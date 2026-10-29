@@ -9,17 +9,17 @@ release: cmake_release
 .PHONY: release
 
 test: ${BUILDDIR}
-	cd ${BUILDDIR}; cmake -DBUILD_TESTS=ON ..
-	cd ${BUILDDIR}; make
-	./${BUILDDIR}/test/main
+	cd ${BUILDDIR}; cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON ..
+	cd ${BUILDDIR}; make ear_tests
+	cd ${BUILDDIR}; ctest --output-on-failure
 .PHONY: test
 
 cmake_debug: ${BUILDDIR}
-	cd ${BUILDDIR}; cmake -DCMAKE_BUILD_TYPE=Debug ..
+	cd ${BUILDDIR}; cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF ..
 .PHONY: cmake_debug
 
 cmake_release: ${BUILDDIR}
-	cd ${BUILDDIR}; cmake -DCMAKE_BUILD_TYPE=Release ..
+	cd ${BUILDDIR}; cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=OFF ..
 .PHONY: cmake_release
 
 clean:

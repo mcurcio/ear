@@ -84,10 +84,10 @@ include_directories(include)
 #add_subdirectory(bin)
 add_subdirectory(src)
 
-#if(BUILD_TESTS)
-#    add_subdirectory(deps/gtest)
-#    add_subdirectory(test)
-#endif()
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(test)
+endif()
 
 #if(BUILD_COVERAGE AND NOT CMAKE_COMPILER_IS_GNUCXX)
 #    message([WARNING] "Code Coverage on non-GCC compilers is not supported by default.
