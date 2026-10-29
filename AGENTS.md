@@ -88,14 +88,16 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 
 `.github/workflows/test.yml` runs on every pull request and every push to `master`, as a
 matrix of two jobs that do not cancel each other: `macos-latest` (Apple Silicon, AppleClang) and
-`ubuntu-latest` (x86_64, GCC, after an `apt-get install` of the Linux packages above), both with
-CMake 4.2.1 (the images ship a newer one): `make test`, then `make debug` (the `ear` binary,
-which `make test` does not build). On failure it uploads `out/Testing` (ctest's logs) as the
+`ubuntu-24.04` (x86_64, GCC 13, after an `apt-get install` of the Linux packages above; pinned
+to the tested release, while `macos-latest` follows GitHub's image), both with CMake 4.2.1 (not
+the images' own CMake): `make test`, then `make debug` (the `ear` binary, which `make test` does
+not build), then `./out/ear --help`, which starts the binary (it exits before opening a device)
+so a shared library missing at runtime fails the job. On failure it uploads `out/Testing` (ctest's logs) as the
 `ctest-output-<runner OS>` artifact (`ctest-output-macOS`, `ctest-output-Linux`). Each job
 caches, keyed by its OS and architecture, `.cache/deps/juce-src` and
 `.cache/deps/boost-src`, keyed also on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
 restored from an older key whose marker no longer matches its pin is fetched again. It also
-caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB per job): each job sets
+caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB, measured on the macOS job): each job sets
 `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER` to `ccache`, which CMake takes as
 defaults and JUCE passes on to the juceaide build during configure. On a warm cache every
 compile hits except `juce_core_CompilationTime.cpp` (`__DATE__`/`__TIME__`); measured on a Mac,
