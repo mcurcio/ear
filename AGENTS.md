@@ -13,9 +13,9 @@ snapshots from 2020).
 ## Build and run
 
 Needs CMake 3.28 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
-Apple Silicon) and network access on the first configure. Nothing is installed: JUCE 9.0.4 and
-the other libraries are vendored, and `CMakeLists.txt` fetches Boost 1.92.0 (official CMake
-release archive, pinned by SHA-256) with `FetchContent`.
+Apple Silicon), git and network access on the first configure. Nothing is installed:
+`CMakeLists.txt` fetches JUCE 9.0.4 (pinned by commit) and Boost 1.92.0 (official CMake release
+archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 
 A build compiles only what EAR links. `ear_dependencies` in `src/CMakeLists.txt` is the one
 link list for `ear` and `ear_tests`; its comment says why each entry is there.
@@ -38,11 +38,14 @@ make clean      # rm -rf out
 ```
 
 - Build output goes to `out/` (gitignored); a post-build step copies the binary to `out/ear`.
-- Boost's archive and source (about 800 MB) are cached in `.cache/deps/` (gitignored;
-  `-DFETCHCONTENT_BASE_DIR=...` moves it); its build tree is `out/_deps/boost-build`.
-  `make clean` keeps the archive and source. A marker file in the source tree records the archive URL and SHA-256
-  it was extracted from; when it matches the pinned pair the next configure reuses the tree
-  (`FETCHCONTENT_SOURCE_DIR_BOOST`), otherwise it re-verifies the archive and re-extracts
+- Fetched sources are cached in `.cache/deps/` (gitignored; `-DFETCHCONTENT_BASE_DIR=...`
+  moves it): JUCE's shallow clone in `.cache/deps/juce-src/` (about 220 MB) and Boost's archive
+  and source in `.cache/deps/boost-src/` (about 800 MB). Their build trees are
+  `out/_deps/<name>-build`. `make clean` keeps the sources. `kept_fetchcontent`
+  (`cmake/KeptFetchContent.cmake`) writes a marker file into each source tree recording the pin
+  it was fetched from (repository and commit, or archive URL and SHA-256); when it matches the
+  declared pin the next configure reuses the tree (`FETCHCONTENT_SOURCE_DIR_<NAME>`), otherwise
+  it fetches again: JUCE re-clones (about 10 s), Boost re-verifies its archive and re-extracts
   (30-40 s).
 - The build runs `cmake --build out --parallel $(JOBS)` with `MAKEFLAGS` cleared, so
   `JOBS`, not `make -jN`, sets its parallelism (a `-jN` is harmless but ignored). Configure
@@ -139,17 +142,29 @@ does not forward `releaseResources`).
 Sample rate 44100 and block size 512 are hard-coded in several places (`constants.hpp` exists
 but most code repeats the literals).
 
-## Vendored code
+## Vendored and fetched code
 
-`juce/`, `vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
+`vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
 `vendor/libjsonrpc` were added with `git subtree`; leave them alone unless you are updating a
 dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_tests` adds Catch
 2.12.2, whose x86-only debugger trap `test/main.cpp` overrides for Apple Silicon.
-`vendor/jsonrpc` and `vendor/libjsonrpc` are unused. Boost is fetched, not vendored.
+`vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
+
+JUCE and Boost are fetched, not vendored: the repository holds neither their code nor their
+history. JUCE is cloned from `https://github.com/juce-framework/JUCE.git` at the commit its
+`9.0.4` tag points at, shallow (depth 1). **The JUCE tree is `.cache/deps/juce-src/`**: skills
+and docs cite JUCE files by that prefix (for example
+`.cache/deps/juce-src/modules/juce_core/juce_core.h`), and the first configure creates it. Treat
+it as read-only. To bump JUCE, set `juce_commit` in `CMakeLists.txt` (the one place the pin is
+declared) to the commit of another release tag
+(`git ls-remote --tags https://github.com/juce-framework/JUCE.git`), then configure: the marker
+no longer matches, so FetchContent clones the new commit; then port and run the checks. To build
+against a local JUCE checkout instead, pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=<path>`. Bump Boost
+by changing `boost_url` and `boost_sha256` together.
 
 ## JUCE references
 
 JUCE here is 9.0.4; docs.juce.com may document another version. Two repo skills in
 `.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages generated from the
-vendored headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture`
+JUCE tree's headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture`
 (which JUCE class fits each job in this repo, and the threading rules designs must respect).

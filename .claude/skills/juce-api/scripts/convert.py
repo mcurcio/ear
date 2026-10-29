@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
-"""Convert Doxygen XML for the vendored JUCE modules into an agent-friendly reference.
+"""Convert Doxygen XML for the fetched JUCE modules into an agent-friendly reference.
 
 Writes into OUT_DIR:
   symbols.tsv          one line per class, member, free function, enum and macro
   classes/<name>.md    one page per class or struct (name = qualified name, '::' -> '.')
   modules.md           each module's description and its classes
-  MANIFEST             JUCE version and the git tree id of juce/modules it was built from
+  MANIFEST             JUCE version and the JUCE commit it was built from
 """
 
 import argparse
+import os
 import re
 import subprocess
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
-SOURCE_PREFIX = "juce/modules/"  # generate.sh strips Doxygen paths down to repo-relative ones
+# generate.sh mounts the JUCE tree at /work/juce and Doxygen strips /work/, so Doxygen paths
+# start with "juce/". source_path() rewrites that to the tree's repo-relative path.
+DOXYGEN_PREFIX = "juce/"
+SOURCE_PREFIX = DOXYGEN_PREFIX + "modules/"
+juce_location = DOXYGEN_PREFIX  # main() sets this from --juce
 
 
 def source_path(doxygen_path):
+    if doxygen_path.startswith(DOXYGEN_PREFIX):
+        return juce_location + doxygen_path[len(DOXYGEN_PREFIX):]
     return doxygen_path
 
 
@@ -171,9 +178,9 @@ def load(path):
     return ET.parse(path).getroot().find("compounddef")
 
 
-def module_descriptions(repo):
+def module_descriptions(juce):
     result = {}
-    for header in sorted((repo / "juce/modules").glob("*/juce_*.h")):
+    for header in sorted((juce / "modules").glob("*/juce_*.h")):
         if header.stem != header.parent.name:
             continue
         match = re.search(r"BEGIN_JUCE_MODULE_DECLARATION(.*?)END_JUCE_MODULE_DECLARATION",
@@ -191,7 +198,10 @@ def main():
     parser.add_argument("xml_dir", type=Path)
     parser.add_argument("out_dir", type=Path)
     parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--juce", type=Path, required=True, help="the JUCE source tree")
     args = parser.parse_args()
+    global juce_location
+    juce_location = os.path.relpath(args.juce.resolve(), args.repo.resolve()) + "/"
 
     index = ET.parse(args.xml_dir / "index.xml").getroot()
     compounds = [(c.get("refid"), c.get("kind")) for c in index.findall("compound")]
@@ -295,7 +305,7 @@ def main():
         for row in symbols:
             f.write("\t".join(field.replace("\t", " ") for field in row) + "\n")
 
-    descs = module_descriptions(args.repo)
+    descs = module_descriptions(args.juce)
     lines = ["# JUCE modules", ""]
     for module in sorted(set(descs) | set(by_module)):
         desc, deps = descs.get(module, ("", ""))
@@ -309,12 +319,12 @@ def main():
         lines.append("")
     (args.out_dir / "modules.md").write_text("\n".join(lines))
 
-    header = (args.repo / "juce/modules/juce_core/system/juce_StandardHeader.h").read_text()
+    header = (args.juce / "modules/juce_core/system/juce_StandardHeader.h").read_text()
     version = ".".join(re.search(rf"#define\s+JUCE_{p}\s+(\d+)", header).group(1)
                        for p in ("MAJOR_VERSION", "MINOR_VERSION", "BUILDNUMBER"))
-    tree = subprocess.run(["git", "-C", str(args.repo), "rev-parse", "HEAD:juce/modules"],
-                          capture_output=True, text=True, check=True).stdout.strip()
-    (args.out_dir / "MANIFEST").write_text(f"juce_version={version}\njuce_modules_tree={tree}\n")
+    commit = subprocess.run(["git", "-C", str(args.juce), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    (args.out_dir / "MANIFEST").write_text(f"juce_version={version}\njuce_commit={commit}\n")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ description: Which JUCE 9 building blocks fit this repo's audio-routing jobs, an
 
 Prior art first: before designing a mechanism, find the JUCE class that already does the job
 (table below), then look up its API with the `juce-api` skill. Every claim here was checked
-against the vendored JUCE 9.0.4 source; JUCE `file:line` refs are under `juce/modules/`. Do not
+against the JUCE 9.0.4 source; JUCE `file:line` refs are under `.cache/deps/juce-src/modules/`
+(the JUCE tree CMake fetches; see AGENTS.md). Do not
 mix in older JUCE or remembered behaviour.
 
 ## Which JUCE class does the job
@@ -71,7 +72,7 @@ targets.
 
 ## Applying this to a design
 
-1. Name the JUCE building block for each job and cite its `juce/modules/...` location.
+1. Name the JUCE building block for each job and cite its `.cache/deps/juce-src/modules/...` location.
 2. State which thread each operation runs on: audio, message, reader or network. Rule 1 makes
    this a design question, not an implementation detail.
 3. Check every claim about JUCE behaviour in the `.cpp` before a design rests on it. Use the

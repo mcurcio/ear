@@ -28,6 +28,13 @@ function(kept_fetchcontent name pin)
 			set(FETCHCONTENT_SOURCE_DIR_${uc} "${kept_dir}")
 		endif()
 	endif()
+	if(user_override)
+		message(STATUS "${lc}: using FETCHCONTENT_SOURCE_DIR_${uc}=${user_override}")
+	elseif(FETCHCONTENT_SOURCE_DIR_${uc})
+		message(STATUS "${lc}: reusing ${kept_dir} (marker matches the pin)")
+	else()
+		message(STATUS "${lc}: fetching into ${kept_dir}")
+	endif()
 	FetchContent_Declare(${lc}
 		${ARGN}
 		BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/${lc}-build"
