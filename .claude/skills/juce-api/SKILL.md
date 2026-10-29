@@ -6,10 +6,12 @@ description: Look up the JUCE API this repo actually builds against (vendored JU
 # JUCE API lookup (vendored JUCE 9.0.4)
 
 This repo builds against the JUCE copy in `juce/` (version 9.0.4). Model memory mostly
-describes JUCE 6 to 8, and docs.juce.com tracks the latest release; both differ from this copy
-(for example the device callback is `audioDeviceIOCallbackWithContext`, and
-`AudioProcessorGraph` moved to the `juce_audio_processors_headless` module). Never take a JUCE
-signature from memory or the website: look it up here.
+describes JUCE 6 to 8, and docs.juce.com tracks the latest release, which need not be 9.0.4.
+Memory of JUCE 6 or early 7 differs most (the device callback became
+`audioDeviceIOCallbackWithContext` in 7.x, and `AudioProcessorGraph` lives in the
+`juce_audio_processors_headless` module since 8.0.x); 9.0.x adds its own breaking changes,
+listed per version at the top of `juce/BREAKING_CHANGES.md`. Never take a JUCE signature from
+memory or the website: look it up here.
 
 ## 1. Get the reference
 
@@ -52,7 +54,8 @@ them. If they disagree, trust the headers and rerun `ensure.sh`.
 `src/CMakeLists.txt` links `juce_core`, `juce_audio_devices`, `juce_audio_utils`,
 `juce_audio_processors`, `juce_audio_formats` and `juce_dsp`, and so their dependencies:
 `juce_audio_processors_headless` (where `AudioProcessor` and `AudioProcessorGraph` now live),
-`juce_gui_extra` (via `juce_audio_processors`), `juce_events` and `juce_audio_basics`. The
+`juce_gui_extra` (via `juce_audio_processors`), `juce_gui_basics`, `juce_graphics`,
+`juce_data_structures`, `juce_events` and `juce_audio_basics`. The
 `module` column of `symbols.tsv` names a symbol's module. A class from any other module needs a
 `target_link_libraries` change first.
 
