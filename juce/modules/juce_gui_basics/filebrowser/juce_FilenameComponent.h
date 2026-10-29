@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -66,21 +82,21 @@ public:
     //==============================================================================
     /** Creates a FilenameComponent.
 
-        @param name             the name for this component.
-        @param currentFile      the file to initially show in the box
-        @param canEditFilename  if true, the user can manually edit the filename; if false,
-                                they can only change it by browsing for a new file
-        @param isDirectory      if true, the file will be treated as a directory, and
-                                an appropriate directory browser used
-        @param isForSaving      if true, the file browser will allow non-existent files to
-                                be picked, as the file is assumed to be used for saving rather
-                                than loading
-        @param fileBrowserWildcard  a wildcard pattern to use in the file browser - e.g. "*.txt;*.foo".
-                                If an empty string is passed in, then the pattern is assumed to be "*"
-        @param enforcedSuffix   if this is non-empty, it is treated as a suffix that will be added
-                                to any filenames that are entered or chosen
+        @param name                     the name for this component.
+        @param currentFile              the file to initially show in the box
+        @param canEditFilename          if true, the user can manually edit the filename; if false,
+                                        they can only change it by browsing for a new file
+        @param isDirectory              if true, the file will be treated as a directory, and
+                                        an appropriate directory browser used
+        @param isForSaving              if true, the file browser will allow non-existent files to
+                                        be picked, as the file is assumed to be used for saving rather
+                                        than loading
+        @param fileBrowserWildcard      a wildcard pattern to use in the file browser - e.g. "*.txt;*.foo".
+                                        If an empty string is passed in, then the pattern is assumed to be "*"
+        @param enforcedSuffix           if this is non-empty, it is treated as a suffix that will be added
+                                        to any filenames that are entered or chosen
         @param textWhenNothingSelected  the message to display in the box before any filename is entered. (This
-                                will only appear if the initial file isn't valid)
+                                        will only appear if the initial file isn't valid)
     */
     FilenameComponent (const String& name,
                        const File& currentFile,
@@ -205,10 +221,14 @@ public:
     /** @internal */
     void fileDragExit (const StringArray&) override;
     /** @internal */
-    KeyboardFocusTraverser* createFocusTraverser() override;
+    std::unique_ptr<ComponentTraverser> createKeyboardFocusTraverser() override;
 
 private:
     //==============================================================================
+    void handleAsyncUpdate() override;
+
+    void showChooser();
+
     ComboBox filenameBox;
     String lastFilename;
     std::unique_ptr<Button> browseButton;
@@ -217,9 +237,7 @@ private:
     String wildcard, enforcedSuffix, browseButtonText;
     ListenerList <FilenameComponentListener> listeners;
     File defaultBrowseFile;
-
-    void showChooser();
-    void handleAsyncUpdate() override;
+    std::unique_ptr<FileChooser> chooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FilenameComponent)
 };

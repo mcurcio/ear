@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -75,6 +91,10 @@ public:
                                 that it can be "allButtons" to get them all. You
                                 can change this later with the setTitleBarButtonsRequired()
                                 method, which can also specify where they are positioned.
+                                The behaviour of native titlebars on macOS is slightly different:
+                                the maximiseButton flag controls whether or not the window can enter
+                                native fullscreen mode, and the zoom button can be disabled by
+                                making the window non-resizable.
         @param addToDesktop     if true, the window will be automatically added to the
                                 desktop; if false, you can use it as a child component
         @see TitleBarButtons
@@ -117,6 +137,10 @@ public:
                                 should be shown on the title bar. This value is a bitwise
                                 combination of values from the TitleBarButtons enum. Note
                                 that it can be "allButtons" to get them all.
+                                The behaviour of native titlebars on macOS is slightly different:
+                                the maximiseButton flag controls whether or not the window can enter
+                                native fullscreen mode, and the zoom button can be disabled by
+                                making the window non-resizable.
         @param positionTitleBarButtonsOnLeft    if true, the buttons should go at the
                                 left side of the bar; if false, they'll be placed at the right
     */
@@ -181,6 +205,8 @@ public:
 
     /** Callback that is triggered when the minimise button is pressed.
 
+        This function is only called when using a non-native titlebar.
+
         The default implementation of this calls ResizableWindow::setMinimised(), but
         you can override it to do more customised behaviour.
     */
@@ -188,6 +214,8 @@ public:
 
     /** Callback that is triggered when the maximise button is pressed, or when the
         title-bar is double-clicked.
+
+        This function is only called when using a non-native titlebar.
 
         The default implementation of this calls ResizableWindow::setFullScreen(), but
         you can override it to do more customised behaviour.
@@ -243,7 +271,7 @@ public:
     };
 
     //==============================================================================
-   #ifndef DOXYGEN
+    /** @cond */
     /** @internal */
     void paint (Graphics&) override;
     /** @internal */
@@ -251,9 +279,7 @@ public:
     /** @internal */
     void lookAndFeelChanged() override;
     /** @internal */
-    BorderSize<int> getBorderThickness() override;
-    /** @internal */
-    BorderSize<int> getContentComponentBorder() override;
+    BorderSize<int> getContentComponentBorder() const override;
     /** @internal */
     void mouseDoubleClick (const MouseEvent&) override;
     /** @internal */
@@ -265,8 +291,16 @@ public:
     /** @internal */
     void parentHierarchyChanged() override;
     /** @internal */
-    Rectangle<int> getTitleBarArea();
-   #endif
+    Rectangle<int> getTitleBarArea() const;
+    /** @internal */
+    WindowControlKind findControlAtPoint (Point<float>) const override;
+    /** @internal */
+    void windowControlClickedClose() override;
+    /** @internal */
+    void windowControlClickedMinimise() override;
+    /** @internal */
+    void windowControlClickedMaximise() override;
+    /** @endcond */
 
 private:
     //==============================================================================

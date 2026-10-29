@@ -1,23 +1,42 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
 #include "../../Application/jucer_Headers.h"
 #include "../../ProjectSaving/jucer_ProjectExporter.h"
+#include "../../ProjectSaving/jucer_ProjectExport_Xcode.h"
+#include "../../ProjectSaving/jucer_ProjectExport_Android.h"
+#include "../../ProjectSaving/jucer_ProjectExport_MSVC.h"
 #include "jucer_PIPGenerator.h"
 
 //==============================================================================
@@ -53,29 +72,27 @@ static String ensureCorrectWhitespace (StringRef input)
 
 static bool isJUCEExample (const File& pipFile)
 {
-    int numLinesToTest = 10; // license should be at the top of the file so no need to
-                             // check all lines
+    const auto numLinesToTest = 10; // license should be at the top of the file so no need to check all lines
+    const auto lines = StringArray::fromLines (pipFile.loadFileAsString());
 
-    for (auto line : StringArray::fromLines (pipFile.loadFileAsString()))
-    {
-        if (line.contains ("This file is part of the JUCE examples."))
-            return true;
-
-        --numLinesToTest;
-    }
-
-    return false;
+    return std::any_of (lines.begin(),
+                        lines.begin() + (std::min (lines.size(), numLinesToTest)),
+                        [] (const auto& line)
+                        {
+                            return line.contains ("This file is part of the JUCE framework examples");
+                        });
 }
 
-static bool isValidExporterName (StringRef exporterName)
+static bool isValidExporterIdentifier (const Identifier& exporterIdentifier)
 {
-    return ProjectExporter::getExporterValueTreeNames().contains (exporterName, true);
+    return ProjectExporter::getTypeInfoForExporter (exporterIdentifier).identifier.toString().isNotEmpty();
 }
 
-static bool exporterRequiresExampleAssets (const String& exporterName, const String& projectName)
+static bool exporterRequiresExampleAssets (const Identifier& exporterIdentifier, const String& projectName)
 {
-    return (exporterName == "XCODE_IPHONE" || exporterName == "ANDROIDSTUDIO")
-            || (exporterName == "XCODE_MAC" && projectName == "AUv3SynthPlugin");
+    return (exporterIdentifier.toString() == XcodeProjectExporter::getValueTreeTypeNameiOS()
+            || exporterIdentifier.toString() == AndroidProjectExporter::getValueTreeTypeName())
+            || (exporterIdentifier.toString() == XcodeProjectExporter::getValueTreeTypeNameMac() && projectName == "AUv3SynthPlugin");
 }
 
 //==============================================================================
@@ -99,7 +116,7 @@ PIPGenerator::PIPGenerator (const File& pip, const File& output, const File& juc
     auto isClipboard = (pip.getParentDirectory().getFileName() == "Clipboard"
                         && pip.getParentDirectory().getParentDirectory().getFileName() == "PIPs");
 
-    outputDirectory = outputDirectory.getChildFile (metadata[Ids::name].toString());
+    outputDirectory = outputDirectory.getChildFile (metadata[Ids::name].toString()).getNonexistentSibling();
     useLocalCopy = metadata[Ids::useLocalCopy].toString().trim().getIntValue() == 1 || isClipboard;
 
     if (userModulesPath != File())
@@ -203,6 +220,11 @@ void PIPGenerator::createFiles (ValueTree& jucerTree)
     jucerTree.addChild (mainGroup, 0, nullptr);
 }
 
+String PIPGenerator::getDocumentControllerClass() const
+{
+    return metadata.getProperty (Ids::documentControllerClass, "").toString();
+}
+
 ValueTree PIPGenerator::createModulePathChild (const String& moduleID)
 {
     ValueTree modulePath (Ids::MODULEPATH);
@@ -225,13 +247,22 @@ ValueTree PIPGenerator::createBuildConfigChild (bool isDebug)
     return child;
 }
 
-ValueTree PIPGenerator::createExporterChild (const String& exporterName)
+ValueTree PIPGenerator::createExporterChild (const Identifier& exporterIdentifier)
 {
-    ValueTree exporter (exporterName);
+    ValueTree exporter (exporterIdentifier);
 
-    exporter.setProperty (Ids::targetFolder, "Builds/" + ProjectExporter::getTargetFolderForExporter (exporterName), nullptr);
+    exporter.setProperty (Ids::targetFolder, "Builds/" + ProjectExporter::getTypeInfoForExporter (exporterIdentifier).targetFolder, nullptr);
 
-    if (isJUCEExample (pipFile) && exporterRequiresExampleAssets (exporterName, metadata[Ids::name]))
+    const Identifier vsExporters[] { MSVCProjectExporterVC2019::getValueTreeTypeName(),
+                                     MSVCProjectExporterVC2022::getValueTreeTypeName(),
+                                     MSVCProjectExporterVC2026::getValueTreeTypeName() };
+
+    if (isJUCEExample (pipFile) && std::find (std::begin (vsExporters), std::end (vsExporters), exporterIdentifier) != std::end (vsExporters))
+    {
+        exporter.setProperty (Ids::extraCompilerFlags, "/bigobj", nullptr);
+    }
+
+    if (isJUCEExample (pipFile) && exporterRequiresExampleAssets (exporterIdentifier, metadata[Ids::name]))
     {
         auto examplesDir = getExamplesDirectory();
 
@@ -239,8 +270,8 @@ ValueTree PIPGenerator::createExporterChild (const String& exporterName)
         {
             auto assetsDirectoryPath = examplesDir.getChildFile ("Assets").getFullPathName();
 
-            exporter.setProperty (exporterName == "ANDROIDSTUDIO" ? Ids::androidExtraAssetsFolder
-                                                                  : Ids::customXcodeResourceFolders,
+            exporter.setProperty (exporterIdentifier.toString() == AndroidProjectExporter::getValueTreeTypeName() ? Ids::androidExtraAssetsFolder
+                                                                                                                  : Ids::customXcodeResourceFolders,
                                   assetsDirectoryPath, nullptr);
         }
         else
@@ -249,6 +280,9 @@ ValueTree PIPGenerator::createExporterChild (const String& exporterName)
             jassertfalse;
         }
     }
+
+    if (exporterIdentifier.toString() == AndroidProjectExporter::getValueTreeTypeName())
+        exporter.setProperty (Ids::androidBluetoothNeeded, true, nullptr);
 
     {
         ValueTree configs (Ids::CONFIGURATIONS);
@@ -295,7 +329,7 @@ void PIPGenerator::addExporters (ValueTree& jucerTree)
     {
         e = e.trim().toUpperCase();
 
-        if (isValidExporterName (e))
+        if (isValidExporterIdentifier (e))
             exportersTree.addChild (createExporterChild (e), -1, nullptr);
     }
 
@@ -308,15 +342,6 @@ void PIPGenerator::addModules (ValueTree& jucerTree)
 
     auto modules = StringArray::fromTokens (metadata[Ids::dependencies_].toString(), ",", {});
     modules.trim();
-
-    auto projectType = metadata[Ids::type].toString();
-
-    if (projectType == "Console")
-        modules.mergeArray (getModulesRequiredForConsole());
-    else if (projectType == "Component")
-        modules.mergeArray (getModulesRequiredForComponent());
-    else if (projectType == "AudioProcessor")
-        modules.mergeArray (getModulesRequiredForAudioProcessor());
 
     for (auto& m : modules)
         modulesTree.addChild (createModuleChild (m.trim()), -1, nullptr);
@@ -356,8 +381,6 @@ Result PIPGenerator::setProjectSettings (ValueTree& jucerTree)
                                                                          : "\"File->Global Paths...\"")
                                  + " menu item.");
         }
-
-        jucerTree.setProperty (Ids::displaySplashScreen, true, nullptr);
     }
 
     setPropertyIfNotEmpty (Ids::defines, defines);
@@ -366,21 +389,24 @@ Result PIPGenerator::setProjectSettings (ValueTree& jucerTree)
 
     if (type == "Console")
     {
-        jucerTree.setProperty (Ids::projectType, "consoleapp", nullptr);
+        jucerTree.setProperty (Ids::projectType, build_tools::ProjectType_ConsoleApp::getTypeName(), nullptr);
     }
     else if (type == "Component")
     {
-        jucerTree.setProperty (Ids::projectType, "guiapp", nullptr);
+        jucerTree.setProperty (Ids::projectType, build_tools::ProjectType_GUIApp::getTypeName(), nullptr);
     }
     else if (type == "AudioProcessor")
     {
-        jucerTree.setProperty (Ids::projectType, "audioplug", nullptr);
+        jucerTree.setProperty (Ids::projectType, build_tools::ProjectType_AudioPlugin::getTypeName(), nullptr);
         jucerTree.setProperty (Ids::pluginAUIsSandboxSafe, "1", nullptr);
 
         setPropertyIfNotEmpty (Ids::pluginManufacturer, metadata[Ids::vendor]);
 
         StringArray pluginFormatsToBuild (Ids::buildVST3.toString(), Ids::buildAU.toString(), Ids::buildStandalone.toString());
         pluginFormatsToBuild.addArray (getExtraPluginFormatsToBuild());
+
+        if (getDocumentControllerClass().isNotEmpty())
+            pluginFormatsToBuild.add (Ids::enableARA.toString());
 
         jucerTree.setProperty (Ids::pluginFormats, pluginFormatsToBuild.joinIntoString (","), nullptr);
 
@@ -420,6 +446,7 @@ void PIPGenerator::setModuleFlags (ValueTree& jucerTree)
 String PIPGenerator::getMainFileTextForType()
 {
     const auto type = metadata[Ids::type].toString();
+    const auto documentControllerClass = getDocumentControllerClass();
 
     const auto mainTemplate = [&]
     {
@@ -433,8 +460,17 @@ String PIPGenerator::getMainFileTextForType()
                    .replace ("${JUCE_PIP_MAIN_CLASS}", metadata[Ids::mainClass].toString());
 
         if (type == "AudioProcessor")
+        {
+            if (documentControllerClass.isNotEmpty())
+            {
+                return String (BinaryData::PIPAudioProcessorWithARA_cpp_in)
+                       .replace ("${JUCE_PIP_MAIN_CLASS}", metadata[Ids::mainClass].toString())
+                       .replace ("${JUCE_PIP_DOCUMENTCONTROLLER_CLASS}", documentControllerClass);
+            }
+
             return String (BinaryData::PIPAudioProcessor_cpp_in)
                    .replace ("${JUCE_PIP_MAIN_CLASS}", metadata[Ids::mainClass].toString());
+        }
 
         return String{};
     }();
@@ -472,7 +508,7 @@ Array<File> PIPGenerator::replaceRelativeIncludesAndGetFilesToMove()
             if (path.startsWith ("<") && path.endsWith (">"))
                 continue;
 
-            auto file = pipFile.getParentDirectory().getChildFile (path);
+            auto file = pipFile.getSiblingFile (path);
             files.add (file);
 
             line = line.replace (path, file.getFileName());

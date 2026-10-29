@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -58,8 +74,14 @@
 #include "codecs/juce_FlacAudioFormat.cpp"
 #include "codecs/juce_MP3AudioFormat.cpp"
 #include "codecs/juce_OggVorbisAudioFormat.cpp"
+#include "codecs/juce_OpusAudioFormat.cpp"
 #include "codecs/juce_WavAudioFormat.cpp"
 #include "codecs/juce_LAMEEncoderAudioFormat.cpp"
+
+#if JucePlugin_Enable_ARA
+ #include <juce_audio_processors_headless/utilities/ARA/juce_ARADocumentControllerCommon.h>
+ #include "format/juce_ARAAudioReaders.cpp"
+#endif
 
 #if JUCE_WINDOWS && JUCE_USE_WINDOWS_MEDIA_FORMAT
  #include "codecs/juce_WindowsMediaAudioFormat.cpp"

@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -22,14 +38,20 @@
 #include "InternalPlugins.h"
 #include "../UI/GraphEditorPanel.h"
 
+static std::unique_ptr<ScopedDPIAwarenessDisabler> makeDPIAwarenessDisablerForPlugin (const PluginDescription& desc)
+{
+    return shouldAutoScalePlugin (desc) ? std::make_unique<ScopedDPIAwarenessDisabler>()
+                                        : nullptr;
+}
 
 //==============================================================================
-PluginGraph::PluginGraph (AudioPluginFormatManager& fm)
+PluginGraph::PluginGraph (AudioPluginFormatManager& fm, KnownPluginList& kpl)
     : FileBasedDocument (getFilenameSuffix(),
                          getFilenameWildcard(),
                          "Load a graph",
                          "Save a graph"),
-      formatManager (fm)
+      formatManager (fm),
+      knownPlugins (kpl)
 {
     newDocument();
     graph.addListener (this);
@@ -53,7 +75,7 @@ void PluginGraph::changeListenerCallback (ChangeBroadcaster*)
     changed();
 
     for (int i = activePluginWindows.size(); --i >= 0;)
-        if (! graph.getNodes().contains (activePluginWindows.getUnchecked(i)->node))
+        if (! graph.getNodes().contains (activePluginWindows.getUnchecked (i)->node))
             activePluginWindows.remove (i);
 }
 
@@ -67,34 +89,48 @@ AudioProcessorGraph::Node::Ptr PluginGraph::getNodeForName (const String& name) 
     return nullptr;
 }
 
-void PluginGraph::addPlugin (const PluginDescription& desc, Point<double> pos)
+void PluginGraph::addPlugin (const PluginDescriptionAndPreference& desc, Point<double> pos)
 {
-    formatManager.createPluginInstanceAsync (desc,
+    std::shared_ptr<ScopedDPIAwarenessDisabler> dpiDisabler = makeDPIAwarenessDisablerForPlugin (desc.pluginDescription);
+
+    formatManager.createPluginInstanceAsync (desc.pluginDescription,
                                              graph.getSampleRate(),
                                              graph.getBlockSize(),
-                                             [this, pos] (std::unique_ptr<AudioPluginInstance> instance, const String& error)
+                                             [this, pos, dpiDisabler, useARA = desc.useARA] (std::unique_ptr<AudioPluginInstance> instance, const String& error)
                                              {
-                                                 addPluginCallback (std::move (instance), error, pos);
+                                                 addPluginCallback (std::move (instance), error, pos, useARA);
                                              });
 }
 
 void PluginGraph::addPluginCallback (std::unique_ptr<AudioPluginInstance> instance,
-                                     const String& error, Point<double> pos)
+                                     const String& error,
+                                     Point<double> pos,
+                                     PluginDescriptionAndPreference::UseARA useARA)
 {
     if (instance == nullptr)
     {
-        AlertWindow::showMessageBoxAsync (AlertWindow::WarningIcon,
-                                          TRANS("Couldn't create plugin"),
-                                          error);
+        auto options = MessageBoxOptions::makeOptionsOk (MessageBoxIconType::WarningIcon,
+                                                         TRANS ("Couldn't create plugin"),
+                                                         error);
+        messageBox = AlertWindow::showScopedAsync (options, nullptr);
     }
     else
     {
+       #if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
+        if (useARA == PluginDescriptionAndPreference::UseARA::yes
+            && instance->getPluginDescription().hasARAExtension)
+        {
+            instance = std::make_unique<ARAPluginInstanceWrapper> (std::move (instance));
+        }
+       #endif
+
         instance->enableAllBuses();
 
         if (auto node = graph.addNode (std::move (instance)))
         {
             node->properties.set ("x", pos.x);
             node->properties.set ("y", pos.y);
+            node->properties.set ("useARA", useARA == PluginDescriptionAndPreference::UseARA::yes);
             changed();
         }
     }
@@ -149,18 +185,13 @@ PluginWindow* PluginGraph::getOrCreateWindowFor (AudioProcessorGraph::Node* node
                 getCommandManager().invokeDirectly (CommandIDs::showAudioSettings, false);
                 return nullptr;
             }
-        }
 
-       #if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
-        if (! node->properties["DPIAware"]
-            && ! node->getProcessor()->getName().contains ("Kontakt")) // Kontakt doesn't behave correctly in DPI unaware mode...
-        {
-            ScopedDPIAwarenessDisabler disableDPIAwareness;
-            return activePluginWindows.add (new PluginWindow (node, type, activePluginWindows));
+            auto localDpiDisabler = makeDPIAwarenessDisablerForPlugin (description);
+            return activePluginWindows.add (new PluginWindow (node,
+                                                              type,
+                                                              activePluginWindows,
+                                                              getCommandManager().getKeyMappings()));
         }
-       #endif
-
-        return activePluginWindows.add (new PluginWindow (node, type, activePluginWindows));
     }
 
     return nullptr;
@@ -193,10 +224,10 @@ void PluginGraph::newDocument()
 
     jassert (internalFormat.getAllTypes().size() > 3);
 
-    addPlugin (internalFormat.getAllTypes()[0], { 0.5,  0.1 });
-    addPlugin (internalFormat.getAllTypes()[1], { 0.25, 0.1 });
-    addPlugin (internalFormat.getAllTypes()[2], { 0.5,  0.9 });
-    addPlugin (internalFormat.getAllTypes()[3], { 0.25, 0.9 });
+    addPlugin (PluginDescriptionAndPreference { internalFormat.getAllTypes()[0] }, { 0.5,  0.1 });
+    addPlugin (PluginDescriptionAndPreference { internalFormat.getAllTypes()[1] }, { 0.25, 0.1 });
+    addPlugin (PluginDescriptionAndPreference { internalFormat.getAllTypes()[2] }, { 0.5,  0.9 });
+    addPlugin (PluginDescriptionAndPreference { internalFormat.getAllTypes()[3] }, { 0.25, 0.9 });
 
     MessageManager::callAsync ([this]
     {
@@ -265,7 +296,7 @@ static void readBusLayoutFromXml (AudioProcessor::BusesLayout& busesLayout, Audi
 
     if (auto* buses = xml.getChildByName (isInput ? "INPUTS" : "OUTPUTS"))
     {
-        forEachXmlChildElementWithTagName (*buses, e, "BUS")
+        for (auto* e : buses->getChildWithTagNameIterator ("BUS"))
         {
             const int busIdx = e->getIntAttribute ("index");
             maxNumBuses = jmax (maxNumBuses, busIdx + 1);
@@ -325,9 +356,7 @@ static XmlElement* createNodeXml (AudioProcessorGraph::Node* const node) noexcep
         e->setAttribute ("uid",      (int) node->nodeID.uid);
         e->setAttribute ("x",        node->properties ["x"].toString());
         e->setAttribute ("y",        node->properties ["y"].toString());
-       #if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
-        e->setAttribute ("DPIAware", node->properties["DPIAware"].toString());
-       #endif
+        e->setAttribute ("useARA",   node->properties ["useARA"].toString());
 
         for (int i = 0; i < (int) PluginWindow::Type::numTypes; ++i)
         {
@@ -368,18 +397,65 @@ static XmlElement* createNodeXml (AudioProcessorGraph::Node* const node) noexcep
 
 void PluginGraph::createNodeFromXml (const XmlElement& xml)
 {
-    PluginDescription pd;
+    PluginDescriptionAndPreference pd;
+    const auto nodeUsesARA = xml.getBoolAttribute ("useARA");
 
-    forEachXmlChildElement (xml, e)
+    for (auto* e : xml.getChildIterator())
     {
-        if (pd.loadFromXml (*e))
+        if (pd.pluginDescription.loadFromXml (*e))
+        {
+            pd.useARA = nodeUsesARA ? PluginDescriptionAndPreference::UseARA::yes
+                                    : PluginDescriptionAndPreference::UseARA::no;
             break;
+        }
     }
 
-    String errorMessage;
+    auto createInstanceWithFallback = [&]() -> std::unique_ptr<AudioPluginInstance>
+    {
+        auto createInstance = [this] (const PluginDescriptionAndPreference& description) -> std::unique_ptr<AudioPluginInstance>
+        {
+            String errorMessage;
 
-    if (auto instance = formatManager.createPluginInstance (pd, graph.getSampleRate(),
-                                                            graph.getBlockSize(), errorMessage))
+            auto localDpiDisabler = makeDPIAwarenessDisablerForPlugin (description.pluginDescription);
+
+            auto instance = formatManager.createPluginInstance (description.pluginDescription,
+                                                                graph.getSampleRate(),
+                                                                graph.getBlockSize(),
+                                                                errorMessage);
+
+           #if JUCE_PLUGINHOST_ARA && (JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX)
+            if (instance
+                && description.useARA == PluginDescriptionAndPreference::UseARA::yes
+                && description.pluginDescription.hasARAExtension)
+            {
+                return std::make_unique<ARAPluginInstanceWrapper> (std::move (instance));
+            }
+           #endif
+
+            return instance;
+        };
+
+        if (auto instance = createInstance (pd))
+            return instance;
+
+        const auto allFormats = formatManager.getFormats();
+        const auto matchingFormat = std::find_if (allFormats.begin(), allFormats.end(),
+                                                  [&] (const AudioPluginFormat* f) { return f->getName() == pd.pluginDescription.pluginFormatName; });
+
+        if (matchingFormat == allFormats.end())
+            return nullptr;
+
+        const auto plugins = knownPlugins.getTypesForFormat (**matchingFormat);
+        const auto matchingPlugin = std::find_if (plugins.begin(), plugins.end(),
+                                                  [&] (const PluginDescription& desc) { return pd.pluginDescription.uniqueId == desc.uniqueId; });
+
+        if (matchingPlugin == plugins.end())
+            return nullptr;
+
+        return createInstance (PluginDescriptionAndPreference { *matchingPlugin });
+    };
+
+    if (auto instance = createInstanceWithFallback())
     {
         if (auto* layoutEntity = xml.getChildByName ("LAYOUT"))
         {
@@ -401,11 +477,9 @@ void PluginGraph::createNodeFromXml (const XmlElement& xml)
                 node->getProcessor()->setStateInformation (m.getData(), (int) m.getSize());
             }
 
-            node->properties.set ("x",        xml.getDoubleAttribute ("x"));
-            node->properties.set ("y",        xml.getDoubleAttribute ("y"));
-           #if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
-            node->properties.set ("DPIAware", xml.getDoubleAttribute ("DPIAware"));
-           #endif
+            node->properties.set ("x", xml.getDoubleAttribute ("x"));
+            node->properties.set ("y", xml.getDoubleAttribute ("y"));
+            node->properties.set ("useARA", xml.getBoolAttribute ("useARA"));
 
             for (int i = 0; i < (int) PluginWindow::Type::numTypes; ++i)
             {
@@ -454,13 +528,13 @@ void PluginGraph::restoreFromXml (const XmlElement& xml)
 {
     clear();
 
-    forEachXmlChildElementWithTagName (xml, e, "FILTER")
+    for (auto* e : xml.getChildWithTagNameIterator ("FILTER"))
     {
         createNodeFromXml (*e);
         changed();
     }
 
-    forEachXmlChildElementWithTagName (xml, e, "CONNECTION")
+    for (auto* e : xml.getChildWithTagNameIterator ("CONNECTION"))
     {
         graph.addConnection ({ { NodeID ((uint32) e->getIntAttribute ("srcFilter")), e->getIntAttribute ("srcChannel") },
                                { NodeID ((uint32) e->getIntAttribute ("dstFilter")), e->getIntAttribute ("dstChannel") } });

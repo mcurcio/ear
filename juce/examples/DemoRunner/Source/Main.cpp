@@ -1,17 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   The code included in this file is provided under the terms of the ISC license
+   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
+   to use, copy, modify, and/or distribute this software for any purpose with or
+   without fee is hereby granted provided that the above copyright notice and
+   this permission notice appear in all copies.
 
-   For this technical preview, this file is not subject to commercial licensing.
-
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -22,10 +27,10 @@
 #include "UI/MainComponent.h"
 
 //==============================================================================
-#if JUCE_WINDOWS || JUCE_LINUX || JUCE_MAC
+#if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
  // Just add a simple icon to the Window system tray area or Mac menu bar..
- struct DemoTaskbarComponent  : public SystemTrayIconComponent,
-                                private Timer
+ struct DemoTaskbarComponent final : public SystemTrayIconComponent,
+                                     private Timer
  {
      DemoTaskbarComponent()
      {
@@ -69,7 +74,7 @@
 std::unique_ptr<AudioDeviceManager> sharedAudioDeviceManager;
 
 //==============================================================================
-class DemoRunnerApplication  : public JUCEApplication
+class DemoRunnerApplication final : public JUCEApplication
 {
 public:
     //==============================================================================
@@ -89,7 +94,7 @@ public:
     {
         registerAllDemos();
 
-      #if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX
+      #if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
         // (This function call is for one of the demos, which involves launching a child process)
         if (invokeChildProcessDemo (commandLine))
             return;
@@ -104,11 +109,13 @@ public:
     void shutdown() override             { mainWindow = nullptr; }
 
     //==============================================================================
-    void systemRequestedQuit() override                                 { quit(); }
-    void anotherInstanceStarted (const String&) override                {}
+    void systemRequestedQuit() override                   { quit(); }
+    void anotherInstanceStarted (const String&) override  {}
+
+    ApplicationCommandManager& getGlobalCommandManager()  { return commandManager; }
 
 private:
-    class MainAppWindow    : public DocumentWindow
+    class MainAppWindow final : public DocumentWindow
     {
     public:
         MainAppWindow (const String& name)
@@ -122,35 +129,51 @@ private:
 
            #if JUCE_IOS || JUCE_ANDROID
             setFullScreen (true);
-            Desktop::getInstance().setOrientationsEnabled (Desktop::rotatedClockwise | Desktop::rotatedAntiClockwise);
+
+            auto& desktop = Desktop::getInstance();
+
+            desktop.setOrientationsEnabled (Desktop::allOrientations);
+            desktop.setKioskModeComponent (this);
            #else
-            setBounds ((int) (0.1f * getParentWidth()),
-                       (int) (0.1f * getParentHeight()),
-                       jmax (850, (int) (0.5f * getParentWidth())),
-                       jmax (600, (int) (0.7f * getParentHeight())));
+            setBounds ((int) (0.1f * (float) getParentWidth()),
+                       (int) (0.1f * (float) getParentHeight()),
+                       jmax (850, (int) (0.5f * (float) getParentWidth())),
+                       jmax (600, (int) (0.7f * (float) getParentHeight())));
            #endif
 
             setContentOwned (new MainComponent(), false);
             setVisible (true);
-
-           #if JUCE_WINDOWS || JUCE_LINUX || JUCE_MAC
-            taskbarIcon.reset (new DemoTaskbarComponent());
-           #endif
         }
 
         void closeButtonPressed() override    { JUCEApplication::getInstance()->systemRequestedQuit(); }
+
+       #if JUCE_IOS || JUCE_ANDROID
+        void parentSizeChanged() override
+        {
+            if (auto* comp = getContentComponent())
+                comp->resized();
+        }
+       #endif
 
         //==============================================================================
         MainComponent& getMainComponent()    { return *dynamic_cast<MainComponent*> (getContentComponent()); }
 
     private:
-        std::unique_ptr<Component> taskbarIcon;
+       #if JUCE_MAC || JUCE_WINDOWS || JUCE_LINUX || JUCE_BSD
+        std::unique_ptr<Component> taskbarIcon = std::make_unique<DemoTaskbarComponent>();
+       #endif
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainAppWindow)
     };
 
     std::unique_ptr<MainAppWindow> mainWindow;
+    ApplicationCommandManager commandManager;
 };
+
+ApplicationCommandManager& getGlobalCommandManager()
+{
+    return dynamic_cast<DemoRunnerApplication*> (JUCEApplication::getInstance())->getGlobalCommandManager();
+}
 
 //==============================================================================
 // This macro generates the main() routine that launches the app.

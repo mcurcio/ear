@@ -1,24 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 /**
@@ -43,7 +57,7 @@ public:
         If lookup table is not zero, then the function will be approximated
         with a lookup table.
     */
-    Oscillator (const std::function<NumericType(NumericType)>& function,
+    Oscillator (const std::function<NumericType (NumericType)>& function,
                 size_t lookupTableNumPoints = 0)
     {
         initialise (function, lookupTableNumPoints);
@@ -53,7 +67,7 @@ public:
     bool isInitialised() const noexcept     { return static_cast<bool> (generator); }
 
     /** Initialises the oscillator with a waveform. */
-    void initialise (const std::function<NumericType(NumericType)>& function,
+    void initialise (const std::function<NumericType (NumericType)>& function,
                      size_t lookupTableNumPoints = 0)
     {
         if (lookupTableNumPoints != 0)
@@ -232,7 +246,7 @@ public:
 
 private:
     //==============================================================================
-    std::function<NumericType(NumericType)> generator;
+    std::function<NumericType (NumericType)> generator;
     std::unique_ptr<LookupTableTransform<NumericType>> lookupTable;
     Array<NumericType> rampBuffer;
     SmoothedValue<NumericType> frequency { static_cast<NumericType> (440.0) };
@@ -240,5 +254,4 @@ private:
     Phase<NumericType> phase;
 };
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

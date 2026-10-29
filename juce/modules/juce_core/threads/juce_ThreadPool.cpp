@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -23,98 +35,56 @@
 namespace juce
 {
 
-struct ThreadPool::ThreadPoolThread  : public Thread
+struct ThreadPool::ThreadPoolThread final : public Thread
 {
-    ThreadPoolThread (ThreadPool& p, size_t stackSize)
-       : Thread ("Pool", stackSize), pool (p)
+    ThreadPoolThread (ThreadPool& p, const Options& options)
+       : Thread { options.threadName, options.threadStackSizeBytes },
+         pool { p }
     {
     }
 
     void run() override
     {
         while (! threadShouldExit())
+        {
             if (! pool.runNextJob (*this))
                 wait (500);
+        }
     }
 
     std::atomic<ThreadPoolJob*> currentJob { nullptr };
+
     ThreadPool& pool;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ThreadPoolThread)
 };
 
 //==============================================================================
-ThreadPoolJob::ThreadPoolJob (const String& name)  : jobName (name)
+ThreadPool::ThreadPool (const Options& options)
 {
+    // not much point having a pool without any threads!
+    jassert (options.numberOfThreads > 0);
+
+    for (int i = jmax (1, options.numberOfThreads); --i >= 0;)
+        threads.add (new ThreadPoolThread (*this, options));
+
+    for (auto* t : threads)
+        t->startThread (options.desiredThreadPriority);
 }
 
-ThreadPoolJob::~ThreadPoolJob()
+ThreadPool::ThreadPool (int numberOfThreads,
+                        size_t threadStackSizeBytes,
+                        Thread::Priority desiredThreadPriority)
+    : ThreadPool { Options{}.withNumberOfThreads (numberOfThreads)
+                            .withThreadStackSizeBytes (threadStackSizeBytes)
+                            .withDesiredThreadPriority (desiredThreadPriority) }
 {
-    // you mustn't delete a job while it's still in a pool! Use ThreadPool::removeJob()
-    // to remove it first!
-    jassert (pool == nullptr || ! pool->contains (this));
-}
-
-String ThreadPoolJob::getJobName() const
-{
-    return jobName;
-}
-
-void ThreadPoolJob::setJobName (const String& newName)
-{
-    jobName = newName;
-}
-
-void ThreadPoolJob::signalJobShouldExit()
-{
-    shouldStop = true;
-    listeners.call ([] (Thread::Listener& l) { l.exitSignalSent(); });
-}
-
-void ThreadPoolJob::addListener (Thread::Listener* listener)
-{
-    listeners.add (listener);
-}
-
-void ThreadPoolJob::removeListener (Thread::Listener* listener)
-{
-    listeners.remove (listener);
-}
-
-ThreadPoolJob* ThreadPoolJob::getCurrentThreadPoolJob()
-{
-    if (auto* t = dynamic_cast<ThreadPool::ThreadPoolThread*> (Thread::getCurrentThread()))
-        return t->currentJob.load();
-
-    return nullptr;
-}
-
-//==============================================================================
-ThreadPool::ThreadPool (int numThreads, size_t threadStackSize)
-{
-    jassert (numThreads > 0); // not much point having a pool without any threads!
-
-    createThreads (numThreads, threadStackSize);
-}
-
-ThreadPool::ThreadPool()
-{
-    createThreads (SystemStats::getNumCpus());
 }
 
 ThreadPool::~ThreadPool()
 {
     removeAllJobs (true, 5000);
     stopThreads();
-}
-
-void ThreadPool::createThreads (int numThreads, size_t threadStackSize)
-{
-    for (int i = jmax (1, numThreads); --i >= 0;)
-        threads.add (new ThreadPoolThread (*this, threadStackSize));
-
-    for (auto* t : threads)
-        t->startThread();
 }
 
 void ThreadPool::stopThreads()
@@ -146,32 +116,6 @@ void ThreadPool::addJob (ThreadPoolJob* job, bool deleteJobWhenFinished)
         for (auto* t : threads)
             t->notify();
     }
-}
-
-void ThreadPool::addJob (std::function<ThreadPoolJob::JobStatus()> jobToRun)
-{
-    struct LambdaJobWrapper  : public ThreadPoolJob
-    {
-        LambdaJobWrapper (std::function<ThreadPoolJob::JobStatus()> j) : ThreadPoolJob ("lambda"), job (j) {}
-        JobStatus runJob() override      { return job(); }
-
-        std::function<ThreadPoolJob::JobStatus()> job;
-    };
-
-    addJob (new LambdaJobWrapper (jobToRun), true);
-}
-
-void ThreadPool::addJob (std::function<void()> jobToRun)
-{
-    struct LambdaJobWrapper  : public ThreadPoolJob
-    {
-        LambdaJobWrapper (std::function<void()> j) : ThreadPoolJob ("lambda"), job (j) {}
-        JobStatus runJob() override      { job(); return ThreadPoolJob::jobHasFinished; }
-
-        std::function<void()> job;
-    };
-
-    addJob (new LambdaJobWrapper (jobToRun), true);
 }
 
 int ThreadPool::getNumJobs() const noexcept
@@ -273,7 +217,7 @@ bool ThreadPool::removeAllJobs (bool interruptRunningJobs, int timeOutMs,
 
             for (int i = jobs.size(); --i >= 0;)
             {
-                auto* job = jobs.getUnchecked(i);
+                auto* job = jobs.getUnchecked (i);
 
                 if (selectedJobsToRemove == nullptr || selectedJobsToRemove->isJobSuitable (job))
                 {
@@ -328,17 +272,6 @@ StringArray ThreadPool::getNamesOfAllJobs (bool onlyReturnActiveJobs) const
             s.add (job->getJobName());
 
     return s;
-}
-
-bool ThreadPool::setThreadPriorities (int newPriority)
-{
-    bool ok = true;
-
-    for (auto* t : threads)
-        if (! t->setPriority (newPriority))
-            ok = false;
-
-    return ok;
 }
 
 ThreadPoolJob* ThreadPool::pickNextJobToRun()

@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -27,11 +39,7 @@ class MessageManagerLock;
 class ThreadPoolJob;
 class ActionListener;
 class ActionBroadcaster;
-
-//==============================================================================
-#if JUCE_MODULE_AVAILABLE_juce_opengl
-class OpenGLContext;
-#endif
+class JUCEApplicationBase;
 
 //==============================================================================
 /** See MessageManager::callFunctionOnMessageThread() for use of this function type. */
@@ -48,6 +56,11 @@ using MessageCallbackFunction = void* (void* userData);
 */
 class JUCE_API  MessageManager  final
 {
+    template <typename FunctionResult>
+    using CallSyncResult = std::conditional_t<std::is_same_v<FunctionResult, void>,
+                                              bool,
+                                              std::optional<FunctionResult>>;
+
 public:
     //==============================================================================
     /** Returns the global instance of the MessageManager. */
@@ -57,9 +70,83 @@ public:
     static MessageManager* getInstanceWithoutCreating() noexcept;
 
     /** Deletes the global MessageManager instance.
-        Does nothing if no instance had been created.
+
+        Notifies lifetime listeners, deletes any remaining DeletedAtShutdown
+        objects, then destroys the manager. Does nothing if no instance had
+        been created.
     */
     static void deleteInstance();
+
+    //==============================================================================
+    /** Receives callbacks when a MessageManager is starting or stopping.
+
+        Listeners are process-lifetime: they remain registered across MessageManager
+        restart (for example a plugin reload). They are not unregistered automatically
+        when the manager is deleted.
+
+        If you register after the current manager has already been created you will
+        not receive messageManagerStarting() for that instance. Check
+        getInstanceWithoutCreating() in your constructor if you need to catch up.
+
+        @see addLifetimeListener, removeLifetimeListener
+    */
+    struct JUCE_API LifetimeListener
+    {
+        /** Default constructor */
+        LifetimeListener();
+
+        /** Destructor */
+        virtual ~LifetimeListener();
+
+        /** Called after a new MessageManager has been constructed and its platform
+            message queue is ready, and before the dispatch loop is pumping.
+
+            This runs on the message thread. Posted callbacks will not run until the
+            message loop starts (or the host pumps it). Do not wait for a posted
+            message here; the loop is not pumping yet so that would deadlock.
+        */
+        virtual void messageManagerStarting() = 0;
+
+        /** Called after the manager has stopped accepting new messages, and before
+            DeletedAtShutdown objects and the MessageManager itself are destroyed.
+
+            The MessageManager instance is still available. Do not post messages;
+            they will be discarded.
+        */
+        virtual void messageManagerStopping() = 0;
+
+        JUCE_DECLARE_NON_COPYABLE (LifetimeListener)
+        JUCE_DECLARE_NON_MOVEABLE (LifetimeListener)
+    };
+
+    /** Register a listener for MessageManager start and stop callbacks. */
+    static void addLifetimeListener (LifetimeListener& listenerToAdd)
+    {
+        if (auto* list = getLifetimeListeners())
+            list->add (listenerToAdd);
+        else
+            jassertfalse; // Adding a listener after the list has been destroyed
+    }
+
+    /** Unregister a listener added with addLifetimeListener(). */
+    static void removeLifetimeListener (LifetimeListener& listenerToRemove)
+    {
+        if (auto* list = getLifetimeListeners())
+            list->remove (listenerToRemove);
+    }
+
+    /** Register a listener that is removed when the returned object is destroyed.
+
+        The returned guard must not outlive listenerToAdd.
+    */
+    [[nodiscard]] static ErasedScopeGuard addScopedLifetimeListener (LifetimeListener& listenerToAdd)
+    {
+        addLifetimeListener (listenerToAdd);
+        return ErasedScopeGuard { [&listenerToAdd]
+        {
+            removeLifetimeListener (listenerToAdd);
+        } };
+    }
 
     //==============================================================================
     /** Runs the event dispatch loop until a stop message is posted.
@@ -82,9 +169,9 @@ public:
 
     /** Returns true if the stopDispatchLoop() method has been called.
     */
-    bool hasStopMessageBeenSent() const noexcept        { return quitMessagePosted.get() != 0; }
+    bool hasStopMessageBeenSent() const noexcept        { return quitMessagePosted; }
 
-   #if JUCE_MODAL_LOOPS_PERMITTED || DOXYGEN
+   #if JUCE_MODAL_LOOPS_PERMITTED
     /** Synchronously dispatches messages until a given time has elapsed.
 
         Returns false if a quit message has been posted by a call to stopDispatchLoop(),
@@ -96,10 +183,24 @@ public:
     //==============================================================================
     /** Asynchronously invokes a function or C++11 lambda on the message thread.
 
-        @returns  true if the message was successfully posted to the message queue,
-                  or false otherwise.
+        @param function  the function to call, which should have no arguments
+        @returns         true if the message was successfully posted to the message queue,
+                         or false otherwise.
     */
-    static bool callAsync (std::function<void()> functionToCall);
+    template <typename Function>
+    static bool callAsync (Function&& function)
+    {
+        using NonRef = std::remove_cv_t<std::remove_reference_t<Function>>;
+
+        struct AsyncCallInvoker final : public MessageBase
+        {
+            explicit AsyncCallInvoker (NonRef f) : fn (std::move (f)) {}
+            void messageCallback() override { fn(); }
+            NonRef fn;
+        };
+
+        return (new AsyncCallInvoker { std::move (function) })->post();
+    }
 
     /** Calls a function using the message-thread.
 
@@ -121,19 +222,60 @@ public:
     */
     void* callFunctionOnMessageThread (MessageCallbackFunction* callback, void* userData);
 
+    /** Similar to callFunctionOnMessageThread(), calls a function on the message thread,
+        blocking the current thread until a result is available.
+
+        Be careful not to cause any deadlocks with this! It's easy to do - e.g. if the caller
+        thread has a critical section locked, which an unrelated message callback then tries to lock
+        before the message thread gets round to processing this callback.
+
+        @param function     the function to call, which should have no parameters
+        @returns            if function() returns void, then callSync returns a boolean where
+                            'true' indicates that the function was called successfully, and 'false'
+                            indicates that the message could not be posted.
+                            if function() returns any other type 'T', then callSync returns
+                            std::optional<T>, where the optional value will be valid if the function
+                            was called successfully, or nullopt otherwise.
+    */
+    template <typename Function>
+    static auto callSync (Function&& function) -> CallSyncResult<decltype (function())>
+    {
+        using FinalResult = CallSyncResult<decltype (function())>;
+
+        if (MessageManager::getInstance()->isThisTheMessageThread())
+            return transformResult (std::forward<Function> (function));
+
+        std::promise<FinalResult> promise;
+        auto future = promise.get_future();
+
+        const auto sent = callAsync ([p = std::move (promise), fn = std::move (function)]() mutable
+        {
+            p.set_value (transformResult (std::move (fn)));
+        });
+
+        if (! sent)
+        {
+            // Failed to post message!
+            jassertfalse;
+            return {};
+        }
+
+        return future.get();
+    }
+
     /** Returns true if the caller-thread is the message thread. */
     bool isThisTheMessageThread() const noexcept;
 
     /** Called to tell the manager that the current thread is the one that's running the dispatch loop.
 
-        (Best to ignore this method unless you really know what you're doing..)
+        (Best to ignore this method unless you really know what you're doing.)
         @see getCurrentMessageThread
     */
     void setCurrentThreadAsMessageThread();
 
     /** Returns the ID of the current message thread, as set by setCurrentThreadAsMessageThread().
 
-        (Best to ignore this method unless you really know what you're doing..)
+        (Best to ignore this method unless you really know what you're doing.)
         @see setCurrentThreadAsMessageThread
     */
     Thread::ThreadID getCurrentMessageThread() const noexcept            { return messageThreadId; }
@@ -208,7 +350,7 @@ public:
             Creates a new critical section to exclusively access methods which can
             only be called when the message manager is locked.
 
-            Unlike CrititcalSection, multiple instances of this lock class provide
+            Unlike CriticalSection, multiple instances of this lock class provide
             exclusive access to a single resource - the MessageManager.
         */
         Lock();
@@ -299,24 +441,23 @@ public:
         using ScopedTryLockType = GenericScopedTryLock<Lock>;
 
     private:
-        struct BlockingMessage;
-        friend class ReferenceCountedObjectPtr<BlockingMessage>;
+        class LockingMessage;
 
-        bool tryAcquire (bool) const noexcept;
-        void messageCallback() const;
+        bool attemptLock (bool canAbort) const noexcept;
+        bool attemptLockWithMessage (std::unique_lock<std::mutex>, MessageManager&, bool canAbort) const noexcept;
 
-        //==============================================================================
-        mutable ReferenceCountedObjectPtr<BlockingMessage> blockingMessage;
-        WaitableEvent lockedEvent;
-        mutable Atomic<int> abortWait, lockGained;
+        mutable std::mutex mutex;
+        mutable std::vector<ReferenceCountedObjectPtr<LockingMessage>> messages;
+        mutable bool shouldAbort = false;
+        mutable int depth = 0;
     };
 
     //==============================================================================
-   #ifndef DOXYGEN
     // Internal methods - do not use!
+    /** @cond */
     void deliverBroadcastMessage (const String&);
     ~MessageManager() noexcept;
-   #endif
+    /** @endcond */
 
 private:
     //==============================================================================
@@ -330,15 +471,35 @@ private:
     friend class MessageManagerLock;
 
     std::unique_ptr<ActionBroadcaster> broadcaster;
-    Atomic<int> quitMessagePosted { 0 }, quitMessageReceived { 0 };
-    Thread::ThreadID messageThreadId;
-    Atomic<Thread::ThreadID> threadWithLock;
+    std::atomic<bool> quitMessagePosted { false }, quitMessageReceived { false };
+    std::atomic<Thread::ThreadID> messageThreadId{};
+    std::atomic<Thread::ThreadID> threadWithLock{};
+    MessageBase::Ptr lockingMessage{};
+    int lockCount { 0 };
+
+    template <typename Function>
+    static auto transformResult (Function&& f)
+    {
+        if constexpr (std::is_same_v<decltype (f()), void>)
+        {
+            f();
+            return true;
+        }
+        else
+        {
+            return f();
+        }
+    }
 
     static bool postMessageToSystemQueue (MessageBase*);
     static void* exitModalLoopCallback (void*);
     static void doPlatformSpecificInitialisation();
     static void doPlatformSpecificShutdown();
-    static bool dispatchNextMessageOnSystemQueue (bool returnIfNoPendingMessages);
+
+    using LifetimeListenerList = ThreadSafeListenerList<LifetimeListener>;
+    static LifetimeListenerList* getLifetimeListeners();
+    static void notifyLifetimeStarting();
+    static void notifyLifetimeStopping();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MessageManager)
 };
@@ -357,12 +518,12 @@ private:
         someData = 1234;
 
         const MessageManagerLock mmLock;
-        // the event loop will now be locked so it's safe to make a few calls..
+        // the event loop will now be locked so it's safe to make a few calls
 
         myComponent->setBounds (newBounds);
         myComponent->repaint();
 
-        // ..the event loop will now be unlocked as the MessageManagerLock goes out of scope
+        // the event loop will now be unlocked as the MessageManagerLock goes out of scope
     }
     @endcode
 
@@ -375,7 +536,7 @@ private:
     Another caveat is that using this in conjunction with other CriticalSections
     can create lots of interesting ways of producing a deadlock! In particular, if
     your message thread calls stopThread() for a thread that uses these locks,
-    you'll get an (occasional) deadlock..
+    you'll get an (occasional) deadlock.
 
     @see MessageManager, MessageManager::currentThreadHasLockedMessageManager
 
@@ -418,10 +579,10 @@ public:
                 if (! mml.lockWasGained())
                     return; // another thread is trying to kill us!
 
-                ..do some locked stuff here..
+                ...do some locked stuff here...
             }
 
-            ..and now the MM is now unlocked..
+            ...and now the MM is now unlocked...
         }
         @endcode
 
@@ -456,7 +617,8 @@ private:
     bool locked;
 
     //==============================================================================
-    bool attemptLock (Thread*, ThreadPoolJob*);
+    template <typename ThreadOrThreadPoolJob>
+    bool attemptLock (ThreadOrThreadPoolJob*);
     void exitSignalSent() override;
 
     JUCE_DECLARE_NON_COPYABLE (MessageManagerLock)

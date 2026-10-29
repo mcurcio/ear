@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -28,6 +44,8 @@ namespace juce
 class JUCE_API  OpenGLHelpers
 {
 public:
+    static bool isOpenGLES();
+
     /** Clears the GL error state. */
     static void resetErrorState();
 
@@ -44,6 +62,25 @@ public:
 
     /** Returns the address of a named GL extension function */
     static void* getExtensionFunction (const char* functionName);
+
+    /** Returns true if the given function pointer is not null.
+
+        This can be used to check whether a function from the juce::gl namespace is
+        available before calling it. Functions that are resolved at runtime may be missing,
+        but when a function is linked statically, comparing it against nullptr directly
+        triggers compiler warnings. Passing it through a pointer parameter keeps the check
+        well-formed in both situations.
+    */
+    template <typename Fn>
+    static bool isFunctionAvailable (Fn* fn) noexcept
+    {
+        return fn != nullptr;
+    }
+
+    /** Returns a version string such as "#version 150" suitable for prefixing a GLSL
+        shader on this platform.
+    */
+    static String getGLSLVersionString();
 
     /** Makes some simple textual changes to a shader program to try to convert old GLSL
         keywords to their v3 equivalents.

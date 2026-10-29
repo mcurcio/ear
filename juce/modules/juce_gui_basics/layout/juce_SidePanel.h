@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -32,7 +48,8 @@ namespace juce
     @tags{GUI}
 */
 class SidePanel    : public Component,
-                     private ComponentListener
+                     private ComponentListener,
+                     private ChangeListener
 {
 public:
     //==============================================================================
@@ -137,15 +154,16 @@ public:
     /** Returns the text that is displayed in the title bar at the top of the SidePanel. */
     String getTitleText() const noexcept               { return titleLabel.getText(); }
 
-    //==============================================================================
-    void moved() override;
-    void resized() override;
-    void paint (Graphics& g) override;
+    /** @see isContentRestrictedToSafeArea() */
+    void setContentRestrictedToSafeArea (bool x) noexcept { restrictToSafeArea = x; }
 
-    void parentHierarchyChanged() override;
+    /** When true, will avoid displaying menu content within areas of the screen that may be
+        obscured by display cutouts or operating system decorations. When false, the menu's
+        content will entirely fill the menu bounds. True by default.
 
-    void mouseDrag (const MouseEvent&) override;
-    void mouseUp (const MouseEvent&) override;
+        @see setContentRestrictedToSafeArea()
+    */
+    bool isContentRestrictedToSafeArea() const noexcept { return restrictToSafeArea; }
 
     //==============================================================================
     /** This abstract base class is implemented by LookAndFeel classes to provide
@@ -182,7 +200,23 @@ public:
     std::function<void()> onPanelMove;
 
     /** You can assign a lambda to this callback object and it will be called when the panel is shown or hidden. */
-    std::function<void(bool)> onPanelShowHide;
+    std::function<void (bool)> onPanelShowHide;
+
+    //==============================================================================
+    /** @internal */
+    void moved() override;
+    /** @internal */
+    void resized() override;
+    /** @internal */
+    void paint (Graphics& g) override;
+    /** @internal */
+    void parentHierarchyChanged() override;
+    /** @internal */
+    void mouseDrag (const MouseEvent&) override;
+    /** @internal */
+    void mouseUp (const MouseEvent&) override;
+    /** @internal */
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 
 private:
     //==============================================================================
@@ -207,11 +241,15 @@ private:
     int amountMoved = 0;
 
     bool shouldShowDismissButton = true;
+    bool restrictToSafeArea = true;
 
     //==============================================================================
     void lookAndFeelChanged() override;
     void componentMovedOrResized (Component&, bool wasMoved, bool wasResized) override;
+    void changeListenerCallback (ChangeBroadcaster*) override;
 
+    Rectangle<int> calculateShowingBoundsInParent (Component&) const;
+    Point<int> getCurrentOffset() const;
     Rectangle<int> calculateBoundsInParent (Component&) const;
     void calculateAndRemoveShadowBounds (Rectangle<int>& bounds);
 

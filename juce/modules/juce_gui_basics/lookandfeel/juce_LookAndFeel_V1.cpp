@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -50,13 +66,13 @@ void LookAndFeel_V1::drawButtonBackground (Graphics& g, Button& button, const Co
     const int height = button.getHeight();
 
     const float indent = 2.0f;
-    const int cornerSize = jmin (roundToInt (width * 0.4f),
-                                 roundToInt (height * 0.4f));
+    const int cornerSize = jmin (roundToInt ((float) width * 0.4f),
+                                 roundToInt ((float) height * 0.4f));
 
     Path p;
     p.addRoundedRectangle (indent, indent,
-                           width - indent * 2.0f,
-                           height - indent * 2.0f,
+                           (float) width - indent * 2.0f,
+                           (float) height - indent * 2.0f,
                            (float) cornerSize);
 
     Colour bc (backgroundColour.withMultipliedSaturation (0.3f));
@@ -120,7 +136,7 @@ void LookAndFeel_V1::drawToggleButton (Graphics& g, ToggleButton& button, bool s
 
     const int tickWidth = jmin (20, button.getHeight() - 4);
 
-    drawTickBox (g, button, 4.0f, (button.getHeight() - tickWidth) * 0.5f,
+    drawTickBox (g, button, 4.0f, (float) (button.getHeight() - tickWidth) * 0.5f,
                  (float) tickWidth, (float) tickWidth,
                  button.getToggleState(),
                  button.isEnabled(),
@@ -128,7 +144,7 @@ void LookAndFeel_V1::drawToggleButton (Graphics& g, ToggleButton& button, bool s
                  shouldDrawButtonAsDown);
 
     g.setColour (button.findColour (ToggleButton::textColourId));
-    g.setFont (jmin (15.0f, button.getHeight() * 0.6f));
+    g.setFont (jmin (15.0f, (float) button.getHeight() * 0.6f));
 
     if (! button.isEnabled())
         g.setOpacity (0.5f);
@@ -164,7 +180,7 @@ void LookAndFeel_V1::drawProgressBar (Graphics& g, ProgressBar& progressBar,
         if (textToShow.isNotEmpty())
         {
             g.setColour (Colour::contrasting (background, foreground));
-            g.setFont (height * 0.6f);
+            g.setFont ((float) height * 0.6f);
 
             g.drawText (textToShow, 0, 0, width, height, Justification::centred, false);
         }
@@ -184,22 +200,25 @@ void LookAndFeel_V1::drawScrollbarButton (Graphics& g, ScrollBar& bar,
 
     Path p;
 
+    const auto w = (float) width;
+    const auto h = (float) height;
+
     if (buttonDirection == 0)
-        p.addTriangle (width * 0.5f, height * 0.2f,
-                       width * 0.1f, height * 0.7f,
-                       width * 0.9f, height * 0.7f);
+        p.addTriangle (w * 0.5f, h * 0.2f,
+                       w * 0.1f, h * 0.7f,
+                       w * 0.9f, h * 0.7f);
     else if (buttonDirection == 1)
-        p.addTriangle (width * 0.8f, height * 0.5f,
-                       width * 0.3f, height * 0.1f,
-                       width * 0.3f, height * 0.9f);
+        p.addTriangle (w * 0.8f, h * 0.5f,
+                       w * 0.3f, h * 0.1f,
+                       w * 0.3f, h * 0.9f);
     else if (buttonDirection == 2)
-        p.addTriangle (width * 0.5f, height * 0.8f,
-                       width * 0.1f, height * 0.3f,
-                       width * 0.9f, height * 0.3f);
+        p.addTriangle (w * 0.5f, h * 0.8f,
+                       w * 0.1f, h * 0.3f,
+                       w * 0.9f, h * 0.3f);
     else if (buttonDirection == 3)
-        p.addTriangle (width * 0.2f, height * 0.5f,
-                       width * 0.7f, height * 0.1f,
-                       width * 0.7f, height * 0.9f);
+        p.addTriangle (w * 0.2f, h * 0.5f,
+                       w * 0.7f, h * 0.1f,
+                       w * 0.7f, h * 0.9f);
 
     if (shouldDrawButtonAsDown)
         g.setColour (Colours::white);
@@ -224,15 +243,15 @@ void LookAndFeel_V1::drawScrollbar (Graphics& g, ScrollBar& bar,
     g.setColour (bar.findColour (ScrollBar::thumbColourId)
                     .withAlpha ((isMouseOver || isMouseDown) ? 0.4f : 0.15f));
 
-    if (thumbSize > 0.0f)
+    if ((float) thumbSize > 0.0f)
     {
         Rectangle<int> thumb;
 
         if (isScrollbarVertical)
         {
             width -= 2;
-            g.fillRect (x + roundToInt (width * 0.35f), y,
-                        roundToInt (width * 0.3f), height);
+            g.fillRect (x + roundToInt ((float) width * 0.35f), y,
+                        roundToInt ((float) width * 0.3f), height);
 
             thumb.setBounds (x + 1, thumbStartPosition,
                              width - 2, thumbSize);
@@ -240,8 +259,8 @@ void LookAndFeel_V1::drawScrollbar (Graphics& g, ScrollBar& bar,
         else
         {
             height -= 2;
-            g.fillRect (x, y + roundToInt (height * 0.35f),
-                        width, roundToInt (height * 0.3f));
+            g.fillRect (x, y + roundToInt ((float) height * 0.35f),
+                        width, roundToInt ((float) height * 0.3f));
 
             thumb.setBounds (thumbStartPosition, y + 1,
                              thumbSize, height - 2);
@@ -259,20 +278,20 @@ void LookAndFeel_V1::drawScrollbar (Graphics& g, ScrollBar& bar,
         {
             for (int i = 3; --i >= 0;)
             {
-                const float linePos = thumbStartPosition + thumbSize / 2 + (i - 1) * 4.0f;
+                const float linePos = (float) thumbStartPosition + (float) thumbSize * 0.5f + (float) (i - 1) * 4.0f;
                 g.setColour (Colours::black.withAlpha (0.15f));
 
                 if (isScrollbarVertical)
                 {
-                    g.drawLine (x + width * 0.2f, linePos, width * 0.8f, linePos);
+                    g.drawLine ((float) x + (float) width * 0.2f, linePos, (float) width * 0.8f, linePos);
                     g.setColour (Colours::white.withAlpha (0.15f));
-                    g.drawLine (width * 0.2f, linePos - 1, width * 0.8f, linePos - 1);
+                    g.drawLine ((float) width * 0.2f, linePos - 1.0f, (float) width * 0.8f, linePos - 1.0f);
                 }
                 else
                 {
-                    g.drawLine (linePos, height * 0.2f, linePos, height * 0.8f);
+                    g.drawLine (linePos, (float) height * 0.2f, linePos, (float) height * 0.8f);
                     g.setColour (Colours::white.withAlpha (0.15f));
-                    g.drawLine (linePos - 1, height * 0.2f, linePos - 1, height * 0.8f);
+                    g.drawLine (linePos - 1.0f, (float) height * 0.2f, linePos - 1.0f, (float) height * 0.8f);
                 }
             }
         }
@@ -328,16 +347,21 @@ void LookAndFeel_V1::drawComboBox (Graphics& g, int width, int height,
     const float arrowX = 0.2f;
     const float arrowH = 0.3f;
 
+    const auto x = (float) buttonX;
+    const auto y = (float) buttonY;
+    const auto w = (float) buttonW;
+    const auto h = (float) buttonH;
+
     if (box.isEnabled())
     {
         Path p;
-        p.addTriangle (buttonX + buttonW * 0.5f,            buttonY + buttonH * (0.45f - arrowH),
-                       buttonX + buttonW * (1.0f - arrowX), buttonY + buttonH * 0.45f,
-                       buttonX + buttonW * arrowX,          buttonY + buttonH * 0.45f);
+        p.addTriangle (x + w * 0.5f,            y + h * (0.45f - arrowH),
+                       x + w * (1.0f - arrowX), y + h * 0.45f,
+                       x + w * arrowX,          y + h * 0.45f);
 
-        p.addTriangle (buttonX + buttonW * 0.5f,            buttonY + buttonH * (0.55f + arrowH),
-                       buttonX + buttonW * (1.0f - arrowX), buttonY + buttonH * 0.55f,
-                       buttonX + buttonW * arrowX,          buttonY + buttonH * 0.55f);
+        p.addTriangle (x + w * 0.5f,            y + h * (0.55f + arrowH),
+                       x + w * (1.0f - arrowX), y + h * 0.55f,
+                       x + w * arrowX,          y + h * 0.55f);
 
         g.setColour (box.findColour ((isButtonDown) ? ComboBox::backgroundColourId
                                                     : ComboBox::buttonColourId));
@@ -347,7 +371,7 @@ void LookAndFeel_V1::drawComboBox (Graphics& g, int width, int height,
 
 Font LookAndFeel_V1::getComboBoxFont (ComboBox& box)
 {
-    Font f (jmin (15.0f, box.getHeight() * 0.85f));
+    Font f (withDefaultMetrics (FontOptions { jmin (15.0f, (float) box.getHeight() * 0.85f) }));
     f.setHorizontalScale (0.9f);
     return f;
 }
@@ -387,13 +411,13 @@ void LookAndFeel_V1::drawLinearSlider (Graphics& g,
 
         if (slider.isHorizontal())
         {
-            g.fillRect (x, y + roundToInt (h * 0.6f),
-                        w, roundToInt (h * 0.2f));
+            g.fillRect (x, y + roundToInt ((float) h * 0.6f),
+                        w, roundToInt ((float) h * 0.2f));
         }
         else
         {
-            g.fillRect (x + roundToInt (w * 0.5f - jmin (3.0f, w * 0.1f)), y,
-                        jmin (4, roundToInt (w * 0.2f)), h);
+            g.fillRect (x + roundToInt ((float) w * 0.5f - jmin (3.0f, (float) w * 0.1f)), y,
+                        jmin (4, roundToInt ((float) w * 0.2f)), h);
         }
 
         float alpha = 0.35f;
@@ -406,44 +430,53 @@ void LookAndFeel_V1::drawLinearSlider (Graphics& g,
 
         if (style == Slider::TwoValueVertical || style == Slider::ThreeValueVertical)
         {
-            drawTriangle (g, x + w * 0.5f + jmin (4.0f, w * 0.3f), minSliderPos,
-                          x + w * 0.5f - jmin (8.0f, w * 0.4f), minSliderPos - 7.0f,
-                          x + w * 0.5f - jmin (8.0f, w * 0.4f), minSliderPos,
+            drawTriangle (g,
+                          (float) x + (float) w * 0.5f + jmin (4.0f, (float) w * 0.3f), minSliderPos,
+                          (float) x + (float) w * 0.5f - jmin (8.0f, (float) w * 0.4f), minSliderPos - 7.0f,
+                          (float) x + (float) w * 0.5f - jmin (8.0f, (float) w * 0.4f), minSliderPos,
                           fill, outline);
 
-            drawTriangle (g, x + w * 0.5f + jmin (4.0f, w * 0.3f), maxSliderPos,
-                          x + w * 0.5f - jmin (8.0f, w * 0.4f), maxSliderPos,
-                          x + w * 0.5f - jmin (8.0f, w * 0.4f), maxSliderPos + 7.0f,
+            drawTriangle (g,
+                          (float) x + (float) w * 0.5f + jmin (4.0f, (float) w * 0.3f), maxSliderPos,
+                          (float) x + (float) w * 0.5f - jmin (8.0f, (float) w * 0.4f), maxSliderPos,
+                          (float) x + (float) w * 0.5f - jmin (8.0f, (float) w * 0.4f), maxSliderPos + 7.0f,
                           fill, outline);
         }
         else if (style == Slider::TwoValueHorizontal || style == Slider::ThreeValueHorizontal)
         {
-            drawTriangle (g, minSliderPos, y + h * 0.6f - jmin (4.0f, h * 0.3f),
-                          minSliderPos - 7.0f, y + h * 0.9f ,
-                          minSliderPos, y + h * 0.9f,
+            drawTriangle (g,
+                          minSliderPos, (float) y + (float) h * 0.6f - jmin (4.0f, (float) h * 0.3f),
+                          minSliderPos - 7.0f, (float) y + (float) h * 0.9f,
+                          minSliderPos, (float) y + (float) h * 0.9f,
                           fill, outline);
 
-            drawTriangle (g, maxSliderPos, y + h * 0.6f - jmin (4.0f, h * 0.3f),
-                          maxSliderPos, y + h * 0.9f,
-                          maxSliderPos + 7.0f, y + h * 0.9f,
+            drawTriangle (g,
+                          maxSliderPos, (float) y + (float) h * 0.6f - jmin (4.0f, (float) h * 0.3f),
+                          maxSliderPos, (float) y + (float) h * 0.9f,
+                          maxSliderPos + 7.0f, (float) y + (float) h * 0.9f,
                           fill, outline);
         }
 
         if (style == Slider::LinearHorizontal || style == Slider::ThreeValueHorizontal)
         {
-            drawTriangle (g, sliderPos, y + h * 0.9f,
-                          sliderPos - 7.0f, y + h * 0.2f,
-                          sliderPos + 7.0f, y + h * 0.2f,
+            drawTriangle (g,
+                          sliderPos, (float) y + (float) h * 0.9f,
+                          sliderPos - 7.0f, (float) y + (float) h * 0.2f,
+                          sliderPos + 7.0f, (float) y + (float) h * 0.2f,
                           fill, outline);
         }
         else if (style == Slider::LinearVertical || style == Slider::ThreeValueVertical)
         {
-            drawTriangle (g, x + w * 0.5f - jmin (4.0f, w * 0.3f), sliderPos,
-                          x + w * 0.5f + jmin (8.0f, w * 0.4f), sliderPos - 7.0f,
-                          x + w * 0.5f + jmin (8.0f, w * 0.4f), sliderPos + 7.0f,
+            drawTriangle (g,
+                          (float) x + (float) w * 0.5f - jmin (4.0f, (float) w * 0.3f), sliderPos,
+                          (float) x + (float) w * 0.5f + jmin (8.0f, (float) w * 0.4f), sliderPos - 7.0f,
+                          (float) x + (float) w * 0.5f + jmin (8.0f, (float) w * 0.4f), sliderPos + 7.0f,
                           fill, outline);
         }
     }
+
+    if (slider.isBar())
+        drawLinearSliderOutline (g, x, y, w, h, style, slider);
 }
 
 Button* LookAndFeel_V1::createSliderButton (Slider&, const bool isIncrement)
@@ -470,14 +503,14 @@ void LookAndFeel_V1::drawCornerResizer (Graphics& g, int w, int h, bool isMouseO
     g.setColour ((isMouseOver || isMouseDragging) ? Colours::lightgrey
                                                   : Colours::darkgrey);
 
-    const float lineThickness = jmin (w, h) * 0.1f;
+    const float lineThickness = (float) jmin (w, h) * 0.1f;
 
     for (float i = 0.0f; i < 1.0f; i += 0.3f)
     {
-        g.drawLine (w * i,
-                    h + 1.0f,
-                    w + 1.0f,
-                    h * i,
+        g.drawLine ((float) w * i,
+                    (float) h + 1.0f,
+                    (float) w + 1.0f,
+                    (float) h * i,
                     lineThickness);
     }
 }

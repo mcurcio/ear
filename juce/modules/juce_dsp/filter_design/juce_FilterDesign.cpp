@@ -1,24 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 template <typename FloatType>
@@ -38,7 +52,7 @@ typename FIR::Coefficients<FloatType>::Ptr
 
     for (size_t i = 0; i <= order; ++i)
     {
-        if (i == order * 0.5)
+        if (i == order / 2)
         {
             c[i] = static_cast<FloatType> (normalisedFrequency * 2);
         }
@@ -106,8 +120,8 @@ typename FIR::Coefficients<FloatType>::Ptr
         }
         else
         {
-            auto indice  = MathConstants<double>::pi * (i - 0.5 * order);
-            auto indice2 = MathConstants<double>::pi * normalisedTransitionWidth * (i - 0.5 * order) / spline;
+            auto indice  = MathConstants<double>::pi * ((double) i - 0.5 * (double) order);
+            auto indice2 = MathConstants<double>::pi * normalisedTransitionWidth * ((double) i - 0.5 * (double) order) / spline;
             c[i] = static_cast<FloatType> (std::sin (2 * indice * normalisedFrequency)
                                             / indice * std::pow (std::sin (indice2) / indice2, spline));
         }
@@ -138,6 +152,11 @@ typename FIR::Coefficients<FloatType>::Ptr
     auto* result = new typename FIR::Coefficients<FloatType> (static_cast<size_t> (N));
     auto* c = result->getRawCoefficients();
 
+    auto sinc = [] (double x)
+    {
+        return approximatelyEqual (x, 0.0) ? 1 : std::sin (x * MathConstants<double>::pi) / (MathConstants<double>::pi * x);
+    };
+
     if (N % 2 == 1)
     {
         // Type I
@@ -146,19 +165,16 @@ typename FIR::Coefficients<FloatType>::Ptr
         Matrix<double> b (M + 1, 1),
                        q (2 * M + 1, 1);
 
-        auto sinc = [](double x) { return x == 0 ? 1 : std::sin (x * MathConstants<double>::pi)
-                                                         / (MathConstants<double>::pi * x); };
-
         auto factorp = wp / MathConstants<double>::pi;
         auto factors = ws / MathConstants<double>::pi;
 
         for (size_t i = 0; i <= M; ++i)
-            b (i, 0) = factorp * sinc (factorp * i);
+            b (i, 0) = factorp * sinc (factorp * (double) i);
 
         q (0, 0) = factorp + stopBandWeight * (1.0 - factors);
 
         for (size_t i = 1; i <= 2 * M; ++i)
-            q (i, 0) = factorp * sinc (factorp * i) - stopBandWeight * factors * sinc (factors * i);
+            q (i, 0) = factorp * sinc (factorp * (double) i) - stopBandWeight * factors * sinc (factors * (double) i);
 
         auto Q1 = Matrix<double>::toeplitz (q, M + 1);
         auto Q2 = Matrix<double>::hankel (q, M + 1, 0);
@@ -184,19 +200,16 @@ typename FIR::Coefficients<FloatType>::Ptr
         Matrix<double> qp (2 * M, 1);
         Matrix<double> qs (2 * M, 1);
 
-        auto sinc = [](double x) { return x == 0 ? 1 : std::sin (x * MathConstants<double>::pi)
-                                                         / (MathConstants<double>::pi * x); };
-
         auto factorp = wp / MathConstants<double>::pi;
         auto factors = ws / MathConstants<double>::pi;
 
         for (size_t i = 0; i < M; ++i)
-            b (i, 0) = factorp * sinc (factorp * (i + 0.5));
+            b (i, 0) = factorp * sinc (factorp * ((double) i + 0.5));
 
         for (size_t i = 0; i < 2 * M; ++i)
         {
-            qp (i, 0) = 0.25 * factorp * sinc (factorp * i);
-            qs (i, 0) = -0.25 * stopBandWeight * factors * sinc (factors * i);
+            qp (i, 0) = 0.25 * factorp * sinc (factorp * (double) i);
+            qs (i, 0) = -0.25 * stopBandWeight * factors * sinc (factors * (double) i);
         }
 
         auto Q1p = Matrix<double>::toeplitz (qp, M);
@@ -263,19 +276,19 @@ typename FIR::Coefficients<FloatType>::Ptr
     for (int i = 0; i < hh.size(); ++i)
         c[i] = (float) hh[i];
 
-    double NN;
+    auto NN = [&]
+    {
+        if (n % 2 == 0)
+            return 2.0 * result->getMagnitudeForFrequency (0.5, 1.0);
 
-    if (n % 2 == 0)
-    {
-        NN = 2.0 * result->getMagnitudeForFrequency (0.5, 1.0);
-    }
-    else
-    {
         auto w01 = std::sqrt (kp * kp + (1 - kp * kp) * std::pow (std::cos (MathConstants<double>::pi / (2.0 * n + 1.0)), 2.0));
-        auto om01 = std::acos (-w01);
 
-        NN = -2.0 * result->getMagnitudeForFrequency (om01 / MathConstants<double>::twoPi, 1.0);
-    }
+        if (std::abs (w01) > 1.0)
+            return 2.0 * result->getMagnitudeForFrequency (0.5, 1.0);
+
+        auto om01 = std::acos (-w01);
+        return -2.0 * result->getMagnitudeForFrequency (om01 / MathConstants<double>::twoPi, 1.0);
+    }();
 
     for (int i = 0; i < hh.size(); ++i)
         c[i] = static_cast<FloatType> ((A * hn[i] + B * hnm[i]) / NN);
@@ -379,16 +392,19 @@ ReferenceCountedArray<IIR::Coefficients<FloatType>>
                                                                      FloatType passbandAmplitudedB,
                                                                      FloatType stopbandAmplitudedB)
 {
-    jassert (sampleRate > 0);
-    jassert (frequency > 0 && frequency <= sampleRate * 0.5);
-    jassert (normalisedTransitionWidth > 0 && normalisedTransitionWidth <= 0.5);
-    jassert (passbandAmplitudedB > -20 && passbandAmplitudedB < 0);
-    jassert (stopbandAmplitudedB > -300 && stopbandAmplitudedB < -20);
+    jassert (0 < sampleRate);
+    jassert (0 < frequency && frequency <= sampleRate * 0.5);
+    jassert (0 < normalisedTransitionWidth && normalisedTransitionWidth <= 0.5);
+    jassert (-20 < passbandAmplitudedB && passbandAmplitudedB < 0);
+    jassert (-300 < stopbandAmplitudedB && stopbandAmplitudedB < -20);
 
     auto normalisedFrequency = frequency / sampleRate;
 
     auto fp = normalisedFrequency - normalisedTransitionWidth / 2;
+    jassert (0.0 < fp && fp < 0.5);
+
     auto fs = normalisedFrequency + normalisedTransitionWidth / 2;
+    jassert (0.0 < fs && fs < 0.5);
 
     double Ap = passbandAmplitudedB;
     double As = stopbandAmplitudedB;
@@ -460,7 +476,7 @@ ReferenceCountedArray<IIR::Coefficients<FloatType>>
         auto v0 = std::asinh (epss) / (N * halfPi);
 
         if (r == 1)
-            pa.add(-1.0 / (k / omegap * std::sinh (v0 * halfPi)));
+            pa.add (-1.0 / (k / omegap * std::sinh (v0 * halfPi)));
 
         for (int i = 1; i <= L; ++i)
         {
@@ -688,5 +704,4 @@ typename FilterDesign<FloatType>::IIRPolyphaseAllpassStructure
 template struct FilterDesign<float>;
 template struct FilterDesign<double>;
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

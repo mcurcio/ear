@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -38,6 +54,26 @@ public:
     virtual void globalFocusChanged (Component* focusedComponent) = 0;
 };
 
+//==============================================================================
+/**
+    Classes can implement this interface and register themselves with the Desktop class
+    to receive callbacks when the operating system dark mode setting changes. The
+    Desktop::isDarkModeActive() method can then be used to query the current setting.
+
+    @see Desktop::addDarkModeSettingListener, Desktop::removeDarkModeSettingListener,
+         Desktop::isDarkModeActive
+
+    @tags{GUI}
+*/
+class JUCE_API  DarkModeSettingListener
+{
+public:
+    /** Destructor. */
+    virtual ~DarkModeSettingListener() = default;
+
+    /** Callback to indicate that the dark mode setting has changed. */
+    virtual void darkModeSettingChanged() = 0;
+};
 
 //==============================================================================
 /**
@@ -53,6 +89,12 @@ public:
     //==============================================================================
     /** There's only one desktop object, and this method will return it. */
     static Desktop& JUCE_CALLTYPE getInstance();
+
+    /** This function may return a nullptr if the desktop object hasn't been created yet, and more
+        importantly, if it has already been destroyed during shutdown. This function should be used
+        in destructors that want to unregister a listener from the Desktop instance.
+    */
+    static Desktop* JUCE_CALLTYPE getInstanceWithoutCreating();
 
     //==============================================================================
     /** Returns the mouse position.
@@ -128,21 +170,49 @@ public:
     */
     void addGlobalMouseListener (MouseListener* listener);
 
-    /** Unregisters a MouseListener that was added with the addGlobalMouseListener()
-        method.
+    /** Unregisters a MouseListener that was added with addGlobalMouseListener().
 
         @see addGlobalMouseListener
     */
     void removeGlobalMouseListener (MouseListener* listener);
 
     //==============================================================================
-    /** Registers a MouseListener that will receive a callback whenever the focused
+    /** Registers a FocusChangeListener that will receive a callback whenever the focused
         component changes.
+
+        @see removeFocusChangeListener
     */
     void addFocusChangeListener (FocusChangeListener* listener);
 
-    /** Unregisters a listener that was added with addFocusChangeListener(). */
+    /** Unregisters a FocusChangeListener that was added with addFocusChangeListener().
+
+        @see addFocusChangeListener
+    */
     void removeFocusChangeListener (FocusChangeListener* listener);
+
+    //==============================================================================
+    /** Registers a DarkModeSettingListener that will receive a callback when the
+        operating system dark mode setting changes. To query whether dark mode is on
+        use the isDarkModeActive() method.
+
+        @see isDarkModeActive, removeDarkModeSettingListener
+    */
+    void addDarkModeSettingListener (DarkModeSettingListener* listener);
+
+    /** Unregisters a DarkModeSettingListener that was added with addDarkModeSettingListener().
+
+        @see addDarkModeSettingListener
+    */
+    void removeDarkModeSettingListener (DarkModeSettingListener* listener);
+
+    /** True if the operating system "dark mode" is active.
+
+        To receive a callback when this setting changes implement the DarkModeSettingListener
+        interface and use the addDarkModeSettingListener() to register a listener.
+
+        @see addDarkModeSettingListener, removeDarkModeSettingListener
+    */
+    bool isDarkModeActive() const;
 
     //==============================================================================
     /** Takes a component and makes it full-screen, removing the taskbar, dock, etc.
@@ -195,14 +265,17 @@ public:
     */
     Component* findComponentAt (Point<int> screenPosition) const;
 
-    /** The Desktop object has a ComponentAnimator instance which can be used for performing
+    /** The ComponentAnimator has been superseded, it is now recommended you use the Animator
+        class in the juce_animation module.
+
+        The Desktop object has a ComponentAnimator instance which can be used for performing
         your animations.
 
         Having a single shared ComponentAnimator object makes it more efficient when multiple
         components are being moved around simultaneously. It's also more convenient than having
         to manage your own instance of one.
 
-        @see ComponentAnimator
+        @see Animator, ComponentAnimator
     */
     ComponentAnimator& getAnimator() noexcept                       { return animator; }
 
@@ -318,6 +391,10 @@ public:
     bool isOrientationEnabled (DisplayOrientation orientation) const noexcept;
 
     //==============================================================================
+    /** Returns the Displays object representing the connected displays.
+
+        @see Displays
+    */
     const Displays& getDisplays() const noexcept        { return *displays; }
 
     //==============================================================================
@@ -336,9 +413,22 @@ public:
     static bool canUseSemiTransparentWindows() noexcept;
 
    #if JUCE_MAC
-    /** OSX-specific function to check for the "dark" title-bar and menu mode. */
-    static bool isOSXDarkModeActive();
+    /** @cond */
+    [[deprecated ("This macOS-specific method has been deprecated in favour of the cross-platform "
+                  " isDarkModeActive() method.")]]
+    static bool isOSXDarkModeActive()  { return Desktop::getInstance().isDarkModeActive(); }
+    /** @endcond */
    #endif
+
+    /** Returns true if the desktop environment allows resizing the window by clicking and dragging
+        just on/outside the window border.
+        MacOS and Windows 10+ both support this. Linux doesn't seem to. Mobile platforms do not.
+    */
+    bool supportsBorderlessNonClientResize() const;
+
+    //==============================================================================
+    /** Returns true on a headless system where there are no connected displays. */
+    bool isHeadless() const noexcept;
 
 private:
     //==============================================================================
@@ -346,15 +436,16 @@ private:
 
     friend class Component;
     friend class ComponentPeer;
-    friend class MouseInputSourceInternal;
+    friend class detail::MouseInputSourceImpl;
     friend class DeletedAtShutdown;
-    friend class TopLevelWindowManager;
+    friend class detail::TopLevelWindowManager;
     friend class Displays;
 
-    std::unique_ptr<MouseInputSource::SourceList> mouseSources;
+    std::unique_ptr<detail::MouseInputSourceList> mouseSources;
 
     ListenerList<MouseListener> mouseListeners;
     ListenerList<FocusChangeListener> focusListeners;
+    ListenerList<DarkModeSettingListener> darkModeSettingListeners;
 
     Array<Component*> desktopComponents;
     Array<ComponentPeer*> peers;
@@ -371,7 +462,9 @@ private:
     std::unique_ptr<LookAndFeel> defaultLookAndFeel;
     WeakReference<LookAndFeel> currentLookAndFeel;
 
-    Component* kioskModeComponent = nullptr;
+    std::unique_ptr<FocusOutline> focusOutline;
+
+    Component::SafePointer<Component> kioskModeComponent;
     Rectangle<int> kioskComponentOriginalBounds;
     bool kioskModeReentrant = false;
 
@@ -393,6 +486,7 @@ private:
     void setKioskComponent (Component*, bool shouldBeEnabled, bool allowMenusAndBars);
 
     void triggerFocusCallback();
+    void updateFocusOutline();
     void handleAsyncUpdate() override;
 
     static Point<float> getMousePositionFloat();
@@ -402,6 +496,14 @@ private:
     Desktop();
     ~Desktop() override;
 
+    //==============================================================================
+    class NativeDarkModeChangeDetectorImpl;
+    std::unique_ptr<NativeDarkModeChangeDetectorImpl> nativeDarkModeChangeDetectorImpl;
+
+    static std::unique_ptr<NativeDarkModeChangeDetectorImpl> createNativeDarkModeChangeDetectorImpl();
+    void darkModeChanged();
+
+    //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Desktop)
 };
 

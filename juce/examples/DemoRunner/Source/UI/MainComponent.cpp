@@ -1,17 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   The code included in this file is provided under the terms of the ISC license
+   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
+   to use, copy, modify, and/or distribute this software for any purpose with or
+   without fee is hereby granted provided that the above copyright notice and
+   this permission notice appear in all copies.
 
-   For this technical preview, this file is not subject to commercial licensing.
-
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -19,7 +24,7 @@
 #include "MainComponent.h"
 
 //==============================================================================
-struct SidePanelHeader    : public Component
+struct SidePanelHeader final : public Component
 {
     SidePanelHeader (MainComponent& o)
         : owner (o)
@@ -73,7 +78,7 @@ struct SidePanelHeader    : public Component
         addAndMakeVisible (settingsButton);
         settingsButton.onClick = [this] { owner.settingsButtonClicked(); };
 
-        lookAndFeelChanged();
+        updateLookAndFeel();
     }
 
     void paint (Graphics& g) override
@@ -95,7 +100,7 @@ struct SidePanelHeader    : public Component
         titleLabel.setBounds (bounds);
     }
 
-    void lookAndFeelChanged() override
+    void updateLookAndFeel()
     {
         auto& sidePanel = owner.getSidePanel();
         auto& lf = sidePanel.getLookAndFeel();
@@ -110,6 +115,12 @@ struct SidePanelHeader    : public Component
 
         homeButton.setColours (normal, over, down);
         settingsButton.setColours (normal, over, down);
+
+    }
+
+    void lookAndFeelChanged() override
+    {
+        updateLookAndFeel();
     }
 
     MainComponent& owner;
@@ -119,8 +130,8 @@ struct SidePanelHeader    : public Component
 };
 
 //==============================================================================
-class DemoList    : public Component,
-                    public ListBoxModel
+class DemoList final : public Component,
+                       public ListBoxModel
 {
 public:
     DemoList (DemoContentComponent& holder)
@@ -129,11 +140,23 @@ public:
         addAndMakeVisible (demos);
         demos.setModel (this);
         demos.setRowHeight (40);
+
+        if (JUCEDemos::getCategories().empty())
+        {
+            noDemosMessage.setText ("No demos could be found.\n\n"
+                                    "The DemoRunner looks for the JUCE examples directory relative to its own location. "
+                                    "Run it from somewhere inside the examples directory, or place a copy of the "
+                                    "examples directory next to the executable.",
+                                    dontSendNotification);
+            noDemosMessage.setJustificationType (Justification::centredTop);
+            addAndMakeVisible (noDemosMessage);
+        }
     }
 
     void resized() override
     {
         demos.setBounds (getLocalBounds());
+        noDemosMessage.setBounds (getLocalBounds().reduced (10));
     }
 
     //==============================================================================
@@ -158,21 +181,7 @@ public:
         }
 
         g.setColour (textColour);
-
-        if (selectedCategory.isEmpty())
-        {
-            if (isPositiveAndBelow (rowNumber, JUCEDemos::getCategories().size()))
-                g.drawFittedText (JUCEDemos::getCategories()[(size_t) rowNumber].name,
-                                  bounds, Justification::centred, 1);
-        }
-        else
-        {
-            auto& category = JUCEDemos::getCategory (selectedCategory);
-
-            if (isPositiveAndBelow (rowNumber, category.demos.size()))
-                g.drawFittedText (category.demos[(size_t) rowNumber].demoFile.getFileName(),
-                                  bounds, Justification::centred, 1);
-        }
+        g.drawFittedText (getNameForRow (rowNumber), bounds, Justification::centred, 1);
     }
 
     int getNumRows() override
@@ -181,16 +190,26 @@ public:
                                                  : JUCEDemos::getCategory (selectedCategory).demos.size());
     }
 
-    void selectedRowsChanged (int row) override
+    String getNameForRow (int rowNumber) override
     {
-        if (row < 0)
-            return;
-
         if (selectedCategory.isEmpty())
-            showCategory (JUCEDemos::getCategories()[(size_t) row].name);
+        {
+            if (isPositiveAndBelow (rowNumber, JUCEDemos::getCategories().size()))
+                return JUCEDemos::getCategories()[(size_t) rowNumber].name;
+        }
         else
-            demoHolder.setDemo (selectedCategory, row);
+        {
+            auto& category = JUCEDemos::getCategory (selectedCategory);
+
+            if (isPositiveAndBelow (rowNumber, category.demos.size()))
+                return category.demos[(size_t) rowNumber].demoFile.getFileName();
+        }
+
+        return {};
     }
+
+    void returnKeyPressed (int row) override                       { selectRow (row); }
+    void listBoxItemClicked (int row, const MouseEvent&) override  { selectRow (row); }
 
     //==============================================================================
     void showCategory (const String& categoryName) noexcept
@@ -199,37 +218,76 @@ public:
 
         demos.deselectAllRows();
         demos.setHeaderComponent (categoryName.isEmpty() ? nullptr
-                                                         : std::make_unique<Header> (*this));
+                                                         : std::make_unique<CategoryListHeaderComponent> (*this));
         demos.updateContent();
     }
 
 private:
-    String selectedCategory;
-
-    DemoContentComponent& demoHolder;
-    ListBox demos;
-
-    struct Header    : public Component
+    //==============================================================================
+    class CategoryListHeaderComponent final : public Button
     {
-        Header (DemoList& o)
-            : owner (o)
+    public:
+        explicit CategoryListHeaderComponent (DemoList& o)
+            : Button ({}),
+              owner (o)
         {
+            setTitle ("Previous");
             setSize (0, 30);
         }
 
-        void paint (Graphics& g) override
+        void paintButton (Graphics& g, bool, bool) override
         {
             g.setColour (findColour (Label::textColourId));
             g.drawFittedText ("<", getLocalBounds().reduced (20, 0), Justification::centredLeft, 1);
         }
 
-        void mouseDown (const MouseEvent&) override
+        void clicked() override
         {
             owner.showCategory ({});
         }
 
+        using Button::clicked;
+
+    private:
         DemoList& owner;
     };
+
+    //==============================================================================
+    void selectRow (int row)
+    {
+        if (row < 0)
+            return;
+
+        if (selectedCategory.isEmpty())
+            showCategory (JUCEDemos::getCategories()[(size_t) row].name);
+        else
+            demoHolder.setDemo (selectedCategory, row);
+
+        if (demos.isShowing())
+            selectFirstRow();
+    }
+
+    void selectFirstRow()
+    {
+        if (auto* handler = demos.getAccessibilityHandler())
+        {
+            for (auto* child : handler->getChildren())
+            {
+                if (child->getRole() == AccessibilityRole::listItem)
+                {
+                    child->grabFocus();
+                    break;
+                }
+            }
+        }
+    }
+
+    //==============================================================================
+    String selectedCategory;
+
+    DemoContentComponent& demoHolder;
+    ListBox demos;
+    Label noDemosMessage;
 };
 
 //==============================================================================
@@ -241,11 +299,13 @@ MainComponent::MainComponent()
 
         if (isHeavyweight)
         {
-           #if JUCE_MAC && USE_COREGRAPHICS_RENDERING
-            setRenderingEngine (1);
+           #if (JUCE_MAC && USE_COREGRAPHICS_RENDERING) || JUCE_WINDOWS
+            constexpr auto fallbackEngine = 1;
            #else
-            setRenderingEngine (0);
+            constexpr auto fallbackEngine = 0;
            #endif
+
+            setRenderingEngine (fallbackEngine);
         }
 
         isShowingHeavyweightDemo = isHeavyweight;
@@ -258,6 +318,10 @@ MainComponent::MainComponent()
     addAndMakeVisible (contentComponent.get());
     addAndMakeVisible (showDemosButton);
     addAndMakeVisible (demosPanel);
+
+    demosPanel.setTitle ("Demos");
+    demosPanel.setFocusContainerType (FocusContainerType::focusContainer);
+    demosPanel.setContentRestrictedToSafeArea (true);
 
     showDemosButton.onClick = [this] { demosPanel.showOrHide (true); };
 
@@ -277,6 +341,9 @@ MainComponent::MainComponent()
 
             if (isShowingHeavyweightDemo)
                 resized();
+
+            if (auto* handler = demosPanel.getAccessibilityHandler())
+                handler->grabFocus();
         }
         else
         {
@@ -306,14 +373,23 @@ void MainComponent::paint (Graphics& g)
 
 void MainComponent::resized()
 {
-    auto bounds = getLocalBounds();
+    auto safeBounds = [this]
+    {
+        auto bounds = getLocalBounds();
 
-    showDemosButton.setBounds (0, 0, 150, contentComponent->getTabBarDepth());
+       #if JUCE_IOS || JUCE_ANDROID
+        if (auto* display = Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds()))
+            return display->safeAreaInsets.subtractedFrom (display->keyboardInsets.subtractedFrom (bounds));
+       #endif
+
+        return bounds;
+    }();
+
+    showDemosButton.setBounds (safeBounds.getX(), safeBounds.getY(), 150, contentComponent->getTabBarDepth());
 
     if (isShowingHeavyweightDemo)
     {
-        bounds.removeFromLeft (sidePanelWidth);
-
+        safeBounds.removeFromLeft (sidePanelWidth);
         contentComponent->setTabBarIndent (jmax (0, 150 - sidePanelWidth));
     }
     else
@@ -321,7 +397,7 @@ void MainComponent::resized()
         contentComponent->setTabBarIndent (150);
     }
 
-    contentComponent->setBounds (bounds);
+    contentComponent->setBounds (safeBounds);
 }
 
 void MainComponent::homeButtonClicked()
@@ -379,7 +455,7 @@ void MainComponent::parentHierarchyChanged()
            #if JUCE_ANDROID
             currentRenderingEngineIdx = (renderingEngines.size() - 1);
            #else
-            currentRenderingEngineIdx = peer->getCurrentRenderingEngine();
+            currentRenderingEngineIdx = peer != nullptr ? peer->getCurrentRenderingEngine() : -1;
            #endif
         }
 
@@ -399,7 +475,9 @@ void MainComponent::updateRenderingEngine (int renderingEngineIndex)
     else
     {
         openGLContext.detach();
-        peer->setCurrentRenderingEngine (renderingEngineIndex);
+
+        if (peer != nullptr)
+            peer->setCurrentRenderingEngine (renderingEngineIndex);
     }
 
     currentRenderingEngineIdx = renderingEngineIndex;

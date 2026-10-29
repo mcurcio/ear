@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -21,7 +37,7 @@
 #include "../../Utility/UI/PropertyComponents/jucer_ColourPropertyComponent.h"
 
 //==============================================================================
-class EditorColourSchemeWindowComponent    : public Component
+class EditorColourSchemeWindowComponent final : public Component
 {
 public:
     EditorColourSchemeWindowComponent()
@@ -55,8 +71,8 @@ private:
     //==============================================================================
     struct AppearanceEditor
     {
-        struct FontScanPanel   : public Component,
-                                 private Timer
+        struct FontScanPanel final : public Component,
+                                     private Timer
         {
             FontScanPanel()
             {
@@ -100,21 +116,21 @@ private:
             // This is unfortunately a bit slow, but will work on all platforms.
             static bool isMonospacedTypeface (const String& name)
             {
-                const Font font (name, 20.0f, Font::plain);
+                const Font font = FontOptions (name, 20.0f, Font::plain);
 
-                const auto width = font.getStringWidth ("....");
+                const auto width = GlyphArrangement::getStringWidthInt (font, "....");
 
-                return width == font.getStringWidth ("WWWW")
-                    && width == font.getStringWidth ("0000")
-                    && width == font.getStringWidth ("1111")
-                    && width == font.getStringWidth ("iiii");
+                return width == GlyphArrangement::getStringWidthInt (font, "WWWW")
+                    && width == GlyphArrangement::getStringWidthInt (font, "0000")
+                    && width == GlyphArrangement::getStringWidthInt (font, "1111")
+                    && width == GlyphArrangement::getStringWidthInt (font, "iiii");
             }
 
             StringArray fontsToScan, fontsFound;
         };
 
         //==============================================================================
-        struct EditorPanel  : public Component
+        struct EditorPanel final : public Component
         {
             EditorPanel()
                 : loadButton ("Load Scheme..."),
@@ -172,45 +188,57 @@ private:
             PropertyPanel panel;
             TextButton loadButton, saveButton;
 
-            Font codeFont;
+            Font codeFont { FontOptions{} };
             Array<var> colourValues;
 
             void saveScheme (bool isExit)
             {
-                FileChooser fc ("Select a file in which to save this colour-scheme...",
-                                getAppSettings().appearance.getSchemesFolder()
-                                .getNonexistentChildFile ("Scheme", AppearanceSettings::getSchemeFileSuffix()),
-                                AppearanceSettings::getSchemeFileWildCard());
+                chooser = std::make_unique<FileChooser> ("Select a file in which to save this colour-scheme...",
+                                                         getAppSettings().appearance.getSchemesFolder()
+                                                         .getNonexistentChildFile ("Scheme", AppearanceSettings::getSchemeFileSuffix()),
+                                                         AppearanceSettings::getSchemeFileWildCard());
+                auto chooserFlags = FileBrowserComponent::saveMode
+                                  | FileBrowserComponent::canSelectFiles
+                                  | FileBrowserComponent::warnAboutOverwriting;
 
-                if (fc.browseForFileToSave (true))
+                chooser->launchAsync (chooserFlags, [this, isExit] (const FileChooser& fc)
                 {
+                    if (fc.getResult() == File{})
+                    {
+                        if (isExit)
+                            restorePreviousScheme();
+
+                        return;
+                    }
+
                     File file (fc.getResult().withFileExtension (AppearanceSettings::getSchemeFileSuffix()));
                     getAppSettings().appearance.writeToFile (file);
                     getAppSettings().appearance.refreshPresetSchemeList();
 
                     saveSchemeState();
                     ProjucerApplication::getApp().selectEditorColourSchemeWithName (file.getFileNameWithoutExtension());
-                }
-                else if (isExit)
-                {
-                    restorePreviousScheme();
-                }
+                });
             }
 
             void loadScheme()
             {
-                FileChooser fc ("Please select a colour-scheme file to load...",
-                                getAppSettings().appearance.getSchemesFolder(),
-                                AppearanceSettings::getSchemeFileWildCard());
+                chooser = std::make_unique<FileChooser> ("Please select a colour-scheme file to load...",
+                                                         getAppSettings().appearance.getSchemesFolder(),
+                                                         AppearanceSettings::getSchemeFileWildCard());
+                auto chooserFlags = FileBrowserComponent::openMode
+                                  | FileBrowserComponent::canSelectFiles;
 
-                if (fc.browseForFileToOpen())
+                chooser->launchAsync (chooserFlags, [this] (const FileChooser& fc)
                 {
+                    if (fc.getResult() == File{})
+                        return;
+
                     if (getAppSettings().appearance.readFromFile (fc.getResult()))
                     {
                         rebuildProperties();
                         saveSchemeState();
                     }
-                }
+                });
             }
 
             void lookAndFeelChanged() override
@@ -257,12 +285,13 @@ private:
                     appearance.getColourValue (colourNames[i]).setValue (colourValues[i]);
             }
 
+            std::unique_ptr<FileChooser> chooser;
 
             JUCE_DECLARE_NON_COPYABLE (EditorPanel)
         };
 
         //==============================================================================
-        struct FontNameValueSource   : public ValueSourceFilter
+        struct FontNameValueSource final : public ValueSourceFilter
         {
             FontNameValueSource (const Value& source)  : ValueSourceFilter (source) {}
 
@@ -301,7 +330,7 @@ private:
         };
 
         //==============================================================================
-        struct FontSizeValueSource   : public ValueSourceFilter
+        struct FontSizeValueSource final : public ValueSourceFilter
         {
             FontSizeValueSource (const Value& source)  : ValueSourceFilter (source) {}
 

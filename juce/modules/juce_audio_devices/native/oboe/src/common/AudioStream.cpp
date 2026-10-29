@@ -18,10 +18,13 @@
 #include <pthread.h>
 #include <thread>
 
-#include <oboe/AudioStream.h>
+#include "oboe/AudioClock.h"
+#include "oboe/AudioStream.h"
+
+#include <algorithm>
+
+#include "oboe/Utilities.h"
 #include "OboeDebug.h"
-#include "AudioClock.h"
-#include <oboe/Utilities.h>
 
 namespace oboe {
 
@@ -30,41 +33,77 @@ namespace oboe {
  */
 AudioStream::AudioStream(const AudioStreamBuilder &builder)
         : AudioStreamBase(builder) {
+    LOGD("Constructor for AudioStream at %p", this);
+}
+
+AudioStream::~AudioStream() {
+    // This is to help debug use after free bugs.
+    LOGD("Destructor for AudioStream at %p", this);
 }
 
 Result AudioStream::close() {
+    closePerformanceHint();
     // Update local counters so they can be read after the close.
     updateFramesWritten();
     updateFramesRead();
     return Result::OK;
 }
 
-DataCallbackResult AudioStream::fireDataCallback(void *audioData, int32_t numFrames) {
-    if (!isDataCallbackEnabled()) {
-        LOGW("AudioStream::%s() called with data callback disabled!", __func__);
-        return DataCallbackResult::Stop; // We should not be getting called any more.
-    }
-
-    // TODO remove
+// Call this from fireDataCallback() if you want to monitor CPU scheduler.
+void AudioStream::checkScheduler() {
     int scheduler = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK; // for current thread
     if (scheduler != mPreviousScheduler) {
         LOGD("AudioStream::%s() scheduler = %s", __func__,
-             ((scheduler == SCHED_FIFO) ? "SCHED_FIFO" :
-             ((scheduler == SCHED_OTHER) ? "SCHED_OTHER" :
-             ((scheduler == SCHED_RR) ? "SCHED_RR" : "UNKNOWN")))
+                ((scheduler == SCHED_FIFO) ? "SCHED_FIFO" :
+                ((scheduler == SCHED_OTHER) ? "SCHED_OTHER" :
+                ((scheduler == SCHED_RR) ? "SCHED_RR" : "UNKNOWN")))
         );
         mPreviousScheduler = scheduler;
     }
+}
 
+DataCallbackResult AudioStream::fireDataCallback(void *audioData, int32_t numFrames) {
+    if (!isDataCallbackEnabled()) {
+        LOGW("AudioStream::%s() called with data callback disabled!", __func__);
+        return DataCallbackResult::Stop; // Should not be getting called
+    }
+
+    beginPerformanceHintInCallback();
+
+    // Call the app to do the work.
     DataCallbackResult result;
-    if (mStreamCallback == nullptr) {
-        result = onDefaultCallback(audioData, numFrames);
+    if (mDataCallback) {
+        result = mDataCallback->onAudioReady(this, audioData, numFrames);
     } else {
-        result = mStreamCallback->onAudioReady(this, audioData, numFrames);
+        result = onDefaultCallback(audioData, numFrames);
     }
     // On Oreo, we might get called after returning stop.
     // So block that here.
     setDataCallbackEnabled(result == DataCallbackResult::Continue);
+
+    endPerformanceHintInCallback(numFrames);
+
+    return result;
+}
+
+int32_t AudioStream::firePartialDataCallback(void *audioData, int numFrames) {
+    if (!isDataCallbackEnabled()) {
+        LOGW("AudioStream::%s() called with data callback disabled!", __func__);
+        return -1; // Should not be getting called
+    }
+
+    beginPerformanceHintInCallback();
+
+    // Call the app to do the work.
+    int32_t result;
+    if (mPartialDataCallback) {
+        result = mPartialDataCallback->onPartialAudioReady(this, audioData, numFrames);
+    } else {
+        LOGE("AudioStream::%s, called without a partial data callback!", __func__);
+        result = -1; // This should not happen, return negative value to stop the stream.
+    }
+
+    endPerformanceHintInCallback(numFrames);
 
     return result;
 }
@@ -105,8 +144,12 @@ Result AudioStream::start(int64_t timeoutNanoseconds)
     Result result = requestStart();
     if (result != Result::OK) return result;
     if (timeoutNanoseconds <= 0) return result;
-    return waitForStateTransition(StreamState::Starting,
+    result = waitForStateTransition(StreamState::Starting,
                                   StreamState::Started, timeoutNanoseconds);
+    if (result != Result::OK) {
+        LOGE("AudioStream::%s() timed out before moving from STARTING to STARTED", __func__);
+    }
+    return result;
 }
 
 Result AudioStream::pause(int64_t timeoutNanoseconds)
@@ -164,6 +207,14 @@ ResultWithValue<int32_t> AudioStream::waitForAvailableFrames(int32_t numFrames,
     if (numFrames == 0) return Result::OK;
     if (numFrames < 0) return Result::ErrorOutOfRange;
 
+    // Make sure we don't try to wait for more frames than the buffer can hold.
+    // Subtract framesPerBurst because this is often called from a callback
+    // and we don't want to be sleeping if the buffer is close to overflowing.
+    const int32_t maxAvailableFrames = getBufferCapacityInFrames() - getFramesPerBurst();
+    numFrames = std::min(numFrames, maxAvailableFrames);
+    // The capacity should never be less than one burst. But clip to zero just in case.
+    numFrames = std::max(0, numFrames);
+
     int64_t framesAvailable = 0;
     int64_t burstInNanos = getFramesPerBurst() * kNanosPerSecond / getSampleRate();
     bool ready = false;
@@ -194,18 +245,14 @@ ResultWithValue<FrameTimestamp> AudioStream::getTimestamp(clockid_t clockId) {
     }
 }
 
-static void oboe_stop_thread_proc(AudioStream *oboeStream) {
-    LOGD("%s() called ----)))))", __func__);
-    if (oboeStream != nullptr) {
-        oboeStream->requestStop();
-    }
-    LOGD("%s() returning (((((----", __func__);
-}
-
-void AudioStream::launchStopThread() {
-    // Stop this stream on a separate thread
-    std::thread t(oboe_stop_thread_proc, this);
-    t.detach();
+void AudioStream::calculateDefaultDelayBeforeCloseMillis() {
+    // Calculate delay time before close based on burst duration.
+    // Start with a burst duration then add 1 msec as a safety margin.
+    mDelayBeforeCloseMillis = std::clamp(1 + (mFramesPerBurst * 1000) / getSampleRate(),
+            kMinDelayBeforeCloseMillis,
+            kMaxDelayBeforeCloseMillis);
+    LOGD("calculateDefaultDelayBeforeCloseMillis() default = %d",
+         static_cast<int>(mDelayBeforeCloseMillis));
 }
 
 } // namespace oboe

@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,47 +35,6 @@
 namespace juce
 {
 
-static void blurDataTriplets (uint8* d, int num, const int delta) noexcept
-{
-    uint32 last = d[0];
-    d[0] = (uint8) ((d[0] + d[delta] + 1) / 3);
-    d += delta;
-
-    num -= 2;
-
-    do
-    {
-        const uint32 newLast = d[0];
-        d[0] = (uint8) ((last + d[0] + d[delta] + 1) / 3);
-        d += delta;
-        last = newLast;
-    }
-    while (--num > 0);
-
-    d[0] = (uint8) ((last + d[0] + 1) / 3);
-}
-
-static void blurSingleChannelImage (uint8* const data, const int width, const int height,
-                                    const int lineStride, const int repetitions) noexcept
-{
-    jassert (width > 2 && height > 2);
-
-    for (int y = 0; y < height; ++y)
-        for (int i = repetitions; --i >= 0;)
-            blurDataTriplets (data + lineStride * y, width, 1);
-
-    for (int x = 0; x < width; ++x)
-        for (int i = repetitions; --i >= 0;)
-            blurDataTriplets (data + x, height, lineStride);
-}
-
-static void blurSingleChannelImage (Image& image, int radius)
-{
-    const Image::BitmapData bm (image, Image::BitmapData::readWrite);
-    blurSingleChannelImage (bm.data, bm.width, bm.height, bm.lineStride, 2 * radius);
-}
-
-//==============================================================================
 DropShadow::DropShadow (Colour shadowColour, const int r, Point<int> o) noexcept
     : colour (shadowColour), radius (r), offset (o)
 {
@@ -70,16 +45,16 @@ void DropShadow::drawForImage (Graphics& g, const Image& srcImage) const
 {
     jassert (radius > 0);
 
-    if (srcImage.isValid())
-    {
-        Image shadowImage (srcImage.convertedToFormat (Image::SingleChannel));
-        shadowImage.duplicateIfShared();
+    if (! srcImage.isValid())
+        return;
 
-        blurSingleChannelImage (shadowImage, radius);
+    auto blurred = srcImage.convertedToFormat (Image::SingleChannel);
+    blurred.setBackupEnabled (false);
 
-        g.setColour (colour);
-        g.drawImageAt (shadowImage, offset.x, offset.y, true);
-    }
+    blurred.getPixelData()->applySingleChannelBoxBlurEffect (radius);
+
+    g.setColour (colour);
+    g.drawImageAt (blurred, offset.x, offset.y, true);
 }
 
 void DropShadow::drawForPath (Graphics& g, const Path& path) const
@@ -87,25 +62,27 @@ void DropShadow::drawForPath (Graphics& g, const Path& path) const
     jassert (radius > 0);
 
     auto area = (path.getBounds().getSmallestIntegerContainer() + offset)
-                  .expanded (radius + 1)
-                  .getIntersection (g.getClipBounds().expanded (radius + 1));
+            .expanded (radius + 1)
+            .getIntersection (g.getClipBounds().expanded (radius + 1));
 
-    if (area.getWidth() > 2 && area.getHeight() > 2)
+    if (area.getWidth() <= 2 || area.getHeight() <= 2)
+        return;
+
+    const auto tempImageType = g.getInternalContext().getPreferredImageTypeForTemporaryImages();
+    Image pathImage { Image::SingleChannel, area.getWidth(), area.getHeight(), true, *tempImageType };
+    pathImage.setBackupEnabled (false);
+
     {
-        Image renderedPath (Image::SingleChannel, area.getWidth(), area.getHeight(), true);
-
-        {
-            Graphics g2 (renderedPath);
-            g2.setColour (Colours::white);
-            g2.fillPath (path, AffineTransform::translation ((float) (offset.x - area.getX()),
-                                                             (float) (offset.y - area.getY())));
-        }
-
-        blurSingleChannelImage (renderedPath, radius);
-
-        g.setColour (colour);
-        g.drawImageAt (renderedPath, area.getX(), area.getY(), true);
+        Graphics g2 (pathImage);
+        g2.setColour (Colours::white);
+        g2.fillPath (path, AffineTransform::translation ((float) (offset.x - area.getX()),
+                                                         (float) (offset.y - area.getY())));
     }
+
+    pathImage.getPixelData()->applySingleChannelBoxBlurEffect (radius);
+
+    g.setColour (colour);
+    g.drawImageAt (pathImage, area.getX(), area.getY(), true);
 }
 
 static void drawShadowSection (Graphics& g, ColourGradient& cg, Rectangle<float> area,
@@ -126,8 +103,8 @@ void DropShadow::drawForRectangle (Graphics& g, const Rectangle<int>& targetArea
     for (float i = 0.05f; i < 1.0f; i += 0.1f)
         cg.addColour (1.0 - i, colour.withMultipliedAlpha (i * i));
 
-    const float radiusInset = radius / 2.0f;
-    const float expandedRadius = radius + radiusInset;
+    const float radiusInset = (float) radius / 2.0f;
+    const float expandedRadius = (float) radius + radiusInset;
 
     auto area = targetArea.toFloat().reduced (radiusInset) + offset.toFloat();
 
@@ -151,8 +128,8 @@ void DropShadow::drawForRectangle (Graphics& g, const Rectangle<int>& targetArea
 }
 
 //==============================================================================
-DropShadowEffect::DropShadowEffect() {}
-DropShadowEffect::~DropShadowEffect() {}
+DropShadowEffect::DropShadowEffect() = default;
+DropShadowEffect::~DropShadowEffect() = default;
 
 void DropShadowEffect::setShadowProperties (const DropShadow& newShadow)
 {
@@ -162,10 +139,10 @@ void DropShadowEffect::setShadowProperties (const DropShadow& newShadow)
 void DropShadowEffect::applyEffect (Image& image, Graphics& g, float scaleFactor, float alpha)
 {
     DropShadow s (shadow);
-    s.radius = roundToInt (s.radius * scaleFactor);
+    s.radius = roundToInt ((float) s.radius * scaleFactor);
     s.colour = s.colour.withMultipliedAlpha (alpha);
-    s.offset.x = roundToInt (s.offset.x * scaleFactor);
-    s.offset.y = roundToInt (s.offset.y * scaleFactor);
+    s.offset.x = roundToInt ((float) s.offset.x * scaleFactor);
+    s.offset.y = roundToInt ((float) s.offset.y * scaleFactor);
 
     s.drawForImage (g, image);
 

@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -24,7 +40,75 @@ bool juce_handleXEmbedEvent (ComponentPeer*, void*);
 /** @internal */
 unsigned long juce_getCurrentFocusWindow (ComponentPeer*);
 
-#if JUCE_LINUX || DOXYGEN
+#if JUCE_LINUX || JUCE_BSD || DOXYGEN
+
+/** Options for constructing an XEmbedComponent.
+
+    @see XEmbedComponent
+*/
+class JUCE_API XEmbedComponentOptions
+{
+public:
+    /** Returns a copy of these options with the client window id specified. This corresponds to
+        the client initiated embedding workflow.
+
+        Omitting this option corresponds to the host initiated embedding workflow.
+    */
+    [[nodiscard]] XEmbedComponentOptions withClientWindow (unsigned long x) const
+    {
+        jassert (x != 0);
+        return withMember (*this, &XEmbedComponentOptions::clientWindow, x);
+    }
+
+    /** Specifies that this Component wants to receive and forward keyboard focus.
+
+        The default value is true.
+    */
+    [[nodiscard]] XEmbedComponentOptions withWantsKeyboardFocus (bool x) const
+    {
+        return withMember (*this, &XEmbedComponentOptions::wantsKeyboardFocus, x);
+    }
+
+    /** Specifies that the embedded window is allowed to resize the Component.
+
+        The default value is false.
+    */
+    [[nodiscard]] XEmbedComponentOptions withAllowForeignWidgetToResizeComponent (bool x = true) const
+    {
+        return withMember (*this, &XEmbedComponentOptions::allowForeignWidgetToResizeComponent, x);
+    }
+
+    /** When this option is enabled the client window will be unconditionally mapped regardless of
+        the value of the XEMBED_MAPPED flag.
+
+        You should generally not use this option. The default value is false.
+
+        It's used internally by JUCE plugin hosting to accommodate some plugins that report
+        XEmbedInfo compatibility, but don't set the flag.
+    */
+    [[nodiscard]] XEmbedComponentOptions withIgnoreXembedMapped (bool x = true) const
+    {
+        return withMember (*this, &XEmbedComponentOptions::ignoreXembedMapped, x);
+    }
+
+    /** @see withClientWindow() */
+    [[nodiscard]] auto getClientWindow()                        const { return clientWindow; }
+
+    /** @see withWantsKeyboardFocus() */
+    [[nodiscard]] bool getWantsKeyboardFocus()                  const { return wantsKeyboardFocus; }
+
+    /** @see withAllowForeignWidgetToResizeComponent() */
+    [[nodiscard]] bool getAllowForeignWidgetToResizeComponent() const { return allowForeignWidgetToResizeComponent; }
+
+    /** @see withIgnoreXembedMapped() */
+    [[nodiscard]] bool getIgnoreXembedMapped()                  const { return ignoreXembedMapped; }
+
+private:
+    unsigned long clientWindow{};
+    bool wantsKeyboardFocus = true;
+    bool allowForeignWidgetToResizeComponent = false;
+    bool ignoreXembedMapped = false;
+};
 
 //==============================================================================
 /**
@@ -59,6 +143,12 @@ class XEmbedComponent : public Component
 {
 public:
     //==============================================================================
+    /** Creates a JUCE component wrapping a foreign widget.
+
+        Depending on the options passed, this constructor can be used for either
+        the host initiated or client initiated version of the XEmbedProtocol.
+    */
+    explicit XEmbedComponent (const XEmbedComponentOptions& options);
 
     /** Creates a JUCE component wrapping a foreign widget
 
@@ -89,11 +179,14 @@ public:
     /** Removes the client window from the host. */
     void removeClient();
 
+    /** Forces the embedded window to match the current size of this component. */
+    void updateEmbeddedBounds();
+
 protected:
     //==============================================================================
     /** @internal */
     void paint (Graphics&) override;
-    void focusGained (FocusChangeType) override;
+    void focusGainedWithDirection (FocusChangeType, FocusChangeDirection) override;
     void focusLost (FocusChangeType) override;
     void broughtToFront() override;
 

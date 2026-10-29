@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -21,7 +37,7 @@ namespace juce
 
 #if JUCE_UNIT_TESTS
 
-class InterpolatorTests  : public UnitTest
+class InterpolatorTests final : public UnitTest
 {
 public:
     InterpolatorTests()
@@ -30,10 +46,10 @@ public:
     }
 
 private:
-    template<typename InterpolatorType>
+    template <typename InterpolatorType>
     void runInterplatorTests (const String& interpolatorName)
     {
-        auto createGaussian = [](std::vector<float>& destination, float scale, float centreInSamples, float width)
+        auto createGaussian = [] (const Span<float> destination, float scale, float centreInSamples, float width)
         {
             for (size_t i = 0; i < destination.size(); ++i)
             {
@@ -44,7 +60,7 @@ private:
             FloatVectorOperations::multiply (destination.data(), scale, (int) destination.size());
         };
 
-        auto findGaussianPeak = [](const std::vector<float>& input) -> float
+        auto findGaussianPeak = [] (Span<const float> input) -> float
         {
             auto max = std::max_element (std::begin (input), std::end (input));
             auto maxPrev = max - 1;
@@ -55,7 +71,7 @@ private:
             return quadraticMaxLoc + (float) std::distance (std::begin (input), max);
         };
 
-        auto expectAllElementsWithin = [this](const std::vector<float>& v1, const std::vector<float>& v2, float tolerance)
+        auto expectAllElementsWithin = [this] (Span<const float> v1, Span<const float> v2, float tolerance)
         {
             expectEquals ((int) v1.size(), (int) v2.size());
 
@@ -160,7 +176,7 @@ private:
                                   (int) input.size(), (int) input.size());
 
             std::vector<float> secondGaussian (doubleLengthOutput.size());
-            createGaussian (secondGaussian, 1.0f, expectedGaussianMidpoint + outputBufferSize, expectedGaussianWidth);
+            createGaussian (secondGaussian, 1.0f, expectedGaussianMidpoint + (float) outputBufferSize, expectedGaussianWidth);
             FloatVectorOperations::add (expectedDoubleLengthOutput.data(), secondGaussian.data(), (int) expectedDoubleLengthOutput.size());
 
             expectAllElementsWithin (doubleLengthOutput, expectedDoubleLengthOutput, 0.02f);

@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,48 +36,101 @@
 
 #include "../Project/jucer_Project.h"
 #include "../Utility/UI/PropertyComponents/jucer_PropertyComponentsWithEnablement.h"
+#include "../Utility/Helpers/jucer_ValueTreePropertyWithDefaultWrapper.h"
+#include "../Project/Modules/jucer_Modules.h"
 
 class ProjectSaver;
 
+class LinuxSubprocessHelperProperties
+{
+public:
+    explicit LinuxSubprocessHelperProperties (ProjectExporter& projectExporter);
+
+    bool shouldUseLinuxSubprocessHelper() const;
+
+    void deployLinuxSubprocessHelperSourceFilesIfNecessary() const;
+
+    build_tools::RelativePath getLinuxSubprocessHelperSource() const;
+
+    void setCompileDefinitionIfNecessary (StringPairArray& defs) const;
+
+    build_tools::RelativePath getSimpleBinaryBuilderSource() const;
+
+    build_tools::RelativePath getLinuxSubprocessHelperBinaryDataSource() const;
+
+    void addToExtraSearchPathsIfNecessary() const;
+
+    static std::optional<String> getParentDirectoryRelativeToBuildTargetFolder (build_tools::RelativePath rp);
+
+    static String makeSnakeCase (const String& s);
+
+    static String getBinaryNameFromSource (const build_tools::RelativePath& rp);
+
+    static constexpr const char* useLinuxSubprocessHelperCompileDefinition = "JUCE_USE_EXTERNAL_TEMPORARY_SUBPROCESS";
+
+private:
+    ProjectExporter& owner;
+};
+
 //==============================================================================
-class ProjectExporter  : private Value::Listener
+struct PackageDependency
+{
+    explicit PackageDependency (StringRef dependencyIn)
+        : dependency { dependencyIn }
+    {
+    }
+
+    PackageDependency (StringRef dependencyIn, StringRef fallbackIn)
+        : dependency { dependencyIn },
+          fallback { fallbackIn }
+    {
+    }
+
+    String dependency;
+    std::optional<String> fallback;
+};
+
+std::vector<PackageDependency> makePackageDependencies (const StringArray& dependencies);
+
+//==============================================================================
+class ProjectExporter : private Value::Listener
 {
 public:
     ProjectExporter (Project&, const ValueTree& settings);
-    virtual ~ProjectExporter() override;
 
+    //==============================================================================
     struct ExporterTypeInfo
     {
-        String name;
-        const void* iconData;
-        int iconDataSize;
+        Identifier identifier;
+        String displayName;
+        String targetFolder;
 
-        Image getIcon() const
-        {
-            Image image (Image::ARGB, 200, 200, true);
-            Graphics g (image);
-
-            std::unique_ptr<Drawable> svgDrawable (Drawable::createFromImageData (iconData, (size_t) iconDataSize));
-
-            svgDrawable->drawWithin (g, image.getBounds().toFloat(), RectanglePlacement::fillDestination, 1.0f);
-
-            return image;
-        }
+        Image icon;
     };
 
-    static StringArray getExporterNames();
-    static StringArray getExporterValueTreeNames();
-    static Array<ExporterTypeInfo> getExporterTypes();
-    static String getValueTreeNameForExporter (const String& exporterName);
-    static String getTargetFolderForExporter (const String& exporterValueTreeName);
-    static StringArray getAllDefaultBuildsFolders();
+    static std::vector<ExporterTypeInfo> getExporterTypeInfos();
+    static ExporterTypeInfo getTypeInfoForExporter (const Identifier& exporterIdentifier);
 
-    static ProjectExporter* createNewExporter (Project&, const int index);
-    static ProjectExporter* createNewExporter (Project&, const String& name);
-    static ProjectExporter* createExporter (Project&, const ValueTree& settings);
+    /** Sorted by suitability, with the 'best' exporter for the current platform first. */
+    static void getCurrentPlatformExporterTypeInfos (std::vector<ExporterTypeInfo>&);
+
+    static String getBestPlatformExporterIdentifier()
+    {
+        std::vector<ExporterTypeInfo> infos;
+        getCurrentPlatformExporterTypeInfos (infos);
+
+        if (infos.empty())
+            return {};
+
+        return infos.front().identifier.toString();
+    }
+
+    static std::unique_ptr<ProjectExporter> createNewExporter (Project&, const Identifier& exporterIdentifier);
+    static std::unique_ptr<ProjectExporter> createExporterFromSettings (Project&, const ValueTree& settings);
+
     static bool canProjectBeLaunched (Project*);
 
-    static String getCurrentPlatformExporterName();
+    virtual Identifier getExporterIdentifier() const = 0;
 
     //==============================================================================
     // capabilities of exporter
@@ -74,16 +143,13 @@ public:
     virtual bool canCopeWithDuplicateFiles() = 0;
     virtual bool supportsUserDefinedConfigurations() const = 0; // false if exporter only supports two configs Debug and Release
     virtual void updateDeprecatedSettings()               {}
-    virtual void updateDeprecatedSettingsInteractively()  {}
     virtual void initialiseDependencyPathValues()         {}
 
     // IDE targeted by exporter
     virtual bool isXcode() const         = 0;
     virtual bool isVisualStudio() const  = 0;
-    virtual bool isCodeBlocks() const    = 0;
     virtual bool isMakefile() const      = 0;
     virtual bool isAndroidStudio() const = 0;
-    virtual bool isCLion() const         = 0;
 
     // operating system targeted by exporter
     virtual bool isAndroid() const = 0;
@@ -92,7 +158,11 @@ public:
     virtual bool isOSX() const     = 0;
     virtual bool isiOS() const     = 0;
 
-    virtual String getDescription()   { return {}; }
+    virtual String getNewLineString() const = 0;
+    virtual String getDescription()  { return {}; }
+
+    virtual bool supportsPrecompiledHeaders() const  { return false; }
+    virtual bool supportsPaceProtection() const { return false; }
 
     //==============================================================================
     // cross-platform audio plug-ins supported by exporter
@@ -119,13 +189,15 @@ public:
         return isWindows() || isAndroid();
        #elif JUCE_LINUX
         return isLinux() || isAndroid();
+       #elif JUCE_BSD
+        return isLinux();
        #else
         #error
        #endif
     }
 
     //==============================================================================
-    String getName() const;
+    String getUniqueName() const;
     File getTargetFolder() const;
 
     Project& getProject() noexcept                        { return project; }
@@ -139,20 +211,27 @@ public:
     Value getTargetLocationValue()                        { return targetLocationValue.getPropertyAsValue(); }
     String getTargetLocationString() const                { return targetLocationValue.get(); }
 
-    String getExtraCompilerFlagsString() const            { return extraCompilerFlagsValue.get().toString().replaceCharacters ("\r\n", "  "); }
-    String getExtraLinkerFlagsString() const              { return extraLinkerFlagsValue.get().toString().replaceCharacters ("\r\n", "  "); }
-
-    String getExternalLibrariesString() const             { return getSearchPathsFromString (externalLibrariesValue.get().toString()).joinIntoString (";"); }
+    StringArray getExternalLibrariesStringArray() const   { return getSearchPathsFromString (externalLibrariesValue.get().toString()); }
+    String getExternalLibrariesString() const             { return getExternalLibrariesStringArray().joinIntoString (";"); }
 
     bool shouldUseGNUExtensions() const                   { return gnuExtensionsValue.get(); }
 
-    String getVSTLegacyPathString() const                 { return vstLegacyPathValueWrapper.wrappedValue.get(); }
-    String getAAXPathString() const                       { return aaxPathValueWrapper.wrappedValue.get(); }
-    String getRTASPathString() const                      { return rtasPathValueWrapper.wrappedValue.get(); }
+    String getVSTLegacyPathString() const                 { return vstLegacyPathValueWrapper.getCurrentValue(); }
+
+    auto getAAXPathRelative() const
+    {
+        const String userAaxFolder = aaxPathValueWrapper.getCurrentValue();
+        return userAaxFolder.isNotEmpty()
+             ? build_tools::RelativePath (userAaxFolder, build_tools::RelativePath::projectFolder)
+             : getModuleFolderRelativeToProject ("juce_audio_plugin_client").getChildFile ("AAX")
+                                                                            .getChildFile ("SDK");
+    }
+
+    String getARAPathString() const                       { return araPathValueWrapper.getCurrentValue(); }
 
     // NB: this is the path to the parent "modules" folder that contains the named module, not the
     // module folder itself.
-    ValueWithDefault getPathForModuleValue (const String& moduleID);
+    ValueTreePropertyWithDefault getPathForModuleValue (const String& moduleID);
     String getPathForModuleString (const String& moduleID) const;
     void removePathForModule (const String& moduleID);
 
@@ -166,14 +245,14 @@ public:
     void updateOldModulePaths();
 
     build_tools::RelativePath rebaseFromProjectFolderToBuildTarget (const build_tools::RelativePath& path) const;
+    build_tools::RelativePath rebaseFromBuildTargetToProjectFolder (const build_tools::RelativePath& path) const;
+    File resolveRelativePath (const build_tools::RelativePath&) const;
     void addToExtraSearchPaths (const build_tools::RelativePath& pathFromProjectFolder, int index = -1);
     void addToModuleLibPaths   (const build_tools::RelativePath& pathFromProjectFolder);
 
     void addProjectPathToBuildPathList (StringArray&, const build_tools::RelativePath&, int index = -1) const;
 
-    std::unique_ptr<Drawable> getBigIcon() const;
-    std::unique_ptr<Drawable> getSmallIcon() const;
-    build_tools::Icons getIcons() const { return { getSmallIcon(), getBigIcon() }; }
+    build_tools::Icons getIcons() const;
 
     String getExporterIdentifierMacro() const
     {
@@ -185,6 +264,20 @@ public:
     void createPropertyEditors (PropertyListBuilder&);
     void addSettingsForProjectType (const build_tools::ProjectType&);
 
+    build_tools::RelativePath getLV2HelperProgramSource() const
+    {
+        return getModuleFolderRelativeToProject ("juce_audio_plugin_client")
+               .getChildFile ("LV2")
+               .getChildFile ("juce_LV2ManifestHelper.cpp");
+    }
+
+    build_tools::RelativePath getVST3HelperProgramSource() const
+    {
+        return getModuleFolderRelativeToProject ("juce_audio_plugin_client")
+               .getChildFile ("VST3")
+               .getChildFile ("juce_VST3ManifestHelper.cpp");
+    }
+
     //==============================================================================
     void copyMainGroupFromProject();
     Array<Project::Item>& getAllGroups() noexcept               { jassert (itemGroups.size() > 0); return itemGroups; }
@@ -194,10 +287,18 @@ public:
     //==============================================================================
     StringArray linuxLibs, linuxPackages, makefileExtraLinkerFlags;
 
+    enum class PackageDependencyType
+    {
+        compile,
+        link
+    };
+
+    std::vector<PackageDependency> getLinuxPackages (PackageDependencyType type) const;
+
     //==============================================================================
     StringPairArray msvcExtraPreprocessorDefs;
     String msvcDelayLoadedDLLs;
-    StringArray mingwLibs, windowsLibs;
+    StringArray windowsLibs;
 
     //==============================================================================
     StringArray androidLibs;
@@ -207,11 +308,13 @@ public:
     StringArray moduleLibSearchPaths;
 
     //==============================================================================
-    class BuildConfiguration  : public ReferenceCountedObject
+    const LinuxSubprocessHelperProperties linuxSubprocessHelperProperties { *this };
+
+    //==============================================================================
+    class BuildConfiguration : public ReferenceCountedObject
     {
     public:
         BuildConfiguration (Project& project, const ValueTree& configNode, const ProjectExporter&);
-        ~BuildConfiguration();
 
         using Ptr = ReferenceCountedObjectPtr<BuildConfiguration>;
 
@@ -236,14 +339,21 @@ public:
 
         String getBuildConfigPreprocessorDefsString() const    { return ppDefinesValue.get(); }
         StringPairArray getAllPreprocessorDefs() const;        // includes inherited definitions
-        StringPairArray getUniquePreprocessorDefs() const;     // returns pre-processor definitions that are not already in the project pre-processor defs
 
         String getHeaderSearchPathString() const               { return headerSearchPathValue.get(); }
         StringArray getHeaderSearchPaths() const;
 
         String getLibrarySearchPathString() const              { return librarySearchPathValue.get(); }
         StringArray getLibrarySearchPaths() const;
-        String getGCCLibraryPathFlags() const;
+
+        String getPrecompiledHeaderFilename() const            { return "JucePrecompiledHeader_" + getName(); }
+        static String getSkipPrecompiledHeaderDefine()         { return "JUCE_SKIP_PRECOMPILED_HEADER"; }
+
+        bool shouldUsePrecompiledHeaderFile() const            { return usePrecompiledHeaderFileValue.get(); }
+        String getPrecompiledHeaderFileContent() const;
+
+        String getAllCompilerFlagsString() const               { return (exporter.extraCompilerFlagsValue.get().toString() + "  " + configCompilerFlagsValue.get().toString()).replaceCharacters ("\r\n", "  ").trim(); }
+        String getAllLinkerFlagsString() const                 { return (exporter.extraLinkerFlagsValue  .get().toString() + "  " + configLinkerFlagsValue  .get().toString()).replaceCharacters ("\r\n", "  ").trim(); }
 
         //==============================================================================
         Value getValue (const Identifier& nm)                  { return config.getPropertyAsValue (nm, getUndoManager()); }
@@ -253,7 +363,47 @@ public:
         void createPropertyEditors (PropertyListBuilder&);
         void addRecommendedLinuxCompilerWarningsProperty (PropertyListBuilder&);
         void addRecommendedLLVMCompilerWarningsProperty (PropertyListBuilder&);
-        StringArray getRecommendedCompilerWarningFlags() const;
+
+        struct CompilerNames
+        {
+            static constexpr const char* gcc = "GCC";
+            static constexpr const char* llvm = "LLVM";
+        };
+
+        struct CompilerWarningFlags
+        {
+            static CompilerWarningFlags getRecommendedForGCCAndLLVM()
+            {
+                CompilerWarningFlags result;
+                result.common = {
+                    "-Wall",
+                    "-Wcast-align",
+                    "-Wfloat-equal",
+                    "-Wno-ignored-qualifiers",
+                    "-Wsign-compare",
+                    "-Wsign-conversion",
+                    "-Wstrict-aliasing",
+                    "-Wswitch-enum",
+                    "-Wuninitialized",
+                    "-Wunreachable-code",
+                    "-Wunused-parameter",
+                    "-Wmissing-field-initializers"
+                };
+
+                result.cpp = {
+                    "-Woverloaded-virtual",
+                    "-Wreorder",
+                    "-Wzero-as-null-pointer-constant"
+                };
+
+                return result;
+            }
+
+            StringArray common, cpp, objc;
+        };
+
+        CompilerWarningFlags getRecommendedCompilerWarningFlags() const;
+
         void addGCCOptimisationProperty (PropertyListBuilder&);
         void removeFromExporter();
 
@@ -263,19 +413,18 @@ public:
         const ProjectExporter& exporter;
 
     protected:
-        ValueWithDefault isDebugValue, configNameValue, targetNameValue, targetBinaryPathValue, recommendedWarningsValue, optimisationLevelValue,
-                         linkTimeOptimisationValue, ppDefinesValue, headerSearchPathValue, librarySearchPathValue, userNotesValue;
+        ValueTreePropertyWithDefault isDebugValue, configNameValue, targetNameValue, targetBinaryPathValue, recommendedWarningsValue, optimisationLevelValue,
+                                     linkTimeOptimisationValue, ppDefinesValue, headerSearchPathValue, librarySearchPathValue, userNotesValue,
+                                     usePrecompiledHeaderFileValue, precompiledHeaderFileValue, configCompilerFlagsValue, configLinkerFlagsValue;
 
     private:
-        std::map<String, StringArray> recommendedCompilerWarningFlags;
+        std::map<String, CompilerWarningFlags> recommendedCompilerWarningFlags;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BuildConfiguration)
     };
 
     void addNewConfigurationFromExisting (const BuildConfiguration& configToCopy);
     void addNewConfiguration (bool isDebugConfig);
-    bool hasConfigurationNamed (const String& name) const;
-    String getUniqueConfigName (String name) const;
 
     String getExternalLibraryFlags (const BuildConfiguration& config) const;
 
@@ -329,8 +478,6 @@ public:
     StringPairArray getAllPreprocessorDefs (const BuildConfiguration& config, const build_tools::ProjectType::Target::Type targetType) const;
     // includes exporter + project defs
     StringPairArray getAllPreprocessorDefs() const;
-    // just appconfig defs
-    StringPairArray getAppConfigDefs() const;
 
     void addTargetSpecificPreprocessorDefs (StringPairArray& defs, const build_tools::ProjectType::Target::Type targetType) const;
 
@@ -348,6 +495,36 @@ public:
         gccOfast  = 6
     };
 
+    bool isPCHEnabledForAnyConfigurations() const
+    {
+        if (supportsPrecompiledHeaders())
+            for (ConstConfigIterator config (*this); config.next();)
+                if (config->shouldUsePrecompiledHeaderFile())
+                    return true;
+
+        return false;
+    }
+
+    String getCompilerFlagsForFileCompilerFlagScheme (StringRef) const;
+    String getCompilerFlagsForProjectItem (const Project::Item&) const;
+
+    bool isPaceProtectionEnabled() const { return paceProtectionValue.get(); }
+    void resetPaceProtection() { paceProtectionValue.resetToDefault(); }
+
+    File getPaceConfigurationFile() const
+    {
+        const String path = paceConfigurationFileValue.get();
+        return project.getProjectFolder().getChildFile (path);
+    }
+
+    File getPaceBuildSourceRoot() const
+    {
+        const String path = paceBuildSourceRootValue.get();
+        return project.getProjectFolder().getChildFile (path);
+    }
+
+    bool shouldUsePaceSharableTargetNames() const { return paceUseSharableTargetNames.get(); }
+
 protected:
     //==============================================================================
     String name;
@@ -357,43 +534,14 @@ protected:
     const File projectFolder;
 
     //==============================================================================
-    // Wraps a ValueWithDefault object that has a default which depends on a global value.
-    // Used for the VST, RTAS and AAX project-specific path options.
-    struct ValueWithDefaultWrapper  : public Value::Listener
-    {
-        void init (const ValueWithDefault& vwd, ValueWithDefault global, TargetOS::OS targetOS)
-        {
-            wrappedValue = vwd;
-            globalValue = global.getPropertyAsValue();
-            globalIdentifier = global.getPropertyID();
-            os = targetOS;
+    ValueTreePropertyWithDefaultWrapper vstLegacyPathValueWrapper, aaxPathValueWrapper, araPathValueWrapper;
 
-            if (wrappedValue.get() == var())
-                wrappedValue.resetToDefault();
-
-            globalValue.addListener (this);
-            valueChanged (globalValue);
-        }
-
-        void valueChanged (Value&) override
-        {
-            wrappedValue.setDefault (getAppSettings().getStoredPath (globalIdentifier, os).get());
-        }
-
-        ValueWithDefault wrappedValue;
-        Value globalValue;
-
-        Identifier globalIdentifier;
-        TargetOS::OS os;
-    };
-
-    ValueWithDefaultWrapper vstLegacyPathValueWrapper, rtasPathValueWrapper, aaxPathValueWrapper;
-
-    ValueWithDefault targetLocationValue, extraCompilerFlagsValue, extraLinkerFlagsValue, externalLibrariesValue,
-                     userNotesValue, gnuExtensionsValue, bigIconValue, smallIconValue, extraPPDefsValue;
+    ValueTreePropertyWithDefault targetLocationValue, extraCompilerFlagsValue, extraLinkerFlagsValue, externalLibrariesValue,
+                                 userNotesValue, gnuExtensionsValue, bigIconValue, smallIconValue, extraPPDefsValue,
+                                 paceProtectionValue, paceConfigurationFileValue, paceBuildSourceRootValue,
+                                 paceUseSharableTargetNames;
 
     Value projectCompilerFlagSchemesValue;
-    HashMap<String, ValueWithDefault> compilerFlagSchemesMap;
 
     mutable Array<Project::Item> itemGroups;
     Project::Item* modulesGroup = nullptr;
@@ -431,6 +579,9 @@ protected:
 
 private:
     //==============================================================================
+    std::map<String, ValueTreePropertyWithDefault> compilerFlagSchemesMap;
+
+    //==============================================================================
     void valueChanged (Value&) override   { updateCompilerFlagValues(); }
     void updateCompilerFlagValues();
 
@@ -447,13 +598,14 @@ private:
                                                 : name + suffix;
     }
 
-    void createDependencyPathProperties (PropertyListBuilder&);
     void createIconProperties (PropertyListBuilder&);
-    void addVSTPathsIfPluginOrHost();
+    void addExtraIncludePathsIfPluginOrHost();
+    void addARAPathsIfPluginOrHost();
     void addCommonAudioPluginSettings();
     void addLegacyVSTFolderToPathIfSpecified();
     build_tools::RelativePath getInternalVST3SDKPath();
     void addAAXFoldersToPath();
+    void addARAFoldersToPath();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProjectExporter)
 };

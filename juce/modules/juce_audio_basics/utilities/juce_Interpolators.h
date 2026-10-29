@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,6 +35,14 @@
 namespace juce
 {
 
+/**
+    A collection of different interpolators for resampling streams of floats.
+
+    @see GenericInterpolator, WindowedSincInterpolator, LagrangeInterpolator,
+         CatmullRomInterpolator, LinearInterpolator, ZeroOrderHoldInterpolator
+
+    @tags{Audio}
+*/
 class Interpolators
 {
 private:
@@ -39,7 +63,8 @@ private:
 
         static forcedinline float valueAtOffset (const float* const inputs, const float offset, int indexBuffer) noexcept
         {
-            int numCrossings = 100;
+            const int numCrossings = 100;
+            const float floatCrossings = (float) numCrossings;
             float result = 0.0f;
 
             auto samplePosition = indexBuffer;
@@ -54,14 +79,15 @@ private:
                 if (i == -numCrossings || (sincPosition >= 0 && lastSincPosition < 0))
                 {
                     auto indexFloat = (sincPosition >= 0.f ? sincPosition : -sincPosition) * 100.0f;
-                    index = (int) std::floor (indexFloat);
-                    firstFrac = indexFloat - index;
+                    auto indexFloored = std::floor (indexFloat);
+                    index = (int) indexFloored;
+                    firstFrac = indexFloat - indexFloored;
                     sign = (sincPosition < 0 ? -1 : 1);
                 }
 
-                if (sincPosition == 0.0f)
+                if (exactlyEqual (sincPosition, 0.0f))
                     result += inputs[samplePosition];
-                else if (sincPosition < numCrossings && sincPosition > -numCrossings)
+                else if (sincPosition < floatCrossings && sincPosition > -floatCrossings)
                     result += inputs[samplePosition] * windowedSinc (firstFrac, index);
 
                 if (++samplePosition == numCrossings * 2)
@@ -144,7 +170,8 @@ public:
     Note that the resampler is stateful, so when there's a break in the continuity
     of the input stream you're feeding it, you should call reset() before feeding
     it any new data. And like with any other stateful filter, if you're resampling
-    multiple channels, make sure each one uses its own LinearInterpolator object.
+    multiple channels, make sure each one uses its own WindowedSincInterpolator
+    object.
 
     @see GenericInterpolator
 

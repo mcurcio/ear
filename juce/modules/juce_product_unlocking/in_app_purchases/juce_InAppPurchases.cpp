@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,9 +35,33 @@
 namespace juce
 {
 
-//==============================================================================
-JUCE_IMPLEMENT_SINGLETON (InAppPurchases)
+JUCE_BEGIN_IGNORE_DEPRECATION_WARNINGS
+InAppPurchases::Purchase::Purchase() = default;
 
+InAppPurchases::Purchase::Purchase (String orderIdIn,
+                                    StringArray productIdsIn,
+                                    String applicationBundleNameIn,
+                                    Time timeOfPurchaseIn,
+                                    String purchaseTokenIn)
+    : orderId (std::move (orderIdIn)),
+      productIds (std::move (productIdsIn)),
+      applicationBundleName (std::move (applicationBundleNameIn)),
+      purchaseTime (timeOfPurchaseIn.toString (true, true, true, true)),
+      timeOfPurchase (std::move (timeOfPurchaseIn)),
+      purchaseToken (std::move (purchaseTokenIn))
+{
+}
+
+InAppPurchases::Purchase::Purchase (const Purchase&) = default;
+InAppPurchases::Purchase::Purchase (Purchase&&) noexcept = default;
+
+auto InAppPurchases::Purchase::operator= (const Purchase&) -> Purchase& = default;
+auto InAppPurchases::Purchase::operator= (Purchase&&) noexcept -> Purchase& = default;
+
+InAppPurchases::Purchase::~Purchase() = default;
+JUCE_END_IGNORE_DEPRECATION_WARNINGS
+
+//==============================================================================
 InAppPurchases::InAppPurchases()
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     : pimpl (new Pimpl (*this))
@@ -53,8 +93,8 @@ void InAppPurchases::getProductsInformation (const StringArray& productIdentifie
 }
 
 void InAppPurchases::purchaseProduct (const String& productIdentifier,
-                                      const String& upgradeProductIdentifier,
-                                      bool creditForUnusedSubscription)
+                                      [[maybe_unused]] const String& upgradeProductIdentifier,
+                                      [[maybe_unused]] bool creditForUnusedSubscription)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->purchaseProduct (productIdentifier, upgradeProductIdentifier, creditForUnusedSubscription);
@@ -62,66 +102,55 @@ void InAppPurchases::purchaseProduct (const String& productIdentifier,
     Listener::PurchaseInfo purchaseInfo { Purchase { "", productIdentifier, {}, {}, {} }, {} };
 
     listeners.call ([&] (Listener& l) { l.productPurchaseFinished (purchaseInfo, false, "In-app purchases unavailable"); });
-    ignoreUnused (isSubscription, upgradeProductIdentifiers, creditForUnusedSubscription);
    #endif
 }
 
-void InAppPurchases::restoreProductsBoughtList (bool includeDownloadInfo, const String& subscriptionsSharedSecret)
+void InAppPurchases::restoreProductsBoughtList ([[maybe_unused]] bool includeDownloadInfo, [[maybe_unused]] const String& subscriptionsSharedSecret)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->restoreProductsBoughtList (includeDownloadInfo, subscriptionsSharedSecret);
    #else
     listeners.call ([] (Listener& l) { l.purchasesListRestored ({}, false, "In-app purchases unavailable"); });
-    ignoreUnused (includeDownloadInfo, subscriptionsSharedSecret);
    #endif
 }
 
-void InAppPurchases::consumePurchase (const String& productIdentifier, const String& purchaseToken)
+void InAppPurchases::consumePurchase (const String& productIdentifier, [[maybe_unused]] const String& purchaseToken)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->consumePurchase (productIdentifier, purchaseToken);
    #else
     listeners.call ([&] (Listener& l) { l.productConsumed (productIdentifier, false, "In-app purchases unavailable"); });
-    ignoreUnused (purchaseToken);
    #endif
 }
 
 void InAppPurchases::addListener (Listener* l)      { listeners.add (l); }
 void InAppPurchases::removeListener (Listener* l)   { listeners.remove (l); }
 
-void InAppPurchases::startDownloads  (const Array<Download*>& downloads)
+void InAppPurchases::startDownloads  ([[maybe_unused]] const Array<Download*>& downloads)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->startDownloads (downloads);
-   #else
-    ignoreUnused (downloads);
    #endif
 }
 
-void InAppPurchases::pauseDownloads  (const Array<Download*>& downloads)
+void InAppPurchases::pauseDownloads  ([[maybe_unused]] const Array<Download*>& downloads)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->pauseDownloads (downloads);
-   #else
-    ignoreUnused (downloads);
    #endif
 }
 
-void InAppPurchases::resumeDownloads (const Array<Download*>& downloads)
+void InAppPurchases::resumeDownloads ([[maybe_unused]] const Array<Download*>& downloads)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->resumeDownloads (downloads);
-   #else
-    ignoreUnused (downloads);
    #endif
 }
 
-void InAppPurchases::cancelDownloads (const Array<Download*>& downloads)
+void InAppPurchases::cancelDownloads ([[maybe_unused]] const Array<Download*>& downloads)
 {
    #if JUCE_ANDROID || JUCE_IOS || JUCE_MAC
     pimpl->cancelDownloads (downloads);
-   #else
-    ignoreUnused (downloads);
    #endif
 }
 

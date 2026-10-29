@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -33,23 +49,25 @@ namespace juce
 
     Make sure to call `sendInitialUpdate` at the end of your new attachment's
     constructor, so that the UI immediately reflects the state of the parameter.
+
+    @tags{Audio}
 */
 class ParameterAttachment   : private AudioProcessorParameter::Listener,
                               private AsyncUpdater
 {
 public:
-    /** Listens to a parameter and calls the the provided function in response to
+    /** Listens to a parameter and calls the provided function in response to
         parameter changes. If an undoManager is supplied `beginNewTransaction` will
         be called on it whenever the UI requests a parameter change via this attachment.
 
         @param parameter                  The parameter to which this attachment will listen
         @param parameterChangedCallback   The function that will be called on the message thread in response
                                           to parameter changes
-        @param uundoManager               The UndoManager that will be used to begin transactions when the UI
+        @param undoManager                The UndoManager that will be used to begin transactions when the UI
                                           requests a parameter change.
     */
     ParameterAttachment (RangedAudioParameter& parameter,
-                         std::function<void(float)> parameterChangedCallback,
+                         std::function<void (float)> parameterChangedCallback,
                          UndoManager* undoManager = nullptr);
 
     /** Destructor. */
@@ -105,7 +123,7 @@ private:
     RangedAudioParameter& parameter;
     std::atomic<float> lastValue { 0.0f };
     UndoManager* undoManager = nullptr;
-    std::function<void(float)> setValue;
+    std::function<void (float)> setValue;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ParameterAttachment)
 };
@@ -118,6 +136,8 @@ private:
     it easy to connect a slider to a parameter. When this object is deleted, the
     connection is broken. Make sure that your parameter and Slider are not
     deleted before this object!
+
+    @tags{Audio}
 */
 class SliderParameterAttachment   : private Slider::Listener
 {
@@ -164,6 +184,8 @@ private:
     easy to connect a combo box to a parameter. When this object is deleted, the
     connection is broken. Make sure that your parameter and ComboBox are not deleted
     before this object!
+
+    @tags{Audio}
 */
 class ComboBoxParameterAttachment   : private ComboBox::Listener
 {
@@ -190,6 +212,7 @@ private:
     void comboBoxChanged (ComboBox*) override;
 
     ComboBox& comboBox;
+    RangedAudioParameter& storedParameter;
     ParameterAttachment attachment;
     bool ignoreCallbacks = false;
 };
@@ -202,6 +225,8 @@ private:
     easy to connect a button to a parameter. When this object is deleted, the
     connection is broken. Make sure that your parameter and Button are not deleted
     before this object!
+
+    @tags{Audio}
 */
 class ButtonParameterAttachment   : private Button::Listener
 {
@@ -209,7 +234,7 @@ public:
     /** Creates a connection between a plug-in parameter and a Button.
 
         @param parameter     The parameter to use
-        @param combo         The Button to use
+        @param button        The Button to use
         @param undoManager   An optional UndoManager
     */
     ButtonParameterAttachment (RangedAudioParameter& parameter, Button& button,
@@ -231,5 +256,145 @@ private:
     ParameterAttachment attachment;
     bool ignoreCallbacks = false;
 };
+
+#if JUCE_WEB_BROWSER || DOXYGEN
+//==============================================================================
+/**
+    An object of this class maintains a connection between a WebSliderRelay and a
+    plug-in parameter.
+
+    During the lifetime of this object it keeps the two things in sync, making it
+    easy to connect a WebSliderRelay to a parameter. When this object is deleted,
+    the connection is broken. Make sure that your parameter and WebSliderRelay are
+    not deleted before this object!
+
+    @tags{Audio}
+*/
+class WebSliderParameterAttachment   : private WebSliderRelay::Listener
+{
+public:
+    /** Creates a connection between a plug-in parameter and a WebSliderRelay.
+
+        @param parameterIn   The parameter to use
+        @param sliderStateIn The WebSliderRelay to use
+        @param undoManager   An optional UndoManager
+    */
+    WebSliderParameterAttachment (RangedAudioParameter& parameterIn,
+                                  WebSliderRelay& sliderStateIn,
+                                  UndoManager* undoManager = nullptr);
+
+    /** Destructor. */
+    ~WebSliderParameterAttachment() override;
+
+    /** Call this after setting up your slider in the case where you need to do
+        extra setup after constructing this attachment.
+    */
+    void sendInitialUpdate();
+
+private:
+    void setValue (float newValue);
+
+    void sliderValueChanged (WebSliderRelay*) override;
+
+    void sliderDragStarted (WebSliderRelay*) override      { attachment.beginGesture(); }
+    void sliderDragEnded (WebSliderRelay*) override        { attachment.endGesture(); }
+    void initialUpdateRequested (WebSliderRelay*) override { sendInitialUpdate(); }
+
+    WebSliderRelay& sliderState;
+    RangedAudioParameter& parameter;
+    ParameterAttachment attachment;
+    bool ignoreCallbacks = false;
+};
+
+//==============================================================================
+/**
+    An object of this class maintains a connection between a WebToggleButtonRelay and a
+    plug-in parameter.
+
+    During the lifetime of this object it keeps the two things in sync, making it
+    easy to connect a WebToggleButtonRelay to a parameter. When this object is deleted,
+    the connection is broken. Make sure that your parameter and WebToggleButtonRelay are
+    not deleted before this object!
+
+    @tags{Audio}
+*/
+class WebToggleButtonParameterAttachment  : private WebToggleButtonRelay::Listener
+{
+public:
+    /** Creates a connection between a plug-in parameter and a WebToggleButtonRelay.
+
+        @param parameterIn   The parameter to use
+        @param button        The WebToggleButtonRelay to use
+        @param undoManager   An optional UndoManager
+    */
+    WebToggleButtonParameterAttachment (RangedAudioParameter& parameterIn,
+                                        WebToggleButtonRelay& button,
+                                        UndoManager* undoManager = nullptr);
+
+    /** Destructor. */
+    ~WebToggleButtonParameterAttachment() override;
+
+    /** Call this after setting up your button in the case where you need to do
+        extra setup after constructing this attachment.
+    */
+    void sendInitialUpdate();
+
+private:
+    void setValue (float newValue);
+
+    void toggleStateChanged (bool newValue) override;
+    void initialUpdateRequested() override;
+
+    WebToggleButtonRelay& relay;
+    RangedAudioParameter& parameter;
+    ParameterAttachment attachment;
+    bool ignoreCallbacks = false;
+};
+
+//==============================================================================
+/**
+    An object of this class maintains a connection between a WebComboBoxRelay and a
+    plug-in parameter.
+
+    During the lifetime of this object it keeps the two things in sync, making it
+    easy to connect a WebComboBoxRelay to a parameter. When this object is deleted,
+    the connection is broken. Make sure that your parameter and WebComboBoxRelay are
+    not deleted before this object!
+
+    @tags{Audio}
+*/
+class WebComboBoxParameterAttachment   : private WebComboBoxRelay::Listener
+{
+public:
+    /** Creates a connection between a plug-in parameter and a WebComboBoxRelay.
+
+        @param parameterIn   The parameter to use
+        @param combo         The WebComboBoxRelay to use
+        @param undoManager   An optional UndoManager
+    */
+    WebComboBoxParameterAttachment (RangedAudioParameter& parameterIn, WebComboBoxRelay& combo,
+                                    UndoManager* undoManager = nullptr);
+
+    /** Destructor. */
+    ~WebComboBoxParameterAttachment() override;
+
+    /** Call this after setting up your combo box in the case where you need to do
+        extra setup after constructing this attachment.
+    */
+    void sendInitialUpdate();
+
+private:
+    void setValue (float newValue);
+
+    void valueChanged (float newValue) override;
+    void initialUpdateRequested() override;
+
+    WebComboBoxRelay& relay;
+    RangedAudioParameter& parameter;
+    ParameterAttachment attachment;
+    bool ignoreCallbacks = false;
+};
+
+#endif
 
 } // namespace juce

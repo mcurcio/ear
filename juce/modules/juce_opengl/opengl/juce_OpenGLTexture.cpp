@@ -1,32 +1,39 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
 namespace juce
 {
-
-static int getAllowedTextureSize (int x)
-{
-   #if JUCE_OPENGL_ALLOW_NON_POWER_OF_TWO_TEXTURES
-    return x;
-   #else
-    return nextPowerOfTwo (x);
-   #endif
-}
 
 OpenGLTexture::OpenGLTexture()
     : textureID (0), width (0), height (0), ownerContext (nullptr)
@@ -51,107 +58,200 @@ void OpenGLTexture::create (const int w, const int h, const void* pixels, GLenum
     // context. You'll need to create this object in one of the OpenGLContext's callbacks.
     jassert (ownerContext != nullptr);
 
-    if (textureID == 0)
-    {
-        JUCE_CHECK_OPENGL_ERROR
-        glGenTextures (1, &textureID);
-        glBindTexture (GL_TEXTURE_2D, textureID);
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    JUCE_CHECK_OPENGL_ERROR
 
-        auto glMagFilter = (ownerContext->texMagFilter == OpenGLContext::linear ? GL_LINEAR : GL_NEAREST);
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, glMagFilter);
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        JUCE_CHECK_OPENGL_ERROR
-    }
-    else
-    {
-        glBindTexture (GL_TEXTURE_2D, textureID);
-        JUCE_CHECK_OPENGL_ERROR;
-    }
+    if (textureID == 0)
+        glGenTextures (1, &textureID);
+
+    glBindTexture (GL_TEXTURE_2D, textureID);
+
+    // We need to set parameters on every upload, not just when the texture name is
+    // generated. Textures that outlive a single upload, like those held by the image
+    // cache, would otherwise be stuck with the magnification filter that was current
+    // when they were first created, and would ignore any later call to
+    // OpenGLContext::setTextureMagnificationFilter().
+    const auto glMagFilter = (GLint) (ownerContext != nullptr && ownerContext->texMagFilter == OpenGLContext::nearest
+                                          ? GL_NEAREST
+                                          : GL_LINEAR);
+
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, glMagFilter);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    JUCE_CHECK_OPENGL_ERROR
 
     glPixelStorei (GL_UNPACK_ALIGNMENT, 1);
     JUCE_CHECK_OPENGL_ERROR
 
-    width  = getAllowedTextureSize (w);
-    height = getAllowedTextureSize (h);
-
-    const GLint internalformat = type == GL_ALPHA ? GL_ALPHA : GL_RGBA;
-
-    if (width != w || height != h)
+    if (! tryAllocTexture (w, h, type))
     {
-        glTexImage2D (GL_TEXTURE_2D, 0, internalformat,
-                      width, height, 0, type, GL_UNSIGNED_BYTE, nullptr);
-
-        glTexSubImage2D (GL_TEXTURE_2D, 0, 0, topLeft ? (height - h) : 0, w, h,
-                         type, GL_UNSIGNED_BYTE, pixels);
+        // Completely failed to create a workable texture
+        jassertfalse;
+        return;
     }
-    else
+
+    GLint detectedWidth{}, detectedHeight{};
+    glGetTexLevelParameteriv (GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &detectedWidth);
+    glGetTexLevelParameteriv (GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &detectedHeight);
+    std::tie (width, height) = std::tie (detectedWidth, detectedHeight);
+
+    if (width < w || height < h)
     {
-        glTexImage2D (GL_TEXTURE_2D, 0, internalformat,
-                      w, h, 0, type, GL_UNSIGNED_BYTE, pixels);
+        // Created a texture, but it's not large enough, somehow
+        jassertfalse;
+        return;
+    }
+
+    if (pixels != nullptr)
+    {
+        glTexSubImage2D (GL_TEXTURE_2D,
+                         0,
+                         0,
+                         topLeft ? (height - h) : 0,
+                         w,
+                         h,
+                         type,
+                         GL_UNSIGNED_BYTE,
+                         pixels);
     }
 
     JUCE_CHECK_OPENGL_ERROR
 }
 
+struct UploadScratchBuffer final : public ReferenceCountedObject
+{
+    UploadScratchBuffer() = default;
+
+    static UploadScratchBuffer& get (OpenGLContext& c)
+    {
+        const char scratchValueID[] = "ImageUploadScratch";
+        auto* scratch = static_cast<UploadScratchBuffer*> (c.getAssociatedObject (scratchValueID));
+
+        if (scratch == nullptr)
+        {
+            scratch = new UploadScratchBuffer();
+            c.setAssociatedObject (scratchValueID, scratch);
+        }
+
+        return *scratch;
+    }
+
+    [[nodiscard]] Span<PixelARGB> getWithSize (size_t numPixels)
+    {
+        if (pixels.size() < numPixels)
+            pixels = CopyableHeapBlock<PixelARGB> (numPixels);
+
+        return { pixels.data(), numPixels };
+    }
+
+private:
+    CopyableHeapBlock<PixelARGB> pixels;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UploadScratchBuffer)
+};
+
 template <class PixelType>
 struct Flipper
 {
-    static void flip (HeapBlock<PixelARGB>& dataCopy, const uint8* srcData, const int lineStride,
-                      const int w, const int h)
+    static void flip (Span<PixelARGB> dest,
+                      const uint8* srcData,
+                      const int lineStride,
+                      const int pixelStride,
+                      const int w,
+                      const int h)
     {
-        dataCopy.malloc (w * h);
+        jassert (dest.size() >= (size_t) w * (size_t) h);
 
         for (int y = 0; y < h; ++y)
         {
-            auto* src = (const PixelType*) srcData;
-            auto* dst = (PixelARGB*) (dataCopy + w * (h - 1 - y));
+            auto* srcLine = srcData + lineStride * y;
+            auto* dstLine = dest.data() + w * (h - 1 - y);
+
+            if constexpr (std::is_same_v<PixelType, PixelARGB>)
+            {
+                if ((size_t) pixelStride == sizeof (PixelARGB))
+                {
+                    std::memcpy (dstLine, srcLine, (size_t) w * sizeof (PixelARGB));
+                    continue;
+                }
+            }
 
             for (int x = 0; x < w; ++x)
-                dst[x].set (src[x]);
-
-            srcData += lineStride;
+            {
+                auto* srcPixel = srcLine + x * pixelStride;
+                dstLine[x].set (*unalignedPointerCast<const PixelType*> (srcPixel));
+            }
         }
     }
 };
 
 void OpenGLTexture::loadImage (const Image& image)
 {
+    auto* context = OpenGLContext::getCurrentContext();
+
+    if (context == nullptr)
+    {
+        jassertfalse;
+        return;
+    }
+
     const int imageW = image.getWidth();
     const int imageH = image.getHeight();
 
-    HeapBlock<PixelARGB> dataCopy;
     Image::BitmapData srcData (image, Image::BitmapData::readOnly);
+    const auto dataCopy = UploadScratchBuffer::get (*context).getWithSize ((size_t) imageW * (size_t) imageH);
 
     switch (srcData.pixelFormat)
     {
-        case Image::ARGB:           Flipper<PixelARGB> ::flip (dataCopy, srcData.data, srcData.lineStride, imageW, imageH); break;
-        case Image::RGB:            Flipper<PixelRGB>  ::flip (dataCopy, srcData.data, srcData.lineStride, imageW, imageH); break;
-        case Image::SingleChannel:  Flipper<PixelAlpha>::flip (dataCopy, srcData.data, srcData.lineStride, imageW, imageH); break;
+        case Image::ARGB:           Flipper<PixelARGB> ::flip (dataCopy, srcData.data, srcData.lineStride, srcData.pixelStride, imageW, imageH); break;
+        case Image::RGB:            Flipper<PixelRGB>  ::flip (dataCopy, srcData.data, srcData.lineStride, srcData.pixelStride, imageW, imageH); break;
+        case Image::SingleChannel:  Flipper<PixelAlpha>::flip (dataCopy, srcData.data, srcData.lineStride, srcData.pixelStride, imageW, imageH); break;
+
         case Image::UnknownFormat:
-        default: break;
+        default:
+            create (imageW, imageH, nullptr, JUCE_RGBA_FORMAT, true);
+            return;
     }
 
-    create (imageW, imageH, dataCopy, JUCE_RGBA_FORMAT, true);
+    create (imageW, imageH, dataCopy.data(), JUCE_RGBA_FORMAT, true);
 }
 
 void OpenGLTexture::loadARGB (const PixelARGB* pixels, const int w, const int h)
 {
+    if (OpenGLContext::getCurrentContext() == nullptr)
+    {
+        jassertfalse;
+        return;
+    }
+
     create (w, h, pixels, JUCE_RGBA_FORMAT, false);
 }
 
 void OpenGLTexture::loadAlpha (const uint8* pixels, int w, int h)
 {
+    if (OpenGLContext::getCurrentContext() == nullptr)
+    {
+        jassertfalse;
+        return;
+    }
+
     create (w, h, pixels, GL_ALPHA, false);
 }
 
 void OpenGLTexture::loadARGBFlipped (const PixelARGB* pixels, int w, int h)
 {
-    HeapBlock<PixelARGB> flippedCopy;
-    Flipper<PixelARGB>::flip (flippedCopy, (const uint8*) pixels, 4 * w, w, h);
+    auto* context = OpenGLContext::getCurrentContext();
 
-    create (w, h, flippedCopy, JUCE_RGBA_FORMAT, true);
+    if (context == nullptr)
+    {
+        jassertfalse;
+        return;
+    }
+
+    const auto flippedCopy = UploadScratchBuffer::get (*context).getWithSize ((size_t) w * (size_t) h);
+    Flipper<PixelARGB>::flip (flippedCopy, (const uint8*) pixels, 4 * w, 4, w, h);
+
+    create (w, h, flippedCopy.data(), JUCE_RGBA_FORMAT, true);
 }
 
 void OpenGLTexture::release()

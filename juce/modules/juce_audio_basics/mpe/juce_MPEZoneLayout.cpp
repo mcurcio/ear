@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -23,7 +35,17 @@
 namespace juce
 {
 
-MPEZoneLayout::MPEZoneLayout() noexcept {}
+MPEZoneLayout::MPEZoneLayout (MPEZone lower, MPEZone upper)
+    : lowerZone (lower), upperZone (upper)
+{
+}
+
+MPEZoneLayout::MPEZoneLayout (MPEZone zone)
+    : lowerZone (zone.isLowerZone() ? zone : MPEZone()),
+      upperZone (! zone.isLowerZone() ? zone : MPEZone())
+{
+}
+
 
 MPEZoneLayout::MPEZoneLayout (const MPEZoneLayout& other)
     : lowerZone (other.lowerZone),
@@ -54,9 +76,9 @@ void MPEZoneLayout::setZone (bool isLower, int numMemberChannels, int perNotePit
     checkAndLimitZoneParameters (0, 96,  masterPitchbendRange);
 
     if (isLower)
-        lowerZone = { true, numMemberChannels, perNotePitchbendRange, masterPitchbendRange };
+        lowerZone = { MPEZone::Type::lower, numMemberChannels, perNotePitchbendRange, masterPitchbendRange };
     else
-        upperZone = { false, numMemberChannels, perNotePitchbendRange, masterPitchbendRange };
+        upperZone = { MPEZone::Type::upper, numMemberChannels, perNotePitchbendRange, masterPitchbendRange };
 
     if (numMemberChannels > 0)
     {
@@ -86,8 +108,8 @@ void MPEZoneLayout::setUpperZone (int numMemberChannels, int perNotePitchbendRan
 
 void MPEZoneLayout::clearAllZones()
 {
-    lowerZone = { true, 0 };
-    upperZone = { false, 0 };
+    lowerZone = { MPEZone::Type::lower, 0 };
+    upperZone = { MPEZone::Type::upper, 0 };
 
     sendLayoutChangeMessage();
 }
@@ -98,14 +120,11 @@ void MPEZoneLayout::processNextMidiEvent (const MidiMessage& message)
     if (! message.isController())
         return;
 
-    MidiRPNMessage rpn;
-
-    if (rpnDetector.parseControllerMessage (message.getChannel(),
+    if (auto parsed = rpnDetector.tryParse (message.getChannel(),
                                             message.getControllerNumber(),
-                                            message.getControllerValue(),
-                                            rpn))
+                                            message.getControllerValue()))
     {
-        processRpnMessage (rpn);
+        processRpnMessage (*parsed);
     }
 }
 
@@ -128,7 +147,7 @@ void MPEZoneLayout::processZoneLayoutRpnMessage (MidiRPNMessage rpn)
     }
 }
 
-void MPEZoneLayout::updateMasterPitchbend (Zone& zone, int value)
+void MPEZoneLayout::updateMasterPitchbend (MPEZone& zone, int value)
 {
     if (zone.masterPitchbendRange != value)
     {
@@ -138,7 +157,7 @@ void MPEZoneLayout::updateMasterPitchbend (Zone& zone, int value)
     }
 }
 
-void MPEZoneLayout::updatePerNotePitchbendRange (Zone& zone, int value)
+void MPEZoneLayout::updatePerNotePitchbendRange (MPEZone& zone, int value)
 {
     if (zone.perNotePitchbendRange != value)
     {
@@ -150,20 +169,31 @@ void MPEZoneLayout::updatePerNotePitchbendRange (Zone& zone, int value)
 
 void MPEZoneLayout::processPitchbendRangeRpnMessage (MidiRPNMessage rpn)
 {
+    // When the range is specified using both MSB and LSB, then MSB corresponds to whole semitones
+    // and LSB corresponds to cents.
+    const auto range = rpn.is14BitValue
+                     ? std::div (rpn.value, 128)
+                     : div_t { rpn.value, 0 };
+
+    // If this is hit, the requested pitchbend range is not a whole number of semitones.
+    // This isn't currently supported by JUCE - adding support would require
+    // public API updates.
+    jassert (range.rem == 0);
+
     if (rpn.channel == 1)
     {
-        updateMasterPitchbend (lowerZone, rpn.value);
+        updateMasterPitchbend (lowerZone, range.quot);
     }
     else if (rpn.channel == 16)
     {
-        updateMasterPitchbend (upperZone, rpn.value);
+        updateMasterPitchbend (upperZone, range.quot);
     }
     else
     {
         if (lowerZone.isUsingChannelAsMemberChannel (rpn.channel))
-            updatePerNotePitchbendRange (lowerZone, rpn.value);
+            updatePerNotePitchbendRange (lowerZone, range.quot);
         else if (upperZone.isUsingChannelAsMemberChannel (rpn.channel))
-            updatePerNotePitchbendRange (upperZone, rpn.value);
+            updatePerNotePitchbendRange (upperZone, range.quot);
     }
 }
 
@@ -201,12 +231,31 @@ void MPEZoneLayout::checkAndLimitZoneParameters (int minValue, int maxValue,
     }
 }
 
+//==============================================================================
+bool MPEZone::operator== (const MPEZone& other) const
+{
+    const auto tie = [] (auto& x)
+    {
+        return std::tie (x.zoneType,
+                         x.numMemberChannels,
+                         x.perNotePitchbendRange,
+                         x.masterPitchbendRange);
+    };
+
+    return tie (*this) == tie (other);
+}
+
+bool MPEZone::operator!= (const MPEZone& other) const
+{
+    return ! operator== (other);
+}
+
 
 //==============================================================================
 //==============================================================================
 #if JUCE_UNIT_TESTS
 
-class MPEZoneLayoutTests  : public UnitTest
+class MPEZoneLayoutTests final : public UnitTest
 {
 public:
     MPEZoneLayoutTests()
@@ -374,6 +423,44 @@ public:
             expectEquals (layout.getLowerZone().numMemberChannels, 3);
             expectEquals (layout.getLowerZone().perNotePitchbendRange, 48);
             expectEquals (layout.getLowerZone().masterPitchbendRange, 2);
+
+            const auto masterPitchBend = 0x0c;
+            layout.processNextMidiEvent ({ 0xb0, 0x64, 0x00 });
+            layout.processNextMidiEvent ({ 0xb0, 0x06, masterPitchBend });
+
+            expectEquals (layout.getLowerZone().masterPitchbendRange, masterPitchBend);
+
+            const auto newPitchBend = 0x0d;
+            layout.processNextMidiEvent ({ 0xb0, 0x06, newPitchBend });
+
+            expectEquals (layout.getLowerZone().masterPitchbendRange, newPitchBend);
+        }
+
+        beginTest ("process 14-bit pitch bend sensitivity");
+        {
+            MPEZoneLayout layout;
+            layout.setLowerZone (15);
+            expect (layout.getLowerZone().isActive());
+
+            constexpr auto masterPitchBendA = 0x60;
+
+            // LSB first
+            layout.processNextMidiEvent ({ 0xb0, 0x64, 0x00 }); // RPN part 1
+            layout.processNextMidiEvent ({ 0xb0, 0x65, 0x00 }); // PRN part 2
+            layout.processNextMidiEvent ({ 0xb0, 0x26, 0x00 }); // pitch bend cents
+            layout.processNextMidiEvent ({ 0xb0, 0x06, masterPitchBendA }); // pitch bend semis
+
+            expectEquals (layout.getLowerZone().masterPitchbendRange, masterPitchBendA);
+
+            constexpr auto masterPitchBendB = 0x50;
+
+            // MSB first
+            layout.processNextMidiEvent ({ 0xb0, 0x64, 0x00 }); // RPN part 1
+            layout.processNextMidiEvent ({ 0xb0, 0x65, 0x00 }); // PRN part 2
+            layout.processNextMidiEvent ({ 0xb0, 0x06, masterPitchBendB }); // pitch bend semis
+            layout.processNextMidiEvent ({ 0xb0, 0x26, 0x00 }); // pitch bend cents
+
+            expectEquals (layout.getLowerZone().masterPitchbendRange, masterPitchBendB);
         }
     }
 };

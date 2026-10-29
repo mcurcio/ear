@@ -1,18 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE examples.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
    The code included in this file is provided under the terms of the ISC license
    http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
+   to use, copy, modify, and/or distribute this software for any purpose with or
    without fee is hereby granted provided that the above copyright notice and
    this permission notice appear in all copies.
 
-   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES,
-   WHETHER EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR
-   PURPOSE, ARE DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -32,8 +36,9 @@
  dependencies:     juce_audio_basics, juce_audio_devices, juce_audio_formats,
                    juce_audio_processors, juce_audio_utils, juce_core,
                    juce_data_structures, juce_events, juce_graphics,
-                   juce_gui_basics, juce_gui_extra
- exporters:        xcode_mac, vs2019, linux_make, androidstudio, xcode_iphone
+                   juce_gui_basics, juce_gui_extra, juce_audio_processors_headless
+ exporters:        xcode_mac, vs2022, vs2026, linux_make, androidstudio,
+                   xcode_iphone
 
  moduleFlags:      JUCE_STRICT_REFCOUNTEDPOINTER=1
 
@@ -50,7 +55,7 @@
 
 
 //==============================================================================
-class AudioAppDemo   : public AudioAppComponent
+class AudioAppDemo final : public AudioAppComponent
 {
 public:
     //==============================================================================
@@ -114,7 +119,7 @@ public:
         // (Our component is opaque, so we must completely fill the background with a solid colour)
         g.fillAll (getLookAndFeel().findColour (ResizableWindow::backgroundColourId));
 
-        auto centreY = getHeight() / 2.0f;
+        auto centreY = (float) getHeight() / 2.0f;
         auto radius = amplitude * 200.0f;
 
         if (radius >= 0.0f)
@@ -131,8 +136,8 @@ public:
         Path wavePath;
         wavePath.startNewSubPath (0, centreY);
 
-        for (auto x = 1.0f; x < getWidth(); ++x)
-            wavePath.lineTo (x, centreY + amplitude * getHeight() * 2.0f
+        for (auto x = 1.0f; x < (float) getWidth(); ++x)
+            wavePath.lineTo (x, centreY + amplitude * (float) getHeight() * 2.0f
                                             * std::sin (x * frequency * 0.0001f));
 
         g.setColour (getLookAndFeel().findColour (Slider::thumbColourId));
@@ -149,8 +154,8 @@ public:
     {
         lastMousePosition = e.position;
 
-        frequency = (getHeight() - e.y) * 10.0f;
-        amplitude = jmin (0.9f, 0.2f * e.position.x / getWidth());
+        frequency = (float) (getHeight() - e.y) * 10.0f;
+        amplitude = jmin (0.9f, 0.2f * e.position.x / (float) getWidth());
 
         phaseDelta = (float) (MathConstants<double>::twoPi * frequency / sampleRate);
 

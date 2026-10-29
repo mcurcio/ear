@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -36,11 +52,12 @@ namespace juce
     @code
     void mouseUp (const MouseEvent&)
     {
-        FoobarContentComp* content = new FoobarContentComp();
+        auto content = std::make_unique<FoobarContentComp>();
         content->setSize (300, 300);
 
-        CallOutBox& myBox
-            = CallOutBox::launchAsynchronously (content, getScreenBounds(), nullptr);
+        auto& myBox = CallOutBox::launchAsynchronously (std::move (content),
+                                                        getScreenBounds(),
+                                                        nullptr);
     }
     @endcode
 
@@ -69,9 +86,6 @@ public:
     CallOutBox (Component& contentComponent,
                 Rectangle<int> areaToPointTo,
                 Component* parentComponent);
-
-    /** Destructor. */
-    ~CallOutBox() override;
 
     //==============================================================================
     /** Changes the base width of the arrow. */
@@ -102,15 +116,13 @@ public:
         @param contentComponent     the component to display inside the call-out. This should
                                     already have a size set (although the call-out will also
                                     update itself when the component's size is changed later).
-                                    This component will be owned by the callout box and deleted
-                                    later when the box is dismissed.
         @param areaToPointTo        the area that the call-out's arrow should point towards. If
                                     a parentComponent is supplied, then this is relative to that
                                     parent; otherwise, it's a global screen coord.
         @param parentComponent      if not a nullptr, this is the component to add the call-out to.
                                     If this is a nullptr, the call-out will be added to the desktop.
     */
-    static CallOutBox& launchAsynchronously (Component* contentComponent,
+    static CallOutBox& launchAsynchronously (std::unique_ptr<Component> contentComponent,
                                              Rectangle<int> areaToPointTo,
                                              Component* parentComponent);
 
@@ -159,6 +171,10 @@ public:
     void handleCommandMessage (int) override;
     /** @internal */
     int getBorderSize() const noexcept;
+    /** @internal */
+    void lookAndFeelChanged() override;
+    /** @internal */
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 
 private:
     //==============================================================================

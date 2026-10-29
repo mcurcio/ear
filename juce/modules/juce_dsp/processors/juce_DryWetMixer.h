@@ -1,35 +1,50 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 enum class DryWetMixingRule
 {
-    linear,
-    balanced,
-    sin3dB,
-    sin4p5dB,
-    sin6dB,
-    squareRoot3dB,
-    squareRoot4p5dB
+    linear,          // dry volume is equal to 1 - wet volume
+    balanced,        // both dry and wet are 1 when mix is 0.5, with dry decreasing to 0
+                     // above this value and wet decreasing to 0 below it
+    sin3dB,          // alternate dry/wet mixing rule using the 3 dB sine panning rule
+    sin4p5dB,        // alternate dry/wet mixing rule using the 4.5 dB sine panning rule
+    sin6dB,          // alternate dry/wet mixing rule using the 6 dB sine panning rule
+    squareRoot3dB,   // alternate dry/wet mixing rule using the regular 3 dB panning rule
+    squareRoot4p5dB  // alternate dry/wet mixing rule using the regular 4.5 dB panning rule
 };
 
 /**
@@ -92,6 +107,16 @@ public:
     */
     void mixWetSamples (AudioBlock<SampleType> wetSamples);
 
+    /** Sets the time in seconds to fade between wet and dry signals.
+
+        Setting this will also reset the internal state of the processor.
+    */
+    void setRampLength (Seconds newRampLength)
+    {
+        rampLength = newRampLength;
+        reset();
+    }
+
 private:
     //==============================================================================
     void update();
@@ -101,10 +126,12 @@ private:
     DelayLine<SampleType, DelayLineInterpolationTypes::Thiran> dryDelayLine;
     AudioBuffer<SampleType> bufferDry;
 
+    SingleThreadedAbstractFifo fifo;
     SampleType mix = 1.0;
     MixingRule currentMixingRule = MixingRule::linear;
     double sampleRate = 44100.0;
+    int maximumWetLatencyInSamples = 0;
+    Seconds rampLength { 0.05 };
 };
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

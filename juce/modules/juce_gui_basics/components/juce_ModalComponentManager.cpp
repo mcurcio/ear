@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,13 +35,19 @@
 namespace juce
 {
 
-struct ModalComponentManager::ModalItem  : public ComponentMovementWatcher
+struct ModalComponentManager::ModalItem final : public ComponentMovementWatcher
 {
     ModalItem (Component* comp, bool shouldAutoDelete)
         : ComponentMovementWatcher (comp),
           component (comp), autoDelete (shouldAutoDelete)
     {
         jassert (comp != nullptr);
+    }
+
+    ~ModalItem() override
+    {
+        if (autoDelete)
+            std::unique_ptr<Component> componentDeleter (component);
     }
 
     void componentMovedOrResized (bool, bool) override {}
@@ -86,14 +108,14 @@ ModalComponentManager::~ModalComponentManager()
     clearSingletonInstance();
 }
 
-JUCE_IMPLEMENT_SINGLETON (ModalComponentManager)
-
-
 //==============================================================================
-void ModalComponentManager::startModal (Component* component, bool autoDelete)
+void ModalComponentManager::startModal (Key, Component* component, bool autoDelete)
 {
     if (component != nullptr)
+    {
         stack.add (new ModalItem (component, autoDelete));
+        detail::ComponentHelpers::ModalComponentManagerChangeNotifier::getInstance().modalComponentManagerChanged();
+    }
 }
 
 void ModalComponentManager::attachCallback (Component* component, Callback* callback)
@@ -104,7 +126,7 @@ void ModalComponentManager::attachCallback (Component* component, Callback* call
 
         for (int i = stack.size(); --i >= 0;)
         {
-            auto* item = stack.getUnchecked(i);
+            auto* item = stack.getUnchecked (i);
 
             if (item->component == component)
             {
@@ -116,22 +138,11 @@ void ModalComponentManager::attachCallback (Component* component, Callback* call
     }
 }
 
-void ModalComponentManager::endModal (Component* component)
+void ModalComponentManager::endModal (Key, Component* component, int returnValue)
 {
     for (int i = stack.size(); --i >= 0;)
     {
-        auto* item = stack.getUnchecked(i);
-
-        if (item->component == component)
-            item->cancel();
-    }
-}
-
-void ModalComponentManager::endModal (Component* component, int returnValue)
-{
-    for (int i = stack.size(); --i >= 0;)
-    {
-        auto* item = stack.getUnchecked(i);
+        auto* item = stack.getUnchecked (i);
 
         if (item->component == component)
         {
@@ -158,7 +169,7 @@ Component* ModalComponentManager::getModalComponent (int index) const
 
     for (int i = stack.size(); --i >= 0;)
     {
-        auto* item = stack.getUnchecked(i);
+        auto* item = stack.getUnchecked (i);
 
         if (item->isActive)
             if (n++ == index)
@@ -186,7 +197,7 @@ void ModalComponentManager::handleAsyncUpdate()
 {
     for (int i = stack.size(); --i >= 0;)
     {
-        auto* item = stack.getUnchecked(i);
+        auto* item = stack.getUnchecked (i);
 
         if (! item->isActive)
         {
@@ -194,9 +205,11 @@ void ModalComponentManager::handleAsyncUpdate()
             Component::SafePointer<Component> compToDelete (item->autoDelete ? item->component : nullptr);
 
             for (int j = item->callbacks.size(); --j >= 0;)
-                item->callbacks.getUnchecked(j)->modalStateFinished (item->returnValue);
+                item->callbacks.getUnchecked (j)->modalStateFinished (item->returnValue);
 
             compToDelete.deleteAndZero();
+
+            detail::ComponentHelpers::ModalComponentManagerChangeNotifier::getInstance().modalComponentManagerChanged();
         }
     }
 }
@@ -239,7 +252,7 @@ bool ModalComponentManager::cancelAllModalComponents()
     auto numModal = getNumModalComponents();
 
     for (int i = numModal; --i >= 0;)
-        if (auto* c = getModalComponent(i))
+        if (auto* c = getModalComponent (i))
             c->exitModalState (0);
 
     return numModal > 0;
@@ -256,7 +269,7 @@ int ModalComponentManager::runEventLoopForCurrentComponent()
 
     if (auto* currentlyModal = getModalComponent (0))
     {
-        FocusRestorer focusRestorer;
+        detail::FocusRestorer focusRestorer;
         bool finished = false;
 
         attachCallback (currentlyModal, ModalCallbackFunction::create ([&] (int r) { returnValue = r; finished = true; }));
@@ -275,26 +288,5 @@ int ModalComponentManager::runEventLoopForCurrentComponent()
     return returnValue;
 }
 #endif
-
-//==============================================================================
-struct LambdaCallback  : public ModalComponentManager::Callback
-{
-    LambdaCallback (std::function<void(int)> fn) noexcept  : function (fn)  {}
-
-    void modalStateFinished (int result) override
-    {
-        if (function != nullptr)
-            function (result);
-    }
-
-    std::function<void(int)> function;
-
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LambdaCallback)
-};
-
-ModalComponentManager::Callback* ModalCallbackFunction::create (std::function<void(int)> f)
-{
-    return new LambdaCallback (f);
-}
 
 } // namespace juce

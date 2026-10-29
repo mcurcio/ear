@@ -1,18 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE examples.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
    The code included in this file is provided under the terms of the ISC license
    http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
+   to use, copy, modify, and/or distribute this software for any purpose with or
    without fee is hereby granted provided that the above copyright notice and
    this permission notice appear in all copies.
 
-   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES,
-   WHETHER EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR
-   PURPOSE, ARE DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -31,7 +35,8 @@
 
  dependencies:     juce_core, juce_data_structures, juce_events, juce_graphics,
                    juce_gui_basics, juce_gui_extra
- exporters:        xcode_mac, vs2019, linux_make, androidstudio, xcode_iphone
+ exporters:        xcode_mac, vs2022, vs2026, linux_make, androidstudio,
+                   xcode_iphone
 
  moduleFlags:      JUCE_STRICT_REFCOUNTEDPOINTER=1
 
@@ -49,7 +54,7 @@
 #include "../Assets/DemoUtilities.h"
 
 //==============================================================================
-class XmlTreeItem  : public TreeViewItem
+class XmlTreeItem final : public TreeViewItem
 {
 public:
     XmlTreeItem (XmlElement& x)  : xml (x)    {}
@@ -75,7 +80,7 @@ public:
 
         // use a "colour" attribute in the xml tag for this node to set the text colour..
         g.setColour (Colour::fromString (xml.getStringAttribute ("colour", "ff000000")));
-        g.setFont (height * 0.7f);
+        g.setFont ((float) height * 0.7f);
 
         // draw the xml element's tag name..
         g.drawText (xml.getTagName(),
@@ -95,11 +100,9 @@ public:
                 // create and add sub-items to this node of the tree, corresponding to
                 // each sub-element in the XML..
 
-                forEachXmlChildElement (xml, child)
-                {
-                    jassert (child != nullptr);
-                    addSubItem (new XmlTreeItem (*child));
-                }
+                for (auto* child : xml.getChildIterator())
+                    if (child != nullptr)
+                        addSubItem (new XmlTreeItem (*child));
             }
         }
         else
@@ -117,7 +120,7 @@ private:
 };
 
 //==============================================================================
-class JsonTreeItem  : public TreeViewItem
+class JsonTreeItem final : public TreeViewItem
 {
 public:
     JsonTreeItem (Identifier i, var value)
@@ -145,7 +148,7 @@ public:
             g.fillAll (Colours::blue.withAlpha (0.3f));
 
         g.setColour (Colours::black);
-        g.setFont (height * 0.7f);
+        g.setFont ((float) height * 0.7f);
 
         // draw the element's tag name..
         g.drawText (getText(),
@@ -230,8 +233,8 @@ private:
 };
 
 //==============================================================================
-class XMLandJSONDemo   : public Component,
-                         private CodeDocument::Listener
+class XMLandJSONDemo final : public Component,
+                             private CodeDocument::Listener
 {
 public:
     /** The type of database to parse. */
@@ -262,6 +265,7 @@ public:
         addAndMakeVisible (codeDocumentComponent);
         codeDocument.addListener (this);
 
+        resultsTree.setTitle ("Results");
         addAndMakeVisible (resultsTree);
         resultsTree.setColour (TreeView::backgroundColourId, Colours::white);
         resultsTree.setDefaultOpenness (true);
@@ -293,7 +297,7 @@ public:
         auto area = getLocalBounds();
 
         typeBox.setBounds (area.removeFromTop (36).removeFromRight (150).reduced (8));
-        codeDocumentComponent.setBounds (area.removeFromTop(area.getHeight() / 2).reduced (8));
+        codeDocumentComponent.setBounds (area.removeFromTop (area.getHeight() / 2).reduced (8));
         resultsTree          .setBounds (area.reduced (8));
         errorMessage         .setBounds (resultsTree.getBounds());
     }
@@ -313,12 +317,12 @@ private:
     {
         std::unique_ptr<XmlElement> openness;
 
-        if (rootItem.get() != nullptr)
+        if (rootItem != nullptr)
             openness = rootItem->getOpennessState();
 
         createNewRootNode();
 
-        if (openness.get() != nullptr && rootItem.get() != nullptr)
+        if (openness != nullptr && rootItem != nullptr)
             rootItem->restoreOpennessState (*openness);
     }
 
@@ -337,7 +341,7 @@ private:
         }
 
         // if we have a valid TreeViewItem hide any old error messages and set our TreeView to use it
-        if (rootItem.get() != nullptr)
+        if (rootItem != nullptr)
             errorMessage.clear();
 
         errorMessage.setVisible (! errorMessage.isEmpty());

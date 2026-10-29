@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,7 +36,7 @@ namespace juce
 {
 
 DirectoryContentsList::DirectoryContentsList (const FileFilter* f, TimeSliceThread& t)
-   : fileFilter (f), thread (t)
+    : fileFilter (f), thread (t)
 {
 }
 
@@ -59,10 +75,10 @@ void DirectoryContentsList::setDirectory (const File& directory,
 
     auto newFlags = fileTypeFlags;
 
-    if (includeDirectories) newFlags |= File::findDirectories;
+    if (includeDirectories) newFlags |=  File::findDirectories;
     else                    newFlags &= ~File::findDirectories;
 
-    if (includeFiles)       newFlags |= File::findFiles;
+    if (includeFiles)       newFlags |=  File::findFiles;
     else                    newFlags &= ~File::findFiles;
 
     setTypeFlags (newFlags);
@@ -81,7 +97,7 @@ void DirectoryContentsList::stopSearching()
 {
     shouldStop = true;
     thread.removeTimeSliceClient (this);
-    fileFindHandle = nullptr;
+    isSearching = false;
 }
 
 void DirectoryContentsList::clear()
@@ -105,6 +121,7 @@ void DirectoryContentsList::refresh()
     {
         fileFindHandle = std::make_unique<RangedDirectoryIterator> (root, false, "*", fileTypeFlags);
         shouldStop = false;
+        isSearching = true;
         thread.addTimeSliceClient (this);
     }
 }
@@ -150,7 +167,7 @@ bool DirectoryContentsList::contains (const File& targetFile) const
     const ScopedLock sl (fileListLock);
 
     for (int i = files.size(); --i >= 0;)
-        if (root.getChildFile (files.getUnchecked(i)->filename) == targetFile)
+        if (root.getChildFile (files.getUnchecked (i)->filename) == targetFile)
             return true;
 
     return false;
@@ -158,7 +175,7 @@ bool DirectoryContentsList::contains (const File& targetFile) const
 
 bool DirectoryContentsList::isStillLoading() const
 {
-    return fileFindHandle != nullptr;
+    return isSearching;
 }
 
 void DirectoryContentsList::changed()
@@ -194,32 +211,27 @@ int DirectoryContentsList::useTimeSlice()
 
 bool DirectoryContentsList::checkNextFile (bool& hasChanged)
 {
-    if (fileFindHandle != nullptr)
+    if (fileFindHandle == nullptr)
+        return false;
+
+    if (*fileFindHandle == RangedDirectoryIterator())
     {
-        if (*fileFindHandle != RangedDirectoryIterator())
-        {
-            const auto entry = *(*fileFindHandle)++;
-
-            if (addFile (entry.getFile(),
-                         entry.isDirectory(),
-                         entry.getFileSize(),
-                         entry.getModificationTime(),
-                         entry.getCreationTime(),
-                         entry.isReadOnly()))
-            {
-                hasChanged = true;
-            }
-
-            return true;
-        }
-
         fileFindHandle = nullptr;
-
-        if (! wasEmpty && files.isEmpty())
-            hasChanged = true;
+        isSearching = false;
+        hasChanged = true;
+        return false;
     }
 
-    return false;
+    const auto entry = *(*fileFindHandle)++;
+
+    hasChanged |= addFile (entry.getFile(),
+                           entry.isDirectory(),
+                           entry.getFileSize(),
+                           entry.getModificationTime(),
+                           entry.getCreationTime(),
+                           entry.isReadOnly());
+
+    return true;
 }
 
 bool DirectoryContentsList::addFile (const File& file, const bool isDir,
@@ -243,7 +255,7 @@ bool DirectoryContentsList::addFile (const File& file, const bool isDir,
         info->isReadOnly       = isReadOnly;
 
         for (int i = files.size(); --i >= 0;)
-            if (files.getUnchecked(i)->filename == info->filename)
+            if (files.getUnchecked (i)->filename == info->filename)
                 return false;
 
         files.add (std::move (info));

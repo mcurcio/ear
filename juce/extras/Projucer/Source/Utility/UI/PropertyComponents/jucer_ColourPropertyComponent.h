@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,7 +36,7 @@
 
 
 //==============================================================================
-struct ColourPropertyComponent  : public PropertyComponent
+struct ColourPropertyComponent final : public PropertyComponent
 {
     ColourPropertyComponent (UndoManager* undoManager, const String& name, const Value& colour,
                              Colour defaultColour, bool canResetToDefault)
@@ -42,8 +58,8 @@ private:
         A component that shows a colour swatch with hex ARGB value, and which pops up
         a colour selector when you click it.
     */
-    struct ColourEditorComponent    : public Component,
-                                      public Value::Listener
+    struct ColourEditorComponent final : public Component,
+                                         private Value::Listener
     {
         ColourEditorComponent (UndoManager* um, const Value& colour,
                                Colour defaultCol, const bool canReset)
@@ -64,7 +80,7 @@ private:
                                 Colour (0xffffffff).overlaidWith (colour));
 
             g.setColour (Colours::white.overlaidWith (colour).contrasting());
-            g.setFont (Font (getHeight() * 0.6f, Font::bold));
+            g.setFont (FontOptions ((float) getHeight() * 0.6f, Font::bold));
             g.drawFittedText (colour.toDisplayString (true), getLocalBounds().reduced (2, 1),
                               Justification::centred, 1);
         }
@@ -109,12 +125,14 @@ private:
             if (undoManager != nullptr)
                 undoManager->beginNewTransaction();
 
-            CallOutBox::launchAsynchronously (new PopupColourSelector (colourValue,
-                                                                       defaultColour,
-                                                                       canResetToDefault),
-                                              getScreenBounds(), nullptr);
+            CallOutBox::launchAsynchronously (std::make_unique<PopupColourSelector> (colourValue,
+                                                                                     defaultColour,
+                                                                                     canResetToDefault),
+                                              getScreenBounds(),
+                                              nullptr);
         }
 
+    private:
         void valueChanged (Value&) override
         {
             refresh();
@@ -130,9 +148,9 @@ private:
     };
 
     //==============================================================================
-    struct PopupColourSelector   : public Component,
-                                   public ChangeListener,
-                                   public Value::Listener
+    struct PopupColourSelector final : public Component,
+                                       private ChangeListener,
+                                       private Value::Listener
     {
         PopupColourSelector (const Value& colour,
                              Colour defaultCol,
@@ -193,6 +211,7 @@ private:
             }
         }
 
+    private:
         void changeListenerCallback (ChangeBroadcaster*) override
         {
             if (selector.getCurrentColour() != getColour())
@@ -204,7 +223,6 @@ private:
             selector.setCurrentColour (getColour());
         }
 
-    private:
         StoredSettings::ColourSelectorWithSwatches selector;
         TextButton defaultButton;
         Value colourValue;

@@ -1,18 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE examples.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
    The code included in this file is provided under the terms of the ISC license
    http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
+   to use, copy, modify, and/or distribute this software for any purpose with or
    without fee is hereby granted provided that the above copyright notice and
    this permission notice appear in all copies.
 
-   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES,
-   WHETHER EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR
-   PURPOSE, ARE DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -31,7 +35,8 @@
 
  dependencies:     juce_core, juce_data_structures, juce_events, juce_graphics,
                    juce_gui_basics
- exporters:        xcode_mac, vs2019, linux_make, androidstudio, xcode_iphone
+ exporters:        xcode_mac, vs2022, vs2026, linux_make, androidstudio,
+                   xcode_iphone
 
  moduleFlags:      JUCE_STRICT_REFCOUNTEDPOINTER=1
 
@@ -50,7 +55,7 @@
 
 //==============================================================================
 /** Holds the various toggle buttons for the animation modes. */
-class ControllersComponent  : public Component
+class ControllersComponent final : public Component
 {
 public:
     ControllersComponent()
@@ -113,36 +118,36 @@ public:
 };
 
 //==============================================================================
-class GraphicsDemoBase  : public Component
+class GraphicsDemoBase : public Component
 {
 public:
-    GraphicsDemoBase (ControllersComponent& cc, const String& name)
+    GraphicsDemoBase (ControllersComponent* cc, const String& name)
         : Component (name),
           controls (cc)
     {
-        displayFont = Font (Font::getDefaultMonospacedFontName(), 12.0f, Font::bold);
+        displayFont = FontOptions (Font::getDefaultMonospacedFontName(), 12.0f, Font::bold);
     }
 
     AffineTransform getTransform()
     {
-        auto hw = 0.5f * getWidth();
-        auto hh = 0.5f * getHeight();
+        auto hw = 0.5f * (float) getWidth();
+        auto hh = 0.5f * (float) getHeight();
 
         AffineTransform t;
 
-        if (controls.animateRotation.getToggleState())
+        if (controls != nullptr && controls->animateRotation.getToggleState())
             t = t.rotated (rotation.getValue() * MathConstants<float>::twoPi);
 
-        if (controls.animateSize.getToggleState())
+        if (controls != nullptr && controls->animateSize.getToggleState())
             t = t.scaled (0.3f + size.getValue() * 2.0f);
 
-        if (controls.animatePosition.getToggleState())
+        if (controls != nullptr && controls->animatePosition.getToggleState())
             t = t.translated (hw + hw * (offsetX.getValue() - 0.5f),
                               hh + hh * (offsetY.getValue() - 0.5f));
         else
             t = t.translated (hw, hh);
 
-        if (controls.animateShear.getToggleState())
+        if (controls != nullptr && controls->animateShear.getToggleState())
             t = t.sheared (shear.getValue() * 2.0f - 1.0f, 0.0f);
 
         return t;
@@ -150,7 +155,7 @@ public:
 
     float getAlpha() const
     {
-        if (controls.animateAlpha.getToggleState())
+        if (controls != nullptr && controls->animateAlpha.getToggleState())
             return alpha.getValue();
 
         return 1.0f;
@@ -165,12 +170,12 @@ public:
             // construction when it goes out of scope. We use it here to avoid clipping the fps text
             const Graphics::ScopedSaveState state (g);
 
-            if (controls.clipToRectangle.getToggleState())  clipToRectangle (g);
-            if (controls.clipToPath     .getToggleState())  clipToPath (g);
-            if (controls.clipToImage    .getToggleState())  clipToImage (g);
+            if (controls != nullptr && controls->clipToRectangle.getToggleState())  clipToRectangle (g);
+            if (controls != nullptr && controls->clipToPath     .getToggleState())  clipToPath (g);
+            if (controls != nullptr && controls->clipToImage    .getToggleState())  clipToImage (g);
 
-            g.setImageResamplingQuality (controls.quality.getToggleState() ? Graphics::highResamplingQuality
-                                                                           : Graphics::mediumResamplingQuality);
+            g.setImageResamplingQuality (controls != nullptr && controls->quality.getToggleState() ? Graphics::highResamplingQuality
+                                                                                                   : Graphics::mediumResamplingQuality);
 
             // take a note of the time before the render
             startTime = Time::getMillisecondCounterHiRes();
@@ -178,6 +183,9 @@ public:
             // then let the demo draw itself..
             drawDemo (g);
         }
+
+        if (controls == nullptr)
+            return;
 
         auto now = Time::getMillisecondCounterHiRes();
         auto filtering = 0.08;
@@ -197,7 +205,7 @@ public:
                           "Time: " + String (averageTimeMs, 2)
                             + " ms\nEffective FPS: " + String (effectiveFPS, 1)
                             + "\nActual FPS: " + String (averageActualFPS, 1),
-                          0, 10.0f, getWidth() - 10.0f, (float) getHeight(), Justification::topRight, 3);
+                          0, 10.0f, (float) getWidth() - 10.0f, (float) getHeight(), Justification::topRight, 3);
 
         g.setColour (Colours::white.withAlpha (0.5f));
         g.fillRect (ga.getBoundingBox (0, ga.getNumGlyphs(), true).getSmallestIntegerContainer().expanded (4));
@@ -213,8 +221,8 @@ public:
         auto w = getWidth()  / 2;
         auto h = getHeight() / 2;
 
-        auto x = (int) (w * clipRectX.getValue());
-        auto y = (int) (h * clipRectY.getValue());
+        auto x = (int) ((float) w * clipRectX.getValue());
+        auto y = (int) ((float) h * clipRectY.getValue());
 
         g.reduceClipRegion (x, y, w, h);
     }
@@ -239,12 +247,12 @@ public:
         if (! clipImage.isValid())
             createClipImage();
 
-        AffineTransform transform (AffineTransform::translation (clipImage.getWidth()  / -2.0f,
-                                                                 clipImage.getHeight() / -2.0f)
+        AffineTransform transform (AffineTransform::translation ((float) clipImage.getWidth()  / -2.0f,
+                                                                 (float) clipImage.getHeight() / -2.0f)
                                    .rotated (clipImageAngle.getValue() * MathConstants<float>::twoPi)
                                    .scaled (2.0f + clipImageSize.getValue() * 3.0f)
-                                   .translated (getWidth()  * 0.5f,
-                                                getHeight() * 0.5f));
+                                   .translated ((float) getWidth()  * 0.5f,
+                                                (float) getHeight() * 0.5f));
 
         g.reduceClipRegion (clipImage, transform);
     }
@@ -266,7 +274,7 @@ public:
     }
 
     //==============================================================================
-    ControllersComponent& controls;
+    ControllersComponent* controls;
 
     SlowerBouncingNumber offsetX, offsetY, rotation, size, shear, alpha, clipRectX,
                          clipRectY, clipPathX, clipPathY, clipPathDepth, clipPathAngle,
@@ -274,16 +282,16 @@ public:
 
     double lastRenderStartTime = 0.0, averageTimeMs = 0.0, averageActualFPS = 0.0;
     Image clipImage;
-    Font displayFont;
+    Font displayFont { FontOptions{} };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (GraphicsDemoBase)
 };
 
 //==============================================================================
-class RectangleFillTypesDemo  : public GraphicsDemoBase
+class RectangleFillTypesDemo final : public GraphicsDemoBase
 {
 public:
-    RectangleFillTypesDemo (ControllersComponent& cc)
+    RectangleFillTypesDemo (ControllersComponent* cc)
         : GraphicsDemoBase (cc, "Fill Types: Rectangles")
     {}
 
@@ -297,17 +305,17 @@ public:
         g.fillRect (-rectSize, -rectSize, rectSize, rectSize);
 
         g.setGradientFill (ColourGradient (colour1, 10.0f, (float) -rectSize,
-                                           colour2, 10.0f + rectSize, 0.0f, false));
+                                           colour2, 10.0f + (float) rectSize, 0.0f, false));
         g.setOpacity (getAlpha());
         g.fillRect (10, -rectSize, rectSize, rectSize);
 
-        g.setGradientFill (ColourGradient (colour1, rectSize * -0.5f, 10.0f + rectSize * 0.5f,
-                                           colour2, 0, 10.0f + rectSize, true));
+        g.setGradientFill (ColourGradient (colour1, (float) rectSize * -0.5f, 10.0f + (float) rectSize * 0.5f,
+                                           colour2, 0, 10.0f + (float) rectSize, true));
         g.setOpacity (getAlpha());
         g.fillRect (-rectSize, 10, rectSize, rectSize);
 
         g.setGradientFill (ColourGradient (colour1, 10.0f, 10.0f,
-                                           colour2, 10.0f + rectSize, 10.0f + rectSize, false));
+                                           colour2, 10.0f + (float) rectSize, 10.0f + (float) rectSize, false));
         g.setOpacity (getAlpha());
         g.drawRect (10, 10, rectSize, rectSize, 5);
     }
@@ -316,10 +324,10 @@ public:
 };
 
 //==============================================================================
-class PathsDemo  : public GraphicsDemoBase
+class PathsDemo final : public GraphicsDemoBase
 {
 public:
-    PathsDemo (ControllersComponent& cc, bool linear, bool radial)
+    PathsDemo (ControllersComponent* cc, bool linear, bool radial)
         : GraphicsDemoBase (cc, String ("Paths") + (radial ? ": Radial Gradients"
                                                            : (linear ? ": Linear Gradients"
                                                                      : ": Solid"))),
@@ -349,10 +357,10 @@ public:
             Colour c2 (gradientColours[3].getValue(), gradientColours[4].getValue(), gradientColours[5].getValue(), 1.0f);
             Colour c3 (gradientColours[6].getValue(), gradientColours[7].getValue(), gradientColours[8].getValue(), 1.0f);
 
-            auto x1 = gradientPositions[0].getValue() * getWidth()  * 0.25f;
-            auto y1 = gradientPositions[1].getValue() * getHeight() * 0.25f;
-            auto x2 = gradientPositions[2].getValue() * getWidth()  * 0.75f;
-            auto y2 = gradientPositions[3].getValue() * getHeight() * 0.75f;
+            auto x1 = gradientPositions[0].getValue() * (float) getWidth()  * 0.25f;
+            auto y1 = gradientPositions[1].getValue() * (float) getHeight() * 0.25f;
+            auto x2 = gradientPositions[2].getValue() * (float) getWidth()  * 0.75f;
+            auto y2 = gradientPositions[3].getValue() * (float) getHeight() * 0.75f;
 
             ColourGradient gradient (c1, x1, y1,
                                      c2, x2, y2,
@@ -377,10 +385,10 @@ public:
 };
 
 //==============================================================================
-class StrokesDemo  : public GraphicsDemoBase
+class StrokesDemo final : public GraphicsDemoBase
 {
 public:
-    StrokesDemo (ControllersComponent& cc)
+    StrokesDemo (ControllersComponent* cc)
         : GraphicsDemoBase (cc, "Paths: Stroked")
     {}
 
@@ -410,10 +418,10 @@ public:
 };
 
 //==============================================================================
-class ImagesRenderingDemo  : public GraphicsDemoBase
+class ImagesRenderingDemo final : public GraphicsDemoBase
 {
 public:
-    ImagesRenderingDemo (ControllersComponent& cc, bool argb, bool tiled)
+    ImagesRenderingDemo (ControllersComponent* cc, bool argb, bool tiled)
         : GraphicsDemoBase (cc, String ("Images") + (argb ? ": ARGB" : ": RGB") + (tiled ? " Tiled" : String() )),
           isArgb (argb), isTiled (tiled)
     {
@@ -448,13 +456,13 @@ public:
 };
 
 //==============================================================================
-class GlyphsDemo  : public GraphicsDemoBase
+class GlyphsDemo final : public GraphicsDemoBase
 {
 public:
-    GlyphsDemo (ControllersComponent& cc)
+    GlyphsDemo (ControllersComponent* cc)
         : GraphicsDemoBase (cc, "Glyphs")
     {
-        glyphs.addFittedText ({ 20.0f }, "The Quick Brown Fox Jumped Over The Lazy Dog",
+        glyphs.addFittedText (FontOptions { 20.0f }, "The Quick Brown Fox Jumps Over The Lazy Dog",
                               -120, -50, 240, 100, Justification::centred, 2, 1.0f);
     }
 
@@ -468,10 +476,10 @@ public:
 };
 
 //==============================================================================
-class SVGDemo  : public GraphicsDemoBase
+class SVGDemo final : public GraphicsDemoBase
 {
 public:
-    SVGDemo (ControllersComponent& cc)
+    SVGDemo (ControllersComponent* cc)
         : GraphicsDemoBase (cc, "SVG")
     {
         createSVGDrawable();
@@ -489,7 +497,7 @@ public:
     {
         lastSVGLoadTime = Time::getCurrentTime();
 
-        ZipFile icons (createAssetInputStream ("icons.zip").release(), true);
+        ZipFile icons { createAssetInputStream ("icons.zip") };
 
         // Load a random SVG file from our embedded icons.zip file.
         const std::unique_ptr<InputStream> svgFileStream (icons.createStreamForEntry (Random::getSystemRandom().nextInt (icons.getNumEntries())));
@@ -512,72 +520,219 @@ public:
     std::unique_ptr<Drawable> svgDrawable;
 };
 
-//==============================================================================
-class LinesDemo  : public GraphicsDemoBase
+class BlurDemo final : public GraphicsDemoBase
 {
 public:
-    LinesDemo (ControllersComponent& cc)
+    BlurDemo (ControllersComponent* cc)
+        : GraphicsDemoBase (cc, "Blur")
+    {
+        image.setBackupEnabled (false);
+    }
+
+    void drawDemo (Graphics& g) override
+    {
+        const auto a = lopassA.next (jmap (frequencyA.getValue(), 0.09f, 0.12f));
+        const auto b = lopassB.next (jmap (frequencyB.getValue(), 0.09f, 0.12f));
+
+        initialPhase += 0.01f;
+        initialPhase -= (float) (int) initialPhase;
+        const auto startAngle = initialPhase * MathConstants<float>::twoPi;
+        const auto centreSquare = image.getBounds().reduced (100);
+
+        {
+            Graphics g2 { image };
+            g2.setColour (Colours::transparentBlack);
+            g2.excludeClipRegion (centreSquare);
+            g2.getInternalContext().fillRect (image.getBounds(), true);
+        }
+
+        if (auto ptr = image.getClippedImage (centreSquare).getPixelData())
+        {
+            ptr->applyGaussianBlurEffect (7.0f);
+            ptr->multiplyAllAlphas (0.98f);
+        }
+
+        {
+            Graphics g2 { image };
+            const auto baseColour = Colours::cyan;
+            const auto destColour = Colours::magenta;
+            const auto offset = image.getBounds().getCentre().toFloat();
+            const auto numSegments = 200;
+
+            for (auto i = 0; i < numSegments; ++i)
+            {
+                g2.setColour (baseColour.interpolatedWith (destColour, (float) i / numSegments));
+
+                const auto getPoint = [&] (auto ind)
+                {
+                    return offset + Point { 200 * std::sin (startAngle + a * (float) ind),
+                                            200 * std::cos (startAngle + b * (float) ind) };
+                };
+
+                g2.drawLine ({ getPoint (i), getPoint (i + 1) }, 2.0f);
+            }
+        }
+
+        AffineTransform transform (AffineTransform::translation ((float) (-image.getWidth()  / 2),
+                                                                 (float) (-image.getHeight() / 2))
+                                   .followedBy (getTransform()));
+
+        g.setOpacity (getAlpha());
+        g.drawImageTransformed (image, transform, false);
+    }
+
+    class Lopass
+    {
+    public:
+        float next (float f) { return value += (f - value) * 0.05f; }
+
+    private:
+        float value{};
+    };
+
+    Image image { Image::ARGB, 512, 512, true };
+    SlowerBouncingNumber frequencyA, frequencyB;
+    Lopass lopassA, lopassB;
+    float initialPhase = 0.0f;
+};
+
+//==============================================================================
+class LinesDemo final : public GraphicsDemoBase
+{
+public:
+    LinesDemo (ControllersComponent* cc)
         : GraphicsDemoBase (cc, "Lines")
     {}
 
     void drawDemo (Graphics& g) override
     {
+        const auto bounds = getLocalBounds().toFloat();
+
+        g.addTransform (AffineTransform::translation (-bounds.getWidth() / 2.0f,
+                                                      -bounds.getHeight() / 2.0f)
+                            .followedBy (getTransform()));
+
+        // There are two reasons to use a transparency layer here instead of
+        // setting the alpha of each colour.
+        //
+        //  1. To prevent semi-transparent lines occurring between rectangles in
+        //     the D2D renderer, each rectangle has been expanded in size so
+        //     there is a small overlap. A transparency layer prevents this
+        //     overlap from becoming visible when applying an alpha.
+        //
+        //  2. In the CoreGraphics renderer when applying an alpha, or clipping
+        //     to a path or image, lines would occur between rectangles that
+        //     were not resolved by expanding the rectangles size. This appears
+        //     to be a bug in CoreGraphics. However, drawing the changes into a
+        //     transparency layer appears to avoid the issue.
+
+        g.beginTransparencyLayer (getAlpha());
+        ScopeGuard scope { [&] { g.endTransparencyLayer(); }};
+
+        const auto lineWidth = 19 * thickness.getValue() + 1.0f;
+
         {
-            RectangleList<float> verticalLines;
-            verticalLines.ensureStorageAllocated (getWidth());
+            lines.clear();
 
-            auto pos = offset.getValue();
+            const auto pos = offset.getValue();
 
-            for (int x = 0; x < getWidth(); ++x)
+            for (auto x = 0.0f; x < bounds.getWidth(); x += lineWidth)
             {
-                auto y = getHeight() * 0.3f;
-                auto length = y * std::abs (std::sin (x / 100.0f + 2.0f * pos));
-                verticalLines.addWithoutMerging (Rectangle<float> ((float) x, y - length * 0.5f, 1.0f, length));
+                const auto y = bounds.getHeight() * 0.3f;
+                const auto length = y * std::abs (std::sin (x / 100.0f + 2.0f * pos));
+                const auto width = jmin (lineWidth, bounds.getRight() - x);
+                const Rectangle<float> lineBounds { x, y - length * 0.5f, width, length };
+                lines.addWithoutMerging (lineBounds.expanded (0.5f, 0.0f));
             }
 
-            g.setColour (Colours::blue.withAlpha (getAlpha()));
-            g.fillRectList (verticalLines);
+            g.setColour (Colours::blue);
+            g.fillRectList (lines);
         }
 
         {
-            RectangleList<float> horizontalLines;
-            horizontalLines.ensureStorageAllocated (getHeight());
+            lines.clear();
 
-            auto pos = offset.getValue();
+            const auto pos = offset.getValue();
 
-            for (int y = 0; y < getHeight(); ++y)
+            for (auto y = 0.0f; y < bounds.getWidth(); y += lineWidth)
             {
-                auto x = getWidth() * 0.3f;
-                auto length = x * std::abs (std::sin (y / 100.0f + 2.0f * pos));
-                horizontalLines.addWithoutMerging (Rectangle<float> (x - length * 0.5f, (float) y, length, 1.0f));
+                const auto x = bounds.getWidth() * 0.3f;
+                const auto length = x * std::abs (std::sin (y / 100.0f + 2.0f * pos));
+                const auto width = jmin (lineWidth, bounds.getBottom() - y);
+                const Rectangle<float> lineBounds { x - length * 0.5f, y, length, width };
+                lines.addWithoutMerging (lineBounds.expanded (0.0f, 0.5f));
             }
 
-            g.setColour (Colours::green.withAlpha (getAlpha()));
-            g.fillRectList (horizontalLines);
+            g.setGradientFill (ColourGradient (Colours::green,
+                                               bounds.getTopLeft(),
+                                               Colours::yellow,
+                                               bounds.withWidth (bounds.getWidth() / 2.0f).getBottomRight(), false));
+            g.fillRectList (lines);
         }
 
-        g.setColour (Colours::red.withAlpha (getAlpha()));
+        g.setColour (Colours::red);
 
-        auto w = (float) getWidth();
-        auto h = (float) getHeight();
+        g.drawLine (positions[0].getValue() * bounds.getWidth(),
+                    positions[1].getValue() * bounds.getHeight(),
+                    positions[2].getValue() * bounds.getWidth(),
+                    positions[3].getValue() * bounds.getHeight());
 
-        g.drawLine (positions[0].getValue() * w,
-                    positions[1].getValue() * h,
-                    positions[2].getValue() * w,
-                    positions[3].getValue() * h);
-
-        g.drawLine (positions[4].getValue() * w,
-                    positions[5].getValue() * h,
-                    positions[6].getValue() * w,
-                    positions[7].getValue() * h);
+        g.drawLine (positions[4].getValue() * bounds.getWidth(),
+                    positions[5].getValue() * bounds.getHeight(),
+                    positions[6].getValue() * bounds.getWidth(),
+                    positions[7].getValue() * bounds.getHeight(),
+                    10.0f * thickness.getValue());
     }
 
-    SlowerBouncingNumber offset, positions[8];
+    SlowerBouncingNumber offset, positions[8], thickness;
+    RectangleList<float> lines;
 };
 
 //==============================================================================
-class DemoHolderComponent  : public Component,
-                             private Timer
+class ShapesDemo final : public GraphicsDemoBase
+{
+public:
+    explicit ShapesDemo (ControllersComponent* cc)
+        : GraphicsDemoBase (cc, "Shapes")
+    {}
+
+    void drawDemo (Graphics& g) override
+    {
+        auto bounds = getLocalBounds().toFloat();
+        const auto rowHeight = bounds.getHeight() / 2.0f;
+        const auto spacing = 5.0f;
+
+        const auto drawShapes = [&] (auto area)
+        {
+            const auto lineThickness = thickness.getValue() * 25.0f;
+            const auto cornerSize = 15.0f;
+            const auto shapeWidth = area.getWidth() / 4.0f;
+
+            g.drawEllipse (area.removeFromLeft (shapeWidth).reduced (spacing), lineThickness);
+            g.fillEllipse (area.removeFromLeft (shapeWidth).reduced (spacing));
+
+            g.drawRoundedRectangle (area.removeFromLeft (shapeWidth).reduced (spacing), cornerSize, lineThickness);
+            g.fillRoundedRectangle (area.removeFromLeft (shapeWidth).reduced (spacing), cornerSize);
+        };
+
+        g.addTransform (AffineTransform::translation (-(bounds.getWidth() / 2.0f), -(bounds.getHeight() / 2.0f)).followedBy (getTransform()));
+
+        g.setColour (juce::Colours::red.withAlpha (getAlpha()));
+        drawShapes (bounds.removeFromTop (rowHeight).reduced (spacing));
+
+        const auto r = bounds.removeFromTop (rowHeight).reduced (spacing);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::green, r.getTopLeft(),
+                                                 juce::Colours::blue, r.getBottomRight(),
+                                                 false));
+        g.setOpacity (getAlpha());
+        drawShapes (r);
+    }
+
+    SlowerBouncingNumber thickness;
+};
+
+//==============================================================================
+class DemoHolderComponent final : public Component
 {
 public:
     DemoHolderComponent()
@@ -591,12 +746,6 @@ public:
                             Colours::lightgrey, Colours::white);
     }
 
-    void timerCallback() override
-    {
-        if (currentDemo != nullptr)
-            currentDemo->repaint();
-    }
-
     void setDemo (GraphicsDemoBase* newDemo)
     {
         if (currentDemo != nullptr)
@@ -607,7 +756,6 @@ public:
         if (currentDemo != nullptr)
         {
             addAndMakeVisible (currentDemo);
-            startTimerHz (60);
             resized();
         }
     }
@@ -620,14 +768,19 @@ public:
 
 private:
     GraphicsDemoBase* currentDemo = nullptr;
+    VBlankAttachment vblank { this, [&]
+    {
+        if (currentDemo != nullptr)
+            currentDemo->repaint();
+    }};
 };
 
 //==============================================================================
-class TestListComponent   : public Component,
-                            private ListBoxModel
+class TestListComponent final : public Component,
+                                private ListBoxModel
 {
 public:
-    TestListComponent (DemoHolderComponent& holder, ControllersComponent& controls)
+    TestListComponent (DemoHolderComponent& holder, ControllersComponent* controls)
         : demoHolder (holder)
     {
         demos.add (new PathsDemo (controls, false, true));
@@ -639,40 +792,51 @@ public:
         demos.add (new ImagesRenderingDemo (controls, false, true));
         demos.add (new ImagesRenderingDemo (controls, true,  false));
         demos.add (new ImagesRenderingDemo (controls, true,  true));
+        demos.add (new BlurDemo   (controls));
         demos.add (new GlyphsDemo (controls));
         demos.add (new SVGDemo    (controls));
         demos.add (new LinesDemo  (controls));
+        demos.add (new ShapesDemo (controls));
 
         addAndMakeVisible (listBox);
+        listBox.setTitle ("Test List");
         listBox.setModel (this);
         listBox.selectRow (0);
     }
 
-    void resized()
+    void resized() override
     {
         listBox.setBounds (getLocalBounds());
     }
 
-    int getNumRows()
+    int getNumRows() override
     {
         return demos.size();
     }
 
-    void paintListBoxItem (int rowNumber, Graphics& g, int width, int height, bool rowIsSelected)
+    void paintListBoxItem (int rowNumber, Graphics& g, int width, int height, bool rowIsSelected) override
     {
-        if (auto* demo = demos[rowNumber])
-        {
-            if (rowIsSelected)
-                g.fillAll (Colour::contrasting (findColour (ListBox::textColourId),
-                                                findColour (ListBox::backgroundColourId)));
+        if (demos[rowNumber] == nullptr)
+            return;
 
-            g.setColour (findColour (ListBox::textColourId));
-            g.setFont (14.0f);
-            g.drawFittedText (demo->getName(), 8, 0, width - 10, height, Justification::centredLeft, 2);
-        }
+        if (rowIsSelected)
+            g.fillAll (Colour::contrasting (findColour (ListBox::textColourId),
+                                            findColour (ListBox::backgroundColourId)));
+
+        g.setColour (findColour (ListBox::textColourId));
+        g.setFont (14.0f);
+        g.drawFittedText (getNameForRow (rowNumber), 8, 0, width - 10, height, Justification::centredLeft, 2);
     }
 
-    void selectedRowsChanged (int lastRowSelected)
+    String getNameForRow (int rowNumber) override
+    {
+        if (auto* demo = demos[rowNumber])
+            return demo->getName();
+
+        return {};
+    }
+
+    void selectedRowsChanged (int lastRowSelected) override
     {
         demoHolder.setDemo (demos [lastRowSelected]);
     }
@@ -686,12 +850,13 @@ private:
 };
 
 //==============================================================================
-class GraphicsDemo  : public Component
+class GraphicsDemo final : public Component
 {
 public:
     GraphicsDemo()
-        : testList (demoHolder, controllersComponent)
+        : testList (demoHolder, &controllersComponent)
     {
+        setName ("Graphics demo");
         setOpaque (true);
 
         addAndMakeVisible (demoHolder);

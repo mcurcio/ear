@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -74,7 +86,9 @@ MemoryBlock& MemoryBlock::operator= (const MemoryBlock& other)
     if (this != &other)
     {
         setSize (other.size, false);
-        memcpy (data, other.data, size);
+
+        if (size > 0)
+            memcpy (data, other.data, size);
     }
 
     return *this;
@@ -82,14 +96,14 @@ MemoryBlock& MemoryBlock::operator= (const MemoryBlock& other)
 
 MemoryBlock::MemoryBlock (MemoryBlock&& other) noexcept
     : data (std::move (other.data)),
-      size (other.size)
+      size (std::exchange (other.size, 0))
 {
 }
 
 MemoryBlock& MemoryBlock::operator= (MemoryBlock&& other) noexcept
 {
-    data = std::move (other.data);
-    size = other.size;
+    MemoryBlock tmp { std::move (other) };
+    swapWith (tmp);
     return *this;
 }
 
@@ -106,8 +120,18 @@ bool MemoryBlock::operator!= (const MemoryBlock& other) const noexcept
 
 bool MemoryBlock::matches (const void* dataToCompare, size_t dataSize) const noexcept
 {
-    return size == dataSize
-            && memcmp (data, dataToCompare, size) == 0;
+    jassert (dataToCompare != nullptr || dataSize == 0);
+
+    if (size != dataSize)
+        return false;
+
+    if (size == 0)
+        return true;
+
+    if (dataToCompare == nullptr)
+        return false;
+
+    return memcmp (data, dataToCompare, size) == 0;
 }
 
 //==============================================================================
@@ -160,7 +184,8 @@ void MemoryBlock::swapWith (MemoryBlock& other) noexcept
 //==============================================================================
 void MemoryBlock::fillWith (uint8 value) noexcept
 {
-    memset (data, (int) value, size);
+    if (data != nullptr)
+        memset (data, (int) value, size);
 }
 
 void MemoryBlock::append (const void* srcData, size_t numBytes)
@@ -174,14 +199,17 @@ void MemoryBlock::append (const void* srcData, size_t numBytes)
     }
 }
 
-void MemoryBlock::replaceWith (const void* srcData, size_t numBytes)
+void MemoryBlock::replaceAll (const void* srcData, size_t numBytes)
 {
-    if (numBytes > 0)
+    if (numBytes <= 0)
     {
-        jassert (srcData != nullptr); // this must not be null!
-        setSize (numBytes);
-        memcpy (data, srcData, numBytes);
+        reset();
+        return;
     }
+
+    jassert (srcData != nullptr); // this must not be null!
+    setSize (numBytes);
+    memcpy (data, srcData, numBytes);
 }
 
 void MemoryBlock::insert (const void* srcData, size_t numBytes, size_t insertPosition)
@@ -321,7 +349,7 @@ void MemoryBlock::loadFromHexString (StringRef hex)
 
     for (;;)
     {
-        int byte = 0;
+        juce_wchar byte = 0;
 
         for (int loop = 2; --loop >= 0;)
         {
@@ -331,9 +359,9 @@ void MemoryBlock::loadFromHexString (StringRef hex)
             {
                 auto c = t.getAndAdvance();
 
-                if (c >= '0' && c <= '9')    { byte |= c - '0';        break; }
-                if (c >= 'a' && c <= 'z')    { byte |= c - ('a' - 10); break; }
-                if (c >= 'A' && c <= 'Z')    { byte |= c - ('A' - 10); break; }
+                if ('0' <= c && c <= '9')    { byte |= c - '0';        break; }
+                if ('a' <= c && c <= 'f')    { byte |= c - ('a' - 10); break; }
+                if ('A' <= c && c <= 'F')    { byte |= c - ('A' - 10); break; }
 
                 if (c == 0)
                 {
@@ -354,7 +382,7 @@ String MemoryBlock::toBase64Encoding() const
 {
     auto numChars = ((size << 3) + 5) / 6;
 
-    String destString ((unsigned int) size); // store the length, followed by a '.', and then the data.
+    String destString ((unsigned int) size); // store the length, followed by a '.', and then the data
     auto initialLen = destString.length();
     destString.preallocateBytes ((size_t) initialLen * sizeof (String::CharPointerType::CharType) + 2 + numChars);
 
@@ -388,23 +416,70 @@ bool MemoryBlock::fromBase64Encoding (StringRef s)
     setSize ((size_t) numBytesNeeded, true);
 
     auto srcChars = dot + 1;
-    int pos = 0;
+    size_t pos = 0;
 
-    for (;;)
+    while (auto c = (int) srcChars.getAndAdvance())
     {
-        auto c = (int) srcChars.getAndAdvance();
-
-        if (c == 0)
-            return true;
-
         c -= 43;
 
         if (isPositiveAndBelow (c, numElementsInArray (base64DecodingTable)))
         {
-            setBitRange ((size_t) pos, 6, base64DecodingTable[c]);
-            pos += 6;
+            setBitRange (pos * 6, 6, base64DecodingTable[c]);
+            pos += 1;
         }
     }
+
+    return true;
 }
+
+//==============================================================================
+#if JUCE_UNIT_TESTS
+
+class MemoryBlockTest final : public UnitTest
+{
+public:
+    MemoryBlockTest()
+        : UnitTest ("MemoryBlock", UnitTestCategories::memory) {}
+
+    void runTest() final
+    {
+        testCase ("Empty blocks compare equal", [&]
+        {
+            const MemoryBlock a, b;
+
+            expect (a == b);
+            expect (! (a != b));
+            expect (a.matches (nullptr, 0));
+            expect (a.matches (b.getData(), b.getSize()));
+        });
+
+        testCase ("An empty block does not match a populated one", [&]
+        {
+            const MemoryBlock empty;
+            const MemoryBlock populated { "abc", 3 };
+
+            expect (empty != populated);
+            expect (populated != empty);
+            expect (! empty.matches (populated.getData(), populated.getSize()));
+            expect (! populated.matches (nullptr, 0));
+        });
+
+        testCase ("Blocks with matching contents compare equal", [&]
+        {
+            const MemoryBlock a { "abc", 3 };
+            const MemoryBlock b { "abc", 3 };
+            const MemoryBlock c { "abd", 3 };
+
+            expect (a == b);
+            expect (a != c);
+            expect (a.matches (b.getData(), b.getSize()));
+            expect (! a.matches (c.getData(), c.getSize()));
+        });
+    }
+};
+
+static MemoryBlockTest memoryBlockTest;
+
+#endif
 
 } // namespace juce

@@ -1,30 +1,48 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
 #pragma once
 
+#include "../../Utility/UI/PropertyComponents/jucer_LabelPropertyComponent.h"
 
 //==============================================================================
-struct ContentViewHeader    : public Component
+struct ContentViewHeader final : public Component
 {
     ContentViewHeader (String headerName, Icon headerIcon)
         : name (headerName), icon (headerIcon)
     {
+        setTitle (name);
     }
 
     void paint (Graphics& g) override
@@ -36,7 +54,7 @@ struct ContentViewHeader    : public Component
         icon.withColour (Colours::white).draw (g, bounds.toFloat().removeFromRight (30), false);
 
         g.setColour (Colours::white);
-        g.setFont (Font (18.0f));
+        g.setFont (FontOptions (18.0f));
         g.drawFittedText (name, bounds, Justification::centredLeft, 1);
     }
 
@@ -45,7 +63,7 @@ struct ContentViewHeader    : public Component
 };
 
 //==============================================================================
-class ListBoxHeader    : public Component
+class ListBoxHeader final : public Component
 {
 public:
     ListBoxHeader (Array<String> columnHeaders)
@@ -53,7 +71,7 @@ public:
         for (auto s : columnHeaders)
         {
             addAndMakeVisible (headers.add (new Label (s, s)));
-            widths.add (1.0f / columnHeaders.size());
+            widths.add (1.0f / (float) columnHeaders.size());
         }
 
         setSize (200, 40);
@@ -63,11 +81,10 @@ public:
     {
         jassert (columnHeaders.size() == columnWidths.size());
 
-        auto index = 0;
-        for (auto s : columnHeaders)
+        for (const auto [index, s] : enumerate (columnHeaders))
         {
             addAndMakeVisible (headers.add (new Label (s, s)));
-            widths.add (columnWidths.getUnchecked (index++));
+            widths.add (columnWidths.getUnchecked ((int) index));
         }
 
         recalculateWidths();
@@ -83,7 +100,7 @@ public:
         auto index = 0;
         for (auto h : headers)
         {
-            auto headerWidth = roundToInt (width * widths.getUnchecked (index));
+            auto headerWidth = roundToInt ((float) width * widths.getUnchecked (index));
             h->setBounds (bounds.removeFromLeft (headerWidth));
             ++index;
         }
@@ -107,7 +124,7 @@ public:
         for (int i = 0; i < index; ++i)
             prop += widths.getUnchecked (i);
 
-        return roundToInt (prop * getWidth());
+        return roundToInt (prop * (float) getWidth());
     }
 
     float getProportionAtIndex (int index)
@@ -127,7 +144,7 @@ private:
         for (auto w : widths)
             total += w;
 
-        if (total == 1.0f)
+        if (approximatelyEqual (total, 1.0f))
             return;
 
         auto diff = 1.0f - total;
@@ -145,14 +162,18 @@ private:
 };
 
 //==============================================================================
-class InfoButton    : public Button
+class InfoButton final : public Button
 {
 public:
     InfoButton (const String& infoToDisplay = {})
         : Button ({})
     {
+        setTitle ("Info");
+
         if (infoToDisplay.isNotEmpty())
             setInfoToDisplay (infoToDisplay);
+
+        setSize (20, 20);
     }
 
     void paintButton (Graphics& g, bool isMouseOverButton, bool isButtonDown) override
@@ -171,10 +192,10 @@ public:
 
     void clicked() override
     {
-        auto* w = new InfoWindow (info);
+        auto w = std::make_unique<InfoWindow> (info);
         w->setSize (width, w->getHeight() * numLines + 10);
 
-        CallOutBox::launchAsynchronously (w, getScreenBounds(), nullptr);
+        CallOutBox::launchAsynchronously (std::move (w), getScreenBounds(), nullptr);
     }
 
     using Button::clicked;
@@ -185,10 +206,12 @@ public:
         {
             info = infoToDisplay;
 
-            auto stringWidth = roundToInt (Font (14.0f).getStringWidthFloat (info));
+            auto stringWidth = roundToInt (GlyphArrangement::getStringWidth (FontOptions (14.0f), info));
             width = jmin (300, stringWidth);
 
             numLines += static_cast<int> (stringWidth / width);
+
+            setHelpText (info);
         }
     }
 
@@ -202,7 +225,7 @@ private:
     int numLines = 1;
 
     //==============================================================================
-    struct InfoWindow    : public Component
+    struct InfoWindow final : public Component
     {
         InfoWindow (const String& s)
             : stringToDisplay (s)
@@ -215,8 +238,8 @@ private:
             g.fillAll (findColour (secondaryBackgroundColourId));
 
             g.setColour (findColour (defaultTextColourId));
-            g.setFont (Font (14.0f));
-            g.drawFittedText (stringToDisplay, getLocalBounds(), Justification::centred, 10, 1.0f);
+            g.setFont (FontOptions (14.0f));
+            g.drawFittedText (stringToDisplay, getLocalBounds(), Justification::centred, 15, 0.75f);
         }
 
         String stringToDisplay;
@@ -226,7 +249,8 @@ private:
 };
 
 //==============================================================================
-class PropertyGroupComponent  : public Component
+class PropertyGroupComponent final : public Component,
+                                     private TextPropertyComponent::Listener
 {
 public:
     PropertyGroupComponent (String name, Icon icon, String desc = {})
@@ -234,40 +258,48 @@ public:
           description (desc)
     {
         addAndMakeVisible (header);
-
-        description.setFont ({ 16.0f });
-        description.setColour (getLookAndFeel().findColour (defaultTextColourId));
-        description.setLineSpacing (5.0f);
-        description.setJustification (Justification::centredLeft);
     }
 
     void setProperties (const PropertyListBuilder& newProps)
     {
-        infoButtons.clear();
-        properties.clear();
-        properties.addArray (newProps.components);
+        clearProperties();
 
-        for (auto* prop : properties)
+        if (description.isNotEmpty())
+            properties.push_back (std::make_unique<LabelPropertyComponent> (description, 16, FontOptions (16.0f),
+                                                                            Justification::centredLeft));
+
+        for (auto* comp : newProps.components)
+            properties.push_back (std::unique_ptr<PropertyComponent> (comp));
+
+        for (auto& prop : properties)
         {
-            addAndMakeVisible (prop);
+            const auto propertyTooltip = prop->getTooltip();
 
-            if (! prop->getTooltip().isEmpty())
+            if (propertyTooltip.isNotEmpty())
             {
-                addAndMakeVisible (infoButtons.add (new InfoButton (prop->getTooltip())));
-                infoButtons.getLast()->setAssociatedComponent (prop);
-                prop->setTooltip ({}); // set the tooltip to empty so it only displays when its button is clicked
+                // set the tooltip to empty so it only displays when its button is clicked
+                prop->setTooltip ({});
+
+                auto infoButton = std::make_unique<InfoButton> (propertyTooltip);
+                infoButton->setAssociatedComponent (prop.get());
+
+                auto propertyAndInfoWrapper = std::make_unique<PropertyAndInfoWrapper> (*prop, *infoButton.get());
+                addAndMakeVisible (propertyAndInfoWrapper.get());
+                propertyComponentsWithInfo.push_back (std::move (propertyAndInfoWrapper));
+
+                infoButtons.push_back (std::move (infoButton));
+            }
+            else
+            {
+                addAndMakeVisible (prop.get());
             }
 
-            if (auto* multiChoice = dynamic_cast<MultiChoicePropertyComponent*> (prop))
-            {
-                multiChoice->onHeightChange = [this]
-                {
-                    updateSize (getX(), getY(), getWidth());
+            if (auto* multiChoice = dynamic_cast<MultiChoicePropertyComponent*> (prop.get()))
+                multiChoice->onHeightChange = [this] { updateSize(); };
 
-                    if (auto* parent = getParentComponent())
-                        parent->parentSizeChanged();
-                };
-            }
+            if (auto* text = dynamic_cast<TextPropertyComponent*> (prop.get()))
+                if (text->isTextEditorMultiLine())
+                    text->addListener (this);
         }
     }
 
@@ -276,31 +308,20 @@ public:
         header.setBounds (0, 0, width, headerSize);
         auto height = header.getBottom() + 10;
 
-        descriptionLayout.createLayout (description, (float) (width - 40));
-        auto descriptionHeight = (int) descriptionLayout.getHeight();
-
-        if (descriptionHeight > 0)
-            height += (int) descriptionLayout.getHeight() + 25;
-
-        for (auto* pp : properties)
+        for (auto& pp : properties)
         {
-            auto propertyHeight = pp->getPreferredHeight() + (getHeightMultiplier (pp) * pp->getPreferredHeight());
+            const auto propertyHeight = jmax (pp->getPreferredHeight(), getApproximateLabelHeight (*pp));
 
-            InfoButton* buttonToUse = nullptr;
-            for (auto* b : infoButtons)
-                if (b->getAssociatedComponent() == pp)
-                    buttonToUse = b;
+            auto iter = std::find_if (propertyComponentsWithInfo.begin(), propertyComponentsWithInfo.end(),
+                                      [&pp] (const std::unique_ptr<PropertyAndInfoWrapper>& w) { return &w->propertyComponent == pp.get(); });
 
-            if (buttonToUse != nullptr)
-            {
-                buttonToUse->setSize (20, 20);
-                buttonToUse->setCentrePosition (20, height + (propertyHeight / 2));
-            }
+            if (iter != propertyComponentsWithInfo.end())
+                (*iter)->setBounds (0, height, width - 10, propertyHeight);
+            else
+                pp->setBounds (40, height, width - 50, propertyHeight);
 
-            pp->setBounds (40, height, width - 50, propertyHeight);
-
-            if (shouldResizePropertyComponent (pp))
-                resizePropertyComponent (pp);
+            if (shouldResizePropertyComponent (pp.get()))
+                resizePropertyComponent (pp.get());
 
             height += pp->getHeight() + 10;
         }
@@ -314,26 +335,75 @@ public:
 
     void paint (Graphics& g) override
     {
-        g.setColour (findColour (secondaryBackgroundColourId));
-        g.fillRect (getLocalBounds());
-
-        auto textArea = getLocalBounds().toFloat()
-                                        .withTop ((float) headerSize)
-                                        .reduced (20.0f, 10.0f)
-                                        .withHeight (descriptionLayout.getHeight());
-        descriptionLayout.draw (g, textArea);
+        g.fillAll (findColour (secondaryBackgroundColourId));
     }
 
-    OwnedArray<PropertyComponent> properties;
+    const std::vector<std::unique_ptr<PropertyComponent>>& getProperties() const noexcept
+    {
+        return properties;
+    }
+
+    void clearProperties()
+    {
+        propertyComponentsWithInfo.clear();
+        infoButtons.clear();
+        properties.clear();
+    }
 
 private:
-    OwnedArray<InfoButton> infoButtons;
-    ContentViewHeader header;
-    AttributedString description;
-    TextLayout descriptionLayout;
-    int headerSize = 40;
+    //==============================================================================
+    struct PropertyAndInfoWrapper final : public Component
+    {
+        PropertyAndInfoWrapper (PropertyComponent& c, InfoButton& i)
+            : propertyComponent (c),
+              infoButton (i)
+        {
+            setFocusContainerType (FocusContainerType::focusContainer);
+            setTitle (propertyComponent.getName());
+
+            addAndMakeVisible (propertyComponent);
+            addAndMakeVisible (infoButton);
+        }
+
+        void resized() override
+        {
+            auto bounds = getLocalBounds();
+
+            bounds.removeFromLeft (40);
+            bounds.removeFromRight (10);
+
+            propertyComponent.setBounds (bounds);
+            infoButton.setCentrePosition (20, bounds.getHeight() / 2);
+        }
+
+        PropertyComponent& propertyComponent;
+        InfoButton& infoButton;
+    };
 
     //==============================================================================
+    void textPropertyComponentChanged (TextPropertyComponent* comp) override
+    {
+        auto fontHeight = [comp]
+        {
+            Label tmpLabel;
+            return comp->getLookAndFeel().getLabelFont (tmpLabel).getHeight();
+        }();
+
+        auto lines = StringArray::fromLines (comp->getText());
+
+        comp->setPreferredHeight (jmax (100, 10 + roundToInt (fontHeight * (float) lines.size())));
+
+        updateSize();
+    }
+
+    void updateSize()
+    {
+        updateSize (getX(), getY(), getWidth());
+
+        if (auto* parent = getParentComponent())
+            parent->parentSizeChanged();
+    }
+
     bool shouldResizePropertyComponent (PropertyComponent* p)
     {
         if (auto* textComp = dynamic_cast<TextPropertyComponent*> (p))
@@ -355,18 +425,28 @@ private:
         }
     }
 
-    int getHeightMultiplier (PropertyComponent* pp)
+    static int getApproximateLabelHeight (const PropertyComponent& pp)
     {
         auto availableTextWidth = ProjucerLookAndFeel::getTextWidthForPropertyComponent (pp);
-
-        auto font = ProjucerLookAndFeel::getPropertyComponentFont();
-        auto nameWidth = font.getStringWidthFloat (pp->getName());
 
         if (availableTextWidth == 0)
             return 0;
 
-        return static_cast<int> (nameWidth / availableTextWidth);
+        const auto font = ProjucerLookAndFeel::getPropertyComponentFont();
+        const auto labelWidth = GlyphArrangement::getStringWidth (font, pp.getName());
+        const auto numLines = (int) (labelWidth / (float) availableTextWidth) + 1;
+        return (int) std::round ((float) numLines * font.getHeight() * 1.1f);
     }
+
+    //==============================================================================
+    static constexpr int headerSize = 40;
+
+    std::vector<std::unique_ptr<PropertyComponent>> properties;
+    std::vector<std::unique_ptr<InfoButton>> infoButtons;
+    std::vector<std::unique_ptr<PropertyAndInfoWrapper>> propertyComponentsWithInfo;
+
+    ContentViewHeader header;
+    String description;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PropertyGroupComponent)

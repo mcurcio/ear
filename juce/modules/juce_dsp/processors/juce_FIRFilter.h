@@ -1,30 +1,41 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
-{
-
 /**
     Classes for FIR filter processing.
 */
-namespace FIR
+namespace juce::dsp::FIR
 {
     template <typename NumericType>
     struct Coefficients;
@@ -34,12 +45,12 @@ namespace FIR
         A processing class that can perform FIR filtering on an audio signal, in the
         time domain.
 
-        Using FIRFilter is fast enough for FIRCoefficients with a size lower than 128
-        samples. For longer filters, it might be more efficient to use the class
+        Using FIR::Filter is fast enough for FIR::Coefficients with a size lower than
+        128 samples. For longer filters, it might be more efficient to use the class
         Convolution instead, which does the same processing in the frequency domain
         thanks to FFT.
 
-        @see FIRFilter::Coefficients, Convolution, FFT
+        @see FIR::Coefficients, Convolution, FFT
 
         @tags{DSP}
     */
@@ -69,12 +80,11 @@ namespace FIR
 
         //==============================================================================
         /** Prepare this filter for processing. */
-        inline void prepare (const ProcessSpec& spec) noexcept
+        inline void prepare ([[maybe_unused]] const ProcessSpec& spec) noexcept
         {
             // This class can only process mono signals. Use the ProcessorDuplicator class
             // to apply this filter on a multi-channel audio stream.
             jassert (spec.numChannels == 1);
-            ignoreUnused (spec);
             reset();
         }
 
@@ -99,6 +109,8 @@ namespace FIR
 
                 for (size_t i = 0; i < size; ++i)
                     fifo[i] = SampleType {0};
+
+                pos = 0;
             }
         }
 
@@ -116,7 +128,7 @@ namespace FIR
         template <typename ProcessContext>
         void process (const ProcessContext& context) noexcept
         {
-            static_assert (std::is_same<typename ProcessContext::SampleType, SampleType>::value,
+            static_assert (std::is_same_v<typename ProcessContext::SampleType, SampleType>,
                            "The sample-type of the FIR filter must match the sample-type supplied to this process callback");
             check();
 
@@ -202,9 +214,9 @@ namespace FIR
 
     //==============================================================================
     /**
-        A set of coefficients for use in an FIRFilter object.
+        A set of coefficients for use in an FIR::Filter object.
 
-        @see FIRFilter
+        @see FIR::Filter
 
         @tags{DSP}
     */
@@ -273,7 +285,5 @@ namespace FIR
         */
         Array<NumericType> coefficients;
     };
-}
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp::FIR

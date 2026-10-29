@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -25,9 +41,9 @@
     The user may drag files over the property box, enter the path manually and/or click
     the '...' button to open a file selection dialog box.
 */
-class FilePathPropertyComponent    : public PropertyComponent,
-                                     public FileDragAndDropTarget,
-                                     private Value::Listener
+class FilePathPropertyComponent : public PropertyComponent,
+                                  public FileDragAndDropTarget,
+                                  protected Value::Listener
 {
 public:
     FilePathPropertyComponent (Value valueToControl, const String& propertyName, bool isDir, bool thisOS = true,
@@ -41,8 +57,12 @@ public:
     }
 
     /** Displays a default value when no value is specified by the user. */
-    FilePathPropertyComponent (ValueWithDefault& valueToControl, const String& propertyName, bool isDir, bool thisOS = true,
-                               const String& wildcardsToUse = "*", const File& relativeRoot = File())
+    FilePathPropertyComponent (ValueTreePropertyWithDefault valueToControl,
+                               const String& propertyName,
+                               bool isDir,
+                               bool thisOS = true,
+                               const String& wildcardsToUse = "*",
+                               const File& relativeRoot = File())
        : PropertyComponent (propertyName),
          text (valueToControl, propertyName, 1024, false),
          isDirectory (isDir), isThisOS (thisOS), wildcards (wildcardsToUse), root (relativeRoot)
@@ -85,6 +105,12 @@ public:
         repaint();
     }
 
+protected:
+    void valueChanged (Value&) override
+    {
+        updateEditorColour();
+    }
+
 private:
     //==============================================================================
     void init()
@@ -97,7 +123,7 @@ private:
         browseButton.onClick = [this] { browse(); };
         addAndMakeVisible (browseButton);
 
-        lookAndFeelChanged();
+        updateLookAndFeel();
     }
 
     void setTo (File f)
@@ -121,17 +147,29 @@ private:
 
         if (isDirectory)
         {
-            FileChooser chooser ("Select directory", currentFile);
+            chooser = std::make_unique<FileChooser> ("Select directory", currentFile);
+            auto chooserFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories;
 
-            if (chooser.browseForDirectory())
-                setTo (chooser.getResult());
+            chooser->launchAsync (chooserFlags, [this] (const FileChooser& fc)
+            {
+                if (fc.getResult() == File{})
+                    return;
+
+                setTo (fc.getResult());
+            });
         }
         else
         {
-            FileChooser chooser ("Select file", currentFile, wildcards);
+            chooser = std::make_unique<FileChooser> ("Select file", currentFile, wildcards);
+            auto chooserFlags = FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles;
 
-            if (chooser.browseForFileToOpen())
-                setTo (chooser.getResult());
+            chooser->launchAsync (chooserFlags, [this] (const FileChooser& fc)
+            {
+                if (fc.getResult() == File{})
+                    return;
+
+                setTo (fc.getResult());
+            });
         }
     }
 
@@ -158,17 +196,17 @@ private:
         }
     }
 
-    void valueChanged (Value&) override
-    {
-        updateEditorColour();
-    }
-
-    void lookAndFeelChanged() override
+    void updateLookAndFeel()
     {
         browseButton.setColour (TextButton::buttonColourId, findColour (secondaryButtonBackgroundColourId));
         browseButton.setColour (TextButton::textColourOffId, Colours::white);
 
         updateEditorColour();
+    }
+
+    void lookAndFeelChanged() override
+    {
+        updateLookAndFeel();
     }
 
     //==============================================================================
@@ -181,6 +219,50 @@ private:
     String wildcards;
     File root;
 
+    std::unique_ptr<FileChooser> chooser;
+
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (FilePathPropertyComponent)
+};
+
+//==============================================================================
+class FilePathPropertyComponentWithEnablement final : public FilePathPropertyComponent
+{
+public:
+    FilePathPropertyComponentWithEnablement (const ValueTreePropertyWithDefault& valueToControl,
+                                             ValueTreePropertyWithDefault valueToListenTo,
+                                             const String& propertyName,
+                                             bool isDir,
+                                             bool thisOS = true,
+                                             const String& wildcardsToUse = "*",
+                                             const File& relativeRoot = File())
+        : FilePathPropertyComponent (valueToControl,
+                                     propertyName,
+                                     isDir,
+                                     thisOS,
+                                     wildcardsToUse,
+                                     relativeRoot),
+          propertyWithDefault (valueToListenTo),
+          value (valueToListenTo.getPropertyAsValue())
+    {
+        value.addListener (this);
+        handleValueChanged (value);
+    }
+
+    ~FilePathPropertyComponentWithEnablement() override    { value.removeListener (this); }
+
+private:
+    void handleValueChanged (Value& v)
+    {
+        FilePathPropertyComponent::valueChanged (v);
+        setEnabled (propertyWithDefault.get());
+    }
+
+    void valueChanged (Value& v) override
+    {
+        handleValueChanged (v);
+    }
+
+    ValueTreePropertyWithDefault propertyWithDefault;
+    Value value;
 };

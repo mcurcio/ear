@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef OBOE_INTEGER_RATIO_H
-#define OBOE_INTEGER_RATIO_H
+#ifndef RESAMPLER_INTEGER_RATIO_H
+#define RESAMPLER_INTEGER_RATIO_H
 
 #include <sys/types.h>
-#include <vector>
 
-namespace resampler {
+#include "ResamplerDefinitions.h"
+
+namespace RESAMPLER_OUTER_NAMESPACE::resampler {
 
 /**
  * Represent the ratio of two integers.
@@ -46,9 +47,8 @@ public:
 private:
     int32_t mNumerator;
     int32_t mDenominator;
-    static const std::vector<int> kPrimes;
 };
 
-}
+} /* namespace RESAMPLER_OUTER_NAMESPACE::resampler */
 
-#endif //OBOE_INTEGER_RATIO_H
+#endif //RESAMPLER_INTEGER_RATIO_H

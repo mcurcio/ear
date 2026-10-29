@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,8 +36,9 @@ namespace juce
 {
 
 Desktop::Desktop()
-    : mouseSources (new MouseInputSource::SourceList()),
-      masterScaleFactor ((float) getDefaultMasterScale())
+    : mouseSources (new detail::MouseInputSourceList()),
+      masterScaleFactor ((float) getDefaultMasterScale()),
+      nativeDarkModeChangeDetectorImpl (createNativeDarkModeChangeDetectorImpl())
 {
     displays.reset (new Displays (*this));
 }
@@ -47,6 +64,11 @@ Desktop& JUCE_CALLTYPE Desktop::getInstance()
     return *instance;
 }
 
+Desktop* JUCE_CALLTYPE Desktop::getInstanceWithoutCreating()
+{
+    return instance;
+}
+
 Desktop* Desktop::instance = nullptr;
 
 //==============================================================================
@@ -66,7 +88,7 @@ Component* Desktop::findComponentAt (Point<int> screenPosition) const
 
     for (int i = desktopComponents.size(); --i >= 0;)
     {
-        auto* c = desktopComponents.getUnchecked(i);
+        auto* c = desktopComponents.getUnchecked (i);
 
         if (c->isVisible())
         {
@@ -173,21 +195,63 @@ int Desktop::getNumMouseSources() const noexcept                                
 int Desktop::getNumDraggingMouseSources() const noexcept                        { return mouseSources->getNumDraggingMouseSources(); }
 MouseInputSource* Desktop::getMouseSource (int index) const noexcept            { return mouseSources->getMouseSource (index); }
 MouseInputSource* Desktop::getDraggingMouseSource (int index) const noexcept    { return mouseSources->getDraggingMouseSource (index); }
-MouseInputSource Desktop::getMainMouseSource() const noexcept                   { return MouseInputSource (mouseSources->sources.getUnchecked(0)); }
 void Desktop::beginDragAutoRepeat (int interval)                                { mouseSources->beginDragAutoRepeat (interval); }
+
+MouseInputSource Desktop::getMainMouseSource() const noexcept
+{
+    auto& sources = mouseSources->sources;
+
+    const auto firstMouse = std::find_if (sources.begin(), sources.end(), [] (auto& source)
+    {
+        return source->inputType == MouseInputSource::InputSourceType::mouse;
+    });
+
+    if (firstMouse != sources.end())
+        return MouseInputSource { *firstMouse };
+
+    return MouseInputSource (mouseSources->sources.getUnchecked (0));
+}
 
 //==============================================================================
 void Desktop::addFocusChangeListener    (FocusChangeListener* l)   { focusListeners.add (l); }
 void Desktop::removeFocusChangeListener (FocusChangeListener* l)   { focusListeners.remove (l); }
 void Desktop::triggerFocusCallback()                               { triggerAsyncUpdate(); }
 
+void Desktop::updateFocusOutline()
+{
+    if (auto* currentFocus = Component::getCurrentlyFocusedComponent())
+    {
+        if (currentFocus->hasFocusOutline())
+        {
+            focusOutline = currentFocus->getLookAndFeel().createFocusOutlineForComponent (*currentFocus);
+
+            if (focusOutline != nullptr)
+                focusOutline->setOwner (currentFocus);
+
+            return;
+        }
+    }
+
+    focusOutline = nullptr;
+}
+
 void Desktop::handleAsyncUpdate()
 {
     // The component may be deleted during this operation, but we'll use a SafePointer rather than a
     // BailOutChecker so that any remaining listeners will still get a callback (with a null pointer).
-    WeakReference<Component> currentFocus (Component::getCurrentlyFocusedComponent());
-    focusListeners.call ([&] (FocusChangeListener& l) { l.globalFocusChanged (currentFocus.get()); });
+    focusListeners.call ([currentFocus = WeakReference<Component> { Component::getCurrentlyFocusedComponent() }] (FocusChangeListener& l)
+    {
+        l.globalFocusChanged (currentFocus.get());
+    });
+
+    updateFocusOutline();
 }
+
+//==============================================================================
+void Desktop::addDarkModeSettingListener    (DarkModeSettingListener* l)  { darkModeSettingListeners.add (l); }
+void Desktop::removeDarkModeSettingListener (DarkModeSettingListener* l)  { darkModeSettingListeners.remove (l); }
+
+void Desktop::darkModeChanged()  { darkModeSettingListeners.call ([] (auto& l) { l.darkModeSettingChanged(); }); }
 
 //==============================================================================
 void Desktop::resetTimer()
@@ -240,9 +304,9 @@ void Desktop::sendMouseMove()
             auto pos = target->getLocalPoint (nullptr, lastFakeMouseMove);
             auto now = Time::getCurrentTime();
 
-            const MouseEvent me (getMainMouseSource(), pos, ModifierKeys::currentModifiers, MouseInputSource::invalidPressure,
-                                 MouseInputSource::invalidOrientation, MouseInputSource::invalidRotation,
-                                 MouseInputSource::invalidTiltX, MouseInputSource::invalidTiltY,
+            const MouseEvent me (getMainMouseSource(), pos, ModifierKeys::currentModifiers, MouseInputSource::defaultPressure,
+                                 MouseInputSource::defaultOrientation, MouseInputSource::defaultRotation,
+                                 MouseInputSource::defaultTiltX, MouseInputSource::defaultTiltY,
                                  target, target, now, pos, now, 0, false);
 
             if (me.mods.isAnyMouseButtonDown())
@@ -266,7 +330,7 @@ void Desktop::setKioskModeComponent (Component* componentToUse, bool allowMenusA
         // agh! Don't delete or remove a component from the desktop while it's still the kiosk component!
         jassert (kioskModeComponent == nullptr || ComponentPeer::getPeerFor (kioskModeComponent) != nullptr);
 
-        if (auto* oldKioskComp = kioskModeComponent)
+        if (auto* oldKioskComp = kioskModeComponent.getComponent())
         {
             kioskModeComponent = nullptr; // (to make sure that isKioskMode() returns false when resizing the old one)
             setKioskComponent (oldKioskComp, false, allowMenusAndBars);
@@ -317,11 +381,25 @@ void Desktop::setGlobalScaleFactor (float newScaleFactor) noexcept
 {
     JUCE_ASSERT_MESSAGE_MANAGER_IS_LOCKED
 
-    if (masterScaleFactor != newScaleFactor)
+    if (! approximatelyEqual (masterScaleFactor, newScaleFactor))
     {
         masterScaleFactor = newScaleFactor;
         displays->refresh();
     }
+}
+
+bool Desktop::isHeadless() const noexcept
+{
+    return displays->displays.isEmpty();
+}
+
+bool Desktop::supportsBorderlessNonClientResize() const
+{
+   #if JUCE_WINDOWS || JUCE_MAC
+    return true;
+   #else
+    return false;
+   #endif
 }
 
 } // namespace juce

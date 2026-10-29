@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -80,9 +92,13 @@ public:
     //==============================================================================
     /** Starts the timer and sets the length of interval required.
 
-        If the timer is already started, this will reset it, so the
-        time between calling this method and the next timer callback
-        will not be less than the interval length passed in.
+        If the timer is already started, this will reset it, so the time between
+        calling this method and the next timer callback will not be less than
+        the interval length passed in.
+
+        This method may be called from any thread. It only affects when future
+        callbacks are scheduled. Callbacks themselves always run on the message
+        thread.
 
         @param  intervalInMilliseconds  the interval to use (any value less
                                         than 1 will be rounded up to 1)
@@ -96,24 +112,27 @@ public:
 
     /** Stops the timer.
 
-        No more timer callbacks will be triggered after this method returns.
+        This method may be called from any thread. It cancels any future
+        callbacks for this timer. If a callback is already running on the
+        message thread, this method does not wait for it to finish and may
+        return while that callback is still executing.
 
-        Note that if you call this from a background thread while the message-thread
-        is already in the middle of your callback, then this method will cancel any
-        future timer callbacks, but it will return without waiting for the current one
-        to finish. The current callback will continue, possibly still running some of
-        your timer code after this method has returned.
+        Do not destroy the Timer (or data it uses) from another thread while a
+        callback may still be running. Before destroying a timer it's best
+        practice to stop the timer from the message thread. If the Timer will be
+        destroyed from a background thread consider using MessageManager::callSync()
+        to call stopTimer() from the message thread.
     */
     void stopTimer() noexcept;
 
     //==============================================================================
     /** Returns true if the timer is currently running. */
-    bool isTimerRunning() const noexcept                    { return timerPeriodMs > 0; }
+    bool isTimerRunning() const noexcept                    { return timerPeriodMs.load() > 0; }
 
     /** Returns the timer's interval.
         @returns the timer's interval in milliseconds if it's running, or 0 if it's not.
     */
-    int getTimerInterval() const noexcept                   { return timerPeriodMs; }
+    int getTimerInterval() const noexcept                   { return timerPeriodMs.load(); }
 
     //==============================================================================
     /** Invokes a lambda after a given number of milliseconds. */
@@ -127,11 +146,13 @@ public:
 
 private:
     class TimerThread;
-    friend class TimerThread;
     size_t positionInQueue = (size_t) -1;
-    int timerPeriodMs = 0;
+    std::atomic<int> timerPeriodMs = 0;
+    SharedResourcePointer<TimerThread> timerThread;
 
     Timer& operator= (const Timer&) = delete;
+
+    JUCE_LEAK_DETECTOR (Timer)
 };
 
 } // namespace juce

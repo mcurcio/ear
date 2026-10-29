@@ -1,24 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 /** Abstract class for the provided oversampling stages used internally in
@@ -63,7 +77,7 @@ struct Oversampling<SampleType>::OversamplingStage
     signal, which could be equivalent to a "one time" oversampling processing.
 */
 template <typename SampleType>
-struct OversamplingDummy   : public Oversampling<SampleType>::OversamplingStage
+struct OversamplingDummy final : public Oversampling<SampleType>::OversamplingStage
 {
     using ParentType = typename Oversampling<SampleType>::OversamplingStage;
 
@@ -103,7 +117,7 @@ struct OversamplingDummy   : public Oversampling<SampleType>::OversamplingStage
     leading to specific processing optimizations.
 */
 template <typename SampleType>
-struct Oversampling2TimesEquirippleFIR  : public Oversampling<SampleType>::OversamplingStage
+struct Oversampling2TimesEquirippleFIR final : public Oversampling<SampleType>::OversamplingStage
 {
     using ParentType = typename Oversampling<SampleType>::OversamplingStage;
 
@@ -255,7 +269,7 @@ private:
     phase, and provided with a method to get the exact resulting latency.
 */
 template <typename SampleType>
-struct Oversampling2TimesPolyphaseIIR  : public Oversampling<SampleType>::OversamplingStage
+struct Oversampling2TimesPolyphaseIIR final : public Oversampling<SampleType>::OversamplingStage
 {
     using ParentType = typename Oversampling<SampleType>::OversamplingStage;
 
@@ -356,7 +370,7 @@ struct Oversampling2TimesPolyphaseIIR  : public Oversampling<SampleType>::Oversa
             }
         }
 
-       #if JUCE_SNAP_TO_ZERO
+       #if JUCE_DSP_ENABLE_SNAP_TO_ZERO
         snapToZero (true);
        #endif
     }
@@ -415,7 +429,7 @@ struct Oversampling2TimesPolyphaseIIR  : public Oversampling<SampleType>::Oversa
             delayDown.setUnchecked (static_cast<int> (channel), delay);
         }
 
-       #if JUCE_SNAP_TO_ZERO
+       #if JUCE_DSP_ENABLE_SNAP_TO_ZERO
         snapToZero (false);
        #endif
     }
@@ -556,8 +570,8 @@ Oversampling<SampleType>::Oversampling (size_t newNumChannels, size_t newFactor,
             auto gaindBFactorDown = (isMaximumQuality ? 10.0f  : 8.0f);
 
             addOversamplingStage (FilterType::filterHalfBandPolyphaseIIR,
-                                  twUp, gaindBStartUp + gaindBFactorUp * n,
-                                  twDown, gaindBStartDown + gaindBFactorDown * n);
+                                  twUp, gaindBStartUp + gaindBFactorUp * (float) n,
+                                  twDown, gaindBStartDown + gaindBFactorDown * (float) n);
         }
     }
     else if (newType == FilterType::filterHalfBandFIREquiripple)
@@ -573,8 +587,8 @@ Oversampling<SampleType>::Oversampling (size_t newNumChannels, size_t newFactor,
             auto gaindBFactorDown = (isMaximumQuality ? 10.0f  : 8.0f);
 
             addOversamplingStage (FilterType::filterHalfBandFIREquiripple,
-                                  twUp, gaindBStartUp + gaindBFactorUp * n,
-                                  twDown, gaindBStartDown + gaindBFactorDown * n);
+                                  twUp, gaindBStartUp + gaindBFactorUp * (float) n,
+                                  twDown, gaindBStartDown + gaindBFactorDown * (float) n);
         }
     }
 }
@@ -722,11 +736,11 @@ void Oversampling<SampleType>::processSamplesDown (AudioBlock<SampleType>& outpu
     auto currentNumSamples = outputBlock.getNumSamples();
 
     for (int n = 0; n < stages.size() - 1; ++n)
-        currentNumSamples *= stages.getUnchecked(n)->factor;
+        currentNumSamples *= stages.getUnchecked (n)->factor;
 
     for (int n = stages.size() - 1; n > 0; --n)
     {
-        auto& stage = *stages.getUnchecked(n);
+        auto& stage = *stages.getUnchecked (n);
         auto audioBlock = stages.getUnchecked (n - 1)->getProcessedSamples (currentNumSamples);
         stage.processSamplesDown (audioBlock);
 
@@ -748,7 +762,7 @@ void Oversampling<SampleType>::updateDelayLine()
     auto latency = getUncompensatedLatency();
     fractionalDelay = static_cast<SampleType> (1.0) - (latency - std::floor (latency));
 
-    if (fractionalDelay == static_cast<SampleType> (1.0))
+    if (approximatelyEqual (fractionalDelay, static_cast<SampleType> (1.0)))
         fractionalDelay = static_cast<SampleType> (0.0);
     else if (fractionalDelay < static_cast<SampleType> (0.618))
         fractionalDelay += static_cast<SampleType> (1.0);
@@ -759,5 +773,4 @@ void Oversampling<SampleType>::updateDelayLine()
 template class Oversampling<float>;
 template class Oversampling<double>;
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

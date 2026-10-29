@@ -19,6 +19,7 @@
 
 #include <unistd.h>
 #include <sys/types.h>
+#include <string>
 #include "oboe/Definitions.h"
 
 namespace oboe {
@@ -59,6 +60,19 @@ template <typename FromType>
 const char * convertToText(FromType input);
 
 /**
+ * @param name
+ * @return the value of a named system property in a string or empty string
+ */
+std::string getPropertyString(const char * name);
+
+/**
+ * @param name
+ * @param defaultValue
+ * @return integer value associated with a property or the default value
+ */
+int getPropertyInteger(const char * name, int defaultValue);
+
+/**
  * Return the version of the SDK that is currently running.
  *
  * For example, on Android, this would return 27 for Oreo 8.1.
@@ -67,6 +81,22 @@ const char * convertToText(FromType input);
  * @return version number or -1
  */
 int getSdkVersion();
+
+/**
+ * Returns whether a device is on a pre-release SDK that is at least the specified codename
+ * version.
+ *
+ * @param codename the code name to verify.
+ * @return boolean of whether the device is on a pre-release SDK and is at least the specified
+ * codename
+ */
+bool isAtLeastPreReleaseCodename(const std::string& codename);
+
+int getChannelCountFromChannelMask(ChannelMask channelMask);
+
+bool isCompressedFormat(AudioFormat format);
+
+std::string toString(const PlaybackParameters& parameters);
 
 } // namespace oboe
 

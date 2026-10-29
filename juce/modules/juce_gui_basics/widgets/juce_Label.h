@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -73,13 +89,15 @@ public:
 
     //==============================================================================
     /** Changes the font to use to draw the text.
-        @see getFont
+        Note that when drawing, the label's LookAndFeel may override the font set here.
+        @see getFont, LookAndFeelMethods
     */
     void setFont (const Font& newFont);
 
-    /** Returns the font currently being used.
-        This may be the one set by setFont(), unless it has been overridden by the current LookAndFeel
-        @see setFont
+    /** Returns the Label's current font.
+        Note that this method will always return the font set by setFont(), even if
+        the LookAndFeel is overriding the label's font during drawing.
+        @see setFont, LookAndFeelMethods
     */
     Font getFont() const noexcept;
 
@@ -275,6 +293,9 @@ public:
         virtual BorderSize<int> getLabelBorderSize (Label&) = 0;
     };
 
+    /** @internal */
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
+
 protected:
     //==============================================================================
     /** Creates the TextEditor component that will be used when the user has clicked on the label.
@@ -316,7 +337,7 @@ protected:
     /** @internal */
     void enablementChanged() override;
     /** @internal */
-    KeyboardFocusTraverser* createFocusTraverser() override;
+    std::unique_ptr<ComponentTraverser> createKeyboardFocusTraverser() override;
     /** @internal */
     void textEditorTextChanged (TextEditor&) override;
     /** @internal */
@@ -336,7 +357,7 @@ private:
     //==============================================================================
     Value textValue;
     String lastTextValue;
-    Font font { 15.0f };
+    Font font { withDefaultMetrics (FontOptions { 15.0f }) };
     Justification justification = Justification::centredLeft;
     std::unique_ptr<TextEditor> editor;
     ListenerList<Listener> listeners;

@@ -1,26 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
 #include "../../Application/jucer_Headers.h"
-
-#ifdef BUILDING_JUCE_COMPILEENGINE
- const char* getPreferredLineFeed() { return "\r\n"; }
-#endif
 
 //==============================================================================
 String joinLinesIntoSourceFile (StringArray& lines)
@@ -50,6 +62,7 @@ String getLineFeedForFile (const String& fileContent)
             case 0:     break;
             case '\n':  return "\n";
             case '\r':  if (*t == '\n') return "\r\n";
+                        [[fallthrough]];
             default:    continue;
         }
     }
@@ -96,6 +109,11 @@ String escapeSpaces (const String& s)
     return s.replace (" ", "\\ ");
 }
 
+String escapeQuotesAndSpaces (const String& s)
+{
+    return escapeSpaces (s).replace ("'", "\\'").replace ("\"", "\\\"");
+}
+
 String addQuotesIfContainsSpaces (const String& text)
 {
     return (text.containsChar (' ') && ! text.isQuotedString()) ? text.quoted() : text;
@@ -116,12 +134,12 @@ StringPairArray parsePreprocessorDefs (const String& text)
     while (! s.isEmpty())
     {
         String token, value;
-        s = s.findEndOfWhitespace();
+        s.incrementToEndOfWhitespace();
 
         while ((! s.isEmpty()) && *s != '=' && ! s.isWhitespace())
             token << s.getAndAdvance();
 
-        s = s.findEndOfWhitespace();
+        s.incrementToEndOfWhitespace();
 
         if (*s == '=')
         {
@@ -242,18 +260,28 @@ bool fileNeedsCppSyntaxHighlighting (const File& file)
 }
 
 //==============================================================================
+void writeAutoGenWarningComment (OutputStream& outStream)
+{
+    outStream << "/*" << newLine << newLine
+              << "    IMPORTANT! This file is auto-generated each time you save your" << newLine
+              << "    project - if you alter its contents, your changes may be overwritten!" << newLine
+              << newLine;
+}
+
+//==============================================================================
 StringArray getJUCEModules() noexcept
 {
     static StringArray juceModuleIds =
     {
         "juce_analytics",
+        "juce_animation",
         "juce_audio_basics",
         "juce_audio_devices",
         "juce_audio_formats",
         "juce_audio_plugin_client",
         "juce_audio_processors",
+        "juce_audio_processors_headless",
         "juce_audio_utils",
-        "juce_blocks_basics",
         "juce_box2d",
         "juce_core",
         "juce_cryptography",
@@ -263,10 +291,12 @@ StringArray getJUCEModules() noexcept
         "juce_graphics",
         "juce_gui_basics",
         "juce_gui_extra",
+        "juce_javascript",
         "juce_opengl",
         "juce_osc",
         "juce_product_unlocking",
-        "juce_video"
+        "juce_video",
+        "juce_midi_ci"
     };
 
     return juceModuleIds;
@@ -308,6 +338,7 @@ StringArray getModulesRequiredForAudioProcessor() noexcept
         "juce_audio_formats",
         "juce_audio_plugin_client",
         "juce_audio_processors",
+        "juce_audio_processors_headless",
         "juce_audio_utils",
         "juce_core",
         "juce_data_structures",
@@ -347,6 +378,71 @@ bool isJUCEFolder (const File& f)
 bool isJUCEModulesFolder (const File& f)
 {
     return f.isDirectory() && f.getChildFile ("juce_core").isDirectory();
+}
+
+//==============================================================================
+static bool isDivider (const String& line)
+{
+    auto afterIndent = line.trim();
+
+    if (afterIndent.startsWith ("//") && afterIndent.length() > 20)
+    {
+        afterIndent = afterIndent.substring (5);
+
+        if (afterIndent.containsOnly ("=")
+            || afterIndent.containsOnly ("/")
+            || afterIndent.containsOnly ("-"))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int getIndexOfCommentBlockStart (const StringArray& lines, int endIndex)
+{
+    auto endLine = lines[endIndex];
+
+    if (endLine.contains ("*/"))
+    {
+        for (int i = endIndex; i >= 0; --i)
+            if (lines[i].contains ("/*"))
+                return i;
+    }
+
+     if (endLine.trim().startsWith ("//") && ! isDivider (endLine))
+     {
+         for (int i = endIndex; i >= 0; --i)
+             if (! lines[i].startsWith ("//") || isDivider (lines[i]))
+                 return i + 1;
+     }
+
+    return -1;
+}
+
+int findBestLineToScrollToForClass (StringArray lines, const String& className, bool isPlugin)
+{
+    for (auto line : lines)
+    {
+        if (line.contains ("struct " + className) || line.contains ("class " + className)
+            || (isPlugin && line.contains ("public AudioProcessor") && ! line.contains ("AudioProcessorEditor")))
+        {
+            auto index = lines.indexOf (line);
+
+            auto commentBlockStartIndex = getIndexOfCommentBlockStart (lines, index - 1);
+
+            if (commentBlockStartIndex != -1)
+                index = commentBlockStartIndex;
+
+            if (isDivider (lines[index - 1]))
+                index -= 1;
+
+            return index;
+        }
+    }
+
+    return 0;
 }
 
 //==============================================================================

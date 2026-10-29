@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -41,7 +57,7 @@ struct TranslationHelpers
                 break;
 
             p += 5;
-            p = p.findEndOfWhitespace();
+            p.incrementToEndOfWhitespace();
 
             if (*p == '(')
             {
@@ -56,7 +72,7 @@ struct TranslationHelpers
 
     static void parseStringLiteral (String::CharPointerType& p, MemoryOutputStream& out) noexcept
     {
-        p = p.findEndOfWhitespace();
+        p.incrementToEndOfWhitespace();
 
         if (p.getAndAdvance() == '"')
         {
@@ -117,7 +133,7 @@ struct TranslationHelpers
                         break;
 
                     ++p;
-                    c = (juce_wchar) ((c << 4) + digitValue);
+                    c = (c << 4) + (juce_wchar) digitValue;
                 }
 
                 break;
@@ -128,12 +144,12 @@ struct TranslationHelpers
 
                 for (int i = 4; --i >= 0;)
                 {
-                    const int digitValue = *p - '0';
+                    const auto digitValue = (int) (*p - '0');
                     if (digitValue < 0 || digitValue > 7)
                         break;
 
                     ++p;
-                    c = (juce_wchar) ((c << 3) + digitValue);
+                    c = (c << 3) + (juce_wchar) digitValue;
                 }
 
                 break;
@@ -166,7 +182,7 @@ struct TranslationHelpers
             const auto file = i.getFile();
 
             if (file.hasFileExtension (sourceOrHeaderFileExtensions))
-                scanFileForTranslations(strings, file);
+                scanFileForTranslations (strings, file);
          }
     }
 
@@ -179,13 +195,13 @@ struct TranslationHelpers
 
         for (int j = 0; j < modules.size(); ++j)
         {
-            const File localFolder (modules.getUnchecked(j)->getFolder());
+            const File localFolder (modules.getUnchecked (j)->getFolder());
 
             Array<File> files;
-            modules.getUnchecked(j)->findBrowseableFiles (localFolder, files);
+            modules.getUnchecked (j)->findBrowseableFiles (localFolder, files);
 
             for (int i = 0; i < files.size(); ++i)
-                scanFileForTranslations (strings, files.getReference(i));
+                scanFileForTranslations (strings, files.getReference (i));
         }
     }
 
@@ -289,7 +305,6 @@ struct TranslationHelpers
 
             const StringArray& originalKeys (originalStrings.getAllKeys());
             const StringArray& originalValues (originalStrings.getAllValues());
-            int numRemoved = 0;
 
             for (int i = preStrings.size(); --i >= 0;)
             {
@@ -297,7 +312,6 @@ struct TranslationHelpers
                 {
                     preStrings.remove (i);
                     postStrings.remove (i);
-                    ++numRemoved;
                 }
             }
 

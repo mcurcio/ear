@@ -1,24 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 /**
@@ -57,7 +71,7 @@ public:
     /** Sets the length of the ramp used for smoothing gain changes. */
     void setRampDurationSeconds (double newDurationSeconds) noexcept
     {
-        if (rampDurationSeconds != newDurationSeconds)
+        if (! approximatelyEqual (rampDurationSeconds, newDurationSeconds))
         {
             rampDurationSeconds = newDurationSeconds;
             updateRamp();
@@ -89,7 +103,7 @@ public:
 
     //==============================================================================
     /** Processes the input and output buffers supplied in the processing context. */
-    template<typename ProcessContext>
+    template <typename ProcessContext>
     void process (const ProcessContext& context) noexcept
     {
         auto&& inBlock  = context.getInputBlock();
@@ -121,6 +135,7 @@ public:
         }
         else
         {
+            JUCE_BEGIN_IGNORE_WARNINGS_MSVC (6255 6386)
             auto* biases = static_cast<FloatType*> (alloca (sizeof (FloatType) * len));
 
             for (size_t i = 0; i < len; ++i)
@@ -130,6 +145,7 @@ public:
                 FloatVectorOperations::add (outBlock.getChannelPointer (chan),
                                             inBlock.getChannelPointer (chan),
                                             biases, static_cast<int> (len));
+            JUCE_END_IGNORE_WARNINGS_MSVC
         }
     }
 
@@ -146,5 +162,4 @@ private:
     }
 };
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

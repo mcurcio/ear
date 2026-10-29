@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -62,18 +78,26 @@ namespace ProjectInfo
 
 int writeBinaryData (juce::ArgumentList&& args)
 {
-    args.checkMinNumArguments (3);
+    args.checkMinNumArguments (4);
     const auto namespaceName = args.arguments.removeAndReturn (0);
     const auto headerName    = args.arguments.removeAndReturn (0);
     const auto outFolder     = args.arguments.removeAndReturn (0).resolveAsExistingFolder();
+    const auto inputFileList = args.arguments.removeAndReturn (0).resolveAsExistingFile();
 
     juce::build_tools::ResourceFile resourceFile;
 
     resourceFile.setClassName (namespaceName.text);
     const auto lineEndings = args.removeOptionIfFound ("--windows") ? "\r\n" : "\n";
 
-    for (const auto& arg : args.arguments)
-        resourceFile.addFile (arg.resolveAsExistingFile());
+    const auto allLines = [&]
+    {
+        auto lines = juce::StringArray::fromLines (inputFileList.loadFileAsString());
+        lines.removeEmptyStrings();
+        return lines;
+    }();
+
+    for (const auto& arg : allLines)
+        resourceFile.addFile (juce::File (arg));
 
     const auto result = resourceFile.write (0,
                                             lineEndings,
@@ -89,51 +113,65 @@ int writeBinaryData (juce::ArgumentList&& args)
     return 0;
 }
 
-struct IconParseResults final
+struct IconParseResults
 {
     juce::build_tools::Icons icons;
     juce::File output;
+    juce::String iconName;
 };
 
-IconParseResults parseIconArguments (juce::ArgumentList&& args)
+enum class IconNameSpecified
 {
-    args.checkMinNumArguments (2);
-    const auto output = args.arguments.removeAndReturn (0);
+    no,
+    yes
+};
 
-    const auto popDrawable = [&args]() -> std::unique_ptr<juce::Drawable>
+IconParseResults parseIconArguments (juce::ArgumentList&& args, IconNameSpecified iconNameSpecified)
+{
+    args.checkMinNumArguments (iconNameSpecified == IconNameSpecified::yes ? 3 : 2);
+    const auto output = args.arguments.removeAndReturn (0);
+    const auto iconName = std::invoke ([&]
+    {
+        if (iconNameSpecified == IconNameSpecified::yes)
+            return args.arguments.removeAndReturn (0).text;
+
+        return juce::String{};
+    });
+
+    const auto popFile = [&args]() -> juce::File
     {
         if (args.size() == 0)
             return {};
 
-        const auto firstArgText = args.arguments.removeAndReturn (0).text;
-        return juce::Drawable::createFromImageFile (firstArgText);
+        return args.arguments.removeAndReturn (0).text;
     };
 
-    auto smallIcon = popDrawable();
-    auto bigIcon   = popDrawable();
+    const auto smallIcon = popFile();
+    const auto bigIcon   = popFile();
 
-    return { { std::move (smallIcon), std::move (bigIcon) }, output.text };
+    return { juce::build_tools::Icons::fromFilesSmallAndBig (smallIcon, bigIcon), output.text, iconName };
 }
 
 int writeMacIcon (juce::ArgumentList&& argumentList)
 {
-    const auto parsed = parseIconArguments (std::move (argumentList));
+    const auto parsed = parseIconArguments (std::move (argumentList), IconNameSpecified::yes);
     juce::build_tools::writeMacIcon (parsed.icons, parsed.output);
     return 0;
 }
 
 int writeiOSAssets (juce::ArgumentList&& argumentList)
 {
-    const auto parsed = parseIconArguments (std::move (argumentList));
+    const auto parsed = parseIconArguments (std::move (argumentList), IconNameSpecified::yes);
     juce::build_tools::createXcassetsFolderFromIcons (parsed.icons,
                                                       parsed.output.getParentDirectory(),
-                                                      parsed.output.getFileName());
+                                                      parsed.output.getFileName(),
+                                                      parsed.iconName);
     return 0;
 }
 
 int writeWinIcon (juce::ArgumentList&& argumentList)
 {
-    const auto parsed = parseIconArguments (std::move (argumentList));
+    const auto parsed = parseIconArguments (std::move (argumentList), IconNameSpecified::no);
     juce::build_tools::writeWinIcon (parsed.icons, parsed.output);
     return 0;
 }
@@ -176,7 +214,7 @@ bool getBoolValue (const std::unordered_map<juce::String, juce::String>& dict, j
         || str.equalsIgnoreCase ("on");
 }
 
-struct UpdateField final
+struct UpdateField
 {
     const std::unordered_map<juce::String, juce::String>& dict;
 
@@ -228,17 +266,21 @@ juce::build_tools::PlistOptions parsePlistOptions (const juce::File& file,
     updateField ("CAMERA_PERMISSION_TEXT",               result.cameraPermissionText);
     updateField ("BLUETOOTH_PERMISSION_ENABLED",         result.bluetoothPermissionEnabled);
     updateField ("BLUETOOTH_PERMISSION_TEXT",            result.bluetoothPermissionText);
+    updateField ("LOCAL_NETWORK_PERMISSION_ENABLED",     result.localNetworkPermissionEnabled);
+    updateField ("LOCAL_NETWORK_PERMISSION_TEXT",        result.localNetworkPermissionText);
     updateField ("SEND_APPLE_EVENTS_PERMISSION_ENABLED", result.sendAppleEventsPermissionEnabled);
     updateField ("SEND_APPLE_EVENTS_PERMISSION_TEXT",    result.sendAppleEventsPermissionText);
     updateField ("SHOULD_ADD_STORYBOARD",                result.shouldAddStoryboardToProject);
     updateField ("LAUNCH_STORYBOARD_FILE",               result.storyboardName);
     updateField ("PROJECT_NAME",                         result.projectName);
-    updateField ("VERSION",                              result.version);
+    updateField ("VERSION",                              result.marketingVersion);
+    updateField ("BUILD_VERSION",                        result.currentProjectVersion);
     updateField ("COMPANY_COPYRIGHT",                    result.companyCopyright);
     updateField ("DOCUMENT_EXTENSIONS",                  result.documentExtensions);
     updateField ("FILE_SHARING_ENABLED",                 result.fileSharingEnabled);
     updateField ("DOCUMENT_BROWSER_ENABLED",             result.documentBrowserEnabled);
     updateField ("STATUS_BAR_HIDDEN",                    result.statusBarHidden);
+    updateField ("REQUIRES_FULL_SCREEN",                 result.requiresFullScreen);
     updateField ("BACKGROUND_AUDIO_ENABLED",             result.backgroundAudioEnabled);
     updateField ("BACKGROUND_BLE_ENABLED",               result.backgroundBleEnabled);
     updateField ("PUSH_NOTIFICATIONS_ENABLED",           result.pushNotificationsEnabled);
@@ -251,13 +293,16 @@ juce::build_tools::PlistOptions parsePlistOptions (const juce::File& file,
     updateField ("PLUGIN_DESCRIPTION",                   result.pluginDescription);
     updateField ("PLUGIN_AU_EXPORT_PREFIX",              result.pluginAUExportPrefix);
     updateField ("PLUGIN_AU_MAIN_TYPE",                  result.auMainType);
+    updateField ("PLUGIN_AU_FRAMEWORK_BUNDLE_ID",        result.auv3FrameworkBundle);
     updateField ("IS_AU_SANDBOX_SAFE",                   result.isAuSandboxSafe);
     updateField ("IS_PLUGIN_SYNTH",                      result.isPluginSynth);
+    updateField ("IS_PLUGIN_ARA_EFFECT",                 result.isPluginARAEffect);
+    updateField ("SUPPRESS_AU_PLIST_RESOURCE_USAGE",     result.suppressResourceUsage);
     updateField ("BUNDLE_ID",                            result.bundleIdentifier);
     updateField ("ICON_FILE",                            result.iconFile);
+    updateField ("ICON_COMPOSER_BUNDLE",                 result.iconComposerIcon);
 
     result.type = type;
-    result.versionAsHex = juce::build_tools::getVersionAsHexInteger (result.version);
 
     if (result.storyboardName.isNotEmpty())
         result.storyboardName = result.storyboardName.fromLastOccurrenceOf ("/", false, false)
@@ -271,6 +316,8 @@ juce::build_tools::PlistOptions parsePlistOptions (const juce::File& file,
                 "This app requires access to Bluetooth to function correctly.");
     setIfEmpty (result.sendAppleEventsPermissionText,
                 "This app requires the ability to send Apple events to function correctly.");
+    setIfEmpty (result.localNetworkPermissionText,
+                "This app requires access to the local network to function correctly.");
 
     result.documentExtensions = result.documentExtensions.replace (";", ",");
 
@@ -304,9 +351,6 @@ int writePlist (juce::ArgumentList&& args)
 juce::build_tools::EntitlementOptions parseEntitlementsOptions (const juce::File& file,
                                                                 juce::build_tools::ProjectType::Target::Type type)
 {
-    if (type == juce::build_tools::ProjectType::Target::ConsoleApp)
-        juce::ConsoleApplication::fail ("Deduced project type does not require entitlements", 1);
-
     const auto dict = parseProjectData (file);
 
     UpdateField updateField { dict };
@@ -315,6 +359,7 @@ juce::build_tools::EntitlementOptions parseEntitlementsOptions (const juce::File
 
     updateField ("IS_IOS",                          result.isiOS);
     updateField ("IS_PLUGIN",                       result.isAudioPluginProject);
+    updateField ("IS_AU_PLUGIN_HOST",               result.isAUPluginHost);
     updateField ("ICLOUD_PERMISSIONS_ENABLED",      result.isiCloudPermissionsEnabled);
     updateField ("PUSH_NOTIFICATIONS_ENABLED",      result.isPushNotificationsEnabled);
     updateField ("APP_GROUPS_ENABLED",              result.isAppGroupsEnabled);
@@ -324,6 +369,38 @@ juce::build_tools::EntitlementOptions parseEntitlementsOptions (const juce::File
     updateField ("APP_SANDBOX_ENABLED",             result.isAppSandboxEnabled);
     updateField ("APP_SANDBOX_INHERIT",             result.isAppSandboxInhertianceEnabled);
     updateField ("APP_SANDBOX_OPTIONS",             result.appSandboxOptions);
+    updateField ("NETWORK_MULTICAST_ENABLED",       result.isNetworkingMulticastEnabled);
+
+    struct SandboxTemporaryAccessKey
+    {
+        juce::String cMakeVar, key;
+    };
+
+    SandboxTemporaryAccessKey sandboxTemporaryAccessKeys[]
+    {
+        { "APP_SANDBOX_FILE_ACCESS_HOME_RO", "home-relative-path.read-only" },
+        { "APP_SANDBOX_FILE_ACCESS_HOME_RW", "home-relative-path.read-write" },
+        { "APP_SANDBOX_FILE_ACCESS_ABS_RO",  "absolute-path.read-only" },
+        { "APP_SANDBOX_FILE_ACCESS_ABS_RW",  "absolute-path.read-write" }
+    };
+
+    for (const auto& entry : sandboxTemporaryAccessKeys)
+    {
+        juce::StringArray values;
+        updateField (entry.cMakeVar, values);
+
+        if (! values.isEmpty())
+            result.appSandboxTemporaryPaths.push_back ({ "com.apple.security.temporary-exception.files." + entry.key,
+                                                         std::move (values) });
+    }
+
+    {
+        juce::StringArray values;
+        updateField ("APP_SANDBOX_EXCEPTION_IOKIT", values);
+
+        if (! values.isEmpty())
+            result.appSandboxExceptionIOKit = values;
+    }
 
     result.type = type;
 
@@ -466,6 +543,12 @@ int writeHeader (juce::ArgumentList&& args)
     return createAndWrite (output.resolveAsFile(), headerText);
 }
 
+int printJUCEVersion (juce::ArgumentList&&)
+{
+    std::cout << juce::SystemStats::getJUCEVersion() << std::endl;
+    return 0;
+}
+
 } // namespace
 
 int main (int argc, char** argv)
@@ -474,9 +557,21 @@ int main (int argc, char** argv)
 
     return juce::ConsoleApplication::invokeCatchingFailures ([argc, argv]
     {
-        juce::ArgumentList argumentList { argc, argv };
+        if (argc < 1)
+            juce::ConsoleApplication::fail ("No arguments passed", 1);
 
-        using Fn = typename std::add_lvalue_reference<decltype (writeBinaryData)>::type;
+        const auto getString = [&] (const char* text)
+        {
+            return juce::String (juce::CharPointer_UTF8 (text));
+        };
+
+        std::vector<juce::String> arguments;
+        std::transform (argv, argv + argc, std::back_inserter (arguments), getString);
+
+        juce::ArgumentList argumentList { arguments.front(),
+                                          juce::StringArray (arguments.data() + 1, (int) arguments.size() - 1) };
+
+        using Fn = int (*) (juce::ArgumentList&&);
 
         const std::unordered_map<juce::String, Fn> commands
         {
@@ -489,6 +584,7 @@ int main (int argc, char** argv)
             { "pkginfo",         writePkgInfo },
             { "plist",           writePlist },
             { "rcfile",          writeRcFile },
+            { "version",         printJUCEVersion },
             { "winicon",         writeWinIcon }
         };
 
@@ -499,6 +595,25 @@ int main (int argc, char** argv)
         if (it == commands.cend())
             juce::ConsoleApplication::fail ("No matching mode", 1);
 
-        return it->second (std::move (argumentList));
+        try
+        {
+            return it->second (std::move (argumentList));
+        }
+        catch (const juce::build_tools::SaveError& error)
+        {
+            juce::ConsoleApplication::fail (error.message);
+        }
+        catch (const std::exception& ex)
+        {
+            juce::ConsoleApplication::fail (ex.what());
+        }
+        catch (...)
+        {
+            juce::ConsoleApplication::fail ("Unhandled exception");
+        }
+
+        return 1;
     });
+
+    return 0;
 }

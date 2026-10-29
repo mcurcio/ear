@@ -1,42 +1,63 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
+namespace juce::build_tools
 {
-namespace build_tools
-{
+
     //==============================================================================
+    static XmlElement* getKeyWithName (XmlElement& xml, const String& key)
+    {
+        for (auto* element : xml.getChildWithTagNameIterator ("key"))
+            if (element->getAllSubText().trim().equalsIgnoreCase (key))
+                return element;
+
+        return nullptr;
+    }
+
     static bool keyFoundAndNotSequentialDuplicate (XmlElement& xml, const String& key)
     {
-        forEachXmlChildElementWithTagName (xml, element, "key")
+        if (auto* element = getKeyWithName (xml, key))
         {
-            if (element->getAllSubText().trim().equalsIgnoreCase (key))
+            if (element->getNextElement() != nullptr && element->getNextElement()->hasTagName ("key"))
             {
-                if (element->getNextElement() != nullptr && element->getNextElement()->hasTagName ("key"))
-                {
-                    // found broken plist format (sequential duplicate), fix by removing
-                    xml.removeChildElement (element, true);
-                    return false;
-                }
-
-                // key found (not sequential duplicate)
-                return true;
+                // found broken plist format (sequential duplicate), fix by removing
+                xml.removeChildElement (element, true);
+                return false;
             }
+
+            // key found (not sequential duplicate)
+            return true;
         }
 
         // key not found
@@ -78,9 +99,11 @@ namespace build_tools
             xml.createNewChildElement ("integer")->addTextElement (String (value));
     }
 
-    //==============================================================================
     static void addArrayToPlist (XmlElement& dict, String arrayKey, const StringArray& arrayElements)
     {
+        if (getKeyWithName (dict, arrayKey) != nullptr)
+            return;
+
         dict.createNewChildElement ("key")->addTextElement (arrayKey);
         auto* plistStringArray = dict.createNewChildElement ("array");
 
@@ -88,6 +111,14 @@ namespace build_tools
             plistStringArray->createNewChildElement ("string")->addTextElement (e);
     }
 
+    static int getAUVersionAsHexInteger (const PlistOptions& opts)
+    {
+        const auto segments = getVersionSegments (opts.marketingVersion);
+        const StringArray trimmed (segments.strings.getRawDataPointer(), jmin (segments.size(), 3));
+        return getVersionAsHexIntegerFromParts (trimmed);
+    }
+
+    //==============================================================================
     void PlistOptions::write (const File& infoPlistFile) const
     {
         writeStreamToFile (infoPlistFile, [&] (MemoryOutputStream& mo) { write (mo); });
@@ -118,21 +149,31 @@ namespace build_tools
         if (cameraPermissionEnabled)
             addPlistDictionaryKey (*dict, "NSCameraUsageDescription", cameraPermissionText);
 
+        if (bluetoothPermissionEnabled)
+            addPlistDictionaryKey (*dict, "NSBluetoothAlwaysUsageDescription", bluetoothPermissionText);
+
+        if (localNetworkPermissionEnabled)
+            addPlistDictionaryKey (*dict, "NSLocalNetworkUsageDescription", localNetworkPermissionText);
+
         if (iOS)
         {
             if (bluetoothPermissionEnabled)
-            {
-                addPlistDictionaryKey (*dict, "NSBluetoothAlwaysUsageDescription", bluetoothPermissionText);
                 addPlistDictionaryKey (*dict, "NSBluetoothPeripheralUsageDescription", bluetoothPermissionText); // needed for pre iOS 13.0
-            }
 
             addPlistDictionaryKey (*dict, "LSRequiresIPhoneOS", true);
-
-            if (type != ProjectType::Target::AudioUnitv3PlugIn)
-                addPlistDictionaryKey (*dict, "UIViewControllerBasedStatusBarAppearance", false);
+            addPlistDictionaryKey (*dict, "UIViewControllerBasedStatusBarAppearance", true);
 
             if (shouldAddStoryboardToProject)
                 addPlistDictionaryKey (*dict, "UILaunchStoryboardName", storyboardName);
+
+            XmlElement sceneManifestKey ("key");
+            sceneManifestKey.addTextElement ("UIApplicationSceneManifest");
+            dict->addChildElement (new XmlElement (sceneManifestKey));
+
+            auto* sceneManifestDict = dict->createNewChildElement ("dict");
+            addPlistDictionaryKey (*sceneManifestDict, "UIApplicationSupportsMultipleScenes", false);
+            addKeyIfNotFound (*sceneManifestDict, "UISceneConfigurations");
+            sceneManifestDict->createNewChildElement ("dict");
         }
         else
         {
@@ -143,7 +184,12 @@ namespace build_tools
         addPlistDictionaryKey (*dict, "CFBundleExecutable",          executableName);
 
         if (! iOS) // (NB: on iOS this causes error ITMS-90032 during publishing)
+        {
             addPlistDictionaryKey (*dict, "CFBundleIconFile", iconFile.exists() ? iconFile.getFileName() : String());
+
+            if (iconComposerIcon.exists())
+                addPlistDictionaryKey (*dict, "CFBundleIconName", iconComposerIcon.getFileNameWithoutExtension());
+        }
 
         addPlistDictionaryKey (*dict, "CFBundleIdentifier",          bundleIdentifier);
         addPlistDictionaryKey (*dict, "CFBundleName",                projectName);
@@ -152,10 +198,13 @@ namespace build_tools
         addPlistDictionaryKey (*dict, "CFBundleDisplayName",         projectName);
         addPlistDictionaryKey (*dict, "CFBundlePackageType",         getXcodePackageType (type));
         addPlistDictionaryKey (*dict, "CFBundleSignature",           getXcodeBundleSignature (type));
-        addPlistDictionaryKey (*dict, "CFBundleShortVersionString",  version);
-        addPlistDictionaryKey (*dict, "CFBundleVersion",             version);
+        addPlistDictionaryKey (*dict, "CFBundleShortVersionString",  marketingVersion);
+        addPlistDictionaryKey (*dict, "CFBundleVersion",             currentProjectVersion);
         addPlistDictionaryKey (*dict, "NSHumanReadableCopyright",    companyCopyright);
-        addPlistDictionaryKey (*dict, "NSHighResolutionCapable", true);
+        addPlistDictionaryKey (*dict, "NSHighResolutionCapable",     true);
+
+        if (applicationCategory.isNotEmpty())
+            addPlistDictionaryKey (*dict, "LSApplicationCategoryType", applicationCategory);
 
         auto replacedDocExtensions = StringArray::fromTokens (replacePreprocessorDefs (allPreprocessorDefs,
                                                                                        documentExtensions), ",", {});
@@ -180,8 +229,9 @@ namespace build_tools
 
                     addPlistDictionaryKey (*dict2, "CFBundleTypeName", ex);
                     addPlistDictionaryKey (*dict2, "CFBundleTypeRole", "Editor");
-                    addPlistDictionaryKey (*dict2, "CFBundleTypeIconFile", "Icon");
+                    addPlistDictionaryKey (*dict2, "CFBundleTypeIconFile", iconFile.getFileNameWithoutExtension());
                     addPlistDictionaryKey (*dict2, "NSPersistentStoreTypeKey", "XML");
+                    addPlistDictionaryKey (*dict2, "LSHandlerRank", "Default");
                 }
 
                 arrayTag->createNewChildElement ("string")->addTextElement (ex);
@@ -194,16 +244,14 @@ namespace build_tools
         if (documentBrowserEnabled)
             addPlistDictionaryKey (*dict, "UISupportsDocumentBrowser", true);
 
-        if (statusBarHidden && type != ProjectType::Target::AudioUnitv3PlugIn)
-            addPlistDictionaryKey (*dict, "UIStatusBarHidden", true);
-
         if (iOS)
         {
             if (type != ProjectType::Target::AudioUnitv3PlugIn)
             {
-                // Forcing full screen disables the split screen feature and prevents error ITMS-90475
-                addPlistDictionaryKey (*dict, "UIRequiresFullScreen", true);
-                addPlistDictionaryKey (*dict, "UIStatusBarHidden", true);
+                if (statusBarHidden)
+                    addPlistDictionaryKey (*dict, "UIStatusBarHidden", true);
+
+                addPlistDictionaryKey (*dict, "UIRequiresFullScreen", requiresFullScreen);
 
                 addIosScreenOrientations (*dict);
                 addIosBackgroundModes (*dict);
@@ -223,7 +271,7 @@ namespace build_tools
                 addPlistDictionaryKey (*audioComponentsDict, "manufacturer", pluginManufacturerCode.substring (0, 4));
                 addPlistDictionaryKey (*audioComponentsDict, "type",         IAATypeCode);
                 addPlistDictionaryKey (*audioComponentsDict, "subtype",      pluginCode.substring (0, 4));
-                addPlistDictionaryKey (*audioComponentsDict, "version",      versionAsHex);
+                addPlistDictionaryKey (*audioComponentsDict, "version",      getVersionAsHexInteger (marketingVersion));
 
                 dict->addChildElement (new XmlElement (audioComponentsPlistEntry));
             }
@@ -289,19 +337,26 @@ namespace build_tools
         addPlistDictionaryKey (*dict, "manufacturer", truncatedCode);
         addPlistDictionaryKey (*dict, "type", auMainType.removeCharacters ("'"));
         addPlistDictionaryKey (*dict, "subtype", pluginSubType);
-        addPlistDictionaryKey (*dict, "version", versionAsHex);
+        addPlistDictionaryKey (*dict, "version", getAUVersionAsHexInteger (*this));
 
         if (isAuSandboxSafe)
         {
             addPlistDictionaryKey (*dict, "sandboxSafe", true);
         }
-        else
+        else if (! suppressResourceUsage)
         {
             dict->createNewChildElement ("key")->addTextElement ("resourceUsage");
             auto* resourceUsageDict = dict->createNewChildElement ("dict");
 
             addPlistDictionaryKey (*resourceUsageDict, "network.client", true);
             addPlistDictionaryKey (*resourceUsageDict, "temporary-exception.files.all.read-write", true);
+        }
+
+        if (isPluginARAEffect)
+        {
+            dict->createNewChildElement ("key")->addTextElement ("tags");
+            auto* tagsArray = dict->createNewChildElement ("array");
+            tagsArray->createNewChildElement ("string")->addTextElement ("ARA");
         }
 
         return { plistKey, plistEntry };
@@ -319,6 +374,10 @@ namespace build_tools
         plistEntry.createNewChildElement ("key")->addTextElement ("NSExtensionAttributes");
 
         auto* dict = plistEntry.createNewChildElement ("dict");
+
+        if (auv3FrameworkBundle.isNotEmpty())
+            addPlistDictionaryKey (*dict, "AudioComponentBundle", auv3FrameworkBundle);
+
         dict->createNewChildElement ("key")->addTextElement ("AudioComponents");
         auto* componentArray = dict->createNewChildElement ("array");
 
@@ -330,16 +389,19 @@ namespace build_tools
         addPlistDictionaryKey (*componentDict, "manufacturer", pluginManufacturerCode.substring (0, 4));
         addPlistDictionaryKey (*componentDict, "type", auMainType.removeCharacters ("'"));
         addPlistDictionaryKey (*componentDict, "subtype", pluginCode.substring (0, 4));
-        addPlistDictionaryKey (*componentDict, "version", versionAsHex);
+        addPlistDictionaryKey (*componentDict, "version", getAUVersionAsHexInteger (*this));
         addPlistDictionaryKey (*componentDict, "sandboxSafe", true);
 
         componentDict->createNewChildElement ("key")->addTextElement ("tags");
         auto* tagsArray = componentDict->createNewChildElement ("array");
 
         tagsArray->createNewChildElement ("string")
-            ->addTextElement (isPluginSynth ? "Synth" : "Effects");
+                 ->addTextElement (isPluginSynth ? "Synth" : "Effects");
+
+        if (auMainType.removeCharacters ("'") == "aumi")
+            tagsArray->createNewChildElement ("string")->addTextElement ("MIDI");
 
         return { plistKey, plistEntry };
     }
-}
-}
+
+} // namespace juce::build_tools

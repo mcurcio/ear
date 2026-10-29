@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -43,7 +59,7 @@ PropertiesFile::Options::Options()
 
 File PropertiesFile::Options::getDefaultFile() const
 {
-    // mustn't have illegal characters in this name..
+    // mustn't have illegal characters in this name
     jassert (applicationName == File::createLegalFileName (applicationName));
 
    #if JUCE_MAC || JUCE_IOS
@@ -66,7 +82,7 @@ File PropertiesFile::Options::getDefaultFile() const
 
            If your app needs to load settings files that were created by older versions of juce and
            you want to maintain backwards-compatibility, then you can set this to "Preferences".
-           But.. for better Apple-compliance, the recommended approach would be to write some code that
+           But, for better Apple-compliance, the recommended approach would be to write some code that
            finds your old settings files in ~/Library/Preferences, moves them to ~/Library/Application Support,
            and then uses the new path.
         */
@@ -82,7 +98,7 @@ File PropertiesFile::Options::getDefaultFile() const
     if (folderName.isNotEmpty())
         dir = dir.getChildFile (folderName);
 
-   #elif JUCE_LINUX || JUCE_ANDROID
+   #elif JUCE_LINUX || JUCE_BSD || JUCE_ANDROID
     auto dir = File (commonToAllUsers ? "/var" : "~")
                       .getChildFile (folderName.isNotEmpty() ? folderName
                                                              : ("." + applicationName));
@@ -124,7 +140,7 @@ bool PropertiesFile::reload()
     ProcessScopedLock pl (createProcessLock());
 
     if (pl != nullptr && ! pl->isLocked())
-        return false; // locking failure..
+        return false; // locking failure
 
     loadedOk = (! file.exists()) || loadAsBinary() || loadAsXml();
     return loadedOk;
@@ -180,7 +196,7 @@ bool PropertiesFile::loadAsXml()
 {
     if (auto doc = parseXMLIfTagMatches (file, PropertyFileConstants::fileTag))
     {
-        forEachXmlChildElementWithTagName (*doc, e, PropertyFileConstants::valueTag)
+        for (auto* e : doc->getChildWithTagNameIterator (PropertyFileConstants::valueTag))
         {
             auto name = e->getStringAttribute (PropertyFileConstants::nameAttribute);
 
@@ -207,7 +223,7 @@ bool PropertiesFile::saveAsXml()
         auto* e = doc.createNewChildElement (PropertyFileConstants::valueTag);
         e->setAttribute (PropertyFileConstants::nameAttribute, props.getAllKeys() [i]);
 
-        // if the value seems to contain xml, store it as such..
+        // if the value seems to contain xml, store it as such
         if (auto childElement = parseXML (props.getAllValues() [i]))
             e->addChildElement (childElement.release());
         else
@@ -217,7 +233,7 @@ bool PropertiesFile::saveAsXml()
     ProcessScopedLock pl (createProcessLock());
 
     if (pl != nullptr && ! pl->isLocked())
-        return false; // locking failure..
+        return false; // locking failure
 
     if (doc.writeTo (file, {}))
     {
@@ -274,7 +290,7 @@ bool PropertiesFile::saveAsBinary()
     ProcessScopedLock pl (createProcessLock());
 
     if (pl != nullptr && ! pl->isLocked())
-        return false; // locking failure..
+        return false; // locking failure
 
     TemporaryFile tempFile (file);
 

@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,8 +36,10 @@
 
 #include "jucer_ModuleDescription.h"
 
+#include <future>
+
 //==============================================================================
-class AvailableModulesList
+class AvailableModulesList final : private AsyncUpdater
 {
 public:
     using ModuleIDAndFolder     = std::pair<String, File>;
@@ -32,16 +50,36 @@ public:
     //==============================================================================
     void scanPaths (const Array<File>& paths)
     {
-        auto job = createScannerJob (paths);
-        auto& ref = *job;
-
-        removePendingAndAddJob (std::move (job));
-        scanPool.waitForJobToFinish (&ref, -1);
+        scanPathsAsync (paths);
+        scanner = {};
     }
 
     void scanPathsAsync (const Array<File>& paths)
     {
-        removePendingAndAddJob (createScannerJob (paths));
+        scanner = std::async (std::launch::async, [this, paths]
+        {
+            ModuleIDAndFolderList list;
+
+            for (auto& p : paths)
+                addAllModulesInFolder (p, list);
+
+            std::sort (list.begin(), list.end(), [] (const ModuleIDAndFolder& m1,
+                                                     const ModuleIDAndFolder& m2)
+            {
+                return m1.first.compareIgnoreCase (m2.first) < 0;
+            });
+
+            {
+                const ScopedLock swapLock (lock);
+
+                if (list == modulesList)
+                    return;
+
+                modulesList.swap (list);
+            }
+
+            triggerAsyncUpdate();
+        });
     }
 
     //==============================================================================
@@ -88,107 +126,62 @@ public:
 
 private:
     //==============================================================================
-    struct ModuleScannerJob  : public ThreadPoolJob
+    static bool tryToAddModuleFromFolder (const File& path, ModuleIDAndFolderList& list)
     {
-        ModuleScannerJob (const Array<File>& paths,
-                          std::function<void (const ModuleIDAndFolderList&)>&& callback)
-            : ThreadPoolJob ("ModuleScannerJob"),
-              pathsToScan (paths),
-              completionCallback (std::move (callback))
+        ModuleDescription m (path);
+
+        if (m.isValid()
+            && std::none_of (list.begin(), list.end(),
+                             [&m] (const ModuleIDAndFolder& element) { return element.first == m.getID(); }))
         {
+            list.push_back ({ m.getID(), path });
+            return true;
         }
 
-        JobStatus runJob() override
-        {
-            ModuleIDAndFolderList list;
-
-            for (auto& p : pathsToScan)
-                addAllModulesInFolder (p, list);
-
-            if (! shouldExit())
-            {
-                std::sort (list.begin(), list.end(), [] (const ModuleIDAndFolder& m1,
-                                                         const ModuleIDAndFolder& m2)
-                {
-                    return m1.first.compareIgnoreCase (m2.first) < 0;
-                });
-
-                completionCallback (list);
-            }
-
-            return jobHasFinished;
-        }
-
-        static bool tryToAddModuleFromFolder (const File& path, ModuleIDAndFolderList& list)
-        {
-            ModuleDescription m (path);
-
-            if (m.isValid())
-            {
-                list.push_back ({ m.getID(), path });
-                return true;
-            }
-
-            return false;
-        }
-
-        static void addAllModulesInSubfoldersRecursively (const File& path, int depth, ModuleIDAndFolderList& list)
-        {
-            if (depth > 0)
-            {
-                for (const auto& iter : RangedDirectoryIterator (path, false, "*", File::findDirectories))
-                {
-                    if (auto* job = ThreadPoolJob::getCurrentThreadPoolJob())
-                        if (job->shouldExit())
-                            return;
-
-                    auto childPath = iter.getFile();
-
-                    if (! tryToAddModuleFromFolder (childPath, list))
-                        addAllModulesInSubfoldersRecursively (childPath, depth - 1, list);
-                }
-            }
-        }
-
-        static void addAllModulesInFolder (const File& path, ModuleIDAndFolderList& list)
-        {
-            if (! tryToAddModuleFromFolder (path, list))
-            {
-                constexpr int subfolders = 3;
-                addAllModulesInSubfoldersRecursively (path, subfolders, list);
-            }
-        }
-
-        Array<File> pathsToScan;
-        std::function<void (const ModuleIDAndFolderList&)> completionCallback;
-    };
-
-    //==============================================================================
-    std::unique_ptr<ThreadPoolJob> createScannerJob (const Array<File>& paths)
-    {
-        return std::make_unique<ModuleScannerJob> (paths, [this] (ModuleIDAndFolderList scannedModulesList)
-        {
-            {
-                const ScopedLock swapLock (lock);
-                modulesList.swap (scannedModulesList);
-            }
-
-            listeners.call ([this] (Listener& l) { MessageManager::callAsync ([&] { l.availableModulesChanged (this); }); });
-        });
+        return false;
     }
 
-    void removePendingAndAddJob (std::unique_ptr<ThreadPoolJob> jobToAdd)
+    static void addAllModulesInFolder (const File& topLevelPath, ModuleIDAndFolderList& list)
     {
-        scanPool.removeAllJobs (false, 100);
-        scanPool.addJob (jobToAdd.release(), true);
+        struct FileAndDepth
+        {
+            File file;
+            int depth;
+        };
+
+        std::queue<FileAndDepth> pathsToCheck;
+        pathsToCheck.push ({ topLevelPath, 0 });
+
+        while (! pathsToCheck.empty())
+        {
+            const auto path = pathsToCheck.front();
+            pathsToCheck.pop();
+
+            if (tryToAddModuleFromFolder (path.file, list) || path.depth == 3)
+                continue;
+
+            for (const auto& iter : RangedDirectoryIterator (path.file, false, "*", File::findDirectories))
+            {
+                if (auto* job = ThreadPoolJob::getCurrentThreadPoolJob())
+                    if (job->shouldExit())
+                        return;
+
+                pathsToCheck.push ({ iter.getFile(), path.depth + 1 });
+            }
+        }
     }
 
     //==============================================================================
-    ThreadPool scanPool { 1 };
+    void handleAsyncUpdate() override
+    {
+        listeners.call ([this] (Listener& l) { l.availableModulesChanged (this); });
+    }
 
+    //==============================================================================
     ModuleIDAndFolderList modulesList;
     ListenerList<Listener> listeners;
     CriticalSection lock;
+    std::future<void> scanner;
 
     //==============================================================================
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AvailableModulesList)

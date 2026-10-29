@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -21,7 +37,7 @@
 #include "jucer_DocumentEditorComponent.h"
 
 //==============================================================================
-class SourceCodeDocument  : public OpenDocumentManager::Document
+class SourceCodeDocument : public OpenDocumentManager::Document
 {
 public:
     SourceCodeDocument (Project*, const File&);
@@ -73,11 +89,12 @@ public:
     }
 
     void reloadFromFile() override;
-    bool save() override;
-    bool saveAs() override;
+    bool saveSyncWithoutAsking() override;
+    void saveAsync (std::function<void (bool)>) override;
+    void saveAsAsync (std::function<void (bool)>) override;
 
-    Component* createEditor() override;
-    Component* createViewer() override       { return createEditor(); }
+    std::unique_ptr<Component> createEditor() override;
+    std::unique_ptr<Component> createViewer() override  { return createEditor(); }
 
     void updateLastState (CodeEditorComponent&);
     void applyLastState (CodeEditorComponent&) const;
@@ -85,7 +102,7 @@ public:
     CodeDocument& getCodeDocument();
 
     //==============================================================================
-    struct Type  : public OpenDocumentManager::DocumentType
+    struct Type final : public OpenDocumentManager::DocumentType
     {
         bool canOpenFile (const File& file) override
         {
@@ -125,14 +142,17 @@ protected:
     std::unique_ptr<CodeEditorComponent::State> lastState;
 
     void reloadInternal();
+
+private:
+    std::unique_ptr<FileChooser> chooser;
 };
 
 class GenericCodeEditorComponent;
 
 //==============================================================================
-class SourceCodeEditor  : public DocumentEditorComponent,
-                          private ValueTree::Listener,
-                          private CodeDocument::Listener
+class SourceCodeEditor final : public DocumentEditorComponent,
+                               private ValueTree::Listener,
+                               private CodeDocument::Listener
 {
 public:
     SourceCodeEditor (OpenDocumentManager::Document*, CodeDocument&);
@@ -167,7 +187,7 @@ private:
 
 
 //==============================================================================
-class GenericCodeEditorComponent  : public CodeEditorComponent
+class GenericCodeEditorComponent : public CodeEditorComponent
 {
 public:
     GenericCodeEditorComponent (const File&, CodeDocument&, CodeTokeniser*);
@@ -213,7 +233,7 @@ private:
 };
 
 //==============================================================================
-class CppCodeEditorComponent  : public GenericCodeEditorComponent
+class CppCodeEditorComponent final : public GenericCodeEditorComponent
 {
 public:
     CppCodeEditorComponent (const File&, CodeDocument&);
@@ -227,6 +247,8 @@ public:
 
 private:
     void insertComponentClass();
+
+    std::unique_ptr<AlertWindow> asyncAlertWindow;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (CppCodeEditorComponent)
 };

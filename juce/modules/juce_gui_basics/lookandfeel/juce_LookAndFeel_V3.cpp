@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -57,15 +73,15 @@ void LookAndFeel_V3::drawScrollbar (Graphics& g, ScrollBar& scrollbar, int x, in
 
     if (thumbSize > 0)
     {
-        const float thumbIndent = (isScrollbarVertical ? width : height) * 0.25f;
+        const float thumbIndent = (float) (isScrollbarVertical ? width : height) * 0.25f;
         const float thumbIndentx2 = thumbIndent * 2.0f;
 
         if (isScrollbarVertical)
-            thumbPath.addRoundedRectangle (x + thumbIndent, thumbStartPosition + thumbIndent,
-                                           width - thumbIndentx2, thumbSize - thumbIndentx2, (width - thumbIndentx2) * 0.5f);
+            thumbPath.addRoundedRectangle ((float) x + thumbIndent, (float) thumbStartPosition + thumbIndent,
+                                           (float) width - thumbIndentx2, (float) thumbSize - thumbIndentx2, ((float) width - thumbIndentx2) * 0.5f);
         else
-            thumbPath.addRoundedRectangle (thumbStartPosition + thumbIndent, y + thumbIndent,
-                                           thumbSize - thumbIndentx2, height - thumbIndentx2, (height - thumbIndentx2) * 0.5f);
+            thumbPath.addRoundedRectangle ((float) thumbStartPosition + thumbIndent, (float) y + thumbIndent,
+                                           (float) thumbSize - thumbIndentx2, (float) height - thumbIndentx2, ((float) height - thumbIndentx2) * 0.5f);
     }
 
     Colour thumbCol (scrollbar.findColour (ScrollBar::thumbColourId, true));
@@ -95,7 +111,7 @@ void LookAndFeel_V3::drawConcertinaPanelHeader (Graphics& g, const Rectangle<int
     g.fillRect (area.withTop (area.getBottom() - 1));
 
     g.setColour (bkg.contrasting());
-    g.setFont (Font (area.getHeight() * 0.6f).boldened());
+    g.setFont (Font (withDefaultMetrics (FontOptions { (float) area.getHeight() * 0.6f })).boldened());
     g.drawFittedText (panel.getName(), 4, 0, area.getWidth() - 6, area.getHeight(), Justification::centredLeft, 1);
 }
 
@@ -130,8 +146,8 @@ void LookAndFeel_V3::drawButtonBackground (Graphics& g, Button& button, const Co
     const bool flatOnTop    = button.isConnectedOnTop();
     const bool flatOnBottom = button.isConnectedOnBottom();
 
-    const float width  = button.getWidth() - 1.0f;
-    const float height = button.getHeight() - 1.0f;
+    const float width  = (float) button.getWidth()  - 1.0f;
+    const float height = (float) button.getHeight() - 1.0f;
 
     if (width > 0 && height > 0)
     {
@@ -171,7 +187,7 @@ int LookAndFeel_V3::getTabButtonSpaceAroundImage()                    { return 0
 void LookAndFeel_V3::createTabTextLayout (const TabBarButton& button, float length, float depth,
                                           Colour colour, TextLayout& textLayout)
 {
-    Font font (depth * 0.5f);
+    Font font (button.withDefaultMetrics (FontOptions { depth * 0.5f }));
     font.setUnderline (button.hasKeyboardFocus (false));
 
     AttributedString s;
@@ -274,26 +290,26 @@ void LookAndFeel_V3::drawTabAreaBehindFrontButton (TabbedButtonBar& bar, Graphic
     {
         case TabbedButtonBar::TabsAtLeft:
             gradient.point1.x = (float) w;
-            gradient.point2.x = w * (1.0f - shadowSize);
+            gradient.point2.x = (float) w * (1.0f - shadowSize);
             shadowRect.setBounds ((int) gradient.point2.x, 0, w - (int) gradient.point2.x, h);
             line.setBounds (w - 1, 0, 1, h);
             break;
 
         case TabbedButtonBar::TabsAtRight:
-            gradient.point2.x = w * shadowSize;
+            gradient.point2.x = (float) w * shadowSize;
             shadowRect.setBounds (0, 0, (int) gradient.point2.x, h);
             line.setBounds (0, 0, 1, h);
             break;
 
         case TabbedButtonBar::TabsAtTop:
             gradient.point1.y = (float) h;
-            gradient.point2.y = h * (1.0f - shadowSize);
+            gradient.point2.y = (float) h * (1.0f - shadowSize);
             shadowRect.setBounds (0, (int) gradient.point2.y, w, h - (int) gradient.point2.y);
             line.setBounds (0, h - 1, w, 1);
             break;
 
         case TabbedButtonBar::TabsAtBottom:
-            gradient.point2.y = h * shadowSize;
+            gradient.point2.y = (float) h * shadowSize;
             shadowRect.setBounds (0, 0, w, (int) gradient.point2.y);
             line.setBounds (0, 0, w, 1);
             break;
@@ -364,14 +380,19 @@ void LookAndFeel_V3::drawComboBox (Graphics& g, int width, int height, const boo
     const float arrowX = 0.3f;
     const float arrowH = 0.2f;
 
-    Path p;
-    p.addTriangle (buttonX + buttonW * 0.5f,            buttonY + buttonH * (0.45f - arrowH),
-                   buttonX + buttonW * (1.0f - arrowX), buttonY + buttonH * 0.45f,
-                   buttonX + buttonW * arrowX,          buttonY + buttonH * 0.45f);
+    const auto x = (float) buttonX;
+    const auto y = (float) buttonY;
+    const auto w = (float) buttonW;
+    const auto h = (float) buttonH;
 
-    p.addTriangle (buttonX + buttonW * 0.5f,            buttonY + buttonH * (0.55f + arrowH),
-                   buttonX + buttonW * (1.0f - arrowX), buttonY + buttonH * 0.55f,
-                   buttonX + buttonW * arrowX,          buttonY + buttonH * 0.55f);
+    Path p;
+    p.addTriangle (x + w * 0.5f,            y + h * (0.45f - arrowH),
+                   x + w * (1.0f - arrowX), y + h * 0.45f,
+                   x + w * arrowX,          y + h * 0.45f);
+
+    p.addTriangle (x + w * 0.5f,            y + h * (0.55f + arrowH),
+                   x + w * (1.0f - arrowX), y + h * 0.55f,
+                   x + w * arrowX,          y + h * 0.55f);
 
     g.setColour (box.findColour (ComboBox::arrowColourId).withMultipliedAlpha (box.isEnabled() ? 1.0f : 0.3f));
     g.fillPath (p);
@@ -408,6 +429,8 @@ void LookAndFeel_V3::drawLinearSlider (Graphics& g, int x, int y, int width, int
             g.fillRect (fx, sliderPos, fw, 1.0f);
         else
             g.fillRect (sliderPos, fy, 1.0f, fh);
+
+        drawLinearSliderOutline (g, x, y, width, height, style, slider);
     }
     else
     {
@@ -431,19 +454,19 @@ void LookAndFeel_V3::drawLinearSliderBackground (Graphics& g, int x, int y, int 
 
     if (slider.isHorizontal())
     {
-        auto iy = y + height * 0.5f - sliderRadius * 0.5f;
+        auto iy = (float) y + (float) height * 0.5f - sliderRadius * 0.5f;
 
         g.setGradientFill (ColourGradient::vertical (gradCol1, iy, gradCol2, iy + sliderRadius));
 
-        indent.addRoundedRectangle (x - sliderRadius * 0.5f, iy, width + sliderRadius, sliderRadius, 5.0f);
+        indent.addRoundedRectangle ((float) x - sliderRadius * 0.5f, iy, (float) width + sliderRadius, sliderRadius, 5.0f);
     }
     else
     {
-        auto ix = x + width * 0.5f - sliderRadius * 0.5f;
+        auto ix = (float) x + (float) width * 0.5f - sliderRadius * 0.5f;
 
         g.setGradientFill (ColourGradient::horizontal (gradCol1, ix, gradCol2, ix + sliderRadius));
 
-        indent.addRoundedRectangle (ix, y - sliderRadius * 0.5f, sliderRadius, height + sliderRadius, 5.0f);
+        indent.addRoundedRectangle (ix, (float) y - sliderRadius * 0.5f, sliderRadius, (float) height + sliderRadius, 5.0f);
     }
 
     g.fillPath (indent);
@@ -452,10 +475,9 @@ void LookAndFeel_V3::drawLinearSliderBackground (Graphics& g, int x, int y, int 
     g.strokePath (indent, PathStrokeType (0.5f));
 }
 
-void LookAndFeel_V3::drawPopupMenuBackground (Graphics& g, int width, int height)
+void LookAndFeel_V3::drawPopupMenuBackground (Graphics& g, [[maybe_unused]] int width, [[maybe_unused]] int height)
 {
     g.fillAll (findColour (PopupMenu::backgroundColourId));
-    ignoreUnused (width, height);
 
    #if ! JUCE_MAC
     g.setColour (findColour (PopupMenu::textColourId).withAlpha (0.6f));
@@ -493,7 +515,7 @@ void LookAndFeel_V3::drawKeymapChangeButton (Graphics& g, int width, int height,
         }
 
         g.setColour (textColour);
-        g.setFont (height * 0.6f);
+        g.setFont ((float) height * 0.6f);
         g.drawFittedText (keyDescription, 4, 0, width - 8, height, Justification::centred, 1);
     }
     else
@@ -508,8 +530,8 @@ void LookAndFeel_V3::drawKeymapChangeButton (Graphics& g, int width, int height,
         p.addRectangle (50.0f - thickness, 50.0f + thickness, thickness * 2.0f, 50.0f - indent - thickness);
         p.setUsingNonZeroWinding (false);
 
-        g.setColour (textColour.darker(0.1f).withAlpha (button.isDown() ? 0.7f : (button.isOver() ? 0.5f : 0.3f)));
-        g.fillPath (p, p.getTransformToScaleToFit (2.0f, 2.0f, width - 4.0f, height - 4.0f, true));
+        g.setColour (textColour.darker (0.1f).withAlpha (button.isDown() ? 0.7f : (button.isOver() ? 0.5f : 0.3f)));
+        g.fillPath (p, p.getTransformToScaleToFit (2.0f, 2.0f, (float) width - 4.0f, (float) height - 4.0f, true));
     }
 
     if (button.hasKeyboardFocus (false))
@@ -520,7 +542,7 @@ void LookAndFeel_V3::drawKeymapChangeButton (Graphics& g, int width, int height,
 }
 
 
-class LookAndFeel_V3_DocumentWindowButton   : public Button
+class LookAndFeel_V3_DocumentWindowButton final : public Button
 {
 public:
     LookAndFeel_V3_DocumentWindowButton (const String& name, Colour c, const Path& normal, const Path& toggled)
@@ -535,7 +557,7 @@ public:
         if (ResizableWindow* rw = findParentComponentOfClass<ResizableWindow>())
             background = rw->getBackgroundColour();
 
-        const float cx = getWidth() * 0.5f, cy = getHeight() * 0.5f;
+        const float cx = (float) getWidth() * 0.5f, cy = (float) getHeight() * 0.5f;
         const float diam = jmin (cx, cy) * (shouldDrawButtonAsDown ? 0.60f : 0.65f);
 
         g.setColour (background);

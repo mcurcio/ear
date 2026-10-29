@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -42,7 +58,7 @@ public:
         destAlpha = finalAlpha;
 
         isMoving = (finalBounds != component->getBounds());
-        isChangingAlpha = (finalAlpha != component->getAlpha());
+        isChangingAlpha = ! approximatelyEqual (finalAlpha, component->getAlpha());
 
         left    = component->getX();
         top     = component->getY();
@@ -139,7 +155,7 @@ public:
     }
 
     //==============================================================================
-    struct ProxyComponent  : public Component
+    struct ProxyComponent final : public Component
     {
         ProxyComponent (Component& c)
         {
@@ -154,9 +170,9 @@ public:
             else if (c.isOnDesktop() && c.getPeer() != nullptr)
                 addToDesktop (c.getPeer()->getStyleFlags() | ComponentPeer::windowIgnoresKeyPresses);
             else
-                jassertfalse; // seem to be trying to animate a component that's not visible..
+                jassertfalse; // seem to be trying to animate a component that's not visible
 
-            auto scale = (float) Desktop::getInstance().getDisplays().findDisplayForRect (getScreenBounds()).scale
+            auto scale = (float) Desktop::getInstance().getDisplays().getDisplayForRect (getScreenBounds())->scale
                            * Component::getApproximateScaleFactorForComponent (&c);
 
             image = c.createComponentSnapshot (c.getLocalBounds(), false, scale);
@@ -168,11 +184,16 @@ public:
         void paint (Graphics& g) override
         {
             g.setOpacity (1.0f);
-            g.drawImageTransformed (image, AffineTransform::scale (getWidth()  / (float) jmax (1, image.getWidth()),
-                                                                   getHeight() / (float) jmax (1, image.getHeight())), false);
+            g.drawImageTransformed (image, AffineTransform::scale ((float) getWidth()  / (float) jmax (1, image.getWidth()),
+                                                                   (float) getHeight() / (float) jmax (1, image.getHeight())), false);
         }
 
     private:
+        std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override
+        {
+            return createIgnoredAccessibilityHandler (*this);
+        }
+
         Image image;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ProxyComponent)
@@ -209,8 +230,8 @@ ComponentAnimator::~ComponentAnimator() {}
 ComponentAnimator::AnimationTask* ComponentAnimator::findTaskFor (Component* const component) const noexcept
 {
     for (int i = tasks.size(); --i >= 0;)
-        if (component == tasks.getUnchecked(i)->component.get())
-            return tasks.getUnchecked(i);
+        if (component == tasks.getUnchecked (i)->component.get())
+            return tasks.getUnchecked (i);
 
     return nullptr;
 }
@@ -261,7 +282,7 @@ void ComponentAnimator::fadeOut (Component* component, int millisecondsToTake)
 
 void ComponentAnimator::fadeIn (Component* component, int millisecondsToTake)
 {
-    if (component != nullptr && ! (component->isVisible() && component->getAlpha() == 1.0f))
+    if (component != nullptr && ! (component->isVisible() && approximatelyEqual (component->getAlpha(), 1.0f)))
     {
         component->setAlpha (0.0f);
         component->setVisible (true);
@@ -275,7 +296,7 @@ void ComponentAnimator::cancelAllAnimations (const bool moveComponentsToTheirFin
     {
         if (moveComponentsToTheirFinalPositions)
             for (int i = tasks.size(); --i >= 0;)
-                tasks.getUnchecked(i)->moveToFinalDestination();
+                tasks.getUnchecked (i)->moveToFinalDestination();
 
         tasks.clear();
         sendChangeMessage();

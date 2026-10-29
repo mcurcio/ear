@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -49,12 +65,8 @@ namespace CommandIDs
         showAboutWindow         = 0x300024,
         checkForNewVersion      = 0x300025,
         enableNewVersionCheck   = 0x300026,
-        enableLiveBuild         = 0x300027,
-        enableGUIEditor         = 0x300028,
 
         showProjectSettings     = 0x300030,
-        showProjectTab          = 0x300031,
-        showBuildTab            = 0x300032,
         showFileExplorerPanel   = 0x300033,
         showModulesPanel        = 0x300034,
         showExportersPanel      = 0x300035,
@@ -76,32 +88,16 @@ namespace CommandIDs
         findNext                = 0x300052,
         findPrevious            = 0x300053,
 
-        cleanAll                = 0x300060,
-        toggleBuildEnabled      = 0x300061,
-        showWarnings            = 0x300062,
-        reinstantiateComp       = 0x300063,
-        launchApp               = 0x300064,
-        killApp                 = 0x300065,
-        buildNow                = 0x300066,
-        toggleContinuousBuild   = 0x300067,
-
         enableSnapToGrid        = 0x300070,
         zoomIn                  = 0x300071,
         zoomOut                 = 0x300072,
         zoomNormal              = 0x300073,
         spaceBarDrag            = 0x300074,
 
-        nextError               = 0x300080,
-        prevError               = 0x300081,
-
-        loginLogout             = 0x300090,
-
         showForum               = 0x300100,
         showAPIModules          = 0x300101,
         showAPIClasses          = 0x300102,
         showTutorials           = 0x300103,
-
-        addNewGUIFile           = 0x300200,
 
         lastCommandIDEntry
     };

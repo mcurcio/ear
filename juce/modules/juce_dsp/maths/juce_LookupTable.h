@@ -1,24 +1,38 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
 
-namespace juce
-{
-namespace dsp
+namespace juce::dsp
 {
 
 /**
@@ -34,8 +48,10 @@ namespace dsp
 
     Example:
 
-        LookupTable<float> lut ([] (size_t i) { return std::sqrt ((float) i); }, 64);
-        auto outValue = lut[17];
+    @code
+    LookupTable<float> lut ([] (size_t i) { return std::sqrt ((float) i); }, 64);
+    auto outValue = lut[17];
+    @endcode
 
     @see LookupTableTransform
 
@@ -60,7 +76,7 @@ public:
                                      mapping from the integer range [0, numPointsToUse - 1].
         @param numPointsToUse        The number of pre-calculated values stored.
     */
-    LookupTable (const std::function<FloatType(size_t)>& functionToApproximate, size_t numPointsToUse);
+    LookupTable (const std::function<FloatType (size_t)>& functionToApproximate, size_t numPointsToUse);
 
     /** Initialises or changes the parameters of a LookupTable object.
 
@@ -72,7 +88,7 @@ public:
                                      mapping from the integer range [0, numPointsToUse - 1].
         @param numPointsToUse        The number of pre-calculated values stored.
     */
-    void initialise (const std::function<FloatType(size_t)>& functionToApproximate, size_t numPointsToUse);
+    void initialise (const std::function<FloatType (size_t)>& functionToApproximate, size_t numPointsToUse);
 
     //==============================================================================
     /** Calculates the approximated value for the given index without range checking.
@@ -115,7 +131,7 @@ public:
     */
     FloatType get (FloatType index) const noexcept
     {
-        if (index >= getNumPoints())
+        if (index >= (FloatType) getNumPoints())
             index = static_cast<FloatType> (getGuardIndex());
         else if (index < 0)
             index = {};
@@ -153,8 +169,10 @@ private:
 
     Example:
 
-        LookupTableTransform<float> tanhApprox ([] (float x) { return std::tanh (x); }, -5.0f, 5.0f, 64);
-        auto outValue = tanhApprox (4.2f);
+    @code
+    LookupTableTransform<float> tanhApprox ([] (float x) { return std::tanh (x); }, -5.0f, 5.0f, 64);
+    auto outValue = tanhApprox (4.2f);
+    @endcode
 
     Note: If you try to call the function with an input outside the provided
     range, it will return either the first or the last recorded LookupTable value.
@@ -188,7 +206,7 @@ public:
                                      fail for values higher than this.
         @param numPoints             The number of pre-calculated values stored.
     */
-    LookupTableTransform (const std::function<FloatType(FloatType)>& functionToApproximate,
+    LookupTableTransform (const std::function<FloatType (FloatType)>& functionToApproximate,
                           FloatType minInputValueToUse,
                           FloatType maxInputValueToUse,
                           size_t numPoints)
@@ -207,7 +225,7 @@ public:
                                      fail for values higher than this.
         @param numPoints             The number of pre-calculated values stored.
     */
-    void initialise (const std::function<FloatType(FloatType)>& functionToApproximate,
+    void initialise (const std::function<FloatType (FloatType)>& functionToApproximate,
                      FloatType minInputValueToUse,
                      FloatType maxInputValueToUse,
                      size_t numPoints);
@@ -301,7 +319,7 @@ public:
                                      accuracy of the error calculation. If it's zero
                                      then 100 * numPoints will be used.
     */
-    static double calculateMaxRelativeError (const std::function<FloatType(FloatType)>& functionToApproximate,
+    static double calculateMaxRelativeError (const std::function<FloatType (FloatType)>& functionToApproximate,
                                              FloatType minInputValue,
                                              FloatType maxInputValue,
                                              size_t numPoints,
@@ -319,5 +337,4 @@ private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (LookupTableTransform)
 };
 
-} // namespace dsp
-} // namespace juce
+} // namespace juce::dsp

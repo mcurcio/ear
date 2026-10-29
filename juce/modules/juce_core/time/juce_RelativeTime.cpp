@@ -1,21 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE library.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   JUCE is an open source library subject to commercial or open-source
+   JUCE is an open source framework subject to commercial or open source
    licensing.
 
-   The code included in this file is provided under the terms of the ISC license
-   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
-   without fee is hereby granted provided that the above copyright notice and
-   this permission notice appear in all copies.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -28,8 +40,8 @@ RelativeTime::RelativeTime (const RelativeTime& other) noexcept   : numSeconds (
 RelativeTime::~RelativeTime() noexcept {}
 
 //==============================================================================
-RelativeTime RelativeTime::milliseconds (int milliseconds) noexcept         { return RelativeTime (milliseconds * 0.001); }
-RelativeTime RelativeTime::milliseconds (int64 milliseconds) noexcept       { return RelativeTime (milliseconds * 0.001); }
+RelativeTime RelativeTime::milliseconds (int milliseconds) noexcept         { return RelativeTime ((double) milliseconds * 0.001); }
+RelativeTime RelativeTime::milliseconds (int64 milliseconds) noexcept       { return RelativeTime ((double) milliseconds * 0.001); }
 RelativeTime RelativeTime::seconds (double s) noexcept                      { return RelativeTime (s); }
 RelativeTime RelativeTime::minutes (double numberOfMinutes) noexcept        { return RelativeTime (numberOfMinutes * 60.0); }
 RelativeTime RelativeTime::hours (double numberOfHours) noexcept            { return RelativeTime (numberOfHours * (60.0 * 60.0)); }
@@ -37,11 +49,11 @@ RelativeTime RelativeTime::days (double numberOfDays) noexcept              { re
 RelativeTime RelativeTime::weeks (double numberOfWeeks) noexcept            { return RelativeTime (numberOfWeeks * (60.0 * 60.0 * 24.0 * 7.0)); }
 
 //==============================================================================
-int64 RelativeTime::inMilliseconds() const noexcept { return (int64) (numSeconds * 1000.0); }
-double RelativeTime::inMinutes() const noexcept     { return numSeconds / 60.0; }
-double RelativeTime::inHours() const noexcept       { return numSeconds / (60.0 * 60.0); }
-double RelativeTime::inDays() const noexcept        { return numSeconds / (60.0 * 60.0 * 24.0); }
-double RelativeTime::inWeeks() const noexcept       { return numSeconds / (60.0 * 60.0 * 24.0 * 7.0); }
+int64 RelativeTime::inMilliseconds() const noexcept { return (int64) to<Milliseconds>(); }
+double RelativeTime::inMinutes() const noexcept     { return to<Minutes>(); }
+double RelativeTime::inHours() const noexcept       { return to<Hours>(); }
+double RelativeTime::inDays() const noexcept        { return to<Days>(); }
+double RelativeTime::inWeeks() const noexcept       { return to<Weeks>(); }
 
 //==============================================================================
 RelativeTime& RelativeTime::operator= (const RelativeTime& other) noexcept      { numSeconds = other.numSeconds; return *this; }
@@ -54,8 +66,16 @@ RelativeTime RelativeTime::operator-= (double secs) noexcept        { numSeconds
 JUCE_API RelativeTime JUCE_CALLTYPE operator+ (RelativeTime t1, RelativeTime t2) noexcept  { return t1 += t2; }
 JUCE_API RelativeTime JUCE_CALLTYPE operator- (RelativeTime t1, RelativeTime t2) noexcept  { return t1 -= t2; }
 
-JUCE_API bool JUCE_CALLTYPE operator== (RelativeTime t1, RelativeTime t2) noexcept       { return t1.inSeconds() == t2.inSeconds(); }
-JUCE_API bool JUCE_CALLTYPE operator!= (RelativeTime t1, RelativeTime t2) noexcept       { return t1.inSeconds() != t2.inSeconds(); }
+JUCE_API bool JUCE_CALLTYPE operator== (RelativeTime t1, RelativeTime t2) noexcept
+{
+    return exactlyEqual (t1.inSeconds(), t2.inSeconds());
+}
+
+JUCE_API bool JUCE_CALLTYPE operator!= (RelativeTime t1, RelativeTime t2) noexcept
+{
+    return ! (t1 == t2);
+}
+
 JUCE_API bool JUCE_CALLTYPE operator>  (RelativeTime t1, RelativeTime t2) noexcept       { return t1.inSeconds() >  t2.inSeconds(); }
 JUCE_API bool JUCE_CALLTYPE operator<  (RelativeTime t1, RelativeTime t2) noexcept       { return t1.inSeconds() <  t2.inSeconds(); }
 JUCE_API bool JUCE_CALLTYPE operator>= (RelativeTime t1, RelativeTime t2) noexcept       { return t1.inSeconds() >= t2.inSeconds(); }
@@ -67,13 +87,13 @@ static String translateTimeField (int n, const char* singular, const char* plura
     return TRANS (n == 1 ? singular : plural).replace (n == 1 ? "1" : "2", String (n));
 }
 
-static String describeYears   (int n)      { return translateTimeField (n, NEEDS_TRANS("1 year"),  NEEDS_TRANS("2 years")); }
-static String describeMonths  (int n)      { return translateTimeField (n, NEEDS_TRANS("1 month"), NEEDS_TRANS("2 months")); }
-static String describeWeeks   (int n)      { return translateTimeField (n, NEEDS_TRANS("1 week"),  NEEDS_TRANS("2 weeks")); }
-static String describeDays    (int n)      { return translateTimeField (n, NEEDS_TRANS("1 day"),   NEEDS_TRANS("2 days")); }
-static String describeHours   (int n)      { return translateTimeField (n, NEEDS_TRANS("1 hr"),    NEEDS_TRANS("2 hrs")); }
-static String describeMinutes (int n)      { return translateTimeField (n, NEEDS_TRANS("1 min"),   NEEDS_TRANS("2 mins")); }
-static String describeSeconds (int n)      { return translateTimeField (n, NEEDS_TRANS("1 sec"),   NEEDS_TRANS("2 secs")); }
+static String describeYears   (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 year"),  NEEDS_TRANS ("2 years")); }
+static String describeMonths  (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 month"), NEEDS_TRANS ("2 months")); }
+static String describeWeeks   (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 week"),  NEEDS_TRANS ("2 weeks")); }
+static String describeDays    (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 day"),   NEEDS_TRANS ("2 days")); }
+static String describeHours   (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 hr"),    NEEDS_TRANS ("2 hrs")); }
+static String describeMinutes (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 min"),   NEEDS_TRANS ("2 mins")); }
+static String describeSeconds (int n)      { return translateTimeField (n, NEEDS_TRANS ("1 sec"),   NEEDS_TRANS ("2 secs")); }
 
 String RelativeTime::getApproximateDescription() const
 {
@@ -86,7 +106,7 @@ String RelativeTime::getApproximateDescription() const
     if (weeks > 8)    return describeMonths ((weeks * 12) / 52);
     if (weeks > 1)    return describeWeeks (weeks);
 
-    auto days = (int) inWeeks();
+    auto days = (int) inDays();
 
     if (days > 1)
         return describeDays (days);
@@ -114,39 +134,39 @@ String RelativeTime::getDescription (const String& returnValueForZeroTime) const
 
     StringArray fields;
 
-    auto n = (int) inWeeks();
+    auto n = (int) to<Weeks>();
 
     if (n > 0)
         fields.add (describeWeeks (n));
 
-    n = ((int) inDays()) % 7;
+    n = ((int) to<Days>()) % 7;
 
     if (n > 0)
         fields.add (describeDays (n));
 
     if (fields.size() < 2)
     {
-        n = ((int) inHours()) % 24;
+        n = ((int) to<Hours>()) % 24;
 
         if (n > 0)
             fields.add (describeHours (n));
 
         if (fields.size() < 2)
         {
-            n = ((int) inMinutes()) % 60;
+            n = ((int) to<Minutes>()) % 60;
 
             if (n > 0)
                 fields.add (describeMinutes (n));
 
             if (fields.size() < 2)
             {
-                n = ((int) inSeconds()) % 60;
+                n = ((int) to<Seconds>()) % 60;
 
                 if (n > 0)
                     fields.add (describeSeconds (n));
 
                 if (fields.isEmpty())
-                    fields.add (String (((int) inMilliseconds()) % 1000) + " " + TRANS ("ms"));
+                    fields.add (String (((int) to<Milliseconds>()) % 1000) + " " + TRANS ("ms"));
             }
         }
     }

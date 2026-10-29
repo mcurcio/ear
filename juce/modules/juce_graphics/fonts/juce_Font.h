@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,7 +35,6 @@
 namespace juce
 {
 
-//==============================================================================
 /**
     Represents a particular font, including its size, style, etc.
 
@@ -46,6 +61,9 @@ public:
         underlined  = 4     /**< underlines the font. @see setStyleFlags */
     };
 
+    /** Constructs a Font from a set of options describing the font. */
+    Font (FontOptions options);
+
     //==============================================================================
     /** Creates a sans-serif font in a given size.
 
@@ -55,6 +73,7 @@ public:
                             just Font::plain for the normal style.
         @see FontStyleFlags, getDefaultSansSerifFontName
     */
+    [[deprecated ("Use the constructor that takes a FontOptions argument")]]
     Font (float fontHeight, int styleFlags = plain);
 
     /** Creates a font with a given typeface and parameters.
@@ -66,6 +85,7 @@ public:
                             just Font::plain for the normal style.
         @see FontStyleFlags, getDefaultSansSerifFontName
     */
+    [[deprecated ("Use the constructor that takes a FontOptions argument")]]
     Font (const String& typefaceName, float fontHeight, int styleFlags);
 
     /** Creates a font with a given typeface and parameters.
@@ -74,12 +94,11 @@ public:
         @param typefaceStyle the font style of the typeface to use
         @param fontHeight    the height in pixels (can be fractional)
     */
+    [[deprecated ("Use the constructor that takes a FontOptions argument")]]
     Font (const String& typefaceName, const String& typefaceStyle, float fontHeight);
 
-    /** Creates a copy of another Font object. */
-    Font (const Font& other) noexcept;
-
     /** Creates a font for a typeface. */
+    [[deprecated ("Use the constructor that takes a FontOptions argument")]]
     Font (const Typeface::Ptr& typeface);
 
     /** Creates a basic sans-serif font at a default height.
@@ -88,7 +107,11 @@ public:
         on drawing with - this constructor is here to help initialise objects before changing
         the font's settings later.
     */
+    [[deprecated ("Use the constructor that takes a FontOptions argument")]]
     Font();
+
+    /** Creates a copy of another Font object. */
+    Font (const Font& other) noexcept;
 
     /** Move constructor */
     Font (Font&& other) noexcept;
@@ -114,7 +137,7 @@ public:
         or Font::getDefaultMonospacedFontName(), which are not actual platform-specific font family names,
         but are generic font family names that are used to represent the various default fonts.
         If you need to know the exact typeface font family being used, you can call
-        Font::getTypeface()->getName(), which will give you the platform-specific font family.
+        Font::getTypefacePtr()->getName(), which will give you the platform-specific font family.
 
         If a suitable font isn't found on the machine, it'll just use a default instead.
     */
@@ -129,15 +152,15 @@ public:
         but are generic font family names that are used to represent the various default fonts.
 
         If you need to know the exact typeface font family being used, you can call
-        Font::getTypeface()->getName(), which will give you the platform-specific font family.
+        Font::getTypefacePtr()->getName(), which will give you the platform-specific font family.
     */
-    const String& getTypefaceName() const noexcept;
+    String getTypefaceName() const noexcept;
 
     //==============================================================================
     /** Returns the font style of the typeface that this font uses.
         @see withTypefaceStyle, getAvailableStyles()
     */
-    const String& getTypefaceStyle() const noexcept;
+    String getTypefaceStyle() const noexcept;
 
     /** Changes the font style of the typeface.
         @see getAvailableStyles()
@@ -147,10 +170,34 @@ public:
     /** Returns a copy of this font with a new typeface style.
         @see getAvailableStyles()
     */
-    Font withTypefaceStyle (const String& newStyle) const;
+    [[nodiscard]] Font withTypefaceStyle (const String& newStyle) const;
 
     /** Returns a list of the styles that this font can use. */
     StringArray getAvailableStyles() const;
+
+    //==============================================================================
+    /** Sets the names of the fallback font families that should be tried, in order,
+        when searching for glyphs that are missing in the main typeface, specified via
+        setTypefaceName() or Font(const Typeface::Ptr&).
+    */
+    void setPreferredFallbackFamilies (const StringArray& fallbacks);
+
+    /** Returns the names of the fallback font families.
+    */
+    StringArray getPreferredFallbackFamilies() const;
+
+    /** When drawing text using this Font, specifies whether glyphs that are missing in the main
+        typeface should be replaced with glyphs from other fonts.
+        To find missing glyphs, the typefaces for the preferred fallback families will be checked
+        in order, followed by the system fallback fonts. The system fallback font is likely to be
+        different on each platform.
+
+        Fallback is enabled by default.
+    */
+    void setFallbackEnabled (bool enabled);
+
+    /** Returns true if fallback is enabled, or false otherwise. */
+    bool getFallbackEnabled() const;
 
     //==============================================================================
     /** Returns a typeface font family that represents the default sans-serif font.
@@ -164,6 +211,15 @@ public:
         @see setTypefaceName, getDefaultSerifFontName, getDefaultMonospacedFontName
     */
     static const String& getDefaultSansSerifFontName();
+
+    /** Returns a typeface font family that represents the system UI font.
+
+        Note that this method just returns a generic placeholder string that means "the default
+        UI font" - it's not the actual font family of this font.
+
+        @see getDefaultSansSerifFontName, setTypefaceName
+    */
+    static const String& getSystemUIFontName();
 
     /** Returns a typeface font family that represents the default serif font.
 
@@ -192,20 +248,38 @@ public:
     */
     static const String& getDefaultStyle();
 
-    /** Returns the default system typeface for the given font. */
+    /** Returns the default system typeface for the given font.
+
+        Note: This will only ever return the typeface for the font's "main" family.
+        Before attempting to render glyphs from this typeface, it's a good idea to check
+        that those glyphs are present in the typeface, and to select a different
+        face if necessary.
+    */
     static Typeface::Ptr getDefaultTypefaceForFont (const Font& font);
 
     //==============================================================================
     /** Returns a copy of this font with a new height. */
-    Font withHeight (float height) const;
+    [[nodiscard]] Font withHeight (float height) const;
 
     /** Returns a copy of this font with a new height, specified in points. */
-    Font withPointHeight (float heightInPoints) const;
+    [[nodiscard]] Font withPointHeight (float heightInPoints) const;
 
     /** Changes the font's height.
-        @see getHeight, withHeight, setHeightWithoutChangingWidth
+
+        The font will be scaled so that the sum of the ascender and descender is equal to the
+        provided height in logical pixels.
+
+        @see setPointHeight, getHeight, withHeight, setHeightWithoutChangingWidth
     */
     void setHeight (float newHeight);
+
+    /** Changes the font's height.
+
+        The argument specifies the size of the font's em-square in logical pixels.
+
+        @see setHeight, getHeight, withHeight, setHeightWithoutChangingWidth
+    */
+    void setPointHeight (float newHeight);
 
     /** Changes the font's height without changing its width.
         This alters the horizontal scale to compensate for the change in height.
@@ -216,7 +290,14 @@ public:
         This is the maximum height, from the top of the ascent to the bottom of the
         descenders.
 
-        @see withHeight, setHeightWithoutChangingWidth, getAscent
+        There can be a notable exception to this rule however, if you use the
+        ascent/descent override feature. This feature follows CSS semantics and acts
+        on the point height of the Font. So if you specified the font's height using
+        setHeight() and also specified an ascent or descent override, then the visually
+        rendered height of the Font can be different from the value returned by
+        getHeight().
+
+        @see withHeight, setHeightWithoutChangingWidth, getAscent, setAscentOverride
     */
     float getHeight() const noexcept;
 
@@ -224,6 +305,7 @@ public:
         This is the maximum height, from the top of the ascent to the bottom of the
         descenders.
 
+        This value is not affected by the optional ascent or descent override.
         @see withPointHeight, getHeight
     */
     float getHeightInPoints() const;
@@ -236,7 +318,9 @@ public:
 
     /** Returns the height of the font above its baseline, in points.
         This is the maximum height from the baseline to the top.
-        @see getHeight, getDescent
+
+        This value is affected by the optional ascent override.
+        @see getAscentOverride, getHeightInPoints, getDescentInPoints
     */
     float getAscentInPoints() const;
 
@@ -248,9 +332,16 @@ public:
 
     /** Returns the amount that the font descends below its baseline, in points.
         This is calculated as (getHeight() - getAscent()).
-        @see getAscent, getHeight
+
+        This value is affected by the optional descent override.
+        @see getDescentOverride, getHeightInPoints, getAscentInPoints
     */
     float getDescentInPoints() const;
+
+    /** Returns a distance in points that should be used in addition to the
+        ascent and descent between the baselines of successive lines of text.
+    */
+    float getLineGapInPoints() const;
 
     //==============================================================================
     /** Returns the font's style flags.
@@ -264,7 +355,7 @@ public:
         @param styleFlags     a bitwise-or'ed combination of values from the FontStyleFlags enum.
         @see FontStyleFlags, getStyleFlags
     */
-    Font withStyle (int styleFlags) const;
+    [[nodiscard]] Font withStyle (int styleFlags) const;
 
     /** Changes the font's style.
         @param newFlags     a bitwise-or'ed combination of values from the FontStyleFlags enum.
@@ -279,7 +370,7 @@ public:
     /** Returns a copy of this font with the bold attribute set.
         If the font does not have a bold version, this will return the default font.
      */
-    Font boldened() const;
+    [[nodiscard]] Font boldened() const;
 
     /** Returns true if the font is bold. */
     bool isBold() const noexcept;
@@ -287,7 +378,7 @@ public:
     /** Makes the font italic or non-italic. */
     void setItalic (bool shouldBeItalic);
     /** Returns a copy of this font with the italic attribute set. */
-    Font italicised() const;
+    [[nodiscard]] Font italicised() const;
     /** Returns true if the font is italic. */
     bool isItalic() const noexcept;
 
@@ -296,6 +387,85 @@ public:
     /** Returns true if the font is underlined. */
     bool isUnderlined() const noexcept;
 
+    /** Returns the kind of metrics used by this Font. */
+    TypefaceMetricsKind getMetricsKind() const noexcept;
+
+    //==============================================================================
+    /** Returns an Span view of the features configured for this font instance.
+
+        Use Typeface::getSupportedFeatures() to determine what features this font supports.
+
+        @see setFeatureEnabled, setFeatureDisabled, removeFeature,
+             Typeface::getSupportedFeatures
+    */
+    Span<const FontFeatureSetting> getFeatureSettings() const&;
+    Span<const FontFeatureSetting> getFeatureSettings() const&& = delete;
+
+    /** Enables or disables a font feature.
+
+        Use Typeface::getSupportedFeatures() to determine what features this font
+        supports.
+
+        @see setFeatureEnabled, setFeatureDisabled, removeFeature, Typeface::getSupportedFeatures
+    */
+    void setFeatureSetting (FontFeatureSetting featureSetting);
+
+    /** Removes a specific feature setting from this font.
+
+        If `featureToRemove` corresponds to a feature that is typically enabled by default (e.g.,
+        "calt" for contextual alternates, "liga" for standard ligatures), calling this method will
+        reset it to its default-enabled state.
+
+        @see setFeatureEnabled, setFeatureDisabled, Typeface::getSupportedFeatures
+    */
+    void removeFeatureSetting (FontFeatureTag featureToRemove);
+
+    /** Replaces the current variable settings for this font.
+
+        Variable font settings control the interpolation between different font designs along axes
+        like weight, width, or slant.
+
+        Use Typeface::getSupportedVariables() to query which axes are available and their valid
+        ranges before setting values.
+
+        Unsupported or out-of-range variables will be removed or clamped respectively. This happens
+        at Typeface resolution (on first use or a call to getTypefacePtr).
+
+        @param variables  A span of variable settings to apply to the font
+
+        @see Typeface::getSupportedVariables
+    */
+    void setVariableSettings (Span<const FontVariableSetting> variables);
+
+    /** Removes a specific variable setting from this font.
+
+        @param variableToRemove  The tag identifying the variable axis to remove
+
+        @see setVariableSettings, getVariableSettings, Typeface::getSupportedVariables
+    */
+    void removeVariableSetting (FontFeatureTag variableToRemove);
+
+    /** Returns a copy of this font with the specified variable settings.
+
+        @param variables  A span of variable settings to apply to the font
+
+        @see setVariableSettings, getVariableSettings, Typeface::getSupportedVariables,
+             Typeface::getConfiguredVariables
+    */
+    [[nodiscard]] Font withVariableSettings (Span<const FontVariableSetting> variables) const;
+
+    /** Returns a Span of the variable settings configured for this font instance.
+
+        The settings are guaranteed to be sorted by tag.
+
+        Use Typeface::getSupportedVariables() to determine which variable axes this font supports
+        and their valid ranges.
+
+        @see setVariableSettings, withVariableSettings, Typeface::getSupportedVariables,
+             Typeface::getConfiguredVariables
+    */
+    Span<const FontVariableSetting> getVariableSettings() const&;
+    Span<const FontVariableSetting> getVariableSettings() const&& = delete;
 
     //==============================================================================
     /** Returns the font's horizontal scale.
@@ -311,7 +481,7 @@ public:
                             narrower, greater than 1.0 will be stretched out.
         @see getHorizontalScale
     */
-    Font withHorizontalScale (float scaleFactor) const;
+    [[nodiscard]] Font withHorizontalScale (float scaleFactor) const;
 
     /** Changes the font's horizontal scale factor.
         @param scaleFactor  a value of 1.0 is the normal scale, less than this will be
@@ -331,7 +501,8 @@ public:
     */
     static void setDefaultMinimumHorizontalScaleFactor (float newMinimumScaleFactor) noexcept;
 
-    /** Returns the font's kerning.
+    /** Returns the font's tracking, i.e. spacing applied between characters in
+        addition to the kerning defined by the font.
 
         This is the extra space added between adjacent characters, as a proportion
         of the font's height.
@@ -341,21 +512,89 @@ public:
     */
     float getExtraKerningFactor() const noexcept;
 
-    /** Returns a copy of this font with a new kerning factor.
+    /** Returns a copy of this font with a new tracking factor.
         @param extraKerning     a multiple of the font's height that will be added
                                 to space between the characters. So a value of zero is
                                 normal spacing, positive values spread the letters out,
                                 negative values make them closer together.
     */
-    Font withExtraKerningFactor (float extraKerning) const;
+    [[nodiscard]] Font withExtraKerningFactor (float extraKerning) const;
 
-    /** Changes the font's kerning.
+    /** Changes the font's tracking.
         @param extraKerning     a multiple of the font's height that will be added
                                 to space between the characters. So a value of zero is
                                 normal spacing, positive values spread the letters out,
                                 negative values make them closer together.
     */
     void setExtraKerningFactor (float extraKerning);
+
+    /** @see setAscentOverride() */
+    std::optional<float> getAscentOverride() const noexcept;
+
+    /** This is designed to mirror CSS's ascent-override property.
+
+        When the font size is specified in points (using setPointHeight(),
+        FontOptions::withPointHeight(), etc.), then the font's ascent value in points will be equal
+        to the font's size in points multiplied by the override value. That is, if the font size
+        is 14pt and the ascent override is 0.5f, then the ascent will be 7pt.
+
+        When the font size is *not* specified in points (using setHeight(),
+        FontOptions::withHeight(), etc.), then the behaviour is more subtle.
+        The ascent override still specifies the size of the font's ascender as a proportion of the
+        font's em size.
+        However, the point size of the font is now found by multiplying the JUCE height by the
+        height-to-point factor, where this factor is equal to
+        (1.0f / (ascent-in-em-units + descent-in-em-units)).
+        As an example, if the JUCE font height is 14, the ascent override is 0.5f, and the
+        descent override is 0.5f, then the font size will be 14pt and the ascent will be 7pt.
+        Changing the ascent override to 1.0f and the descent override to 0.0f will preserve the
+        font size of 14pt but give an ascender of 14pt and a descender of 0pt.
+        Changing the ascent and descent overrides both to 1.0f will result in the
+        font's size changing to 7pt with an ascent of 3.5pt.
+
+        @see setDescentOverride()
+    */
+    void setAscentOverride (std::optional<float>);
+
+    /** @see setDescentOverride() */
+    std::optional<float> getDescentOverride() const noexcept;
+
+    /** This is designed to mirror CSS's descent-override property.
+
+        Specifies a value to replace the built-in typeface descent metric.
+        The final descent value will be found by multiplying the provided value by the font
+        size. You may also pass std::nullopt to use the descent value specified in the typeface.
+
+        The documentation for setAscentOverride() includes a more thorough discussion
+        of the mechanism used for overriding.
+
+        @see setAscentOverride()
+    */
+    void setDescentOverride (std::optional<float>);
+
+    //==============================================================================
+    /** Set Direct2D hinting enabled or disabled as specified.
+
+        The default state is enabled.
+
+        This option currently only has an effect when using the Direct2D renderer on Windows.
+
+        Some typefaces can look substantially different under the Direct2D renderer when compared to
+        the software or OpenGL renderers. Fonts such as MS PGothic have hinted bitmaps for specific
+        font sizes, and these bitmaps may appear much thinner than the font outlines that are also
+        provided in the font. The software renderer always rasterises the font outlines, but
+        Direct2D will default to using the built-in bitmaps if present, which will more closely
+        match the intentions of the font designer. Disabling this option will cause the Direct2D
+        to rasterise the font outlines in a similar way to the software renderer, which will
+        produce a result that's closer to that of the software renderer (and therefore the legacy
+        JUCE behaviour).
+
+        @see getDirect2DHinting()
+    */
+    void setDirect2DHinting (bool);
+
+    /** @see setDirect2DHinting() */
+    bool getDirect2DHinting() const noexcept;
 
     //==============================================================================
     /** Changes all the font's characteristics with one call. */
@@ -371,30 +610,14 @@ public:
                           float newKerningAmount);
 
     //==============================================================================
-    /** Returns the total width of a string as it would be drawn using this font.
-        For a more accurate floating-point result, use getStringWidthFloat().
+    /** Returns the main typeface used by this font.
+
+        Note: This will only ever return the typeface for the "main" family.
+        Before attempting to render glyphs from this typeface, it's a good idea to check
+        that those glyphs are present in the typeface, and to select a different
+        face if necessary.
     */
-    int getStringWidth (const String& text) const;
-
-    /** Returns the total width of a string as it would be drawn using this font.
-        @see getStringWidth
-    */
-    float getStringWidthFloat (const String& text) const;
-
-    /** Returns the series of glyph numbers and their x offsets needed to represent a string.
-
-        An extra x offset is added at the end of the run, to indicate where the right hand
-        edge of the last character is.
-    */
-    void getGlyphPositions (const String& text, Array<int>& glyphs, Array<float>& xOffsets) const;
-
-    //==============================================================================
-    /** Returns the typeface used by this font.
-
-        Note that the object returned may go out of scope if this font is deleted
-        or has its style changed.
-    */
-    Typeface* getTypeface() const;
+    Typeface::Ptr getTypefacePtr() const;
 
     /** Creates an array of Font objects to represent all the fonts on the system.
 
@@ -424,25 +647,30 @@ public:
     static StringArray findAllTypefaceStyles (const String& family);
 
     //==============================================================================
-    /** Returns the font family of the typeface to be used for rendering glyphs that aren't
-        found in the requested typeface.
-    */
-    static const String& getFallbackFontName();
+    /** Attempts to locate a visually similar font that is capable of rendering the
+        provided string.
 
-    /** Sets the (platform-specific) font family of the typeface to use to find glyphs that
-        aren't available in whatever font you're trying to use.
-    */
-    static void setFallbackFontName (const String& name);
+        If fallback is disabled on this Font by setFallbackEnabled(), then this will
+        always return a copy of the current Font.
 
-    /** Returns the font style of the typeface to be used for rendering glyphs that aren't
-        found in the requested typeface.
-    */
-    static const String& getFallbackFontStyle();
+        Otherwise, the current font, then each of the fallback fonts specified by
+        setPreferredFallbackFamilies() will be checked, and the first Font that is
+        capable of rendering the string will be returned. If none of these fonts is
+        suitable, then the system font fallback mechanism will be used to locate a
+        font from the currently installed fonts. If the system also cannot find any
+        suitable font, then a copy of the original Font will be returned.
 
-    /** Sets the (platform-specific) font style of the typeface to use to find glyphs that
-        aren't available in whatever font you're trying to use.
+        Note that most fonts don't contain glyphs for all possible unicode codepoints,
+        and instead may contain e.g. just the glyphs required for a specific script. So,
+        if the provided text would be displayed using several scripts (multiple languages,
+        emoji, etc.) then there's a good chance that no single font will be able to
+        render the entire text. Shorter strings will generally produce better fallback
+        results than longer strings, with the caveat that the system may take control
+        characters such as combining marks and variation selectors into account when
+        selecting suitable fonts, so querying fallbacks character-by-character is likely
+        to produce poor results.
     */
-    static void setFallbackFontStyle (const String& style);
+    Font findSuitableFontForText (const String& text, const String& language = {}) const;
 
     //==============================================================================
     /** Creates a string to describe this font.
@@ -457,14 +685,47 @@ public:
     */
     static Font fromString (const String& fontDescription);
 
+    /** @internal */
+    class Native;
+
+    /** @internal
+
+        At the moment, this is a way to get at the hb_font_t that backs this font.
+        The typeface's hb_font_t is sized appropriately for this font instance.
+        The font may also have synthetic slant and bold applied.
+        This is only for internal use!
+    */
+    Native getNativeDetails() const;
+
+    /*  @internal
+        The factor by which a JUCE font height should be multiplied in order to convert to a font
+        size in points.
+
+        May be inf if the font ascent and descent overrides have both been set to 0!
+    */
+    float getHeightToPointsFactor() const;
 
 private:
     //==============================================================================
+    static bool compare (const Font&, const Font&) noexcept;
+
+    /*  Pins the underlying TypefacePtr, if any, instead of the name and style of the Font. A font
+        with a placeholder name e.g. "<Sans-Serif>" can resolve to different TypefacePtrs during
+        the lifetime of the application.
+
+        This function allows us to store an "unchanging" font that is always safe to use with the
+        glyph numbers resolved during shaping.
+    */
+    static Font withPinnedTypeface (Font f);
+    static StringArray findAllTypefaceNamesImpl();
+    static StringArray findAllTypefaceStylesImpl (const String&);
+
+    void dupeInternalIfShared();
+
+    friend struct GraphicsFontHelpers;
+
     class SharedFontInternal;
     ReferenceCountedObjectPtr<SharedFontInternal> font;
-    void dupeInternalIfShared();
-    void checkTypefaceSuitability();
-    float getHeightToPointsFactor() const;
 
     JUCE_LEAK_DETECTOR (Font)
 };

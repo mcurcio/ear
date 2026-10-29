@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -285,12 +301,12 @@ public:
     /** Returns the width of the frame to use around the window.
         @see getContentComponentBorder
     */
-    virtual BorderSize<int> getBorderThickness();
+    virtual BorderSize<int> getBorderThickness() const;
 
     /** Returns the insets to use when positioning the content component.
         @see getBorderThickness
     */
-    virtual BorderSize<int> getContentComponentBorder();
+    virtual BorderSize<int> getContentComponentBorder() const;
 
     //==============================================================================
     /** A set of colour IDs to use to change the colour of various aspects of the window.
@@ -306,10 +322,13 @@ public:
     };
 
     //==============================================================================
-    // Deprecated: use setContentOwned() and setContentNonOwned() instead.
-    JUCE_DEPRECATED (void setContentComponent (Component* newContentComponent,
-                                               bool deleteOldOne = true,
-                                               bool resizeToFit = false));
+    /** @cond */
+    [[deprecated ("use setContentOwned and setContentNonOwned instead.")]]
+    void setContentComponent (Component* newContentComponent,
+                              bool deleteOldOne = true,
+                              bool resizeToFit = false);
+    /** @endcond */
+
     using TopLevelWindow::addToDesktop;
 
     //==============================================================================
@@ -374,10 +393,20 @@ protected:
     std::unique_ptr<ResizableCornerComponent> resizableCorner;
     std::unique_ptr<ResizableBorderComponent> resizableBorder;
 
+    //==============================================================================
+    // The parameters for these methods have changed - please update your code!
+    void getBorderThickness (int& left, int& top, int& right, int& bottom);
+    void getContentComponentBorder (int& left, int& top, int& right, int& bottom);
+
 private:
     //==============================================================================
-    Component::SafePointer<Component> contentComponent, splashScreen;
-    bool ownsContentComponent = false, resizeToFitContent = false, fullscreen = false, canDrag = true, dragStarted = false;
+    Component::SafePointer<Component> contentComponent;
+    bool ownsContentComponent = false;
+    bool resizeToFitContent = false;
+    bool fullscreen = false;
+    bool canDrag = true;
+    bool dragStarted = false;
+    bool resizable = false;
     ComponentDragger dragger;
     Rectangle<int> lastNonFullScreenPos;
     ComponentBoundsConstrainer defaultConstrainer;
@@ -391,12 +420,6 @@ private:
     void updateLastPosIfShowing();
     void setContent (Component*, bool takeOwnership, bool resizeToFit);
     void updatePeerConstrainer();
-
-   #if JUCE_CATCH_DEPRECATED_CODE_MISUSE
-    // The parameters for these methods have changed - please update your code!
-    JUCE_DEPRECATED (void getBorderThickness (int& left, int& top, int& right, int& bottom));
-    JUCE_DEPRECATED (void getContentComponentBorder (int& left, int& top, int& right, int& bottom));
-   #endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ResizableWindow)
 };

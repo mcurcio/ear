@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -29,30 +45,10 @@ PathStrokeType::PathStrokeType (float strokeThickness, JointStyle joint, EndCapS
 {
 }
 
-PathStrokeType::PathStrokeType (const PathStrokeType& other) noexcept
-    : thickness (other.thickness),
-      jointStyle (other.jointStyle),
-      endStyle (other.endStyle)
-{
-}
-
-PathStrokeType& PathStrokeType::operator= (const PathStrokeType& other) noexcept
-{
-    thickness = other.thickness;
-    jointStyle = other.jointStyle;
-    endStyle = other.endStyle;
-    return *this;
-}
-
-PathStrokeType::~PathStrokeType() noexcept
-{
-}
-
 bool PathStrokeType::operator== (const PathStrokeType& other) const noexcept
 {
-    return thickness == other.thickness
-        && jointStyle == other.jointStyle
-        && endStyle == other.endStyle;
+    const auto tie = [] (const PathStrokeType& p) { return std::tie (p.thickness, p.jointStyle, p.endStyle); };
+    return tie (*this) == tie (other);
 }
 
 bool PathStrokeType::operator!= (const PathStrokeType& other) const noexcept
@@ -63,127 +59,133 @@ bool PathStrokeType::operator!= (const PathStrokeType& other) const noexcept
 //==============================================================================
 namespace PathStrokeHelpers
 {
-    static bool lineIntersection (const float x1, const float y1,
-                                  const float x2, const float y2,
-                                  const float x3, const float y3,
-                                  const float x4, const float y4,
-                                  float& intersectionX,
-                                  float& intersectionY,
-                                  float& distanceBeyondLine1EndSquared) noexcept
+    struct LineIntersection
     {
-        if (x2 != x3 || y2 != y3)
+        Point<float> point;
+        float distanceBeyondLine1EndSquared;
+        bool intersects;
+    };
+
+    static LineIntersection lineIntersection (const float x1, const float y1,
+                                              const float x2, const float y2,
+                                              const float x3, const float y3,
+                                              const float x4, const float y4)
+    {
+        if (! approximatelyEqual (x2, x3) || ! approximatelyEqual (y2, y3))
         {
-            auto dx1 = x2 - x1;
-            auto dy1 = y2 - y1;
-            auto dx2 = x4 - x3;
-            auto dy2 = y4 - y3;
-            auto divisor = dx1 * dy2 - dx2 * dy1;
+            const auto dx1 = x2 - x1;
+            const auto dy1 = y2 - y1;
+            const auto dx2 = x4 - x3;
+            const auto dy2 = y4 - y3;
+            const auto divisor = dx1 * dy2 - dx2 * dy1;
 
-            if (divisor == 0.0f)
+            if (approximatelyEqual (divisor, 0.0f))
             {
-                if (! ((dx1 == 0.0f && dy1 == 0.0f) || (dx2 == 0.0f && dy2 == 0.0f)))
+                if (! ((approximatelyEqual (dx1, 0.0f) && approximatelyEqual (dy1, 0.0f))
+                       || (approximatelyEqual (dx2, 0.0f) && approximatelyEqual (dy2, 0.0f))))
                 {
-                    if (dy1 == 0.0f && dy2 != 0.0f)
+                    if (approximatelyEqual (dy1, 0.0f) && ! approximatelyEqual (dy2, 0.0f))
                     {
-                        auto along = (y1 - y3) / dy2;
-                        intersectionX = x3 + along * dx2;
-                        intersectionY = y1;
+                        const auto along = (y1 - y3) / dy2;
+                        const auto intersectionX = x3 + along * dx2;
+                        const auto intersectionY = y1;
 
-                        distanceBeyondLine1EndSquared = intersectionX - x2;
-                        distanceBeyondLine1EndSquared *= distanceBeyondLine1EndSquared;
-                        if ((x2 > x1) == (intersectionX < x2))
-                            distanceBeyondLine1EndSquared = -distanceBeyondLine1EndSquared;
+                        const auto distance = square (intersectionX - x2);
+                        const auto distanceBeyondLine1EndSquared = (x2 > x1) == (intersectionX < x2)
+                                                                 ? -distance
+                                                                 : distance;
 
-                        return along >= 0 && along <= 1.0f;
+                        return { { intersectionX, intersectionY },
+                                 distanceBeyondLine1EndSquared,
+                                 along >= 0 && along <= 1.0f };
                     }
 
-                    if (dy2 == 0.0f && dy1 != 0.0f)
+                    if (approximatelyEqual (dy2, 0.0f) && ! approximatelyEqual (dy1, 0.0f))
                     {
-                        auto along = (y3 - y1) / dy1;
-                        intersectionX = x1 + along * dx1;
-                        intersectionY = y3;
+                        const auto along = (y3 - y1) / dy1;
+                        const auto intersectionX = x1 + along * dx1;
+                        const auto intersectionY = y3;
 
-                        distanceBeyondLine1EndSquared = (along - 1.0f) * dx1;
-                        distanceBeyondLine1EndSquared *= distanceBeyondLine1EndSquared;
-                        if (along < 1.0f)
-                            distanceBeyondLine1EndSquared = -distanceBeyondLine1EndSquared;
+                        const auto distance = square ((along - 1.0f) * dx1);
+                        const auto distanceBeyondLine1EndSquared = along < 1.0f ? -distance : distance;
 
-                        return along >= 0 && along <= 1.0f;
+                        return { { intersectionX, intersectionY },
+                                 distanceBeyondLine1EndSquared,
+                                 along >= 0 && along <= 1.0f };
                     }
 
-                    if (dx1 == 0.0f && dx2 != 0.0f)
+                    if (approximatelyEqual (dx1, 0.0f) && ! approximatelyEqual (dx2, 0.0f))
                     {
-                        auto along = (x1 - x3) / dx2;
-                        intersectionX = x1;
-                        intersectionY = y3 + along * dy2;
+                        const auto along = (x1 - x3) / dx2;
+                        const auto intersectionX = x1;
+                        const auto intersectionY = y3 + along * dy2;
 
-                        distanceBeyondLine1EndSquared = intersectionY - y2;
-                        distanceBeyondLine1EndSquared *= distanceBeyondLine1EndSquared;
+                        const auto distance = square (intersectionY - y2);
+                        const auto distanceBeyondLine1EndSquared = (y2 > y1) == (intersectionY < y2)
+                                                                 ? -distance
+                                                                 : distance;
 
-                        if ((y2 > y1) == (intersectionY < y2))
-                            distanceBeyondLine1EndSquared = -distanceBeyondLine1EndSquared;
-
-                        return along >= 0 && along <= 1.0f;
+                        return { { intersectionX, intersectionY },
+                                 distanceBeyondLine1EndSquared,
+                                 along >= 0 && along <= 1.0f };
                     }
 
-                    if (dx2 == 0.0f && dx1 != 0.0f)
+                    if (approximatelyEqual (dx2, 0.0f) && ! approximatelyEqual (dx1, 0.0f))
                     {
-                        auto along = (x3 - x1) / dx1;
-                        intersectionX = x3;
-                        intersectionY = y1 + along * dy1;
+                        const auto along = (x3 - x1) / dx1;
+                        const auto intersectionX = x3;
+                        const auto intersectionY = y1 + along * dy1;
 
-                        distanceBeyondLine1EndSquared = (along - 1.0f) * dy1;
-                        distanceBeyondLine1EndSquared *= distanceBeyondLine1EndSquared;
-                        if (along < 1.0f)
-                            distanceBeyondLine1EndSquared = -distanceBeyondLine1EndSquared;
+                        const auto distance = square ((along - 1.0f) * dy1);
+                        const auto distanceBeyondLine1EndSquared = along < 1.0f ? -distance : distance;
 
-                        return along >= 0 && along <= 1.0f;
+                        return { { intersectionX, intersectionY },
+                                 distanceBeyondLine1EndSquared,
+                                 along >= 0 && along <= 1.0f };
                     }
                 }
 
-                intersectionX = 0.5f * (x2 + x3);
-                intersectionY = 0.5f * (y2 + y3);
+                const auto intersectionX = 0.5f * (x2 + x3);
+                const auto intersectionY = 0.5f * (y2 + y3);
 
-                distanceBeyondLine1EndSquared = 0.0f;
-                return false;
+                const auto distanceBeyondLine1EndSquared = 0.0f;
+
+                return { { intersectionX, intersectionY },
+                         distanceBeyondLine1EndSquared,
+                         false };
             }
 
-            auto along1 = ((y1 - y3) * dx2 - (x1 - x3) * dy2) / divisor;
+            const auto along = ((y1 - y3) * dx2 - (x1 - x3) * dy2) / divisor;
 
-            intersectionX = x1 + along1 * dx1;
-            intersectionY = y1 + along1 * dy1;
+            const auto intersectionX = x1 + along * dx1;
+            const auto intersectionY = y1 + along * dy1;
 
-            if (along1 >= 0 && along1 <= 1.0f)
+            if (along >= 0 && along <= 1.0f)
             {
-                auto along2 = ((y1 - y3) * dx1 - (x1 - x3) * dy1) / divisor;
+                const auto along2 = ((y1 - y3) * dx1 - (x1 - x3) * dy1) / divisor;
 
                 if (along2 >= 0 && along2 <= 1.0f)
                 {
-                    distanceBeyondLine1EndSquared = 0.0f;
-                    return true;
+                    return { { intersectionX, intersectionY },
+                             0.0f,
+                             true };
                 }
             }
 
-            distanceBeyondLine1EndSquared = along1 - 1.0f;
-            distanceBeyondLine1EndSquared *= distanceBeyondLine1EndSquared;
-            distanceBeyondLine1EndSquared *= (dx1 * dx1 + dy1 * dy1);
+            const auto distance = square (along - 1.0f) * (dx1 * dx1 + dy1 * dy1);
+            const auto distanceBeyondLine1EndSquared = along < 1.0f ? -distance : distance;
 
-            if (along1 < 1.0f)
-                distanceBeyondLine1EndSquared = -distanceBeyondLine1EndSquared;
-
-            return false;
+            return { { intersectionX, intersectionY },
+                     distanceBeyondLine1EndSquared,
+                     false };
         }
 
-        intersectionX = x2;
-        intersectionY = y2;
-
-        distanceBeyondLine1EndSquared = 0.0f;
-        return true;
+        return { Point { x2, y2 }, 0.0f, true };
     }
 
     static void addEdgeAndJoint (Path& destPath,
                                  const PathStrokeType::JointStyle style,
-                                 const float maxMiterExtensionSquared, const float width,
+                                 const float miterLimit, const float width,
                                  const float x1, const float y1,
                                  const float x2, const float y2,
                                  const float x3, const float y3,
@@ -191,31 +193,32 @@ namespace PathStrokeHelpers
                                  const float midX, const float midY)
     {
         if (style == PathStrokeType::beveled
-            || (x3 == x4 && y3 == y4)
-            || (x1 == x2 && y1 == y2))
+            || (approximatelyEqual (x3, x4) && approximatelyEqual (y3, y4))
+            || (approximatelyEqual (x1, x2) && approximatelyEqual (y1, y2)))
         {
             destPath.lineTo (x2, y2);
             destPath.lineTo (x3, y3);
         }
         else
         {
-            float jx, jy, distanceBeyondLine1EndSquared;
+            const auto intersection = lineIntersection (x1, y1, x2, y2, x3, y3, x4, y4);
 
-            // if they intersect, use this point..
-            if (lineIntersection (x1, y1, x2, y2,
-                                  x3, y3, x4, y4,
-                                  jx, jy, distanceBeyondLine1EndSquared))
+            // if they intersect, use this point
+            if (intersection.intersects)
             {
-                destPath.lineTo (jx, jy);
+                destPath.lineTo (intersection.point);
             }
             else
             {
                 if (style == PathStrokeType::mitered)
                 {
-                    if (distanceBeyondLine1EndSquared < maxMiterExtensionSquared
-                        && distanceBeyondLine1EndSquared > 0.0f)
+                    Point<float> mid { midX, midY };
+                    const auto halfMiterLength = intersection.point.getDistanceFrom (mid);
+
+                    if (0.0f < intersection.distanceBeyondLine1EndSquared
+                        && halfMiterLength <= width * miterLimit)
                     {
-                        destPath.lineTo (jx, jy);
+                        destPath.lineTo (intersection.point);
                     }
                     else
                     {
@@ -294,7 +297,7 @@ namespace PathStrokeHelpers
             auto dy = y2 - y1;
             auto len = juce_hypot (dx, dy);
 
-            if (len == 0.0f)
+            if (approximatelyEqual (len, 0.0f))
             {
                 offx1 = offx2 = x1;
                 offy1 = offy2 = y1;
@@ -422,7 +425,7 @@ namespace PathStrokeHelpers
     }
 
     static void addSubPath (Path& destPath, Array<LineSection>& subPath,
-                            const bool isClosed, const float width, const float maxMiterExtensionSquared,
+                            const bool isClosed, const float width, const float miterLimit,
                             const PathStrokeType::JointStyle jointStyle, const PathStrokeType::EndCapStyle endStyle,
                             const Arrowhead* const arrowhead)
     {
@@ -458,7 +461,7 @@ namespace PathStrokeHelpers
             const LineSection& l = subPath.getReference (i);
 
             addEdgeAndJoint (destPath, jointStyle,
-                             maxMiterExtensionSquared, width,
+                             miterLimit, width,
                              lastX1, lastY1, lastX2, lastY2,
                              l.lx1, l.ly1, l.lx2, l.ly2,
                              l.x1, l.y1);
@@ -476,7 +479,7 @@ namespace PathStrokeHelpers
             auto& l = subPath.getReference (0);
 
             addEdgeAndJoint (destPath, jointStyle,
-                             maxMiterExtensionSquared, width,
+                             miterLimit, width,
                              lastX1, lastY1, lastX2, lastY2,
                              l.lx1, l.ly1, l.lx2, l.ly2,
                              l.x1, l.y1);
@@ -505,7 +508,7 @@ namespace PathStrokeHelpers
             auto& l = subPath.getReference (i);
 
             addEdgeAndJoint (destPath, jointStyle,
-                             maxMiterExtensionSquared, width,
+                             miterLimit, width,
                              lastX1, lastY1, lastX2, lastY2,
                              l.rx1, l.ry1, l.rx2, l.ry2,
                              l.x2, l.y2);
@@ -519,7 +522,7 @@ namespace PathStrokeHelpers
         if (isClosed)
         {
             addEdgeAndJoint (destPath, jointStyle,
-                             maxMiterExtensionSquared, width,
+                             miterLimit, width,
                              lastX1, lastY1, lastX2, lastY2,
                              lastLine.rx1, lastLine.ry1, lastLine.rx2, lastLine.ry2,
                              lastLine.x2, lastLine.y2);
@@ -534,12 +537,15 @@ namespace PathStrokeHelpers
     }
 
     static void createStroke (const float thickness, const PathStrokeType::JointStyle jointStyle,
+                              float miterLimit,
                               const PathStrokeType::EndCapStyle endStyle,
                               Path& destPath, const Path& source,
                               const AffineTransform& transform,
                               const float extraAccuracy, const Arrowhead* const arrowhead)
     {
         jassert (extraAccuracy > 0);
+
+        miterLimit = std::max (1.0f, miterLimit);
 
         if (thickness <= 0)
         {
@@ -562,7 +568,6 @@ namespace PathStrokeHelpers
 
         destPath.setUsingNonZeroWinding (true);
 
-        const float maxMiterExtensionSquared = 9.0f * thickness * thickness;
         const float width = 0.5f * thickness;
 
         // Iterate the path, creating a list of the
@@ -583,7 +588,7 @@ namespace PathStrokeHelpers
             {
                 if (subPath.size() > 0)
                 {
-                    addSubPath (destPath, subPath, false, width, maxMiterExtensionSquared, jointStyle, endStyle, arrowhead);
+                    addSubPath (destPath, subPath, false, width, miterLimit, jointStyle, endStyle, arrowhead);
                     subPath.clearQuick();
                 }
 
@@ -603,7 +608,7 @@ namespace PathStrokeHelpers
             {
                 auto len = std::sqrt (hypotSquared);
 
-                if (len == 0.0f)
+                if (approximatelyEqual (len, 0.0f))
                 {
                     l.rx1 = l.rx2 = l.lx1 = l.lx2 = l.x1;
                     l.ry1 = l.ry2 = l.ly1 = l.ly2 = l.y1;
@@ -629,7 +634,7 @@ namespace PathStrokeHelpers
 
                 if (it.closesSubPath)
                 {
-                    addSubPath (destPath, subPath, true, width, maxMiterExtensionSquared, jointStyle, endStyle, arrowhead);
+                    addSubPath (destPath, subPath, true, width, miterLimit, jointStyle, endStyle, arrowhead);
                     subPath.clearQuick();
                 }
                 else
@@ -641,15 +646,56 @@ namespace PathStrokeHelpers
         }
 
         if (subPath.size() > 0)
-            addSubPath (destPath, subPath, false, width, maxMiterExtensionSquared, jointStyle, endStyle, arrowhead);
+            addSubPath (destPath, subPath, false, width, miterLimit, jointStyle, endStyle, arrowhead);
     }
 }
 
 void PathStrokeType::createStrokedPath (Path& destPath, const Path& sourcePath,
                                         const AffineTransform& transform, float extraAccuracy) const
 {
-    PathStrokeHelpers::createStroke (thickness, jointStyle, endStyle, destPath, sourcePath,
+    PathStrokeHelpers::createStroke (thickness, jointStyle, miterLimit, endStyle, destPath, sourcePath,
                                      transform, extraAccuracy, nullptr);
+}
+
+struct PositionInDashArray
+{
+    int startIndex;
+    float lengthReductionForFirstDash;
+};
+
+static PositionInDashArray calculatePositionInDashArray (Span<const float> dashLengths, float dashOffset)
+{
+    const auto sumOfDashLengths = std::accumulate (dashLengths.begin(), dashLengths.end(), 0.0f);
+    dashOffset = std::fmod (dashOffset, sumOfDashLengths);
+
+    if (approximatelyEqual (dashOffset, 0.0f) || approximatelyEqual (sumOfDashLengths, 0.0f))
+        return { 0, 0.0f };
+
+    const auto forward = dashOffset >= 0.0f;
+
+    int safetyLoopCounter = 0;
+    auto offset = std::abs (dashOffset);
+    for (int i = forward ? 0 : -1;; i += forward ? 1 : -1)
+    {
+        const auto index = (size_t) negativeAwareModulo (i, (int) dashLengths.size());
+        const auto currentDash = dashLengths[index];
+        const auto omitFromCurrentDash = forward ? offset : std::max (0.0f, currentDash - offset);
+
+        offset -= currentDash;
+
+        // We can't omit all of the current dash, otherwise we'd have to draw a zero-length segment,
+        // which would cause a division problem in our implementation.
+        if (offset <= 0.0f && omitFromCurrentDash < currentDash)
+            return { (int) index, omitFromCurrentDash };
+
+        if (++safetyLoopCounter > 10000)
+        {
+            // We aren't converging quickly enough on a solution. Maybe the dash parameters
+            // are ill conditioned?
+            jassertfalse;
+            return { 0, 0.0f };
+        }
+    }
 }
 
 void PathStrokeType::createDashedStroke (Path& destPath,
@@ -657,9 +703,11 @@ void PathStrokeType::createDashedStroke (Path& destPath,
                                          const float* dashLengths,
                                          int numDashLengths,
                                          const AffineTransform& transform,
-                                         float extraAccuracy) const
+                                         float extraAccuracy,
+                                         float dashOffset) const
 {
     jassert (extraAccuracy > 0);
+    jassert (numDashLengths > 0);
 
     if (thickness <= 0)
         return;
@@ -668,8 +716,11 @@ void PathStrokeType::createDashedStroke (Path& destPath,
     PathFlatteningIterator it (sourcePath, transform, Path::defaultToleranceForMeasurement / extraAccuracy);
 
     bool first = true;
-    int dashNum = 0;
-    float pos = 0.0f, lineLen = 0.0f, lineEndPos = 0.0f;
+
+    const auto positionInDashArray = calculatePositionInDashArray ({ dashLengths, (size_t) numDashLengths }, dashOffset);
+
+    int dashNum = positionInDashArray.startIndex;
+    float pos = -positionInDashArray.lengthReductionForFirstDash, lineLen = 0.0f, lineEndPos = 0.0f;
     float dx = 0.0f, dy = 0.0f;
 
     for (;;)
@@ -694,10 +745,13 @@ void PathStrokeType::createDashedStroke (Path& destPath,
                 return;
             }
 
-            if (isSolid && ! first)
-                newDestPath.lineTo (it.x1, it.y1);
-            else
-                newDestPath.startNewSubPath (it.x1, it.y1);
+            if (isSolid)
+            {
+                if (first)
+                    newDestPath.startNewSubPath (it.x1, it.y1);
+                else
+                    newDestPath.lineTo (it.x1, it.y1);
+            }
 
             dx = it.x2 - it.x1;
             dy = it.y2 - it.y1;
@@ -730,7 +784,7 @@ void PathStrokeType::createStrokeWithArrowheads (Path& destPath,
     head.endWidth = arrowheadEndWidth;
     head.endLength = arrowheadEndLength;
 
-    PathStrokeHelpers::createStroke (thickness, jointStyle, endStyle,
+    PathStrokeHelpers::createStroke (thickness, jointStyle, miterLimit, endStyle,
                                      destPath, sourcePath, transform, extraAccuracy, &head);
 }
 

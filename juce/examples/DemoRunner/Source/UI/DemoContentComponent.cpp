@@ -1,17 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   The code included in this file is provided under the terms of the ISC license
+   http://www.isc.org/downloads/software-support-policy/isc-license. Permission
+   to use, copy, modify, and/or distribute this software for any purpose with or
+   without fee is hereby granted provided that the above copyright notice and
+   this permission notice appear in all copies.
 
-   For this technical preview, this file is not subject to commercial licensing.
-
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -21,7 +26,7 @@
 #include "MainComponent.h"
 
 //==============================================================================
-struct DemoContent    : public Component
+struct DemoContent final : public Component
 {
     DemoContent() noexcept    {}
 
@@ -51,7 +56,7 @@ private:
 
 //==============================================================================
 #if ! (JUCE_ANDROID || JUCE_IOS)
-struct CodeContent    : public Component
+struct CodeContent final : public Component
 {
     CodeContent()
     {
@@ -60,7 +65,7 @@ struct CodeContent    : public Component
         codeEditor.setReadOnly (true);
         codeEditor.setScrollbarThickness (8);
 
-        lookAndFeelChanged();
+        updateLookAndFeel();
     }
 
     void resized() override
@@ -76,14 +81,19 @@ struct CodeContent    : public Component
                                     "*******************************************************************************/\n");
     }
 
-    void lookAndFeelChanged() override
+    void updateLookAndFeel()
     {
-        auto* v4 = dynamic_cast <LookAndFeel_V4*> (&Desktop::getInstance().getDefaultLookAndFeel());
+        auto* v4 = dynamic_cast<LookAndFeel_V4*> (&Desktop::getInstance().getDefaultLookAndFeel());
 
         if (v4 != nullptr && (v4->getCurrentColourScheme() != LookAndFeel_V4::getLightColourScheme()))
             codeEditor.setColourScheme (getDarkColourScheme());
         else
             codeEditor.setColourScheme (getLightColourScheme());
+    }
+
+    void lookAndFeelChanged() override
+    {
+        updateLookAndFeel();
     }
 
     CodeDocument document;
@@ -93,7 +103,7 @@ struct CodeContent    : public Component
 #endif
 
 //==============================================================================
-DemoContentComponent::DemoContentComponent (Component& mainComponent, std::function<void(bool)> callback)
+DemoContentComponent::DemoContentComponent (Component& mainComponent, std::function<void (bool)> callback)
     : TabbedComponent (TabbedButtonBar::Orientation::TabsAtTop),
       demoChangedCallback (std::move (callback))
 {
@@ -108,7 +118,7 @@ DemoContentComponent::DemoContentComponent (Component& mainComponent, std::funct
     addTab ("Settings", Colours::transparentBlack, new SettingsContent (dynamic_cast<MainComponent&> (mainComponent)), true);
 
     setTabBarDepth (40);
-    lookAndFeelChanged();
+    updateLookAndFeel();
 }
 
 DemoContentComponent::~DemoContentComponent()
@@ -175,12 +185,17 @@ void DemoContentComponent::clearCurrentDemo()
     demoChangedCallback (false);
 }
 
-void DemoContentComponent::lookAndFeelChanged()
+void DemoContentComponent::updateLookAndFeel()
 {
     auto backgroundColour = findColour (ResizableWindow::backgroundColourId);
 
     for (int i = 0; i < getNumTabs(); ++i)
         setTabBackgroundColour (i, backgroundColour);
+}
+
+void DemoContentComponent::lookAndFeelChanged()
+{
+    updateLookAndFeel();
 }
 
 String DemoContentComponent::trimPIP (const String& fileContents)

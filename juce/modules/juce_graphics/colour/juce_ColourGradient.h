@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -30,17 +46,22 @@ namespace juce
 class JUCE_API  ColourGradient  final
 {
 public:
+    /** Specifies how the gradient range outside [0, 1] should be mapped onto the colours.
+        Follows the SVG/CSS terminology.
+    */
+    enum class SpreadMethod
+    {
+        pad,
+        reflect,
+        repeat
+    };
+
     /** Creates an uninitialised gradient.
 
         If you use this constructor instead of the other one, be sure to set all the
         object's public member variables before using it!
     */
     ColourGradient() noexcept;
-
-    ColourGradient (const ColourGradient&);
-    ColourGradient (ColourGradient&&) noexcept;
-    ColourGradient& operator= (const ColourGradient&);
-    ColourGradient& operator= (ColourGradient&&) noexcept;
 
     //==============================================================================
     /** Creates a gradient object.
@@ -107,9 +128,6 @@ public:
     {
         return horizontal (colourLeft, (float) area.getX(), colourRight, (float) area.getRight());
     }
-
-    /** Destructor */
-    ~ColourGradient();
 
     //==============================================================================
     /** Removes any colours that have been added.
@@ -178,6 +196,17 @@ public:
     */
     void createLookupTable (PixelARGB* resultLookupTable, int numEntries) const noexcept;
 
+    /** Creates a set of interpolated premultiplied ARGB values.
+        This will fill an array of a user-specified size with the gradient, interpolating to fit.
+        When calling this, the ColourGradient must have at least 2 colour stops specified.
+    */
+    template <size_t NumEntries>
+    void createLookupTable (PixelARGB (&resultLookupTable)[NumEntries]) const noexcept
+    {
+        static_assert (NumEntries != 0);
+        createLookupTable (resultLookupTable, NumEntries);
+    }
+
     /** Returns true if all colours are opaque. */
     bool isOpaque() const noexcept;
 
@@ -194,20 +223,53 @@ public:
     */
     bool isRadial;
 
+    /** When isRadial is true, and this value is set to a non-negative value, point2 becomes the
+        centre of the gradient's end circle, and endRadius defines its radius. point1 then becomes
+        the centre of the gradient's start circle, and startRadius defines its radius.
+
+        Otherwise, point1 is the centre of both the start and end circles, and point2 defines a
+        point on the circumference. The end radius is then calculated as the distance between
+        point1 and point2.
+    */
+    float endRadius = -1.0f;
+
+    /** If isRadial is true, and endRadius is set to a non-negative value, this specifies the radius
+        of the gradient's start circle.
+    */
+    float startRadius = 0.0f;
+
+    /** @see SpreadMethod */
+    SpreadMethod spreadMethod = SpreadMethod::pad;
+
     bool operator== (const ColourGradient&) const noexcept;
     bool operator!= (const ColourGradient&) const noexcept;
 
+    /** This comparison, and the other ordered comparisons are provided only for compatibility with
+        ordered container types like std::set and std::map.
+    */
+    bool operator<  (const ColourGradient&) const noexcept;
+    bool operator<= (const ColourGradient&) const noexcept;
+    bool operator>  (const ColourGradient&) const noexcept;
+    bool operator>= (const ColourGradient&) const noexcept;
 
 private:
     //==============================================================================
     struct ColourPoint
     {
-        bool operator== (ColourPoint) const noexcept;
-        bool operator!= (ColourPoint) const noexcept;
+        bool operator== (ColourPoint other) const noexcept;
+        bool operator!= (ColourPoint other) const noexcept;
+        bool operator<  (ColourPoint other) const noexcept;
 
         double position;
         Colour colour;
+
+    private:
+        auto tie() const;
     };
+
+    struct ColourPointArrayComparisons;
+
+    auto tie() const;
 
     Array<ColourPoint> colours;
 

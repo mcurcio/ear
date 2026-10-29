@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -19,16 +35,13 @@
 namespace juce
 {
 
-Image juce_createIconForFile (const File& file);
-
-
 //==============================================================================
 FileListComponent::FileListComponent (DirectoryContentsList& listToShow)
-    : ListBox ({}, nullptr),
+    : ListBox ({}, this),
       DirectoryContentsDisplayComponent (listToShow),
       lastDirectory (listToShow.getDirectory())
 {
-    setModel (this);
+    setTitle ("Files");
     directoryContentsList.addChangeListener (this);
 }
 
@@ -59,14 +72,20 @@ void FileListComponent::scrollToTop()
 
 void FileListComponent::setSelectedFile (const File& f)
 {
-    for (int i = directoryContentsList.getNumFiles(); --i >= 0;)
-    {
-        if (directoryContentsList.getFile(i) == f)
-        {
-            fileWaitingToBeSelected = File();
+    lastDirectory = directoryContentsList.getDirectory();
 
-            selectRow (i);
-            return;
+    if (! directoryContentsList.isStillLoading())
+    {
+        for (int i = directoryContentsList.getNumFiles(); --i >= 0;)
+        {
+            if (directoryContentsList.getFile (i) == f)
+            {
+                fileWaitingToBeSelected = File();
+
+                updateContent();
+                selectRow (i);
+                return;
+            }
         }
     }
 
@@ -91,9 +110,10 @@ void FileListComponent::changeListenerCallback (ChangeBroadcaster*)
 }
 
 //==============================================================================
-class FileListComponent::ItemComponent  : public Component,
-                                          private TimeSliceClient,
-                                          private AsyncUpdater
+class FileListComponent::ItemComponent final : public Component,
+                                               public TooltipClient,
+                                               private TimeSliceClient,
+                                               private AsyncUpdater
 {
 public:
     ItemComponent (FileListComponent& fc, TimeSliceThread& t)
@@ -182,6 +202,11 @@ public:
         repaint();
     }
 
+    String getTooltip() override
+    {
+        return owner.getTooltipForRow (index);
+    }
+
 private:
     //==============================================================================
     FileListComponent& owner;
@@ -192,6 +217,11 @@ private:
     int index = 0;
     bool highlighted = false, isDirectory = false;
 
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override
+    {
+        return createIgnoredAccessibilityHandler (*this);
+    }
+
     void updateIcon (const bool onlyUpdateIfCached)
     {
         if (icon.isNull())
@@ -201,7 +231,7 @@ private:
 
             if (im.isNull() && ! onlyUpdateIfCached)
             {
-                im = juce_createIconForFile (file);
+                im = detail::WindowingHelpers::createIconForFile (file);
 
                 if (im.isValid())
                     ImageCache::addImageToCache (im, hashCode);
@@ -222,6 +252,11 @@ private:
 int FileListComponent::getNumRows()
 {
     return directoryContentsList.getNumFiles();
+}
+
+String FileListComponent::getNameForRow (int rowNumber)
+{
+    return directoryContentsList.getFile (rowNumber).getFileName();
 }
 
 void FileListComponent::paintListBoxItem (int, Graphics&, int, int, bool)

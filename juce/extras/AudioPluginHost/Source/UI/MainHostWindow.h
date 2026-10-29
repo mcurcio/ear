@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -36,18 +52,41 @@ namespace CommandIDs
     static const int aboutBox               = 0x30300;
     static const int allWindowsForward      = 0x30400;
     static const int toggleDoublePrecision  = 0x30500;
+    static const int autoScalePluginWindows = 0x30600;
 }
 
+//==============================================================================
 ApplicationCommandManager& getCommandManager();
 ApplicationProperties& getAppProperties();
-bool isOnTouchDevice();
 
 //==============================================================================
-class MainHostWindow    : public DocumentWindow,
-                          public MenuBarModel,
-                          public ApplicationCommandTarget,
-                          public ChangeListener,
-                          public FileDragAndDropTarget
+enum class AutoScale
+{
+    scaled,
+    unscaled,
+    useDefault
+};
+
+constexpr bool autoScaleOptionAvailable =
+    #if JUCE_WINDOWS && JUCE_WIN_PER_MONITOR_DPI_AWARE
+     true;
+    #else
+     false;
+    #endif
+
+AutoScale getAutoScaleValueForPlugin (const String&);
+void setAutoScaleValueForPlugin (const String&, AutoScale);
+bool shouldAutoScalePlugin (const PluginDescription&);
+void addPluginAutoScaleOptionsSubMenu (AudioPluginInstance*, PopupMenu&);
+
+constexpr const char* processUID = "juceaudiopluginhost";
+
+//==============================================================================
+class MainHostWindow final : public DocumentWindow,
+                             public MenuBarModel,
+                             public ApplicationCommandTarget,
+                             public ChangeListener,
+                             public FileDragAndDropTarget
 {
 public:
     //==============================================================================
@@ -76,17 +115,23 @@ public:
 
     void tryToQuitApplication();
 
-    void createPlugin (const PluginDescription&, Point<int> pos);
+    void createPlugin (const PluginDescriptionAndPreference&, Point<int> pos);
 
     void addPluginsToMenu (PopupMenu&);
-    PluginDescription getChosenType (int menuID) const;
-
-    bool isDoublePrecisionProcessing();
-    void updatePrecisionMenuItem (ApplicationCommandInfo& info);
+    std::optional<PluginDescriptionAndPreference> getChosenType (int menuID) const;
 
     std::unique_ptr<GraphDocumentComponent> graphHolder;
 
 private:
+    //==============================================================================
+    static bool isDoublePrecisionProcessingEnabled();
+    static bool isAutoScalePluginWindowsEnabled();
+
+    static void updatePrecisionMenuItem (ApplicationCommandInfo& info);
+    static void updateAutoScaleMenuItem (ApplicationCommandInfo& info);
+
+    void showAudioSettings();
+
     //==============================================================================
     AudioDeviceManager deviceManager;
     AudioPluginFormatManager formatManager;
@@ -94,12 +139,10 @@ private:
     std::vector<PluginDescription> internalTypes;
     KnownPluginList knownPluginList;
     KnownPluginList::SortMethod pluginSortMethod;
-    Array<PluginDescription> pluginDescriptions;
+    Array<PluginDescriptionAndPreference> pluginDescriptionsAndPreference;
 
     class PluginListWindow;
     std::unique_ptr<PluginListWindow> pluginListWindow;
-
-    void showAudioSettings();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MainHostWindow)
 };

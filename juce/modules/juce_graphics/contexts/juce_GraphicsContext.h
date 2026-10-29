@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -49,9 +65,6 @@ public:
     */
     explicit Graphics (const Image& imageToDrawOnto);
 
-    /** Destructor. */
-    ~Graphics();
-
     //==============================================================================
     /** Changes the current drawing colour.
 
@@ -75,6 +88,9 @@ public:
         A value of 0.0 is completely transparent, 1.0 is completely opaque.
     */
     void setOpacity (float newOpacity);
+
+    /** Changes the blend mode used for drawing images. */
+    void setImageBlendMode (BlendMode newMode);
 
     /** Sets the context to use a gradient for its fill pattern. */
     void setGradientFill (const ColourGradient& gradient);
@@ -207,7 +223,8 @@ public:
                          int x, int y, int width, int height,
                          Justification justificationFlags,
                          int maximumNumberOfLines,
-                         float minimumHorizontalScale = 0.0f) const;
+                         float minimumHorizontalScale = 0.0f,
+                         GlyphArrangementOptions options = {}) const;
 
     /** Tries to draw a text string inside a given space.
 
@@ -232,7 +249,8 @@ public:
                          Rectangle<int> area,
                          Justification justificationFlags,
                          int maximumNumberOfLines,
-                         float minimumHorizontalScale = 0.0f) const;
+                         float minimumHorizontalScale = 0.0f,
+                         GlyphArrangementOptions options = {}) const;
 
     //==============================================================================
     /** Fills the context's entire clip region with the current colour or brush.
@@ -465,7 +483,7 @@ public:
         By default a Graphics object will be set to mediumRenderingQuality.
         @see Graphics::drawImage, Graphics::drawImageTransformed, Graphics::drawImageWithin
     */
-    void setImageResamplingQuality (const ResamplingQuality newQuality);
+    void setImageResamplingQuality (ResamplingQuality newQuality);
 
     /** Draws an image.
 
@@ -577,7 +595,7 @@ public:
 
     //==============================================================================
     /** Returns the position of the bounding box for the current clipping region.
-        @see getClipRegion, clipRegionIntersects
+        @see clipRegionIntersects
     */
     Rectangle<int> getClipBounds() const;
 
@@ -652,7 +670,7 @@ public:
         On construction, this calls Graphics::saveState(), and on destruction it calls
         Graphics::restoreState() on the Graphics object that you supply.
     */
-    class ScopedSaveState
+    class JUCE_API ScopedSaveState
     {
     public:
         ScopedSaveState (Graphics&);

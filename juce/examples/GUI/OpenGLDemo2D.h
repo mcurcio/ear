@@ -1,18 +1,22 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE examples.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework examples.
+   Copyright (c) Raw Material Software Limited
 
    The code included in this file is provided under the terms of the ISC license
    http://www.isc.org/downloads/software-support-policy/isc-license. Permission
-   To use, copy, modify, and/or distribute this software for any purpose with or
+   to use, copy, modify, and/or distribute this software for any purpose with or
    without fee is hereby granted provided that the above copyright notice and
    this permission notice appear in all copies.
 
-   THE SOFTWARE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES,
-   WHETHER EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR
-   PURPOSE, ARE DISCLAIMED.
+   THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+   REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+   AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+   INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+   LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+   OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+   PERFORMANCE OF THIS SOFTWARE.
 
   ==============================================================================
 */
@@ -31,7 +35,8 @@
 
  dependencies:     juce_core, juce_data_structures, juce_events, juce_graphics,
                    juce_gui_basics, juce_gui_extra, juce_opengl
- exporters:        xcode_mac, vs2019, linux_make, androidstudio, xcode_iphone
+ exporters:        xcode_mac, vs2022, vs2026, linux_make, androidstudio,
+                   xcode_iphone
 
  moduleFlags:      JUCE_STRICT_REFCOUNTEDPOINTER=1
 
@@ -49,9 +54,9 @@
 #include "../Assets/DemoUtilities.h"
 
 //==============================================================================
-class OpenGLDemo2D  : public Component,
-                      private CodeDocument::Listener,
-                      private Timer
+class OpenGLDemo2D final : public Component,
+                           private CodeDocument::Listener,
+                           private Timer
 {
 public:
     OpenGLDemo2D()
@@ -65,12 +70,10 @@ public:
 
         addAndMakeVisible (statusLabel);
         statusLabel.setJustificationType (Justification::topLeft);
-        statusLabel.setFont (Font (14.0f));
+        statusLabel.setFont (FontOptions (14.0f));
 
-        auto presets = getPresets();
-
-        for (int i = 0; i < presets.size(); ++i)
-            presetBox.addItem (presets[i].name, i + 1);
+        for (const auto [index, preset] : enumerate (getPresets(), 1))
+            presetBox.addItem (preset.name, index);
 
         addAndMakeVisible (presetLabel);
         presetLabel.attachToComponent (&presetBox, true);
@@ -141,7 +144,7 @@ public:
 
     void selectPreset (int preset)
     {
-        fragmentDocument.replaceAllContent (getPresets()[preset].fragmentShader);
+        fragmentDocument.replaceAllContent (preprocessShader (getPresets()[(size_t) preset].fragmentShader));
         startTimer (1);
     }
 
@@ -181,7 +184,14 @@ private:
         const char* fragmentShader;
     };
 
-    static Array<ShaderPreset> getPresets()
+    static String preprocessShader (String shaderSource)
+    {
+        return shaderSource.replace ("#lowp#",    OpenGLHelpers::isOpenGLES() ? "lowp" : "")
+                           .replace ("#mediump#", OpenGLHelpers::isOpenGLES() ? "mediump" : "")
+                           .replace ("#highp#",   OpenGLHelpers::isOpenGLES() ? "highp" : "");
+    }
+
+    static Span<const ShaderPreset> getPresets()
     {
         #define SHADER_2DDEMO_HEADER \
             "/*  This demo shows the use of the OpenGLGraphicsContextCustomShader,\n" \
@@ -191,7 +201,7 @@ private:
             "    recompiled in real-time!\n" \
             "*/\n\n"
 
-        ShaderPreset presets[] =
+        static constexpr ShaderPreset presets[]
         {
             {
                 "Simple Gradient",
@@ -199,9 +209,9 @@ private:
                 SHADER_2DDEMO_HEADER
                 "void main()\n"
                 "{\n"
-                "    " JUCE_MEDIUMP " vec4 colour1 = vec4 (1.0, 0.4, 0.6, 1.0);\n"
-                "    " JUCE_MEDIUMP " vec4 colour2 = vec4 (0.0, 0.8, 0.6, 1.0);\n"
-                "    " JUCE_MEDIUMP " float alpha = pixelPos.x / 1000.0;\n"
+                "    #mediump# vec4 colour1 = vec4 (1.0, 0.4, 0.6, 1.0);\n"
+                "    #mediump# vec4 colour2 = vec4 (0.0, 0.8, 0.6, 1.0);\n"
+                "    #mediump# float alpha = pixelPos.x / 1000.0;\n"
                 "    gl_FragColor = pixelAlpha * mix (colour1, colour2, alpha);\n"
                 "}\n"
             },
@@ -212,9 +222,9 @@ private:
                 SHADER_2DDEMO_HEADER
                 "void main()\n"
                 "{\n"
-                "    " JUCE_MEDIUMP " vec4 colour1 = vec4 (1.0, 0.4, 0.6, 1.0);\n"
-                "    " JUCE_MEDIUMP " vec4 colour2 = vec4 (0.3, 0.4, 0.4, 1.0);\n"
-                "    " JUCE_MEDIUMP " float alpha = distance (pixelPos, vec2 (600.0, 500.0)) / 400.0;\n"
+                "    #mediump# vec4 colour1 = vec4 (1.0, 0.4, 0.6, 1.0);\n"
+                "    #mediump# vec4 colour2 = vec4 (0.3, 0.4, 0.4, 1.0);\n"
+                "    #mediump# float alpha = distance (pixelPos, vec2 (600.0, 500.0)) / 400.0;\n"
                 "    gl_FragColor = pixelAlpha * mix (colour1, colour2, alpha);\n"
                 "}\n"
             },
@@ -225,12 +235,12 @@ private:
                 SHADER_2DDEMO_HEADER
                 "void main()\n"
                 "{\n"
-                "    " JUCE_MEDIUMP " vec4 colour1 = vec4 (0.1, 0.1, 0.9, 1.0);\n"
-                "    " JUCE_MEDIUMP " vec4 colour2 = vec4 (0.0, 0.8, 0.6, 1.0);\n"
-                "    " JUCE_MEDIUMP " float distance = distance (pixelPos, vec2 (600.0, 500.0));\n"
+                "    #mediump# vec4 colour1 = vec4 (0.1, 0.1, 0.9, 1.0);\n"
+                "    #mediump# vec4 colour2 = vec4 (0.0, 0.8, 0.6, 1.0);\n"
+                "    #mediump# float distance = distance (pixelPos, vec2 (600.0, 500.0));\n"
                 "\n"
-                "    " JUCE_MEDIUMP " float innerRadius = 200.0;\n"
-                "    " JUCE_MEDIUMP " float outerRadius = 210.0;\n"
+                "    #mediump# float innerRadius = 200.0;\n"
+                "    #mediump# float outerRadius = 210.0;\n"
                 "\n"
                 "    if (distance < innerRadius)\n"
                 "        gl_FragColor = colour1;\n"
@@ -254,7 +264,7 @@ private:
             }
         };
 
-        return Array<ShaderPreset> (presets, numElementsInArray (presets));
+        return presets;
     }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OpenGLDemo2D)

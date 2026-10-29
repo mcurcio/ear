@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,8 +36,8 @@
 
 
 //==============================================================================
-class ExporterItem   : public ProjectTreeItemBase,
-                       private Value::Listener
+class ExporterItem final : public ProjectTreeItemBase,
+                           private Value::Listener
 {
 public:
     ExporterItem (Project& p, ProjectExporter* e, int index)
@@ -39,7 +55,7 @@ public:
     bool mightContainSubItems() override      { return exporter->getNumConfigurations() > 0; }
     String getUniqueName() const override     { return "exporter_" + String (exporterIndex); }
     String getRenamingName() const override   { return getDisplayName(); }
-    String getDisplayName() const override    { return exporter->getName(); }
+    String getDisplayName() const override    { return exporter->getUniqueName(); }
     void setName (const String&) override     {}
     bool isMissing() const override           { return false; }
     String getTooltip() override              { return getDisplayName(); }
@@ -51,9 +67,7 @@ public:
             if         (e->isXcode())        return Icon (getIcons().xcode,        Colours::transparentBlack);
             else if    (e->isVisualStudio()) return Icon (getIcons().visualStudio, Colours::transparentBlack);
             else if    (e->isAndroid())      return Icon (getIcons().android,      Colours::transparentBlack);
-            else if    (e->isCodeBlocks())   return Icon (getIcons().codeBlocks,   Colours::transparentBlack);
             else if    (e->isMakefile())     return Icon (getIcons().linux,        Colours::transparentBlack);
-            else if    (e->isCLion())        return Icon (getIcons().clion,        Colours::transparentBlack);
         }
 
         return Icon();
@@ -71,13 +85,20 @@ public:
 
     void deleteItem() override
     {
-        if (AlertWindow::showOkCancelBox (AlertWindow::WarningIcon, "Delete Exporter",
-                                          "Are you sure you want to delete this export target?"))
+        auto options = MessageBoxOptions::makeOptionsOkCancel (MessageBoxIconType::WarningIcon,
+                                                               "Delete Exporter",
+                                                               "Are you sure you want to delete this export target?");
+        messageBox = AlertWindow::showScopedAsync (options, [safeThis = WeakReference { this }] (int result)
         {
-            closeSettingsPage();
-            ValueTree parent (exporter->settings.getParent());
-            parent.removeChild (exporter->settings, project.getUndoManagerFor (parent));
-        }
+            if (safeThis == nullptr || result == 0)
+                return;
+
+            safeThis->closeSettingsPage();
+
+            auto parent = safeThis->exporter->settings.getParent();
+            parent.removeChild (safeThis->exporter->settings,
+                                safeThis->project.getUndoManagerFor (parent));
+        });
     }
 
     void addSubItems() override
@@ -86,7 +107,7 @@ public:
             addSubItem (new ConfigItem (config.config, *exporter));
     }
 
-    void showPopupMenu() override
+    void showPopupMenu (Point<int> p) override
     {
         PopupMenu menu;
         menu.addItem (1, "Add a new configuration", exporter->supportsUserDefinedConfigurations());
@@ -94,15 +115,15 @@ public:
         menu.addSeparator();
         menu.addItem (3, "Delete this exporter");
 
-        launchPopupMenu (menu);
+        launchPopupMenu (menu, p);
     }
 
-    void showAddMenu() override
+    void showAddMenu (Point<int> p) override
     {
         PopupMenu menu;
         menu.addItem (1, "Add a new configuration", exporter->supportsUserDefinedConfigurations());
 
-        launchPopupMenu (menu);
+        launchPopupMenu (menu, p);
     }
 
     void handlePopupMenuResult (int resultCode) override
@@ -110,7 +131,7 @@ public:
         if (resultCode == 1)
             exporter->addNewConfiguration (false);
         else if (resultCode == 2)
-            project.saveProject (exporter.get());
+            project.saveProject (Async::yes, exporter.get(), nullptr);
         else if (resultCode == 3)
             deleteAllSelectedItems();
     }
@@ -162,6 +183,8 @@ private:
 
     Value targetLocationValue;
 
+    ScopedMessageBox messageBox;
+
     void valueChanged (Value& value) override
     {
         if (value == exporter->getTargetLocationValue())
@@ -169,10 +192,10 @@ private:
     }
 
     //==============================================================================
-    struct SettingsComp  : public Component
+    struct SettingsComp final : public Component
     {
         SettingsComp (ProjectExporter& exp)
-            : group (exp.getName(),
+            : group (exp.getUniqueName(),
                      ExporterItem::getIconForExporter (&exp),
                      exp.getDescription())
         {
@@ -193,11 +216,12 @@ private:
     };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ExporterItem)
+    JUCE_DECLARE_WEAK_REFERENCEABLE (ExporterItem)
 };
 
 
 //==============================================================================
-class ConfigItem   : public ProjectTreeItemBase
+class ConfigItem final : public ProjectTreeItemBase
 {
 public:
     ConfigItem (const ProjectExporter::BuildConfiguration::Ptr& conf, ProjectExporter& e)
@@ -224,15 +248,23 @@ public:
 
     void deleteItem() override
     {
-        if (AlertWindow::showOkCancelBox (AlertWindow::WarningIcon, "Delete Configuration",
-                                          "Are you sure you want to delete this configuration?"))
+        auto options = MessageBoxOptions::makeOptionsOkCancel (MessageBoxIconType::WarningIcon,
+                                                               "Delete Configuration",
+                                                               "Are you sure you want to delete this configuration?");
+        messageBox = AlertWindow::showScopedAsync (options, [parent = WeakReference { this }] (int result)
         {
-            closeSettingsPage();
-            config->removeFromExporter();
-        }
+            if (parent == nullptr)
+                return;
+
+            if (result == 0)
+                return;
+
+            parent->closeSettingsPage();
+            parent->config->removeFromExporter();
+        });
     }
 
-    void showPopupMenu() override
+    void showPopupMenu (Point<int> p) override
     {
         bool enabled = exporter.supportsUserDefinedConfigurations();
 
@@ -241,7 +273,7 @@ public:
         menu.addSeparator();
         menu.addItem (2, "Delete this configuration", enabled);
 
-        launchPopupMenu (menu);
+        launchPopupMenu (menu, p);
     }
 
     void handlePopupMenuResult (int resultCode) override
@@ -263,13 +295,14 @@ private:
     ProjectExporter::BuildConfiguration::Ptr config;
     ProjectExporter& exporter;
     ValueTree configTree;
+    ScopedMessageBox messageBox;
 
     //==============================================================================
-    class SettingsComp  : public Component
+    class SettingsComp final : public Component
     {
     public:
         SettingsComp (ProjectExporter::BuildConfiguration& conf)
-            : group (conf.exporter.getName() + " - " + conf.getName(), Icon (getIcons().config, Colours::transparentBlack))
+            : group (conf.exporter.getUniqueName() + " - " + conf.getName(), Icon (getIcons().config, Colours::transparentBlack))
         {
             addAndMakeVisible (group);
 
@@ -290,10 +323,11 @@ private:
     };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ConfigItem)
+    JUCE_DECLARE_WEAK_REFERENCEABLE (ConfigItem)
 };
 
 //==============================================================================
-class ExportersTreeRoot    : public ProjectTreeItemBase
+class ExportersTreeRoot final : public ProjectTreeItemBase
 {
 public:
     ExportersTreeRoot (Project& p)
@@ -313,7 +347,7 @@ public:
     void setName (const String&) override            {}
     Icon getIcon() const override                    { return project.getMainGroup().getIcon (isOpen()).withColour (getContentColour (true)); }
 
-    void showPopupMenu() override
+    void showPopupMenu (Point<int>) override
     {
         if (auto* pcc = getProjectContentComponent())
             pcc->showNewExporterMenu();

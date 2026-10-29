@@ -1,17 +1,33 @@
 /*
   ==============================================================================
 
-   This file is part of the JUCE 6 technical preview.
-   Copyright (c) 2020 - Raw Material Software Limited
+   This file is part of the JUCE framework.
+   Copyright (c) Raw Material Software Limited
 
-   You may use this code under the terms of the GPL v3
-   (see www.gnu.org/licenses).
+   JUCE is an open source framework subject to commercial or open source
+   licensing.
 
-   For this technical preview, this file is not subject to commercial licensing.
+   By downloading, installing, or using the JUCE framework, or combining the
+   JUCE framework with any other source code, object code, content or any other
+   copyrightable work, you agree to the terms of the JUCE End User Licence
+   Agreement, and all incorporated terms including the JUCE Privacy Policy and
+   the JUCE Website Terms of Service, as applicable, which will bind you. If you
+   do not agree to the terms of these agreements, we will not license the JUCE
+   framework to you, and you must discontinue the installation or download
+   process and cease use of the JUCE framework.
 
-   JUCE IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL WARRANTIES, WHETHER
-   EXPRESSED OR IMPLIED, INCLUDING MERCHANTABILITY AND FITNESS FOR PURPOSE, ARE
-   DISCLAIMED.
+   JUCE End User Licence Agreement: https://juce.com/legal/juce-9-licence/
+   JUCE Privacy Policy: https://juce.com/juce-privacy-policy
+   JUCE Website Terms of Service: https://juce.com/juce-website-terms-of-service/
+
+   Or:
+
+   You may also use this code under the terms of the AGPLv3:
+   https://www.gnu.org/licenses/agpl-3.0.en.html
+
+   THE JUCE FRAMEWORK IS PROVIDED "AS IS" WITHOUT ANY WARRANTY, AND ALL
+   WARRANTIES, WHETHER EXPRESSED OR IMPLIED, INCLUDING WARRANTY OF
+   MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE, ARE DISCLAIMED.
 
   ==============================================================================
 */
@@ -20,8 +36,8 @@ namespace juce
 {
 
 //==============================================================================
-class TextPropertyComponent::LabelComp  : public Label,
-                                          public FileDragAndDropTarget
+class TextPropertyComponent::LabelComp final : public Label,
+                                               public FileDragAndDropTarget
 {
 public:
     LabelComp (TextPropertyComponent& tpc, int charLimit, bool multiline, bool editable)
@@ -96,7 +112,7 @@ public:
             g.setFont (labelFont);
 
             g.drawFittedText (textToDisplayWhenEmpty, textArea, getJustificationType(),
-                              jmax (1, (int) (textArea.getHeight() / labelFont.getHeight())),
+                              jmax (1, (int) ((float) textArea.getHeight() / labelFont.getHeight())),
                               getMinimumHorizontalScale());
         }
     }
@@ -113,38 +129,38 @@ private:
 };
 
 //==============================================================================
-class TextPropertyComponent::RemapperValueSourceWithDefault    : public Value::ValueSource
+class TextRemapperValueSourceWithDefault final : public Value::ValueSource
 {
 public:
-    RemapperValueSourceWithDefault (ValueWithDefault* vwd)
-        : valueWithDefault (vwd)
+    TextRemapperValueSourceWithDefault (const ValueTreePropertyWithDefault& v)
+        : value (v)
     {
     }
 
     var getValue() const override
     {
-        if (valueWithDefault == nullptr || valueWithDefault->isUsingDefault())
+        if (value.isUsingDefault())
             return {};
 
-        return valueWithDefault->get();
+        return value.get();
     }
 
     void setValue (const var& newValue) override
     {
-        if (valueWithDefault == nullptr)
-            return;
-
         if (newValue.toString().isEmpty())
-            valueWithDefault->resetToDefault();
-        else
-            *valueWithDefault = newValue;
+        {
+            value.resetToDefault();
+            return;
+        }
+
+        value = newValue;
     }
 
 private:
-    WeakReference<ValueWithDefault> valueWithDefault;
+    ValueTreePropertyWithDefault value;
 
     //==============================================================================
-    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RemapperValueSourceWithDefault)
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TextRemapperValueSourceWithDefault)
 };
 
 //==============================================================================
@@ -165,27 +181,23 @@ TextPropertyComponent::TextPropertyComponent (const Value& valueToControl, const
     textEditor->getTextValue().referTo (valueToControl);
 }
 
-TextPropertyComponent::TextPropertyComponent (ValueWithDefault& valueToControl, const String& name,
+TextPropertyComponent::TextPropertyComponent (const ValueTreePropertyWithDefault& valueToControl, const String& name,
                                               int maxNumChars, bool multiLine, bool isEditable)
     : TextPropertyComponent (name, maxNumChars, multiLine, isEditable)
 {
-    valueWithDefault = &valueToControl;
+    value = valueToControl;
 
-    textEditor->getTextValue().referTo (Value (new RemapperValueSourceWithDefault (valueWithDefault)));
-    textEditor->setTextToDisplayWhenEmpty (valueWithDefault->getDefault(), 0.5f);
+    textEditor->getTextValue().referTo (Value (new TextRemapperValueSourceWithDefault (value)));
+    textEditor->setTextToDisplayWhenEmpty (value.getDefault(), 0.5f);
 
-    valueWithDefault->onDefaultChange = [this]
+    value.onDefaultChange = [this]
     {
-        textEditor->setTextToDisplayWhenEmpty (valueWithDefault->getDefault(), 0.5f);
+        textEditor->setTextToDisplayWhenEmpty (value.getDefault(), 0.5f);
         repaint();
     };
 }
 
-TextPropertyComponent::~TextPropertyComponent()
-{
-    if (valueWithDefault != nullptr)
-        valueWithDefault->onDefaultChange = nullptr;
-}
+TextPropertyComponent::~TextPropertyComponent()  {}
 
 void TextPropertyComponent::setText (const String& newText)
 {
