@@ -165,7 +165,7 @@ public:
 	}
 
 	juce::Array<int> getAvailableBufferSizes() const {
-		_device->getAvailableBufferSizes();
+		return _device->getAvailableBufferSizes();
 	}
 
 	int getDefaultBufferSize() const { return _device->getDefaultBufferSize(); }
