@@ -98,6 +98,10 @@ shairport-sync's pipe backend). `airplay.buffer` is the ring size in 512-sample 
 
 ## Architecture
 
+This section describes the code as it is. The agreed direction is different: EAR becomes the
+PipeWire instance and hosts built-in node types, replacing the JUCE runtime described below
+(`docs/design/pipewire-graph.md`).
+
 All project code is header-only in `include/ear/`, plus `src/main.cpp` (CLI parsing, config
 loading) and `src/server.hpp` (`run()`: device selection, then `buildGraphFromConfig` from
 `include/ear/graph_config.hpp`, then the server loop). Each
