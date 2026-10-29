@@ -17,7 +17,7 @@ Runs on macOS and Linux; configure stops on any other platform. Needs CMake 3.28
 Ubuntu 24.04), git and network access on the first configure. macOS also needs the Xcode
 Command Line Tools, which configure checks for. On Linux, `scripts/install-build-deps.sh`
 installs the system packages JUCE needs, and configure names any that are missing; which module
-needs each, and the one gap in that check, are in the `juce-architecture` skill's
+needs each, and the gaps in that check, are in the `juce-architecture` skill's
 [system-dependencies.md](.claude/skills/juce-architecture/system-dependencies.md). Nothing else
 is installed: `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0
 (pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.

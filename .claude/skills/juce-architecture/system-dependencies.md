@@ -14,6 +14,10 @@ list for every module is `docs/Linux Dependencies.md`.
   missing header. `src/CMakeLists.txt` walks `ear_dependencies` to those targets and stops
   configure when one's `<module>_LINUX_DEPS_FOUND` is not true. JUCE keeps no package list on
   a failed lookup, so that message names the module and its target, not the package.
+- FindPkgConfig caches a found result and skips the lookup on later configures
+  (`__pkg_config_checked_<prefix>`), so a package removed after a successful configure is
+  reported only once `out/CMakeCache.txt` is deleted (`make clean`); a failed lookup is retried
+  on every configure.
 - The modules EAR links need `alsa` (`juce_audio_devices`). Of the rest, `juce_graphics` needs
   `freetype2 fontconfig` and `juce_opengl` needs `egl gl`.
 - juceaide, JUCE's build tool, is configured and built inside `add_subdirectory(JUCE)` by a

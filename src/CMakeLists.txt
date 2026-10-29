@@ -41,6 +41,7 @@ target_link_libraries(ear_dependencies INTERFACE
     juce::juce_audio_processors_headless
     juce::juce_audio_formats
     juce::juce_dsp)
+
 # Linux: JUCE looks up each module's linuxPackages with pkg_check_modules but does not fail when
 # one is missing (_juce_create_pkgconfig_target in JUCEModuleSupport.cmake), so stop here,
 # naming every juce::pkgconfig_<module>_LINUX_DEPS target ear_dependencies reaches whose lookup
@@ -69,6 +70,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 endif()
             endif()
             get_target_property(links ${target} INTERFACE_LINK_LIBRARIES)
+            # Generator-expression entries are skipped: JUCE links its modules to each other and
+            # to their pkgconfig targets without one (JUCEModuleSupport.cmake:637).
             foreach(link IN LISTS links)
                 if(NOT link MATCHES "\\$<" AND TARGET "${link}")
                     list(APPEND pending "${link}")
