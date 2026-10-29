@@ -12,11 +12,21 @@ snapshots from 2020).
 
 ## Build and run
 
-Needs CMake 3.22 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
+Needs CMake 3.28 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
 Apple Silicon) and network access on the first configure. Nothing is installed: JUCE 9.0.4 and
 the other libraries are vendored, and `CMakeLists.txt` fetches Boost 1.92.0 (official CMake
-release archive, pinned by SHA-256) with `FetchContent` and builds the parts EAR links
-(`program_options`, `uuid`, `endian`, `asio`, `beast`) in the normal build.
+release archive, pinned by SHA-256) with `FetchContent`.
+
+A build compiles only what EAR links. `ear_dependencies` in `src/CMakeLists.txt` is the one
+link list for `ear` and `ear_tests`; its comment says why each entry is there.
+
+- Boost: `program_options` is the only compiled library. `uuid`, `endian`, `asio_core` and
+  Beast are header-only; Beast is linked for compilation only (`$<COMPILE_ONLY:...>`, hence
+  CMake 3.28 with `FetchContent`'s `EXCLUDE_FROM_ALL`), and `CMakeLists.txt` does the same for
+  `lexical_cast`'s link to the compiled `container`.
+- JUCE: `juce_core`, `juce_events`, `juce_audio_basics`, `juce_audio_devices`,
+  `juce_audio_processors_headless`, `juce_audio_formats` and `juce_dsp`. No GUI module, so no
+  HarfBuzz, image or SVG libraries and no WebKit.
 
 ```bash
 make debug      # cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF into out/, then make
@@ -29,9 +39,13 @@ make clean      # rm -rf out
 - Build output goes to `out/` (gitignored); a post-build step copies the binary to `out/ear`.
 - Boost's archive and source (about 800 MB) are cached in `.cache/deps/` (gitignored;
   `-DFETCHCONTENT_BASE_DIR=...` moves it); its build tree is `out/_deps/boost-build`.
-  `make clean` keeps the download and the next configure re-extracts it (30-40 s).
-- The inner `make` runs without `-j` and JUCE compiles once per target: from clean, `make test`
-  took about 3 minutes here and `make debug` or `make release` about 4.
+  `make clean` keeps the archive and source. A marker file in the source tree records the archive URL and SHA-256
+  it was extracted from; when it matches the pinned pair the next configure reuses the tree
+  (`FETCHCONTENT_SOURCE_DIR_BOOST`), otherwise it re-verifies the archive and re-extracts
+  (30-40 s).
+- The inner `make` runs without `-j` and JUCE compiles once per target. Measured here with
+  `cd out && make -j8` as the build step (8 cores, other jobs running): from clean, configure
+  18 s and build 16 s; `make test` after that 16 s; a no-op `make debug` 1.4 s.
 - `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
   directory) and `--device` (index or UUID from the startup listing; overrides `"device"`).
   The other flags only feed disabled test functions in `src/main.cpp`. There is no lint config.
