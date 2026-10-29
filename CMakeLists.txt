@@ -2,6 +2,12 @@ cmake_minimum_required(VERSION 3.28...4.2)
 
 project(EAR VERSION 0.0.1)
 
+# The platforms EAR builds on: macOS and Linux, the two it is built and tested on. Any other,
+# Windows included, stops here, before anything is fetched.
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$")
+	message(FATAL_ERROR "EAR does not build on ${CMAKE_SYSTEM_NAME} yet (macOS and Linux only)")
+endif()
+
 option(BUILD_TESTS "Build project with test suite" OFF)
 
 #set(CMAKE_BUILD_TYPE Debug)
@@ -52,6 +58,10 @@ kept_fetchcontent(juce "${juce_repository}\n${juce_commit}"
 file(STRINGS "${juce_SOURCE_DIR}/extras/Build/juceaide/CMakeLists.txt" juceaide_links REGEX "juce::juce_")
 string(REGEX MATCHALL "juce::juce_[A-Za-z0-9_]+" juceaide_links "${juceaide_links}")
 list(TRANSFORM juceaide_links REPLACE "^juce::" "")
+if(NOT juceaide_links)
+	message(FATAL_ERROR "Found no juce::juce_ links in JUCE's extras/Build/juceaide/CMakeLists.txt; "
+		"re-check this parser against the JUCE release juce_commit names")
+endif()
 ear_require_juce_system_dependencies("${juce_SOURCE_DIR}" juceaide ${juceaide_links})
 add_subdirectory("${juce_SOURCE_DIR}" "${juce_BINARY_DIR}")
 

@@ -1,24 +1,33 @@
 # ear_require_juce_system_dependencies(<juce source dir> <consumer> <module or target>...)
 #
 # Stops configure, naming each missing item, the JUCE module that needs it and the install
-# script, when a system dependency of the given JUCE modules is missing on this platform.
+# script (on macOS, the SDK searched), when a system dependency of the given JUCE modules is
+# missing on this platform.
 # <consumer> only labels the message (juceaide, ear). Names that are not JUCE modules (no module
-# header, such as juce_recommended_config_flags) are skipped, so a link list can be passed whole.
+# header, such as juce_recommended_config_flags) are skipped, so a link list can be passed whole;
+# configure stops when none of the names is a module, so a JUCE layout change cannot make the
+# check pass while checking nothing. Only macOS and Linux are handled: the platform gate at the
+# top of CMakeLists.txt stops every other platform before this runs.
 #
 # JUCE declares each module's system dependencies in its header and passes them on itself, but
 # without failing when one is missing (JUCEModuleSupport.cmake: pkg_check_modules without
-# REQUIRED), so a missing package only surfaces later as a compiler error naming a header.
+# REQUIRED, plain -framework flags), so a missing package only surfaces later: on Linux as a
+# compiler error naming a header, on macOS as a linker error ("framework not found").
 # This walks each module's "dependencies:" transitively and requires, for this platform only:
 # - Linux: each linuxPackages entry, found with pkg-config, as JUCE looks it up.
 # - macOS: each OSXFrameworks and WeakOSXFrameworks entry, in the active SDK. JUCE links the weak
 #   ones with -weak_framework, which makes them optional at run time but still needs them in the
 #   SDK at link time.
 # linuxLibs (juce_core: rt dl pthread) and OSXLibs are libraries the C toolchain ships, not
-# checked. The JUCE CMake helpers that read these headers (_juce_extract_metadata_block) are
-# private, so the parser below follows JUCE's module format (docs/JUCE Module Format.md and
-# that function): "key: values" lines between BEGIN_ and END_JUCE_MODULE_DECLARATION, values
-# separated by spaces or commas, a line without a key continuing the previous key. A JUCE bump
-# must re-check it against JUCEModuleSupport.cmake.
+# checked. Nor are the libraries JUCE adds per target for juce_add_* options (NEEDS_CURL,
+# NEEDS_WEB_BROWSER, NEEDS_OPENGL_ES, NEEDS_STORE_KIT in JUCEUtils.cmake): EAR sets none of them;
+# one that is turned on needs its packages added here. Every configure looks each item up again
+# (no cached hit is reused), so a package removed since the last configure is reported.
+# The JUCE CMake helpers that read these headers (_juce_extract_metadata_block) are private, so
+# the parser below follows JUCE's module format (docs/JUCE Module Format.md and that function):
+# "key: values" lines between BEGIN_ and END_JUCE_MODULE_DECLARATION, values separated by spaces
+# or commas, a line without a key continuing the previous key. A JUCE bump must re-check it
+# against JUCEModuleSupport.cmake.
 set(ear_build_deps_script "${CMAKE_CURRENT_LIST_DIR}/../scripts/install-build-deps.sh")
 cmake_path(NORMAL_PATH ear_build_deps_script)
 
@@ -60,9 +69,7 @@ function(ear_require_juce_system_dependencies juce_dir consumer)
 	elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 		set(keys OSXFrameworks WeakOSXFrameworks)
 	else()
-		# EAR is built and tested on macOS and Linux only. Windows support would check
-		# windowsLibs here, once a Windows build is tested.
-		message(FATAL_ERROR "EAR does not build on ${CMAKE_SYSTEM_NAME} yet (macOS and Linux only)")
+		message(FATAL_ERROR "ear_require_juce_system_dependencies has no keys for ${CMAKE_SYSTEM_NAME}")
 	endif()
 
 	# Transitive closure over "dependencies:", each module read once.
@@ -96,6 +103,11 @@ function(ear_require_juce_system_dependencies juce_dir consumer)
 		endforeach()
 		unset(decl_dependencies)
 	endwhile()
+	if(NOT modules)
+		list(JOIN ARGN ", " names)
+		message(FATAL_ERROR "${consumer}: none of ${names} has a module header under ${juce_dir}; "
+			"re-check this parser against the JUCE release juce_commit names")
+	endif()
 	list(JOIN modules ", " modules)
 	message(STATUS "${consumer}: JUCE modules ${modules}")
 
@@ -111,20 +123,21 @@ function(ear_require_juce_system_dependencies juce_dir consumer)
 		string(REPLACE "|" ";" need "${need}")
 		list(GET need 0 item)
 		list(GET need 1 module)
-		string(MAKE_C_IDENTIFIER "ear_sysdep_${item}" var)
 		if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 			if(NOT PKG_CONFIG_FOUND)
 				list(APPEND missing "pkg-config package ${item}, for ${module}")
 				continue()
 			endif()
+			# pkg_check_modules skips the lookup while its cached <prefix>_FOUND is true.
+			string(MAKE_C_IDENTIFIER "ear_sysdep_${item}" var)
+			unset(${var}_FOUND CACHE)
 			pkg_check_modules(${var} QUIET "${item}")
 			set(found "${${var}_FOUND}")
 			set(what "pkg-config package")
 		else()
 			set(CMAKE_FIND_FRAMEWORK ONLY)
-			find_library(${var} NAMES "${item}")
-			mark_as_advanced(${var})
-			set(found "${${var}}")
+			unset(found) # find_library skips the search when its variable is already set.
+			find_library(found NAMES "${item}" NO_CACHE)
 			set(what "framework")
 		endif()
 		if(found)
@@ -136,9 +149,21 @@ function(ear_require_juce_system_dependencies juce_dir consumer)
 
 	if(missing)
 		list(JOIN missing "\n  " missing)
+		if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+			# The frameworks ship in the macOS SDK, so a missing one means a wrong or incomplete SDK.
+			if(CMAKE_OSX_SYSROOT)
+				set(sdk "${CMAKE_OSX_SYSROOT}")
+			else()
+				set(sdk "the default one (xcrun --show-sdk-path)")
+			endif()
+			set(advice "The SDK searched is ${sdk}. Install the Xcode Command Line Tools "
+				"(xcode-select --install) or select a complete Xcode (xcode-select -s <path>), "
+				"then configure again.")
+		else()
+			set(advice "Install them with ${ear_build_deps_script}, then configure again.")
+		endif()
 		message(FATAL_ERROR "${consumer} needs system dependencies that are missing:\n"
-			"  ${missing}\n"
-			"Install them with ${ear_build_deps_script}, then configure again.")
+			"  ${missing}\n" ${advice})
 	endif()
 	list(REMOVE_DUPLICATES checked)
 	list(JOIN checked ", " checked)

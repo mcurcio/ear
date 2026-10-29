@@ -21,10 +21,12 @@ checks for the Xcode Command Line Tools, whose SDK has the frameworks). Configur
 module header's `linuxPackages` or `OSXFrameworks` and `WeakOSXFrameworks`, following
 `dependencies:`, for the modules juceaide (JUCE's build helper, compiled during JUCE's
 configure) links and those in `ear_dependencies`, and stops naming each missing package or
-framework, its module and the script (JUCE's own lookup does not fail, so a missing package
-would otherwise surface as a compiler error naming a header). Any other platform, Windows
-included, stops at configure. So `CMakeLists.txt` fetches JUCE without adding it (a
-`SOURCE_SUBDIR` it lacks), runs the check, then adds it. Nothing else is installed:
+framework and its module, then the script on Linux or the SDK on macOS (JUCE's own lookup does
+not fail, so a missing package would otherwise surface later: on Linux as a compiler error
+naming a header, on macOS as a linker error). Every configure looks them up again (no cached
+hit is reused). So `CMakeLists.txt` fetches JUCE without adding it (a `SOURCE_SUBDIR` it
+lacks), runs the check, then adds it. Any other platform, Windows included, stops at the start
+of configure, before anything is fetched. Nothing else is installed:
 `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
 archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 

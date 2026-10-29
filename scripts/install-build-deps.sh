@@ -7,12 +7,11 @@ set -eu
 
 case "$(uname -s)" in
 Linux)
-	# Debian and Ubuntu package names for the pkg-config packages JUCE's linuxPackages name:
-	# alsa (juce_audio_devices, linked by ear) and freetype2 and fontconfig (juce_graphics,
-	# linked by juceaide, JUCE's build helper compiled during configure).
+	# The apt-get line below maps the pkg-config packages configure requires to their Debian and
+	# Ubuntu names; configure's error names any it finds missing.
 	if ! command -v apt-get >/dev/null 2>&1; then
-		echo "install-build-deps: only Debian and Ubuntu (apt-get) are supported; install" \
-			"the pkg-config packages alsa, freetype2 and fontconfig" >&2
+		echo "install-build-deps: only Debian and Ubuntu (apt-get) are supported; install the" \
+			"pkg-config packages that configure reports missing" >&2
 		exit 1
 	fi
 	sudo=""
@@ -34,7 +33,8 @@ Darwin)
 		"$(xcode-select -p) hold the macOS SDK"
 	;;
 *)
-	echo "install-build-deps: EAR does not build on $(uname -s) yet (macOS and Linux only)" >&2
+	echo "install-build-deps: nothing known to install on $(uname -s); CMakeLists.txt names the" \
+		"platforms EAR builds on" >&2
 	exit 1
 	;;
 esac
