@@ -79,6 +79,16 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 ./out/test/ear_tests_artefacts/Debug/ear_tests "[white]"   # by Catch tag
 ```
 
+## CI
+
+`.github/workflows/test.yml` runs on every pull request and every push to `master`, on
+`macos-latest` (Apple Silicon) with CMake 4.2.1 (the image ships a newer one): `make test`, then
+`make debug` (the `ear` binary, which `make test` does not build). On failure it uploads
+`out/Testing` (ctest's logs) as the `ctest-output` artifact. It caches `.cache/deps/juce-src` and
+`.cache/deps/boost-src`, keyed on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
+restored from an older key whose marker no longer matches its pin is fetched again. Pushes to `master` keep
+the cache warm for pull requests, which can read it.
+
 ## Config file (`ear.json`)
 
 Not committed; its shape comes from `run()` in `src/server.hpp`:
