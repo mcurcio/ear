@@ -1,6 +1,6 @@
 # Runs the integration tests (make test: builds ear_tests and runs ctest on the virtual audio
 # device, no OS audio) and builds the ear binary (make debug) on every pull request, and on
-# pushes to master so master's dependency cache is warm for pull requests.
+# pushes to master so master's caches are warm for pull requests.
 name: test
 
 on:
@@ -20,6 +20,11 @@ jobs:
     # Apple Silicon and AppleClang: the only platform EAR is tested on.
     runs-on: macos-latest
     timeout-minutes: 30
+    # CMake (3.17+) takes these as its compiler launcher defaults, and JUCE passes them on to the
+    # juceaide build it runs during configure, so ccache covers juceaide, JUCE, Boost and EAR.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,6 +45,18 @@ jobs:
             .cache/deps/boost-src
           key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake') }}
           restore-keys: deps-${{ runner.os }}-${{ runner.arch }}-
+
+      # Compiler output: ccache, keyed by content hash, so it is safe with checkout's fresh mtimes
+      # (a cached out/ is not). Installs ccache and restores the newest cache; its post step
+      # drops entries this job did not use and saves the rest (about 40 MB). Picked over a
+      # hand-rolled brew install plus actions/cache because it handles the per-run key and the
+      # eviction. Every source hits on a warm cache except juce_core_CompilationTime.cpp
+      # (__DATE__/__TIME__), so no ccache options are set.
+      - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          key: ${{ runner.os }}-${{ runner.arch }}
+          max-size: 200M
+          evict-old-files: job
 
       - run: make test
 

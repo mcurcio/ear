@@ -86,8 +86,13 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 `make debug` (the `ear` binary, which `make test` does not build). On failure it uploads
 `out/Testing` (ctest's logs) as the `ctest-output` artifact. It caches `.cache/deps/juce-src` and
 `.cache/deps/boost-src`, keyed on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
-restored from an older key whose marker no longer matches its pin is fetched again. Pushes to `master` keep
-the cache warm for pull requests, which can read it.
+restored from an older key whose marker no longer matches its pin is fetched again. It also
+caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB): the job sets
+`CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER` to `ccache`, which CMake takes as
+defaults and JUCE passes on to the juceaide build during configure. On a warm cache every
+compile hits except `juce_core_CompilationTime.cpp` (`__DATE__`/`__TIME__`); measured here,
+a `make test` plus `make debug` sequence into a fresh build folder took 61 s cold and 7 s warm.
+Pushes to `master` keep both caches warm for pull requests, which can read them.
 
 ## Config file (`ear.json`)
 
