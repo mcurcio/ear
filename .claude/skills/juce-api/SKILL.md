@@ -1,14 +1,15 @@
 ---
 name: juce-api
-description: Look up the JUCE API this repo actually builds against (vendored JUCE 6.0.0 in juce/). Use before writing or reviewing any code that calls JUCE, before stating a JUCE class's signature, behaviour or threading rule, and whenever a JUCE compile error mentions a member that "does not exist". Gives a greppable symbol index and one Markdown page per class, generated from the vendored headers.
+description: Look up the JUCE API this repo actually builds against (vendored JUCE 9.0.4 in juce/). Use before writing or reviewing any code that calls JUCE, before stating a JUCE class's signature, behaviour or threading rule, and whenever a JUCE compile error mentions a member that "does not exist". Gives a greppable symbol index and one Markdown page per class, generated from the vendored headers.
 ---
 
-# JUCE API lookup (vendored JUCE 6.0.0)
+# JUCE API lookup (vendored JUCE 9.0.4)
 
-This repo builds against the JUCE copy in `juce/` (version 6.0.0, 2020). docs.juce.com and
-model memory describe JUCE 7 and 8, whose APIs differ (for example the device callback and
-`AudioProcessorGraph` internals changed). Never take a JUCE signature from memory or the website:
-look it up here.
+This repo builds against the JUCE copy in `juce/` (version 9.0.4). Model memory mostly
+describes JUCE 6 to 8, and docs.juce.com tracks the latest release; both differ from this copy
+(for example the device callback is `audioDeviceIOCallbackWithContext`, and
+`AudioProcessorGraph` moved to the `juce_audio_processors_headless` module). Never take a JUCE
+signature from memory or the website: look it up here.
 
 ## 1. Get the reference
 
@@ -49,8 +50,10 @@ them. If they disagree, trust the headers and rerun `ensure.sh`.
 ## 4. Which modules are linked
 
 `src/CMakeLists.txt` links `juce_core`, `juce_audio_devices`, `juce_audio_utils`,
-`juce_audio_processors`, `juce_audio_formats` and `juce_dsp` (and so their dependencies, such as
-`juce_events` and `juce_audio_basics`). A class from any other module needs a
+`juce_audio_processors`, `juce_audio_formats` and `juce_dsp`, and so their dependencies:
+`juce_audio_processors_headless` (where `AudioProcessor` and `AudioProcessorGraph` now live),
+`juce_gui_extra` (via `juce_audio_processors`), `juce_events` and `juce_audio_basics`. The
+`module` column of `symbols.tsv` names a symbol's module. A class from any other module needs a
 `target_link_libraries` change first.
 
 For which JUCE building blocks to use and the threading rules that constrain designs, use the
@@ -59,7 +62,9 @@ For which JUCE building blocks to use and the threading rules that constrain des
 ## Maintaining the generator
 
 `scripts/generate.sh` runs Doxygen 1.9.4 in Docker (`scripts/Dockerfile`, Debian bookworm) with
-`scripts/Doxyfile`, a small overlay on JUCE's own `juce/doxygen/Doxyfile` (same inputs, excludes
-and predefines, XML output). `scripts/convert.py` turns the XML into the files above and writes
+`scripts/Doxyfile`, a small overlay on JUCE's own `juce/docs/doxygen/Doxyfile` (same inputs,
+excludes and predefines, XML output). JUCE's file reads `juce/modules` in place (no preprocessing
+step), so locations are exact `juce/modules` lines. It is written for Doxygen 1.17: 1.9.4 ignores
+its newer tags, and the warnings about them in `doxygen.log` are expected. `scripts/convert.py` turns the XML into the files above and writes
 `MANIFEST` (JUCE version and the `juce/modules` git tree id that `ensure.sh` compares against).
 Doxygen's warnings go to `.cache/juce-api/doxygen.log`.

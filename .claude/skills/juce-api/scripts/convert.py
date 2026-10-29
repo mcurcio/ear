@@ -15,16 +15,17 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
-SOURCE_PREFIX = "juce/modules/"  # Doxygen saw juce/modules mounted as build/
+SOURCE_PREFIX = "juce/modules/"  # generate.sh strips Doxygen paths down to repo-relative ones
 
 
 def source_path(doxygen_path):
-    return SOURCE_PREFIX + doxygen_path[len("build/"):] if doxygen_path.startswith("build/") else doxygen_path
+    return doxygen_path
 
 
 def module_of(doxygen_path):
-    parts = doxygen_path.split("/")
-    return parts[1] if len(parts) > 1 and parts[0] == "build" else ""
+    if not doxygen_path.startswith(SOURCE_PREFIX):
+        return ""
+    return doxygen_path[len(SOURCE_PREFIX):].split("/")[0]
 
 
 def page_name(qualified):
