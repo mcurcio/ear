@@ -1,6 +1,5 @@
-#include "ear/graph.hpp"
+#include "ear/graph_config.hpp"
 #include "ear/sources.hpp"
-#include "ear/pipe_source.hpp"
 #include "ear/server.hpp"
 
 #include "nlohmann/json.hpp"
@@ -67,45 +66,10 @@ int run(const nlohmann::json& config) {
 	}
 
 	ear::AudioGraphStandalone graph;
-	auto outputNode = graph.setDevice(device);
-
-	std::cout << "Registered output device with graph" << std::endl;
-
-	if (!config.count("nodes")) {
-		std::cerr << "No nodes found in config" << std::endl;
+	const std::string graphError = ear::buildGraphFromConfig(graph, device, config);
+	if (!graphError.empty()) {
+		std::cerr << graphError << std::endl;
 		return 1;
-	}
-
-	unsigned airplayBufferSize = 40;
-	if (config.count("airplay")) {
-		const nlohmann::json& airplayConfig = config["airplay"];
-		if (airplayConfig.count("buffer")) {
-			airplayBufferSize = airplayConfig["buffer"].get<unsigned>();
-		}
-	}
-
-	for (auto& nodeConfig : config["nodes"]) {
-		std::unique_ptr<ear::GraphSource> node;
-
-		std::string type = nodeConfig["type"];
-		if (type == "white") {
-			DBG("Creating white noise node");
-			node = std::make_unique<ear::WhiteNoiseProcessor>();
-		} else if (type == "airplay") {
-			DBG(juce::String("Creating AirPlay node from pipe ") + juce::String(nodeConfig["pipe"].get<std::string>()));
-			node = std::make_unique<ear::AirplayProcessor>(nodeConfig["pipe"].get<std::string>(), airplayBufferSize);
-		}
-
-		auto handle = graph.addNode(std::move(node));
-
-		for (auto& it : nodeConfig["connect"].items()) {
-			nlohmann::json connection = it.value();
-			int nodeOutputChannel = connection[0].get<int>();
-			int outputInputChannel = connection[1].get<int>();
-
-			std::cout << "connecting node output " << nodeOutputChannel << " to device output " << outputInputChannel << std::endl;
-			assert(graph.addConnection({{handle, nodeOutputChannel}, {outputNode, outputInputChannel}}));
-		}
 	}
 /*
 	auto whiteNoiseNode1 = graph.addNode(std::make_unique<ear::WhiteNoiseProcessor>());

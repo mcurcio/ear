@@ -2,11 +2,13 @@
 #define EAR_TEST_VIRTUAL_AUDIO_DEVICE_HPP
 
 // A test-only audio device: no OS audio device is opened, started or enumerated.
-// The test thread is the device clock: renderBlocks() calls the registered callback
-// synchronously, one block at a time, and keeps everything written per channel.
+// The test thread is the device clock: renderBlocks() runs the registered callback on a
+// thread of its own (an audio thread distinct from JUCE's message thread, as with a real
+// device), one block at a time, waits for it, and keeps everything written per channel.
 
 #include "juce_audio_devices/juce_audio_devices.h"
 
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -58,13 +60,16 @@ public:
 
 	bool isOpen() override { return _open; }
 
-	// Like a real device: announce the start, then stream until stop().
+	// Like a real device: announce the start, then stream until stop(). Starting with a
+	// different callback replaces the running one, which is told it stopped.
 	void start(juce::AudioIODeviceCallback* callback) override {
-		if (!_open || callback == nullptr || _callback != nullptr) {
+		if (!_open || callback == nullptr || callback == _callback) {
 			return;
 		}
-		_callback = callback;
-		_callback->audioDeviceAboutToStart(this);
+		callback->audioDeviceAboutToStart(this);
+		if (auto* previous = std::exchange(_callback, callback)) {
+			previous->audioDeviceStopped();
+		}
 	}
 
 	void stop() override {
@@ -93,13 +98,28 @@ public:
 
 	// Test API ------------------------------------------------------------------
 
-	// Runs `blocks` device callbacks on the calling thread and appends each block's output
-	// to the per-channel recording. Returns false if the device is not started.
+	// Runs `blocks` device callbacks on a new audio thread, joins it, and appends each block's
+	// output to the per-channel recording. Returns false if the device is not started.
 	bool renderBlocks(int blocks) {
 		if (_callback == nullptr) {
 			return false;
 		}
 
+		std::thread audioThread([this, blocks] { render(blocks); });
+		audioThread.join();
+		return true;
+	}
+
+	// Everything written to `channel` since the last clearRecording().
+	const std::vector<float>& recorded(int channel) const { return _recorded.at((size_t) channel); }
+
+	void clearRecording() { _recorded.clear(); }
+
+	static constexpr double SAMPLE_RATE = 44100;
+	static constexpr int BLOCK_SIZE = 512;
+
+private:
+	void render(int blocks) {
 		_recorded.resize((size_t) _outputChannels);
 		juce::AudioBuffer<float> output(_outputChannels, BLOCK_SIZE);
 
@@ -116,19 +136,8 @@ public:
 				_recorded[(size_t) channel].insert(_recorded[(size_t) channel].end(), samples, samples + BLOCK_SIZE);
 			}
 		}
-
-		return true;
 	}
 
-	// Everything written to `channel` since the last clearRecording().
-	const std::vector<float>& recorded(int channel) const { return _recorded.at((size_t) channel); }
-
-	void clearRecording() { _recorded.clear(); }
-
-	static constexpr double SAMPLE_RATE = 44100;
-	static constexpr int BLOCK_SIZE = 512;
-
-private:
 	const int _outputChannels;
 	juce::BigInteger _activeInputs;
 	juce::BigInteger _activeOutputs;
@@ -153,7 +162,7 @@ public:
 		return wantInputNames ? juce::StringArray{} : juce::StringArray{ DEVICE_NAME };
 	}
 
-	int getDefaultDeviceIndex(bool) const override { return 0; }
+	int getDefaultDeviceIndex(bool forInput) const override { return forInput ? -1 : 0; }
 
 	int getIndexOfDevice(juce::AudioIODevice* device, bool asInput) const override {
 		return device != nullptr && !asInput && device->getName() == DEVICE_NAME ? 0 : -1;
@@ -162,6 +171,9 @@ public:
 	bool hasSeparateInputsAndOutputs() const override { return false; }
 
 	juce::AudioIODevice* createDevice(const juce::String& outputDeviceName, const juce::String&) override {
+		if (outputDeviceName != DEVICE_NAME) {
+			return nullptr;
+		}
 		return new VirtualAudioDevice(outputDeviceName, TYPE_NAME, _outputChannels);
 	}
 

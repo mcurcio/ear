@@ -38,12 +38,15 @@ make clean      # rm -rf out
 
 ## Tests
 
-`ear_tests` (Catch2 v2, one CTest test per test case) builds the graph the way `run()` does,
-around `ear::test::VirtualAudioDevice` (`test/virtual_audio_device.hpp`), which never touches OS
-audio: the test thread clocks it with `renderBlocks(n)` and reads back every output channel.
+`ear_tests` (Catch2 v2, one CTest test per test case) builds the graph with `run()`'s own
+`ear::buildGraphFromConfig` (`include/ear/graph_config.hpp`) onto
+`ear::test::VirtualAudioDevice` (`test/virtual_audio_device.hpp`), which never touches OS audio:
+the test thread clocks it with `renderBlocks(n)`, which runs the callbacks on a separate audio
+thread like a real device, and reads back every output channel.
 The AirPlay cases write 16-bit little-endian stereo PCM (440 Hz left, 880 Hz right) into a
 named pipe and check each tone arrives on its mapped channel sample for sample, unmapped
-channels are exactly zero and an idle pipe is silent; another checks white noise routing.
+channels are exactly zero and an idle pipe is silent; others check white noise routing and pin a
+device's UUID.
 Verify audio here, never on real hardware. `make test` runs them all; to run one:
 
 ```bash
@@ -73,7 +76,8 @@ shairport-sync's pipe backend). `airplay.buffer` is the ring size in 512-sample 
 ## Architecture
 
 All project code is header-only in `include/ear/`, plus `src/main.cpp` (CLI parsing, config
-loading) and `src/server.hpp` (`run()`: device selection, graph build, server loop). Each
+loading) and `src/server.hpp` (`run()`: device selection, then `buildGraphFromConfig` from
+`include/ear/graph_config.hpp`, then the server loop). Each
 executable includes the ear headers from one translation unit only (`src/main.cpp`,
 `test/audio_graph_test.cpp`): `include/ear/server.hpp` defines a global
 `jsonrpccxx::JsonRpc2Server rpcServer` and `pipe_source.hpp` defines a non-inline member
@@ -87,7 +91,9 @@ How audio moves (this pull/push inversion is the non-obvious part):
    identified by a UUID made from `"<type name>:<device name>"`.
 2. `ear::AudioGraphStandalone` (`graph.hpp`) is an `AudioGraph` that registers itself as one of
    those callbacks. On each device callback it runs `processBlock` on a scratch buffer: the
-   device clock drives the graph.
+   device clock drives the graph. The device's start and stop events prepare and release the
+   graph (as `juce::AudioProcessorPlayer` does); a JUCE 9 `AudioProcessorGraph` that was never
+   prepared renders silence and never prepares its nodes.
 3. `setDevice()` adds an `AudioIoDeviceOutputProcessor` node. It is a graph sink: its inputs are
    the device's output channels, and `processBlock` copies them into an internal buffer. It is
    also registered on the device, and its device callback copies that buffer to the hardware
@@ -107,11 +113,9 @@ accepts connections and drops them. `WebsocketServer` (a blocking thread per con
 passes messages to `rpcServer.HandleRequest`) is never started, and no RPC methods are
 registered.
 
-Known defects the test works around: `run()` never prepares the graph, and an unprepared
-JUCE 9 `AudioProcessorGraph` renders silence (no AirPlay reader starts); `run()` calls
-`addConnection` inside `assert`, so Release (`NDEBUG`) makes no connections;
-`AudioIoDevice::removeCallback` loops forever on a started device; destroying a running
-`AirplayProcessor` calls `std::terminate` (`GraphSource` does not forward `releaseResources`).
+Known defects the test works around: `AudioIoDevice::removeCallback` loops forever on a
+started device; destroying a running `AirplayProcessor` calls `std::terminate` (`GraphSource`
+does not forward `releaseResources`).
 
 Sample rate 44100 and block size 512 are hard-coded in several places (`constants.hpp` exists
 but most code repeats the literals).

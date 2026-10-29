@@ -1,8 +1,8 @@
 // Integration test: EAR's audio graph between virtual sources and a virtual output device.
 //
-// No OS audio device is opened, started or enumerated. The graph is built the way run() in
-// src/server.hpp builds it, around a VirtualAudioDevice that the test thread clocks one block
-// at a time. The AirPlay source reads real PCM from a named pipe written by the test.
+// No OS audio device is opened, started or enumerated. The graph is built by the function
+// run() in src/server.hpp uses, onto a VirtualAudioDevice that the test thread clocks one block
+// at a time from a separate audio thread. The AirPlay source reads real PCM from a named pipe written by the test.
 //
 // This is the only translation unit that includes the ear headers (pipe_source.hpp defines a
 // non-inline member function).
@@ -11,11 +11,12 @@
 
 #include "virtual_audio_device.hpp"
 
-#include "ear/graph.hpp"
-#include "ear/pipe_source.hpp"
+#include "ear/graph_config.hpp"
 
 #include "juce_dsp/juce_dsp.h"
 #include "nlohmann/json.hpp"
+
+#include <boost/uuid/uuid_io.hpp>
 
 #include <fcntl.h>
 #include <limits.h>
@@ -41,7 +42,7 @@ constexpr int BLOCK = VirtualAudioDevice::BLOCK_SIZE;
 constexpr double RATE = VirtualAudioDevice::SAMPLE_RATE;
 
 // ---------------------------------------------------------------------------------------------
-// The graph under test, built from a config the way run() does.
+// The graph under test, built from a config by run()'s own graph builder.
 
 class GraphRig {
 public:
@@ -50,42 +51,21 @@ public:
 		, _device(std::make_shared<ear::AudioIoDevice>(_type, VirtualAudioDeviceType::DEVICE_NAME))
 		, _graph(std::make_unique<ear::AudioGraphStandalone>())
 	{
-		// Same steps and order as run() in src/server.hpp, minus device enumeration.
-		const auto outputNode = _graph->setDevice(_device);
+		// run() in src/server.hpp builds its graph with this same function.
+		_error = ear::buildGraphFromConfig(*_graph, _device, config);
 
-		unsigned airplayBufferSize = 40;
-		if (config.count("airplay")) {
-			const nlohmann::json& airplayConfig = config["airplay"];
-			if (airplayConfig.count("buffer")) {
-				airplayBufferSize = airplayConfig["buffer"].get<unsigned>();
+		for (auto* node : _graph->getNodes()) {
+			if (auto* source = dynamic_cast<ear::GraphSource*>(node->getProcessor())) {
+				_sources.push_back(source);
 			}
 		}
-
-		for (auto& nodeConfig : config["nodes"]) {
-			std::unique_ptr<ear::GraphSource> node;
-
-			const std::string type = nodeConfig["type"];
-			if (type == "white") {
-				node = std::make_unique<ear::WhiteNoiseProcessor>();
-			} else if (type == "airplay") {
-				_pipes.push_back(nodeConfig["pipe"].get<std::string>());
-				node = std::make_unique<ear::AirplayProcessor>(nodeConfig["pipe"].get<std::string>(), airplayBufferSize);
-			}
-			_sources.push_back(node.get());
-
-			auto handle = _graph->addNode(std::move(node));
-
-			for (auto& it : nodeConfig["connect"].items()) {
-				const nlohmann::json connection = it.value();
-				const int nodeOutputChannel = connection[0].get<int>();
-				const int outputInputChannel = connection[1].get<int>();
-				_connected = _graph->addConnection({{handle, nodeOutputChannel}, {outputNode, outputInputChannel}}) && _connected;
+		if (config.count("nodes")) {
+			for (auto& nodeConfig : config["nodes"]) {
+				if (nodeConfig["type"] == "airplay") {
+					_pipes.push_back(nodeConfig["pipe"].get<std::string>());
+				}
 			}
 		}
-
-		// Not in run(): nothing there prepares the graph, and a JUCE 9 AudioProcessorGraph that
-		// was never prepared renders silence and never prepares its nodes (see the report).
-		_graph->prepareToPlay(RATE, BLOCK);
 
 		_opened = _device->open();
 		if (_opened) {
@@ -118,7 +98,8 @@ public:
 		_device.reset();
 	}
 
-	bool allConnected() const { return _connected; }
+	// What buildGraphFromConfig reported; empty when the graph was built.
+	const std::string& buildError() const { return _error; }
 
 	bool started() const { return _opened && virtualDevice().isPlaying(); }
 
@@ -134,7 +115,7 @@ private:
 	std::unique_ptr<ear::AudioGraphStandalone> _graph;
 	std::vector<ear::GraphSource*> _sources;
 	std::vector<std::string> _pipes;
-	bool _connected{true};
+	std::string _error;
 	bool _opened{false};
 };
 
@@ -346,7 +327,7 @@ TEST_CASE("AirPlay PCM from the pipe reaches only its mapped device channels", "
 	// A 200-block ring holds all 64 blocks written below, so nothing overruns while the test
 	// has not started rendering yet.
 	GraphRig rig(airplayConfig(fifo.path(), 200, {{0, 1}, {1, 3}}));
-	REQUIRE(rig.allConnected());
+	REQUIRE(rig.buildError() == "");
 	REQUIRE(rig.started());
 
 	const int frames = 64 * BLOCK;
@@ -414,7 +395,7 @@ TEST_CASE("AirPlay with no data in the pipe renders silence", "[airplay]") {
 	REQUIRE(fifo.created());
 
 	GraphRig rig(airplayConfig(fifo.path(), 40, {{0, 0}, {1, 1}}));
-	REQUIRE(rig.allConnected());
+	REQUIRE(rig.buildError() == "");
 	REQUIRE(rig.started());
 
 	// A connected but idle writer, like shairport-sync between tracks. Declared after the rig,
@@ -439,7 +420,7 @@ TEST_CASE("White noise reaches only its mapped device channel", "[white]") {
 	};
 
 	GraphRig rig(config);
-	REQUIRE(rig.allConnected());
+	REQUIRE(rig.buildError() == "");
 	REQUIRE(rig.started());
 
 	VirtualAudioDevice& device = rig.virtualDevice();
@@ -454,4 +435,13 @@ TEST_CASE("White noise reaches only its mapped device channel", "[white]") {
 		INFO("device channel " << channel);
 		CHECK(allExactlyZero(device.recorded(channel)));
 	}
+}
+
+TEST_CASE("A device's UUID is the name-based UUID of its type and name", "[device]") {
+	std::shared_ptr<juce::AudioIODeviceType> type = std::make_shared<VirtualAudioDeviceType>(OUTPUT_CHANNELS);
+	const ear::AudioIoDevice device(type, VirtualAudioDeviceType::DEVICE_NAME);
+
+	// Users pass this value with --device and in the config's "device": it must not change.
+	// Python: uuid.uuid5(uuid.UUID(int=0), "Virtual:Virtual Output")
+	CHECK(boost::uuids::to_string(device.getUuid()) == "a3a610c8-d8b9-588d-b05e-5335729dde2b");
 }

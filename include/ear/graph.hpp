@@ -268,6 +268,19 @@ public:
 	}
 
 private:
+	// The device's start and stop events prepare and release the graph, as
+	// juce::AudioProcessorPlayer does. A JUCE 9 AudioProcessorGraph that was never prepared
+	// builds no render sequence: it renders silence and never prepares its nodes.
+	void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
+		juce::ScopedLock lock(_mutex);
+		prepareToPlay(device->getCurrentSampleRate(), device->getCurrentBufferSizeSamples());
+	}
+
+	void audioDeviceStopped() override {
+		juce::ScopedLock lock(_mutex);
+		releaseResources();
+	}
+
 	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const*, int channels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::ScopedLock lock(_mutex);
 
