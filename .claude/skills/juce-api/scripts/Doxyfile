@@ -1,0 +1,15 @@
+# Overlay on JUCE's own Doxyfile: same inputs, excludes and predefines, XML out.
+# Run with the working directory holding `build` -> juce/modules (see generate.sh),
+# because JUCE's INPUT and EXCLUDE paths are relative to `build`.
+@INCLUDE               = /juce-doxygen/Doxyfile
+OUTPUT_DIRECTORY       = /out
+GENERATE_HTML          = NO
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+XML_PROGRAMLISTING     = NO
+HAVE_DOT               = NO
+GENERATE_TAGFILE       =
+QUIET                  = YES
+WARNINGS               = NO
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = NO
