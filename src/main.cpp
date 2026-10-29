@@ -38,7 +38,7 @@ int simpleTest(boost::program_options::variables_map&) {
 
 	auto juceSource = std::make_shared<ear::FileAudioSource>(juce::File("/Users/matt/Development/ear/media/01 Misery.m4a"));
 
-	ear::AudioIoDeviceFunctorCallback callback([juceSource] (const float**, int, float**, int outputChannels, int samples) {
+	ear::AudioIoDeviceFunctorCallback callback([juceSource] (const float* const*, int, float* const*, int outputChannels, int samples) {
 		DBG("callback channels=" + juce::String(outputChannels) + " samples=" + juce::String(samples));
 
 		//juce::AudioSampleBuffer buffer(outputs, outputChannels, samples);
@@ -150,7 +150,7 @@ int customGraphTest(boost::program_options::variables_map& vm) {
 		}
 	}
 
-	ear::AudioIoDeviceFunctorCallback callback([&graph] (const float**, int, float** outputs, int outputChannels, int samples) {
+	ear::AudioIoDeviceFunctorCallback callback([&graph] (const float* const*, int, float* const* outputs, int outputChannels, int samples) {
 		DBG("callback channels=" + juce::String(outputChannels) + " samples=" + juce::String(samples));
 
 		juce::AudioSampleBuffer buffer(outputs, outputChannels, samples);

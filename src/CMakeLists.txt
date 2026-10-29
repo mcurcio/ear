@@ -22,7 +22,9 @@ target_compile_definitions(ear PRIVATE
     JUCE_USE_CURL=0)
 juce_generate_juce_header(ear)
 target_link_libraries(ear PRIVATE
-	${Boost_LIBRARIES}
+	Boost::headers
+	Boost::program_options
+	Boost::filesystem
 	nlohmann_json::nlohmann_json
     # ConsoleAppData            # If you'd created a binary data target, you'd link to it here
     juce::juce_core
