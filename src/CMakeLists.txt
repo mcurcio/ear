@@ -42,6 +42,52 @@ target_link_libraries(ear_dependencies INTERFACE
     juce::juce_audio_formats
     juce::juce_dsp)
 
+# Linux: JUCE looks up each module's linuxPackages with pkg_check_modules but does not fail when
+# one is missing (_juce_create_pkgconfig_target in JUCEModuleSupport.cmake), so stop here,
+# naming every juce::pkgconfig_<module>_LINUX_DEPS target ear_dependencies reaches whose lookup
+# failed. FindPkgConfig caches a found result and skips the lookup on later configures, so a
+# package removed after a successful configure is reported only once out/CMakeCache.txt is
+# deleted (make clean); a failed lookup is retried on every configure.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    block()
+        set(pending ear_dependencies)
+        set(seen "")
+        set(missing "")
+        while(pending)
+            list(POP_FRONT pending target)
+            get_target_property(aliased ${target} ALIASED_TARGET)
+            if(aliased)
+                set(target ${aliased})
+            endif()
+            if(target IN_LIST seen)
+                continue()
+            endif()
+            list(APPEND seen ${target})
+            # pkg_check_modules' prefix, so its <prefix>_FOUND, is <module>_LINUX_DEPS.
+            if(target MATCHES "^pkgconfig_((.+)_LINUX_DEPS)$")
+                if(NOT ${CMAKE_MATCH_1}_FOUND)
+                    list(APPEND missing "${CMAKE_MATCH_2} (target juce::${target})")
+                endif()
+            endif()
+            get_target_property(links ${target} INTERFACE_LINK_LIBRARIES)
+            # Generator-expression entries are skipped: JUCE links its modules to each other and
+            # to their pkgconfig targets without one (JUCEModuleSupport.cmake:637).
+            foreach(link IN LISTS links)
+                if(NOT link MATCHES "\\$<" AND TARGET "${link}")
+                    list(APPEND pending "${link}")
+                endif()
+            endforeach()
+        endwhile()
+        if(missing)
+            list(JOIN missing "\n  " missing)
+            message(FATAL_ERROR "System packages are missing for these JUCE modules' "
+                "linuxPackages (the pkg-config lines above name them):\n  ${missing}\n"
+                "Install them with ${PROJECT_SOURCE_DIR}/scripts/install-build-deps.sh, "
+                "then configure again.")
+        endif()
+    endblock()
+endif()
+
 juce_add_console_app(ear
     PRODUCT_NAME "Einstein Audio Router")
 target_sources(ear PRIVATE

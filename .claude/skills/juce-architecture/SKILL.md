@@ -1,6 +1,6 @@
 ---
 name: juce-architecture
-description: Which JUCE 9 building blocks fit this repo's audio-routing jobs, and the JUCE threading and real-time rules a design must respect. Use when designing or reviewing architecture in this repo (device handling, the routing graph, sources, cross-thread hand-off, the control server), when judging whether a bespoke mechanism duplicates something JUCE already provides, or when briefing an architect or implementer on JUCE work.
+description: Which JUCE 9 building blocks fit this repo's audio-routing jobs, and the JUCE threading and real-time rules a design must respect. Use when designing or reviewing architecture in this repo (device handling, the routing graph, sources, cross-thread hand-off, the control server), when judging whether a bespoke mechanism duplicates something JUCE already provides, or when briefing an architect or implementer on JUCE work. Also covers which system packages and SDK JUCE needs to build here (system-dependencies.md), for a configure that fails on one.
 ---
 
 # JUCE building blocks and rules for EAR
@@ -10,6 +10,9 @@ Prior art first: before designing a mechanism, find the JUCE class that already 
 against the JUCE 9.0.4 source; JUCE `file:line` refs are under `.cache/deps/juce-src/modules/`
 (the JUCE tree CMake fetches; see AGENTS.md). Do not
 mix in older JUCE or remembered behaviour.
+
+The system packages and SDK JUCE needs to build here, and how configure checks them, are in
+[system-dependencies.md](system-dependencies.md).
 
 ## Which JUCE class does the job
 

@@ -1,6 +1,7 @@
-# Runs the integration tests (make test: builds ear_tests and runs ctest on the virtual audio
-# device, no OS audio) and builds the ear binary (make debug) on every pull request, and on
-# pushes to master so master's caches are warm for pull requests.
+# On macOS and Linux, on every pull request and on pushes to master (so master's caches are warm
+# for pull requests): installs the Linux build packages, runs the integration tests (make test:
+# builds ear_tests and runs ctest on the virtual audio device, no OS audio), builds the ear
+# binary (make debug) and starts it (ear --help).
 name: test
 
 on:
@@ -17,8 +18,15 @@ permissions:
 
 jobs:
   test:
-    # Apple Silicon and AppleClang: the only platform EAR is tested on.
-    runs-on: macos-latest
+    # The platforms EAR is tested on: macOS on Apple Silicon with AppleClang, and Ubuntu 24.04 on
+    # x86_64 with GCC 13. Ubuntu is pinned to the release the Linux build was tested on;
+    # macos-latest follows GitHub's image. fail-fast is off so one platform's failure does not
+    # cancel the other's run and hide whether it passes too.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # CMake (3.17+) takes these as its compiler launcher defaults, and JUCE passes them on to the
     # juceaide build it runs during configure, so ccache covers juceaide, JUCE, Boost and EAR.
@@ -28,7 +36,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Build with the tested CMake release; the runner image ships a newer one.
+      # The system packages JUCE needs on Linux; macOS needs only the Xcode Command Line Tools,
+      # which the image has.
+      - if: runner.os == 'Linux'
+        run: scripts/install-build-deps.sh
+
+      # Build with the tested CMake release, not the one the runner image ships.
       - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2.2.0
         with:
           cmake-version: '4.2.1'
@@ -43,15 +56,17 @@ jobs:
           path: |
             .cache/deps/juce-src
             .cache/deps/boost-src
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake') }}
+          key: >-
+            deps-${{ runner.os }}-${{ runner.arch }}-${{
+            hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake') }}
           restore-keys: deps-${{ runner.os }}-${{ runner.arch }}-
 
       # Compiler output: ccache, keyed by content hash, so it is safe with checkout's fresh mtimes
       # (a cached out/ is not). Installs ccache and restores the newest cache; its post step
-      # drops entries this job did not use and saves the rest (about 40 MB). Picked over a
-      # hand-rolled brew install plus actions/cache because it handles the per-run key and the
-      # eviction. Every source hits on a warm cache except juce_core_CompilationTime.cpp
-      # (__DATE__/__TIME__), so no ccache options are set.
+      # drops entries this job did not use and saves the rest (about 40 MB, measured on macOS).
+      # Picked over a hand-rolled brew or apt install plus actions/cache because it handles the
+      # per-run key and the eviction. Every source hits on a warm cache except
+      # juce_core_CompilationTime.cpp (__DATE__/__TIME__), so no ccache options are set.
       - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
           key: ${{ runner.os }}-${{ runner.arch }}
@@ -63,9 +78,14 @@ jobs:
       # Compiles and links the ear binary itself (src/main.cpp), which make test does not build.
       - run: make debug
 
+      # Starts the built binary: --help prints the options and exits before opening a device,
+      # so this checks the binary loads its shared libraries on the runner.
+      - run: ./out/ear --help
+
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ctest-output
+          # One artifact per matrix leg: two legs uploading the same name would collide.
+          name: ctest-output-${{ runner.os }}
           path: out/Testing
           if-no-files-found: ignore

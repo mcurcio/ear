@@ -1,6 +1,23 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
+# On macOS the compiler and SDK come from the Xcode Command Line Tools; without them project()
+# fails detecting the compiler with an error that does not say so.
+if(CMAKE_HOST_APPLE)
+	execute_process(COMMAND xcrun --show-sdk-path RESULT_VARIABLE xcrun_result
+		OUTPUT_QUIET ERROR_QUIET)
+	if(NOT xcrun_result EQUAL 0)
+		message(FATAL_ERROR "The Xcode Command Line Tools are missing (xcrun --show-sdk-path "
+			"failed). Install them with: xcode-select --install")
+	endif()
+endif()
+
 project(EAR VERSION 0.0.1)
+
+# The platforms EAR builds on: macOS and Linux, the two it is built and tested on. Any other,
+# Windows included, stops here, before anything is fetched.
+if(NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$")
+	message(FATAL_ERROR "EAR does not build on ${CMAKE_SYSTEM_NAME} yet (macOS and Linux only)")
+endif()
 
 option(BUILD_TESTS "Build project with test suite" OFF)
 
@@ -55,7 +72,8 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 # across "make clean" (re-extracting it costs 30-40 s); Boost's build tree stays in the build
 # directory. EXCLUDE_FROM_ALL builds only the Boost targets EAR links.
 set(BOOST_INCLUDE_LIBRARIES program_options uuid endian asio beast)
-set(boost_url https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
+set(boost_url
+	https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
 set(boost_sha256 9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d)
 kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
 	URL ${boost_url}
@@ -68,7 +86,8 @@ kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
 # so program_options stays the only compiled Boost library (src/CMakeLists.txt lists the rest).
 get_target_property(boost_lexical_cast_target Boost::lexical_cast ALIASED_TARGET)
 get_target_property(boost_lexical_cast_links ${boost_lexical_cast_target} INTERFACE_LINK_LIBRARIES)
-list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$" "$<COMPILE_ONLY:Boost::container>")
+list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$"
+	"$<COMPILE_ONLY:Boost::container>")
 set_target_properties(${boost_lexical_cast_target} PROPERTIES
 	INTERFACE_LINK_LIBRARIES "${boost_lexical_cast_links}")
 
