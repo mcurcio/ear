@@ -35,17 +35,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Linux headers JUCE finds with pkg-config (each module's linuxPackages): ALSA for
-      # juce_audio_devices, which EAR links; FreeType and Fontconfig for juce_graphics, which
-      # only juceaide (JUCE's build helper, compiled during configure) links. macOS needs
-      # nothing beyond Xcode.
-      - if: runner.os == 'Linux'
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev libfreetype-dev libfontconfig1-dev
+      # The platform's system packages for the JUCE modules the build uses (apt-get on Linux;
+      # on macOS it only checks for the Xcode Command Line Tools). Configure checks them too.
+      - run: scripts/install-build-deps.sh
 
       # Build with the tested CMake release, not the one the runner image ships.
       - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2.2.0

@@ -14,11 +14,17 @@ snapshots from 2020).
 
 Runs on macOS and Linux. Needs CMake 3.28 or newer (tested with 4.2.1), a C++17 compiler
 (tested with AppleClang 21 on Apple Silicon and GCC 13 on Ubuntu 24.04), git and network access
-on the first configure. On Linux JUCE also needs, through `pkg-config`, the ALSA headers for
-`juce_audio_devices` and the FreeType and Fontconfig headers for `juce_graphics`, which only
-juceaide (JUCE's build helper, compiled during configure) links; on Ubuntu:
-`sudo apt-get install pkg-config libasound2-dev libfreetype-dev libfontconfig1-dev`. Nothing
-else is installed:
+on the first configure. `scripts/install-build-deps.sh` installs the platform's system packages
+(on Linux, with apt-get, the `pkg-config` packages the JUCE modules declare; on macOS it only
+checks for the Xcode Command Line Tools, whose SDK has the frameworks). Configure checks them:
+`ear_require_juce_system_dependencies` (`cmake/JuceSystemDependencies.cmake`) reads each JUCE
+module header's `linuxPackages` or `OSXFrameworks` and `WeakOSXFrameworks`, following
+`dependencies:`, for the modules juceaide (JUCE's build helper, compiled during JUCE's
+configure) links and those in `ear_dependencies`, and stops naming each missing package or
+framework, its module and the script (JUCE's own lookup does not fail, so a missing package
+would otherwise surface as a compiler error naming a header). Any other platform, Windows
+included, stops at configure. So `CMakeLists.txt` fetches JUCE without adding it (a
+`SOURCE_SUBDIR` it lacks), runs the check, then adds it. Nothing else is installed:
 `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
 archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 
@@ -88,10 +94,10 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 
 `.github/workflows/test.yml` runs on every pull request and every push to `master`, as a
 matrix of two jobs that do not cancel each other: `macos-latest` (Apple Silicon, AppleClang) and
-`ubuntu-24.04` (x86_64, GCC 13, after an `apt-get install` of the Linux packages above; pinned
-to the tested release, while `macos-latest` follows GitHub's image), both with CMake 4.2.1 (not
-the images' own CMake): `make test`, then `make debug` (the `ear` binary, which `make test` does
-not build), then `./out/ear --help`, which starts the binary (it exits before opening a device)
+`ubuntu-24.04` (x86_64, GCC 13; pinned to the tested release, while `macos-latest` follows
+GitHub's image), both with CMake 4.2.1 (not the images' own CMake):
+`scripts/install-build-deps.sh`, `make test`, then `make debug` (the `ear` binary, which
+`make test` does not build), then `./out/ear --help`, which starts the binary (it exits before opening a device)
 so a shared library missing at runtime fails the job. On failure it uploads `out/Testing` (ctest's logs) as the
 `ctest-output-<runner OS>` artifact (`ctest-output-macOS`, `ctest-output-Linux`). Each job
 caches, keyed by its OS and architecture, `.cache/deps/juce-src` and

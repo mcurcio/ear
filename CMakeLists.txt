@@ -28,6 +28,7 @@ set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/deps" CACHE PATH
 	"Where FetchContent keeps downloaded dependency sources")
 include(FetchContent)
 include(cmake/KeptFetchContent.cmake)
+include(cmake/JuceSystemDependencies.cmake)
 
 # JUCE, pinned by commit: juce_commit is the commit the upstream 9.0.4 tag points at. A full
 # commit id names exactly one tree; a tag can be moved, and GitHub does not guarantee the bytes
@@ -38,11 +39,21 @@ include(cmake/KeptFetchContent.cmake)
 # .claude/skills/juce-api/scripts/ensure.sh reads juce_commit from this line.
 set(juce_repository https://github.com/juce-framework/JUCE.git)
 set(juce_commit 3fb5cbc0340758596dac39f7c8de47d562b4896e) # JUCE 9.0.4
+# SOURCE_SUBDIR names a directory JUCE does not have, so FetchContent_MakeAvailable fetches the
+# tree without adding it (FetchContent's documented way to populate only): JUCE's configure
+# compiles juceaide, so the system dependencies of the JUCE modules juceaide links (read from
+# its CMakeLists.txt) are checked first, then JUCE is added here.
 kept_fetchcontent(juce "${juce_repository}\n${juce_commit}"
 	GIT_REPOSITORY ${juce_repository}
 	GIT_TAG ${juce_commit}
 	GIT_SHALLOW TRUE
+	SOURCE_SUBDIR ear-populate-only
 )
+file(STRINGS "${juce_SOURCE_DIR}/extras/Build/juceaide/CMakeLists.txt" juceaide_links REGEX "juce::juce_")
+string(REGEX MATCHALL "juce::juce_[A-Za-z0-9_]+" juceaide_links "${juceaide_links}")
+list(TRANSFORM juceaide_links REPLACE "^juce::" "")
+ear_require_juce_system_dependencies("${juce_SOURCE_DIR}" juceaide ${juceaide_links})
+add_subdirectory("${juce_SOURCE_DIR}" "${juce_BINARY_DIR}")
 
 # vendor/json declares cmake_minimum_required(VERSION 3.1), which CMake 4 rejects.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)

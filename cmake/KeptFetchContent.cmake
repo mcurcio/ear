@@ -3,6 +3,8 @@
 # FetchContent_Declare and FetchContent_MakeAvailable for a dependency whose source tree is
 # kept across "make clean": FETCHCONTENT_BASE_DIR/<name>-src (default .cache/deps, gitignored)
 # outlives the build directory, and the build tree goes to <build dir>/_deps/<name>-build.
+# A SOURCE_SUBDIR that does not exist populates the tree without adding it; the caller then
+# runs add_subdirectory(${<name>_SOURCE_DIR} ${<name>_BINARY_DIR}).
 #
 # FetchContent keeps its population stamps in the build directory, so after "make clean" it
 # would download or extract the tree again. A marker written into the tree after a verified

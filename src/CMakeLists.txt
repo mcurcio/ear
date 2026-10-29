@@ -41,6 +41,11 @@ target_link_libraries(ear_dependencies INTERFACE
     juce::juce_audio_processors_headless
     juce::juce_audio_formats
     juce::juce_dsp)
+# Configure stops here if a system dependency of those JUCE modules is missing on this platform.
+get_target_property(ear_juce_modules ear_dependencies INTERFACE_LINK_LIBRARIES)
+list(FILTER ear_juce_modules INCLUDE REGEX "^juce::")
+list(TRANSFORM ear_juce_modules REPLACE "^juce::" "")
+ear_require_juce_system_dependencies("${juce_SOURCE_DIR}" ear ${ear_juce_modules})
 
 juce_add_console_app(ear
     PRODUCT_NAME "Einstein Audio Router")
