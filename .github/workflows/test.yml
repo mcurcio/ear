@@ -23,8 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The runner image ships a CMake newer than the 4.2 that cmake_minimum_required and
-      # AGENTS.md name; use the tested release.
+      # Build with the tested CMake release; the runner image ships a newer one.
       - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2.2.0
         with:
           cmake-version: '4.2.1'

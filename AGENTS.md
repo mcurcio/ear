@@ -12,7 +12,7 @@ snapshots from 2020).
 
 ## Build and run
 
-Needs CMake 3.28 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
+Needs CMake 3.28 or newer (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
 Apple Silicon), git and network access on the first configure. Nothing is installed:
 `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
 archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
