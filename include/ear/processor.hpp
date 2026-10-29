@@ -105,7 +105,7 @@ public:
 		float input = buffer.getSample(0, 0);
 		//juce::AudioSourceChannelInfo info(buffer);
 		//_source->getNextAudioBlock(info);
-		_player.audioDeviceIOCallback(nullptr, 0, buffer.getArrayOfWritePointers(), buffer.getNumChannels(), buffer.getNumSamples());
+		_player.audioDeviceIOCallbackWithContext(nullptr, 0, buffer.getArrayOfWritePointers(), buffer.getNumChannels(), buffer.getNumSamples(), {});
 
 		//DBG("~GraphSource#processBlock input=" + juce::String(input) + " output=" + juce::String(buffer.getSample(0, 0)));
 	}

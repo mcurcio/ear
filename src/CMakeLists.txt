@@ -9,7 +9,7 @@
 #add_library(msgpack_o OBJECT ${msgpack_SOURCES})
 
 set(ear_SOURCES
-    main
+    main.cpp
 )
 
 juce_add_console_app(ear
@@ -22,7 +22,11 @@ target_compile_definitions(ear PRIVATE
     JUCE_USE_CURL=0)
 juce_generate_juce_header(ear)
 target_link_libraries(ear PRIVATE
-	${Boost_LIBRARIES}
+	Boost::program_options
+	Boost::uuid
+	Boost::endian
+	Boost::asio
+	Boost::beast
 	nlohmann_json::nlohmann_json
     # ConsoleAppData            # If you'd created a binary data target, you'd link to it here
     juce::juce_core

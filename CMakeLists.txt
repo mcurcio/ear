@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.22...4.2)
 
 project(EAR VERSION 0.0.1)
 
@@ -12,27 +12,44 @@ option(BUILD_TESTS "Build project with test suite" OFF)
 #set(msgpack_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/msgpack/src")
 
 add_definitions("-g -W -Wall -O2 -fPIC")
-list(APPEND CMAKE_CXX_FLAGS "-std=c++1z")
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install OFF CACHE INTERNAL "")
 
 add_subdirectory(juce)
+# vendor/json declares cmake_minimum_required(VERSION 3.1), which CMake 4 rejects.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(vendor/json)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
 #add_subdirectory(vendor/jsonrpccxx)
 
-find_package(Boost 1.70 REQUIRED
-    system
-    program_options
-	filesystem
+# Boost is built by this project from the official Boost CMake release, like JUCE:
+# nothing is installed. The download and extracted source live in FETCHCONTENT_BASE_DIR
+# (default .cache/deps in the source tree, gitignored), so "make clean" (which removes out/)
+# does not re-download; the next configure re-extracts the kept archive. Boost's build tree
+# stays in the build directory.
+# Set before include(FetchContent), which otherwise caches its own default (build/_deps).
+set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/deps" CACHE PATH
+	"Where FetchContent keeps downloaded dependency sources")
+include(FetchContent)
+set(BOOST_INCLUDE_LIBRARIES program_options uuid endian asio beast)
+FetchContent_Declare(boost
+	URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz
+	URL_HASH SHA256=9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+	BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/boost-build"
 )
+FetchContent_MakeAvailable(boost)
 
 #find_package(JUCE REQUIRED PATHS "${CMAKE_CURRENT_LIST_DIR}/out/juce/")
 
 message("JUCE=${JUCE_FOUND}")
 
 include_directories(
-	${Boost_INCLUDE_DIRS}
 	"${CMAKE_CURRENT_SOURCE_DIR}/vendor/json/include"
 	"${CMAKE_CURRENT_SOURCE_DIR}/vendor/jsonrpccxx/include"
 )

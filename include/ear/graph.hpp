@@ -1,3 +1,5 @@
+#include <cassert>
+
 #include "device.hpp"
 #include "processor.hpp"
 
@@ -44,7 +46,7 @@ public:
 	}
 
 private:
-	void audioDeviceIOCallback(const float**, int, float** outputs, int outputChannels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const* outputs, int outputChannels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::AudioSampleBuffer buffer(outputs, outputChannels, samples);
 
 		DBG("GraphDeviceSink#audioDeviceIOCallback [0][0]=" + juce::String(buffer.getSample(0, 0)));
@@ -183,7 +185,7 @@ public:
 		_device->removeCallback(this);
 	}
 
-	void audioDeviceIOCallback(const float**, int, float** outputs, int channels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const* outputs, int channels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::AudioSampleBuffer outputBuffer(outputs, channels, samples);
 
 		assert(outputBuffer.getNumChannels() <= _buffer.getNumChannels());
@@ -266,7 +268,7 @@ public:
 	}
 
 private:
-	void audioDeviceIOCallback(const float**, int, float**, int channels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const*, int channels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::ScopedLock lock(_mutex);
 
 		//DBG("");
