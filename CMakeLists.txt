@@ -1,5 +1,16 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
+# On macOS the compiler and SDK come from the Xcode Command Line Tools; without them project()
+# fails detecting the compiler with an error that does not say so.
+if(CMAKE_HOST_APPLE)
+	execute_process(COMMAND xcrun --show-sdk-path RESULT_VARIABLE xcrun_result
+		OUTPUT_QUIET ERROR_QUIET)
+	if(NOT xcrun_result EQUAL 0)
+		message(FATAL_ERROR "The Xcode Command Line Tools are missing (xcrun --show-sdk-path "
+			"failed). Install them with: xcode-select --install")
+	endif()
+endif()
+
 project(EAR VERSION 0.0.1)
 
 # The platforms EAR builds on: macOS and Linux, the two it is built and tested on. Any other,
@@ -34,7 +45,6 @@ set(FETCHCONTENT_BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.cache/deps" CACHE PATH
 	"Where FetchContent keeps downloaded dependency sources")
 include(FetchContent)
 include(cmake/KeptFetchContent.cmake)
-include(cmake/JuceSystemDependencies.cmake)
 
 # JUCE, pinned by commit: juce_commit is the commit the upstream 9.0.4 tag points at. A full
 # commit id names exactly one tree; a tag can be moved, and GitHub does not guarantee the bytes
@@ -45,25 +55,11 @@ include(cmake/JuceSystemDependencies.cmake)
 # .claude/skills/juce-api/scripts/ensure.sh reads juce_commit from this line.
 set(juce_repository https://github.com/juce-framework/JUCE.git)
 set(juce_commit 3fb5cbc0340758596dac39f7c8de47d562b4896e) # JUCE 9.0.4
-# SOURCE_SUBDIR names a directory JUCE does not have, so FetchContent_MakeAvailable fetches the
-# tree without adding it (FetchContent's documented way to populate only): JUCE's configure
-# compiles juceaide, so the system dependencies of the JUCE modules juceaide links (read from
-# its CMakeLists.txt) are checked first, then JUCE is added here.
 kept_fetchcontent(juce "${juce_repository}\n${juce_commit}"
 	GIT_REPOSITORY ${juce_repository}
 	GIT_TAG ${juce_commit}
 	GIT_SHALLOW TRUE
-	SOURCE_SUBDIR ear-populate-only
 )
-file(STRINGS "${juce_SOURCE_DIR}/extras/Build/juceaide/CMakeLists.txt" juceaide_links REGEX "juce::juce_")
-string(REGEX MATCHALL "juce::juce_[A-Za-z0-9_]+" juceaide_links "${juceaide_links}")
-list(TRANSFORM juceaide_links REPLACE "^juce::" "")
-if(NOT juceaide_links)
-	message(FATAL_ERROR "Found no juce::juce_ links in JUCE's extras/Build/juceaide/CMakeLists.txt; "
-		"re-check this parser against the JUCE release juce_commit names")
-endif()
-ear_require_juce_system_dependencies("${juce_SOURCE_DIR}" juceaide ${juceaide_links})
-add_subdirectory("${juce_SOURCE_DIR}" "${juce_BINARY_DIR}")
 
 # vendor/json declares cmake_minimum_required(VERSION 3.1), which CMake 4 rejects.
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
@@ -76,7 +72,8 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 # across "make clean" (re-extracting it costs 30-40 s); Boost's build tree stays in the build
 # directory. EXCLUDE_FROM_ALL builds only the Boost targets EAR links.
 set(BOOST_INCLUDE_LIBRARIES program_options uuid endian asio beast)
-set(boost_url https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
+set(boost_url
+	https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
 set(boost_sha256 9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d)
 kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
 	URL ${boost_url}
@@ -89,7 +86,8 @@ kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
 # so program_options stays the only compiled Boost library (src/CMakeLists.txt lists the rest).
 get_target_property(boost_lexical_cast_target Boost::lexical_cast ALIASED_TARGET)
 get_target_property(boost_lexical_cast_links ${boost_lexical_cast_target} INTERFACE_LINK_LIBRARIES)
-list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$" "$<COMPILE_ONLY:Boost::container>")
+list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$"
+	"$<COMPILE_ONLY:Boost::container>")
 set_target_properties(${boost_lexical_cast_target} PROPERTIES
 	INTERFACE_LINK_LIBRARIES "${boost_lexical_cast_links}")
 

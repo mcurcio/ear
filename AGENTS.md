@@ -12,34 +12,20 @@ snapshots from 2020).
 
 ## Build and run
 
-Runs on macOS and Linux. Needs CMake 3.28 or newer (tested with 4.2.1), a C++17 compiler
-(tested with AppleClang 21 on Apple Silicon and GCC 13 on Ubuntu 24.04), git and network access
-on the first configure. `scripts/install-build-deps.sh` installs the platform's system packages
-(on Linux, with apt-get, the `pkg-config` packages the JUCE modules declare; on macOS it only
-checks for the Xcode Command Line Tools, whose SDK has the frameworks). Configure checks them:
-`ear_require_juce_system_dependencies` (`cmake/JuceSystemDependencies.cmake`) reads each JUCE
-module header's `linuxPackages` or `OSXFrameworks` and `WeakOSXFrameworks`, following
-`dependencies:`, for the modules juceaide (JUCE's build helper, compiled during JUCE's
-configure) links and those in `ear_dependencies`, and stops naming each missing package or
-framework and its module, then the script on Linux or the SDK on macOS (JUCE's own lookup does
-not fail, so a missing package would otherwise surface later: on Linux as a compiler error
-naming a header, on macOS as a linker error). Every configure looks them up again (no cached
-hit is reused). So `CMakeLists.txt` fetches JUCE without adding it (a `SOURCE_SUBDIR` it
-lacks), runs the check, then adds it. Any other platform, Windows included, stops at the start
-of configure, before anything is fetched. Nothing else is installed:
-`CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
-archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
+Runs on macOS and Linux; configure stops on any other platform. Needs CMake 3.28 or newer
+(tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on Apple Silicon and GCC 13 on
+Ubuntu 24.04), git and network access on the first configure. macOS also needs the Xcode
+Command Line Tools, which configure checks for. On Linux, `scripts/install-build-deps.sh`
+installs the system packages JUCE needs, and configure names any that are missing; which module
+needs each, and the one gap in that check, are in the `juce-architecture` skill's
+[system-dependencies.md](.claude/skills/juce-architecture/system-dependencies.md). Nothing else
+is installed: `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0
+(pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 
-A build compiles only what EAR links. `ear_dependencies` in `src/CMakeLists.txt` is the one
-link list for `ear` and `ear_tests`; its comment says why each entry is there.
-
-- Boost: `program_options` is the only compiled library. `uuid`, `endian`, `asio_core` and
-  Beast are header-only; Beast is linked for compilation only (`$<COMPILE_ONLY:...>`, hence
-  CMake 3.28 with `FetchContent`'s `EXCLUDE_FROM_ALL`), and `CMakeLists.txt` does the same for
-  `lexical_cast`'s link to the compiled `container`.
-- JUCE: `juce_core`, `juce_events`, `juce_audio_basics`, `juce_audio_devices`,
-  `juce_audio_processors_headless`, `juce_audio_formats` and `juce_dsp`. No GUI module, so no
-  HarfBuzz, image or SVG libraries and no WebKit.
+A build compiles only what EAR links: `ear_dependencies` in `src/CMakeLists.txt` is the one
+link list for `ear` and `ear_tests`, and its comment says why each entry is there (no JUCE GUI
+module; `program_options` is the only compiled Boost library). CMake 3.28 is the minimum for
+the `$<COMPILE_ONLY:...>` links and `FetchContent`'s `EXCLUDE_FROM_ALL`.
 
 ```bash
 make debug      # configure out/ for Debug with -DBUILD_TESTS=OFF, then cmake --build --parallel
@@ -51,25 +37,16 @@ make clean      # rm -rf out
 ```
 
 - Build output goes to `out/` (gitignored); a post-build step copies the binary to `out/ear`.
-- Fetched sources are cached in `.cache/deps/` (gitignored; `-DFETCHCONTENT_BASE_DIR=...`
-  moves it): JUCE's shallow clone in `.cache/deps/juce-src/` (about 220 MB) and Boost's archive
-  and source in `.cache/deps/boost-src/` (about 800 MB). Their build trees are
-  `out/_deps/<name>-build`. `make clean` keeps the sources. `kept_fetchcontent`
-  (`cmake/KeptFetchContent.cmake`) writes a marker file into each source tree recording the pin
-  it was fetched from (repository and commit, or archive URL and SHA-256); when it matches the
-  declared pin the next configure reuses the tree (`FETCHCONTENT_SOURCE_DIR_<NAME>`), otherwise
-  it fetches again: JUCE re-clones (about 10 s), Boost re-verifies its archive and re-extracts
-  (30-40 s). The build trusts a matching marker and does not re-check the tree: a tree edited
-  or moved to another commit after its fetch is built as it is. Delete the tree to fetch it
-  again (a missing tree, or one without its `CMakeLists.txt`, is fetched again even when
-  `out/` survives).
-- The build runs `cmake --build out --parallel $(JOBS)` with `MAKEFLAGS` cleared, so
-  `JOBS`, not `make -jN`, sets its parallelism (a `-jN` is harmless but ignored). Configure
-  runs only when `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS`
-  value; the build itself re-runs CMake when a `CMakeLists.txt` changes. JUCE compiles once
-  per target. Measured on a Mac (8 cores, other jobs running): `make clean && make debug` 44 s
-  (configure 20 s); `make test` after that 24 s; `make debug` after `make test` 2.4 s
-  (reconfigures for `BUILD_TESTS=OFF`); a no-op `make debug` or `make test` 0.4-0.5 s.
+- Fetched sources are kept in `.cache/deps/` (gitignored), which `make clean` keeps: JUCE in
+  `.cache/deps/juce-src/` (about 220 MB), Boost in `.cache/deps/boost-src/` (about 800 MB).
+  `cmake/KeptFetchContent.cmake` says when a kept tree is reused and when it is fetched again;
+  a tree edited after its fetch is built as it is, so delete it to fetch it again.
+- `JOBS`, not `make -jN`, sets the build's parallelism, and configure runs only when
+  `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS` value (the `Makefile`
+  says why). JUCE compiles once per target. Measured on a Mac (8 cores, other jobs running):
+  `make clean && make debug` 44 s (configure 20 s); `make test` after that 24 s; `make debug`
+  after `make test` 2.4 s (reconfigures for `BUILD_TESTS=OFF`); a no-op `make debug` or
+  `make test` 0.4-0.5 s.
 - `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
   directory) and `--device` (index or UUID from the startup listing; overrides `"device"`).
   The other flags only feed disabled test functions in `src/main.cpp`. There is no lint config.
@@ -94,23 +71,11 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 
 ## CI
 
-`.github/workflows/test.yml` runs on every pull request and every push to `master`, as a
-matrix of two jobs that do not cancel each other: `macos-latest` (Apple Silicon, AppleClang) and
-`ubuntu-24.04` (x86_64, GCC 13; pinned to the tested release, while `macos-latest` follows
-GitHub's image), both with CMake 4.2.1 (not the images' own CMake):
-`scripts/install-build-deps.sh`, `make test`, then `make debug` (the `ear` binary, which
-`make test` does not build), then `./out/ear --help`, which starts the binary (it exits before opening a device)
-so a shared library missing at runtime fails the job. On failure it uploads `out/Testing` (ctest's logs) as the
-`ctest-output-<runner OS>` artifact (`ctest-output-macOS`, `ctest-output-Linux`). Each job
-caches, keyed by its OS and architecture, `.cache/deps/juce-src` and
-`.cache/deps/boost-src`, keyed also on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
-restored from an older key whose marker no longer matches its pin is fetched again. It also
-caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB, measured on the macOS job): each job sets
-`CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER` to `ccache`, which CMake takes as
-defaults and JUCE passes on to the juceaide build during configure. On a warm cache every
-compile hits except `juce_core_CompilationTime.cpp` (`__DATE__`/`__TIME__`); measured on a Mac,
-a `make test` plus `make debug` sequence into a fresh build folder took 61 s cold and 7 s warm.
-Pushes to `master` keep both caches warm for pull requests, which can read them.
+`.github/workflows/test.yml` runs on every pull request and every push to `master`, on
+`macos-latest` and `ubuntu-24.04` with CMake 4.2.1: `make test`, `make debug` and
+`./out/ear --help`; its comments give the steps, caches and the reasons. On failure it uploads
+ctest's logs as `ctest-output-macOS` or `ctest-output-Linux`. Measured on a Mac, a `make test`
+plus `make debug` sequence into a fresh build folder took 61 s with a cold ccache and 7 s warm.
 
 ## Config file (`ear.json`)
 
@@ -183,30 +148,25 @@ but most code repeats the literals).
 `vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
 `vendor/libjsonrpc` were added with `git subtree`; leave them alone unless you are updating a
 dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_tests` adds Catch
-2.12.2. `test/main.cpp` overrides its x86-only debugger trap on Macs (for Apple Silicon) and,
-on Linux, turns off its POSIX signal handlers, whose fixed-size signal stack does not compile
-against glibc 2.34 and newer (Catch 2.13.5 fixes both); a crashing test still fails in ctest.
-`vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
+2.12.2, which `test/main.cpp` adapts to Apple Silicon and to glibc 2.34 and newer (its comments
+say how; Catch 2.13.5 fixes both). `vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
 
 JUCE and Boost are fetched, not vendored: the repository holds neither their code nor their
-history. JUCE is cloned from `https://github.com/juce-framework/JUCE.git` at the commit of
-the release tag that `juce_commit` in `CMakeLists.txt` names, shallow (depth 1). **The JUCE
-tree is `.cache/deps/juce-src/`**: skills and docs cite JUCE files by that prefix (for example
-`.cache/deps/juce-src/modules/juce_core/juce_core.h`), and the first configure creates it. Treat
-it as read-only. To bump JUCE, set `juce_commit` in `CMakeLists.txt` (the one place the pin is
-declared) to the commit of another release tag
-(`git ls-remote --tags https://github.com/juce-framework/JUCE.git`) and update the release its
-comments name, then configure: the marker no longer matches, so FetchContent clones the new
-commit; then port and run the checks. The docs name the release only where it is a fact about
-a check: `juce-architecture` says which release its claims were checked against, so re-check
-them and update that line. To build
-against a local JUCE checkout instead, pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=<path>`. Bump Boost
-by changing `boost_url` and `boost_sha256` together.
+history. **The JUCE tree is `.cache/deps/juce-src/`**: skills and docs cite JUCE files by that
+prefix (for example `.cache/deps/juce-src/modules/juce_core/juce_core.h`), and the first
+configure creates it. Treat it as read-only. To bump JUCE, set `juce_commit` in
+`CMakeLists.txt` (the one place the pin is declared; its comment says how to pick one) and the
+release its comments name, configure (the new commit is cloned), then port and run the checks.
+The docs name the release only where it is a fact about a check: the `juce-architecture` pages
+say which release their claims were checked against, so re-check them and update those lines.
+To build against a local JUCE checkout instead, pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=<path>`.
+Bump Boost by changing `boost_url` and `boost_sha256` together.
 
 ## JUCE references
 
 JUCE here is the release pinned in `CMakeLists.txt` (`juce_commit`; the generated
-`.cache/juce-api/MANIFEST` records its version); docs.juce.com may document another version. Two repo skills in
-`.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages generated from the
-JUCE tree's headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture`
-(which JUCE class fits each job in this repo, and the threading rules designs must respect).
+`.cache/juce-api/MANIFEST` records its version); docs.juce.com may document another version.
+Two repo skills in `.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages
+generated from the JUCE tree's headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and
+`juce-architecture` (which JUCE class fits each job in this repo, the threading rules designs
+must respect, and the system packages and SDK JUCE needs to build).
