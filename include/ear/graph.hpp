@@ -1,8 +1,9 @@
+#include <cassert>
+
 #include "device.hpp"
 #include "processor.hpp"
 
-#include "juce_audio_processors/juce_audio_processors.h"
-#include "juce_audio_utils/juce_audio_utils.h"
+#include "juce_audio_processors_headless/juce_audio_processors_headless.h"
 
 #ifndef EAR_GRAPH_HPP
 #define EAR_GRAPH_HPP
@@ -44,7 +45,7 @@ public:
 	}
 
 private:
-	void audioDeviceIOCallback(const float**, int, float** outputs, int outputChannels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const* outputs, int outputChannels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::AudioSampleBuffer buffer(outputs, outputChannels, samples);
 
 		DBG("GraphDeviceSink#audioDeviceIOCallback [0][0]=" + juce::String(buffer.getSample(0, 0)));
@@ -183,7 +184,7 @@ public:
 		_device->removeCallback(this);
 	}
 
-	void audioDeviceIOCallback(const float**, int, float** outputs, int channels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const* outputs, int channels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::AudioSampleBuffer outputBuffer(outputs, channels, samples);
 
 		assert(outputBuffer.getNumChannels() <= _buffer.getNumChannels());
@@ -266,7 +267,20 @@ public:
 	}
 
 private:
-	void audioDeviceIOCallback(const float**, int, float**, int channels, int samples) override {
+	// The device's start and stop events prepare and release the graph, as
+	// juce::AudioProcessorPlayer does. A JUCE 9 AudioProcessorGraph that was never prepared
+	// builds no render sequence: it renders silence and never prepares its nodes.
+	void audioDeviceAboutToStart(juce::AudioIODevice* device) override {
+		juce::ScopedLock lock(_mutex);
+		prepareToPlay(device->getCurrentSampleRate(), device->getCurrentBufferSizeSamples());
+	}
+
+	void audioDeviceStopped() override {
+		juce::ScopedLock lock(_mutex);
+		releaseResources();
+	}
+
+	void audioDeviceIOCallbackWithContext(const float* const*, int, float* const*, int channels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		juce::ScopedLock lock(_mutex);
 
 		//DBG("");

@@ -1,3 +1,4 @@
+#include <cassert>
 #include <chrono>
 #include <mutex>
 #include <condition_variable>
@@ -147,10 +148,10 @@ public:
     juce::String getTypeName() const { return _device->getTypeName(); }
 
 	boost::uuids::uuid getUuid() const {
-		boost::uuids::uuid nil = {0};
+		boost::uuids::uuid nil{};
 		assert(nil.is_nil());
 		boost::uuids::name_generator generator(nil);
-		return generator((getTypeName() + ":" + getName()).getCharPointer());
+		return generator((getTypeName() + ":" + getName()).toRawUTF8());
 	}
 
     juce::StringArray getOutputChannelNames() const { return _device->getOutputChannelNames(); }
@@ -164,7 +165,7 @@ public:
 	}
 
 	juce::Array<int> getAvailableBufferSizes() const {
-		_device->getAvailableBufferSizes();
+		return _device->getAvailableBufferSizes();
 	}
 
 	int getDefaultBufferSize() const { return _device->getDefaultBufferSize(); }
@@ -263,7 +264,7 @@ public:
 	}
 
 private:
-    void audioDeviceIOCallback(const float **inputChannelData, int numInputChannels, float **outputChannelData, int numOutputChannels, int requestedSamples) {
+    void audioDeviceIOCallbackWithContext(const float* const* inputChannelData, int numInputChannels, float* const* outputChannelData, int numOutputChannels, int requestedSamples, const juce::AudioIODeviceCallbackContext& context) override {
 		const juce::ScopedLock lock(_mutex);
 
         //DBG("audioDeviceIOCallback frame=" + juce::String(_count) + ", callbacks=" + juce::String(_callbacks.size()));
@@ -273,7 +274,7 @@ private:
 		int callback = 0;
 		for (auto& cb : _callbacks) {
 			//DBG(juce::String("    * callback ") + juce::String(callback++));
-			cb->audioDeviceIOCallback(inputChannelData, numInputChannels, outputChannelData, numOutputChannels, requestedSamples);
+			cb->audioDeviceIOCallbackWithContext(inputChannelData, numInputChannels, outputChannelData, numOutputChannels, requestedSamples, context);
 		}
 		//DBG(juce::String("~audioDeviceIOCallback [0][0]=") << outputChannelData[0][0] << ", [1][0]=" << outputChannelData[1][0]);
 /*
@@ -304,7 +305,7 @@ private:
     }
 
 
-    void audioDeviceAboutToStart(juce::AudioIODevice *device) {
+    void audioDeviceAboutToStart(juce::AudioIODevice *device) override {
         DBG("audioDeviceAboutToStart");
 
 		const juce::ScopedLock lock(_mutex);
@@ -328,7 +329,7 @@ private:
 */
     }
 
-    void audioDeviceStopped() {
+    void audioDeviceStopped() override {
         DBG("audioDeviceStopped");
 
 		const juce::ScopedLock lock(_mutex);
@@ -343,7 +344,7 @@ private:
         //_output->audioDeviceStopped();
     }
 
-    void audioDeviceError(const juce::String &errorMessage) {
+    void audioDeviceError(const juce::String &errorMessage) override {
         juce::Logger::writeToLog("audioDeviceError=" + errorMessage);
 
 		const juce::ScopedLock lock(_mutex);
@@ -358,7 +359,7 @@ class AudioIoDeviceCallback : public juce::AudioIODeviceCallback {
 public:
 	virtual ~AudioIoDeviceCallback() = default;
 
-	virtual void audioDeviceIOCallback(const float**, int, float**, int, int) override {}
+	virtual void audioDeviceIOCallbackWithContext(const float* const*, int, float* const*, int, int, const juce::AudioIODeviceCallbackContext&) override {}
 
 	virtual void audioDeviceAboutToStart(juce::AudioIODevice*) override {}
 
@@ -368,7 +369,7 @@ public:
 };
 
 class AudioIoDeviceFunctorCallback : public AudioIoDeviceCallback {
-	using Function = std::function<void (const float**, int, float**, int, int)>;
+	using Function = std::function<void (const float* const*, int, float* const*, int, int)>;
 private:
 	Function _fn{nullptr};
 
@@ -377,7 +378,7 @@ public:
 		: _fn(fn)
 	{}
 
-	void audioDeviceIOCallback(const float** inputs, int inputChannels, float** outputs, int outputChannels, int samples) override {
+	void audioDeviceIOCallbackWithContext(const float* const* inputs, int inputChannels, float* const* outputs, int outputChannels, int samples, const juce::AudioIODeviceCallbackContext&) override {
 		_fn(inputs, inputChannels, outputs, outputChannels, samples);
 	}
 };
