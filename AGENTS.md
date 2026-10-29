@@ -29,9 +29,10 @@ link list for `ear` and `ear_tests`; its comment says why each entry is there.
   HarfBuzz, image or SVG libraries and no WebKit.
 
 ```bash
-make debug      # cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF into out/, then make
+make debug      # configure out/ for Debug with -DBUILD_TESTS=OFF, then cmake --build --parallel
 make release    # same with Release
-make test       # configure Debug with -DBUILD_TESTS=ON, build ear_tests, run ctest
+make test       # configure Debug with -DBUILD_TESTS=ON, build ear_tests, run ctest --parallel
+make JOBS=4 debug  # JOBS sets build and ctest parallelism (default: the CPU count)
 make clean      # rm -rf out
 ./out/ear --help
 ```
@@ -43,9 +44,13 @@ make clean      # rm -rf out
   it was extracted from; when it matches the pinned pair the next configure reuses the tree
   (`FETCHCONTENT_SOURCE_DIR_BOOST`), otherwise it re-verifies the archive and re-extracts
   (30-40 s).
-- The inner `make` runs without `-j` and JUCE compiles once per target. Measured here with
-  `cd out && make -j8` as the build step (8 cores, other jobs running): from clean, configure
-  18 s and build 16 s; `make test` after that 16 s; a no-op `make debug` 1.4 s.
+- The build runs `cmake --build out --parallel $(JOBS)` with `MAKEFLAGS` cleared, so
+  `JOBS`, not `make -jN`, sets its parallelism (a `-jN` is harmless but ignored). Configure
+  runs only when `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS`
+  value; the build itself re-runs CMake when a `CMakeLists.txt` changes. JUCE compiles once
+  per target. Measured here (8 cores, other jobs running): `make clean && make debug` 44 s
+  (configure 20 s); `make test` after that 24 s; `make debug` after `make test` 2.4 s
+  (reconfigures for `BUILD_TESTS=OFF`); a no-op `make debug` or `make test` 0.4-0.5 s.
 - `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
   directory) and `--device` (index or UUID from the startup listing; overrides `"device"`).
   The other flags only feed disabled test functions in `src/main.cpp`. There is no lint config.
