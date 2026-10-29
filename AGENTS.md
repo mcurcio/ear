@@ -12,24 +12,44 @@ snapshots from 2020).
 
 ## Build and run
 
-Needs CMake ≥ 3.12 and Boost ≥ 1.70 (`system`, `program_options`, `filesystem`) installed on
-the system. JUCE and the other libraries are vendored in the tree.
+Needs CMake 3.22 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
+Apple Silicon) and network access on the first configure. Nothing is installed: JUCE 9.0.4 and
+the other libraries are vendored, and `CMakeLists.txt` fetches Boost 1.92.0 (official CMake
+release archive, pinned by SHA-256) with `FetchContent` and builds the parts EAR links
+(`program_options`, `uuid`, `endian`, `asio`, `beast`) in the normal build.
 
 ```bash
-make debug      # cmake -DCMAKE_BUILD_TYPE=Debug into out/, then make
+make debug      # cmake -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=OFF into out/, then make
 make release    # same with Release
+make test       # configure Debug with -DBUILD_TESTS=ON, build ear_tests, run ctest
 make clean      # rm -rf out
-./out/ear --config ear.json --device 0
+./out/ear --help
 ```
 
 - Build output goes to `out/` (gitignored); a post-build step copies the binary to `out/ear`.
-- `--device` takes a device index or the device UUID that the startup listing prints; it
-  overrides `"device"` in the config. `--config` is resolved relative to the working directory
-  (default `ear.json`). The other CLI flags (`--gain`, `--ramp`, `--channel`, `--connect`,
-  `--quit`) only feed the disabled test functions in `src/main.cpp`.
-- **There are no tests.** `make test` points at `out/test/main`, but the `BUILD_TESTS` block in
-  `CMakeLists.txt` is commented out and there is no `test/` directory. Catch is vendored in
-  `vendor/catch/` but not wired up. There is no lint config.
+- Boost's archive and source (about 800 MB) are cached in `.cache/deps/` (gitignored;
+  `-DFETCHCONTENT_BASE_DIR=...` moves it); its build tree is `out/_deps/boost-build`.
+  `make clean` keeps the download and the next configure re-extracts it (30-40 s).
+- The inner `make` runs without `-j` and JUCE compiles once per target: from clean, `make test`
+  took about 3 minutes here and `make debug` or `make release` about 4.
+- `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
+  directory) and `--device` (index or UUID from the startup listing; overrides `"device"`).
+  The other flags only feed disabled test functions in `src/main.cpp`. There is no lint config.
+
+## Tests
+
+`ear_tests` (Catch2 v2, one CTest test per test case) builds the graph the way `run()` does,
+around `ear::test::VirtualAudioDevice` (`test/virtual_audio_device.hpp`), which never touches OS
+audio: the test thread clocks it with `renderBlocks(n)` and reads back every output channel.
+The AirPlay cases write 16-bit little-endian stereo PCM (440 Hz left, 880 Hz right) into a
+named pipe and check each tone arrives on its mapped channel sample for sample, unmapped
+channels are exactly zero and an idle pipe is silent; another checks white noise routing.
+Verify audio here, never on real hardware. `make test` runs them all; to run one:
+
+```bash
+ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
+./out/test/ear_tests_artefacts/Debug/ear_tests "[white]"   # by Catch tag
+```
 
 ## Config file (`ear.json`)
 
@@ -53,17 +73,18 @@ shairport-sync's pipe backend). `airplay.buffer` is the ring size in 512-sample 
 ## Architecture
 
 All project code is header-only in `include/ear/`, plus `src/main.cpp` (CLI parsing, config
-loading) and `src/server.hpp` (`run()`: device selection, graph build, server loop). There is a
-single translation unit, so `include/ear/server.hpp` defines a global
+loading) and `src/server.hpp` (`run()`: device selection, graph build, server loop). Each
+executable includes the ear headers from one translation unit only (`src/main.cpp`,
+`test/audio_graph_test.cpp`): `include/ear/server.hpp` defines a global
 `jsonrpccxx::JsonRpc2Server rpcServer` and `pipe_source.hpp` defines a non-inline member
-function; including them from a second `.cpp` breaks the link.
+function, so including them from a second `.cpp` breaks the link.
 
 How audio moves (this pull/push inversion is the non-obvious part):
 
 1. `ear::AudioIoDevice` (`device.hpp`) wraps one `juce::AudioIODevice` and is itself the device
-   callback. It fans each hardware callback out to a list of registered
-   `juce::AudioIODeviceCallback`s, in registration order. Devices are identified by a UUID made
-   from `"<type name>:<device name>"`.
+   callback. It fans each hardware callback (JUCE 9's `audioDeviceIOCallbackWithContext`) out
+   to a list of registered `juce::AudioIODeviceCallback`s, in registration order. Devices are
+   identified by a UUID made from `"<type name>:<device name>"`.
 2. `ear::AudioGraphStandalone` (`graph.hpp`) is an `AudioGraph` that registers itself as one of
    those callbacks. On each device callback it runs `processBlock` on a scratch buffer: the
    device clock drives the graph.
@@ -71,7 +92,8 @@ How audio moves (this pull/push inversion is the non-obvious part):
    the device's output channels, and `processBlock` copies them into an internal buffer. It is
    also registered on the device, and its device callback copies that buffer to the hardware
    output. Connections from config therefore target this node, not JUCE's
-   `AudioGraphIOProcessor` output node.
+   `AudioGraphIOProcessor` output node. It is registered before the graph, so the device
+   receives the previous block's graph output (one block of latency).
 4. Sources are `juce::AudioSource`s wrapped as graph nodes by `ear::GraphSource`
    (`processor.hpp`), which drives them through a `juce::AudioSourcePlayer`.
    `WhiteNoiseProcessor` and `AirplayProcessor` own their source and pass a raw pointer.
@@ -85,6 +107,12 @@ accepts connections and drops them. `WebsocketServer` (a blocking thread per con
 passes messages to `rpcServer.HandleRequest`) is never started, and no RPC methods are
 registered.
 
+Known defects the test works around: `run()` never prepares the graph, and an unprepared
+JUCE 9 `AudioProcessorGraph` renders silence (no AirPlay reader starts); `run()` calls
+`addConnection` inside `assert`, so Release (`NDEBUG`) makes no connections;
+`AudioIoDevice::removeCallback` loops forever on a started device; destroying a running
+`AirplayProcessor` calls `std::terminate` (`GraphSource` does not forward `releaseResources`).
+
 Sample rate 44100 and block size 512 are hard-coded in several places (`constants.hpp` exists
 but most code repeats the literals).
 
@@ -92,12 +120,13 @@ but most code repeats the literals).
 
 `juce/`, `vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
 `vendor/libjsonrpc` were added with `git subtree`; leave them alone unless you are updating a
-dependency. Only JUCE, nlohmann/json and jsonrpccxx (header-only, via the include path) are used
-by the build; `vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
+dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_tests` adds Catch
+2.12.2, whose x86-only debugger trap `test/main.cpp` overrides for Apple Silicon.
+`vendor/jsonrpc` and `vendor/libjsonrpc` are unused. Boost is fetched, not vendored.
 
 ## JUCE references
 
-JUCE here is 6.0.0, not the version on docs.juce.com. Two repo skills in `.claude/skills/` cover it:
-`juce-api` (a symbol index and per-class pages generated from the vendored headers, via
-`.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture` (which JUCE class fits each job
-in this repo, and the threading rules designs must respect).
+JUCE here is 9.0.4; docs.juce.com may document another version. Two repo skills in
+`.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages generated from the
+vendored headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture`
+(which JUCE class fits each job in this repo, and the threading rules designs must respect).
