@@ -12,8 +12,13 @@ snapshots from 2020).
 
 ## Build and run
 
-Needs CMake 3.28 or newer (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
-Apple Silicon), git and network access on the first configure. Nothing is installed:
+Runs on macOS and Linux. Needs CMake 3.28 or newer (tested with 4.2.1), a C++17 compiler
+(tested with AppleClang 21 on Apple Silicon and GCC 13 on Ubuntu 24.04), git and network access
+on the first configure. On Linux JUCE also needs, through `pkg-config`, the ALSA headers for
+`juce_audio_devices` and the FreeType and Fontconfig headers for `juce_graphics`, which only
+juceaide (JUCE's build helper, compiled during configure) links; on Ubuntu:
+`sudo apt-get install pkg-config libasound2-dev libfreetype-dev libfontconfig1-dev`. Nothing
+else is installed:
 `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
 archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 
@@ -54,7 +59,7 @@ make clean      # rm -rf out
   `JOBS`, not `make -jN`, sets its parallelism (a `-jN` is harmless but ignored). Configure
   runs only when `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS`
   value; the build itself re-runs CMake when a `CMakeLists.txt` changes. JUCE compiles once
-  per target. Measured here (8 cores, other jobs running): `make clean && make debug` 44 s
+  per target. Measured on a Mac (8 cores, other jobs running): `make clean && make debug` 44 s
   (configure 20 s); `make test` after that 24 s; `make debug` after `make test` 2.4 s
   (reconfigures for `BUILD_TESTS=OFF`); a no-op `make debug` or `make test` 0.4-0.5 s.
 - `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
@@ -81,16 +86,19 @@ ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
 
 ## CI
 
-`.github/workflows/test.yml` runs on every pull request and every push to `master`, on
-`macos-latest` (Apple Silicon) with CMake 4.2.1 (the image ships a newer one): `make test`, then
-`make debug` (the `ear` binary, which `make test` does not build). On failure it uploads
-`out/Testing` (ctest's logs) as the `ctest-output` artifact. It caches `.cache/deps/juce-src` and
-`.cache/deps/boost-src`, keyed on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
+`.github/workflows/test.yml` runs on every pull request and every push to `master`, as a
+matrix of two jobs that do not cancel each other: `macos-latest` (Apple Silicon, AppleClang) and
+`ubuntu-latest` (x86_64, GCC, after an `apt-get install` of the Linux packages above), both with
+CMake 4.2.1 (the images ship a newer one): `make test`, then `make debug` (the `ear` binary,
+which `make test` does not build). On failure it uploads `out/Testing` (ctest's logs) as the
+`ctest-output-<runner OS>` artifact (`ctest-output-macOS`, `ctest-output-Linux`). Each job
+caches, keyed by its OS and architecture, `.cache/deps/juce-src` and
+`.cache/deps/boost-src`, keyed also on `CMakeLists.txt` and `cmake/KeptFetchContent.cmake`; a tree
 restored from an older key whose marker no longer matches its pin is fetched again. It also
-caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB): the job sets
+caches compiler output with ccache (`hendrikmuhs/ccache-action`, about 40 MB per job): each job sets
 `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER` to `ccache`, which CMake takes as
 defaults and JUCE passes on to the juceaide build during configure. On a warm cache every
-compile hits except `juce_core_CompilationTime.cpp` (`__DATE__`/`__TIME__`); measured here,
+compile hits except `juce_core_CompilationTime.cpp` (`__DATE__`/`__TIME__`); measured on a Mac,
 a `make test` plus `make debug` sequence into a fresh build folder took 61 s cold and 7 s warm.
 Pushes to `master` keep both caches warm for pull requests, which can read them.
 
@@ -165,7 +173,9 @@ but most code repeats the literals).
 `vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
 `vendor/libjsonrpc` were added with `git subtree`; leave them alone unless you are updating a
 dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_tests` adds Catch
-2.12.2, whose x86-only debugger trap `test/main.cpp` overrides for Apple Silicon.
+2.12.2. `test/main.cpp` overrides its x86-only debugger trap on Macs (for Apple Silicon) and,
+on Linux, turns off its POSIX signal handlers, whose fixed-size signal stack does not compile
+against glibc 2.34 and newer (Catch 2.13.5 fixes both); a crashing test still fails in ctest.
 `vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
 
 JUCE and Boost are fetched, not vendored: the repository holds neither their code nor their
