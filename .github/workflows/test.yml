@@ -17,8 +17,14 @@ permissions:
 
 jobs:
   test:
-    # Apple Silicon and AppleClang: the only platform EAR is tested on.
-    runs-on: macos-latest
+    # The platforms EAR is tested on: macOS on Apple Silicon with AppleClang, and Ubuntu on
+    # x86_64 with GCC. fail-fast is off so one platform's failure does not cancel the other's
+    # run and hide whether it passes too.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     # CMake (3.17+) takes these as its compiler launcher defaults, and JUCE passes them on to the
     # juceaide build it runs during configure, so ccache covers juceaide, JUCE, Boost and EAR.
@@ -27,6 +33,16 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Linux headers JUCE finds with pkg-config (each module's linuxPackages): ALSA for
+      # juce_audio_devices, which EAR links; FreeType and Fontconfig for juce_graphics, which
+      # only juceaide (JUCE's build helper, compiled during configure) links. macOS needs
+      # nothing beyond Xcode.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libasound2-dev libfreetype-dev libfontconfig1-dev
 
       # Build with the tested CMake release; the runner image ships a newer one.
       - uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2.2.0
@@ -49,8 +65,8 @@ jobs:
       # Compiler output: ccache, keyed by content hash, so it is safe with checkout's fresh mtimes
       # (a cached out/ is not). Installs ccache and restores the newest cache; its post step
       # drops entries this job did not use and saves the rest (about 40 MB). Picked over a
-      # hand-rolled brew install plus actions/cache because it handles the per-run key and the
-      # eviction. Every source hits on a warm cache except juce_core_CompilationTime.cpp
+      # hand-rolled brew or apt install plus actions/cache because it handles the per-run key
+      # and the eviction. Every source hits on a warm cache except juce_core_CompilationTime.cpp
       # (__DATE__/__TIME__), so no ccache options are set.
       - uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
         with:
@@ -66,6 +82,7 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ctest-output
+          # One artifact per matrix leg: two legs uploading the same name would collide.
+          name: ctest-output-${{ runner.os }}
           path: out/Testing
           if-no-files-found: ignore
