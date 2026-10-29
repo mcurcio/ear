@@ -3,8 +3,7 @@
 #include "device.hpp"
 #include "processor.hpp"
 
-#include "juce_audio_processors/juce_audio_processors.h"
-#include "juce_audio_utils/juce_audio_utils.h"
+#include "juce_audio_processors_headless/juce_audio_processors_headless.h"
 
 #ifndef EAR_GRAPH_HPP
 #define EAR_GRAPH_HPP

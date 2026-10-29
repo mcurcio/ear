@@ -51,13 +51,14 @@ them. If they disagree, trust the headers and rerun `ensure.sh`.
 
 ## 4. Which modules are linked
 
-`src/CMakeLists.txt` links `juce_core`, `juce_audio_devices`, `juce_audio_utils`,
-`juce_audio_processors`, `juce_audio_formats` and `juce_dsp`, and so their dependencies:
-`juce_audio_processors_headless` (where `AudioProcessor` and `AudioProcessorGraph` now live),
-`juce_gui_extra` (via `juce_audio_processors`), `juce_gui_basics`, `juce_graphics`,
-`juce_data_structures`, `juce_events` and `juce_audio_basics`. The
-`module` column of `symbols.tsv` names a symbol's module. A class from any other module needs a
-`target_link_libraries` change first.
+`ear_dependencies` in `src/CMakeLists.txt` (shared by `ear` and `ear_tests`) links `juce_core`,
+`juce_events`, `juce_audio_basics`, `juce_audio_devices`, `juce_audio_processors_headless`
+(where `AudioProcessor` and `AudioProcessorGraph` live), `juce_audio_formats` and `juce_dsp`.
+No GUI module is linked: `juce_audio_processors` (editors, plugin hosting UI) and
+`juce_audio_utils` (`AudioProcessorPlayer`, `AudioDeviceSelectorComponent`) would pull in
+`juce_gui_extra`, `juce_gui_basics` and `juce_graphics`. The `module` column of `symbols.tsv`
+names a symbol's module. A class from any other module needs a `target_link_libraries` change
+first, and its header included instead of `juce_audio_processors_headless.h`.
 
 For which JUCE building blocks to use and the threading rules that constrain designs, use the
 `juce-architecture` skill.

@@ -12,30 +12,42 @@ set(ear_SOURCES
     main.cpp
 )
 
+# What ear and ear_tests (test/CMakeLists.txt) build against, in one place. Only what the code
+# uses is linked, so a build compiles nothing else:
+# - Boost: program_options is the only compiled library. asio_core instead of the Boost::asio
+#   umbrella, which adds Boost::asio_deadline_timer (compiled date_time) and Boost::asio_spawn
+#   (compiled context). Beast is header-only, but Boost::beast links Boost::asio and
+#   Boost::container, so it is taken for compilation only (its headers and their dependencies'
+#   headers, nothing linked).
+# - JUCE: AudioProcessor and AudioProcessorGraph are in juce_audio_processors_headless;
+#   juce_audio_processors and juce_audio_utils would add the GUI modules (juce_gui_extra,
+#   juce_gui_basics, juce_graphics) and their image, font and SVG libraries.
+add_library(ear_dependencies INTERFACE)
+target_compile_definitions(ear_dependencies INTERFACE
+    # JUCE_WEB_BROWSER and JUCE_USE_CURL would be on by default, but you might not need them.
+    JUCE_WEB_BROWSER=0  # If you remove this, add `NEEDS_WEB_BROWSER TRUE` to the `juce_add_console_app` call
+    JUCE_USE_CURL=0)
+target_link_libraries(ear_dependencies INTERFACE
+    Boost::program_options
+    Boost::uuid
+    Boost::endian
+    Boost::asio_core
+    $<COMPILE_ONLY:Boost::beast>
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_events
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_processors_headless
+    juce::juce_audio_formats
+    juce::juce_dsp)
+
 juce_add_console_app(ear
     PRODUCT_NAME "Einstein Audio Router")
 target_sources(ear PRIVATE
     ${ear_SOURCES})
-target_compile_definitions(ear PRIVATE
-    # JUCE_WEB_BROWSER and JUCE_USE_CURL would be on by default, but you might not need them.
-    JUCE_WEB_BROWSER=0  # If you remove this, add `NEEDS_WEB_BROWSER TRUE` to the `juce_add_console_app` call
-    JUCE_USE_CURL=0)
 juce_generate_juce_header(ear)
-target_link_libraries(ear PRIVATE
-	Boost::program_options
-	Boost::uuid
-	Boost::endian
-	Boost::asio
-	Boost::beast
-	nlohmann_json::nlohmann_json
-    # ConsoleAppData            # If you'd created a binary data target, you'd link to it here
-    juce::juce_core
-	juce::juce_audio_devices
-	juce::juce_audio_utils
-	juce::juce_audio_processors
-	juce::juce_audio_formats
-	juce::juce_dsp
-)
+target_link_libraries(ear PRIVATE ear_dependencies)
 
 #add_executable(ear ${ear_SOURCES})
 #target_link_libraries(ear ${Boost_LIBRARIES})

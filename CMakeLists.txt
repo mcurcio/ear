@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.22...4.2)
+cmake_minimum_required(VERSION 3.28...4.2)
 
 project(EAR VERSION 0.0.1)
 
@@ -51,17 +51,26 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 #add_subdirectory(vendor/jsonrpccxx)
 
 # Boost is built by this project from the official Boost CMake release, like JUCE:
-# nothing is installed. Its download and extracted source live in FETCHCONTENT_BASE_DIR, so
-# "make clean" does not re-download; the next configure re-extracts the kept archive. Boost's
-# build tree stays in the build directory.
+# nothing is installed. kept_fetchcontent keeps the download and the extracted 800 MB tree
+# across "make clean" (re-extracting it costs 30-40 s); Boost's build tree stays in the build
+# directory. EXCLUDE_FROM_ALL builds only the Boost targets EAR links.
 set(BOOST_INCLUDE_LIBRARIES program_options uuid endian asio beast)
-FetchContent_Declare(boost
-	URL https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz
-	URL_HASH SHA256=9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d
+set(boost_url https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
+set(boost_sha256 9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d)
+kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
+	URL ${boost_url}
+	URL_HASH SHA256=${boost_sha256}
 	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-	BINARY_DIR "${CMAKE_BINARY_DIR}/_deps/boost-build"
+	EXCLUDE_FROM_ALL
 )
-FetchContent_MakeAvailable(boost)
+# Boost::program_options links Boost::lexical_cast, which links the compiled Boost::container
+# but uses only its header-only container_fwd.hpp. Take container for compilation only there,
+# so program_options stays the only compiled Boost library (src/CMakeLists.txt lists the rest).
+get_target_property(boost_lexical_cast_target Boost::lexical_cast ALIASED_TARGET)
+get_target_property(boost_lexical_cast_links ${boost_lexical_cast_target} INTERFACE_LINK_LIBRARIES)
+list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$" "$<COMPILE_ONLY:Boost::container>")
+set_target_properties(${boost_lexical_cast_target} PROPERTIES
+	INTERFACE_LINK_LIBRARIES "${boost_lexical_cast_links}")
 
 #find_package(JUCE REQUIRED PATHS "${CMAKE_CURRENT_LIST_DIR}/out/juce/")
 

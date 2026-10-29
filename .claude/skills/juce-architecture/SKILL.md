@@ -15,14 +15,14 @@ mix in older JUCE or remembered behaviour.
 | Job | JUCE 9 building block | Module (linked?) | This repo today |
 |---|---|---|---|
 | Open and configure an audio device (type, name, rate, block size) | `AudioDeviceManager`, `AudioDeviceManager::AudioDeviceSetup` | juce_audio_devices (yes) | `ear::AudioIoDevice` wraps `AudioIODevice` by hand |
-| Play a processor or graph on a device | `AudioProcessorPlayer` (is an `AudioIODeviceCallback`) | juce_audio_utils (yes) | `AudioGraphStandalone` + `AudioIoDeviceOutputProcessor` |
-| Route channels between nodes | `AudioProcessorGraph`, its `AudioGraphIOProcessor` (`audioOutputNode` = the device's outputs) | juce_audio_processors_headless (yes, via deps) | `ear::AudioGraph` (thin wrapper, fine) |
+| Play a processor or graph on a device | `AudioProcessorPlayer` (is an `AudioIODeviceCallback`) | juce_audio_utils (no: linking it adds the GUI modules) | `AudioGraphStandalone` + `AudioIoDeviceOutputProcessor` |
+| Route channels between nodes | `AudioProcessorGraph`, its `AudioGraphIOProcessor` (`audioOutputNode` = the device's outputs) | juce_audio_processors_headless (yes) | `ear::AudioGraph` (thin wrapper, fine) |
 | Pull-style sources | `AudioSource`, `AudioSourcePlayer`, `MixerAudioSource`, `ChannelRemappingAudioSource`, `BufferingAudioSource` | juce_audio_basics / juce_audio_devices (yes) | `GraphSource` wraps sources as nodes |
 | Hand audio from a reader thread to the audio thread without a lock | `AbstractFifo` (single reader, single writer) over an `AudioBuffer<float>` | juce_core (yes) | `AirplaySource`: ring buffer + `CriticalSection` |
 | Wait for something to happen instead of polling | `WaitableEvent`, `Thread` (`notify`, `wait`, `signalThreadShouldExit`) | juce_core (yes) | `PipeSource`: 1 ms sleep loop, 5 s retry |
 | Smooth gain and parameter changes | `SmoothedValue`, `dsp::Gain` | juce_audio_basics / juce_dsp (yes) | `GainProcessor` uses `dsp::Gain` |
 | Fixed DSP chains | `dsp::ProcessorChain`, `dsp::ProcessSpec` | juce_dsp (yes) | none |
-| Run work on the message thread | `MessageManager::callAsync`, `callSync`, `runDispatchLoop` | juce_events (yes, via deps) | no dispatch loop runs |
+| Run work on the message thread | `MessageManager::callAsync`, `callSync`, `runDispatchLoop` | juce_events (yes) | no dispatch loop runs |
 
 Using one of these needs no justification; a bespoke replacement must say why it does not fit.
 

@@ -5,8 +5,7 @@
 
 #include <boost/program_options.hpp>
 
-#include "juce_audio_processors/juce_audio_processors.h"
-#include "juce_audio_utils/juce_audio_utils.h"
+#include "juce_audio_processors_headless/juce_audio_processors_headless.h"
 
 #include "ear/device.hpp"
 #include "ear/processor.hpp"
