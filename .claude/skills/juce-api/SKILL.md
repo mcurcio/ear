@@ -1,13 +1,14 @@
 ---
 name: juce-api
-description: Look up the JUCE API this repo actually builds against (JUCE 9.0.4, fetched by CMake into .cache/deps/juce-src/). Use before writing or reviewing any code that calls JUCE, before stating a JUCE class's signature, behaviour or threading rule, and whenever a JUCE compile error mentions a member that "does not exist". Gives a greppable symbol index and one Markdown page per class, generated from its headers.
+description: Look up the JUCE API this repo actually builds against (the JUCE release pinned in CMakeLists.txt, fetched by CMake into .cache/deps/juce-src/). Use before writing or reviewing any code that calls JUCE, before stating a JUCE class's signature, behaviour or threading rule, and whenever a JUCE compile error mentions a member that "does not exist". Gives a greppable symbol index and one Markdown page per class, generated from its headers.
 ---
 
-# JUCE API lookup (JUCE 9.0.4)
+# JUCE API lookup
 
-This repo builds against JUCE 9.0.4, which CMake fetches into `.cache/deps/juce-src/` (the
+This repo builds against the JUCE release `juce_commit` pins in `CMakeLists.txt` (its version is
+in the reference's `MANIFEST`), which CMake fetches into `.cache/deps/juce-src/` (the
 JUCE tree; see AGENTS.md). Model memory mostly
-describes JUCE 6 to 8, and docs.juce.com tracks the latest release, which need not be 9.0.4.
+describes JUCE 6 to 8, and docs.juce.com tracks the latest release, which need not be the pinned one.
 Memory of JUCE 6 or early 7 differs most (the device callback became
 `audioDeviceIOCallbackWithContext` in 7.x, and `AudioProcessorGraph` lives in the
 `juce_audio_processors_headless` module since 8.0.x); 9.0.x adds its own breaking changes,
@@ -23,8 +24,10 @@ memory or the website: look it up here.
 Prints the reference directory (`.cache/juce-api/`, gitignored). It rebuilds it (about 10 seconds,
 needs Docker) when it is missing or was built from another JUCE commit than the `juce_commit`
 that `CMakeLists.txt` pins. If the JUCE tree is missing or at another commit, it first runs the
-project's CMake configure (`cmake -S . -B out`), which fetches it. No Docker: skip to step 3 and
-read the headers.
+project's CMake configure (`cmake -S . -B out`), which fetches it; it checks the tree on every
+run. It supports only the default tree and build directory: with `-DFETCHCONTENT_BASE_DIR` or
+`-DFETCHCONTENT_SOURCE_DIR_JUCE` set it stops with an error. No Docker: skip to step 3 and read
+the headers.
 
 ## 2. Find things
 

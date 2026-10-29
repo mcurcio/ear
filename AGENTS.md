@@ -14,7 +14,7 @@ snapshots from 2020).
 
 Needs CMake 3.28 to 4.2 (tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on
 Apple Silicon), git and network access on the first configure. Nothing is installed:
-`CMakeLists.txt` fetches JUCE 9.0.4 (pinned by commit) and Boost 1.92.0 (official CMake release
+`CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0 (official CMake release
 archive, pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
 
 A build compiles only what EAR links. `ear_dependencies` in `src/CMakeLists.txt` is the one
@@ -46,7 +46,10 @@ make clean      # rm -rf out
   it was fetched from (repository and commit, or archive URL and SHA-256); when it matches the
   declared pin the next configure reuses the tree (`FETCHCONTENT_SOURCE_DIR_<NAME>`), otherwise
   it fetches again: JUCE re-clones (about 10 s), Boost re-verifies its archive and re-extracts
-  (30-40 s).
+  (30-40 s). The build trusts a matching marker and does not re-check the tree: a tree edited
+  or moved to another commit after its fetch is built as it is. Delete the tree to fetch it
+  again (a missing tree, or one without its `CMakeLists.txt`, is fetched again even when
+  `out/` survives).
 - The build runs `cmake --build out --parallel $(JOBS)` with `MAKEFLAGS` cleared, so
   `JOBS`, not `make -jN`, sets its parallelism (a `-jN` is harmless but ignored). Configure
   runs only when `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS`
@@ -151,20 +154,24 @@ dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_te
 `vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
 
 JUCE and Boost are fetched, not vendored: the repository holds neither their code nor their
-history. JUCE is cloned from `https://github.com/juce-framework/JUCE.git` at the commit its
-`9.0.4` tag points at, shallow (depth 1). **The JUCE tree is `.cache/deps/juce-src/`**: skills
-and docs cite JUCE files by that prefix (for example
+history. JUCE is cloned from `https://github.com/juce-framework/JUCE.git` at the commit of
+the release tag that `juce_commit` in `CMakeLists.txt` names, shallow (depth 1). **The JUCE
+tree is `.cache/deps/juce-src/`**: skills and docs cite JUCE files by that prefix (for example
 `.cache/deps/juce-src/modules/juce_core/juce_core.h`), and the first configure creates it. Treat
 it as read-only. To bump JUCE, set `juce_commit` in `CMakeLists.txt` (the one place the pin is
 declared) to the commit of another release tag
-(`git ls-remote --tags https://github.com/juce-framework/JUCE.git`), then configure: the marker
-no longer matches, so FetchContent clones the new commit; then port and run the checks. To build
+(`git ls-remote --tags https://github.com/juce-framework/JUCE.git`) and update the release its
+comments name, then configure: the marker no longer matches, so FetchContent clones the new
+commit; then port and run the checks. The docs name the release only where it is a fact about
+a check: `juce-architecture` says which release its claims were checked against, so re-check
+them and update that line. To build
 against a local JUCE checkout instead, pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=<path>`. Bump Boost
 by changing `boost_url` and `boost_sha256` together.
 
 ## JUCE references
 
-JUCE here is 9.0.4; docs.juce.com may document another version. Two repo skills in
+JUCE here is the release pinned in `CMakeLists.txt` (`juce_commit`; the generated
+`.cache/juce-api/MANIFEST` records its version); docs.juce.com may document another version. Two repo skills in
 `.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages generated from the
 JUCE tree's headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and `juce-architecture`
 (which JUCE class fits each job in this repo, and the threading rules designs must respect).

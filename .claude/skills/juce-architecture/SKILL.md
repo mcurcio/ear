@@ -40,7 +40,7 @@ immediately on any thread (`:1843-1861`). Posted updates need a message loop.
   (`juce_events/messages/juce_MessageManager.cpp:38-39`, `:72-81`); the graph's rebuild check
   calls it, so the first thread to edit a graph claims it: here, `main`.
 - This repo runs no dispatch loop: `main` builds the graph, then blocks in Boost.Asio's `io.run()`
-  (`src/server.hpp:69-159`), so edits from any other thread (such as a socket thread) never
+  (`src/server.hpp:69-123`), so edits from any other thread (such as a socket thread) never
   take effect.
 - A control-plane design must deliver every graph edit to the message thread: run
   `runDispatchLoop` there and post edits with `callAsync`, or run them there synchronously.

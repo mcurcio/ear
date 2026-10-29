@@ -72,10 +72,6 @@ list(TRANSFORM boost_lexical_cast_links REPLACE "^Boost::container$" "$<COMPILE_
 set_target_properties(${boost_lexical_cast_target} PROPERTIES
 	INTERFACE_LINK_LIBRARIES "${boost_lexical_cast_links}")
 
-#find_package(JUCE REQUIRED PATHS "${CMAKE_CURRENT_LIST_DIR}/out/juce/")
-
-message("JUCE=${JUCE_FOUND}")
-
 include_directories(
 	"${CMAKE_CURRENT_SOURCE_DIR}/vendor/json/include"
 	"${CMAKE_CURRENT_SOURCE_DIR}/vendor/jsonrpccxx/include"
