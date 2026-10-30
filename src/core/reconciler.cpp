@@ -6,7 +6,6 @@
 
 #include <map>
 #include <optional>
-#include <stdexcept>
 #include <utility>
 
 namespace ear {
@@ -95,8 +94,11 @@ void Reconciler::routeAdded(const Route& route) {
 	impl_->linkIfLive(it->first, it->second);
 }
 
-void Reconciler::routeRemoved(const Route&) {
-	throw std::logic_error("Reconciler::routeRemoved: not built yet (slice C1)");
+void Reconciler::routeRemoved(const Route& route) {
+	const auto it = impl_->routes.find(route);
+	if (it == impl_->routes.end()) return;
+	if (it->second.link) impl_->links.destroyLink(*it->second.link);
+	impl_->routes.erase(it);   // no status: the route is no longer wanted
 }
 
 void Reconciler::portAppeared(const LivePort& port) {
@@ -119,6 +121,9 @@ void Reconciler::portGone(EnginePortId id) {
 		wanted.link.reset();
 		wanted.ends.reset();
 		impl_->set(route, wanted, RouteMatch::pending);
+		// A port of the same name may already be live under a newer id (its node removed and
+		// added again before this id went): link to that one.
+		impl_->linkIfLive(route, wanted);
 	}
 }
 

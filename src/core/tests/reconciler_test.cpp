@@ -185,3 +185,77 @@ TEST_CASE("Ports of routes nobody wants are never linked", "[reconciler]") {
 	CHECK(f.links.made.front().output == noiseOut.id);
 	CHECK(f.links.made.front().input == recFl.id);
 }
+
+TEST_CASE("A removed route's link is destroyed once and no status is told for it", "[reconciler]") {
+	Fixture f;
+	f.reconciler.routeAdded(noiseToFl);
+	f.reconciler.portAppeared(noiseOut);
+	f.reconciler.portAppeared(recFl);
+	REQUIRE(f.links.made.size() == 1);
+	const LinkId link = f.links.made.front().link;
+	f.reconciler.linkActive(link);
+	const auto told = f.log.changes.size();
+
+	f.reconciler.routeRemoved(noiseToFl);
+	CHECK(f.links.destroyed == std::vector<LinkId>{link});
+	CHECK(f.reconciler.status().empty());
+	CHECK(f.log.changes.size() == told);
+
+	// Nothing about it afterwards: removing it again, its link's late events, its ends going and
+	// coming back.
+	f.reconciler.routeRemoved(noiseToFl);
+	f.reconciler.linkGone(link);
+	f.reconciler.portGone(recFl.id);
+	f.reconciler.portAppeared({recFl.port, Direction::input, 30});
+	CHECK(f.links.destroyed.size() == 1);
+	CHECK(f.links.made.size() == 1);
+	CHECK(f.log.changes.size() == told);
+
+	SECTION("wanted again, it links to the live ports") {
+		f.reconciler.routeAdded(noiseToFl);
+		REQUIRE(f.links.made.size() == 2);
+		CHECK(f.links.made.back().input == 30);
+	}
+}
+
+TEST_CASE("A route with no link is removed without destroying anything", "[reconciler]") {
+	Fixture f;
+	f.reconciler.routeAdded(noiseToFl);
+	f.reconciler.portAppeared(noiseOut);
+	f.reconciler.routeRemoved(noiseToFl);
+	CHECK(f.links.destroyed.empty());
+	f.reconciler.portAppeared(recFl);
+	CHECK(f.links.made.empty());
+	CHECK(f.reconciler.status().empty());
+}
+
+TEST_CASE("A port that reappears with a new id before its old id goes is linked again through the new id",
+          "[reconciler]") {
+	// A node removed and added again: its port's new id can appear before the old id's portGone.
+	Fixture f;
+	f.reconciler.routeAdded(noiseToFl);
+	f.reconciler.portAppeared(noiseOut);
+	f.reconciler.portAppeared(recFl);
+	REQUIRE(f.links.made.size() == 1);
+	const LinkId first = f.links.made.front().link;
+	f.reconciler.linkActive(first);
+
+	const LivePort recFlNew{recFl.port, Direction::input, 30};
+	f.reconciler.portAppeared(recFlNew);
+	f.reconciler.portGone(recFl.id);   // the old id goes last
+
+	CHECK(f.links.destroyed == std::vector<LinkId>{first});
+	REQUIRE(f.links.made.size() == 2);
+	CHECK(f.links.made.back().output == noiseOut.id);
+	CHECK(f.links.made.back().input == recFlNew.id);
+	f.reconciler.linkActive(f.links.made.back().link);
+	CHECK(f.match() == RouteMatch::linked);
+
+	SECTION("a route added after the old id went links to the new one") {
+		const Route noiseToFlAgain{{"noise", "MONO"}, {"rec", "FL"}};
+		f.reconciler.routeRemoved(noiseToFl);
+		f.reconciler.routeAdded(noiseToFlAgain);
+		REQUIRE(f.links.made.size() == 3);
+		CHECK(f.links.made.back().input == recFlNew.id);
+	}
+}

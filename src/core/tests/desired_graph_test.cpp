@@ -1,6 +1,7 @@
 // The desired graph's control calls, checked against a catalogue of test node types: the errors
 // each call returns, the events it sends, and the catalogue's own boot-time check
-// (docs/design/m1-white-to-file.md section 3, S2 criteria 1-3).
+// (docs/design/m1-white-to-file.md section 3, S2 criteria 1-3; docs/design/batch2.md section 4.1,
+// C1 criteria 1-6: removing and updating, the name rule, observers first, close()).
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -32,7 +33,9 @@ public:
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
 	                                                                        const NodeSettings& settings) const override {
 		if (settings.contains("bad")) return std::unexpected(InvalidSettings{node, "bad is not a setting"});
-		return std::make_unique<TestConfig>(ports_);
+		Ports ports = ports_;   // {"extra": "<name>"} adds an input port of that name
+		if (settings.contains("extra")) ports.inputs.push_back(settings["extra"].get<std::string>());
+		return std::make_unique<TestConfig>(std::move(ports));
 	}
 
 private:
@@ -48,27 +51,50 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	return types;
 }
 
+using Log = std::vector<std::string>;
+
+std::string text(const Route& route) {
+	return route.from.node + ":" + route.from.port + " -> " + route.to.node + ":" + route.to.port;
+}
+
+/// Records every event, and writes each one to `log` as "<tag> <event> <what>".
 struct Recorder final : DesiredNodeListener, DesiredRouteListener {
+	Log& log;
+	std::string tag;
 	std::vector<std::pair<NodeName, std::shared_ptr<const NodeConfig>>> nodes;
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> updates;
 	std::vector<Route> routes;
+	Recorder(Log& l, std::string t) : log(l), tag(std::move(t)) {}
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override {
+		log.push_back(tag + " nodeAdded " + node.name);
 		nodes.emplace_back(node.name, std::move(config));
 	}
-	void nodeUpdated(const NodeSpec&, std::shared_ptr<const NodeConfig>) override {}
-	void nodeRemoved(const NodeName&) override {}
-	void routeAdded(const Route& route) override { routes.push_back(route); }
-	void routeRemoved(const Route&) override {}
+	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override {
+		log.push_back(tag + " nodeUpdated " + node.name);
+		updates.emplace_back(node, std::move(config));
+	}
+	void nodeRemoved(const NodeName& node) override { log.push_back(tag + " nodeRemoved " + node); }
+	void routeAdded(const Route& route) override {
+		log.push_back(tag + " routeAdded " + text(route));
+		routes.push_back(route);
+	}
+	void routeRemoved(const Route& route) override { log.push_back(tag + " routeRemoved " + text(route)); }
 };
 
 struct Fixture {
 	NodeCatalogue catalogue{testTypes()};
 	DesiredGraph graph{catalogue};
-	Recorder recorder;
+	Log log;
+	Recorder recorder{log, "sub"};
 	Fixture() {
 		graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
 		graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
 	}
 };
+
+const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
+const Route noiseToFr{{"noise", "MONO"}, {"rec", "FR"}};
+const Route hissToFl{{"hiss", "MONO"}, {"rec", "FL"}};
 
 template <class Error> const Error& errorOf(const std::expected<void, CommandError>& result) {
 	REQUIRE_FALSE(result.has_value());
@@ -184,4 +210,167 @@ TEST_CASE("Command errors have one code each and describe what they name", "[com
 		const std::string code(errorCode(error));
 		CHECK((text == code || text.starts_with(code + " ")));
 	}
+}
+
+TEST_CASE("removeRoute removes a wanted route once and refuses one not wanted", "[desired_graph]") {
+	Fixture f;
+	REQUIRE(f.graph.addNode({"noise", "source", {}}).has_value());
+	REQUIRE(f.graph.addNode({"rec", "sink", {}}).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFr).has_value());
+	f.log.clear();
+
+	REQUIRE(f.graph.removeRoute(noiseToFl).has_value());
+	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL"});
+	CHECK(f.graph.routes() == std::vector<Route>{noiseToFr});
+
+	CHECK(errorOf<UnknownRoute>(f.graph.removeRoute(noiseToFl)).route == noiseToFl);
+	CHECK(f.log.size() == 1);
+
+	// It can be wanted again.
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	CHECK(f.log.back() == "sub routeAdded noise:MONO -> rec:FL");
+}
+
+TEST_CASE("removeNode removes each of its routes before the node, and the name can be added again",
+          "[desired_graph]") {
+	Fixture f;
+	REQUIRE(f.graph.addNode({"noise", "source", {}}).has_value());
+	REQUIRE(f.graph.addNode({"hiss", "source", {}}).has_value());
+	REQUIRE(f.graph.addNode({"rec", "sink", {}}).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFr).has_value());
+	REQUIRE(f.graph.addRoute(hissToFl).has_value());
+	f.log.clear();
+
+	REQUIRE(f.graph.removeNode("noise").has_value());
+	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FR",
+	                   "sub nodeRemoved noise"});
+	CHECK(f.graph.routes() == std::vector<Route>{hissToFl});
+	REQUIRE(f.graph.nodes().size() == 2);
+	CHECK(f.graph.nodes()[0].spec.name == "hiss");
+	CHECK(f.graph.nodes()[1].spec.name == "rec");
+
+	CHECK(errorOf<UnknownNode>(f.graph.removeNode("noise")).node == "noise");
+	CHECK(errorOf<UnknownNode>(f.graph.addRoute(noiseToFl)).node == "noise");
+	CHECK(f.log.size() == 3);
+
+	REQUIRE(f.graph.addNode({"noise", "source", {{"level", 2}}}).has_value());
+	CHECK(f.log.back() == "sub nodeAdded noise");
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+
+	SECTION("a node with no routes is removed alone") {
+		REQUIRE(f.graph.addNode({"lone", "source", {}}).has_value());
+		f.log.clear();
+		REQUIRE(f.graph.removeNode("lone").has_value());
+		CHECK(f.log == Log{"sub nodeRemoved lone"});
+	}
+}
+
+TEST_CASE("updateNode records new settings with the same ports and tells nodeUpdated", "[desired_graph]") {
+	Fixture f;
+	REQUIRE(f.graph.addNode({"rec", "sink", {{"level", 1}}}).has_value());
+	f.log.clear();
+
+	SECTION("the same settings succeed with no event") {
+		REQUIRE(f.graph.updateNode("rec", {{"level", 1}}).has_value());
+		CHECK(f.log.empty());
+	}
+	SECTION("an unknown node") {
+		CHECK(errorOf<UnknownNode>(f.graph.updateNode("tape", {})).node == "tape");
+		CHECK(f.log.empty());
+	}
+	SECTION("invalid settings change nothing") {
+		CHECK(errorOf<InvalidSettings>(f.graph.updateNode("rec", {{"bad", true}})).node == "rec");
+		CHECK(f.log.empty());
+		CHECK(f.graph.nodes().at(0).spec.settings == NodeSettings{{"level", 1}});
+	}
+	SECTION("settings that change the ports are refused") {
+		CHECK(errorOf<PortsChanged>(f.graph.updateNode("rec", {{"extra", "FC"}})).node == "rec");
+		CHECK(f.log.empty());
+		CHECK(f.graph.nodes().at(0).spec.settings == NodeSettings{{"level", 1}});
+		CHECK(f.graph.nodes().at(0).ports.inputs == std::vector<PortName>{"FL", "FR"});
+	}
+	SECTION("new settings with the same ports") {
+		REQUIRE(f.graph.updateNode("rec", {{"level", 2}}).has_value());
+		CHECK(f.log == Log{"sub nodeUpdated rec"});
+		REQUIRE(f.recorder.updates.size() == 1);
+		CHECK(f.recorder.updates[0].first == NodeSpec{"rec", "sink", {{"level", 2}}});
+		CHECK(f.recorder.updates[0].second != f.recorder.nodes.at(0).second);   // a new config
+		CHECK(f.recorder.updates[0].second->ports().inputs == std::vector<PortName>{"FL", "FR"});
+		CHECK(f.graph.nodes().at(0).spec.settings == NodeSettings{{"level", 2}});
+		// The recorded spec is the new one: adding the old spec again is a duplicate.
+		CHECK(errorOf<DuplicateNode>(f.graph.addNode({"rec", "sink", {{"level", 1}}})).node == "rec");
+		CHECK(f.graph.addNode({"rec", "sink", {{"level", 2}}}).has_value());
+	}
+}
+
+TEST_CASE("A node name is 1-64 characters of letters, digits, '_' and '-'", "[desired_graph]") {
+	Fixture f;
+	for (const std::string& name : {std::string(), std::string(65, 'a'), std::string("a.b"), std::string("a b"),
+	                               std::string("a:b"), std::string("rec/1")}) {
+		INFO(name);
+		CHECK(errorOf<InvalidName>(f.graph.addNode({name, "source", {}})).node == name);
+	}
+	CHECK(f.log.empty());
+	CHECK(f.graph.addNode({"noise-1_A", "source", {}}).has_value());
+	CHECK(f.graph.addNode({std::string(64, 'z'), "source", {}}).has_value());
+	CHECK(f.log.size() == 2);
+}
+
+TEST_CASE("Observers hear every change before any subscriber, whatever the registration order",
+          "[desired_graph]") {
+	Fixture f;   // its recorder subscribed first
+	Recorder observer{f.log, "obs"};
+	f.graph.observe(static_cast<DesiredNodeListener&>(observer));
+	f.graph.observe(static_cast<DesiredRouteListener&>(observer));
+
+	REQUIRE(f.graph.addNode({"noise", "source", {}}).has_value());
+	REQUIRE(f.graph.addNode({"rec", "sink", {}}).has_value());
+	REQUIRE(f.graph.updateNode("rec", {{"level", 2}}).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	REQUIRE(f.graph.removeRoute(noiseToFl).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFr).has_value());
+	REQUIRE(f.graph.removeNode("rec").has_value());
+
+	CHECK(f.log == Log{
+		"obs nodeAdded noise", "sub nodeAdded noise",
+		"obs nodeAdded rec", "sub nodeAdded rec",
+		"obs nodeUpdated rec", "sub nodeUpdated rec",
+		"obs routeAdded noise:MONO -> rec:FL", "sub routeAdded noise:MONO -> rec:FL",
+		"obs routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FL",
+		"obs routeAdded noise:MONO -> rec:FR", "sub routeAdded noise:MONO -> rec:FR",
+		"obs routeRemoved noise:MONO -> rec:FR", "sub routeRemoved noise:MONO -> rec:FR",
+		"obs nodeRemoved rec", "sub nodeRemoved rec",
+	});
+}
+
+TEST_CASE("After close() every edit returns stopping and tells nobody, and reads still answer",
+          "[desired_graph]") {
+	Fixture f;
+	REQUIRE(f.graph.addNode({"noise", "source", {}}).has_value());
+	REQUIRE(f.graph.addNode({"rec", "sink", {}}).has_value());
+	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	f.log.clear();
+
+	(void)f.graph.close();
+	(void)f.graph.close();   // again: another proof, nothing changes
+
+	const std::vector<std::expected<void, CommandError>> results{
+		f.graph.addNode({"hiss", "source", {}}),
+		f.graph.addNode({"noise", "source", {}}),   // even the same spec again
+		f.graph.updateNode("rec", {{"level", 2}}),
+		f.graph.removeNode("noise"),
+		f.graph.addRoute(noiseToFr),
+		f.graph.removeRoute(noiseToFl),
+	};
+	for (const auto& result : results) errorOf<Stopping>(result);
+	CHECK(f.log.empty());
+
+	const auto nodes = f.graph.nodes();
+	REQUIRE(nodes.size() == 2);
+	CHECK(nodes[0].spec == NodeSpec{"noise", "source", {}});
+	CHECK(nodes[0].ports.outputs == std::vector<PortName>{"MONO"});
+	CHECK(nodes[1].spec == NodeSpec{"rec", "sink", {}});
+	CHECK(f.graph.routes() == std::vector<Route>{noiseToFl});
 }
