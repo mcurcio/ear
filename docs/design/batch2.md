@@ -32,7 +32,8 @@ themselves cannot move.
   every merge to master and tagged by commit; versioned images only from an automated release
   flow.
 - "add MOTU drivers to image": no MOTU driver exists or is needed. MOTU's USB interfaces use the
-  kernel's USB audio class driver (`snd-usb-audio`), which is in the Talos kernel, not the image.
+  kernel's USB audio class driver (`snd-usb-audio`), which comes with the node, not EAR's image (on
+  Talos, from the `usb-audio-drivers` system extension; see the `ear-on-talos` skill).
   The image already carries PipeWire's ALSA plugin. The work is a sound card node type, with the
   card driving the clock while it works.
 - "support home assistant network audio as source + sink": Music Assistant's Sendspin protocol
@@ -1356,7 +1357,8 @@ is linked. Probe: AlsaSoundCards never tells ready → the node stays starting a
 fails.
 
 **D.** Docs only; a doc finding never fails a code slice. The Talos and MOTU notes cover:
-snd-usb-audio loaded as a module (Talos 1.12 and later, machine config); the namespace labelled
+snd-usb-audio loaded as a module (erratum, 2026-10-30: it ships only in Talos's `usb-audio-drivers`
+extension, and the device group needs a numeric udev rule; the `ear-on-talos` skill has both); the namespace labelled
 Pod Security `privileged`; `/dev/snd` through a device plugin (or a privileged container) and the
 host's audio group in `supplementalGroups`; `capabilities.add: [SYS_NICE]` with
 `allowPrivilegeEscalation` not false; checking `realtime` in graph.get; the card's rate and USB
