@@ -1,7 +1,8 @@
 # Batch 2: run image, control port, graph UI, sound card
 
-Status: scope answered by the owner on 2026-10-30; the module design and slice pages are added
-below by the batch's code architect. The system design is `docs/design/pipewire-graph.md`.
+Status: scope answered by the owner on 2026-10-30; the module design and slice pages are below,
+revised the same day after the adversarial design review (section 12 lists each finding and the
+change). The system design is `docs/design/pipewire-graph.md`.
 
 ## The owner's answers (chat, 2026-10-30)
 
@@ -12,13 +13,16 @@ The question page: https://claude.ai/artifact/DraHdKRyZDB4WwBWxDTn4k
 | Scope | "Ok" (to the recommended scope) | Run image, control port, web UI, sound card node. Sendspin (Music Assistant) is the next batch. |
 | Web UI | "Graph view is the goal. Dynamically wiring up nodes and edges in a UI is the goal. I want to see all of the graph information in real time, like the audio levels per-channel / per edge" | A drawn graph editor: nodes as boxes, routes as wires added and removed in the UI, with live status and live audio levels per channel and per route. |
 | Hardware | "Motu 24ao. Talos 1.13.x I think maybe 1.14.x" | A MOTU 24Ao (AVB series, USB class compliant). Talos 1.13 or later includes the USB audio driver (added in 1.12). |
-| Threading | "The control port shouldn't run in the PipeWire context, because it will not be real time" | The control port runs on its own thread, never on PipeWire's threads. |
+| Threading | "The control port shouldn't run in the PipeWire context, because it will not be real time" | The control port's own work (sockets, messages, client queues) runs on its own thread, never on PipeWire's threads. The graph edits it asks for are applied on PipeWire's main loop, which is not realtime; only PipeWire's data thread is realtime, and nothing of the control port runs there. |
 
 Not answered: the CPU of the Talos nodes. The image is built for amd64 until he says otherwise.
 
-Note on the threading answer: in EAR today audio runs on PipeWire's realtime data thread, and
-graph edits and link events run on PipeWire's main loop, which is not realtime. The control port
-still gets its own thread, so a slow or stuck client never delays graph edits or link events.
+**Open question for the owner (does not block the cut):** graph edits from the control port are
+applied on PipeWire's main loop. That loop is not realtime: it already makes the links and reads
+the engine's events, and audio runs on a separate realtime thread. The control port's own work
+stays on its own thread. Is that what you meant? If you meant that no control work may touch any
+PipeWire thread at all, say so: every PipeWire call has to run on its main loop, so the edits
+themselves cannot move.
 
 ## The ideas, as researched (2026-10-30)
 
@@ -28,7 +32,7 @@ still gets its own thread, so a slow or stuck client never delays graph edits or
 - "add MOTU drivers to image": no MOTU driver exists or is needed. MOTU's USB interfaces use the
   kernel's USB audio class driver (`snd-usb-audio`), which is in the Talos kernel, not the image.
   The image already carries PipeWire's ALSA plugin. The work is a sound card node type, with the
-  card driving the clock while present.
+  card driving the clock while it works.
 - "support home assistant network audio as source + sink": Music Assistant's Sendspin protocol
   (deferred to the next batch).
 - "add control socket": port 7777, JSON-RPC 2.0 over WebSocket (Snapcast's pattern).
@@ -36,14 +40,21 @@ still gets its own thread, so a slow or stuck client never delays graph edits or
 
 ## Design choices (current choices, revisable)
 
-- The sound card drives the clock while present; the dummy driver stays as a fallback so the
-  graph keeps running without it (R2).
+- A sound card drives the graph's clock only while it works. A card that fails or is lost
+  leaves the clock at once and the dummy driver drives the graph (R2: "its always just
+  'running'").
 - Removing a node removes its routes, and status says so.
 - New settings for a node restart its insides; its ports and routes stay. Changing ports is
   refused.
 - Live edits are not saved; `ear.json` loads at boot.
-- No login on port 7777 yet; it refuses browser pages from other origins. Keep it in the cluster.
-- A sound card is named in `ear.json` by card name (for example `hw:CARD=...`), never by index.
+- No login on port 7777 yet: anyone who can reach the port can edit the graph. It answers only
+  requests addressed to an IP address, `localhost` or a name given with `--allowed-host`, and
+  refuses browser pages from other sites.
+- A sound card is named in `ear.json` by its ALSA card id (the name in `/proc/asound/cards`, for
+  example `Pro24`), never by index and never by a raw ALSA device string.
+- Stopping EAR first refuses graph edits (clients get "stopping"), then stops every node.
+- The run image runs as an ordinary user. It gets realtime priority only when the pod grants
+  it, and EAR reports whether it got it.
 
 ---
 
@@ -51,9 +62,9 @@ still gets its own thread, so a slow or stuck client never delays graph edits or
 
 Layer: module, beneath the agreed system design (`docs/design/pipewire-graph.md`) and the answers
 above. Milestone 1's page (`docs/design/m1-white-to-file.md`) holds the M1 interfaces this batch
-changes; every change is listed in section 4. [V] = verified in PipeWire's sources or docs
-(fetched copies cited), [U] = unverified, so each [U] is an acceptance criterion of the slice that
-meets it. Nothing here was compiled by the architect (NOT RUN).
+changes; every change is listed in section 4. [V] = verified in PipeWire's sources (1.4.2 unless
+stated; fetched copies), [U] = unverified, so each [U] is an acceptance criterion of the slice
+that meets it. Nothing here was compiled by the architect (NOT RUN).
 
 ## 1. Module map
 
@@ -62,8 +73,8 @@ flowchart LR
   core[ear_core<br/>graph rules, node framework,<br/>reconciler, levels, executor]
   nodes[ear_nodes<br/>white, file, card]
   pw[ear_pipewire<br/>engine adapters]
-  control[ear_control<br/>graph file, JSON-RPC protocol]
-  server[ear_server<br/>control port: HTTP + WebSocket]
+  control[ear_control<br/>graph JSON, JSON-RPC protocol,<br/>main-loop gateway]
+  server[ear_server<br/>control thread, port 7777]
   main[ear main.cpp<br/>composition root]
   web[web/ graph editor<br/>React + React Flow]
   core --> nodes & pw & control
@@ -74,12 +85,12 @@ flowchart LR
 
 | Package (dir) | Owns | Takes | Gives | Never |
 |---|---|---|---|---|
-| ear_core (src/core) | wanted nodes and routes and their checks; each node's state machine and everything it made (port block, insides, handoffs, sound cards, inside links); route links; what a level is; the graph read | GraphControl calls; engine facts through its own interfaces | listener events; `GraphReader::read()`; `LevelMeter` | PipeWire, sockets, threads, files |
-| ear_nodes (src/nodes) | the built-in types white, file, card | settings JSON, a NodeGrant | NodeConfig, AudioCode | PipeWire (a card is asked for through the grant) |
-| ear_pipewire (src/pipewire) | the in-process engine; port blocks (with level metering), links, live ports, handoffs, sound cards (ALSA adapter nodes), the main-loop executor | core interfaces to implement | engine events as core events; `LevelReader` | policy |
-| ear_control (src/control) | ear.json; the JSON-RPC protocol: envelope, commands, events, sessions, subscriptions | text messages; GraphEvents; levels | encoded responses and notifications; `runCommand` for the main loop | sockets; calling the graph from any thread but the main loop |
-| ear_server (src/server, new) | port 7777: HTTP for the UI's files, WebSocket at `/rpc`, Origin check, per-client queues, the control thread, the level bell | settings; executors; ear_control | bytes on sockets | graph state; PipeWire |
-| ear (src/main.cpp) | wiring and boot/stop order | flags, ear.json | exit status | computing anything |
+| ear_core (src/core) | wanted nodes and routes and their checks; closing the graph to edits; each node's state machine and everything it made (port block, insides, handoffs, sound cards); route links; what a level is; the graph read | GraphControl calls; engine facts through its own interfaces | listener events; `GraphReader::read()`; `LevelMeter`; `CardId` | PipeWire, sockets, threads, files |
+| ear_nodes (src/nodes) | the built-in types white, file, card | settings JSON, a NodeGrant | NodeConfig, AudioCode | PipeWire, ALSA (a card is asked for through the grant) |
+| ear_pipewire (src/pipewire) | the in-process engine and its scheduling report; port blocks (with level metering); links; live ports; handoffs; sound cards (an ALSA adapter node plus its own links, leaving the clock when it fails); the main-loop executor | core interfaces to implement | engine events as core events; `LevelReader` | policy |
+| ear_control (src/control) | ear.json; the one decoder and encoder of node and route JSON; the JSON-RPC protocol (envelope, commands, events, sessions, subscriptions); `MainLoopGateway`, the one crossing between the main loop and the control thread | text messages; graph events; levels | encoded responses and notifications | sockets; holding the graph on the control thread (the hub sees only `GraphGateway`) |
+| ear_server (src/server, new) | the control thread; port 7777: HTTP for the UI's files, WebSocket at `/rpc`, Host and Origin checks, per-client queues, the level bell | settings; a `GraphGateway`; levels | bytes on sockets | graph state; PipeWire |
+| ear (src/main.cpp) | wiring; boot and stop order | flags, ear.json | exit status | computing anything |
 | web/ (new) | the graph editor | the wire format | JSON-RPC calls | graph rules (the server is the one source of truth) |
 
 Dependencies: ear_core (nlohmann/json only) ← ear_nodes (sndfile), ear_pipewire (libpipewire-0.3),
@@ -90,29 +101,30 @@ fixtures in `test/protocol/`, which both sides test against (section 6).
 ## 2. Threads: who runs what
 
 The owner (2026-10-30): "The control port shouldn't run in the PipeWire context, because it will
-not be real time". So the control port's code runs on its own thread; the only thing of its path
-that runs on the main loop is the graph call itself (typed in, typed out: `runCommand`).
+not be real time". So the control port's code runs on its own thread. Of its path, only the graph
+call runs on the main loop (typed in, typed out, inside `MainLoopGateway`). The main loop is not
+realtime (the open question at the top asks him to confirm this reading).
 
 | Thread | Runs | Owns | Never |
 |---|---|---|---|
 | Realtime (PipeWire data loop) | `AudioCode::process`; port-block level metering; `RtWriter::write`; publishing a level window and ringing the bell | each block's meters and its level mailbox's write side | locks, allocation, waiting; system calls other than one eventfd write |
-| Main loop (PipeWire, the main thread) | Engine, DesiredGraph, NodeHost, both Reconcilers, LiveGraph, both Links, FilterPortBlocks, AlsaSoundCards, GraphStatus, EventBridge, `runCommand` | every piece of graph state | sockets, JSON-RPC text, waiting on the control thread |
-| Control (ear_server, one `io_context`, one strand) | Beast HTTP and WebSocket, ControlHub and sessions, JSON-RPC decode and encode, per-client queues, reading levels when the bell rings | connections, subscriptions, queues | calling GraphControl, GraphReader or any core object directly; waiting on the main loop |
+| Main loop (PipeWire, the main thread) | Engine, DesiredGraph, NodeHost, Reconciler, LiveGraph, Links, FilterPortBlocks, AlsaSoundCards, GraphStatus, MainLoopGateway's main-loop side (its listener calls and the commands it posts there) | every piece of graph state | sockets, JSON-RPC text, waiting on the control thread |
+| Control (ear_server's `ControlThread`, one `io_context`, one thread) | Beast HTTP and WebSocket, ControlHub and sessions, JSON-RPC decode and encode, per-client queues, reading levels when the bell rings | connections, subscriptions, queues | holding GraphControl, GraphReader or any core object (it holds only `GraphGateway`); waiting on the main loop |
 | Handoff threads (one per handoff, M1) | `HandoffConsumer::consume` | the file node's writer | unchanged |
 
-Crossings (each one event-driven; no thread polls another):
+Crossings (each event-driven; no thread polls another):
 
 | From → to | How | Bounded by |
 |---|---|---|
-| control → main | `MainLoopExecutor::post` (mutex-guarded queue plus a `pw_loop` event source) | one message in flight per connection: its next message is read only after its replies are queued |
-| main → control | `ControlPort::executor().post` (`asio::post` on the strand: posts run in post order) | events are small and human-rate; per-client queues bound what waits for a socket |
-| realtime → control | per-block level mailbox (triple buffer) + `LevelBell` (non-blocking eventfd, rung at most once until answered) → control thread calls `LevelReader::takeLevels()` | latest-value: an unread window is replaced, never queued |
+| control → main | `GraphGateway::run` → `MainLoopExecutor::post` (mutex-guarded queue plus a `pw_loop` event source) | one message in flight per connection: its next message is read only after its replies are queued |
+| main → control | `MainLoopGateway` posts replies and events to `ControlThread` (`asio::post`; one thread, post order kept) | events are small and human-rate; per-client queues bound what waits for a socket |
+| realtime → control | per-block level mailbox (triple buffer) + `LevelBell` (non-blocking eventfd, rung at most once until answered) → control thread reads `LevelReader::latestLevels()` | latest value per block; every levels message is a complete snapshot, so replacing an unsent one loses nothing |
 
 Why a mutex queue and not `pw_loop_invoke` for control → main: both are equivalent crossings; the
 queue owns each posted function, so work left when EAR stops is destroyed rather than leaked, and
 it has no "queue full" failure. The main loop is not realtime, so a mutex there costs nothing.
-The control thread is started after `Engine::create`, so it inherits the blocked SIGINT and
-SIGTERM (pipewire-engine skill, "Traps").
+`ControlThread` is started after `Engine::create`, so it inherits the blocked SIGINT and SIGTERM
+(pipewire-engine skill, "Traps").
 
 ```mermaid
 sequenceDiagram
@@ -122,15 +134,15 @@ sequenceDiagram
   participant RT as realtime thread
   UI->>C: {"method":"route.add",...}
   C->>C: parseMessage, decodeCommand
-  C->>M: post(runCommand(AddRoute))
-  M->>M: DesiredGraph.addRoute → Reconciler → createLink
-  M->>C: post(reply) then post(event route.added)
-  C->>UI: response, then notification
+  C->>M: gateway.run([AddRoute])
+  M->>M: DesiredGraph.addRoute → observers (gateway: route.added) → Reconciler → createLink
+  M->>C: post(event route.added), post(reply)
+  C->>UI: notification, then response
   M-->>C: later: post(event route.status linked)
-  RT->>RT: meter ports; every 1/30 s publish window
+  RT->>RT: meter ports; at each window boundary of the graph clock, publish
   RT->>C: bell (eventfd)
-  C->>C: takeLevels, encode once
-  C->>UI: "levels" (latest wins per client)
+  C->>C: latestLevels, encode once
+  C->>UI: "levels" (a complete snapshot; the newest replaces an unsent one)
 ```
 
 ## 3. Design rules for this batch (design choices)
@@ -139,12 +151,23 @@ sequenceDiagram
    when the node is removed. Insides (the type's code, its handoffs, its sound cards) start,
    restart and fail behind it; the block keeps processing (silent when no code drives it), so
    routes stay linked and levels keep flowing (system design rule 3, R2).
-2. **The main loop owns every piece of graph state; the control thread owns only connections.**
-   Commands and reads cross as typed values; nothing on the control thread caches the graph. A
-   client's view is a snapshot plus the events after it, in one ordered stream.
-3. **Levels are a latest-value signal measured on the audio clock.** Each port block measures its
-   own public ports every cycle and publishes once per window (`levelWindowsPerSecond`, one
-   home); nothing between the realtime thread and a browser queues levels.
+2. **A sound card is in the graph's clock only while it works.** It runs alone until its PCM is
+   running, then its own links join it to its port block, and through the block's graph group it
+   drives every block. When it fails, it destroys its engine node and links before it reports the
+   loss, so a failed card never holds the graph (R2). One owner: the card adapter (section 5).
+3. **The main loop owns every piece of graph state; the control thread holds only a gateway.**
+   Commands and reads cross as typed values through `GraphGateway`; nothing on the control thread
+   caches the graph or can reach it. A client's view is a snapshot plus the events after it, in
+   one ordered stream.
+4. **One event order, frozen in `DesiredGraph`.** Observers (the gateway) hear each change before
+   any subscriber acts on it, so a change's notification always comes before the statuses it
+   causes (`node.added` before `node.state`, `node.removed` before `node.stopped`).
+5. **Stopping closes the graph to edits first.** `DesiredGraph::close()` returns the proof
+   `NodeHost::stopAll` requires, so no edit can reach the node framework once it is stopping.
+6. **Levels are a latest-value signal measured on the graph clock.** Each port block measures its
+   public ports every cycle; every block publishes at the same clock positions (window boundaries
+   of the graph clock), and a levels message carries every block's latest window. Nothing between
+   the realtime thread and a browser queues levels.
 
 ## 4. Frozen interfaces
 
@@ -154,16 +177,18 @@ C++23 as M1. Stateful classes keep a private Impl pointer. Bodies are not part o
 
 | Header | Change |
 |---|---|
-| `core/command_error.hpp` | + `InvalidName`, `PortsChanged`, `UnknownRoute` (codes "invalid-name", "ports-changed", "unknown-route") |
-| `core/node_type.hpp` | `Ports` + `insideInputs`, `insideOutputs`; `AudioCode::process` spans include inside ports; + `CardDirection`, `SoundCardRequest`; `NodeGrant::soundCard` |
+| `core/command_error.hpp` | + `InvalidName`, `PortsChanged`, `UnknownRoute`, `Stopping` (codes "invalid-name", "ports-changed", "unknown-route", "stopping") |
+| `core/node_type.hpp` | `Ports` + `insideInputs`, `insideOutputs`; `AudioCode::process` spans include inside ports; `NodeGrant::soundCard`; includes the new `core/sound_card.hpp` |
 | `core/node_catalogue.hpp` | + `names()` |
-| `core/desired_graph.hpp` | listeners take `NodeSpec`; + `nodeUpdated`, `nodeRemoved`, `routeRemoved`; `GraphControl` + `updateNode`, `removeNode`, `removeRoute`; `DesiredGraph` + `nodes()`, `routes()`; + `WantedNode` |
-| `core/node_lifecycle.hpp` | `refused` splits into `portBlockLost` and `insidesFailed`; + `insidesReady`, `restartRequested`; running needs both readiness facts |
-| `core/node_host.hpp` | `PortBlock::drive`; `PortBlockFactory::make` loses `AudioCode&`; + `SoundCard`, `SoundCardEvents`, `SoundCardFactory`; `NodeHost` ctor + cards and inside links; + `nodeUpdated`, `nodeRemoved` |
+| `core/desired_graph.hpp` | listeners take `NodeSpec` and `std::shared_ptr<const NodeConfig>`; + `nodeUpdated`, `nodeRemoved`, `routeRemoved`; + `observe()` (told before subscribers); + `close()` and `GraphClosed`; `GraphControl` + `updateNode`, `removeNode`, `removeRoute`; `DesiredGraph` + `nodes()`, `routes()`; + `WantedNode` |
+| `core/node_lifecycle.hpp` | `refused` splits into `portBlockLost` (final) and `insidesFailed`; + `insidesReady`, `restartRequested`, `blockLost()`; running needs both readiness facts |
+| `core/node_host.hpp` | `PortBlock::drive`; `PortBlockFactory::make` loses `AudioCode&`; + `SoundCard`, `SoundCardEvents`, `SoundCardFactory`; `NodeHost` ctor + cards; + `nodeUpdated`, `nodeRemoved`; `stopAll` takes `GraphClosed` |
 | `core/reconciler.hpp` | + `routeRemoved`; `portGone` acts only on the port whose live id it is |
+| `pipewire/engine.hpp` | + `Scheduling`, `dataThreadScheduling()`; `create` makes a permitted CAP_SYS_NICE effective |
 | `pipewire/port_blocks.hpp` | ctor takes `LevelWake&`; implements `LevelReader`; new `make` |
 | `nodes/builtin.hpp` | + `makeCardNodeType`; `builtinNodeTypes()` adds card |
-| unchanged | `graph_spec.hpp`, `engine.hpp`, `links.hpp`, `live_graph.hpp`, `handoffs.hpp`, `graph_file.hpp`, `status_log.hpp` |
+| `pipewire/links.cpp` (not a header) | its link proxy moves to the private `src/pipewire/link_proxy.hpp`, shared with sound cards (s0, behaviour unchanged) |
+| unchanged | `graph_spec.hpp`, `links.hpp`, `live_graph.hpp`, `handoffs.hpp`, `graph_file.hpp`, `status_log.hpp` |
 
 Every frozen header's first line points at this page from s0 on (section 4 of this page, Errata
 in section 11).
@@ -173,15 +198,47 @@ in section 11).
 struct InvalidName  { NodeName node; };   // not 1-64 characters of [A-Za-z0-9_-]
 struct PortsChanged { NodeName node; };   // updateNode: the new settings would change its ports
 struct UnknownRoute { Route route; };     // removeRoute: the route is not wanted
+struct Stopping     {};                   // EAR is stopping: the graph takes no more edits
 using CommandError = std::variant<UnknownNodeType, InvalidSettings, DuplicateNode, UnknownNode,
                                   UnknownPort, WrongDirection, InvalidName, PortsChanged,
-                                  UnknownRoute>;
-/// describe(): "invalid-name <n>", "ports-changed <n>", "unknown-route <a>:<p> -> <b>:<q>".
+                                  UnknownRoute, Stopping>;
+/// describe(): "invalid-name <n>", "ports-changed <n>", "unknown-route <a>:<p> -> <b>:<q>",
+/// "stopping".
+
+// ===== core/sound_card.hpp (new; s0 writes it whole) =====
+#pragma once
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+#include "ear/core/graph_spec.hpp"
+namespace ear {
+/// An ALSA card id, the name in /proc/asound/cards (e.g. "Pro24"): 1-15 characters of
+/// [A-Za-z0-9_-]. The only way anything names a sound card, so no user text ever reaches
+/// alsa-lib's device-name parser, whose plugins open files and run commands
+/// (the `file` plugin's "|command" form).
+class CardId {
+public:
+  static std::optional<CardId> parse(std::string_view text);   // nullopt outside the grammar
+  const std::string& text() const noexcept;
+  friend bool operator==(const CardId&, const CardId&) = default;
+private:
+  explicit CardId(std::string text);
+  std::string text_;
+};
+enum class CardDirection { playback, capture };
+struct SoundCardRequest {
+  CardId card;
+  CardDirection direction;
+  std::vector<PortName> blockPorts;  // channel i <-> blockPorts[i]: insideOutputs (playback)
+                                     // or insideInputs (capture) of this node
+};
+}
 
 // ===== core/node_type.hpp (changes) =====
 /// Public ports are routable. Inside ports belong to the port block only; nothing but the node's
-/// own inside links reaches them (a card's channels). Invariant: the four lists' names are unique
-/// together (DesiredGraph::addNode throws std::logic_error otherwise: a type bug).
+/// own sound cards reaches them. Invariant: the four lists' names are unique together
+/// (DesiredGraph::addNode throws std::logic_error otherwise: a type bug).
 struct Ports {
   std::vector<PortName> inputs;
   std::vector<PortName> outputs;
@@ -190,22 +247,15 @@ struct Ports {
 };
 // AudioCode::process: `inputs` = inputs then insideInputs, `outputs` = outputs then insideOutputs,
 // each in declaration order. Everything else in AudioCode is unchanged.
-enum class CardDirection { playback, capture };
-struct SoundCardRequest {
-  std::string device;                // ALSA PCM name, e.g. "hw:CARD=Pro24"; the type checks it
-  CardDirection direction;
-  std::vector<PortName> blockPorts;  // channel i <-> blockPorts[i]: insideOutputs (playback)
-                                     // or insideInputs (capture) of this node
-};
 class NodeGrant {
 public:
   virtual AudioFormat format() const = 0;
   virtual RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames,
                             HandoffConsumer& consumer) = 0;
   /// Main thread, inside start() only (else std::logic_error). The framework opens the card at
-  /// format().rate with blockPorts.size() channels and links its channels to blockPorts. The
+  /// format().rate with blockPorts.size() channels and joins its channels to blockPorts. The
   /// node runs once every card it asked for is ready, and fails (engine-refused) when one is
-  /// lost. Cards and their inside links go with the insides, before the insides are destroyed.
+  /// lost. Cards go with the insides, before the insides are destroyed.
   virtual void soundCard(const SoundCardRequest& request) = 0;
 protected:
   ~NodeGrant() = default;
@@ -224,12 +274,12 @@ namespace ear {
 struct WantedNode { NodeSpec spec; Ports ports; };
 class DesiredNodeListener {
 public:
-  /// After the node is recorded. `config` stays valid until nodeUpdated or nodeRemoved for this
-  /// node returns.
-  virtual void nodeAdded(const NodeSpec& node, const NodeConfig& config) = 0;
-  /// New settings recorded (ports unchanged). The previous config stays valid until this returns.
-  virtual void nodeUpdated(const NodeSpec& node, const NodeConfig& config) = 0;
-  /// After routeRemoved for each of its routes. Its config stays valid until this returns.
+  /// After the node is recorded. The listener may keep `config` for as long as it needs it
+  /// (the node framework keeps it until the insides it started are destroyed).
+  virtual void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) = 0;
+  /// New settings recorded (ports unchanged).
+  virtual void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) = 0;
+  /// After routeRemoved for each of its routes.
   virtual void nodeRemoved(const NodeName& node) = 0;
 protected:
   ~DesiredNodeListener() = default;
@@ -241,7 +291,13 @@ public:
 protected:
   ~DesiredRouteListener() = default;
 };
-/// The control calls: one per question. Main thread only.
+/// Proof that the graph takes no more edits. Only DesiredGraph::close() makes one.
+class GraphClosed {
+  friend class DesiredGraph;
+  GraphClosed() = default;
+};
+/// The control calls: one per question. Main thread only. After close(), every one returns
+/// Stopping and changes nothing.
 class GraphControl {
 public:
   virtual ~GraphControl() = default;
@@ -263,7 +319,12 @@ class DesiredGraph final : public GraphControl {
 public:
   explicit DesiredGraph(const NodeCatalogue& catalogue);
   ~DesiredGraph() override;
-  void subscribe(DesiredNodeListener& listener);   // before the first call
+  /// Each change is told to every observer (in observe order), then to every subscriber (in
+  /// subscribe order). Observers record and report; they never act on the graph or call back.
+  /// Subscribers act (the node framework, the reconciler). Register before the first call.
+  void observe(DesiredNodeListener& listener);
+  void observe(DesiredRouteListener& listener);
+  void subscribe(DesiredNodeListener& listener);
   void subscribe(DesiredRouteListener& listener);
   std::expected<void, CommandError> addNode(const NodeSpec& node) override;
   std::expected<void, CommandError> updateNode(const NodeName& node,
@@ -271,6 +332,9 @@ public:
   std::expected<void, CommandError> removeNode(const NodeName& node) override;
   std::expected<void, CommandError> addRoute(const Route& route) override;
   std::expected<void, CommandError> removeRoute(const Route& route) override;
+  /// Main thread. From now on every edit returns Stopping; nodes() and routes() still answer.
+  /// Calling it again returns another proof and changes nothing.
+  GraphClosed close();
   std::vector<WantedNode> nodes() const;   // name order; ports as the config declares them
   std::vector<Route> routes() const;       // Route order
 private:
@@ -282,25 +346,31 @@ private:
 // they cannot collide. The rule lives in desired_graph.cpp only.
 
 // ===== core/node_lifecycle.hpp (class) =====
-/// running = the port block is ready AND the insides are ready. Each fact records itself and
-/// returns true only when the state changed. No transitions after gone().
+/// running = the port block is ready AND the insides are ready. A lost port block is final: it
+/// is never remade, so the node stays failed with the block's reason until it is removed. Each
+/// fact returns true when the state or its reason changed. No transitions after gone().
 class NodeLifecycle {
 public:
   NodeLifecycle() noexcept;                      // starting; nothing ready
   NodeState state() const noexcept;
   const std::optional<FailureReason>& reason() const noexcept;   // set only while failed
   bool gone() const noexcept;
+  bool blockLost() const noexcept;
   bool portBlockReady() noexcept;                // starting -> running if insides ready
-  bool portBlockLost(FailureReason reason);      // block not ready; starting|running -> failed
-  bool insidesReady() noexcept;                  // starting -> running if block ready
-  bool insidesFailed(FailureReason reason);      // insides not ready; starting|running -> failed
-  bool restartRequested() noexcept;              // starting|running|failed -> starting; insides
-                                                 // not ready; block readiness kept; reason cleared
+  bool portBlockLost(FailureReason reason);      // starting|running|failed -> failed, this
+                                                 // reason (it replaces an insides reason)
+  bool insidesReady() noexcept;                  // starting -> running if block ready;
+                                                 // nothing once the block is lost
+  bool insidesFailed(FailureReason reason);      // starting|running -> failed; nothing once
+                                                 // the block is lost
+  bool restartRequested() noexcept;              // block not lost: starting|running|failed ->
+                                                 // starting, insides not ready, reason cleared;
+                                                 // block lost: nothing
   bool stopRequested() noexcept;                 // starting|running|failed -> stopping
   bool stopped() noexcept;                       // stopping -> gone
 private:
   NodeState state_; std::optional<FailureReason> reason_;
-  bool blockReady_; bool insidesReady_; bool gone_;
+  bool blockReady_; bool blockLost_; bool insidesReady_; bool gone_;
 };
 
 // ===== core/node_host.hpp (changed and new parts) =====
@@ -311,8 +381,9 @@ public:
   virtual ~PortBlock() = default;
   /// Main thread. The realtime thread runs `code` from its next cycle; nullptr silences every
   /// output. Returns only when the realtime thread can no longer be inside a process() of the
-  /// code it ran before (a blocking barrier with the data loop, as pw_filter_destroy is).
-  /// `code` must outlive the next drive() or the block.
+  /// code it ran before: a blocking barrier with the block's data loop. On a block the engine
+  /// refused or lost that has no data loop, nothing can run, so it returns at once; the barrier
+  /// holds either way. `code` must outlive the next drive() or the block.
   virtual void drive(AudioCode* code) = 0;
 };
 class PortBlockFactory {
@@ -326,56 +397,59 @@ public:
 protected:
   ~PortBlockFactory() = default;
 };
-/// A sound card opened through the engine. Destroying it (main thread) removes its engine node.
+/// A sound card opened through the engine: its engine node plus the links joining its channels
+/// to its port block. Destroying it (main thread) removes both.
 class SoundCard {
 public:
   virtual ~SoundCard() = default;
-  virtual const std::vector<PortName>& channelPorts() const noexcept = 0;   // channel order
 };
 class SoundCardEvents {   // main thread
 public:
-  virtual void ready() = 0;                    // the card is open and processing; at most once
-  virtual void lost(std::string detail) = 0;   // refused or dropped by the engine; at most once
+  /// The card's PCM runs and every channel is linked to its block port; at most once.
+  virtual void ready() = 0;
+  /// At most once, never inside make(). When it is told, the card's engine node and links are
+  /// already destroyed, so the card no longer clocks or holds any part of the graph.
+  virtual void lost(std::string detail) = 0;
 protected:
   ~SoundCardEvents() = default;
 };
 class SoundCardFactory {
 public:
-  /// Main thread. Opens request.device as one engine node named `engineNode`, with
-  /// request.blockPorts.size() channels at format.rate, in EAR's graph group (so while it runs
-  /// it drives every port block). Refusal is told via events.lost later, never thrown or told
-  /// inside this call.
-  virtual std::unique_ptr<SoundCard> make(const NodeName& engineNode,
+  /// Main thread; only once port block `blockNode` is ready (its ports exist). One engine node
+  /// named `engineNode` for request.card with request.blockPorts.size() channels at format.rate.
+  /// It joins the graph's clock only through its links to `blockNode`, made once its PCM runs.
+  virtual std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
       const SoundCardRequest& request, const AudioFormat& format, SoundCardEvents& events) = 0;
 protected:
   ~SoundCardFactory() = default;
 };
 class NodeHost final : public DesiredNodeListener {
 public:
-  /// `insideLinks`: where a node's card links are wanted and unwanted (a second Reconciler).
   NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-           SoundCardFactory& cards, DesiredRouteListener& insideLinks);
+           SoundCardFactory& cards);
   ~NodeHost();   // precondition: stopAll completed (or no node was ever added)
   void subscribe(NodeStatusListener& listener);
-  /// starting; port block made; config.start(grant); code.prepare; block.drive(&code); cards
-  /// made and their inside links wanted; insides ready when every card is ready. A failure
-  /// fails the node; its port block stays.
-  void nodeAdded(const NodeSpec& node, const NodeConfig& config) override;
-  /// Restarts the insides: drive(nullptr), release(), inside links unwanted, cards destroyed,
-  /// handoffs closed, insides destroyed, then started from `config` as in nodeAdded. The port
-  /// block and routes stay. An update arriving during a restart replaces the config to start.
-  void nodeUpdated(const NodeSpec& node, const NodeConfig& config) override;
+  /// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the cards
+  /// the type asked for are made once the block is ready; insides ready when every card is
+  /// ready (at once with none). A failure fails the node; its port block stays.
+  void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+  /// Restart: drive(nullptr), release(), cards destroyed, handoffs closed, insides destroyed and
+  /// then their config let go, then started from `config` as in nodeAdded. The port block and
+  /// routes stay. An update arriving during a restart replaces the config to start. If the
+  /// block was lost: the old insides are torn down, nothing starts, the node stays failed.
+  void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
   /// stopping; port block destroyed; then as the restart's teardown; nodeGone. Others untouched.
   void nodeRemoved(const NodeName& node) override;
-  void stopAll(std::move_only_function<void()> allGone);
+  /// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
+  /// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn
+  /// down; gone. `allGone` runs once on the main thread after the last (at once if none).
+  void stopAll(GraphClosed closed, std::move_only_function<void()> allGone);
   /// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
   /// of the same name).
   std::vector<NodeStatus> status() const;
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
-// Inside links: playback Route{{node, blockPorts[i]}, {"<node>.playback", channelPorts()[i]}},
-// capture Route{{"<node>.capture", channelPorts()[i]}, {node, blockPorts[i]}}.
 
 // ===== core/reconciler.hpp (additions) =====
   /// Destroys the route's link if any; no status event for a route no longer wanted.
@@ -413,12 +487,15 @@ namespace ear {
 struct Level { float peak; float rms; };
 struct PortLevel { PortName port; Level level; };
 /// One port block's latest window: its public ports, inputs then outputs, declaration order.
-struct NodeLevels { NodeName node; std::vector<PortLevel> ports; };
+/// windowEnd: the graph clock position (frames) where the window ended. Every block's windows
+/// end at the same positions (multiples of levelWindowFrames), so one snapshot is one window.
+struct NodeLevels { NodeName node; std::uint64_t windowEnd; std::vector<PortLevel> ports; };
 /// Windows per second (the one home). A stated display rate: meters are read by eye, browsers
-/// paint at 60 Hz, and 30 is the common meter refresh; at 48 kHz and 256-frame blocks a window
-/// is 7 cycles (37 ms, about 27 per second). About 20 bytes per port per window per client.
+/// paint at 60 Hz, and 30 is the common meter refresh; at 48 kHz a window is 1600 frames
+/// (6.25 cycles of 256: a block publishes in the cycle that crosses a boundary). About 20 bytes
+/// per port per window per client.
 inline constexpr std::uint32_t levelWindowsPerSecond = 30;
-/// ceil(rate / levelWindowsPerSecond). A block publishes at the end of the cycle that completes it.
+/// ceil(rate / levelWindowsPerSecond).
 std::uint32_t levelWindowFrames(std::uint32_t rate) noexcept;
 /// One port's accumulator. Realtime-safe: no locks, allocation or system calls.
 class LevelMeter {
@@ -439,9 +516,9 @@ protected:
 /// Ordinary-thread end. Thread-safe; never blocks the realtime thread.
 class LevelReader {
 public:
-  /// The latest window of every block that published since the last call; older windows are
-  /// gone (levels are a latest-value signal).
-  virtual std::vector<NodeLevels> takeLevels() = 0;
+  /// A complete snapshot: the latest window of every port block that exists and has published
+  /// one. A block that has gone is absent (levels are a latest-value signal).
+  virtual std::vector<NodeLevels> latestLevels() = 0;
 protected:
   ~LevelReader() = default;
 };
@@ -456,6 +533,12 @@ protected:
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 namespace ear {
+/// Engine facts fixed at boot.
+struct EngineView {
+  AudioFormat format;          // rate = graphFrequency, maxBlock = blockSize
+  bool realtime;               // the data thread got realtime priority
+  std::string scheduling;      // e.g. "SCHED_FIFO 88", "SCHED_OTHER"
+};
 struct NodeView {
   NodeSpec spec;
   Ports ports;                               // public only (inside lists empty)
@@ -463,7 +546,7 @@ struct NodeView {
   std::optional<FailureReason> reason;
 };
 struct GraphView {
-  AudioFormat format;                        // rate = graphFrequency, maxBlock = blockSize
+  EngineView engine;
   std::vector<std::string> types;            // sorted
   std::vector<NodeView> nodes;               // wanted nodes, name order
   std::vector<RouteStatus> routes;           // wanted routes, Route order
@@ -478,11 +561,11 @@ protected:
 /// is that of NodeHost's last status entry of its name.
 class GraphStatus final : public GraphReader {
 public:
-  GraphStatus(AudioFormat format, const NodeCatalogue& catalogue, const DesiredGraph& desired,
+  GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired,
               const NodeHost& nodes, const Reconciler& routes);   // all outlive it
   GraphView read() const override;
 private:
-  AudioFormat format_; const NodeCatalogue& catalogue_; const DesiredGraph& desired_;
+  EngineView engine_; const NodeCatalogue& catalogue_; const DesiredGraph& desired_;
   const NodeHost& nodes_; const Reconciler& routes_;
 };
 }
@@ -491,28 +574,42 @@ private:
 ### 4.3 ear_pipewire
 
 ```cpp
+// ===== pipewire/engine.hpp (additions) =====
+struct Scheduling { bool realtime; std::string detail; };   // detail: "SCHED_FIFO 88" etc.
+  /// create(): if CAP_SYS_NICE is in the process's permitted set, it is made effective before
+  /// the context loads its modules (so module-rt can raise the data thread); absent: no error.
+  /// Main thread. How the thread that runs the port blocks' process() is scheduled.
+  Scheduling dataThreadScheduling() const;
+
 // ===== pipewire/port_blocks.hpp =====
 namespace ear::pipewire {
 /// One pw_filter per block, node.always-process=true, node.group = graphGroup, one DSP port per
-/// name (public and inside). Meters the public ports every cycle; at each window's end
-/// publishes into the block's mailbox and rings `wake` (at most once per cycle).
+/// name (public and inside). Meters the public ports every cycle; in the cycle whose clock
+/// position crosses a window boundary (position / levelWindowFrames changes) it publishes into
+/// the block's mailbox and rings `wake`.
 class FilterPortBlocks final : public PortBlockFactory, public LevelReader {
 public:
   FilterPortBlocks(Engine& engine, LevelWake& wake);   // both outlive it
   ~FilterPortBlocks();
   std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports,
       const AudioFormat& format, PortBlockEvents& events) override;
-  std::vector<NodeLevels> takeLevels() override;       // any thread
+  std::vector<NodeLevels> latestLevels() override;     // any thread
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
 }
-// drive(): pw_loop_invoke(pw_filter_get_data_loop(filter), ..., block=true) [V
-// pw_filter_get_data_loop: filter.c:2016 of the fetched source; U on 1.4.2].
+// drive(): pw_loop_invoke(pw_filter_get_data_loop(filter), ..., block=true) when the filter has
+// a data loop [V: filter.h:231, filter.c:1994; the pointer is set only by a successful connect,
+// filter.c:1677, and cleared on disconnect, filter.c:1552]; no filter or no data loop: store
+// the pointer and return.
+// Window position: spa_io_position.clock.position, the driver's frame count, the same for every
+// block of one driver [U: E1 checks that blocks made at different cycles publish equal windowEnd].
 // Mailbox: a private header, src/pipewire/level_mailbox.hpp (triple buffer, fixed size per
-// block, allocated in make()). The block registry that takeLevels walks is guarded by a mutex
-// taken on the main loop (make, destroy) and the control thread (takeLevels), never on the
+// block, allocated in make()). The block registry that latestLevels walks is guarded by a mutex
+// taken on the main loop (make, destroy) and the control thread (latestLevels), never on the
 // realtime thread. A block leaves the registry after pw_filter_destroy returns.
+// The bell: an atomic flag set by the first block to publish; only that block writes the
+// eventfd; the control thread clears the flag before it reads (at most a few wakes per window).
 
 // ===== pipewire/main_loop_executor.hpp (new) =====
 namespace ear::pipewire {
@@ -528,33 +625,53 @@ private:
 
 // ===== pipewire/sound_cards.hpp (new) =====
 namespace ear::pipewire {
-/// A card is pw_core_create_object("adapter") with factory.name api.alsa.pcm.sink (playback) or
-/// api.alsa.pcm.source (capture), api.alsa.path = device, audio.channels, audio.rate =
-/// format.rate, audio.position AUX0.., node.name = engineNode, node.group = graphGroup, and
-/// adapter.auto-port-config = { mode = dsp monitor = false control = false position = aux }
-/// [V: pwsrc/props.md:886, "useful (only) for minimal configurations without a session
-/// manager"]. ready: node info state RUNNING [U]; lost: ERROR, proxy error or removal.
-/// channelPorts: "playback_AUX<i>" / "capture_AUX<i>" [U: read from the registry in the test].
+/// One card = pw_core_create_object("adapter") with factory.name api.alsa.pcm.sink (playback) or
+/// api.alsa.pcm.source (capture), api.alsa.path = "hw:CARD=<id>,DEV=0" (built here from the
+/// CardId: the one home of that form), audio.channels, audio.rate = format.rate, audio.position
+/// AUX0.., node.name = engineNode, node.always-process = true, priority.driver = cardPriority,
+/// no node.group, adapter.auto-port-config = { mode = dsp monitor = false control = false
+/// position = aux } [V 1.0.5 docs: pwsrc/props.md:886, "useful (only) for minimal
+/// configurations without a session manager"; U on 1.4.2].
+/// Its state machine (one owner of "is this card in the clock"):
+///   opening --node info RUNNING--> linking: one link per channel through link-factory, by
+///     node and port name (link.output.node/port, link.input.node/port) [V module-link-factory.c
+///     361-440, 478-496], owned by EAR's connection (link_proxy.hpp)
+///   linking --every link ACTIVE--> ready (events.ready)
+///   any state --node ERROR, proxy error, node removed, a link failed or gone--> destroy the
+///     links, destroy the adapter proxy (no linger: the node goes, module-adapter.c 67-75), then
+///     events.lost(detail)
+/// channelPorts: "playback_AUX<i>" / "capture_AUX<i>" [U: read from the registry in E2's test].
 class AlsaSoundCards final : public SoundCardFactory {
 public:
   explicit AlsaSoundCards(Engine& engine);
-  std::unique_ptr<SoundCard> make(const NodeName& engineNode, const SoundCardRequest& request,
-      const AudioFormat& format, SoundCardEvents& events) override;
+  std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
+      const SoundCardRequest& request, const AudioFormat& format,
+      SoundCardEvents& events) override;
 private:
   Engine& engine_;
 };
 }
 // src/pipewire/engine_names.hpp (private, s0 writes it whole):
-//   inline constexpr char graphGroup[] = "ear.graph";   // used by port_blocks.cpp, sound_cards.cpp
+//   inline constexpr char graphGroup[] = "ear.graph";      // port_blocks.cpp
+//   inline constexpr int cardPriority = 1;                  // sound_cards.cpp; must stay below
+//                                                           // engine.conf's Dummy-Driver 200000
+// src/pipewire/link_proxy.hpp (private, s0 moves it out of links.cpp unchanged): one link's
+//   proxy and its active / failed / gone events; used by links.cpp and sound_cards.cpp.
 ```
 
-Why `node.group` [V, PipeWire 1.0.5 `context.c` 945-960 and 1236-1320]: the scheduler starts
-from each driver, collects its linked nodes plus every node sharing a `node.group`, and moves them
-to that driver; nodes no driver collected go to the first driver that has followers, which is the
-dummy. With every port block and card in one group, a running card drives every block; with no
-card, the group has no driver and the always-processing blocks go to the dummy (R2). Two cards in
-the group: one drives, the other follows with PipeWire's rate matching (the system design's
-"drift correction is enough"). [U] on 1.4.2: E1 and E2 criteria.
+Why the card never holds a stalled graph [V, PipeWire 1.4.2]: `pw_context_recalc_graph` walks
+every driver and `collect_nodes` pulls in, from each node it reaches, its linked peers and every
+active node sharing a `node.group`, with no check of the driver's state (context.c 1257-1273,
+1556-1563). An ALSA error sets the node to ERROR and takes it out of the realtime graph but not
+out of the driver list (impl-node.c 450-455, 1931-1934), so a failed card kept in place would hold
+every block it collected. Hence rule 2: the card has no group and no links until its PCM runs (so
+it collects nothing), and it destroys its node and links before reporting a loss. Destroying a
+node recalculates the graph, and the blocks, still in their group, go to the dummy: unassigned
+nodes go to the first driver with active followers, else the first active driver by
+`priority.driver` (context.c 1580-1640; the driver list is sorted by priority, impl-node.c
+760-777). The card's priority is below the dummy's, so a card running alone is never that
+fallback. Two working cards: one drives, the other follows with PipeWire's rate matching (the
+system design's "drift correction is enough").
 
 engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 `audio.convert.* = audioconvert/libspa-audioconvert`; context.modules +
@@ -564,13 +681,13 @@ engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 
 ```cpp
 // ===== nodes/builtin.hpp (additions) =====
-/// "card": a sound card. Settings: {"device": ALSA PCM name, required (index forms "hw:<n>",
-/// "plughw:<n>" are invalid: name the card, "hw:CARD=<id>"), "playback": channels 0-64
+/// "card": a sound card. Settings: {"card": a CardId (required), "playback": channels 0-64
 /// (default 0), "capture": channels 0-64 (default 0)}; at least one above 0; unknown keys
-/// invalid. Ports: inputs "playback_1".."playback_N", outputs "capture_1".."capture_M"; inside
-/// outputs "to_card_1".., inside inputs "from_card_1"... Audio passes straight through
-/// (playback_i -> to_card_i, from_card_j -> capture_j). Start asks the grant for one card per
-/// direction used. The rate is the graph frequency (R5), never a setting.
+/// invalid; a "card" outside CardId's grammar is invalid. Ports: inputs
+/// "playback_1".."playback_N", outputs "capture_1".."capture_M"; inside outputs "to_card_1"..,
+/// inside inputs "from_card_1"... Audio passes straight through (playback_i -> to_card_i,
+/// from_card_j -> capture_j). Start asks the grant for one card per direction used. The rate is
+/// the graph frequency (R5), never a setting.
 std::unique_ptr<const NodeType> makeCardNodeType();
 std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes();   // white, file, card
 ```
@@ -578,6 +695,26 @@ std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes();   // white, fil
 ### 4.5 ear_control (pure; nlohmann/json and ear_core only)
 
 ```cpp
+// ===== control/graph_json.hpp: the one home of node and route JSON =====
+namespace ear::control {
+using JsonPointer = nlohmann::json::json_pointer;
+struct JsonError { std::string detail; };   // "<JSON pointer>: <problem>"; "the document" at root
+/// An object whose keys are all in `keys`.
+std::expected<void, JsonError> requireObject(const nlohmann::json& value, const JsonPointer& at,
+                                             std::initializer_list<std::string_view> keys);
+std::expected<const nlohmann::json*, JsonError> requireMember(const nlohmann::json& object,
+    const JsonPointer& at, const std::string& key);   // "<at>/<key>: missing"
+std::expected<std::string, JsonError> requireName(const nlohmann::json& object,
+    const JsonPointer& at, const std::string& key);   // a non-empty string
+/// {"name", "type", "settings"?}; settings defaults to {}.
+std::expected<NodeSpec, JsonError> decodeNodeSpec(const nlohmann::json& value, const JsonPointer& at);
+/// {"from": {"node", "port"}, "to": {"node", "port"}}.
+std::expected<Route, JsonError> decodeRoute(const nlohmann::json& value, const JsonPointer& at);
+nlohmann::json encodePortRef(const PortRef& port);   // {"node", "port"}
+nlohmann::json encodeRoute(const Route& route);      // {"from", "to"}
+}
+// graph_file.cpp is rewritten on these (R1); its error texts and graph_file.hpp stay as they are.
+
 // ===== control/rpc.hpp: the JSON-RPC 2.0 envelope =====
 namespace ear::control {
 using RpcId = nlohmann::json;              // number or string; null when unreadable
@@ -606,11 +743,12 @@ struct AddRoute { Route route; };
 struct RemoveRoute { Route route; };
 using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute>;
 using CommandResult = std::variant<GraphView, std::expected<void, CommandError>>;
-/// Control thread. Named params only. Unknown method: methodNotFound; a missing, extra or
-/// mistyped key: invalidParams whose message names the JSON pointer ("/from/port: missing").
+/// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
+/// a missing, extra or mistyped key: invalidParams whose message is the JsonError
+/// ("/from/port: missing").
 std::expected<Command, RpcError> decodeCommand(std::string_view method,
                                                const nlohmann::json& params);
-/// Main thread: the only step of a request that runs there.
+/// Main thread; called only by MainLoopGateway.
 CommandResult runCommand(const Command& command, GraphControl& control,
                          const GraphReader& reader);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->
@@ -637,14 +775,42 @@ public:
 protected:
   ~EventSink() = default;
 };
-/// Main thread: copies each event and posts it to `sink` through `control`. Never calls the
-/// sink inline; does nothing else.
-class EventBridge final : public DesiredNodeListener, public DesiredRouteListener,
-                          public NodeStatusListener, public RouteStatusListener {
+std::string encodeEvent(const GraphEvent& event);              // one notification
+std::string encodeLevels(std::span<const NodeLevels> levels);  // one "levels" notification
+}
+
+// ===== control/gateway.hpp: the graph as the control thread sees it =====
+namespace ear::control {
+class GraphGateway {
 public:
-  EventBridge(Executor& control, EventSink& sink);
-  void nodeAdded(const NodeSpec& node, const NodeConfig& config) override;
-  void nodeUpdated(const NodeSpec& node, const NodeConfig& config) override;
+  /// Any thread. Runs `commands` in order in one main-loop turn, then runs `done` on the control
+  /// executor with one result per command, in order. Never runs anything inline.
+  virtual void run(std::vector<Command> commands,
+                   std::move_only_function<void(std::vector<CommandResult>)> done) = 0;
+  /// Any thread, before the first run(). Takes effect in a main-loop turn; every graph event
+  /// after that reaches `sink` on the control executor. Events and run()'s replies arrive in the
+  /// order they happened on the main loop. `sink` outlives the gateway's control executor.
+  virtual void watch(EventSink& sink) = 0;
+protected:
+  ~GraphGateway() = default;
+};
+/// The one object that crosses between the main loop and the control thread, both ways, so
+/// replies and events share one ordered stream. Main-loop side: an observer of DesiredGraph and
+/// a listener of NodeHost and the Reconciler (each call copies the event and posts it; never
+/// calls the sink inline). It touches `graph` and `reader` only inside work it posts to
+/// `mainLoop`.
+class MainLoopGateway final : public GraphGateway, public DesiredNodeListener,
+                              public DesiredRouteListener, public NodeStatusListener,
+                              public RouteStatusListener {
+public:
+  MainLoopGateway(Executor& mainLoop, Executor& control, GraphControl& graph,
+                  const GraphReader& reader);   // all outlive it
+  ~MainLoopGateway();
+  void run(std::vector<Command> commands,
+           std::move_only_function<void(std::vector<CommandResult>)> done) override;
+  void watch(EventSink& sink) override;
+  void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+  void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
   void nodeRemoved(const NodeName& node) override;
   void routeAdded(const Route& route) override;
   void routeRemoved(const Route& route) override;
@@ -652,10 +818,8 @@ public:
   void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
   void routeChanged(const RouteStatus& status) override;
 private:
-  Executor& control_; EventSink& sink_;
+  struct Impl; std::unique_ptr<Impl> impl_;
 };
-std::string encodeEvent(const GraphEvent& event);              // one notification
-std::string encodeLevels(std::span<const NodeLevels> levels);  // one "levels" notification
 }
 
 // ===== control/session.hpp: the protocol per connection (control thread only) =====
@@ -667,7 +831,8 @@ public:
   /// A response or a graph notification, in order. The transport closes a connection whose
   /// queue is full (section 6).
   virtual void send(Message message) = 0;
-  /// Replaces any levels not yet written (latest wins).
+  /// A complete levels snapshot. Replaces one not yet written (it holds every block, so
+  /// nothing is lost).
   virtual void sendLevels(Message message) = 0;
 protected:
   ~Outbox() = default;
@@ -677,22 +842,21 @@ class ControlSession {
 public:
   ControlSession(ControlHub& hub, Outbox& out);   // attaches
   ~ControlSession();                              // detaches; later replies for it are dropped
-  /// One text message. Its commands run on the main loop in one post; `done` runs once all its
+  /// One text message. Its commands go to the gateway in one run(); `done` runs once all its
   /// responses are queued (the transport reads the next message only then).
   void received(std::string text, std::move_only_function<void()> done);
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
-/// Sessions, subscriptions, the event stream and levels. graph.subscribe: the session gets
-/// events posted after its snapshot, never before. levels.subscribe is answered here, without
-/// the main loop.
+/// Sessions, subscriptions, the event stream and levels. Control thread only, construction
+/// included. graph.subscribe: the session gets events after its snapshot, never before.
+/// levels.subscribe is answered here, without the main loop.
 class ControlHub final : public EventSink {
 public:
-  ControlHub(Executor& mainLoop, Executor& control, GraphControl& graph,
-             const GraphReader& reader, LevelReader& levels);   // graph, reader: main loop only
+  ControlHub(GraphGateway& graph, LevelReader& levels);   // calls graph.watch(*this)
   ~ControlHub();
   void graphChanged(GraphEvent event) override;   // encoded once, to subscribed sessions
-  void levelsPublished();                         // takeLevels(), encode once, sendLevels
+  void levelsPublished();                         // latestLevels(), encode once, sendLevels
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
@@ -702,12 +866,29 @@ private:
 ### 4.6 ear_server
 
 ```cpp
+// ===== server/control_thread.hpp (no Boost type in it) =====
+namespace ear::server {
+/// The control thread: one io_context run by one thread. Start it after Engine::create (it
+/// inherits the blocked stop signals).
+class ControlThread final : public Executor {
+public:
+  ControlThread();                       // starts the thread
+  ~ControlThread();                      // stop()
+  void post(std::move_only_function<void()> work) override;   // any thread; post order kept
+  /// Any thread but this one; idempotent. Joins; queued and later work is destroyed unrun.
+  void stop();
+private:
+  struct Impl; std::unique_ptr<Impl> impl_;
+};
+}
+
 // ===== server/control_port.hpp (no Boost type in it) =====
 namespace ear::server {
 struct ControlPortSettings {
-  std::string address;               // --control-address, default "0.0.0.0"
-  std::uint16_t port;                // --control-port, default 7777; 0: any free port
-  std::filesystem::path webRoot;     // --web-root, default <directory of ear>/web
+  std::string address;                     // --control-address, default "0.0.0.0"
+  std::uint16_t port;                      // --control-port, default 7777; 0: any free port
+  std::filesystem::path webRoot;           // --web-root, default <directory of ear>/web
+  std::vector<std::string> allowedHosts;   // --allowed-host (repeatable): DNS names Host may use
 };
 struct ControlPortError { std::string detail; };
 /// Realtime-safe bell: a non-blocking eventfd, rung at most once until the control thread
@@ -721,22 +902,22 @@ public:
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
-/// Port 7777 on its own thread: GET/HEAD files from webRoot ("/" is index.html; ".." refused;
-/// 404; other methods 405), WebSocket JSON-RPC at /rpc. Origin: absent, or its host[:port]
-/// equals the Host header; anything else 403 without upgrade. Max message 64 KiB.
+/// Port 7777 on the control thread. Every request: its Host's name must be an IP literal,
+/// "localhost" or one of allowedHosts (case-insensitive), else 403 (DNS rebinding: a name the
+/// operator did not give cannot reach the port). GET/HEAD files from webRoot ("/" is
+/// index.html; ".." refused; 404; other methods 405). WebSocket JSON-RPC at /rpc: Origin absent
+/// or its host[:port] equal to Host's, else 403 without upgrade. Max message 64 KiB.
 class ControlPort final {
 public:
-  /// Binds and listens, then starts the control thread. `graph` and `reader` are used only
-  /// inside work posted to `mainLoop`. All arguments outlive the port.
+  /// Binds and listens, then makes the hub and starts accepting on `thread`. All arguments
+  /// outlive the port.
   static std::expected<std::unique_ptr<ControlPort>, ControlPortError> start(
-      const ControlPortSettings& settings, Executor& mainLoop, GraphControl& graph,
-      const GraphReader& reader, LevelReader& levels, LevelBell& bell);
+      const ControlPortSettings& settings, ControlThread& thread, control::GraphGateway& graph,
+      LevelReader& levels, LevelBell& bell);
   ~ControlPort();                           // stop()
   std::uint16_t port() const noexcept;      // the bound port
-  Executor& executor() noexcept;            // the control thread, post order kept
-  control::EventSink& events() noexcept;    // for EventBridge
-  /// Any thread but the control thread; idempotent. Closes every connection, joins the
-  /// thread; work posted to executor() afterwards is destroyed unrun.
+  /// Any thread but the control thread; idempotent. On the control thread: closes the listener
+  /// and every connection (WebSocket close 1001), destroys the hub; waits for that.
   void stop();
 private:
   struct Impl; std::unique_ptr<Impl> impl_;
@@ -747,7 +928,10 @@ private:
 
 Prior art: Beast's `advanced_server` example (HTTP and WebSocket on one port, upgrade detected
 with `websocket::is_upgrade`) and its `websocket-chat-multi` example (a per-session queue of
-shared messages); Snapcast's control server (JSON-RPC 2.0 over WebSocket beside HTTP on one port).
+shared messages); Snapcast's control server (JSON-RPC 2.0 over WebSocket beside HTTP on one port);
+the Host allowlist of Vite (`server.allowedHosts`, CVE-2025-24010) and Transmission
+(`rpc-host-whitelist`, CVE-2018-5702) against DNS rebinding; the gateway is the Active Object
+pattern (calls cross to the thread that owns the state, results come back as messages).
 Not used: the vendored jsonrpccxx (`vendor/jsonrpccxx`), whose server answers synchronously
 (`HandleRequest(string) -> string`) while EAR's answers come back later from the main loop; and
 the vendored jsonrpcpp (`vendor/jsonrpc`, Snapcast's own), which carries its own copy of
@@ -756,34 +940,46 @@ spec's own examples.
 
 ### 4.7 main.cpp (J): boot and stop order
 
-Flags: `--config`, `--help` (M1), `--control-address`, `--control-port`, `--web-root`. Boot:
-readGraphFile → Engine::create → MainLoopExecutor → LevelBell → FilterPortBlocks(engine, bell),
-ThreadHandoffs, AlsaSoundCards, Links ×2, LiveGraph → catalogue, DesiredGraph, Reconciler routes
-(Links 1), Reconciler insideLinks (Links 2), NodeHost(…, cards, insideLinks), GraphStatus →
-ControlPort::start (error: print, exit 1) → print `control listening on <address>:<port>` →
-EventBridge(port.executor(), port.events()) → subscriptions (graph → nodes, routes, bridge;
-nodes → log, bridge; routes → log, bridge; insideLinks → log; live → routes, insideLinks;
-links 1 → routes; links 2 → insideLinks) → replay → onStopSignal → run. Stop: stopAll → allGone →
-port.stop() → quit. Declaration order makes destruction run port, core, adapters, executor,
-engine.
+Flags: `--config`, `--help` (M1), `--control-address`, `--control-port`, `--web-root`,
+`--allowed-host` (repeatable). Boot: readGraphFile → Engine::create → print `engine: realtime
+<detail>` or `engine: not realtime (<detail>)` → MainLoopExecutor → ControlThread → LevelBell →
+FilterPortBlocks(engine, bell), ThreadHandoffs, AlsaSoundCards, Links, LiveGraph → catalogue,
+DesiredGraph, Reconciler(links), NodeHost(format, blocks, handoffs, cards), GraphStatus(engine
+view, …) → MainLoopGateway(mainLoop, control, graph, status) → wiring: graph.observe(gateway)
+(both kinds); graph.subscribe(nodes), graph.subscribe(reconciler); nodes → log, gateway;
+reconciler → log, gateway; live → reconciler; links → reconciler → ControlPort::start (error:
+print, exit 1) → print `control listening on <address>:<port>` → replay → onStopSignal(stop) →
+run.
 
-## 5. Sound cards
+Stop, one function on the stop event: `nodes.stopAll(graph.close(), [&] { port->stop();
+control.stop(); engine->quit(); })`. Between `close()` and `port->stop()` (while files finish),
+every edit a client sends is answered -32000 with `data.code` "stopping"; `graph.get` still
+answers and events (node.state stopping, node.stopped) still arrive; then the socket closes with
+1001. Declaration order makes destruction run port, gateway, core, adapters, control thread,
+main-loop executor, engine.
+
+## 5. Sound cards and the clock
 
 - A `card` node is a port block (its public ports, metered) plus, inside, one ALSA adapter node
-  per direction, joined by inside links. The card failing or being absent fails the node with
-  `engine-refused: <detail>`; the block stays, its routes stay linked, the dummy drives (R2). No
-  retry: `node.update` restarts it, and hotplug is not planned (R10).
-- Clock: while a card runs it drives every block (`node.group`, section 4.3); the dummy driver
-  stays in engine.conf as the fallback.
-- CI has no sound hardware. E2 starts with a spike: alsa-lib's `null` PCM, and its `file` PCM
-  over `null` (writes what the card is sent to a file), defined in a test asoundrc. If the null
-  PCM cannot drive the graph, E2 says so in its commit and the page's Errata; the card-drives
-  criterion is then checked only on the hardware (docs task), and CI keeps the others.
-- MOTU 24Ao on Talos (docs slice): snd-usb-audio loaded as a module (Talos 1.12 and later, via
-  the machine config), `/dev/snd` given to the pod, CAP_SYS_NICE for realtime priority, the
-  card's rate and USB channel count set in MOTU's web app (class-compliant mode reports at most 24
-  channels per direction; the kernel validates MOTU rates), named `hw:CARD=<id>` from
-  `/proc/asound/cards`.
+  per direction with its own links to the block's inside ports. The card is one engine resource
+  owned by the node framework: its health (PCM running and every channel link active) is the
+  node's insides readiness, so the node's state and the UI show it.
+- Clock (rule 2): a card runs alone until its PCM runs, then links to its block and through the
+  block's graph group drives every block. A card that fails (refused at open, a rate the kernel
+  refuses, unplugged, a link that breaks) destroys its node and links before it is reported
+  lost: the node becomes failed (`engine-refused: <detail>`), the port block stays, its routes
+  stay linked, the dummy drives (R2). No retry: `node.update` restarts it; hotplug is not planned
+  (R10: "hotplug 'is not my main concern'").
+- The MOTU case the review raised: the kernel validates every MOTU rate, and the rate is set in
+  MOTU's web app, so a graph frequency the card is not set to fails the card at open. That fails
+  the card node only; every other node keeps running.
+- CI has no sound hardware. E2 starts with a spike: a test ALSA configuration
+  (`ALSA_CONFIG_PATH`) that defines `pcm.hw` so `hw:CARD=Test` is alsa-lib's `file` PCM over its
+  `null` PCM (what the card is sent lands in a file). If the override or the null PCM's clock
+  fails, E2 says so in its commit and section 11; the card-drives and channel criteria are then
+  checked only on the hardware (docs task), and CI keeps the others (a missing card, the card
+  type's checks).
+- MOTU 24Ao on Talos: section 7 (what the image and pod must give) and the D slice's notes.
 
 ## 6. Control port protocol (the wire format)
 
@@ -794,17 +990,19 @@ JSON-RPC 2.0 over WebSocket at `ws://<host>:7777/rpc`, named params only.
 | `graph.get` | none | Graph | none |
 | `graph.subscribe` | none | Graph; afterwards this connection gets every graph notification | none |
 | `levels.subscribe` | none | `{"windowsPerSecond": 30}`; afterwards `levels` notifications | none |
-| `node.add` | `{"name", "type", "settings"?}` | `{}` | invalid-name, unknown-node-type, invalid-settings, duplicate-node |
-| `node.update` | `{"name", "settings"}` | `{}` | unknown-node, invalid-settings, ports-changed |
-| `node.remove` | `{"name"}` | `{}` | unknown-node |
-| `route.add` | `{"from": {"node", "port"}, "to": {...}}` | `{}` | unknown-node, unknown-port, wrong-direction |
-| `route.remove` | `{"from", "to"}` | `{}` | unknown-route |
+| `node.add` | `{"name", "type", "settings"?}` | `{}` | invalid-name, unknown-node-type, invalid-settings, duplicate-node, stopping |
+| `node.update` | `{"name", "settings"}` | `{}` | unknown-node, invalid-settings, ports-changed, stopping |
+| `node.remove` | `{"name"}` | `{}` | unknown-node, stopping |
+| `route.add` | `{"from": {"node", "port"}, "to": {...}}` | `{}` | unknown-node, unknown-port, wrong-direction, stopping |
+| `route.remove` | `{"from", "to"}` | `{}` | unknown-route, stopping |
 
 Graph:
 ```json
 {
   "graphFrequency": 48000,
   "blockSize": 256,
+  "realtime": false,
+  "scheduling": "SCHED_OTHER",
   "types": ["card", "file", "white"],
   "nodes": [
     {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["MONO"],
@@ -828,42 +1026,71 @@ Graph:
 | `node.stopped` | `{"name", "droppedFrames"}` (everything it made is gone) | NodeHost |
 | `route.added` / `route.removed` | `{"from", "to"}` | DesiredGraph |
 | `route.status` | `{"from", "to", "status", "detail"?}` | Reconciler |
-| `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}`, linear, 4 decimals | port blocks |
+| `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}`, linear, 4 decimals; every block that has a window | port blocks |
 
+- Order (rule 4): a DesiredGraph notification comes before every status it causes. Adding:
+  `node.added`, `node.state` starting, then running or failed. Removing: `route.removed` for each
+  route, `node.removed`, `node.state` stopping, `node.stopped`. A client ignores events naming a
+  node it does not know.
 - A route carries one mono channel, so **a route's level is its source port's level**: the
   server sends port levels only, and the UI draws each wire with its `from` port's level. An
   input port's level is what arrives there, which is the sum when several routes mix into it.
+- Each `levels` notification is a complete snapshot: a node missing from it has no level (gone,
+  or not yet measured).
 - Errors: code -32000, message `describe(error)`, `data: {"code": errorCode(error)}`; -32602
   names the JSON pointer; -32700, -32600, -32601 per the spec. A batch runs in order in one
   crossing.
 - Per client: one message in flight; at most 256 queued responses and notifications (one constant
   in ear_server); a full queue closes the connection with WebSocket code 1008, and the client
   reconnects and subscribes again (a fresh snapshot: the list-then-watch pattern). Levels never
-  queue: the newest replaces the unsent one.
-- No login yet; the default address is every interface, for the cluster (cost, section 10).
+  queue: the newest snapshot replaces the unsent one.
+- Requests whose Host is a DNS name not given with `--allowed-host` get 403, as do WebSocket
+  upgrades from another site's page. No login yet (cost, section 10).
 - Conformance: `test/protocol/*.json` (s0 writes them from this section). Each file is
   `{"description", "messages": [server texts as JSON, in order], "graph": <Graph after applying
-  them>}`: snapshot, edits (add, update, remove, statuses), levels, errors. ear_control's tests
-  check its encoders produce exactly those messages; the UI's tests check its reducer turns them
-  into exactly that graph.
+  them>}`: snapshot, edits (add, update, remove, statuses), levels, errors (including stopping).
+  ear_control's tests check its encoders produce exactly those messages; the UI's tests check its
+  reducer turns them into exactly that graph.
 
-## 7. Run image, CI and releases
+## 7. Run image, CI, releases, realtime and devices
 
 - `docker/Dockerfile` targets: `dev` (today's image plus Node.js 24 LTS copied from the official
   `node` image pinned by digest; used by scripts/dev.sh and CI), `build` (from dev: `make
   release` and the UI's `npm ci && npm run build`), `run` (debian:trixie-slim pinned by digest:
   PipeWire, SPA modules, libsndfile, alsa-lib at run time, no compiler; `/opt/ear/{ear,
-  engine.conf, web/}`; user `ear` uid 10001; `EXPOSE 7777`; entrypoint `/opt/ear/ear`, default
-  `--config /etc/ear/ear.json`). amd64 only until the owner names the Talos nodes' CPU.
+  engine.conf, web/}`; `setcap cap_sys_nice=p /opt/ear/ear` in the run stage, with libcap2-bin
+  installed and purged in the same step; user `ear` uid 10001; `EXPOSE 7777`; entrypoint
+  `/opt/ear/ear`, default `--config /etc/ear/ear.json`). amd64 only until the owner names the
+  Talos nodes' CPU.
+- Realtime for uid 10001: a capability added in a pod spec does not reach a non-root process
+  (execve clears it without file or ambient capabilities; capabilities(7); kubernetes#56374), so
+  the binary carries the file capability. It is permitted-only (`=p`): a binary marked effective
+  (`=ep`) fails to start with EPERM wherever SYS_NICE is not allowed (capabilities(7), "safety
+  checking for capability-dumb binaries"), which would break `docker run` and CI. EAR makes it
+  effective at boot (`Engine::create`). It works only if the pod adds SYS_NICE and does not set
+  `allowPrivilegeEscalation: false` (no_new_privs ignores file capabilities). Whatever the pod
+  allows, EAR prints its scheduling at boot and `graph.get` carries `realtime` and `scheduling`,
+  so a missing realtime priority is visible, not silent (module-rt stays `nofail`).
+- Devices: the pod needs `/dev/snd` (a device plugin such as squat/generic-device-plugin, or a
+  privileged container) and the host's audio group in `supplementalGroups`. Talos enforces Pod
+  Security "baseline" by default, which forbids adding SYS_NICE and hostPath, so EAR's namespace
+  must be labelled `privileged`. That widens what a compromised EAR could do, which is why the
+  card setting takes only a card id and the port checks Host (sections 4.4, 4.6). D writes this
+  up.
 - `.github/workflows/test.yml` on every pull request: job `test` (as today), job `web` (`make
   web-test` in the dev image: npm ci, typecheck, vitest, build), job `image` (build target `run`,
   load, `scripts/image-smoke.sh ear:ci`). Jobs run in parallel.
-- `.github/workflows/image.yml` on push to master: release-please (googleapis/release-please-
-  action, pinned by SHA; config `release-please-config.json`, `.release-please-manifest.json`,
-  release type `simple`, the version in `CMakeLists.txt` marked `x-release-please-version`), then
-  build `run` and push `ghcr.io/mcurcio/ear` tagged `master` and `sha-<short>` (docker/metadata-
-  action), and the version tag when release-please created a release. The version push lives in
-  this workflow because a release made with GITHUB_TOKEN starts no other workflow.
+- `.github/workflows/image.yml` on push to master and `workflow_dispatch`, `concurrency: {group:
+  image-${{ github.ref }}, cancel-in-progress: false}` (a publish run is never cancelled):
+  release-please (googleapis/release-please-action, pinned by SHA; config
+  `release-please-config.json`, `.release-please-manifest.json`, release type `simple`, the
+  version in `CMakeLists.txt` marked `x-release-please-version`), then build `run` and push
+  `ghcr.io/mcurcio/ear` tagged `master` and `sha-<short>` (docker/metadata-action), plus one
+  version tag per `v*` tag pointing at the built commit (`scripts/version-tags.sh`, which reads
+  `git tag --points-at HEAD`, never `release_created`). So a rerun of a failed or interrupted run
+  publishes the version: release-please made the tag the first time, and the tag is still on the
+  commit. The version push lives in this workflow because a release made with GITHUB_TOKEN starts
+  no other workflow.
 - Owner actions after merge (not design choices): allow GitHub Actions to create pull requests
   (Settings, Actions), so release-please can open its release PR; the ghcr package is private
   until he changes it, so the cluster needs a pull secret or a public package.
@@ -875,10 +1102,10 @@ Graph:
 | `src/protocol.ts` (s0) | the wire types from section 6; the one home on the UI side | typecheck |
 | `src/rpc.ts` | WebSocket JSON-RPC client: ids, replies, notifications; on close, reconnect after a growing wait (1 s doubling to 30 s: a stated retry rate, not a schedule) and subscribe again | vitest, fake socket |
 | `src/graph.ts` | reducer: (graph, server message) → graph; a snapshot replaces everything; events for unknown nodes are ignored | vitest, `test/protocol` fixtures |
-| `src/levels.ts` | level store outside React state: per-port listeners, so only the meters re-render at 30 Hz; dBFS clamp at -60 | vitest |
+| `src/levels.ts` | level store outside React state: each `levels` message replaces it; per-port listeners, so only the meters re-render at 30 Hz; dBFS clamp at -60 | vitest |
 | `src/connect.ts` | React Flow connection ↔ `route.add`/`route.remove` params; only output → input | vitest |
 | `src/layout.ts` | first placement of unplaced nodes (@dagrejs/dagre, the layout React Flow's docs use); dragged positions kept in the browser only | vitest |
-| `src/App.tsx`, `src/components/*` | canvas (@xyflow/react): node boxes with port handles and meters, wires coloured by status and drawn by level, add-node panel (type list, JSON settings), settings edit, delete key removes the selected wire or node, error banner | build only |
+| `src/App.tsx`, `src/components/*` | canvas (@xyflow/react): node boxes with port handles and meters, wires coloured by status and drawn by level, add-node panel (type list, JSON settings), settings edit, delete key removes the selected wire or node, error banner, a "not realtime" badge from the graph | build only |
 
 - Library: React Flow (@xyflow/react), the established node-editor library (MIT, maintained,
   custom nodes and edges, handles per port). Rete.js and LiteGraph were weighed: Rete brings its
@@ -886,7 +1113,7 @@ Graph:
 - The UI never draws an edge or node the server has not announced: the server is the one source
   of truth (an edge appears on `route.added`).
 - Tooling: Vite, TypeScript, Vitest; `web/.nvmrc` 24; `package-lock.json`; `npm run dev` proxies
-  `/rpc` to a running ear.
+  `/rpc` to a running ear (the proxy sends Host `localhost`).
 - No browser test runner in this batch. A Playwright leg costs about 150 MB of browsers and a
   minute or two per CI run; the logic sits in the reducer, client and connection rules, which
   vitest covers against the same fixtures the server is tested with, and J's system tests prove
@@ -910,16 +1137,16 @@ that needs a file outside its list, a new dependency or a signature change appen
 
 | Slice | Goal | Owned files | Size |
 |---|---|---|---|
-| B2 build base | Node in the dev image; Boost.Beast; web toolchain; run image; CI jobs; publish and release workflows | `docker/Dockerfile`, `.dockerignore` (allowlist: sources in, `.cache`, `out`, `web/node_modules`, `web/dist`, `.git` out), `CMakeLists.txt` (`BOOST_INCLUDE_LIBRARIES program_options;beast`, configure fails if `Boost::beast` is missing; `x-release-please-version` marker), `Makefile` (`web`, `web-test`), `scripts/dev.sh` (`npm_config_cache` in `.cache/npm`; `EAR_DEV_PUBLISH` adds `--publish`), `scripts/image-smoke.sh`, `.gitignore`, `.github/workflows/{test,image}.yml`, `release-please-config.json`, `.release-please-manifest.json`, `web/{package.json,package-lock.json,tsconfig.json,vite.config.ts,.nvmrc,index.html,src/main.tsx}` (placeholder page; deps: react, react-dom, @xyflow/react, @dagrejs/dagre; dev: typescript, vite, @vitejs/plugin-react, vitest, @types/react, @types/react-dom) | 4-6 h |
-| s0 interfaces | section 4 compiles; every new target and placeholder test; fixtures; M1 behaviour kept | every header in section 4; `src/{core,nodes,pipewire,control,server}/CMakeLists.txt`, `src/CMakeLists.txt`, `test/CMakeLists.txt` (INTERFACE target `ear_ws_client`: `test/support`, Boost::beast), `test/system/CMakeLists.txt` (+ `control_port_test.cpp`, Boost::beast); `src/core/command_error.cpp` (new arms, complete); `src/pipewire/engine_names.hpp`; stubs: `src/core/{levels,graph_status}.cpp`, `src/pipewire/{main_loop_executor,sound_cards}.cpp`, `src/nodes/card.cpp`, `src/control/{rpc,commands,events,session}.cpp`, `src/server/{control_port,level_bell}.cpp`; mechanical edits keeping M1 green: `src/core/{desired_graph,node_host,node_lifecycle,reconciler,node_catalogue}.cpp`, `src/pipewire/port_blocks.cpp` (drive stores the pointer, null silences; takeLevels returns {}), `src/main.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler}_test.cpp`, `src/nodes/tests/{file,white}_test.cpp`, `src/pipewire/tests/engine_test.cpp`; placeholders: `src/core/tests/{levels,graph_status}_test.cpp`, `src/pipewire/tests/{port_block,main_loop_executor,sound_card}_test.cpp`, `src/nodes/tests/card_test.cpp`, `src/control/tests/{rpc,commands,events,session}_test.cpp`, `src/server/tests/control_port_test.cpp`, `test/system/control_port_test.cpp`; `test/protocol/{snapshot,edits,levels,errors}.json`; `web/src/protocol.ts`, `web/src/protocol.test.ts` (fixture coverage check; W1 owns it afterwards); test compile definitions `EAR_PROTOCOL_DIR` (control tests) and `EAR_ALSA_TEST_DIR` (pipewire tests) | 4-5 h |
-| C1 graph edits and node framework | remove/update nodes and routes; block-first node framework with restart, removal, sound-card power and inside links; GraphStatus | `src/core/{desired_graph,node_catalogue,node_host,node_lifecycle,reconciler,graph_status}.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler,graph_status}_test.cpp` | 6-8 h |
-| E1 port blocks and crossings (tracer of the engine lane) | drive barrier, inside ports, graph group, level metering and reading, main-loop executor | `src/core/levels.cpp`, `src/core/tests/levels_test.cpp`, `src/pipewire/{port_blocks,main_loop_executor}.cpp`, `src/pipewire/level_mailbox.hpp`, `src/pipewire/tests/{port_block,main_loop_executor}_test.cpp` | 5-6 h |
-| E2 sound card | ALSA spike, AlsaSoundCards, engine.conf, the card type | `src/pipewire/{sound_cards.cpp,engine.conf}`, `src/pipewire/tests/sound_card_test.cpp`, `src/pipewire/tests/alsa/**`, `src/nodes/{card,builtin}.cpp`, `src/nodes/tests/card_test.cpp` | 5-7 h |
-| R1 protocol (tracer of the control lane) | envelope, commands, events, bridge, sessions and hub, all pure | `src/control/{rpc,commands,events,session}.cpp`, `src/control/tests/{rpc,commands,events,session}_test.cpp` | 5-6 h |
-| R2 control port | Beast on its own thread: files, `/rpc`, Origin, queues, bell, stop | `src/server/{control_port,level_bell}.cpp`, `src/server/*.hpp` (private), `src/server/tests/control_port_test.cpp`, `test/support/ws_client.hpp` | 5-6 h |
+| B2 build base | Node in the dev image; Boost.Beast; web toolchain; run image with the file capability; CI jobs; publish and release workflows | `docker/Dockerfile`, `.dockerignore` (allowlist: sources in, `.cache`, `out`, `web/node_modules`, `web/dist`, `.git` out), `CMakeLists.txt` (`BOOST_INCLUDE_LIBRARIES program_options;beast`, configure fails if `Boost::beast` is missing; `x-release-please-version` marker), `Makefile` (`web`, `web-test`), `scripts/dev.sh` (`npm_config_cache` in `.cache/npm`; `EAR_DEV_PUBLISH` adds `--publish`), `scripts/image-smoke.sh`, `scripts/version-tags.sh`, `.gitignore`, `.github/workflows/{test,image}.yml`, `release-please-config.json`, `.release-please-manifest.json`, `web/{package.json,package-lock.json,tsconfig.json,vite.config.ts,.nvmrc,index.html,src/main.tsx}` (placeholder page; deps: react, react-dom, @xyflow/react, @dagrejs/dagre; dev: typescript, vite, @vitejs/plugin-react, vitest, @types/react, @types/react-dom) | 4-6 h |
+| s0 interfaces | section 4 compiles; every new target and placeholder test; fixtures; M1 behaviour kept | headers: `src/core/include/ear/core/{command_error,sound_card,node_type,node_catalogue,desired_graph,node_lifecycle,node_host,reconciler,executor,levels,graph_view}.hpp`, `src/pipewire/include/ear/pipewire/{engine,port_blocks,main_loop_executor,sound_cards}.hpp`, `src/nodes/include/ear/nodes/builtin.hpp`, `src/control/include/ear/control/{graph_json,rpc,commands,events,gateway,session}.hpp`, `src/server/include/ear/server/{control_thread,control_port}.hpp`; `src/{core,nodes,pipewire,control,server}/CMakeLists.txt`, `src/CMakeLists.txt`, `test/CMakeLists.txt` (INTERFACE target `ear_ws_client`: `test/support`, Boost::beast), `test/system/CMakeLists.txt` (+ `control_port_test.cpp`, Boost::beast); `src/core/command_error.cpp` (new arms, complete); `src/pipewire/{engine_names,link_proxy}.hpp`, `src/pipewire/links.cpp` (proxy moved out, unchanged behaviour); stubs: `src/core/{levels,graph_status,sound_card}.cpp`, `src/pipewire/{main_loop_executor,sound_cards}.cpp`, `src/nodes/card.cpp`, `src/control/{graph_json,rpc,commands,events,gateway,session}.cpp`, `src/server/{control_thread,control_port,level_bell}.cpp`; mechanical edits keeping M1 green: `src/core/{desired_graph,node_host,node_lifecycle,reconciler,node_catalogue}.cpp`, `src/pipewire/port_blocks.cpp` (drive stores the pointer, null silences; latestLevels returns {}), `src/pipewire/engine.cpp` (dataThreadScheduling returns {false, "unknown"}), `src/main.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler}_test.cpp`, `src/nodes/tests/{file,white}_test.cpp`, `src/pipewire/tests/engine_test.cpp`; placeholders: `src/core/tests/{levels,graph_status,sound_card}_test.cpp`, `src/pipewire/tests/{port_block,main_loop_executor,sound_card}_test.cpp`, `src/nodes/tests/card_test.cpp`, `src/control/tests/{graph_json,rpc,commands,events,gateway,session}_test.cpp`, `src/server/tests/control_port_test.cpp`, `test/system/control_port_test.cpp`; `test/protocol/{snapshot,edits,levels,errors}.json`; `web/src/protocol.ts`, `web/src/protocol.test.ts` (fixture coverage check; W1 owns it afterwards); test compile definitions `EAR_PROTOCOL_DIR` (control tests) and `EAR_ALSA_TEST_DIR` (pipewire tests) | 4-5 h |
+| C1 graph edits and node framework | remove/update nodes and routes; observers first; close; block-first node framework with restart, removal, sound cards; final block loss; GraphStatus; CardId | `src/core/{desired_graph,node_catalogue,node_host,node_lifecycle,reconciler,graph_status,sound_card}.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler,graph_status,sound_card}_test.cpp` | 6-8 h |
+| E1 port blocks, crossings, scheduling (tracer of the engine lane) | drive barrier, inside ports, graph group, clock-aligned level windows, main-loop executor, CAP_SYS_NICE and the scheduling report | `src/core/levels.cpp`, `src/core/tests/levels_test.cpp`, `src/pipewire/{port_blocks,main_loop_executor,engine}.cpp`, `src/pipewire/level_mailbox.hpp`, `src/pipewire/tests/{port_block,main_loop_executor,engine}_test.cpp` | 5-7 h |
+| E2 sound card | ALSA spike, AlsaSoundCards and its state machine, engine.conf, the card type | `src/pipewire/{sound_cards.cpp,engine.conf}`, `src/pipewire/tests/sound_card_test.cpp`, `src/pipewire/tests/alsa/**`, `src/nodes/{card,builtin}.cpp`, `src/nodes/tests/card_test.cpp` | 6-8 h |
+| R1 protocol (tracer of the control lane) | graph JSON (graph_file moved onto it), envelope, commands, events, gateway, sessions and hub, all pure | `src/control/{graph_json,graph_file,rpc,commands,events,gateway,session}.cpp`, `src/control/tests/{graph_json,graph_file,rpc,commands,events,gateway,session}_test.cpp` | 6-7 h |
+| R2 control port | Beast on the control thread: files, Host and Origin checks, `/rpc`, queues, bell, stop | `src/server/{control_thread,control_port,level_bell}.cpp`, `src/server/*.hpp` (private), `src/server/tests/control_port_test.cpp`, `test/support/ws_client.hpp` | 5-6 h |
 | W1 graph editor | section 8 | `web/src/**` except `web/src/protocol.ts`; derived `web/node_modules`, `web/dist` | 6-8 h |
-| J join | wiring, flags, end-to-end through the real ear and the real image | `src/main.cpp`, `test/system/control_port_test.cpp`, `scripts/image-smoke.sh`, `scripts/rpc-call.mjs` | 4-5 h |
-| D docs | AGENTS.md (control port, flags, UI, image, releases); skills: pipewire-engine (cards, graph group, adapter auto-port-config, drive barrier, levels), new `control-port` skill (talking to it, traps); Talos and MOTU 24Ao notes; design records and this page's results | `AGENTS.md`, `.claude/skills/**`, `docs/**` | 2-3 h |
+| J join | wiring, flags, stop order, end-to-end through the real ear and the real image | `src/main.cpp`, `test/system/control_port_test.cpp`, `scripts/image-smoke.sh`, `scripts/rpc-call.mjs` | 4-5 h |
+| D docs | AGENTS.md (control port, flags, UI, image, releases); skills: pipewire-engine (cards and the clock, graph group, adapter auto-port-config, link-factory by name, drive barrier, levels, CAP_SYS_NICE), new `control-port` skill (talking to it, Host rule, traps); Talos and MOTU 24Ao notes; design records and this page's results | `AGENTS.md`, `.claude/skills/**`, `docs/**` | 2-3 h |
 
 ### Acceptance criteria and mutation probes
 
@@ -928,93 +1155,134 @@ Every test waits for events; a deadline only fails a test. One probe per criteri
 **B2.** (1) `scripts/dev.sh make test` and `scripts/dev.sh make web-test` pass; the latter leaves
 `web/dist/index.html`. Probe: a type error in `web/src/main.tsx` fails web-test. (2) The run
 image has no compiler (`command -v cc c++ g++ gcc cmake` finds none) and `scripts/image-smoke.sh`
-runs `/opt/ear/ear --help` and finds `/opt/ear/engine.conf` and `/opt/ear/web/index.html`. Probe:
-build `run` from `dev` → the compiler check fails. (3) Configure fails naming Boost.Beast when it
-is not built. Probe: drop `beast` from the list. (4) CI's three jobs pass on the PR; `image.yml`
-passes actionlint (run in a container); its push, tag and release steps are NOT RUN before merge
-and are checked on master's first run. Probe: misspell `release_created` → actionlint flags it
-[U]. Report the image job's cold and warm times.
+runs `/opt/ear/ear --help` as uid 10001 and finds `/opt/ear/engine.conf` and
+`/opt/ear/web/index.html`. Probe: build `run` from `dev` → the compiler check fails. (3)
+`/opt/ear/ear --help` exits 0 both without and with `--cap-add SYS_NICE` (the capability is
+permitted-only). Probe: `setcap cap_sys_nice=ep` → the run without cap-add fails with EPERM [U].
+(4) Configure fails naming Boost.Beast when it is not built. Probe: drop `beast` from the list.
+(5) `scripts/version-tags.sh` in a scratch clone: with `v0.0.0-test` on HEAD it prints
+`ghcr.io/mcurcio/ear:0.0.0-test`; with no `v*` tag on HEAD it prints nothing. Probe: derive the
+tag from a `RELEASE_CREATED` variable → the rerun case (tag on HEAD, no release made) prints
+nothing. (6) CI's three jobs pass on the PR; `image.yml` passes actionlint (run in a container)
+and sets `cancel-in-progress: false`; its push, tag and release steps are NOT RUN before merge
+and are checked on master's first run. Probe: misspell a release-please output → actionlint
+flags it [U]. Report the image job's cold and warm times.
 
 **s0.** (1) Every header compiles alone (header-set verify) and `make test` passes with all M1
-tests unchanged in behaviour, including `ear_system_tests`. Probe: drop `#include <functional>`
-from executor.hpp → verify fails. (2) `web` typecheck passes with protocol.ts, and every
-notification and method in section 6 appears in a fixture. Probe: delete `route.status` from
-edits.json → the coverage check in `web/src/protocol.test.ts` fails.
+tests unchanged in behaviour, including `ear_system_tests` and the link tests after the proxy
+moves. Probe: drop `#include <functional>` from executor.hpp → verify fails. (2) `web` typecheck
+passes with protocol.ts, and every notification, method and error code in section 6 appears in a
+fixture. Probe: delete `route.status` from edits.json → the coverage check in
+`web/src/protocol.test.ts` fails.
 
 **C1.** (1) removeRoute: routeRemoved once; again → UnknownRoute; the Reconciler destroys the link
 once and tells no status. Probe: Reconciler keeps the link. (2) removeNode: routeRemoved for each
 of its routes before nodeRemoved; unknown → UnknownNode; the name can be added again. Probe: tell
 nodeRemoved first. (3) updateNode: same settings no event; InvalidSettings; PortsChanged when the
 parsed ports differ; success nodeUpdated. Probe: skip the ports comparison. (4) Names: "", 65
-characters, "a.b", "a b" → InvalidName; "noise-1_A" accepted. Probe: allow '.'. (5) NodeHost
-with fakes: make, start, prepare, drive(&code) in that order; running only after block ready and
-insides ready; a failed start leaves the block in place (failed start-failed). Probe: destroy the
-block on a failed start. (6) Restart: drive(nullptr) before release(); handoffs closed and old
-insides destroyed before the new start; the block is never destroyed or remade; two updates during
-one restart start only the latest config. Probe: start the new insides before the old are
-destroyed. (7) soundCard outside start → logic_error; inside: one make per request named
-"<node>.playback"/".capture", inside links wanted in channel order and direction; running only
-after every card is ready; lost → failed engine-refused; teardown unwants the links and destroys
-the cards before the insides. Probe: swap a capture link's direction. (8) nodeRemoved stops only
-that node and ends with nodeGone. Probe: stop every node. (9) The lifecycle's full state × fact
-table. Probe: insidesReady → running while the block is not ready. (10) A port reappearing with a
-new id before the old id's portGone stays linked. Probe: erase by port name. (11) GraphStatus:
-the join; a removed node still stopping is absent; a re-added name shows the new node's state;
-types sorted. Probe: take the first status entry of a name.
+characters, "a.b", "a b" → InvalidName; "noise-1_A" accepted. Probe: allow '.'. (5) Observers
+first: an observer registered after a subscriber is still told every change (add, update,
+remove, route add and remove) before it. Probe: tell everyone in registration order. (6) close():
+every edit afterwards returns Stopping and tells nobody; nodes() and routes() still answer.
+Probe: close() leaves updateNode open. (7) NodeHost with fakes: make, start, prepare,
+drive(&code) in that order; running only after block ready and insides ready; a failed start
+leaves the block in place (failed start-failed). Probe: destroy the block on a failed start.
+(8) Restart: drive(nullptr) before release(); handoffs closed and old insides destroyed before the
+new start; the old config is let go only after the old insides are destroyed (a fake config and
+insides record the order); the block is never destroyed or remade; two updates during one restart
+start only the latest config. Probe: drop the old config before its insides. (9) Cards:
+soundCard outside start → logic_error; no card is made before the block is ready; then one make
+per request named "<node>.playback"/".capture" with blockNode = the node and blockPorts in order;
+running only after every card is ready; lost → failed engine-refused with the card's detail;
+teardown destroys the cards before the insides. Probe: make the cards inside start, before the
+block is ready. (10) Block lost: the node stays failed with the block's reason through
+node.update (old insides torn down, none started, no starting status) and through a later
+insidesFailed; removal still ends with nodeGone. Probe: restartRequested clears a lost block's
+failure. (11) nodeRemoved stops only that node and ends with nodeGone. Probe: stop every node.
+(12) The lifecycle's full state × fact table, block loss included. Probe: insidesReady → running
+while the block is not ready. (13) A port reappearing with a new id before the old id's portGone
+stays linked. Probe: erase by port name. (14) GraphStatus: the join; a removed node still
+stopping is absent; a re-added name shows the new node's state; types sorted; the engine view as
+given. Probe: take the first status entry of a name. (15) CardId: "Pro24", "M24_ao-2" accepted;
+"", 16 characters, "hw:0", "file:'|touch x'", "a,b", "a b", "a=b" refused. Probe: allow ':'.
 
 **E1.** (1) LevelMeter: constant 0.5 → {0.5, 0.5}; full-scale sine → rms 0.7071 ± 1e-4; take()
 resets; levelWindowFrames(48000) = 1600, (44100) = 1470. Probe: rms without the square root.
 (2) Real engine at 48000/256: a block driven by constant 0.25 on "OUT" linked to a block's "IN":
-after the wake, takeLevels has OUT and IN at {0.25, 0.25}, an unlinked input at {0, 0}; wakes
-come once per 7 cycles. Probe: publish every cycle. (3) takeLevels returns only blocks with a new
-window, latest only; process and publish allocate nothing (operator new counter on the realtime
-thread, as M1's S4). Probe: allocate in publish. (4) drive: after drive(&b) returns, a's process
-count stays fixed over 3 later cycles; drive(nullptr) → the linked sink reads exact zeros. Probe:
-drive keeps the old code. (5) Inside ports: a block with input IN and inside output TO, driven by
-a pass-through: LiveGraph reports TO; linked TO → sink carries a ramp sample for sample; levels
-list IN only. Probe: meter inside ports too. (6) Every block's node info has `node.group` =
-"ear.graph" and blocks still process with only the dummy driver [U on 1.4.2]. Probe: omit
-node.group. (7) MainLoopExecutor: 4 threads × 1000 posts run on the main-loop thread in each
-thread's order; a post from the loop thread runs after post() returns; queued work at destruction
-is destroyed unrun. Probe: run inline when already on the loop thread.
+after the wake, latestLevels has OUT and IN at {0.25, 0.25} and an unlinked input at {0, 0}.
+Probe: report an input with its block's output level. (3) Windows on the clock: three blocks made
+in different cycles publish windows with equal `windowEnd`, each a multiple of 1600, and a
+snapshot never holds two different `windowEnd` values once all three have published. Probe:
+count each block's window from its own first cycle. (4) latestLevels is a snapshot: a destroyed
+block is absent from the next call, a block with no window yet is absent; process and publish
+allocate nothing (operator new counter on the realtime thread, as M1's S4). Probe: allocate in
+publish. (5) drive: after drive(&b) returns, a's process count stays fixed over 3 later cycles;
+drive(nullptr) → the linked sink reads exact zeros. Probe: drive keeps the old code. (6) drive on
+a lost block: after the test destroys a block's engine node through the registry and lost is
+told, drive(&code) and drive(nullptr) return and `code` is never called. Probe: invoke on the
+filter's data loop without checking it → the test crashes or hangs to its deadline. (7) Inside
+ports: a block with input IN and inside output TO, driven by a pass-through: LiveGraph reports TO;
+linked TO → sink carries a ramp sample for sample; levels list IN only. Probe: meter inside ports
+too. (8) Every block's node info has `node.group` = "ear.graph" and blocks still process with only
+the dummy driver [U on 1.4.2]. Probe: omit node.group. (9) MainLoopExecutor: 4 threads × 1000
+posts run on the main-loop thread in each thread's order; a post from the loop thread runs after
+post() returns; queued work at destruction is destroyed unrun. Probe: run inline when already on
+the loop thread. (10) dataThreadScheduling() matches what a test AudioCode reads with
+`sched_getscheduler(0)` inside process() (test code may make that call); in the dev container it
+is not realtime. Probe: always report realtime.
 
-**E2.** (1) Spike first, its result in the commit message and section 11: with a test asoundrc
-(`HOME` pointed at `src/pipewire/tests/alsa/`), a playback card on the null PCM becomes ready
-and every port block's `node.driver-id` is the card's node id [U]; if the null PCM cannot drive,
-say so and mark this criterion hardware-only. Probe: AlsaSoundCards omits node.group → driver-id
-is the dummy's. (2) Playback through the file PCM (float, over null): a ramp routed to
-`to_card_2` lands on channel 2 sample for sample, other channels exactly zero. Probe: map
-channel i to AUX(i+1). (3) Destroying the card → blocks keep processing (dummy). Probe: remove the
-dummy from engine.conf. (4) An undefined device → lost(detail) after make returns, never inside.
-Probe: tell lost inside make. (5) The card type: settings rules of section 4.4; port names exact;
-start asks one card per direction with blockPorts in order; pass-through copies sample for sample.
-Probe: off-by-one in the channel mapping. (6) builtinNodeTypes() is white, file, card. Probe:
-drop card.
+**E2.** (1) Spike first, its result in the commit message and section 11: with the test ALSA
+configuration (`ALSA_CONFIG_PATH` in `src/pipewire/tests/alsa/`), a playback card `Test` becomes
+ready, and then every port block's `node.driver-id` is the card's node id [U]. If it cannot, say
+so and mark (1), (2), (3) and (5) hardware-only. Probe: no inside links → driver-id stays the
+dummy's. (2) Before ready, the blocks stay on the dummy: from make until ready, every block's
+driver-id is the dummy's, and the card's node has no `node.group`. Probe: give the card
+`priority.driver` above the dummy's → a block's driver-id shows the card before ready.
+(3) Playback through the file PCM (float, over null): a ramp routed to `to_card_2` lands on
+channel 2 sample for sample, other channels exactly zero. Probe: map channel i to AUX(i+1).
+(4) A card that cannot open (`Absent`: no such card): lost(detail) after make returns, never
+inside; when lost is told the card's engine node is already gone from the registry; every block's
+process count keeps rising throughout. Probe: tell lost before destroying the engine node.
+(5) A lost card that nobody destroyed: with a ready card driving every block, the test removes one
+of its links through the registry; the card is lost, its engine node is gone before lost is told,
+and while the SoundCard object still exists every block's driver-id returns to the dummy's and
+every process count keeps rising. Probe: on loss keep the engine node → the counts stop and the
+deadline fails. (6) The card type: settings rules of section 4.4 (`{"card": "file:'|touch x'"}`
+and `{"device": "hw:0"}` → InvalidSettings); port names exact; start asks one card per direction
+with blockPorts in order; pass-through copies sample for sample. Probe: off-by-one in the channel
+mapping. (7) builtinNodeTypes() is white, file, card. Probe: drop card.
 
 **R1.** (1) parseMessage and encoders reproduce the JSON-RPC 2.0 spec's section 7 examples that
 use named params (positional params → -32602); notifications get no response; an empty batch →
-one -32600. Probe: answer a notification. (2) decodeCommand: every method and every missing,
-extra and mistyped key, with the pointer in the message. Probe: accept extra keys. (3) encodeEvent,
-encodeGraph, encodeLevels and error results equal `test/protocol` exactly. Probe: rename
-"status". (4) EventBridge posts one event per listener call through the executor and never calls
-the sink inline. Probe: call the sink inline. (5) With queue executors: a session gets no event
-posted before its snapshot and every one after, in order; responses keep request order; `done`
-runs after the message's responses are queued. Probe: mark subscribed when the request arrives.
-(6) Levels: one notification per levels-subscribed session per bell; an unsent one is replaced.
-Probe: queue levels. (7) A session closed while its command is on the main loop: the reply is
-dropped, nothing crashes. Probe: hold a raw session pointer.
+one -32600. Probe: answer a notification. (2) graph_json and decodeCommand: every method and every
+missing, extra and mistyped key, with the pointer in the message; the same bad node JSON gives
+the same text through `parseGraphFile` and `node.add`; graph_file's M1 tests pass unchanged.
+Probe: accept extra keys. (3) encodeEvent, encodeGraph, encodeLevels and error results equal
+`test/protocol` exactly. Probe: rename "status". (4) MainLoopGateway with queue executors: run()
+runs its commands in one main-loop turn and calls `done` on the control executor; the fake
+GraphControl and GraphReader are only ever called from the main-loop executor; each listener call
+posts one event and never calls the sink inline. Probe: run a GetGraph inline on the caller's
+thread. (5) A session gets no event posted before its snapshot and every one after, in order;
+responses keep request order; `done` runs after the message's responses are queued. Probe: mark
+subscribed when the request arrives. (6) Levels: one notification per levels-subscribed session
+per bell, holding every node latestLevels returned; an unsent one is replaced by the next. Probe:
+queue levels. (7) A session closed while its command is on the main loop: the reply is dropped,
+nothing crashes. Probe: hold a raw session pointer.
 
-**R2.** Real sockets on 127.0.0.1:0, a thread-backed fake main loop and a fake graph. (1) GET /
+**R2.** Real sockets on 127.0.0.1:0, a thread-backed fake main loop and a fake gateway. (1) GET /
 → index.html, `text/html`; HEAD; a ".." path never leaves the root; POST → 405. Probe: skip the
-".." check. (2) /rpc upgrades with no Origin and with a same-host Origin; a foreign Origin → 403
-and no upgrade. Probe: skip the Origin check. (3) graph.get round trip; two clients both get
-every event. Probe: send events to the first session only. (4) A client that never reads is
-closed with 1008 once its queue is full; the other client still gets every event. Probe:
-unbounded queue. (5) A client that resets mid-write leaves ear running (Asio sends with
+".." check. (2) Host: `127.0.0.1:<port>`, `[::1]:<port>`, `localhost:<port>` and an
+`--allowed-host` name are served; `Host: attacker.example:<port>` with `Origin:
+http://attacker.example:<port>` → 403 on GET / and on /rpc, no upgrade. Probe: skip the Host
+check. (3) /rpc upgrades with no Origin and with a same-host Origin; a foreign Origin with a good
+Host → 403 and no upgrade. Probe: skip the Origin check. (4) graph.get round trip; two clients
+both get every event. Probe: send events to the first session only. (5) A client that never reads
+is closed with 1008 once its queue is full; the other client still gets every event. Probe:
+unbounded queue. (6) A client that resets mid-write leaves ear running (Asio sends with
 MSG_NOSIGNAL [U]). Probe: write with ::write on the native socket instead of Asio's send →
-SIGPIPE ends the test process. (6) stop() with clients connected and a request on the main loop
-returns, and later posts are dropped. Probe: join before closing sessions → the test's deadline
-fails.
+SIGPIPE ends the test process. (7) stop() with clients connected and a request on the main loop
+returns, the clients see close 1001, and work posted afterwards is dropped; ControlThread::stop
+then joins. Probe: join before closing sessions → the test's deadline fails.
 
 **W1.** (1) The reducer turns every fixture's messages into its `graph` exactly; unknown-node
 events are ignored; a snapshot replaces the state. Probe: route.removed leaves the edge. (2) The
@@ -1022,51 +1290,74 @@ client with a fake socket: ids matched; errors reject with code and message; not
 dispatched; after close it reconnects and subscribes again, and the snapshot replaces the state.
 Probe: no resubscribe. (3) Connections: an output → input drag gives route.add's params; input →
 input refused. Probe: swap from and to. (4) Levels: dBFS conversion and clamp; a wire's level is
-its from port's; a port update notifies only that port's listeners. Probe: use the to port's
-level. (5) `npm run typecheck`, `npm test`, `npm run build` pass. Probe: a type error.
+its from port's; a port update notifies only that port's listeners; a node missing from the next
+message reads silent. Probe: merge messages instead of replacing (a removed node's meter stays
+lit). (5) `npm run typecheck`, `npm test`, `npm run build` pass. Probe: a type error.
 
 **J.** System tests through the real out/ear (`--control-address 127.0.0.1 --control-port 0
---web-root <tmp>`). (1) It prints `control listening on 127.0.0.1:<port>` and GET / returns the
-temp index.html. Probe: ignore --web-root. (2) graph.subscribe's snapshot matches ear.json (white
-→ file:FL); node.add white "n2" and route.add n2:MONO → rec:FR give node.added, node.state
-running, route.added, route.status linked, and after SIGTERM the WAV's FR is noise. Probe: don't
-subscribe the bridge to the reconciler. (3) levels.subscribe → a levels notification with
-noise:MONO rms 0.577 ± 0.05. Probe: give FilterPortBlocks a bell nobody watches. (4) node.remove
-noise → route.removed, node.removed, then node.stopped; route.add to rec:FX → -32000 with
-data.code unknown-port. Probe: send every error as -32603. (5) SIGTERM with a client connected
-exits 0 and the WAV is finished. Probe: stop the port after quit (hangs to the deadline).
-(6) `scripts/image-smoke.sh` also starts the run image on a sample graph, fetches / (the built
-UI) and gets graph.get's answer through `scripts/rpc-call.mjs` run with the dev image's Node.
-Probe: the run stage without web/dist. (7) If E2's spike passed: a card on the null PCM in
-ear.json runs and its route is linked. Probe: AlsaSoundCards never tells ready → the node stays starting
-and the deadline fails.
+--web-root <tmp>`). (1) It prints its scheduling line and `control listening on
+127.0.0.1:<port>`, and GET / returns the temp index.html. Probe: ignore --web-root.
+(2) graph.subscribe's snapshot matches ear.json (white → file:FL); node.add white "n2" and
+route.add n2:MONO → rec:FR give, in this order, node.added, node.state starting, node.state
+running, route.added, route.status linked; after SIGTERM the WAV's FR is noise. Probe: register
+the gateway with `subscribe` after NodeHost instead of `observe` → node.state comes before
+node.added. (3) levels.subscribe → a levels notification with noise:MONO rms 0.577 ± 0.05.
+Probe: give FilterPortBlocks a bell nobody watches. (4) node.remove noise → route.removed,
+node.removed, node.state stopping, node.stopped; route.add to rec:FX → -32000 with data.code
+unknown-port. Probe: send every error as -32603. (5) Stop with edits in flight: with a file node
+whose drain is slow (a large ring), the test sends SIGTERM and then node.add and node.update;
+each gets -32000 data.code "stopping" or the socket closes with 1001; ear exits 0, prints no
+"terminate", and the WAV is finished. Probe: stop the port after quit → hangs to the deadline.
+(6) `scripts/image-smoke.sh` also starts the run image as uid 10001 on a sample graph, fetches /
+(the built UI) and gets graph.get's answer through `scripts/rpc-call.mjs` run with the dev image's
+Node; with `--cap-add SYS_NICE` the answer has `"realtime": true`, without it `false` and ear
+still runs [U: the GitHub runner allows SCHED_FIFO in a container; if not, that half is NOT RUN
+and reported]. Probe: Engine::create does not raise the capability → false with cap-add.
+(7) If E2's spike passed: a card `Test` in ear.json (test ALSA configuration) runs and its route
+is linked. Probe: AlsaSoundCards never tells ready → the node stays starting and the deadline
+fails.
 
-**D.** Docs only; a doc finding never fails a code slice.
+**D.** Docs only; a doc finding never fails a code slice. The Talos and MOTU notes cover:
+snd-usb-audio loaded as a module (Talos 1.12 and later, machine config); the namespace labelled
+Pod Security `privileged`; `/dev/snd` through a device plugin (or a privileged container) and the
+host's audio group in `supplementalGroups`; `capabilities.add: [SYS_NICE]` with
+`allowPrivilegeEscalation` not false; checking `realtime` in graph.get; the card's rate and USB
+channel count set in MOTU's web app to the graph frequency (class-compliant mode reports at most
+24 channels per direction; the kernel validates MOTU rates); the card id from
+`/proc/asound/cards`; the card-drives and latency checks on the hardware (R4).
 
 ## 10. Tests, risks and costs
 
 | Suite | Isolation | Speed |
 |---|---|---|
 | ear_core_tests, ear_control_tests, ear_nodes_tests | pure; fakes for every interface; control tests against `test/protocol` | ms |
-| ear_pipewire_tests | in-process engine, no daemon or hardware; ALSA null and file PCMs | about 1 s each |
-| ear_server_tests | real sockets on 127.0.0.1:0; fake main loop and graph | under 1 s each |
+| ear_pipewire_tests | in-process engine, no daemon or hardware; ALSA null and file PCMs through a test ALSA configuration | about 1 s each |
+| ear_server_tests | real sockets on 127.0.0.1:0; fake main loop and gateway | under 1 s each |
 | ear_system_tests | the real out/ear | about 1.5 s each, parallel |
 | web vitest | reducer and client against the same fixtures; no browser | seconds |
-| image smoke (CI) | the real run image | one container start |
+| image smoke (CI) | the real run image | two container starts |
 
 Conformance boundaries: the wire format (`test/protocol`, both sides); every core interface is
 exercised through fakes in core and through the real engine in ear_pipewire.
 
-Risks: `node.group` scheduling and the adapter's auto port config are verified on 1.0.5 sources
-and docs, not 1.4.2 (E1, E2 test them); PipeWire 1.7 moves scheduling into
-`module-scheduler-v1` (pipewire-engine skill's bump procedure). The null PCM may not drive the
-graph in CI (E2's spike). The image job compiles EAR from scratch on every PR whose sources
-changed (B2 measures). npm dependencies drift; the lockfile pins them. Inside links reuse the
-Reconciler, so a refused inside link shows only in the status lines, not in the node's state.
+Risks: the adapter's auto port config and its port names are read from 1.0.5 docs, not 1.4.2
+(E2 tests them); PipeWire 1.7 moves scheduling into `module-scheduler-v1` (pipewire-engine
+skill's bump procedure), so rule 2's reasoning must be re-checked on a bump. The test ALSA
+configuration or the null PCM may not let a card run in CI (E2's spike); then the card-drives and
+channel tests are hardware-only. Card links find the block by `node.name` (link-factory also
+matches nick, description and object path, module-link-factory.c 408-433): a node a user names
+like another engine node (only `Dummy-Driver` today) gets card links that fail, so its card is
+lost with the link-factory's error. The image job compiles EAR from scratch on every PR whose sources
+changed (B2 measures). npm dependencies drift; the lockfile pins them. GitHub's runners may refuse
+SCHED_FIFO in a container (J(6)).
 
 Costs: node names are now limited to letters, digits, '-' and '_' (an ear.json with other
-characters is refused); one copy per card channel per cycle (the pass-through) and per-port
-metering on the realtime thread; port 7777 has no login and listens on every interface by default;
+characters is refused); a card is named only by card id, so ALSA's other device forms (a PCM
+other than device 0, plugins) are out of reach; a card's link change moves every block from one
+driver to the other (a brief glitch when a card becomes ready or is lost); one copy per card
+channel per cycle (the pass-through) and per-port metering on the realtime thread; a levels
+message carries every block, about 20 bytes per port 30 times a second per client; port 7777 has
+no login and listens on every interface by default; on Talos the namespace must be privileged;
 node positions in the editor live in the browser only; live edits are lost on restart (agreed).
 Deferred: login, saving live edits, card retry and hotplug, settings forms per node type (the
 editor takes settings as JSON), a browser test runner, arm64 images, removing the unused
@@ -1076,7 +1367,11 @@ Findings against the brief: (1) "channel count and rate from settings": the rate
 frequency, not a setting, because R5 has endpoints "proactively configured to match the 'graph
 frequency'"; the MOTU's rate is set to match in its web app. (2) The publish of versioned images
 must sit in the release workflow itself (GITHUB_TOKEN releases trigger nothing). (3) Ten slices,
-not nine (section 9).
+not nine (section 9). (4) "the card drives the graph clock while present" becomes "while it
+works": a present card that fails must leave the clock (section 5). (5) "card chosen by name
+(hw:CARD=...)": the setting is the card id alone, because a raw ALSA device name can run commands.
+(6) "CAP_SYS_NICE" alone does not give a non-root process realtime priority; the image carries a
+file capability (section 7).
 
 ## New terms
 
@@ -1084,13 +1379,43 @@ not nine (section 9).
 |---|---|---|---|
 | Control thread | ear_server's one thread for port 7777 | the owner's threading answer | — |
 | Executor | something that runs posted work on one thread, in order | the two thread crossings | Asio's executor (same idea) |
-| Inside ports, inside links | port-block ports no route can name, and the links joining them to a node's own engine nodes | a card behind a port block | system design's "inside links" (same) |
+| Gateway (`GraphGateway`) | the control thread's only handle on the graph: it sends commands to the main loop and gets replies and events back in one ordered stream | so the control thread can never touch graph state | Active Object pattern |
+| Observer (of the desired graph) | a listener told of each change before the ones that act on it | one fixed event order | — |
+| Graph closed | the state after stopping began: edits are refused with "stopping" | a clean stop with clients connected | — |
+| Card id | the ALSA name of a sound card in `/proc/asound/cards` | the only way to name a card | "card name" |
+| Inside ports | port-block ports no route can name; a card's links join them | a card behind a port block | system design's "inside links" (same) |
 | Sound card / card node | type `card`: a port block plus ALSA adapter nodes | the owner's MOTU | "sound card node" on this page's top |
-| Level window | the stretch of audio one level covers (1/30 s, rounded up to whole cycles) | stated display rate | — |
+| Level window | the stretch of audio one level covers (1/30 s of the graph clock) | stated display rate | — |
 | Level bell | the eventfd the realtime thread rings when levels are ready | event-driven levels | M1's handoff wake (same mechanism) |
 | Graph snapshot | `graph.get`'s result; `graph.subscribe` = snapshot + later events | consistent client view | — |
-| Graph group | `node.group = ear.graph` on everything EAR makes | one driver for all blocks | — |
+| Graph group | `node.group = ear.graph` on every port block | one clock for all blocks | — |
+| Scheduling report | how the audio thread is scheduled (`realtime`, `scheduling`) | realtime priority visible | — |
 
 ## 11. Errata
 
 (none yet)
+
+## 12. Design review, 2026-10-30: findings and changes
+
+| Finding | Change |
+|---|---|
+| P0 ×2: a failed card kept in place still drives the whole group, so every node stops (R2) | Rule 2 and section 5: the card has no group; it runs alone until its PCM runs, joins through its own links, and destroys its node and links before it reports a loss. E2(2), (4), (5) test before-ready, a card that cannot open, and a lost card nobody destroyed. Verified in 1.4.2 context.c and impl-node.c. |
+| P1 ×2: edits during stopAll throw on the main loop | `DesiredGraph::close()` returns `GraphClosed`, which `stopAll` requires; edits after it get `Stopping`; section 4.7 says what clients see; J(5) sends edits during the drain. |
+| P1: levels, latest-wins per message drops nodes | Windows sit on the graph clock (equal `windowEnd`), `latestLevels()` is a complete snapshot, so replacing an unsent message loses nothing; E1(3), (4), R1(6), W1(4). |
+| P1: the threading answer restated two ways | The answers table and section 2 now say the same; the open question at the top asks the owner to confirm. |
+| P1: drive on a refused or lost block | The contract covers it (returns at once without a data loop); `pw_filter_get_data_loop` is [V] on 1.4.2; E1(6). |
+| P1: listener order puts node.state before node.added | `DesiredGraph::observe()`: observers are told before subscribers, frozen in the interface; C1(5), J(2) with the probe of the old wiring. |
+| P1: inside links owned by a second Reconciler, health lost | The card owns its links (link-factory by node and port name); its readiness requires them, so a broken link fails the node. The second Reconciler and Links are gone. |
+| P1: a lost block plus node.update leaves "starting" forever | A lost block is final in the lifecycle; restart tears down and starts nothing; C1(10), (12). |
+| P1: config lifetime shorter than the insides | Listeners get `std::shared_ptr<const NodeConfig>`; NodeHost lets it go after the insides; C1(8). |
+| P1: the control thread holds `GraphControl&` by convention | `GraphGateway` is all the hub and port see; `MainLoopGateway` alone holds the graph; R1(4). |
+| P1: decodeCommand duplicates graph_file's decoding | `control/graph_json.hpp` is the one decoder; graph_file moves onto it (R1); R1(2). |
+| P1: card device string runs commands through ALSA's file plugin | `CardId` with a closed grammar is the only way to name a card; the PCM name is built in one place; C1(15), E2(6). |
+| P1: Origin == Host does not stop DNS rebinding | Host must be an IP literal, localhost or an `--allowed-host` name; R2(2). |
+| P1: CAP_SYS_NICE does not reach uid 10001; Talos baseline; silent non-realtime | File capability `=p` raised at boot; scheduling reported at boot and in graph.get; Talos needs a privileged namespace (section 7, D); B2(3), E1(10), J(6). |
+| P1: a failed release cannot be republished; publish runs could be cancelled | Version tags come from `git tag --points-at HEAD` (`scripts/version-tags.sh`); `cancel-in-progress: false`; B2(5), (6). |
+
+No finding was refuted. One was narrowed: E2 cannot make an ALSA PCM fail on its own while it is
+running in CI, so the "lost but not destroyed" case is driven by removing one of the card's links
+(the same loss path as an ALSA error, one handler in the card's state machine). The ALSA-error
+trigger itself is checked on the hardware.
