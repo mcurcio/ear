@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include <sched.h>
 #include <unistd.h>
 
 #include <pipewire/filter.h>
@@ -430,4 +431,62 @@ TEST_CASE("SIGTERM reaches the stop-signal handler as a main-loop event", "[engi
   // To the process, as a container runtime sends it, not to this thread.
   REQUIRE(kill(getpid(), SIGTERM) == 0);
   REQUIRE(waiter.until([&] { return stopped; }));
+}
+
+namespace {
+
+/// Reads, inside process(), how the thread running it is scheduled.
+class SchedulingProbe final : public AudioCode {
+public:
+  explicit SchedulingProbe(Waiter& waiter) : waiter_(waiter) {}
+  void prepare(const AudioFormat&) override {}
+  void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+               std::uint32_t) noexcept override {
+    for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0f);
+    if (!seen_.load(std::memory_order_acquire)) {
+      policy_ = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;
+      sched_param param{};
+      sched_getparam(0, &param);
+      priority_ = param.sched_priority;
+      seen_.store(true, std::memory_order_release);
+      waiter_.wake();
+    }
+  }
+  void release() noexcept override {}
+  bool seen() const { return seen_.load(std::memory_order_acquire); }
+  int policy() const { return policy_; }
+  int priority() const { return priority_; }
+
+private:
+  Waiter& waiter_;
+  std::atomic<bool> seen_{false};
+  int policy_ = -1;
+  int priority_ = -1;
+};
+
+}  // namespace
+
+TEST_CASE("The scheduling report is how the thread running process() is scheduled",
+          "[engine][scheduling]") {
+  auto engine = makeEngine();
+  Waiter waiter(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
+  SchedulingProbe probe(waiter);
+  BlockEvents events(waiter);
+  auto block = makeDriven(blocks, "probe", Ports{{}, {"OUT"}}, probe, events);
+  REQUIRE(waiter.until([&] { return probe.seen(); }));
+
+  const Scheduling scheduling = engine->dataThreadScheduling();
+  CHECK(scheduling.realtime == (probe.policy() == SCHED_FIFO || probe.policy() == SCHED_RR));
+  if (probe.policy() == SCHED_FIFO) {
+    CHECK(scheduling.detail == "SCHED_FIFO " + std::to_string(probe.priority()));
+  } else if (probe.policy() == SCHED_RR) {
+    CHECK(scheduling.detail == "SCHED_RR " + std::to_string(probe.priority()));
+  } else {
+    REQUIRE(probe.policy() == SCHED_OTHER);
+    CHECK(scheduling.detail == "SCHED_OTHER");
+  }
+  // The dev container and CI grant no realtime priority (no CAP_SYS_NICE, RLIMIT_RTPRIO 0).
+  CHECK_FALSE(scheduling.realtime);
 }
