@@ -1,8 +1,11 @@
 // The node framework driven through fake engine factories: how a node starts, what makes it
 // running or failed, and the order stopAll takes everything down in
-// (docs/design/m1-white-to-file.md section 3, S2 criterion 5). Every step a fake engine would
-// take later (ready, lost, a handoff closing) is an event the test sends.
+// (docs/design/m1-white-to-file.md section 3, S2 criterion 5), on batch 2's interfaces
+// (docs/design/batch2.md section 4.1: the port block is made first and the insides drive it).
+// Every step a fake engine would take later (ready, lost, a handoff closing) is an event the
+// test sends. Slice C1 adds updates, removal and sound cards.
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -62,13 +65,14 @@ struct TestBlock final : PortBlock {
 	Log& log;
 	explicit TestBlock(Log& l) : log(l) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
+	void drive(AudioCode* code) override { log.push_back(code != nullptr ? "drive code" : "drive nothing"); }
 };
 
 struct TestBlocks final : PortBlockFactory {
 	Log& log;
 	std::vector<PortBlockEvents*> events;
 	explicit TestBlocks(Log& l) : log(l) {}
-	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&, AudioCode&,
+	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		log.push_back("make " + node + " " + std::to_string(ports.inputs.size()) + " inputs");
 		events.push_back(&e);
@@ -114,6 +118,15 @@ struct TestHandoffs final : HandoffFactory {
 	}
 };
 
+/// No test here asks for a sound card.
+struct NoCards final : SoundCardFactory {
+	std::unique_ptr<SoundCard> make(const NodeName&, const NodeName&, const SoundCardRequest&, const AudioFormat&,
+	                                SoundCardEvents&) override {
+		FAIL("a sound card was made");
+		return nullptr;
+	}
+};
+
 struct TestListener final : NodeStatusListener {
 	Log& log;
 	explicit TestListener(Log& l) : log(l) {}
@@ -131,12 +144,18 @@ struct Fixture {
 	Log log;
 	TestBlocks blocks{log};
 	TestHandoffs handoffs{log};
+	NoCards cards;
 	TestListener listener{log};
-	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs};
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph{catalogue};   // only for close(), the proof stopAll takes
+	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards};
 	int allGone = 0;   // how often stopAll's callback has run
 	Fixture() { host.subscribe(listener); }
+	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
+		host.nodeAdded(NodeSpec{name, "test", {}}, std::move(config));
+	}
 	void stopAll() {
-		host.stopAll([this] {
+		host.stopAll(graph.close(), [this] {
 			++allGone;
 			log.push_back("all gone");
 		});
@@ -145,15 +164,16 @@ struct Fixture {
 
 } // namespace
 
-TEST_CASE("A node starts, prepares its audio code and only then gets its port block", "[node_host]") {
+TEST_CASE("A node gets its port block, then starts, prepares its audio code and drives the block",
+          "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	rec.handoffs = 1;
+	auto rec = std::make_shared<TestConfig>(f.log);
+	rec->handoffs = 1;
 
-	f.host.nodeAdded("rec", rec);
+	f.add("rec", rec);
 
-	CHECK(f.log == Log{"node rec starting", "start 44100", "handoff rec 2 channels", "prepare 44100/256",
-	                   "make rec 2 inputs"});
+	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
+	                   "prepare 44100/256", "drive code"});
 	REQUIRE(f.host.status().size() == 1);
 	CHECK(f.host.status()[0].state == NodeState::starting);
 
@@ -163,8 +183,7 @@ TEST_CASE("A node starts, prepares its audio code and only then gets its port bl
 
 TEST_CASE("A node becomes running when its port block is ready", "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	f.host.nodeAdded("rec", rec);
+	f.add("rec", std::make_shared<TestConfig>(f.log));
 	f.log.clear();
 
 	f.blocks.events.at(0)->ready();
@@ -176,32 +195,34 @@ TEST_CASE("A node becomes running when its port block is ready", "[node_host]") 
 	f.stopAll();
 }
 
-TEST_CASE("A node whose start fails is failed with start-failed and gets no port block", "[node_host]") {
+TEST_CASE("A node whose start fails is failed with start-failed and keeps its port block", "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	rec.handoffs = 1;
-	rec.fail = true;
+	auto rec = std::make_shared<TestConfig>(f.log);
+	rec->handoffs = 1;
+	rec->fail = true;
 
-	f.host.nodeAdded("rec", rec);
+	f.add("rec", rec);
 
-	// The handoff it asked for goes at once (nothing ever wrote to it); no prepare, no block.
-	CHECK(f.log == Log{"node rec starting", "start 44100", "handoff rec 2 channels", "insides destroyed",
-	                   "handoff destroyed", "node rec failed start-failed: cannot open /nope"});
+	// The handoff it asked for goes at once (nothing ever wrote to it); no prepare, no drive.
+	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
+	                   "insides destroyed", "handoff destroyed", "node rec failed start-failed: cannot open /nope"});
 	REQUIRE(f.host.status().size() == 1);
 	CHECK(f.host.status()[0].state == NodeState::failed);
 	REQUIRE(f.host.status()[0].reason.has_value());
 	CHECK(f.host.status()[0].reason->code == FailureReason::Code::startFailed);
-	CHECK(f.blocks.events.empty());
 
+	// The block becoming ready leaves the node failed.
 	f.log.clear();
+	f.blocks.events.at(0)->ready();
+	CHECK(f.log.empty());
+
 	f.stopAll();
-	CHECK(f.log == Log{"node rec stopping", "node rec gone dropped=0", "all gone"});
+	CHECK(f.log == Log{"node rec stopping", "block destroyed", "node rec gone dropped=0", "all gone"});
 }
 
 TEST_CASE("A node whose port block is lost is failed with engine-refused", "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	f.host.nodeAdded("rec", rec);
+	f.add("rec", std::make_shared<TestConfig>(f.log));
 	f.blocks.events.at(0)->ready();
 	f.log.clear();
 
@@ -216,9 +237,9 @@ TEST_CASE("A node whose port block is lost is failed with engine-refused", "[nod
 
 TEST_CASE("stopAll takes a node down in order: block, release, handoffs, insides, gone", "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	rec.handoffs = 2;
-	f.host.nodeAdded("rec", rec);
+	auto rec = std::make_shared<TestConfig>(f.log);
+	rec->handoffs = 2;
+	f.add("rec", rec);
 	f.blocks.events.at(0)->ready();
 	f.log.clear();
 
@@ -243,11 +264,10 @@ TEST_CASE("stopAll takes a node down in order: block, release, handoffs, insides
 
 TEST_CASE("allGone runs once, after the last node is gone", "[node_host]") {
 	Fixture f;
-	TestConfig rec{f.log};
-	rec.handoffs = 1;
-	TestConfig noise{f.log};
-	f.host.nodeAdded("rec", rec);
-	f.host.nodeAdded("noise", noise);
+	auto rec = std::make_shared<TestConfig>(f.log);
+	rec->handoffs = 1;
+	f.add("rec", rec);
+	f.add("noise", std::make_shared<TestConfig>(f.log));
 	f.log.clear();
 
 	f.stopAll();

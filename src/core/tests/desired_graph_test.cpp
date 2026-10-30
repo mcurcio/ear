@@ -49,10 +49,15 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 }
 
 struct Recorder final : DesiredNodeListener, DesiredRouteListener {
-	std::vector<std::pair<NodeName, const NodeConfig*>> nodes;
+	std::vector<std::pair<NodeName, std::shared_ptr<const NodeConfig>>> nodes;
 	std::vector<Route> routes;
-	void nodeAdded(const NodeName& node, const NodeConfig& config) override { nodes.emplace_back(node, &config); }
+	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override {
+		nodes.emplace_back(node.name, std::move(config));
+	}
+	void nodeUpdated(const NodeSpec&, std::shared_ptr<const NodeConfig>) override {}
+	void nodeRemoved(const NodeName&) override {}
 	void routeAdded(const Route& route) override { routes.push_back(route); }
+	void routeRemoved(const Route&) override {}
 };
 
 struct Fixture {
@@ -169,9 +174,14 @@ TEST_CASE("Command errors have one code each and describe what they name", "[com
 		{UnknownNode{"tape"}, "unknown-node tape"},
 		{UnknownPort{{"rec", "FX"}}, "unknown-port rec:FX"},
 		{WrongDirection{route}, "wrong-direction rec:FL -> noise:MONO"},
+		{InvalidName{"a.b"}, "invalid-name a.b"},
+		{PortsChanged{"motu"}, "ports-changed motu"},
+		{UnknownRoute{{{"noise", "MONO"}, {"rec", "FR"}}}, "unknown-route noise:MONO -> rec:FR"},
+		{Stopping{}, "stopping"},
 	};
 	for (const auto& [error, text] : cases) {
 		CHECK(describe(error) == text);
-		CHECK(text.starts_with(std::string(errorCode(error)) + " "));
+		const std::string code(errorCode(error));
+		CHECK((text == code || text.starts_with(code + " ")));
 	}
 }

@@ -1,7 +1,11 @@
-// Port blocks as pw_filter nodes (docs/design/m1-white-to-file.md section 2, port_blocks.hpp).
+// Port blocks as pw_filter nodes (docs/design/batch2.md section 4.3, port_blocks.hpp). Slice s0
+// kept M1's blocks on batch 2's interface: drive() stores the code the realtime thread runs
+// (nullptr silences), and latestLevels() has none yet. Slice E1 builds the drive barrier, the
+// graph group and the levels.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <span>
 #include <string>
 #include <vector>
@@ -16,11 +20,12 @@ namespace {
 class FilterPortBlock final : public PortBlock {
 public:
   FilterPortBlock(Engine& engine, const NodeName& node, const Ports& ports,
-                  const AudioFormat& format, AudioCode& code, PortBlockEvents& events)
-      : code_(code), events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
-        zeros_(format.maxBlock, 0.0f), inputs_(ports.inputs.size()),
-        outputs_(ports.outputs.size()) {
-    for (std::size_t i = 0; i < ports.outputs.size(); ++i) {
+                  const AudioFormat& format, PortBlockEvents& events)
+      : events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
+        zeros_(format.maxBlock, 0.0f),
+        inputs_(ports.inputs.size() + ports.insideInputs.size()),
+        outputs_(ports.outputs.size() + ports.insideOutputs.size()) {
+    for (std::size_t i = 0; i < outputs_.size(); ++i) {
       scratch_.emplace_back(format.maxBlock, 0.0f);
     }
     refusal_ = pw_loop_add_event(loop_, &FilterPortBlock::onRefusal, this);
@@ -35,8 +40,11 @@ public:
       return;
     }
     pw_filter_add_listener(filter_, &listener_, &filterEvents(), this);
+    // AudioCode::process sees inputs then inside inputs, outputs then inside outputs.
     addPorts(PW_DIRECTION_INPUT, ports.inputs, inputPorts_);
+    addPorts(PW_DIRECTION_INPUT, ports.insideInputs, inputPorts_);
     addPorts(PW_DIRECTION_OUTPUT, ports.outputs, outputPorts_);
+    addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs, outputPorts_);
     if (const int res = pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0);
         res < 0) {
       fail(std::string("cannot connect the engine node: ") + spa_strerror(res));
@@ -52,6 +60,9 @@ public:
 
   FilterPortBlock(const FilterPortBlock&) = delete;
   FilterPortBlock& operator=(const FilterPortBlock&) = delete;
+
+  /// s0: the realtime thread picks the new code up from its next cycle; no barrier yet (E1).
+  void drive(AudioCode* code) override { code_.store(code, std::memory_order_release); }
 
 private:
   static const pw_filter_events& filterEvents() {
@@ -107,7 +118,8 @@ private:
   static void onProcess(void* data, spa_io_position* position) {
     auto* self = static_cast<FilterPortBlock*>(data);
     const auto frames = static_cast<std::uint32_t>(position->clock.duration);
-    if (frames > self->maxBlock_) {
+    AudioCode* code = self->code_.load(std::memory_order_acquire);
+    if (frames > self->maxBlock_ || code == nullptr) {
       for (void* port : self->outputPorts_) {
         if (port == nullptr) continue;
         if (auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(port, frames))) {
@@ -129,10 +141,10 @@ private:
                       : static_cast<float*>(pw_filter_get_dsp_buffer(self->outputPorts_[i], frames));
       self->outputs_[i] = std::span<float>(out != nullptr ? out : self->scratch_[i].data(), frames);
     }
-    self->code_.process(self->inputs_, self->outputs_, frames);
+    code->process(self->inputs_, self->outputs_, frames);
   }
 
-  AudioCode& code_;
+  std::atomic<AudioCode*> code_{nullptr};   // nullptr: every output silent
   PortBlockEvents& events_;
   pw_loop* loop_;
   std::uint32_t maxBlock_;
@@ -152,12 +164,22 @@ private:
 
 }  // namespace
 
-FilterPortBlocks::FilterPortBlocks(Engine& engine) : engine_(engine) {}
+struct FilterPortBlocks::Impl {
+  Engine& engine;
+  LevelWake& wake;   // rung by blocks once they publish levels (E1)
+};
+
+FilterPortBlocks::FilterPortBlocks(Engine& engine, LevelWake& wake)
+    : impl_(std::make_unique<Impl>(engine, wake)) {}
+
+FilterPortBlocks::~FilterPortBlocks() = default;
 
 std::unique_ptr<PortBlock> FilterPortBlocks::make(const NodeName& node, const Ports& ports,
-                                                  const AudioFormat& format, AudioCode& code,
+                                                  const AudioFormat& format,
                                                   PortBlockEvents& events) {
-  return std::make_unique<FilterPortBlock>(engine_, node, ports, format, code, events);
+  return std::make_unique<FilterPortBlock>(impl_->engine, node, ports, format, events);
 }
+
+std::vector<NodeLevels> FilterPortBlocks::latestLevels() { return {}; }   // E1
 
 }  // namespace ear::pipewire

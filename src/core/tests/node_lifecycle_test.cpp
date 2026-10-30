@@ -1,5 +1,7 @@
 // The node state machine, every state against every fact (docs/design/m1-white-to-file.md
-// section 3, S2 criterion 4).
+// section 3, S2 criterion 4), on batch 2's lifecycle (docs/design/batch2.md section 4.1: running
+// needs the port block and the insides ready; refused split into portBlockLost and
+// insidesFailed). Slice C1 extends the table to every batch 2 fact.
 #include <functional>
 #include <string>
 #include <vector>
@@ -20,8 +22,11 @@ NodeLifecycle reach(At at) {
 	NodeLifecycle node;
 	switch (at) {
 	case At::starting: break;
-	case At::running: REQUIRE(node.portBlockReady()); break;
-	case At::failed: REQUIRE(node.refused(refusal)); break;
+	case At::running:
+		REQUIRE_FALSE(node.portBlockReady());
+		REQUIRE(node.insidesReady());
+		break;
+	case At::failed: REQUIRE(node.insidesFailed(refusal)); break;
 	case At::stopping: REQUIRE(node.stopRequested()); break;
 	case At::gone:
 		REQUIRE(node.stopRequested());
@@ -50,7 +55,7 @@ struct Fact {
 
 const std::vector<Fact> facts{
 	{"portBlockReady", [](NodeLifecycle& n) { return n.portBlockReady(); }},
-	{"refused", [](NodeLifecycle& n) { return n.refused(refusal); }},
+	{"insidesFailed", [](NodeLifecycle& n) { return n.insidesFailed(refusal); }},
 	{"stopRequested", [](NodeLifecycle& n) { return n.stopRequested(); }},
 	{"stopped", [](NodeLifecycle& n) { return n.stopped(); }},
 };
@@ -65,10 +70,11 @@ TEST_CASE("A new node is starting with no reason", "[lifecycle]") {
 }
 
 TEST_CASE("Every fact in every state moves the node as the table says", "[lifecycle]") {
-	// Rows: states. Columns: portBlockReady, refused, stopRequested, stopped. Each cell: where
-	// the node is afterwards; the fact reports a change exactly when the cell differs from the row.
+	// Rows: states. Columns: portBlockReady, insidesFailed, stopRequested, stopped. Each cell:
+	// where the node is afterwards; the fact reports a change exactly when the cell differs from
+	// the row. A starting node's insides are not ready, so its port block alone leaves it starting.
 	const std::vector<std::pair<At, std::vector<At>>> table{
-		{At::starting, {At::running, At::failed, At::stopping, At::starting}},
+		{At::starting, {At::starting, At::failed, At::stopping, At::starting}},
 		{At::running, {At::running, At::failed, At::stopping, At::running}},
 		{At::failed, {At::failed, At::failed, At::stopping, At::failed}},
 		{At::stopping, {At::stopping, At::stopping, At::stopping, At::gone}},
@@ -87,14 +93,29 @@ TEST_CASE("Every fact in every state moves the node as the table says", "[lifecy
 	}
 }
 
-TEST_CASE("A refused node keeps its reason until it is asked to stop", "[lifecycle]") {
+TEST_CASE("A node runs once its port block and its insides are both ready, in either order",
+          "[lifecycle]") {
+	NodeLifecycle blockFirst;
+	CHECK_FALSE(blockFirst.portBlockReady());
+	CHECK(blockFirst.state() == NodeState::starting);
+	CHECK(blockFirst.insidesReady());
+	CHECK(blockFirst.state() == NodeState::running);
+
+	NodeLifecycle insidesFirst;
+	CHECK_FALSE(insidesFirst.insidesReady());
+	CHECK(insidesFirst.state() == NodeState::starting);
+	CHECK(insidesFirst.portBlockReady());
+	CHECK(insidesFirst.state() == NodeState::running);
+}
+
+TEST_CASE("A failed node keeps its reason until it is asked to stop", "[lifecycle]") {
 	NodeLifecycle node;
-	REQUIRE(node.portBlockReady());
-	REQUIRE(node.refused({FailureReason::Code::startFailed, "cannot open /nope"}));
+	REQUIRE_FALSE(node.portBlockReady());
+	REQUIRE(node.insidesFailed({FailureReason::Code::startFailed, "cannot open /nope"}));
 	REQUIRE(node.reason().has_value());
 	CHECK(node.reason()->code == FailureReason::Code::startFailed);
 	CHECK(node.reason()->detail == "cannot open /nope");
-	CHECK_FALSE(node.refused(refusal));
+	CHECK_FALSE(node.insidesFailed(refusal));
 	CHECK(node.reason()->code == FailureReason::Code::startFailed);
 }
 

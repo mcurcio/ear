@@ -1,5 +1,6 @@
 // Slice S1's tests (docs/design/m1-white-to-file.md section 3, acceptance criteria S1): the
-// real in-process engine, port blocks, live ports and links, no daemon and no hardware.
+// real in-process engine, port blocks, live ports and links, no daemon and no hardware. On batch
+// 2's interfaces (docs/design/batch2.md section 4.1) a block is made silent and then driven.
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
@@ -43,6 +44,21 @@ std::unique_ptr<Engine> makeEngine() {
   auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
   if (!engine) FAIL("Engine::create: " << engine.error().detail);
   return std::move(*engine);
+}
+
+/// Port blocks ring this when they publish levels; these tests read none.
+class NoLevelWake final : public LevelWake {
+public:
+  void levelsPublished() noexcept override {}
+};
+
+/// A port block made silent, then driven by `code` (which outlives it).
+std::unique_ptr<PortBlock> makeDriven(FilterPortBlocks& blocks, const NodeName& node,
+                                      const Ports& ports, AudioCode& code,
+                                      PortBlockEvents& events) {
+  auto block = blocks.make(node, ports, kFormat, events);
+  block->drive(&code);
+  return block;
 }
 
 /// Runs the engine's main loop until `done` holds. Every event a test listens for calls
@@ -212,13 +228,14 @@ std::size_t firstSound(std::span<const float> samples) {
 /// A source block (ramp) linked to a sink block (recorder) by their port ids.
 struct LinkedPair {
   explicit LinkedPair(Engine& engine, Waiter& waiter)
-      : blocks(engine), live(engine), links(engine), ports(waiter), linkLog(waiter),
+      : blocks(engine, wake), live(engine), links(engine), ports(waiter), linkLog(waiter),
         ramp(waiter), recorder(waiter), sourceEvents(waiter), sinkEvents(waiter) {
     live.subscribe(ports);
     links.subscribe(linkLog);
-    source = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, ramp, sourceEvents);
-    sink = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recorder, sinkEvents);
+    source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
+    sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, sinkEvents);
   }
+  NoLevelWake wake;
   FilterPortBlocks blocks;
   LiveGraph live;
   Links links;
@@ -240,10 +257,11 @@ TEST_CASE("The engine runs with no daemon, runtime directory or D-Bus, and an un
           "block processes zeros", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = blocks.make("rec", Ports{{"FL", "FR"}, {}}, kFormat, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, events);
 
   REQUIRE(waiter.until([&] { return events.readyCount > 0 && recorder.calls() >= 8; }));
   CHECK(events.readyCount == 1);
@@ -256,7 +274,8 @@ TEST_CASE("The engine runs with no daemon, runtime directory or D-Bus, and an un
 TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   LiveGraph live(*engine);
   PortLog ports(waiter);
   live.subscribe(ports);
@@ -264,8 +283,8 @@ TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   Ramp ramp(waiter);
   Recorder recorder(waiter);
   BlockEvents sourceEvents(waiter), sinkEvents(waiter);
-  auto source = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, ramp, sourceEvents);
-  auto sink = blocks.make("rec", Ports{{"FL", "FR"}, {}}, kFormat, recorder, sinkEvents);
+  auto source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, sinkEvents);
 
   REQUIRE(waiter.until([&] { return ports.appeared.size() >= 3; }));
   const auto out = ports.find("ramp", "OUT");
@@ -319,10 +338,11 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, events);
 
   // The clock as a process callback sees it, read by a bare engine node beside the block.
   struct Clock {

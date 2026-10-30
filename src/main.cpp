@@ -1,6 +1,7 @@
 // EAR's composition root (docs/design/m1-white-to-file.md section 2, "Boot in main"): reads the
 // graph file, starts the engine, wires the packages together, replays the file as control calls
-// and runs until SIGINT or SIGTERM, then stops every node before it exits.
+// and runs until SIGINT or SIGTERM, then stops every node before it exits. Batch 2's wiring
+// (control port, levels, scheduling line) arrives with slice J (docs/design/batch2.md 4.7).
 
 #include <filesystem>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include "ear/control/graph_file.hpp"
 #include "ear/control/status_log.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/levels.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -21,6 +23,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/sound_cards.hpp"
 
 namespace po = boost::program_options;
 
@@ -30,6 +33,12 @@ namespace {
 std::filesystem::path engineConfig() {
 	return std::filesystem::read_symlink("/proc/self/exe").parent_path() / "engine.conf";
 }
+
+/// Nobody reads levels until slice J wires the control port's LevelBell here.
+class UnreadLevels final : public ear::LevelWake {
+public:
+	void levelsPublished() noexcept override {}
+};
 
 } // namespace
 
@@ -69,9 +78,11 @@ int main(int argc, char** argv) {
 
 	const ear::NodeCatalogue catalogue(ear::nodes::builtinNodeTypes());
 	ear::DesiredGraph graph(catalogue);
-	ear::pipewire::FilterPortBlocks blocks(*engine);
+	UnreadLevels levels;
+	ear::pipewire::FilterPortBlocks blocks(*engine, levels);
 	ear::pipewire::ThreadHandoffs handoffs(engine->mainLoop());
-	ear::NodeHost nodes({spec->graphFrequency, spec->blockSize}, blocks, handoffs);
+	ear::pipewire::AlsaSoundCards cards(*engine);
+	ear::NodeHost nodes({spec->graphFrequency, spec->blockSize}, blocks, handoffs, cards);
 	ear::pipewire::LiveGraph live(*engine);
 	ear::pipewire::Links links(*engine);
 	ear::Reconciler reconciler(links);
@@ -91,7 +102,7 @@ int main(int argc, char** argv) {
 	auto stop = [&] {
 		if (stopping) return;
 		stopping = true;
-		nodes.stopAll([&] {
+		nodes.stopAll(graph.close(), [&] {
 			allGone = true;
 			engine->quit();
 		});

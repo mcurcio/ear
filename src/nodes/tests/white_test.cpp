@@ -21,6 +21,9 @@ public:
 	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
 		throw std::logic_error("white requested a handoff");
 	}
+	void soundCard(const ear::SoundCardRequest&) override {
+		throw std::logic_error("white asked for a sound card");
+	}
 
 private:
 	ear::AudioFormat format_;

@@ -1,0 +1,306 @@
+{
+  "description": "Refusals and protocol errors (docs/design/batch2.md section 6): a refused command is -32000 with message describe(error) and data.code its code (the last one sent while EAR is stopping); envelope errors follow JSON-RPC 2.0 section 5.1; -32602 names the JSON pointer. None changes the graph.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"a.b\",\"type\":\"white\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.add\",\"params\":{\"name\":\"pinky\",\"type\":\"pink\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"file\",\"settings\":{\"path\":\"/z.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"ghost\",\"settings\":{}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.update\",\"params\":{\"name\":\"motu\",\"settings\":{\"card\":\"Pro24\",\"playback\":4}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"ghost\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FX\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"rec\",\"port\":\"FL\"},\"to\":{\"node\":\"noise\",\"port\":\"MONO\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.add\",\"params\":{\"name\":\"n3\",\"type\":\"white\"}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"graph.get\",\"params\":[1,2",
+    "{\"jsonrpc\":\"2.0\",\"method\":1,\"params\":\"bar\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"graph.explode\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "motu",
+            "type": "card",
+            "settings": {
+              "card": "Pro24",
+              "playback": 2
+            },
+            "inputs": [
+              "playback_1",
+              "playback_2"
+            ],
+            "outputs": [],
+            "state": "running"
+          },
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "MONO"
+            ],
+            "state": "running"
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "/x.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "running"
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "rec",
+              "port": "FL"
+            },
+            "status": "linked"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "error": {
+        "code": -32000,
+        "message": "invalid-name a.b",
+        "data": {
+          "code": "invalid-name"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "error": {
+        "code": -32000,
+        "message": "unknown-node-type pink",
+        "data": {
+          "code": "unknown-node-type"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "error": {
+        "code": -32000,
+        "message": "invalid-settings tape: path: missing",
+        "data": {
+          "code": "invalid-settings"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "error": {
+        "code": -32000,
+        "message": "duplicate-node noise",
+        "data": {
+          "code": "duplicate-node"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "error": {
+        "code": -32000,
+        "message": "unknown-node ghost",
+        "data": {
+          "code": "unknown-node"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "error": {
+        "code": -32000,
+        "message": "ports-changed motu",
+        "data": {
+          "code": "ports-changed"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "error": {
+        "code": -32000,
+        "message": "unknown-node ghost",
+        "data": {
+          "code": "unknown-node"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "error": {
+        "code": -32000,
+        "message": "unknown-port rec:FX",
+        "data": {
+          "code": "unknown-port"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "error": {
+        "code": -32000,
+        "message": "wrong-direction rec:FL -> noise:MONO",
+        "data": {
+          "code": "wrong-direction"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "error": {
+        "code": -32000,
+        "message": "unknown-route noise:MONO -> rec:FR",
+        "data": {
+          "code": "unknown-route"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "error": {
+        "code": -32000,
+        "message": "stopping",
+        "data": {
+          "code": "stopping"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": null,
+      "error": {
+        "code": -32700,
+        "message": "Parse error"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": null,
+      "error": {
+        "code": -32600,
+        "message": "Invalid Request"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 14,
+      "error": {
+        "code": -32602,
+        "message": "/from/port: missing"
+      }
+    }
+  ],
+  "graph": {
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "motu",
+        "type": "card",
+        "settings": {
+          "card": "Pro24",
+          "playback": 2
+        },
+        "inputs": [
+          "playback_1",
+          "playback_2"
+        ],
+        "outputs": [],
+        "state": "running"
+      },
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "MONO"
+        ],
+        "state": "running"
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "/x.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "running"
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FL"
+        },
+        "status": "linked"
+      }
+    ]
+  }
+}

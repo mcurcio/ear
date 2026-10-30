@@ -1,12 +1,13 @@
 // What the user wants: nodes and routes, checked against the catalogue and each node's declared
-// ports (docs/design/m1-white-to-file.md section 2, desired_graph.hpp). It never knows what
-// exists in the engine.
+// ports (docs/design/batch2.md section 4.1, desired_graph.hpp). It never knows what exists in
+// the engine. Slice s0 kept M1's addNode and addRoute; slice C1 builds the rest.
 #include "ear/core/desired_graph.hpp"
 
 #include <algorithm>
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace ear {
@@ -19,11 +20,15 @@ bool declares(const std::vector<PortName>& ports, const PortName& port) {
 /// The node type's ports invariant (node_type.hpp): a breach is a type bug, not a user error.
 void requireUniquePortNames(const NodeSpec& node, const Ports& ports) {
 	std::set<PortName> seen;
-	for (const auto* list : {&ports.inputs, &ports.outputs})
+	for (const auto* list : {&ports.inputs, &ports.outputs, &ports.insideInputs, &ports.insideOutputs})
 		for (const auto& port : *list)
 			if (!seen.insert(port).second)
 				throw std::logic_error("node type " + node.type + " declares port " + port + " twice on node " +
 				                       node.name);
+}
+
+[[noreturn]] void notBuilt(const char* what) {
+	throw std::logic_error(std::string("DesiredGraph::") + what + ": not built yet (slice C1)");
 }
 
 } // namespace
@@ -31,7 +36,7 @@ void requireUniquePortNames(const NodeSpec& node, const Ports& ports) {
 struct DesiredGraph::Impl {
 	struct WantedNode {
 		NodeSpec spec;
-		std::unique_ptr<const NodeConfig> config;
+		std::shared_ptr<const NodeConfig> config;
 	};
 
 	const NodeCatalogue& catalogue;
@@ -55,6 +60,10 @@ DesiredGraph::DesiredGraph(const NodeCatalogue& catalogue) : impl_(new Impl{cata
 
 DesiredGraph::~DesiredGraph() = default;
 
+void DesiredGraph::observe(DesiredNodeListener&) { notBuilt("observe"); }
+
+void DesiredGraph::observe(DesiredRouteListener&) { notBuilt("observe"); }
+
 void DesiredGraph::subscribe(DesiredNodeListener& listener) { impl_->nodeListeners.push_back(&listener); }
 
 void DesiredGraph::subscribe(DesiredRouteListener& listener) { impl_->routeListeners.push_back(&listener); }
@@ -71,9 +80,15 @@ std::expected<void, CommandError> DesiredGraph::addNode(const NodeSpec& node) {
 	requireUniquePortNames(node, (*config)->ports());
 
 	const auto it = impl_->nodes.emplace(node.name, Impl::WantedNode{node, std::move(*config)}).first;
-	for (auto* listener : impl_->nodeListeners) listener->nodeAdded(it->first, *it->second.config);
+	for (auto* listener : impl_->nodeListeners) listener->nodeAdded(it->second.spec, it->second.config);
 	return {};
 }
+
+std::expected<void, CommandError> DesiredGraph::updateNode(const NodeName&, const NodeSettings&) {
+	notBuilt("updateNode");
+}
+
+std::expected<void, CommandError> DesiredGraph::removeNode(const NodeName&) { notBuilt("removeNode"); }
 
 std::expected<void, CommandError> DesiredGraph::addRoute(const Route& route) {
 	const auto from = impl_->portsOf(route.from);
@@ -87,5 +102,13 @@ std::expected<void, CommandError> DesiredGraph::addRoute(const Route& route) {
 	for (auto* listener : impl_->routeListeners) listener->routeAdded(route);
 	return {};
 }
+
+std::expected<void, CommandError> DesiredGraph::removeRoute(const Route&) { notBuilt("removeRoute"); }
+
+GraphClosed DesiredGraph::close() { return GraphClosed{}; }   // C1: later edits return Stopping
+
+std::vector<WantedNode> DesiredGraph::nodes() const { notBuilt("nodes"); }
+
+std::vector<Route> DesiredGraph::routes() const { notBuilt("routes"); }
 
 } // namespace ear

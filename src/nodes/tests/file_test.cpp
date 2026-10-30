@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -53,6 +54,9 @@ public:
 		requests.push_back({channels, capacityFrames});
 		writers.push_back(std::make_unique<SynchronousWriter>(channels, consumer));
 		return *writers.back();
+	}
+	void soundCard(const ear::SoundCardRequest&) override {
+		throw std::logic_error("file asked for a sound card");
 	}
 
 	struct Request {
