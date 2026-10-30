@@ -555,7 +555,7 @@ private:
 }
 ```
 
-engine.conf (S1 owns): context.properties core.daemon=false, core.name=ear, support.dbus=false,
+src/pipewire/engine.conf (S1 owns): context.properties core.daemon=false, core.name=ear, support.dbus=false,
 NO default.clock.*; context.spa-libs support.* = support/libspa-support; context.modules:
 module-rt [ifexists nofail], protocol-native, client-node [U needed for pw_filter export],
 spa-node-factory, link-factory; context.objects: Dummy-Driver (support.node.driver,
@@ -573,10 +573,10 @@ lanes. Architect's order: S1 tracer then S2–S5 fan out, each in its own worktr
 plan (page): three concurrent lanes after 0 — engine lane S1→S4, core lane S2→S3, nodes lane S5 —
 then S6 join, then D. Departure: owner's e2e test lands in S6, not first; S1 proves the
 frame-deciding risk through the real engine.
-Slice 0 owns every CMakeLists.txt under src/*/ and test/system/, creates each .cpp as a stub that
+Slice 0 owns every CMakeLists.txt under src/*/ and test/system/ (test/system is added from src/CMakeLists.txt, after the ear target its tests spawn), creates each .cpp as a stub that
 includes its header, placeholder tests. Each later slice owns only its .cpp/test files. New
 file or link needed = erratum.
-Land command: `git add -A -- <owned> && git commit -m '<msg>' -- <owned> && git pull --rebase origin claude/pipewire-design && git push origin HEAD:claude/pipewire-design`
+Land command: `git add -A -- <owned> && git commit -m '<msg>' -- <owned> && git pull --rebase origin claude/m1-white-to-file && git push origin HEAD:claude/m1-white-to-file`
 Shared derived state: each worktree own out/; .cache/ccache shared; Boost tree shared read-only
 via CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_BOOST=<main checkout>/.cache/deps/boost-src
 (cmake/KeptFetchContent.cmake:30-35); Docker image shared read-only; scripts/dev.sh mounts
@@ -586,8 +586,8 @@ via CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_BOOST=<main checkout>/.cache/deps/boost
 |---|---|---|---|
 | B build base | one image dev+CI; JUCE gone; C++23; libpipewire + sndfile via pkg-config | CMakeLists.txt, src/CMakeLists.txt, Makefile (make test builds all + ctest; CMAKE_ARGS pass-through), docker/Dockerfile (base pinned by digest; libpipewire-0.3-dev libspa-0.2-dev libpipewire-0.3-modules libspa-0.2-modules libsndfile1-dev [U names], cmake, ccache, pkg-config, xz-utils), .dockerignore, scripts/dev.sh, .github/workflows/test.yml (one Linux job: buildx type=gha cache, run inside image; ccache + Boost via actions/cache; ctest logs on failure), src/main.cpp (stub program_options --help/--config), test/CMakeLists.txt, test/main.cpp (ear_catch_main lib; JUCE cleanup removed). Deletes include/ear/, src/server.hpp, test/audio_graph_test.cpp, test/virtual_audio_device.hpp, scripts/install-build-deps.sh. Boost trimmed to program_options. Subtree-bump vendor/json / vendor/catch ONLY if a C++23 probe fails | 4–6 h |
 | 0 interfaces | §2 headers compile; package skeletons | every src/*/include/**, every src/*/CMakeLists.txt, stub .cpp, placeholder tests, test/system/ placeholders, first engine.conf | 3 h |
-| S1 tracer: engine seam | real in-process PipeWire carries audio between two port blocks over a link | src/pipewire/{engine,live_graph,links,port_blocks}.cpp, engine.conf, src/pipewire/tests/engine_test.cpp | 6–8 h |
-| S2 node framework core | desired graph, catalogue, lifecycle, NodeHost | src/core/{command_error,node_catalogue,desired_graph,node_lifecycle,node_host}.cpp, src/core/tests/{desired_graph,node_lifecycle,node_host}_test.cpp | 5–6 h |
+| S1 tracer: engine seam | real in-process PipeWire carries audio between two port blocks over a link | src/pipewire/{engine,live_graph,links,port_blocks}.cpp, src/pipewire/engine.conf, src/pipewire/tests/engine_test.cpp | 6–8 h |
+| S2 node framework core | desired graph, catalogue, lifecycle (also defines failureCode, in node_lifecycle.cpp), NodeHost | src/core/{command_error,node_catalogue,desired_graph,node_lifecycle,node_host}.cpp, src/core/tests/{desired_graph,node_lifecycle,node_host}_test.cpp | 5–6 h |
 | S3 reconciler | route links from events | src/core/reconciler.cpp, src/core/tests/reconciler_test.cpp | 2–3 h |
 | S4 handoff | RT → ordinary-thread handoff | src/pipewire/handoffs.cpp, src/pipewire/tests/handoff_test.cpp | 3–4 h |
 | S5 node types | white, file | src/nodes/{white,file,builtin}.cpp, src/nodes/tests/{white,file}_test.cpp | 3–4 h |
@@ -643,17 +643,21 @@ cases ~1.5 s, parallel under ctest. One pinned image locally (scripts/dev.sh; Do
 /Volumes/Dock) and in CI. Build without JUCE est. 1–2 min cold (not measured).
 
 ## 5. JUCE
-Removed in B (pending owner Q2): JUCE, ear_tests, virtual device, install-build-deps.sh, macOS CI
+Removed in B (owner's answer to Q2, 2026-10-29): JUCE, ear_tests, virtual device, install-build-deps.sh, macOS CI
 leg. ear.json v1 and --device/--gain flags dropped without compat. Departs from outline step 9.
 
 ## 6. Risks
 Folded into S1: engine + dummy driver; output-only source; always-process without SM; clock props;
 no process after pw_filter_destroy; client-node enough. B: C++23 with old vendored libs; package
 names. Unverified: 1.4.2 behaviour matching 1.0.5 scheduling; pw_loop_signal_event RT-safe.
+After the work: S1's tests passed on 1.4.2 for every item folded into S1 (so 1.4.2 schedules
+unlinked always-process nodes as 1.0.5 does); S4 showed the handoff write, wake included,
+allocates nothing, but RT safety beyond that is still unverified.
 
 ## 7. Owner questions (on the gate page)
 Q1 container base: Debian 13 (rec; PipeWire 1.4.2, GCC 14) vs Ubuntu 24.04 (PipeWire 1.0.5, GCC 13).
-Q2 remove JUCE now (rec) vs keep until sound-card output.
+Answered: Debian 13.
+Q2 remove JUCE now (rec) vs keep until sound-card output. Answered: remove now.
 
 ## 8. Parked
 Control port 7777 + rest of GraphControl; Beast + PipeWire one main loop. Socket (core.daemon,
@@ -662,10 +666,17 @@ airplay, recovering + backoff. Engine-node and module port-block kinds (NodeInsi
 generalises). Live rate/block changes (prepare again); multiple links mixing. media.class; pw-top
 attach. Handoff batching / shared threads. Production image, k8s, RT privileges, mlock; ALSA + R5.
 PipeWire ≥1.7: load module-scheduler-v1. Reload/persist ear.json. Status/drop counts over port.
-Maintenance risks: engine.conf tied to pinned PipeWire (bump procedure in D skill); node.name
+Maintenance risks: engine.conf tied to pinned PipeWire (bump procedure in .claude/skills/pipewire-engine/SKILL.md); node.name
 recognition only while no other client; one thread per handoff; stuck disk I/O hangs SIGTERM;
 lanes need the Boost override or refetch 800 MB.
 
 ## New terms
 Handoff (ring + wake + ordinary thread), Live port, Graph file (ear.json v2), Status line, Lane.
 NOT RUN: nothing was built or compiled by the architect.
+
+## Errata (corrected after the work, slice D)
+- Land command named branch claude/pipewire-design; the work landed on claude/m1-white-to-file.
+- engine.conf's path was not given; it is src/pipewire/engine.conf (configure copies it beside out/ear).
+- test/system/ is added from src/CMakeLists.txt, not the top-level CMakeLists.txt (slice 0's choice): its tests need the ear target.
+- failureCode (node_type.hpp) had no owning slice; S2 defines it, in src/core/node_lifecycle.cpp.
+- Results: every slice landed; ctest in the Debian image passed 60 of 60 tests, and CI passed. S6 checks criterion 1's "no zero inside" as "no two adjacent zero samples" (white can produce an exact 0 with chance 2^-24 per sample).

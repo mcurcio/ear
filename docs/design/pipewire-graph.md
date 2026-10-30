@@ -2,8 +2,8 @@
 
 Layer: system design (domain model and public interfaces). Agreed 2026-10-29 in chat and on the
 design page, https://claude.ai/artifact/Ct6C2EPnD2S49oAeWmVNXZ (version 4), which holds the full
-interfaces, diagrams and flows. This file records what was agreed; the module-level design comes
-next, at its own gate.
+interfaces, diagrams and flows. This file records what was agreed. Module-level designs have their
+own pages and gates: milestone 1 is `docs/design/m1-white-to-file.md`.
 
 ## Requirements (the owner's words, 2026-10-29)
 
@@ -73,6 +73,22 @@ Not planned: hotplug, sample-exact alignment, WirePlumber.
 
 ## Work outline
 
+Milestone 1 (white noise into a file sink, through the in-process engine) landed on 2026-10-29
+on branch `claude/m1-white-to-file`; its page is `docs/design/m1-white-to-file.md`. It changed
+the order below:
+
+- Step 9 came first: the JUCE runtime and its tests were removed in milestone 1's first slice,
+  the build base (the owner's answer on the milestone 1 gate page, 2026-10-29: remove JUCE in
+  this milestone). The docs and skills were rewritten at the milestone's end.
+- Done: step 1 (Debian 13 image for development and CI, Linux CI); step 2; step 4; step 5 with
+  the `white` and `file` types in place of null-sink and tone; step 3 without the socket or
+  marks (no other client can connect, so EAR recognises its nodes by `node.name`); step 6's
+  `ear.json` v2 only.
+- Not started: the control port (rest of step 6), steps 7 and 8. The parked list is section 8
+  of the milestone 1 page.
+
+The original outline:
+
 1. Build base: PipeWire libraries, a Linux dev and test container, Linux CI.
 2. Pure core: graph spec, checks, errors, the node state machine.
 3. Engine host: PipeWire inside EAR, its socket, marks, live objects.
@@ -87,7 +103,10 @@ The tracer test runs in a Linux container with no hardware, through `ear.json` a
 port: tones routed to two virtual sinks arrive on their channels with every other channel exactly
 zero; an airplay node with a stand-in that behaves like shairport is running while idle and plays
 while "played"; a crash recovers without unlinking the route; a bad route returns `unknown-port`;
-removing the node silences its channel.
+removing the node silences its channel. Milestone 1's system tests cover part of it through
+`ear.json` alone: white noise routed to one channel of a file sink, the other channel exactly
+zero, and a bad route ending EAR with `unknown-port`.
 
-Still to test: several links mixing into one input; an output-only node acting as a source;
-node activity with no session manager.
+Tested in milestone 1 (`src/pipewire/tests/engine_test.cpp`, PipeWire 1.4.2): an output-only
+node acting as a source, and node activity with no session manager. Still to test: several
+links mixing into one input.
