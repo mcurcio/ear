@@ -2,7 +2,9 @@
 // criteria 1-7): real sockets on 127.0.0.1:0, a fake main loop on its own thread and a fake
 // gateway that answers on it. Every step waits for the event it needs (a reply, a notification,
 // a close); the client's deadline only fails a test.
+#include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -10,7 +12,14 @@
 #include <future>
 #include <mutex>
 #include <thread>
+#include <vector>
 
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/resource.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "catch2/catch.hpp"
@@ -197,7 +206,78 @@ json removedNotification(const std::string& node) {
 	return {{"jsonrpc", "2.0"}, {"method", "node.removed"}, {"params", {{"name", node}}}};
 }
 
+/// This process's descriptor table, full: the soft limit lowered and every free descriptor
+/// below it taken, but `free` of them. The destructor gives them back and restores the limit.
+class FullDescriptorTable {
+public:
+	explicit FullDescriptorTable(int free) {
+		REQUIRE(::getrlimit(RLIMIT_NOFILE, &saved_) == 0);
+		const int lowestFree = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+		REQUIRE(lowestFree >= 0);
+		::close(lowestFree);
+		rlimit lowered = saved_;
+		lowered.rlim_cur = static_cast<rlim_t>(lowestFree + 64);
+		REQUIRE(::setrlimit(RLIMIT_NOFILE, &lowered) == 0);
+		for (int fd; (fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) >= 0;) taken_.push_back(fd);
+		REQUIRE(errno == EMFILE);
+		for (int i = 0; i < free; ++i) {
+			::close(taken_.back());
+			taken_.pop_back();
+		}
+	}
+	~FullDescriptorTable() {
+		for (const int fd : taken_) ::close(fd);
+		::setrlimit(RLIMIT_NOFILE, &saved_);
+	}
+	FullDescriptorTable(const FullDescriptorTable&) = delete;
+	FullDescriptorTable& operator=(const FullDescriptorTable&) = delete;
+
+private:
+	rlimit saved_{};
+	std::vector<int> taken_;
+};
+
+/// A plain TCP connection to 127.0.0.1:`port` (it completes in the kernel's queue, before the
+/// port accepts it); -1 if it could not be made.
+int connectTcp(std::uint16_t port) {
+	const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if (fd < 0) return -1;
+	sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (::connect(fd, reinterpret_cast<const sockaddr*>(&address), sizeof address) != 0) {
+		::close(fd);
+		return -1;
+	}
+	return fd;
+}
+
 } // namespace
+
+TEST_CASE("With no descriptor left the port closes the waiting connection and serves the next",
+          "[control-port]") {
+	Fixture fixture;
+	bool closedByPort = false;
+	{
+		// One descriptor free: the client's socket takes it, so the port's accept finds none.
+		FullDescriptorTable full(1);
+		const int client = connectTcp(fixture.number());
+		REQUIRE(client >= 0);
+		// The port refuses it (and goes on waiting for the next connection): the client reads
+		// end of file or a reset. Before the remedy the port retried at once forever and the
+		// connection stayed queued, so this read reached the deadline.
+		pollfd readable{client, POLLIN, 0};
+		if (::poll(&readable, 1, 10'000) == 1) {   // the deadline only fails the test
+			char byte = 0;
+			closedByPort = ::recv(client, &byte, 1, 0) <= 0;
+		}
+		::close(client);
+	}
+	CHECK(closedByPort);
+	WsClient later(fixture.number());
+	CHECK(call(later, 9, "graph.get")["id"] == 9);
+}
 
 TEST_CASE("The control port serves the web root's files and refuses paths out of it", "[control-port]") {
 	Fixture fixture;

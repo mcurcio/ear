@@ -201,11 +201,14 @@ How audio moves:
    context loaded from `engine.conf`, and EAR's own connection to it. There is no daemon, no
    socket and no session manager; a dummy driver clocks the graph at `graphFrequency` with
    `blockSize` frames a cycle. The `pipewire-engine` skill covers the configuration and traps.
-2. A node starts (`NodeHost`): its type's `NodeConfig::start` makes the type's insides, then
-   `AudioCode::prepare` runs, then `FilterPortBlocks` makes its port block: one
-   always-processing `pw_filter` named by the node's name, with one 32-bit float mono port per
-   declared port. Its first STREAMING state makes the node `running`. Every block processes
-   whether routed or not; an unlinked input reads zeros.
+2. A node starts (`NodeHost`) block first: `FilterPortBlocks` makes its port block, once for
+   the node's life: one always-processing `pw_filter` named by the node's name, with one 32-bit
+   float mono port per declared port. Then its type's `NodeConfig::start` makes the type's
+   insides, `AudioCode::prepare` runs and the block is driven with that code; new settings
+   restart the insides behind the same block. The node is `running` once the block is ready
+   (its first STREAMING state) and the insides are ready, every sound card they asked for
+   included (`NodeLifecycle`). Every block processes whether routed or not; an unlinked input
+   reads zeros.
 3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
    per port. `white` fills its output with noise.
 4. `LiveGraph` reports each port as the engine's registry announces it (node name, port name,

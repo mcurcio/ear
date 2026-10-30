@@ -1426,6 +1426,42 @@ file capability (section 7).
 - **D, 2026-10-30: `web/vite.config.ts` has a stale comment** ("Until the first test file
   lands, an empty run passes", beside `passWithNoTests`): the tests have landed. Not in D's
   owned files; left for the next change to `web/`.
+- **Review fix, 2026-10-30: E1(6)'s probe cannot turn red, and no test can reach drive()'s
+  no-data-loop branch.** In PipeWire 1.4.2's filter.c the data loop is set by
+  `pw_filter_connect` (from the node it creates) and cleared only by `node_event_destroy`, which
+  runs when the filter itself disconnects or is destroyed (EAR does that only in the block's
+  destructor). `pw_filter_connect` fails before that only when an allocation fails
+  (`ensure_loop` logs and goes on), and an engine node destroyed through the registry keeps its
+  data loop (section 13). So the branch is a guard with no test; E1(6) proves the reachable
+  case (a block lost through the registry: drive returns and the code never runs).
+- **Review fix, 2026-10-30, needs the owner: a `file` node writes wherever the client says.**
+  Section 4.4 freezes "file": settings {"path": any non-empty string}, truncated at start. With
+  "no login on port 7777" (design choices), anyone who can reach the port can truncate or
+  overwrite any file the ear process can write (`node.add` type "file" with that path). Not
+  changed: it changes a frozen interface. Options: file paths relative to one recordings
+  directory given on the command line (no `..`, no absolute paths), or no overwrite of an
+  existing file, or login on the port. Related: `--control-address` defaults to 0.0.0.0 (section
+  4.6), so by default the whole LAN can edit the graph; the design records that as a revisable
+  choice, not as the owner's word.
+- **Review fix, 2026-10-30: J(5) as built accepts a 1001 close without one "stopping" refusal**
+  (the criterion allows it: "each gets ... "stopping" or the socket closes with 1001"). Making a
+  refusal certain needs a node held in stopping by a test event, which no node type offers; the
+  refusal itself is checked through the real session against `test/protocol/errors.json`. The
+  flake fixed here: when both edits were refused before the close, the test stopped reading and
+  ear waited for its close reply until the deadline.
+- **Review fix, 2026-10-30: E2(3) saw one block of silence on the card about 1 run in 10**, mid
+  stream, with no sample lost (the ramp goes on where it stopped): a cycle in which the card got
+  no block in time, in a container without realtime scheduling. The test now requires every ramp
+  sample once and in order, and allows only whole silent blocks. Whether this happens with
+  realtime scheduling is checked on the hardware.
+- **Review fix, 2026-10-30: a full descriptor table made the control port spin.** Accepting
+  again at once after EMFILE or ENFILE retried forever. Now the port frees a spare descriptor,
+  accepts and closes the waiting connection, and waits for the next one. Still open (the owner's
+  call, like J's close timeout): no cap on connections and no idle timeout, so a peer holding
+  about a thousand idle connections still locks other clients out.
+- **Review fix, 2026-10-30: no test drives the built editor in a browser.** A headless-browser
+  smoke (load the page from `out/ear`, see the nodes, drag a wire, see it linked) needs a new
+  test dependency (Playwright or similar, and a browser in the dev image). Not added here.
 
 ## 12. Design review, 2026-10-30: findings and changes
 

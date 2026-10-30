@@ -368,6 +368,7 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 	    {"node.add", {{"name", "late"}, {"type", "white"}}},
 	    {"node.update", {{"name", "rec"}, {"settings", {{"path", (directory.path() / "late.wav").string()}}}}},
 	};
+	std::optional<std::uint16_t> closeCode;
 	for (const auto& [method, params] : edits) {
 		try {
 			const json reply = rpc.call(method, params);
@@ -375,10 +376,13 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 			CHECK(reply["error"]["code"] == -32000);
 			CHECK(reply["error"]["data"]["code"] == "stopping");
 		} catch (const ear::test::Closed& closed) {
-			CHECK(closed.code == 1001);
+			closeCode = closed.code;
 			break;
 		}
 	}
+	// ear waits for each client's close reply before it exits, so keep reading until it closes.
+	if (!closeCode) closeCode = rpc.readUntilClosed();
+	CHECK(*closeCode == 1001);
 
 	const auto exitStatus = ear.process().waitForExit(deadline);
 	INFO("ear printed:\n" << ear.process().output());

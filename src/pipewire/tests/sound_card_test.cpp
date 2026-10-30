@@ -502,16 +502,35 @@ TEST_CASE("What a port block sends to inside output to_card_2 lands on the card'
     }
   }
   REQUIRE(first + 2 * 16 * kBlock < samples.size());
-  std::size_t breaks = 0;
   std::size_t leftNonZero = 0;
   for (std::size_t i = 0; i < samples.size(); i += 2) {
     if (samples[i] != 0.0F) ++leftNonZero;
   }
+  // Every ramp sample arrives once, in order: each non-zero sample is the last one plus a step.
+  // A cycle in which the card gets no block in time plays one whole block of silence and loses
+  // nothing (seen about 1 run in 10 without realtime scheduling: 256 zeros mid-stream, then
+  // the ramp goes on where it stopped). Any other zero run is a break.
+  std::size_t breaks = 0;
+  std::size_t rampSamples = 1;
+  std::size_t silentBlocks = 0;
+  float last = samples[first];
+  std::size_t zeroRun = 0;
   for (std::size_t i = first + 2; i < samples.size(); i += 2) {
-    if (samples[i] != samples[i - 2] + Code::kStep) ++breaks;
+    if (samples[i] == 0.0F) {
+      ++zeroRun;
+      continue;
+    }
+    if (zeroRun % kBlock != 0) ++breaks;
+    silentBlocks += zeroRun / kBlock;
+    zeroRun = 0;
+    if (samples[i] != last + Code::kStep) ++breaks;
+    last = samples[i];
+    ++rampSamples;
   }
+  INFO("whole silent blocks: " << silentBlocks);
   CHECK(leftNonZero == 0);
   CHECK(breaks == 0);
+  CHECK(rampSamples >= 16 * kBlock);
   CHECK(samples[first] >= Code::kStep);
 }
 

@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <cstdint>
 #include <deque>
@@ -27,6 +28,7 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/beast/websocket.hpp>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include "control_context.hpp"
@@ -153,10 +155,18 @@ struct Shared {
 	/// HTTP connections, held by their own operations.
 	std::unordered_map<HttpSession*, std::weak_ptr<HttpSession>> requests;
 
+	/// A descriptor kept in reserve for a full descriptor table (acceptNext).
+	int spare = openSpare();
+
 	Shared(ControlPortSettings s, asio::io_context& io) : settings(std::move(s)), acceptor(io), bell(io) {}
 	~Shared() {
 		if (bell.is_open()) bell.release();   // the LevelBell owns its descriptor
+		if (spare >= 0) ::close(spare);
 	}
+	Shared(const Shared&) = delete;
+	Shared& operator=(const Shared&) = delete;
+
+	static int openSpare() noexcept { return ::open("/dev/null", O_RDONLY | O_CLOEXEC); }
 };
 
 class WsSession final : public control::Outbox, public std::enable_shared_from_this<WsSession> {
@@ -394,9 +404,34 @@ private:
 	std::optional<http::request_parser<http::string_body>> parser_;
 };
 
+void acceptNext(const std::shared_ptr<Shared>& shared);
+
+/// With the descriptor table full (EMFILE, ENFILE) a waiting connection stays queued and the
+/// acceptor stays readable, so accepting again at once would spin. The usual remedy (libuv,
+/// nginx): free the spare descriptor, accept the waiting connection (if any) and close it, take
+/// the spare back, then accept again only once the acceptor is readable: the next connection is
+/// the next event. The refused peer sees its connection closed.
+void refuseOne(const std::shared_ptr<Shared>& shared) {
+	if (shared->spare >= 0) ::close(shared->spare);
+	error_code ignored;
+	shared->acceptor.non_blocking(true, ignored);   // an empty queue answers would_block
+	tcp::socket refused(shared->acceptor.get_executor());
+	shared->acceptor.accept(refused, ignored);
+	refused.close(ignored);
+	shared->spare = Shared::openSpare();
+	shared->acceptor.async_wait(tcp::acceptor::wait_read, [shared](error_code ec) {
+		if (shared->stopped || ec == asio::error::operation_aborted) return;
+		acceptNext(shared);
+	});
+}
+
 void acceptNext(const std::shared_ptr<Shared>& shared) {
 	shared->acceptor.async_accept([shared](error_code ec, tcp::socket socket) {
 		if (shared->stopped || ec == asio::error::operation_aborted) return;
+		if (ec == asio::error::no_descriptors || ec.value() == ENFILE) {
+			refuseOne(shared);
+			return;
+		}
 		if (!ec) {
 			// Messages are small and each is wanted now (levels are 30 a second): no Nagle wait
 			// behind the peer's delayed acknowledgement (tens of ms per message on loopback).
