@@ -1,0 +1,338 @@
+{
+  "description": "graph.get and graph.subscribe answer with the whole graph (docs/design/batch2.md section 6): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.get\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": true,
+        "scheduling": "SCHED_FIFO 88",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "motu",
+            "type": "card",
+            "settings": {
+              "card": "Pro24",
+              "playback": 2
+            },
+            "inputs": [
+              "playback_1",
+              "playback_2"
+            ],
+            "outputs": [],
+            "state": "failed",
+            "reason": {
+              "code": "engine-refused",
+              "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
+            }
+          },
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "MONO"
+            ],
+            "state": "running"
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "/x.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "running"
+          },
+          {
+            "name": "tape",
+            "type": "file",
+            "settings": {
+              "path": "/nope/t.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "failed",
+            "reason": {
+              "code": "start-failed",
+              "detail": "cannot open /nope/t.wav: No such file or directory"
+            }
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "motu",
+              "port": "playback_1"
+            },
+            "status": "pending"
+          },
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "rec",
+              "port": "FL"
+            },
+            "status": "linked"
+          },
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "tape",
+              "port": "FL"
+            },
+            "status": "refused",
+            "detail": "the engine removed the link before it was active"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": true,
+        "scheduling": "SCHED_FIFO 88",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "motu",
+            "type": "card",
+            "settings": {
+              "card": "Pro24",
+              "playback": 2
+            },
+            "inputs": [
+              "playback_1",
+              "playback_2"
+            ],
+            "outputs": [],
+            "state": "failed",
+            "reason": {
+              "code": "engine-refused",
+              "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
+            }
+          },
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "MONO"
+            ],
+            "state": "running"
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "/x.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "running"
+          },
+          {
+            "name": "tape",
+            "type": "file",
+            "settings": {
+              "path": "/nope/t.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "failed",
+            "reason": {
+              "code": "start-failed",
+              "detail": "cannot open /nope/t.wav: No such file or directory"
+            }
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "motu",
+              "port": "playback_1"
+            },
+            "status": "pending"
+          },
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "rec",
+              "port": "FL"
+            },
+            "status": "linked"
+          },
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "tape",
+              "port": "FL"
+            },
+            "status": "refused",
+            "detail": "the engine removed the link before it was active"
+          }
+        ]
+      }
+    }
+  ],
+  "graph": {
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": true,
+    "scheduling": "SCHED_FIFO 88",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "motu",
+        "type": "card",
+        "settings": {
+          "card": "Pro24",
+          "playback": 2
+        },
+        "inputs": [
+          "playback_1",
+          "playback_2"
+        ],
+        "outputs": [],
+        "state": "failed",
+        "reason": {
+          "code": "engine-refused",
+          "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
+        }
+      },
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "MONO"
+        ],
+        "state": "running"
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "/x.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "running"
+      },
+      {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "/nope/t.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "failed",
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open /nope/t.wav: No such file or directory"
+        }
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "motu",
+          "port": "playback_1"
+        },
+        "status": "pending"
+      },
+      {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FL"
+        },
+        "status": "linked"
+      },
+      {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "tape",
+          "port": "FL"
+        },
+        "status": "refused",
+        "detail": "the engine removed the link before it was active"
+      }
+    ]
+  }
+}

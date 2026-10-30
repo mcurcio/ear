@@ -40,6 +40,20 @@ public:
 		if (route.to.port == refuseRouteTo) return std::unexpected(ear::UnknownPort{route.to});
 		return {};
 	}
+	// replay only adds; the other edits are recorded so a stray call fails the order checks.
+	std::expected<void, ear::CommandError> updateNode(const ear::NodeName& node,
+	                                                  const ear::NodeSettings&) override {
+		calls.push_back("update " + node);
+		return {};
+	}
+	std::expected<void, ear::CommandError> removeNode(const ear::NodeName& node) override {
+		calls.push_back("remove node " + node);
+		return {};
+	}
+	std::expected<void, ear::CommandError> removeRoute(const ear::Route& route) override {
+		calls.push_back("remove route " + route.to.node + ":" + route.to.port);
+		return {};
+	}
 };
 
 const std::string twoNodes = R"({

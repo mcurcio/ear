@@ -1,0 +1,160 @@
+{
+  "description": "levels.subscribe and levels notifications (docs/design/batch2.md section 6): each is a complete snapshot of every port block's latest window, [peak, rms] linear to 4 decimals per public port; a node missing from a snapshot has no level. Levels never change the graph.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"levels.subscribe\"}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "MONO"
+            ],
+            "state": "running"
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "/x.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "running"
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "rec",
+              "port": "FL"
+            },
+            "status": "linked"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "windowsPerSecond": 30
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "levels",
+      "params": {
+        "nodes": {
+          "noise": {
+            "MONO": [
+              0.9998,
+              0.5771
+            ]
+          },
+          "rec": {
+            "FL": [
+              0.9998,
+              0.5771
+            ],
+            "FR": [
+              0,
+              0
+            ]
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "levels",
+      "params": {
+        "nodes": {
+          "rec": {
+            "FL": [
+              0.9991,
+              0.5779
+            ],
+            "FR": [
+              0,
+              0
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "graph": {
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "MONO"
+        ],
+        "state": "running"
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "/x.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "running"
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FL"
+        },
+        "status": "linked"
+      }
+    ]
+  }
+}

@@ -1,4 +1,5 @@
-// PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts").
+// PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts";
+// docs/design/batch2.md section 4.3). Slice E1 builds CAP_SYS_NICE and the scheduling report.
 #include "ear/pipewire/engine.hpp"
 
 #include <algorithm>
@@ -124,6 +125,8 @@ void Engine::onStopSignal(std::function<void()> handler) {
   if (impl_->sigint == nullptr) impl_->sigint = pw_loop_add_signal(loop, SIGINT, &Impl::onSignal, impl_.get());
   if (impl_->sigterm == nullptr) impl_->sigterm = pw_loop_add_signal(loop, SIGTERM, &Impl::onSignal, impl_.get());
 }
+
+Scheduling Engine::dataThreadScheduling() const { return {false, "unknown"}; }   // E1
 
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }
 

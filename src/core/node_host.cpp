@@ -1,7 +1,8 @@
-// The node framework (docs/design/m1-white-to-file.md sections 1 and 2, node_host.hpp): runs each
-// wanted node's state machine, owns everything the node made, and tears it down in one order:
-// port block, release(), handoffs, insides. It reaches the engine only through the factory
-// interfaces node_host.hpp declares.
+// The node framework (docs/design/batch2.md section 4.1, node_host.hpp): runs each wanted node's
+// state machine, owns everything the node made, and tears it down in one order: port block,
+// release(), handoffs, insides, config. It reaches the engine only through the factory
+// interfaces node_host.hpp declares. Slice s0 kept M1's behaviour on the batch 2 interfaces
+// (block first, then the insides drive it); slice C1 builds updates, removal and sound cards.
 #include "ear/core/node_host.hpp"
 
 #include <stdexcept>
@@ -11,7 +12,8 @@ namespace ear {
 
 struct NodeHost::Impl {
 	/// One wanted node and everything it made. Members are declared in reverse teardown order,
-	/// so destroying a node that never stopped still removes its port block first.
+	/// so destroying a node that never stopped still removes its port block first and lets its
+	/// config go last.
 	class Node final : public PortBlockEvents, public NodeGrant {
 	public:
 		Node(Impl& host, NodeName name) : host_(host), name_(std::move(name)) {}
@@ -20,22 +22,27 @@ struct NodeHost::Impl {
 		const NodeLifecycle& lifecycle() const noexcept { return lifecycle_; }
 		NodeStatus status() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
 
-		void start(const NodeConfig& config) {
+		/// The port block first; then the insides, which drive it.
+		void start(std::shared_ptr<const NodeConfig> config) {
+			config_ = std::move(config);
+			block_ = host_.blocks.make(name_, config_->ports(), host_.format, *this);
 			granting_ = true;
-			auto insides = config.start(*this);
+			auto insides = config_->start(*this);
 			granting_ = false;
 			if (!insides) {
-				// No write happened (there is no port block), so the handoffs may go now; the
-				// consumers they were given went with the type's failed start.
+				// No write happened (the block was never driven by this node's code), so the
+				// handoffs may go now; the consumers they were given went with the type's failed
+				// start. The port block stays.
 				handoffs_.clear();
-				if (lifecycle_.refused(std::move(insides.error()))) host_.changed(*this);
+				if (lifecycle_.insidesFailed(std::move(insides.error()))) host_.changed(*this);
 				return;
 			}
 			insides_ = std::move(*insides);
 			AudioCode& code = insides_->audioCode();
 			code.prepare(host_.format);
 			prepared_ = true;
-			block_ = host_.blocks.make(name_, config.ports(), host_.format, code, *this);
+			block_->drive(&code);
+			if (lifecycle_.insidesReady()) host_.changed(*this);   // no sound cards yet (C1)
 		}
 
 		/// Stopping: port block, release(), handoffs, insides; then gone.
@@ -60,7 +67,8 @@ struct NodeHost::Impl {
 			if (lifecycle_.portBlockReady()) host_.changed(*this);
 		}
 		void lost(std::string detail) override {
-			if (lifecycle_.refused({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
+			if (lifecycle_.portBlockLost({FailureReason::Code::engineRefused, std::move(detail)}))
+				host_.changed(*this);
 		}
 
 		// NodeGrant
@@ -70,6 +78,9 @@ struct NodeHost::Impl {
 			handoffs_.push_back(host_.handoffs.make(name_, channels, capacityFrames, consumer));
 			return handoffs_.back()->writer();
 		}
+		void soundCard(const SoundCardRequest&) override {
+			throw std::logic_error("node " + name_ + ": sound cards are not built yet (slice C1)");
+		}
 
 	private:
 		/// Runs once every handoff reported closed, and never inside a close() call, so no
@@ -78,6 +89,7 @@ struct NodeHost::Impl {
 			if (closing_ || closed_ != handoffs_.size() || lifecycle_.gone()) return;
 			handoffs_.clear();
 			insides_.reset();
+			config_.reset();
 			lifecycle_.stopped();
 			host_.gone(*this, dropped_);
 		}
@@ -85,6 +97,7 @@ struct NodeHost::Impl {
 		Impl& host_;
 		NodeName name_;
 		NodeLifecycle lifecycle_;
+		std::shared_ptr<const NodeConfig> config_;
 		std::unique_ptr<NodeInsides> insides_;
 		std::vector<std::unique_ptr<Handoff>> handoffs_;
 		std::unique_ptr<PortBlock> block_;
@@ -98,6 +111,7 @@ struct NodeHost::Impl {
 	AudioFormat format;
 	PortBlockFactory& blocks;
 	HandoffFactory& handoffs;
+	SoundCardFactory& cards;
 	std::vector<NodeStatusListener*> listeners;
 	std::vector<std::unique_ptr<Node>> nodes;   // in arrival order; kept until the host goes
 	bool stopRequested = false;
@@ -121,21 +135,30 @@ struct NodeHost::Impl {
 	}
 };
 
-NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs)
-	: impl_(new Impl{format, blocks, handoffs, {}, {}, false, nullptr}) {}
+NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
+                   SoundCardFactory& cards)
+	: impl_(new Impl{format, blocks, handoffs, cards, {}, {}, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
 
 void NodeHost::subscribe(NodeStatusListener& listener) { impl_->listeners.push_back(&listener); }
 
-void NodeHost::nodeAdded(const NodeName& node, const NodeConfig& config) {
-	if (impl_->stopRequested) throw std::logic_error("node " + node + " was added after stopAll()");
-	auto& added = *impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node));
+void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
+	if (impl_->stopRequested) throw std::logic_error("node " + node.name + " was added after stopAll()");
+	auto& added = *impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name));
 	impl_->changed(added);
-	added.start(config);
+	added.start(std::move(config));
 }
 
-void NodeHost::stopAll(std::move_only_function<void()> allGone) {
+void NodeHost::nodeUpdated(const NodeSpec&, std::shared_ptr<const NodeConfig>) {
+	throw std::logic_error("NodeHost::nodeUpdated: not built yet (slice C1)");
+}
+
+void NodeHost::nodeRemoved(const NodeName&) {
+	throw std::logic_error("NodeHost::nodeRemoved: not built yet (slice C1)");
+}
+
+void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	if (impl_->stopRequested) throw std::logic_error("stopAll() was called twice");
 	impl_->stopRequested = true;
 	impl_->allGone = std::move(allGone);

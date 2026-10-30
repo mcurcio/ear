@@ -1,5 +1,5 @@
-// Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
-// erratum in that page's Errata section and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
+// page's Errata section (section 11) and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -9,10 +9,17 @@
 #include <string_view>
 #include <vector>
 #include "ear/core/command_error.hpp"
+#include "ear/core/sound_card.hpp"
 namespace ear {
-/// Invariant: names unique across inputs and outputs (DesiredGraph::addNode throws
-/// std::logic_error otherwise: a type bug, not a user error).
-struct Ports { std::vector<PortName> inputs; std::vector<PortName> outputs; };
+/// Public ports are routable. Inside ports belong to the port block only; nothing but the node's
+/// own sound cards reaches them. Invariant: the four lists' names are unique together
+/// (DesiredGraph::addNode throws std::logic_error otherwise: a type bug, not a user error).
+struct Ports {
+  std::vector<PortName> inputs;
+  std::vector<PortName> outputs;
+  std::vector<PortName> insideInputs = {};
+  std::vector<PortName> insideOutputs = {};
+};
 /// Why a node is failed. Part of status; never returned by a control call.
 struct FailureReason { enum class Code { engineRefused, startFailed }; Code code; std::string detail; };
 std::string_view failureCode(FailureReason::Code code) noexcept;  // "engine-refused" | "start-failed"
@@ -23,9 +30,10 @@ public:
   virtual ~AudioCode() = default;
   /// Main thread, before the first process(), never concurrently with it. May allocate.
   virtual void prepare(const AudioFormat& format) = 0;
-  /// Realtime: no locks, allocation, file/network access or waiting. inputs/outputs are in
-  /// declaration order, each span exactly `frames` long, frames <= maxBlock. An unlinked
-  /// input reads zeros. Every output sample must be written.
+  /// Realtime: no locks, allocation, file/network access or waiting. `inputs` = inputs then
+  /// insideInputs, `outputs` = outputs then insideOutputs, each in declaration order, each span
+  /// exactly `frames` long, frames <= maxBlock. An unlinked input reads zeros. Every output
+  /// sample must be written.
   virtual void process(std::span<const std::span<const float>> inputs,
                        std::span<const std::span<float>> outputs,
                        std::uint32_t frames) noexcept = 0;
@@ -61,14 +69,19 @@ public:
   /// or none). Same object every call; lives as long as the insides.
   virtual AudioCode& audioCode() = 0;
 };
-/// Powers granted to one starting node. Everything made here belongs to the node and is torn
-/// down by the framework in order: port block, handoffs, insides.
+/// Powers granted to one starting node. Everything made here belongs to the node's insides and
+/// is torn down by the framework in order: sound cards, handoffs, insides.
 class NodeGrant {
 public:
   virtual AudioFormat format() const = 0;   // the value prepare() will get
   /// `consumer` must live in the returned NodeInsides.
   virtual RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames,
                             HandoffConsumer& consumer) = 0;
+  /// Main thread, inside start() only (else std::logic_error). The framework opens the card at
+  /// format().rate with blockPorts.size() channels and joins its channels to blockPorts. The
+  /// node runs once every card it asked for is ready, and fails (engine-refused) when one is
+  /// lost. Cards go with the insides, before the insides are destroyed.
+  virtual void soundCard(const SoundCardRequest& request) = 0;
 protected:
   ~NodeGrant() = default;
 };

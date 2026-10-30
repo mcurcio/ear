@@ -1,0 +1,409 @@
+{
+  "description": "Live edits after graph.subscribe (docs/design/batch2.md section 6): each change's notification comes before the statuses it causes and before the request's response; later statuses follow. Removing a node removes its routes first. A notification naming a node the client does not know (ghost) changes nothing.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"n2\",\"type\":\"white\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"/nope/t.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"tape\",\"port\":\"FL\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"/y.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"noise\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "MONO"
+            ],
+            "state": "running"
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "/x.wav"
+            },
+            "inputs": [
+              "FL",
+              "FR"
+            ],
+            "outputs": [],
+            "state": "running"
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "MONO"
+            },
+            "to": {
+              "node": "rec",
+              "port": "FL"
+            },
+            "status": "linked"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "n2",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "MONO"
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "n2",
+        "state": "starting"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "n2",
+        "state": "running"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.added",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FR"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.status",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FR"
+        },
+        "status": "pending"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.status",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FR"
+        },
+        "status": "linked"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "/nope/t.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "failed",
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open /nope/t.wav: No such file or directory"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.added",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "tape",
+          "port": "FL"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.status",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "tape",
+          "port": "FL"
+        },
+        "status": "pending"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.status",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "tape",
+          "port": "FL"
+        },
+        "status": "refused",
+        "detail": "the engine removed the link before it was active"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "rec",
+        "settings": {
+          "path": "/y.wav"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "starting"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "running"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.removed",
+      "params": {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FR"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.removed",
+      "params": {
+        "from": {
+          "node": "noise",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "rec",
+          "port": "FL"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.removed",
+      "params": {
+        "name": "noise"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "stopping"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.stopped",
+      "params": {
+        "name": "noise",
+        "droppedFrames": 0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "ghost",
+        "state": "running"
+      }
+    }
+  ],
+  "graph": {
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "n2",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "MONO"
+        ],
+        "state": "running"
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "/y.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "running"
+      },
+      {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "/nope/t.wav"
+        },
+        "inputs": [
+          "FL",
+          "FR"
+        ],
+        "outputs": [],
+        "state": "failed",
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open /nope/t.wav: No such file or directory"
+        }
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "n2",
+          "port": "MONO"
+        },
+        "to": {
+          "node": "tape",
+          "port": "FL"
+        },
+        "status": "refused",
+        "detail": "the engine removed the link before it was active"
+      }
+    ]
+  }
+}
