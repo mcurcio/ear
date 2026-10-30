@@ -1393,7 +1393,27 @@ file capability (section 7).
 
 ## 11. Errata
 
-(none yet)
+- **J, 2026-10-30: J needs `test/system/white_to_file_test.cpp`.** With the control port wired,
+  `ear` listens on 7777 by default, and M1's system tests start it without `--control-port`;
+  ctest runs them in parallel, so all but one fail with `cannot listen on 0.0.0.0:7777: Address
+  already in use`. Fix: pass `"--control-port", "0"` in its two `ChildProcess` calls (checked
+  with a temporary edit: both pass). Not in J's owned files, so J stopped.
+- **J, 2026-10-30: a client writing while EAR stops gets a TCP reset, not 1001 (R2 against 4.7
+  and J(5)).** `ControlPort::stop` only starts each connection's `async_close` and returns;
+  section 4.7's `control.stop()` comes next and stops the io_context, so the close frame may never
+  be written, and a socket holding unread client data is destroyed, which resets the connection.
+  J(5) (edits sent after `node.state rec stopping`) fails about 19 runs in 20 with `read:
+  Connection reset by peer`. Fix belongs in `src/server/control_port.cpp`: `stop()` resolves
+  only once every connection's close frame is written (its `async_close` handler, or the socket's
+  error). Also in J(5): the file node has no ring setting (its ring is fixed at 2 s), so "a large
+  ring" cannot be asked for; and its probe ("stop the port after quit hangs") does not hang,
+  because `ControlPort::stop` on a stopped control thread returns at once (R2 catches the broken
+  promise).
+- **J, 2026-10-30: levels sometimes never arrive under parallel load.** Under `ctest --parallel
+  8`, J(3) and J(2)'s wait for `rec:FR`'s level saw no `levels` notification within 10 s after
+  `levels.subscribe` (1 to 2 tests in 3 runs); twelve concurrent runs of the levels test alone
+  all passed. The cause was not found; candidates are the port blocks' publish (E1) and the bell's
+  wait (R2). The test now dumps every notification it got when the wait fails.
 
 ## 12. Design review, 2026-10-30: findings and changes
 
