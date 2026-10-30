@@ -2,7 +2,8 @@
 
 Status: scope answered by the owner on 2026-10-30; the module design and slice pages are below,
 revised the same day after the adversarial design review (section 12 lists each finding and the
-change). The system design is `docs/design/pipewire-graph.md`.
+change). Built on branch `claude/batch2` the same day: section 13 records each slice's result,
+section 11 the errata. The system design is `docs/design/pipewire-graph.md`.
 
 ## The owner's answers (chat, 2026-10-30)
 
@@ -978,8 +979,9 @@ main-loop executor, engine.
   `null` PCM (what the card is sent lands in a file). If the override or the null PCM's clock
   fails, E2 says so in its commit and section 11; the card-drives and channel criteria are then
   checked only on the hardware (docs task), and CI keeps the others (a missing card, the card
-  type's checks).
-- MOTU 24Ao on Talos: section 7 (what the image and pod must give) and the D slice's notes.
+  type's checks). Result: the spike passed (section 13), so CI checks them all.
+- MOTU 24Ao on Talos: section 7 (what the image and pod must give) and the `ear-on-talos` skill
+  (`.claude/skills/ear-on-talos/SKILL.md`).
 
 ## 6. Control port protocol (the wire format)
 
@@ -1075,8 +1077,8 @@ Graph:
   privileged container) and the host's audio group in `supplementalGroups`. Talos enforces Pod
   Security "baseline" by default, which forbids adding SYS_NICE and hostPath, so EAR's namespace
   must be labelled `privileged`. That widens what a compromised EAR could do, which is why the
-  card setting takes only a card id and the port checks Host (sections 4.4, 4.6). D writes this
-  up.
+  card setting takes only a card id and the port checks Host (sections 4.4, 4.6). Written up in
+  the `ear-on-talos` skill.
 - `.github/workflows/test.yml` on every pull request: job `test` (as today), job `web` (`make
   web-test` in the dev image: npm ci, typecheck, vitest, build), job `image` (build target `run`,
   load, `scripts/image-smoke.sh ear:ci`). Jobs run in parallel.
@@ -1146,7 +1148,7 @@ that needs a file outside its list, a new dependency or a signature change appen
 | R2 control port | Beast on the control thread: files, Host and Origin checks, `/rpc`, queues, bell, stop | `src/server/{control_thread,control_port,level_bell}.cpp`, `src/server/*.hpp` (private), `src/server/tests/control_port_test.cpp`, `test/support/ws_client.hpp` | 5-6 h |
 | W1 graph editor | section 8 | `web/src/**` except `web/src/protocol.ts`; derived `web/node_modules`, `web/dist` | 6-8 h |
 | J join | wiring, flags, stop order, end-to-end through the real ear and the real image | `src/main.cpp`, `test/system/control_port_test.cpp`, `scripts/image-smoke.sh`, `scripts/rpc-call.mjs` | 4-5 h |
-| D docs | AGENTS.md (control port, flags, UI, image, releases); skills: pipewire-engine (cards and the clock, graph group, adapter auto-port-config, link-factory by name, drive barrier, levels, CAP_SYS_NICE), new `control-port` skill (talking to it, Host rule, traps); Talos and MOTU 24Ao notes; design records and this page's results | `AGENTS.md`, `.claude/skills/**`, `docs/**` | 2-3 h |
+| D docs | AGENTS.md (control port, flags, UI, image, releases); skills: pipewire-engine (cards and the clock, graph group, adapter auto-port-config, link-factory by name, drive barrier, levels, CAP_SYS_NICE), new `control-port` skill (talking to it, Host rule, traps); Talos and MOTU 24Ao notes (written as the new `ear-on-talos` skill); design records and this page's results (sections 11 and 13) | `AGENTS.md`, `.claude/skills/**`, `docs/**` | 2-3 h |
 
 ### Acceptance criteria and mutation probes
 
@@ -1324,7 +1326,9 @@ host's audio group in `supplementalGroups`; `capabilities.add: [SYS_NICE]` with
 `allowPrivilegeEscalation` not false; checking `realtime` in graph.get; the card's rate and USB
 channel count set in MOTU's web app to the graph frequency (class-compliant mode reports at most
 24 channels per direction; the kernel validates MOTU rates); the card id from
-`/proc/asound/cards`; the card-drives and latency checks on the hardware (R4).
+`/proc/asound/cards`; the card-drives and latency checks on the hardware (R4). Written in
+`.claude/skills/ear-on-talos/SKILL.md`; nothing in it has run on the hardware, and each step
+still to confirm there is marked [check].
 
 ## 10. Tests, risks and costs
 
@@ -1393,7 +1397,35 @@ file capability (section 7).
 
 ## 11. Errata
 
-(none yet)
+- **J, 2026-10-30: J needed `test/system/white_to_file_test.cpp`, which was not in its owned
+  files.** With the control port wired, `ear` listens on 7777 by default, and M1's system tests
+  started it without `--control-port`; under `ctest --parallel` they collided on the port. J
+  passed `"--control-port", "0"` in both `ChildProcess` calls, under its brief.
+- **J, 2026-10-30: section 4.3 (the level bell): "the control thread clears the flag before it
+  reads" loses wake-ups.** `ControlHub::levelsPublished` skips `latestLevels` when no session has
+  subscribed to levels, so the flag the realtime side set was never cleared and the bell went
+  silent for good (seen as levels that sometimes never arrived under parallel load). Now the
+  flag is the window last rung for (`rungFor` in `port_blocks.cpp`), set only on the realtime
+  side: one ring per window, and no reader has to answer it.
+- **J, 2026-10-30: sections 4.6 and 4.7 (R2): stop must wait for each close handshake, not only
+  for the close frame to be written.** Closing a socket whose client data is unread sends a TCP
+  reset, and the Beast client reports that instead of 1001 (J(5) failed about 19 runs in 20).
+  `ControlPort::stop` now returns once every connection's `async_close` handler has run (it
+  reads the client's close reply). Cost: a client that never answers the close holds stop, and
+  so ear's exit, until it goes. Beast's usual remedy is a close timeout (a timer), which is the
+  owner's call.
+- **J, 2026-10-30: J(5) as written cannot be built.** The file node has no ring setting (its
+  ring is fixed at 2 s), so "a large ring" cannot be asked for. Its probe ("stop the port after
+  quit hangs") does not hang, because `stop()` on a stopped control thread returns at once. The
+  probe used instead: `stop()` stops waiting for the close handshakes, which turns J(5) red.
+- **E2, 2026-10-30: section 10's risk came true: `adapter.auto-port-config` fails on PipeWire
+  1.4.2** (one unconfigured port whose PCM fails to start with EINVAL). The card sends a dsp
+  `PortConfig` with AUX positions itself; its ports are `playback_AUX<n>` and `capture_AUX<n>`.
+  Also, 1.4.2 tells no client when a node's `node.driver-id` changes, so the tests bind the node
+  again to read it. (From E2's commit message; its report listed no errata.)
+- **D, 2026-10-30: `web/vite.config.ts` has a stale comment** ("Until the first test file
+  lands, an empty run passes", beside `passWithNoTests`): the tests have landed. Not in D's
+  owned files; left for the next change to `web/`.
 
 ## 12. Design review, 2026-10-30: findings and changes
 
@@ -1419,3 +1451,27 @@ No finding was refuted. One was narrowed: E2 cannot make an ALSA PCM fail on its
 running in CI, so the "lost but not destroyed" case is driven by removing one of the card's links
 (the same loss path as an ALSA error, one handler in the card's state machine). The ALSA-error
 trigger itself is checked on the hardware.
+
+## 13. Results (2026-10-30)
+
+Each slice landed on `claude/batch2`; its commit message says what it built. CI on pull request 9
+passed all three jobs (test, web, image) on J's commit.
+
+| Slice | Commit | Result |
+|---|---|---|
+| B2 | cc244b9501 | Dev image with Node.js 24, Boost.Beast, web toolchain, run image with the file capability, the three CI jobs, `image.yml` with release-please. Its push, tag and release steps run only on master: not yet seen |
+| s0 | 859459b2c8 | Section 4 compiles as stubs; fixtures in `test/protocol` |
+| R1 | 68fe260163 | Every fixture replays through the real session, hub and gateway |
+| R2 | d60b2cfc20 | Port 7777 as section 4.6 (stop later changed by J, section 11) |
+| W1 | 7a25a551fd | The graph editor of section 8 |
+| E1 | 3d76e9bb81 | Graph group, `drive` barrier, level windows on the clock, main-loop executor, CAP_SYS_NICE and the scheduling report. A block whose engine node is destroyed through the registry keeps its data loop |
+| C1 | 9883c77c64 | Edits, observers first, `close()`, block-first node framework, `GraphStatus`, `CardId` |
+| E2a | 43b32600e5 | The spike passed: the test ALSA card (hw, then plug, file and null PCMs) runs, drives every block and gets each channel sample for sample, so CI checks E2(1) to (5). Auto port config replaced (section 11) |
+| E2b | fc864f33c7 | The `card` type; `builtinNodeTypes` is white, file, card |
+| J | 39e44fb951 | Wiring, flags, stop order; system tests through `out/ear`, J(7) included (a card in ear.json runs and its route links); the image smoke shows `graph.get` with `"realtime": true` under `--cap-add SYS_NICE` and `false` without it on GitHub's runner; J(5) passed 20 runs of 20 |
+| D | this commit | AGENTS.md; skills `pipewire-engine` (updated), `control-port` and `ear-on-talos` (new); the system design's progress line |
+
+Not done: every check on the MOTU 24Ao and the Talos cluster (the `ear-on-talos` skill lists
+them), the first run of `image.yml` on master, and the owner's two settings after merge
+(section 7). The open question at the top (edits applied on PipeWire's main loop) is still
+unanswered.
