@@ -1,0 +1,3 @@
+# docker/Dockerfile copies nothing from the build context (the repository root), so send none
+# of it: .cache/ (over 1 GB of fetched sources) and out/ would otherwise go to the builder.
+*

@@ -4,173 +4,201 @@ This file provides guidance to coding agents working with code in this repositor
 
 ## What this is
 
-EAR ("Einstein Audio Router") is a C++17 console app built on JUCE. It opens one audio output
-device, builds a `juce::AudioProcessorGraph` of source nodes from a JSON config, routes their
-channels to the device's output channels, and then serves a TCP port (7777) that is meant to
-become a JSON-RPC control interface. The code is an early prototype (commits are "checkpoint"
-snapshots from 2020).
+EAR ("Einstein Audio Router") is a C++23 program for Linux that runs PipeWire's audio engine
+inside its own process and builds an audio graph from a JSON file (`ear.json`): it starts the
+nodes the file names, links their ports as the file's routes say, prints a status line for every
+change, and stops cleanly on SIGINT or SIGTERM. Milestone 1 has two built-in node types, `white`
+(white noise) and `file` (records a stereo WAV file). The system design is
+`docs/design/pipewire-graph.md`; milestone 1's module design, frozen interfaces and slices are
+`docs/design/m1-white-to-file.md`.
 
 ## Build and run
 
-Runs on macOS and Linux; configure stops on any other platform. Needs CMake 3.28 or newer
-(tested with 4.2.1), a C++17 compiler (tested with AppleClang 21 on Apple Silicon and GCC 13 on
-Ubuntu 24.04), git and network access on the first configure. macOS also needs the Xcode
-Command Line Tools, which configure checks for. On Linux, `scripts/install-build-deps.sh`
-installs the system packages JUCE needs, and configure names any that are missing; which module
-needs each, and the gaps in that check, are in the `juce-architecture` skill's
-[system-dependencies.md](.claude/skills/juce-architecture/system-dependencies.md). Nothing else
-is installed: `CMakeLists.txt` fetches JUCE (a release, pinned by commit) and Boost 1.92.0
-(pinned by SHA-256) with `FetchContent`, and the other libraries are vendored.
-
-A build compiles only what EAR links: `ear_dependencies` in `src/CMakeLists.txt` is the one
-link list for `ear` and `ear_tests`, and its comment says why each entry is there (no JUCE GUI
-module; `program_options` is the only compiled Boost library). CMake 3.28 is the minimum for
-the `$<COMPILE_ONLY:...>` links and `FetchContent`'s `EXCLUDE_FROM_ALL`.
+EAR builds and runs on Linux only (it links PipeWire); configure stops on any other platform.
+Build and test in the project's image, `docker/Dockerfile` (Debian 13 "trixie": PipeWire 1.4.2,
+GCC 14, CMake 3.31), through `scripts/dev.sh`, which builds the image when the Dockerfile
+changed, mounts the checkout at the same path and runs the command as you (its header says
+how). On a Mac this is the only way to build; it needs Docker.
 
 ```bash
-make debug      # configure out/ for Debug with -DBUILD_TESTS=OFF, then cmake --build --parallel
-make release    # same with Release
-make test       # configure Debug with -DBUILD_TESTS=ON, build ear_tests, run ctest --parallel
-make JOBS=4 debug  # JOBS sets build and ctest parallelism (default: the CPU count)
-make clean      # rm -rf out
-./out/ear --help
+scripts/dev.sh make test          # configure Debug with -DBUILD_TESTS=ON, build everything, run ctest
+scripts/dev.sh make debug         # configure Debug with -DBUILD_TESTS=OFF and build ear
+scripts/dev.sh make release       # same with Release
+scripts/dev.sh make JOBS=4 test   # JOBS sets build and ctest parallelism (default: the CPU count)
+scripts/dev.sh make clean         # rm -rf out
+scripts/dev.sh make test CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_BOOST=<path>/.cache/deps/boost-src
+scripts/dev.sh bash               # a shell in the image
 ```
 
-- Build output goes to `out/` (gitignored); a post-build step copies the binary to `out/ear`.
-- Fetched sources are kept in `.cache/deps/` (gitignored), which `make clean` keeps: JUCE in
-  `.cache/deps/juce-src/` (about 220 MB), Boost in `.cache/deps/boost-src/` (about 800 MB).
-  `cmake/KeptFetchContent.cmake` says when a kept tree is reused and when it is fetched again;
-  a tree edited after its fetch is built as it is, so delete it to fetch it again.
+- Needs CMake 3.28 or newer (the `$<COMPILE_ONLY:...>` link and `FetchContent`'s
+  `EXCLUDE_FROM_ALL`), pkg-config, `libpipewire-0.3`, `libspa-0.2` and their run-time modules,
+  and `sndfile`; the Dockerfile's comments say why each package is there. Configure names every
+  pkg-config package it did not find.
+- Build output goes to `out/` (gitignored). A post-build step copies the binary to `out/ear`,
+  and configure copies `src/pipewire/engine.conf` beside it to `out/engine.conf`.
+- Boost 1.92.0 (pinned by SHA-256) is the only fetched dependency; `program_options` is its only
+  compiled library. Its source tree is kept in `.cache/deps/boost-src/` (about 800 MB,
+  gitignored), which `make clean` keeps; `cmake/KeptFetchContent.cmake` says when a kept tree is
+  reused and when it is fetched again. A worktree points `CMAKE_ARGS` at the main checkout's tree
+  (as above) instead of fetching its own. Bump Boost by changing `boost_url` and `boost_sha256`
+  in `CMakeLists.txt` together.
+- ccache: the image's compiler launcher; `scripts/dev.sh` points `CCACHE_DIR` at the main
+  checkout's `.cache/ccache`, shared by every worktree.
 - `JOBS`, not `make -jN`, sets the build's parallelism, and configure runs only when
-  `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS` value (the `Makefile`
-  says why). JUCE compiles once per target. Measured on a Mac (8 cores, other jobs running):
-  `make clean && make debug` 44 s (configure 20 s); `make test` after that 24 s; `make debug`
-  after `make test` 2.4 s (reconfigures for `BUILD_TESTS=OFF`); a no-op `make debug` or
-  `make test` 0.4-0.5 s.
-- `ear` opens a real audio device: `--config` (default `ear.json`, relative to the working
-  directory) and `--device` (index or UUID from the startup listing; overrides `"device"`).
-  The other flags only feed disabled test functions in `src/main.cpp`. There is no lint config.
+  `out/CMakeCache.txt` lacks the target's build type and `BUILD_TESTS` value or `CMAKE_ARGS` is
+  given (the `Makefile` says why).
 
-## Tests
-
-`ear_tests` (Catch2 v2, one CTest test per test case) builds the graph with `run()`'s own
-`ear::buildGraphFromConfig` (`include/ear/graph_config.hpp`) onto
-`ear::test::VirtualAudioDevice` (`test/virtual_audio_device.hpp`), which never touches OS audio:
-the test thread clocks it with `renderBlocks(n)`, which runs the callbacks on a separate audio
-thread like a real device, and reads back every output channel.
-The AirPlay cases write 16-bit little-endian stereo PCM (440 Hz left, 880 Hz right) into a
-named pipe and check each tone arrives on its mapped channel sample for sample, unmapped
-channels are exactly zero and an idle pipe is silent; others check white noise routing and pin a
-device's UUID.
-Verify audio here, never on real hardware. `make test` runs them all; to run one:
+Running it (inside the image, or on a Linux host with the packages):
 
 ```bash
-ctest --test-dir out -R "White noise" --output-on-failure  # by test name regex
-./out/test/ear_tests_artefacts/Debug/ear_tests "[white]"   # by Catch tag
+./out/ear --config ear.json   # the default; --help lists the options
 ```
 
-## CI
+`ear` reads `engine.conf` from beside its own binary. It prints status lines on standard output:
 
-`.github/workflows/test.yml` runs on every pull request and every push to `master`, on
-`macos-latest` and `ubuntu-24.04` with CMake 4.2.1: `make test`, `make debug` and
-`./out/ear --help`; its comments give the steps, caches and the reasons. On failure it uploads
-ctest's logs as `ctest-output-macOS` or `ctest-output-Linux`. Measured on a Mac, a `make test`
-plus `make debug` sequence into a fresh build folder took 61 s with a cold ccache and 7 s warm.
+```
+node <name> starting|running|stopping
+node <name> failed <engine-refused|start-failed>: <detail>
+node <name> stopped dropped=<frames>
+route <node>:<port> -> <node>:<port> pending|linked|refused[: <detail>]
+```
 
-## Config file (`ear.json`)
+SIGINT or SIGTERM stops every node (a `file` node finishes its WAV file) and exits 0. A graph
+file that does not parse, an engine that does not start, or a node or route the graph refuses
+(printed as an error code and what it names, for example `unknown-port rec:FX`) exits 1. There
+is no lint config.
 
-Not committed; its shape comes from `run()` in `src/server.hpp`:
+## Graph file (`ear.json`, version 2)
+
+Not committed; read by `ear::control::parseGraphFile` (`src/control/graph_file.cpp`):
 
 ```json
 {
-  "device": "0",
-  "airplay": { "buffer": 40 },
+  "graphFrequency": 48000,
+  "blockSize": 256,
   "nodes": [
-    { "type": "airplay", "pipe": "/tmp/airplay", "connect": [[0, 0], [1, 1]] },
-    { "type": "white", "connect": [[0, 0]] }
+    { "name": "noise", "type": "white" },
+    { "name": "rec", "type": "file", "settings": { "path": "/tmp/rec.wav" } }
+  ],
+  "routes": [
+    { "from": { "node": "noise", "port": "MONO" }, "to": { "node": "rec", "port": "FL" } }
   ]
 }
 ```
 
-Each `connect` pair is `[node output channel, device output channel]`. Node types are `white`
-(mono white noise) and `airplay` (stereo, 16-bit little-endian PCM read from a named pipe, e.g.
-shairport-sync's pipe backend). `airplay.buffer` is the ring size in 512-sample blocks.
+- `graphFrequency` (Hz) and `blockSize` (samples per cycle) are required whole numbers above
+  zero and fixed at boot; the engine runs at exactly these.
+- `nodes` and `routes` may be left out (read as empty). Unknown keys are errors at every level,
+  and an error names the file and the JSON pointer of the bad member.
+- Each node has a unique `name`, a `type` and optional `settings`, which only the type checks.
+  `white` has one output, `MONO`, uniform noise in [-1, 1), and takes no settings. `file` has
+  inputs `FL` and `FR` and needs `{"path": "<non-empty string>"}`; it truncates the file at start
+  and writes 32-bit float stereo WAV at the graph frequency, complete once the node is gone.
+- A route joins one output port to one input port. Nodes are added in file order, then routes;
+  the first error stops EAR.
+
+Version 1 (`device`, `airplay`, `connect` pairs) is gone with the JUCE runtime; there is no
+compatibility with it.
 
 ## Architecture
 
-This section describes the code as it is. The agreed direction is different: EAR becomes the
-PipeWire instance and hosts built-in node types, replacing the JUCE runtime described below
-(`docs/design/pipewire-graph.md`).
+Four libraries and the binary, each package in `src/<package>/` with its own `CMakeLists.txt`,
+public headers in `include/ear/<package>/` and tests in `tests/`:
 
-All project code is header-only in `include/ear/`, plus `src/main.cpp` (CLI parsing, config
-loading) and `src/server.hpp` (`run()`: device selection, then `buildGraphFromConfig` from
-`include/ear/graph_config.hpp`, then the server loop). Each
-executable includes the ear headers from one translation unit only (`src/main.cpp`,
-`test/audio_graph_test.cpp`): `include/ear/server.hpp` defines a global
-`jsonrpccxx::JsonRpc2Server rpcServer` and `pipe_source.hpp` defines a non-inline member
-function, so including them from a second `.cpp` breaks the link.
+| Target | Owns | Never |
+|---|---|---|
+| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; `CommandError`), node catalogue contract (`NodeType`, `NodeConfig`, `AudioCode`, handoff ends), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`), reconciler (route links and route status) | Any PipeWire call or file access; nlohmann/json is its only dependency |
+| `ear_nodes` (`src/nodes`) | The built-in types `white` and `file` | PipeWire (`file` uses libsndfile) |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement core's interfaces: port blocks (`pw_filter`), links (`link-factory`), live ports (the registry), handoffs (`pw_thread_loop`) | Policy |
+| `ear_control` (`src/control`) | Reads `ear.json`, replays it as `addNode` and `addRoute` calls; status lines | Graph rules; engine calls |
+| `ear` (`src/main.cpp`) | The composition root: wiring only | Computing anything |
 
-How audio moves (this pull/push inversion is the non-obvious part):
+Dependencies point one way: `ear_core` <- {`ear_nodes`, `ear_pipewire`, `ear_control`} <- `ear`.
+An interface lives with the package that consumes it: `node_host.hpp` declares
+`PortBlockFactory` and `HandoffFactory`, `reconciler.hpp` declares `LinkMaker` and the
+live-port and link listeners, and `ear_pipewire` implements them. Each package's headers form a
+CMake header set that is compiled on its own (`VERIFY_INTERFACE_HEADER_SETS`); `ear_pipewire`'s
+headers only forward-declare PipeWire's types, so PipeWire's headers stay private to it.
 
-1. `ear::AudioIoDevice` (`device.hpp`) wraps one `juce::AudioIODevice` and is itself the device
-   callback. It fans each hardware callback (JUCE 9's `audioDeviceIOCallbackWithContext`) out
-   to a list of registered `juce::AudioIODeviceCallback`s, in registration order. Devices are
-   identified by a UUID made from `"<type name>:<device name>"`.
-2. `ear::AudioGraphStandalone` (`graph.hpp`) is an `AudioGraph` that registers itself as one of
-   those callbacks. On each device callback it runs `processBlock` on a scratch buffer: the
-   device clock drives the graph. The device's start and stop events prepare and release the
-   graph (as `juce::AudioProcessorPlayer` does); a JUCE 9 `AudioProcessorGraph` that was never
-   prepared renders silence and never prepares its nodes.
-3. `setDevice()` adds an `AudioIoDeviceOutputProcessor` node. It is a graph sink: its inputs are
-   the device's output channels, and `processBlock` copies them into an internal buffer. It is
-   also registered on the device, and its device callback copies that buffer to the hardware
-   output. Connections from config therefore target this node, not JUCE's
-   `AudioGraphIOProcessor` output node. It is registered before the graph, so the device
-   receives the previous block's graph output (one block of latency).
-4. Sources are `juce::AudioSource`s wrapped as graph nodes by `ear::GraphSource`
-   (`processor.hpp`), which drives them through a `juce::AudioSourcePlayer`.
-   `WhiteNoiseProcessor` and `AirplayProcessor` own their source and pass a raw pointer.
-5. `PipeSource` (`pipe_source.hpp`) runs a reader thread that reopens the pipe file until it
-   opens and polls it with 1 ms sleeps. `AirplaySource` converts samples into an interleaved
-   float ring buffer guarded by a `juce::CriticalSection` and re-buffers half the ring whenever
-   the reader catches up with the writer.
+Events, not polling, move everything. `main.cpp` wires: `DesiredGraph` tells `NodeHost` about
+each added node and the `Reconciler` about each added route; `LiveGraph` tells the `Reconciler`
+which ports exist; `Links` tells it when a link is active, failed or gone; `NodeHost` and the
+`Reconciler` tell `StatusLog`. All of these run on the engine's main-loop thread.
 
-The network side is unfinished. `RpcServer` (async Beast acceptor on the main `io_context`)
-accepts connections and drops them. `WebsocketServer` (a blocking thread per connection that
-passes messages to `rpcServer.HandleRequest`) is never started, and no RPC methods are
-registered.
+How audio moves:
 
-Known defects the test works around: `AudioIoDevice::removeCallback` loops forever on a
-started device; destroying a running `AirplayProcessor` calls `std::terminate` (`GraphSource`
-does not forward `releaseResources`).
+1. `Engine` (`src/pipewire/engine.cpp`) runs PipeWire's engine in-process: its main loop, a
+   context loaded from `engine.conf`, and EAR's own connection to it. There is no daemon, no
+   socket and no session manager; a dummy driver clocks the graph at `graphFrequency` with
+   `blockSize` frames a cycle. The `pipewire-engine` skill covers the configuration and traps.
+2. A node starts (`NodeHost`): its type's `NodeConfig::start` makes the type's insides, then
+   `AudioCode::prepare` runs, then `FilterPortBlocks` makes its port block: one
+   always-processing `pw_filter` named by the node's name, with one 32-bit float mono port per
+   declared port. Its first STREAMING state makes the node `running`. Every block processes
+   whether routed or not; an unlinked input reads zeros.
+3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
+   per port. `white` fills its output with noise.
+4. `LiveGraph` reports each port as the engine's registry announces it (node name, port name,
+   direction, port id). When both ends of a wanted route are live, the `Reconciler` asks `Links`
+   for a link by port ids; the route is `linked` once the link is active, and `pending` again
+   if an end goes, relinked when it comes back.
+5. `file` cannot write a file on the realtime thread. Its audio code writes into a handoff
+   (`ThreadHandoffs`, `src/pipewire/handoffs.cpp`): a lock-free ring of interleaved floats (two
+   seconds) that wakes the handoff's own thread, where libsndfile writes the frames. A full ring
+   drops frames and counts them; the count is the `dropped=` of the node's `stopped` line.
+6. Stopping (`NodeHost::stopAll`) takes each node through `stopping` and tears it down in one
+   order: port block destroyed (no `process` after that), `release`, handoffs drained and
+   finished, insides destroyed; then `stopped`. EAR's main loop quits after the last node is
+   gone.
 
-Sample rate 44100 and block size 512 are hard-coded in several places (`constants.hpp` exists
-but most code repeats the literals).
+Not built yet (parked in the design page, section 8): the control port (7777) and the rest of
+the control calls, serving PipeWire's socket, sound-card output, the program supervisor and the
+`airplay` type.
+
+## Tests
+
+Catch2 v2; each package has one test executable, and `catch_discover_tests` makes each test
+case its own CTest test, so `ctest --parallel` runs them side by side.
+
+| Executable | What it proves |
+|---|---|
+| `ear_core_tests` | The desired graph's checks and errors, the node state machine (every state against every fact), `NodeHost` with fake factories, the reconciler. Pure, milliseconds |
+| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, and refusing an unopenable path |
+| `ear_control_tests` | The graph-file parser (error pointers, unknown keys) and replay order |
+| `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock, teardown, SIGTERM; and the handoff (order, drops, close, no allocation on the writer) |
+| `ear_system_tests` | The owner's end-to-end tests: spawn the real `out/ear` on a graph file, wait for `linked`, record about a second, send SIGTERM, then read the WAV back (noise on the routed channel only, exact zeros on the other, header finished, `dropped=0`); a route to an undeclared port exits 1 |
+
+`test/CMakeLists.txt` also runs `ear --help` (the binary loads its shared libraries), and
+`ear_engine_conf_beside_ear` checks the copy beside the binary matches the source. Tests are
+event-gated: they wait for the event they need, and a deadline only fails a test, never decides
+when something happens. Verify audio here, never on real hardware. Run one, inside the image:
+
+```bash
+scripts/dev.sh ctest --test-dir out -R "lands on FL" --output-on-failure   # by test name regex
+scripts/dev.sh out/src/nodes/ear_nodes_tests "[white]"                     # by Catch tag
+```
+
+## CI
+
+`.github/workflows/test.yml` runs on every pull request and every push to `master`: one
+`ubuntu-24.04` job builds the image with buildx (layers cached in GitHub's cache), restores the
+Boost tree and ccache, and runs `scripts/dev.sh make test` with `EAR_DEV_IMAGE=ear-dev` so the
+script uses that image. On failure it uploads ctest's logs as `ctest-output`. Its comments give
+the reasons for each step and cache.
 
 ## Vendored and fetched code
 
-`vendor/json` (nlohmann), `vendor/jsonrpccxx`, `vendor/catch`, `vendor/jsonrpc` and
-`vendor/libjsonrpc` were added with `git subtree`; leave them alone unless you are updating a
-dependency. `ear` uses JUCE, nlohmann/json and jsonrpccxx (header-only); `ear_tests` adds Catch
-2.12.2, which `test/main.cpp` adapts to Apple Silicon and to glibc 2.34 and newer (its comments
-say how; Catch 2.13.5 fixes both). `vendor/jsonrpc` and `vendor/libjsonrpc` are unused.
+`vendor/json` (nlohmann) and `vendor/catch` (Catch 2.12.2) are used; `vendor/jsonrpccxx`,
+`vendor/jsonrpc` and `vendor/libjsonrpc` are not built (left for the control port). All were
+added with `git subtree`; leave them alone unless you are updating a dependency.
+`test/main.cpp` turns off Catch's POSIX signal handlers, which do not compile against glibc 2.34
+and newer (its comment says why; Catch 2.13.5 fixes it). Boost is fetched, not vendored (see
+Build and run). PipeWire and libsndfile come from the image's Debian packages.
 
-JUCE and Boost are fetched, not vendored: the repository holds neither their code nor their
-history. **The JUCE tree is `.cache/deps/juce-src/`**: skills and docs cite JUCE files by that
-prefix (for example `.cache/deps/juce-src/modules/juce_core/juce_core.h`), and the first
-configure creates it. Treat it as read-only. To bump JUCE, set `juce_commit` in
-`CMakeLists.txt` (the one place the pin is declared; its comment says how to pick one) and the
-release its comments name, configure (the new commit is cloned), then port and run the checks.
-The docs name the release only where it is a fact about a check: the `juce-architecture` pages
-say which release their claims were checked against, so re-check them and update those lines.
-To build against a local JUCE checkout instead, pass `-DFETCHCONTENT_SOURCE_DIR_JUCE=<path>`.
-Bump Boost by changing `boost_url` and `boost_sha256` together.
+## PipeWire references
 
-## JUCE references
-
-JUCE here is the release pinned in `CMakeLists.txt` (`juce_commit`; the generated
-`.cache/juce-api/MANIFEST` records its version); docs.juce.com may document another version.
-Two repo skills in `.claude/skills/` cover it: `juce-api` (a symbol index and per-class pages
-generated from the JUCE tree's headers, via `.claude/skills/juce-api/scripts/ensure.sh`) and
-`juce-architecture` (which JUCE class fits each job in this repo, the threading rules designs
-must respect, and the system packages and SDK JUCE needs to build).
+The `pipewire-engine` skill (`.claude/skills/pipewire-engine/SKILL.md`) explains running the
+engine in-process: what `engine.conf` sets and why, the modules, the dummy driver, running
+without a session manager, the traps found while building it, and how to bump PipeWire. The
+PipeWire source behind each engine fact is cited in `docs/design/m1-white-to-file.md`
+section 1.
