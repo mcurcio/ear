@@ -9,8 +9,9 @@ namespace ear::pipewire {
 /// api.alsa.pcm.source (capture), api.alsa.path = "hw:CARD=<id>,DEV=0" (built here from the
 /// CardId: the one home of that form), audio.channels, audio.rate = format.rate, audio.position
 /// AUX0.., node.name = engineNode, node.always-process = true, priority.driver = cardPriority,
-/// no node.group, adapter.auto-port-config = { mode = dsp monitor = false control = false
-/// position = aux }.
+/// no node.group. Its ports: a dsp PortConfig with AUX positions sent by pw_node_set_param, as a
+/// session manager does (adapter.auto-port-config leaves one port, playback_1, whose start fails
+/// with EINVAL on PipeWire 1.4.2).
 /// Its state machine (one owner of "is this card in the clock"):
 ///   opening --node info RUNNING--> linking: one link per channel through link-factory, by
 ///     node and port name (link.output.node/port, link.input.node/port), owned by EAR's
