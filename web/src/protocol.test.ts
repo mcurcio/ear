@@ -1,22 +1,11 @@
 // The conformance fixtures (test/protocol, docs/design/batch2.md section 6) cover the whole wire
 // format: every method, notification and error code protocol.ts names appears in at least one
 // fixture, so the server's and the UI's tests, which both run on these fixtures, exercise all of
-// it. Slice W1 owns this file after s0 and adds the reducer's checks.
+// it. The reducer's checks against the same fixtures are in graph.test.ts.
 import { describe, expect, it } from "vitest";
-import edits from "../../test/protocol/edits.json";
-import errors from "../../test/protocol/errors.json";
-import levels from "../../test/protocol/levels.json";
-import snapshot from "../../test/protocol/snapshot.json";
-import {
-  commandErrorCodes,
-  methodNames,
-  notificationNames,
-  rpcErrorCodes,
-  type ProtocolFixture,
-} from "./protocol";
+import { commandErrorCodes, methodNames, notificationNames, rpcErrorCodes } from "./protocol";
+import { fixtures } from "./testFixtures";
 
-// JSON imports are typed by their contents (strings widened), so they are read as the wire type.
-const fixtures = { snapshot, edits, levels, errors } as unknown as Record<string, ProtocolFixture>;
 const all = Object.values(fixtures);
 
 /** The method of every request a fixture sends that parses as JSON-RPC. */
