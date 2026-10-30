@@ -226,6 +226,32 @@ TEST_CASE("Frames from a writer thread arrive in order, interleaved, on the hand
   REQUIRE(handoffThread != std::this_thread::get_id());
 }
 
+TEST_CASE("Frames keep their order as the ring's index wraps many times", "[handoff]") {
+  MainLoop main;
+  ThreadHandoffs handoffs(main.loop());
+  RecordingConsumer consumer;
+  // A 256-frame ring and 100-frame blocks: the blocks do not divide the ring, so reads
+  // split at its end at varying offsets, and 50 blocks wrap the index about 20 times.
+  constexpr std::uint32_t kBlock = 100;
+  constexpr std::uint32_t kBlocks = 50;
+  auto handoff = handoffs.make("rec", 2, 256, consumer);
+  Signal signal(2, kBlock);
+  for (std::uint32_t b = 0; b < kBlocks; ++b) {
+    // Each block waits for the last to arrive, so the ring never fills and nothing drops.
+    REQUIRE(handoff->writer().write(signal.block(std::uint64_t{b} * kBlock), kBlock) == kBlock);
+    REQUIRE(consumer.waitForFrames(std::uint64_t{b + 1} * kBlock));
+  }
+  REQUIRE(closeAndWait(main, *handoff) == 0);
+
+  std::lock_guard lock(consumer.mutex_);
+  REQUIRE_FALSE(consumer.badSpan_);
+  REQUIRE(consumer.frames_ == kBlock * kBlocks);
+  REQUIRE(consumer.samples_.size() == 2u * kBlock * kBlocks);
+  for (std::size_t i = 0; i < consumer.samples_.size(); ++i) {
+    if (consumer.samples_[i] != static_cast<float>(i)) FAIL("sample " << i << " is " << consumer.samples_[i]);
+  }
+}
+
 /// Blocks in its first consume() until released, so the ring stays full.
 class StalledConsumer : public RecordingConsumer {
 public:
