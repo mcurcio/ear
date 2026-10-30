@@ -77,7 +77,10 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
   capability never reaches a non-root process (`pipewire-engine` skill, "Realtime priority").
 - `ear.json` mounted at `/etc/ear/ear.json` (the image's default `--config`); port 7777 exposed.
   A browser reaching it by a DNS name needs `--allowed-host <name>` in the container's args
-  (`control-port` skill).
+  (`control-port` skill). Args replace the image's default command, so they must also carry
+  `--config /etc/ear/ear.json --recordings-dir /var/lib/ear/recordings`.
+- Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
+  to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
 
 ## 5. Checks on the hardware
 

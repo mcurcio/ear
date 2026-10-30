@@ -4,10 +4,14 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "catch2/catch.hpp"
 #include "ear/nodes/builtin.hpp"
@@ -47,7 +51,7 @@ TEST_CASE("White declares one output, MONO, and no inputs", "[white]") {
 TEST_CASE("White rejects any settings key", "[white]") {
 	const auto type = ear::nodes::makeWhiteNodeType();
 	for (const ear::NodeSettings& settings :
-	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "/tmp/a.wav"}}, ear::NodeSettings(3)}) {
+	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "a.wav"}}, ear::NodeSettings(3)}) {
 		const auto config = type->parse("noise", settings);
 		REQUIRE_FALSE(config.has_value());
 		CHECK(config.error().node == "noise");
@@ -88,7 +92,12 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 }
 
 TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
-	const auto types = ear::nodes::builtinNodeTypes();
+	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_builtin_" + std::to_string(::getpid()));
+	auto folder = ear::nodes::RecordingsFolder::open(path);
+	REQUIRE(folder.has_value());
+	const auto types =
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*folder)));
+	std::filesystem::remove(path);
 	std::vector<std::string> names;
 	for (const auto& type : types) {
 		names.emplace_back(type->name());

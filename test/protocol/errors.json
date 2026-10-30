@@ -5,7 +5,7 @@
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"a.b\",\"type\":\"white\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.add\",\"params\":{\"name\":\"pinky\",\"type\":\"pink\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"file\",\"settings\":{\"path\":\"/z.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"file\",\"settings\":{\"path\":\"z.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"ghost\",\"settings\":{}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.update\",\"params\":{\"name\":\"motu\",\"settings\":{\"card\":\"Pro24\",\"playback\":4}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"ghost\"}}",
@@ -61,7 +61,7 @@
             "name": "rec",
             "type": "file",
             "settings": {
-              "path": "/x.wav"
+              "path": "x.wav"
             },
             "inputs": [
               "FL",
@@ -279,7 +279,7 @@
         "name": "rec",
         "type": "file",
         "settings": {
-          "path": "/x.wav"
+          "path": "x.wav"
         },
         "inputs": [
           "FL",

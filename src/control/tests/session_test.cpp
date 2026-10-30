@@ -201,7 +201,7 @@ ear::GraphView baseView(bool motu) {
 		view.nodes.push_back({{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
 		                      {{"playback_1", "playback_2"}, {}}, NodeState::running, std::nullopt});
 	view.nodes.push_back({{"noise", "white", json::object()}, {{}, {"MONO"}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "/x.wav"}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
 	view.routes.push_back({{{"noise", "MONO"}, {"rec", "FL"}}, ear::RouteMatch::linked, ""});
 	return view;
 }
@@ -221,8 +221,8 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	                          ear::NodeView{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
 	                           {{"playback_1", "playback_2"}, {}}, NodeState::failed,
 	                           ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	w.graph.view.nodes.push_back({{"tape", "file", {{"path", "/nope/t.wav"}}}, {{"FL", "FR"}, {}}, NodeState::failed,
-	                              ear::FailureReason{Code::startFailed, "cannot open /nope/t.wav: No such file or directory"}});
+	w.graph.view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}}, {{"FL", "FR"}, {}}, NodeState::failed,
+	                              ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
 	w.graph.view.routes.insert(w.graph.view.routes.begin(),
 	                           ear::RouteStatus{{{"noise", "MONO"}, {"motu", "playback_1"}}, ear::RouteMatch::pending, ""});
 	w.graph.view.routes.push_back({{{"noise", "MONO"}, {"tape", "FL"}}, ear::RouteMatch::refused,
@@ -263,11 +263,11 @@ TEST_CASE("edits.json: each change's notification comes before its statuses and 
 	w.receive(session, requests[2]);
 	w.onMain([&] { w.route(n2ToRecFr, ear::RouteMatch::linked); });
 
-	w.graph.script.push_back({R"(addNode tape file {"path":"/nope/t.wav"})", [&] {
-		                          w.nodeAdded({"tape", "file", {{"path", "/nope/t.wav"}}}, {{"FL", "FR"}, {}});
+	w.graph.script.push_back({R"(addNode tape file {"path":"nope/t.wav"})", [&] {
+		                          w.nodeAdded({"tape", "file", {{"path", "nope/t.wav"}}}, {{"FL", "FR"}, {}});
 		                          w.state("tape", NodeState::starting);
 		                          w.state("tape", NodeState::failed,
-		                                  ear::FailureReason{Code::startFailed, "cannot open /nope/t.wav: No such file or directory"});
+		                                  ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"});
 		                          return Result{};
 	                          }});
 	w.receive(session, requests[3]);
@@ -280,8 +280,8 @@ TEST_CASE("edits.json: each change's notification comes before its statuses and 
 	w.receive(session, requests[4]);
 	w.onMain([&] { w.route(n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"); });
 
-	w.graph.script.push_back({R"(updateNode rec {"path":"/y.wav"})", [&] {
-		                          w.gateway.nodeUpdated({"rec", "file", {{"path", "/y.wav"}}},
+	w.graph.script.push_back({R"(updateNode rec {"path":"y.wav"})", [&] {
+		                          w.gateway.nodeUpdated({"rec", "file", {{"path", "y.wav"}}},
 		                                                std::make_shared<Config>(ear::Ports{{"FL", "FR"}, {}}));
 		                          w.state("rec", NodeState::starting);
 		                          return Result{};
@@ -320,7 +320,7 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 		{"addNode a.b white {}", ear::InvalidName{"a.b"}},
 		{"addNode pinky pink {}", ear::UnknownNodeType{"pink"}},
 		{"addNode tape file {}", ear::InvalidSettings{"tape", "path: missing"}},
-		{R"(addNode noise file {"path":"/z.wav"})", ear::DuplicateNode{"noise"}},
+		{R"(addNode noise file {"path":"z.wav"})", ear::DuplicateNode{"noise"}},
 		{"updateNode ghost {}", ear::UnknownNode{"ghost"}},
 		{R"(updateNode motu {"card":"Pro24","playback":4})", ear::PortsChanged{"motu"}},
 		{"removeNode ghost", ear::UnknownNode{"ghost"}},

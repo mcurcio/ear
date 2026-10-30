@@ -33,13 +33,13 @@ TEST_CASE("Every graph notification encodes as edits.json has it", "[events][pro
 	CHECK(encoded(RouteAdded{n2ToRecFr}) == m[5]);
 	CHECK(encoded(RouteChanged{{n2ToRecFr, ear::RouteMatch::pending, ""}}) == m[6]);
 	CHECK(encoded(RouteChanged{{n2ToRecFr, ear::RouteMatch::linked, ""}}) == m[8]);
-	CHECK(encoded(NodeAdded{{"tape", "file", {{"path", "/nope/t.wav"}}}, {{"FL", "FR"}, {}}}) == m[9]);
+	CHECK(encoded(NodeAdded{{"tape", "file", {{"path", "nope/t.wav"}}}, {{"FL", "FR"}, {}}}) == m[9]);
 	CHECK(encoded(NodeChanged{{"tape", NodeState::failed,
 	                           ear::FailureReason{ear::FailureReason::Code::startFailed,
-	                                              "cannot open /nope/t.wav: No such file or directory"}}}) == m[11]);
+	                                              "cannot open nope/t.wav: No such file or directory"}}}) == m[11]);
 	CHECK(encoded(RouteChanged{{n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"}}) ==
 	      m[16]);
-	CHECK(encoded(NodeUpdated{"rec", {{"path", "/y.wav"}}}) == m[17]);
+	CHECK(encoded(NodeUpdated{"rec", {{"path", "y.wav"}}}) == m[17]);
 	CHECK(encoded(RouteRemoved{n2ToRecFr}) == m[21]);
 	CHECK(encoded(NodeRemoved{"noise"}) == m[24]);
 	CHECK(encoded(NodeChanged{{"noise", NodeState::stopping, std::nullopt}}) == m[25]);

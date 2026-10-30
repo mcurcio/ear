@@ -55,11 +55,12 @@ json route(const std::string& fromNode, const std::string& fromPort, const std::
 	return {{"from", {{"node", fromNode}, {"port", fromPort}}}, {"to", {{"node", toNode}, {"port", toPort}}}};
 }
 
-/// white "noise" routed to file "rec":FL, plus `extraNodes` and `extraRoutes`.
+/// white "noise" routed to file "rec":FL (rec.wav in the recordings folder), plus `extraNodes`
+/// and `extraRoutes`.
 std::filesystem::path writeGraph(const TempDirectory& directory, json extraNodes = json::array(),
                                  json extraRoutes = json::array()) {
 	json nodes = {{{"name", "noise"}, {"type", "white"}},
-	              {{"name", "rec"}, {"type", "file"}, {"settings", {{"path", (directory.path() / "rec.wav").string()}}}}};
+	              {{"name", "rec"}, {"type", "file"}, {"settings", {{"path", "rec.wav"}}}}};
 	json routes = {route("noise", "MONO", "rec", "FL")};
 	for (auto& node : extraNodes) nodes.push_back(node);
 	for (auto& r : extraRoutes) routes.push_back(r);
@@ -69,13 +70,18 @@ std::filesystem::path writeGraph(const TempDirectory& directory, json extraNodes
 	return path;
 }
 
-/// The real out/ear on `graph`, listening on 127.0.0.1 at a free port, serving `webRoot`. Ready
-/// once the last route in the file is linked (the port is open before the file is replayed).
+/// The recordings folder of a test whose graph file is in `directory`; ear makes it at boot.
+std::filesystem::path recordingsOf(const TempDirectory& directory) { return directory.path() / "recordings"; }
+
+/// The real out/ear on `graph`, listening on 127.0.0.1 at a free port, serving `webRoot`,
+/// recording into "recordings" beside `graph`. Ready once the last route in the file is linked
+/// (the port is open before the file is replayed).
 class Ear {
 public:
 	Ear(const std::filesystem::path& graph, const std::filesystem::path& webRoot, const std::string& readyLine)
 	    : process_(EAR_BINARY, {"--config", graph.string(), "--control-address", "127.0.0.1", "--control-port", "0",
-	                            "--web-root", webRoot.string()}) {
+	                            "--web-root", webRoot.string(), "--recordings-dir",
+	                            (graph.parent_path() / "recordings").string()}) {
 		const bool ready = process_.waitForLine(readyLine, deadline);
 		INFO("ear printed:\n" << process_.output());
 		REQUIRE(ready);
@@ -276,7 +282,7 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	CHECK(graph["nodes"][0]["state"] == "running");
 	CHECK(graph["nodes"][1]["name"] == "rec");
 	CHECK(graph["nodes"][1]["type"] == "file");
-	CHECK(graph["nodes"][1]["settings"]["path"] == (directory.path() / "rec.wav").string());
+	CHECK(graph["nodes"][1]["settings"]["path"] == "rec.wav");
 	CHECK(graph["nodes"][1]["inputs"] == json{"FL", "FR"});
 	CHECK(graph["nodes"][1]["state"] == "running");
 	REQUIRE(graph["routes"].size() == 1);
@@ -310,7 +316,7 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	});
 
 	CHECK(ear.stop(rpc) == 0);
-	CHECK(channelRms(directory.path() / "rec.wav", 1) == Approx(0.577).margin(0.02));
+	CHECK(channelRms(recordingsOf(directory) / "rec.wav", 1) == Approx(0.577).margin(0.02));
 }
 
 TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
@@ -355,6 +361,29 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	CHECK(ear.stop(rpc) == 0);
 }
 
+TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is written",
+          "[system][control]") {
+	TempDirectory directory;
+	Ear ear(writeGraph(directory), writeWebRoot(directory), linkedLine(route("noise", "MONO", "rec", "FL")));
+	Rpc rpc(ear.port());
+	const auto outside = directory.path() / "outside.wav";
+
+	for (const std::string& path : {outside.string(), std::string("../outside.wav")}) {
+		INFO(path);
+		json add = rpc.call("node.add", {{"name", "tape"}, {"type", "file"}, {"settings", {{"path", path}}}});
+		INFO(add.dump());
+		CHECK(add["error"]["code"] == -32000);
+		CHECK(add["error"]["data"]["code"] == "invalid-settings");
+		json update = rpc.call("node.update", {{"name", "rec"}, {"settings", {{"path", path}}}});
+		INFO(update.dump());
+		CHECK(update["error"]["code"] == -32000);
+		CHECK(update["error"]["data"]["code"] == "invalid-settings");
+	}
+	CHECK(ear.stop(rpc) == 0);
+	CHECK_FALSE(std::filesystem::exists(outside));
+	CHECK(headerFinished(recordingsOf(directory) / "rec.wav"));
+}
+
 TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits cleanly", "[system][control]") {
 	TempDirectory directory;
 	Ear ear(writeGraph(directory), writeWebRoot(directory), linkedLine(route("noise", "MONO", "rec", "FL")));
@@ -366,7 +395,7 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"state", "stopping"}}); });
 	const std::vector<std::pair<std::string, json>> edits = {
 	    {"node.add", {{"name", "late"}, {"type", "white"}}},
-	    {"node.update", {{"name", "rec"}, {"settings", {{"path", (directory.path() / "late.wav").string()}}}}},
+	    {"node.update", {{"name", "rec"}, {"settings", {{"path", "late.wav"}}}}},
 	};
 	std::optional<std::uint16_t> closeCode;
 	for (const auto& [method, params] : edits) {
@@ -388,7 +417,7 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 	INFO("ear printed:\n" << ear.process().output());
 	CHECK(exitStatus == 0);
 	CHECK(ear.process().output().find("terminate") == std::string::npos);
-	CHECK(headerFinished(directory.path() / "rec.wav"));
+	CHECK(headerFinished(recordingsOf(directory) / "rec.wav"));
 }
 
 TEST_CASE("A sound card node runs and its route is linked", "[system][control][card]") {

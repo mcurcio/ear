@@ -33,7 +33,7 @@
             "name": "rec",
             "type": "file",
             "settings": {
-              "path": "/x.wav"
+              "path": "x.wav"
             },
             "inputs": [
               "FL",
@@ -133,7 +133,7 @@
         "name": "rec",
         "type": "file",
         "settings": {
-          "path": "/x.wav"
+          "path": "x.wav"
         },
         "inputs": [
           "FL",

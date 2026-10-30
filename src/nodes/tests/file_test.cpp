@@ -1,12 +1,15 @@
 // The "file" node type through its NodeType contract, with a synchronous fake grant standing
 // in for the framework's handoff (docs/design/m1-white-to-file.md section 3, slice S5 criteria
-// 2 and 3). The WAV files are read back with libsndfile.
+// 2 and 3). The WAV files are read back with libsndfile. Paths are relative to a recordings folder
+// and never lead out of it (docs/design/batch2.md section 4.4).
 #include <sndfile.h>
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -87,34 +90,89 @@ private:
 	std::filesystem::path path_;
 };
 
-std::unique_ptr<const ear::NodeConfig> parseFile(const std::string& path) {
-	auto config = ear::nodes::makeFileNodeType()->parse("rec", {{"path", path}});
+std::shared_ptr<const ear::nodes::RecordingsFolder> recordingsIn(const std::filesystem::path& path) {
+	auto folder = ear::nodes::RecordingsFolder::open(path);
+	REQUIRE(folder.has_value());
+	return std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*folder));
+}
+
+std::unique_ptr<const ear::NodeConfig> parseFile(const std::shared_ptr<const ear::nodes::RecordingsFolder>& folder,
+                                                 const std::string& path) {
+	auto config = ear::nodes::makeFileNodeType(folder)->parse("rec", {{"path", path}});
 	REQUIRE(config.has_value());
 	return std::move(*config);
+}
+
+std::string contents(const std::filesystem::path& path) {
+	std::ifstream file(path, std::ios::binary);
+	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
 }  // namespace
 
 TEST_CASE("File declares inputs FL and FR and no outputs", "[file]") {
-	const auto type = ear::nodes::makeFileNodeType();
+	TempDir dir{"ports"};
+	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
 	CHECK(type->name() == "file");
-	const auto config = parseFile("/tmp/rec.wav");
+	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
 	CHECK(config->ports().inputs == std::vector<ear::PortName>{"FL", "FR"});
 	CHECK(config->ports().outputs.empty());
 }
 
 TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
-	const auto type = ear::nodes::makeFileNodeType();
+	TempDir dir{"settings"};
+	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
 	for (const ear::NodeSettings& settings :
 	     {ear::NodeSettings{}, ear::NodeSettings::object(), ear::NodeSettings{{"path", ""}},
-	      ear::NodeSettings{{"path", 7}}, ear::NodeSettings{{"path", "/tmp/a.wav"}, {"gain", 1}},
-	      ear::NodeSettings("/tmp/a.wav")}) {
+	      ear::NodeSettings{{"path", 7}}, ear::NodeSettings{{"path", "a.wav"}, {"gain", 1}},
+	      ear::NodeSettings("a.wav")}) {
 		INFO(settings.dump());
 		const auto config = type->parse("rec", settings);
 		REQUIRE_FALSE(config.has_value());
 		CHECK(config.error().node == "rec");
 		CHECK_FALSE(config.error().detail.empty());
 	}
+}
+
+TEST_CASE("File refuses an absolute path or a .. component as invalid settings", "[file]") {
+	TempDir dir{"outside"};
+	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path() / "recordings"));
+	for (const std::string& path : {std::string("/tmp/rec.wav"), (dir.path() / "rec.wav").string(), std::string("../x.wav"),
+	                               std::string(".."), std::string("take/../../x.wav"), std::string("take/..")}) {
+		INFO(path);
+		const auto config = type->parse("rec", {{"path", path}});
+		REQUIRE_FALSE(config.has_value());
+		CHECK(config.error().node == "rec");
+		CHECK(config.error().detail.find("recordings folder") != std::string::npos);
+	}
+	for (const std::string path : {"rec.wav", "take/rec.wav", "..rec.wav", "./rec.wav"}) {
+		INFO(path);
+		CHECK(type->parse("rec", {{"path", path}}).has_value());
+	}
+}
+
+TEST_CASE("File refuses at start a symlink in the folder that leads outside it", "[file]") {
+	TempDir dir{"symlink"};
+	const auto outside = dir.path() / "outside.wav";
+	std::ofstream(outside, std::ios::binary) << "keep";
+	const auto folder = recordingsIn(dir.path() / "recordings");
+	std::filesystem::create_symlink(outside, dir.path() / "recordings" / "rec.wav");
+	std::filesystem::create_directory_symlink(dir.path(), dir.path() / "recordings" / "up");
+
+	for (const std::string path : {"rec.wav", "up/outside.wav", "up/new.wav"}) {
+		INFO(path);
+		const auto config = parseFile(folder, path);
+		FakeGrant grant{{.rate = 48000, .maxBlock = 256}};
+
+		const auto insides = config->start(grant);
+
+		REQUIRE_FALSE(insides.has_value());
+		CHECK(insides.error().code == ear::FailureReason::Code::startFailed);
+		CHECK(insides.error().detail == "cannot open " + path + ": it leads outside the recordings folder");
+		CHECK(grant.requests.empty());
+	}
+	CHECK(contents(outside) == "keep");
+	CHECK_FALSE(std::filesystem::exists(dir.path() / "new.wav"));
 }
 
 TEST_CASE("File records FL and FR as a 32-bit float stereo WAV at the format's rate", "[file]") {
@@ -127,7 +185,7 @@ TEST_CASE("File records FL and FR as a 32-bit float stereo WAV at the format's r
 	}
 	constexpr ear::AudioFormat format{.rate = 32000, .maxBlock = 256};
 	constexpr std::uint32_t blocks = 3;
-	const auto config = parseFile(wav.string());
+	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
 	FakeGrant grant{format};
 
 	auto insides = (*config).start(grant);
@@ -177,7 +235,7 @@ TEST_CASE("File records FL and FR as a 32-bit float stereo WAV at the format's r
 
 TEST_CASE("File fails to start on a path it cannot open, and asks for no handoff", "[file]") {
 	TempDir dir{"unopenable"};
-	const auto config = parseFile((dir.path() / "missing-dir" / "rec.wav").string());
+	const auto config = parseFile(recordingsIn(dir.path()), "missing-dir/rec.wav");
 	FakeGrant grant{{.rate = 48000, .maxBlock = 256}};
 
 	const auto insides = config->start(grant);

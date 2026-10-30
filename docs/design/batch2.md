@@ -14,6 +14,7 @@ The question page: https://claude.ai/artifact/DraHdKRyZDB4WwBWxDTn4k
 | Scope | "Ok" (to the recommended scope) | Run image, control port, web UI, sound card node. Sendspin (Music Assistant) is the next batch. |
 | Web UI | "Graph view is the goal. Dynamically wiring up nodes and edges in a UI is the goal. I want to see all of the graph information in real time, like the audio levels per-channel / per edge" | A drawn graph editor: nodes as boxes, routes as wires added and removed in the UI, with live status and live audio levels per channel and per route. |
 | Hardware | "Motu 24ao. Talos 1.13.x I think maybe 1.14.x" | A MOTU 24Ao (AVB series, USB class compliant). Talos 1.13 or later includes the USB audio driver (added in 1.12). |
+| File node paths (review P0, after the cut) | He picked the option "confine file node paths to one recordings folder (a new --recordings-dir flag; reject anything outside it)" | A `file` node's path is relative to one folder given at boot; absolute paths, `..` and symlinks that lead out are refused (sections 4.4, 4.7, 11). |
 | Threading | "The control port shouldn't run in the PipeWire context, because it will not be real time" | The control port's own work (sockets, messages, client queues) runs on its own thread, never on PipeWire's threads. The graph edits it asks for are applied on PipeWire's main loop, which is not realtime; only PipeWire's data thread is realtime, and nothing of the control port runs there. |
 
 Not answered: the CPU of the Talos nodes. The image is built for amd64 until he says otherwise.
@@ -50,7 +51,9 @@ themselves cannot move.
 - Live edits are not saved; `ear.json` loads at boot.
 - No login on port 7777 yet: anyone who can reach the port can edit the graph. It answers only
   requests addressed to an IP address, `localhost` or a name given with `--allowed-host`, and
-  refuses browser pages from other sites.
+  refuses browser pages from other sites. A `file` node writes only inside the recordings folder
+  (the owner's pick, above); the folder's defaults, `recordings` beside where EAR starts and
+  `/var/lib/ear/recordings` in the run image, are design choices.
 - A sound card is named in `ear.json` by its ALSA card id (the name in `/proc/asound/cards`, for
   example `Pro24`), never by index and never by a raw ALSA device string.
 - Stopping EAR first refuses graph edits (clients get "stopping"), then stops every node.
@@ -187,7 +190,7 @@ C++23 as M1. Stateful classes keep a private Impl pointer. Bodies are not part o
 | `core/reconciler.hpp` | + `routeRemoved`; `portGone` acts only on the port whose live id it is |
 | `pipewire/engine.hpp` | + `Scheduling`, `dataThreadScheduling()`; `create` makes a permitted CAP_SYS_NICE effective |
 | `pipewire/port_blocks.hpp` | ctor takes `LevelWake&`; implements `LevelReader`; new `make` |
-| `nodes/builtin.hpp` | + `makeCardNodeType`; `builtinNodeTypes()` adds card |
+| `nodes/builtin.hpp` | + `makeCardNodeType`; `builtinNodeTypes()` adds card; `makeFileNodeType` and `builtinNodeTypes` take the recordings folder (section 4.4, erratum in section 11) |
 | `pipewire/links.cpp` (not a header) | its link proxy moves to the private `src/pipewire/link_proxy.hpp`, shared with sound cards (s0, behaviour unchanged) |
 | unchanged | `graph_spec.hpp`, `links.hpp`, `live_graph.hpp`, `handoffs.hpp`, `graph_file.hpp`, `status_log.hpp` |
 
@@ -681,7 +684,30 @@ engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 ### 4.4 ear_nodes
 
 ```cpp
-// ===== nodes/builtin.hpp (additions) =====
+// ===== nodes/recordings.hpp (new, erratum 2026-10-30: the recordings folder) =====
+/// The one folder "file" nodes write into (--recordings-dir), held open as a directory for
+/// EAR's life, so no client-given path can name a file outside it.
+class RecordingsFolder {
+public:
+  /// Creates the directory `path` if it is missing (never its parents) and opens it. The error
+  /// is a sentence naming `path` and the reason.
+  static std::expected<RecordingsFolder, std::string> open(const std::filesystem::path& path);
+  RecordingsFolder(RecordingsFolder&&) noexcept;              // move-only; closes on destruction
+  /// Opens `relative` beneath the folder for writing: created (mode 0644) or truncated. The
+  /// kernel resolves it inside the folder only (openat2 RESOLVE_BENEATH |
+  /// RESOLVE_NO_MAGICLINKS), so an absolute path, a ".." or a symlink that leads out is
+  /// refused. A descriptor the caller owns (O_CLOEXEC), or the reason it was refused.
+  std::expected<int, std::string> create(const std::string& relative) const;
+  const std::filesystem::path& path() const noexcept;
+};
+
+// ===== nodes/builtin.hpp (changes) =====
+/// "file": inputs "FL", "FR"; settings {"path": a path relative to `recordings`}: non-empty,
+/// not absolute, no ".." component (else invalid). Opened beneath the folder only
+/// (RecordingsFolder::create), truncated at start; 32-bit float stereo WAV at the graph
+/// frequency; complete once the node is gone. A path the folder refuses or cannot open: start
+/// fails with startFailed. Ring: 2 s at the graph frequency.
+std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const RecordingsFolder> recordings);
 /// "card": a sound card. Settings: {"card": a CardId (required), "playback": channels 0-64
 /// (default 0), "capture": channels 0-64 (default 0)}; at least one above 0; unknown keys
 /// invalid; a "card" outside CardId's grammar is invalid. Ports: inputs
@@ -690,8 +716,16 @@ engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 /// from_card_j -> capture_j). Start asks the grant for one card per direction used. The rate is
 /// the graph frequency (R5), never a setting.
 std::unique_ptr<const NodeType> makeCardNodeType();
-std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes();   // white, file, card
+/// white, file (writing into `recordings`), card.
+std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<const RecordingsFolder> recordings);
 ```
+
+The folder is opened once, by `main.cpp`, and shared by the `file` type and every config it
+makes (a config can outlive a settings change). The settings check refuses absolute paths and
+`..` so the mistake is an invalid-settings error before anything starts; the open is what makes
+leaving the folder impossible, symlinks included (openat2(2), Linux 5.6; Debian 13's and
+Talos's kernels qualify). libsndfile writes to the descriptor (`sf_open_fd`, told not to close
+it); the node closes it after `sf_close`.
 
 ### 4.5 ear_control (pure; nlohmann/json and ear_core only)
 
@@ -942,10 +976,11 @@ spec's own examples.
 ### 4.7 main.cpp (J): boot and stop order
 
 Flags: `--config`, `--help` (M1), `--control-address`, `--control-port`, `--web-root`,
-`--allowed-host` (repeatable). Boot: readGraphFile → Engine::create → print `engine: realtime
+`--allowed-host` (repeatable), `--recordings-dir` (default `recordings`; erratum 2026-10-30).
+Boot: readGraphFile → RecordingsFolder::open (error: print, exit 1) → Engine::create → print `engine: realtime
 <detail>` or `engine: not realtime (<detail>)` → MainLoopExecutor → ControlThread → LevelBell →
-FilterPortBlocks(engine, bell), ThreadHandoffs, AlsaSoundCards, Links, LiveGraph → catalogue,
-DesiredGraph, Reconciler(links), NodeHost(format, blocks, handoffs, cards), GraphStatus(engine
+FilterPortBlocks(engine, bell), ThreadHandoffs, AlsaSoundCards, Links, LiveGraph → catalogue
+(builtinNodeTypes(the recordings folder)), DesiredGraph, Reconciler(links), NodeHost(format, blocks, handoffs, cards), GraphStatus(engine
 view, …) → MainLoopGateway(mainLoop, control, graph, status) → wiring: graph.observe(gateway)
 (both kinds); graph.subscribe(nodes), graph.subscribe(reconciler); nodes → log, gateway;
 reconciler → log, gateway; live → reconciler; links → reconciler → ControlPort::start (error:
@@ -1009,7 +1044,7 @@ Graph:
   "nodes": [
     {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["MONO"],
      "state": "running"},
-    {"name": "rec", "type": "file", "settings": {"path": "/x.wav"}, "inputs": ["FL", "FR"],
+    {"name": "rec", "type": "file", "settings": {"path": "x.wav"}, "inputs": ["FL", "FR"],
      "outputs": [], "state": "failed", "reason": {"code": "start-failed", "detail": "..."}}
   ],
   "routes": [
@@ -1062,7 +1097,8 @@ Graph:
   PipeWire, SPA modules, libsndfile, alsa-lib at run time, no compiler; `/opt/ear/{ear,
   engine.conf, web/}`; `setcap cap_sys_nice=p /opt/ear/ear` in the run stage, with libcap2-bin
   installed and purged in the same step; user `ear` uid 10001; `EXPOSE 7777`; entrypoint
-  `/opt/ear/ear`, default `--config /etc/ear/ear.json`). amd64 only until the owner names the
+  `/opt/ear/ear`, default `--config /etc/ear/ear.json --recordings-dir /var/lib/ear/recordings`,
+  that folder owned by `ear` and a `VOLUME`; erratum 2026-10-30). amd64 only until the owner names the
   Talos nodes' CPU.
 - Realtime for uid 10001: a capability added in a pod spec does not reach a non-root process
   (execve clears it without file or ambient capabilities; capabilities(7); kubernetes#56374), so
@@ -1434,15 +1470,21 @@ file capability (section 7).
   (`ensure_loop` logs and goes on), and an engine node destroyed through the registry keeps its
   data loop (section 13). So the branch is a guard with no test; E1(6) proves the reachable
   case (a block lost through the registry: drive returns and the code never runs).
-- **Review fix, 2026-10-30, needs the owner: a `file` node writes wherever the client says.**
-  Section 4.4 freezes "file": settings {"path": any non-empty string}, truncated at start. With
-  "no login on port 7777" (design choices), anyone who can reach the port can truncate or
-  overwrite any file the ear process can write (`node.add` type "file" with that path). Not
-  changed: it changes a frozen interface. Options: file paths relative to one recordings
-  directory given on the command line (no `..`, no absolute paths), or no overwrite of an
-  existing file, or login on the port. Related: `--control-address` defaults to 0.0.0.0 (section
-  4.6), so by default the whole LAN can edit the graph; the design records that as a revisable
-  choice, not as the owner's word.
+- **Review fix, 2026-10-30, closed: a `file` node wrote wherever the client said.** Section 4.4
+  froze "file": settings {"path": any non-empty string}, truncated at start, so with no login on
+  port 7777 anyone who reached the port could truncate or overwrite any file the ear process
+  could write. The owner picked (2026-10-30) "confine file node paths to one recordings folder (a
+  new --recordings-dir flag; reject anything outside it)". Section 4.4 now has
+  `nodes/recordings.hpp`, and `makeFileNodeType` and `builtinNodeTypes` take the folder; section
+  4.7 has the flag (default `recordings`) and opens the folder before the engine; the run image
+  passes `/var/lib/ear/recordings`, a volume owned by `ear` (section 7). The path is relative to
+  the folder: an absolute path or a `..` component is invalid settings, and the file is opened
+  with openat2 `RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS` on the folder's descriptor, so a
+  symlink that leads out fails the node's start. Fixtures in `test/protocol` use relative paths.
+  Cost: a subfolder named in a path must already exist (none is made), and a container started
+  with its own arguments must pass `--recordings-dir` again. Still open and related:
+  `--control-address` defaults to 0.0.0.0 (section 4.6), so by default the whole LAN can edit the
+  graph; the design records that as a revisable choice, not as the owner's word.
 - **Review fix, 2026-10-30: J(5) as built accepts a 1001 close without one "stopping" refusal**
   (the criterion allows it: "each gets ... "stopping" or the socket closes with 1001"). Making a
   refusal certain needs a node held in stopping by a test event, which no node type offers; the

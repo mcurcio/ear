@@ -60,7 +60,7 @@ scripts/dev.sh bash               # a shell in the image
 Running it (inside the image, or on a Linux host with the packages):
 
 ```bash
-./out/ear --config ear.json   # the default; --help lists the options
+./out/ear --config ear.json   # the default; --help lists the options; file nodes write into ./recordings
 ./out/ear --web-root web/dist # serve the editor built by make web
 ```
 
@@ -71,6 +71,7 @@ Running it (inside the image, or on a Linux host with the packages):
 | `--control-port` | `7777` | its port; `0` takes any free one (tests) |
 | `--web-root` | `<directory of ear>/web` | the editor's built files |
 | `--allowed-host` | none | a DNS name the Host header may carry (repeatable) |
+| `--recordings-dir` | `recordings` | the folder `file` nodes write into; made at boot if missing (not its parents), and a folder it cannot make or open exits 1 |
 
 `ear` reads `engine.conf` from beside its own binary. It prints how its audio thread is
 scheduled (`engine: realtime SCHED_FIFO <n>` or `engine: not realtime (SCHED_OTHER)`), then
@@ -141,8 +142,12 @@ Not committed; read by `ear::control::parseGraphFile` (`src/control/graph_file.c
 - Each node has a unique `name` (1 to 64 letters, digits, `-` and `_`), a `type` and optional
   `settings`, which only the type checks.
   `white` has one output, `MONO`, uniform noise in [-1, 1), and takes no settings. `file` has
-  inputs `FL` and `FR` and needs `{"path": "<non-empty string>"}`; it truncates the file at start
-  and writes 32-bit float stereo WAV at the graph frequency, complete once the node is gone.
+  inputs `FL` and `FR` and needs `{"path": "<path>"}`, relative to the recordings folder
+  (`--recordings-dir`): non-empty, not absolute, no `..` component, else invalid settings. It is
+  opened beneath the folder only (`openat2` with `RESOLVE_BENEATH` on the folder's descriptor,
+  held from boot), so a symlink that leads out fails the node's start; a missing subfolder fails
+  it too (none is made). It truncates the file at start and writes 32-bit float stereo WAV at the
+  graph frequency, complete once the node is gone.
 - `card` is a sound card: `{"card": "<card id>", "playback": <channels>, "capture":
   <channels>}`. The card id is the ALSA name in `/proc/asound/cards` (letters, digits, `-`,
   `_`, at most 15), never an index or an ALSA device string; each count is 0 to 64 (default 0),
@@ -248,11 +253,11 @@ case its own CTest test, so `ctest --parallel` runs them side by side.
 | Executable | What it proves |
 |---|---|
 | `ear_core_tests` | The desired graph's checks, edits and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards, a lost block); the reconciler; levels; the graph read; card ids. Pure, milliseconds |
-| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, and refusing an unopenable path; `card`'s settings, ports and pass-through |
+| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start); the recordings folder made at boot, never its parents; `card`'s settings, ports and pass-through |
 | `ear_control_tests` | The graph-file parser (error pointers, unknown keys) and replay order; the JSON-RPC envelope (the spec's examples), commands, events, gateway and sessions, all against `test/protocol` |
 | `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card |
 | `ear_server_tests` | Port 7777 on real sockets with a fake main loop and gateway: files, Host and Origin, round trips, the 1008 bound, a client that resets, stop with 1001, levels |
-| `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on a graph file: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); a route to an undeclared port exits 1; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, edits during stop refused as `stopping`, a sound card node linked |
+| `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on a graph file: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); a route to an undeclared port exits 1, as does a recordings folder it cannot make; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |
 | web (vitest, `make web-test`) | The editor's reducer against every `test/protocol` fixture, the reconnecting client with a fake socket, connection rules, levels and layout. No browser; rendering is checked by eye |
 
 `test/CMakeLists.txt` also runs `ear --help` (the binary loads its shared libraries), and
@@ -280,7 +285,8 @@ runs `scripts/image-smoke.sh` on it. Its comments give the reasons for each step
 GCC 14, CMake, Node.js 24), `build` (`make release` and the editor's build) and `run`, what
 ships: `debian:trixie-slim` with only the run-time libraries, no compiler; `/opt/ear/ear`,
 `engine.conf` and `web/`; user `ear` (uid 10001); port 7777; default `--config
-/etc/ear/ear.json`. The binary carries CAP_SYS_NICE as a permitted-only file capability that
+/etc/ear/ear.json --recordings-dir /var/lib/ear/recordings`, a volume owned by `ear` (arguments
+given to the container replace both, so pass them again). The binary carries CAP_SYS_NICE as a permitted-only file capability that
 EAR makes effective at boot, so the audio thread is realtime where the container is given
 SYS_NICE (`docker run --cap-add SYS_NICE`) and plain elsewhere; EAR prints which, and
 `graph.get` says it. Built for amd64 only until the Talos nodes' CPU is known.

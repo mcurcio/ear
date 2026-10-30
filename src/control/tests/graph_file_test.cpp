@@ -59,7 +59,7 @@ public:
 const std::string twoNodes = R"({
 	"graphFrequency": 48000, "blockSize": 256,
 	"nodes": [{"name": "noise", "type": "white"},
-	          {"name": "rec", "type": "file", "settings": {"path": "/tmp/x.wav"}}],
+	          {"name": "rec", "type": "file", "settings": {"path": "x.wav"}}],
 	"routes": [{"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FL"}},
 	           {"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FR"}}]
 })";
@@ -73,7 +73,7 @@ TEST_CASE("A graph file parses into its frequency, block size, nodes and routes"
 	CHECK(spec->blockSize == 256);
 	REQUIRE(spec->nodes.size() == 2);
 	CHECK(spec->nodes[0] == ear::NodeSpec{"noise", "white", nlohmann::json::object()});
-	CHECK(spec->nodes[1] == ear::NodeSpec{"rec", "file", {{"path", "/tmp/x.wav"}}});
+	CHECK(spec->nodes[1] == ear::NodeSpec{"rec", "file", {{"path", "x.wav"}}});
 	REQUIRE(spec->routes.size() == 2);
 	CHECK(spec->routes[0] == ear::Route{{"noise", "MONO"}, {"rec", "FL"}});
 	CHECK(spec->routes[1] == ear::Route{{"noise", "MONO"}, {"rec", "FR"}});

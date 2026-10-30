@@ -8,17 +8,20 @@
 #
 # Two container starts, both as the image's own user (no --user):
 # 1. Without SYS_NICE: the user is uid 10001; no compiler or build tool is on the PATH; ear's
-#    engine.conf and the built editor (web/index.html) are in /opt/ear; then ear --help, which
+#    engine.conf and the built editor (web/index.html) are in /opt/ear; the recordings folder
+#    /var/lib/ear/recordings is writable; then ear --help, which
 #    also proves its shared libraries load. ear carries CAP_SYS_NICE as a permitted-only file
 #    capability, so it starts where the capability is not allowed (a marked-effective one would
 #    fail here with EPERM).
 # 2. With --cap-add SYS_NICE: ear --help again.
-# Then ear itself, twice, on a sample graph (white noise into a file node writing to /tmp),
+# Then ear itself, twice, on a sample graph (white noise into a file node writing rec.wav in the
+# image's recordings folder, /var/lib/ear/recordings, which must be the ear user's),
 # without and with --cap-add SYS_NICE: once it prints "control listening on", GET / must return
 # the built editor's index.html and graph.get must answer (scripts/rpc-call.mjs, run with the dev
 # image's Node in a container sharing ear's network). Without SYS_NICE graph.get says
 # "realtime": false and ear still runs; with it, "realtime": true (the binary's permitted
-# capability, made effective by Engine::create). Each run is stopped with SIGTERM and must exit 0.
+# capability, made effective by Engine::create). Each run is stopped with SIGTERM and must exit 0
+# and leave rec.wav in the recordings folder.
 #
 # The dev image (docker/Dockerfile's dev target) is EAR_DEV_IMAGE if set (as scripts/dev.sh), or
 # is built and loaded here as ear-dev from the same Dockerfile (its layers are already cached
@@ -50,6 +53,10 @@ docker run --rm --entrypoint /bin/sh "$image" -euc '
 			exit 1
 		fi
 	done
+	if [ ! -w /var/lib/ear/recordings ]; then
+		echo "image-smoke: /var/lib/ear/recordings is not writable by uid 10001" >&2
+		exit 1
+	fi
 	exec /opt/ear/ear --help
 ' >/dev/null
 
@@ -66,7 +73,8 @@ fi
 scratch=$(mktemp -d)
 containers=()
 cleanup() {
-	if [[ ${#containers[@]} -gt 0 ]]; then docker rm --force "${containers[@]}" >/dev/null 2>&1 || true; fi
+	# --volumes: each run's anonymous recordings volume goes with its container.
+	if [[ ${#containers[@]} -gt 0 ]]; then docker rm --force --volumes "${containers[@]}" >/dev/null 2>&1 || true; fi
 	rm -rf "$scratch"
 }
 trap cleanup EXIT
@@ -77,7 +85,7 @@ cat >"$scratch/ear.json" <<'JSON'
   "blockSize": 256,
   "nodes": [
     {"name": "noise", "type": "white"},
-    {"name": "rec", "type": "file", "settings": {"path": "/tmp/rec.wav"}}
+    {"name": "rec", "type": "file", "settings": {"path": "rec.wav"}}
   ],
   "routes": [{"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FL"}}]
 }
@@ -131,6 +139,13 @@ run_ear() {
 	status=$(docker inspect --format '{{.State.ExitCode}}' "$container")
 	if [[ $status != 0 ]]; then
 		echo "image-smoke: ear exited with $status after SIGTERM" >&2
+		docker logs "$container" >&2 || true
+		exit 1
+	fi
+
+	rm -f "$scratch/rec.wav"
+	if ! docker cp "$container:/var/lib/ear/recordings/rec.wav" "$scratch/rec.wav" >/dev/null || [[ ! -s $scratch/rec.wav ]]; then
+		echo "image-smoke: the file node left no rec.wav in /var/lib/ear/recordings" >&2
 		docker logs "$container" >&2 || true
 		exit 1
 	fi

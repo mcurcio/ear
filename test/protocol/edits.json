@@ -4,9 +4,9 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"n2\",\"type\":\"white\"}}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"/nope/t.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"nope/t.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"tape\",\"port\":\"FL\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"/y.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"y.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"noise\"}}"
   ],
@@ -39,7 +39,7 @@
             "name": "rec",
             "type": "file",
             "settings": {
-              "path": "/x.wav"
+              "path": "x.wav"
             },
             "inputs": [
               "FL",
@@ -154,7 +154,7 @@
         "name": "tape",
         "type": "file",
         "settings": {
-          "path": "/nope/t.wav"
+          "path": "nope/t.wav"
         },
         "inputs": [
           "FL",
@@ -179,7 +179,7 @@
         "state": "failed",
         "reason": {
           "code": "start-failed",
-          "detail": "cannot open /nope/t.wav: No such file or directory"
+          "detail": "cannot open nope/t.wav: No such file or directory"
         }
       }
     },
@@ -244,7 +244,7 @@
       "params": {
         "name": "rec",
         "settings": {
-          "path": "/y.wav"
+          "path": "y.wav"
         }
       }
     },
@@ -364,7 +364,7 @@
         "name": "rec",
         "type": "file",
         "settings": {
-          "path": "/y.wav"
+          "path": "y.wav"
         },
         "inputs": [
           "FL",
@@ -377,7 +377,7 @@
         "name": "tape",
         "type": "file",
         "settings": {
-          "path": "/nope/t.wav"
+          "path": "nope/t.wav"
         },
         "inputs": [
           "FL",
@@ -387,7 +387,7 @@
         "state": "failed",
         "reason": {
           "code": "start-failed",
-          "detail": "cannot open /nope/t.wav: No such file or directory"
+          "detail": "cannot open nope/t.wav: No such file or directory"
         }
       }
     ],

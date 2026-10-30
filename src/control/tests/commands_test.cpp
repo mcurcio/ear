@@ -85,11 +85,11 @@ ear::GraphView snapshotView() {
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
 	view.nodes.push_back({{"noise", "white", json::object()}, {{}, {"MONO"}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "/x.wav"}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"tape", "file", {{"path", "/nope/t.wav"}}},
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}},
 	                      {{"FL", "FR"}, {}},
 	                      NodeState::failed,
-	                      ear::FailureReason{Code::startFailed, "cannot open /nope/t.wav: No such file or directory"}});
+	                      ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
 	view.routes.push_back({{{"noise", "MONO"}, {"motu", "playback_1"}}, ear::RouteMatch::pending, ""});
 	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
 	view.routes.push_back({{{"noise", "MONO"}, {"tape", "FL"}},
@@ -105,14 +105,14 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::holds_alternative<GetGraph>(decodeCommand("graph.get", json::object()).value()));
 	CHECK(std::holds_alternative<GetGraph>(decodeCommand("graph.subscribe", nullptr).value()));
 
-	const auto add = decodeCommand("node.add", json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "/x.wav"}})"));
-	CHECK(std::get<AddNode>(add.value()).node == ear::NodeSpec{"rec", "file", {{"path", "/x.wav"}}});
+	const auto add = decodeCommand("node.add", json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "x.wav"}})"));
+	CHECK(std::get<AddNode>(add.value()).node == ear::NodeSpec{"rec", "file", {{"path", "x.wav"}}});
 	const auto addPlain = decodeCommand("node.add", json::parse(R"({"name": "noise", "type": "white"})"));
 	CHECK(std::get<AddNode>(addPlain.value()).node.settings == json::object());
 
-	const auto update = decodeCommand("node.update", json::parse(R"({"name": "rec", "settings": {"path": "/y.wav"}})"));
+	const auto update = decodeCommand("node.update", json::parse(R"({"name": "rec", "settings": {"path": "y.wav"}})"));
 	CHECK(std::get<UpdateNode>(update.value()).node == "rec");
-	CHECK(std::get<UpdateNode>(update.value()).settings == json{{"path", "/y.wav"}});
+	CHECK(std::get<UpdateNode>(update.value()).settings == json{{"path", "y.wav"}});
 
 	CHECK(std::get<RemoveNode>(decodeCommand("node.remove", json::parse(R"({"name": "rec"})")).value()).node == "rec");
 	CHECK(std::get<AddRoute>(decodeCommand("route.add", json::parse(noiseToRecFlJson)).value()).route == noiseToRecFl);
@@ -187,12 +187,12 @@ TEST_CASE("runCommand makes the one control call its command names", "[commands]
 	CHECK(std::holds_alternative<ear::GraphView>(runCommand(GetGraph{}, control, reader)));
 	CHECK(reader.reads == 1);
 	runCommand(AddNode{{"noise", "white", json::object()}}, control, reader);
-	runCommand(UpdateNode{"rec", {{"path", "/y.wav"}}}, control, reader);
+	runCommand(UpdateNode{"rec", {{"path", "y.wav"}}}, control, reader);
 	runCommand(RemoveNode{"rec"}, control, reader);
 	runCommand(AddRoute{noiseToRecFl}, control, reader);
 	control.answer = std::unexpected(ear::UnknownRoute{noiseToRecFl});
 	const CommandResult refused = runCommand(RemoveRoute{noiseToRecFl}, control, reader);
-	CHECK(control.calls == std::vector<std::string>{"addNode noise", R"(updateNode rec {"path":"/y.wav"})",
+	CHECK(control.calls == std::vector<std::string>{"addNode noise", R"(updateNode rec {"path":"y.wav"})",
 	                                                "removeNode rec", "addRoute FL", "removeRoute FL"});
 	CHECK(reader.reads == 1);
 	CHECK(ear::errorCode(std::get<std::expected<void, ear::CommandError>>(refused).error()) == "unknown-route");

@@ -1,14 +1,15 @@
-// EAR's composition root (docs/design/batch2.md section 4.7): reads the graph file, starts the
-// engine and prints how its audio thread is scheduled, wires the packages together, opens the
-// control port, replays the file as control calls and runs until SIGINT or SIGTERM. Stopping
-// closes the graph to edits, stops every node, then closes the control port, stops the control
-// thread and ends the main loop.
+// EAR's composition root (docs/design/batch2.md section 4.7): reads the graph file, opens the
+// recordings folder, starts the engine and prints how its audio thread is scheduled, wires the
+// packages together, opens the control port, replays the file as control calls and runs until
+// SIGINT or SIGTERM. Stopping closes the graph to edits, stops every node, then closes the
+// control port, stops the control thread and ends the main loop.
 
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <boost/program_options.hpp>
@@ -22,6 +23,7 @@
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 #include "ear/nodes/builtin.hpp"
+#include "ear/nodes/recordings.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
@@ -54,7 +56,9 @@ int main(int argc, char** argv) {
 		 "control port (0: any free port)")
 		("web-root", po::value<std::string>(), "the graph editor's files (default: <directory of ear>/web)")
 		("allowed-host", po::value<std::vector<std::string>>()->composing(),
-		 "a DNS name requests may name in Host (repeatable); IP addresses and localhost always may");
+		 "a DNS name requests may name in Host (repeatable); IP addresses and localhost always may")
+		("recordings-dir", po::value<std::string>()->default_value("recordings"),
+		 "the folder file nodes write into (made if missing, not its parents); their paths are relative to it");
 
 	po::variables_map arguments;
 	try {
@@ -86,6 +90,12 @@ int main(int argc, char** argv) {
 	}
 	const ear::AudioFormat format{spec->graphFrequency, spec->blockSize};
 
+	auto recordings = ear::nodes::RecordingsFolder::open(arguments["recordings-dir"].as<std::string>());
+	if (!recordings) {
+		std::cerr << "ear: " << recordings.error() << '\n';
+		return 1;
+	}
+
 	// Declaration order is boot order; destruction runs the other way: port, gateway, core,
 	// adapters, control thread, main-loop executor, engine.
 	auto created = ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock});
@@ -113,7 +123,8 @@ int main(int argc, char** argv) {
 	ear::pipewire::Links links(*engine);
 	ear::pipewire::LiveGraph live(*engine);
 
-	const ear::NodeCatalogue catalogue(ear::nodes::builtinNodeTypes());
+	const ear::NodeCatalogue catalogue(
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*recordings))));
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ear::NodeHost nodes(format, blocks, handoffs, cards);

@@ -50,9 +50,9 @@ TEST_CASE("A node decodes with its settings, which default to {}", "[graph-json]
 	REQUIRE(plain.has_value());
 	CHECK(*plain == ear::NodeSpec{"noise", "white", json::object()});
 	const auto set = ear::control::decodeNodeSpec(
-		json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "/x.wav"}})"), JsonPointer{});
+		json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "x.wav"}})"), JsonPointer{});
 	REQUIRE(set.has_value());
-	CHECK(*set == ear::NodeSpec{"rec", "file", {{"path", "/x.wav"}}});
+	CHECK(*set == ear::NodeSpec{"rec", "file", {{"path", "x.wav"}}});
 }
 
 TEST_CASE("Every missing, extra and mistyped node key is named by its pointer", "[graph-json]") {
