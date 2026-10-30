@@ -1,2 +1,13 @@
-// Slice S5 defines this file's functions (docs/design/m1-white-to-file.md section 3).
+// The node types EAR ships with; main builds its catalogue from this list.
 #include "ear/nodes/builtin.hpp"
+
+namespace ear::nodes {
+
+std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes() {
+	std::vector<std::unique_ptr<const NodeType>> types;
+	types.push_back(makeWhiteNodeType());
+	types.push_back(makeFileNodeType());
+	return types;
+}
+
+}  // namespace ear::nodes
