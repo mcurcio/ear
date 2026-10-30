@@ -1,5 +1,5 @@
 // Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
-// erratum in .claude/errata.md and a re-cut, never a local edit.
+// erratum in that page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <expected>
 #include <memory>
