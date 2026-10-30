@@ -1,2 +1,4 @@
 /out
 /.cache
+/web/node_modules
+/web/dist

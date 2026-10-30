@@ -1,12 +1,17 @@
 // The "white" node type through its NodeType contract, and the built-in catalogue list
-// (docs/design/m1-white-to-file.md section 3, slice S5 criteria 1 and 4).
+// (docs/design/m1-white-to-file.md section 3, slice S5 criteria 1 and 4; docs/design/batch2.md
+// E2 criterion 7).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "catch2/catch.hpp"
 #include "ear/nodes/builtin.hpp"
@@ -20,6 +25,9 @@ public:
 	ear::AudioFormat format() const override { return format_; }
 	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
 		throw std::logic_error("white requested a handoff");
+	}
+	void soundCard(const ear::SoundCardRequest&) override {
+		throw std::logic_error("white asked for a sound card");
 	}
 
 private:
@@ -43,7 +51,7 @@ TEST_CASE("White declares one output, MONO, and no inputs", "[white]") {
 TEST_CASE("White rejects any settings key", "[white]") {
 	const auto type = ear::nodes::makeWhiteNodeType();
 	for (const ear::NodeSettings& settings :
-	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "/tmp/a.wav"}}, ear::NodeSettings(3)}) {
+	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "a.wav"}}, ear::NodeSettings(3)}) {
 		const auto config = type->parse("noise", settings);
 		REQUIRE_FALSE(config.has_value());
 		CHECK(config.error().node == "noise");
@@ -83,12 +91,17 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	CHECK(std::sqrt(sumOfSquares / static_cast<double>(samples.size())) == Approx(0.577).margin(0.01));
 }
 
-TEST_CASE("The built-in node types are white and file", "[builtin]") {
-	const auto types = ear::nodes::builtinNodeTypes();
+TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
+	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_builtin_" + std::to_string(::getpid()));
+	auto folder = ear::nodes::RecordingsFolder::open(path);
+	REQUIRE(folder.has_value());
+	const auto types =
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*folder)));
+	std::filesystem::remove(path);
 	std::vector<std::string> names;
 	for (const auto& type : types) {
 		names.emplace_back(type->name());
 	}
 	std::ranges::sort(names);
-	CHECK(names == std::vector<std::string>{"file", "white"});
+	CHECK(names == std::vector<std::string>{"card", "file", "white"});
 }

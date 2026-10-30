@@ -1,3 +1,14 @@
-# docker/Dockerfile copies nothing from the build context (the repository root), so send none
-# of it: .cache/ (over 1 GB of fetched sources) and out/ would otherwise go to the builder.
+# The build context is the repository root. docker/Dockerfile's build stage copies the sources
+# (COPY . .), so this is an allowlist: everything is left out, then the sources are let back in.
+# Kept out: .cache/ (over 1 GB of fetched sources), out/, web/node_modules/, web/dist/ (the
+# build stage makes its own) and .git/.
 *
+!CMakeLists.txt
+!Makefile
+!cmake/
+!src/
+!test/
+!vendor/
+!web/
+web/node_modules/
+web/dist/

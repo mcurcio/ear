@@ -41,6 +41,23 @@ test: ${BUILDDIR}
 	ctest --test-dir ${BUILDDIR} --output-on-failure --parallel ${JOBS}
 .PHONY: test
 
+# The graph editor (web/, its toolchain in web/package.json). Both install exactly what
+# web/package-lock.json pins (npm ci). "web" builds it into web/dist, the folder the run image
+# serves; "web-test" typechecks it, runs its tests (vitest) and builds it.
+WEB = cd web &&
+
+web:
+	${WEB} npm ci
+	${WEB} npm run build
+.PHONY: web
+
+web-test:
+	${WEB} npm ci
+	${WEB} npm run typecheck
+	${WEB} npm test
+	${WEB} npm run build
+.PHONY: web-test
+
 cmake_debug: ${BUILDDIR}
 	$(call configure,Debug,OFF)
 .PHONY: cmake_debug

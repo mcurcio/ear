@@ -10,12 +10,12 @@ using ear::PortRef;
 using ear::Route;
 
 TEST_CASE("A node spec equals another only with the same name, type and settings", "[graph_spec]") {
-	const NodeSpec rec{"rec", "file", {{"path", "/tmp/a.wav"}}};
+	const NodeSpec rec{"rec", "file", {{"path", "a.wav"}}};
 
-	CHECK(rec == NodeSpec{"rec", "file", {{"path", "/tmp/a.wav"}}});
-	CHECK(rec != NodeSpec{"rec", "file", {{"path", "/tmp/b.wav"}}});
-	CHECK(rec != NodeSpec{"rec", "white", {{"path", "/tmp/a.wav"}}});
-	CHECK(rec != NodeSpec{"tap", "file", {{"path", "/tmp/a.wav"}}});
+	CHECK(rec == NodeSpec{"rec", "file", {{"path", "a.wav"}}});
+	CHECK(rec != NodeSpec{"rec", "file", {{"path", "b.wav"}}});
+	CHECK(rec != NodeSpec{"rec", "white", {{"path", "a.wav"}}});
+	CHECK(rec != NodeSpec{"tap", "file", {{"path", "a.wav"}}});
 }
 
 TEST_CASE("Routes compare by both ends, port by port", "[graph_spec]") {

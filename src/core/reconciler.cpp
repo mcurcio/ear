@@ -1,4 +1,4 @@
-// Route links from events (docs/design/m1-white-to-file.md section 2, reconciler.hpp): it holds
+// Route links from events (docs/design/batch2.md section 4.1, reconciler.hpp): it holds
 // the wanted routes and the live ports, asks the LinkMaker for one link per wanted route whose
 // ends are both live, and keeps each route's status from the link events. It never knows node
 // state and never touches audio.
@@ -94,6 +94,13 @@ void Reconciler::routeAdded(const Route& route) {
 	impl_->linkIfLive(it->first, it->second);
 }
 
+void Reconciler::routeRemoved(const Route& route) {
+	const auto it = impl_->routes.find(route);
+	if (it == impl_->routes.end()) return;
+	if (it->second.link) impl_->links.destroyLink(*it->second.link);
+	impl_->routes.erase(it);   // no status: the route is no longer wanted
+}
+
 void Reconciler::portAppeared(const LivePort& port) {
 	if (impl_->livePorts.contains(port.id)) portGone(port.id);
 	const Impl::PortKey key{port.direction, port.port};
@@ -114,6 +121,9 @@ void Reconciler::portGone(EnginePortId id) {
 		wanted.link.reset();
 		wanted.ends.reset();
 		impl_->set(route, wanted, RouteMatch::pending);
+		// A port of the same name may already be live under a newer id (its node removed and
+		// added again before this id went): link to that one.
+		impl_->linkIfLive(route, wanted);
 	}
 }
 

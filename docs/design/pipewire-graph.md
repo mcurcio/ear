@@ -84,8 +84,11 @@ the order below:
   the `white` and `file` types in place of null-sink and tone; step 3 without the socket or
   marks (no other client can connect, so EAR recognises its nodes by `node.name`); step 6's
   `ear.json` v2 only.
-- Not started: the control port (rest of step 6), steps 7 and 8. The parked list is section 8
-  of the milestone 1 page.
+- Batch 2 (page `docs/design/batch2.md`, landed on branch `claude/batch2` on 2026-10-30):
+  the rest of step 6 (the control port, with a graph editor in the browser), and step 8's sound
+  card node, tested in CI with a test ALSA card; plus a run image published from GitHub Actions.
+  Step 8's check on the Talos hardware is not done yet (the `ear-on-talos` skill lists it).
+- Not started: step 3's socket and marks, step 7. Music Assistant's Sendspin is the next batch.
 
 The original outline:
 

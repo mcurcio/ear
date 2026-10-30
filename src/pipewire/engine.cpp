@@ -1,4 +1,5 @@
-// PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts").
+// PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts";
+// docs/design/batch2.md sections 4.3 and 7: CAP_SYS_NICE and the scheduling report).
 #include "ear/pipewire/engine.hpp"
 
 #include <algorithm>
@@ -6,7 +7,11 @@
 #include <string>
 #include <utility>
 
+#include <linux/capability.h>
 #include <pthread.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
@@ -21,6 +26,43 @@ sigset_t stopSignals() {
   sigaddset(&set, SIGINT);
   sigaddset(&set, SIGTERM);
   return set;
+}
+
+/// The run image gives the binary CAP_SYS_NICE as a permitted-only file capability (a binary
+/// marked effective fails to start wherever the capability is not allowed). Making it effective
+/// here, before any engine thread exists, lets module-rt raise the data thread. Not permitted:
+/// nothing changes and nothing fails; the scheduling report shows the result. Raw capget and
+/// capset, so no libcap.
+void raisePermittedSysNice() {
+  __user_cap_header_struct header{_LINUX_CAPABILITY_VERSION_3, 0};
+  __user_cap_data_struct data[_LINUX_CAPABILITY_U32S_3]{};
+  if (syscall(SYS_capget, &header, data) != 0) return;
+  auto& word = data[CAP_TO_INDEX(CAP_SYS_NICE)];
+  const auto bit = static_cast<std::uint32_t>(CAP_TO_MASK(CAP_SYS_NICE));
+  if ((word.permitted & bit) == 0 || (word.effective & bit) != 0) return;
+  word.effective |= bit;
+  syscall(SYS_capset, &header, data);
+}
+
+/// Runs on the data loop: how the calling thread is scheduled.
+int readScheduling(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/,
+                   const void* /*data*/, std::size_t /*size*/, void* userData) {
+  auto* result = static_cast<Scheduling*>(userData);
+  const int policy = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;
+  sched_param param{};
+  sched_getparam(0, &param);
+  switch (policy) {
+    case SCHED_FIFO:
+      *result = {true, "SCHED_FIFO " + std::to_string(param.sched_priority)};
+      break;
+    case SCHED_RR:
+      *result = {true, "SCHED_RR " + std::to_string(param.sched_priority)};
+      break;
+    case SCHED_OTHER: *result = {false, "SCHED_OTHER"}; break;
+    case SCHED_BATCH: *result = {false, "SCHED_BATCH"}; break;
+    case SCHED_IDLE: *result = {false, "SCHED_IDLE"}; break;
+    default: *result = {false, "policy " + std::to_string(policy)}; break;
+  }  return 0;
 }
 
 /// The clock settings EngineSettings decides. pw_context_new reads them from its own
@@ -88,6 +130,8 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
   // signalfd, which also reports a signal that arrived before it was called.
   const sigset_t stop = stopSignals();
   pthread_sigmask(SIG_BLOCK, &stop, &impl->previousMask);
+  // Before any engine thread and before the context loads module-rt.
+  raisePermittedSysNice();
   pw_init(nullptr, nullptr);
   impl->initialised = true;
 
@@ -123,6 +167,16 @@ void Engine::onStopSignal(std::function<void()> handler) {
   pw_loop* loop = pw_main_loop_get_loop(impl_->loop);
   if (impl_->sigint == nullptr) impl_->sigint = pw_loop_add_signal(loop, SIGINT, &Impl::onSignal, impl_.get());
   if (impl_->sigterm == nullptr) impl_->sigterm = pw_loop_add_signal(loop, SIGTERM, &Impl::onSignal, impl_.get());
+}
+
+/// The context's one data loop (engine.conf keeps context.num-data-loops at its default, 1)
+/// runs every port block's process(); the question is asked on that thread itself.
+Scheduling Engine::dataThreadScheduling() const {
+  Scheduling result{false, "unknown"};
+  pw_data_loop* dataLoop = pw_context_get_data_loop(impl_->context);
+  if (dataLoop == nullptr) return result;
+  pw_data_loop_invoke(dataLoop, &readScheduling, 0, nullptr, 0, true, &result);
+  return result;
 }
 
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }

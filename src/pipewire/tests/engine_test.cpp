@@ -1,5 +1,6 @@
 // Slice S1's tests (docs/design/m1-white-to-file.md section 3, acceptance criteria S1): the
-// real in-process engine, port blocks, live ports and links, no daemon and no hardware.
+// real in-process engine, port blocks, live ports and links, no daemon and no hardware. On batch
+// 2's interfaces (docs/design/batch2.md section 4.1) a block is made silent and then driven.
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include <sched.h>
 #include <unistd.h>
 
 #include <pipewire/filter.h>
@@ -43,6 +45,21 @@ std::unique_ptr<Engine> makeEngine() {
   auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
   if (!engine) FAIL("Engine::create: " << engine.error().detail);
   return std::move(*engine);
+}
+
+/// Port blocks ring this when they publish levels; these tests read none.
+class NoLevelWake final : public LevelWake {
+public:
+  void levelsPublished() noexcept override {}
+};
+
+/// A port block made silent, then driven by `code` (which outlives it).
+std::unique_ptr<PortBlock> makeDriven(FilterPortBlocks& blocks, const NodeName& node,
+                                      const Ports& ports, AudioCode& code,
+                                      PortBlockEvents& events) {
+  auto block = blocks.make(node, ports, kFormat, events);
+  block->drive(&code);
+  return block;
 }
 
 /// Runs the engine's main loop until `done` holds. Every event a test listens for calls
@@ -212,13 +229,14 @@ std::size_t firstSound(std::span<const float> samples) {
 /// A source block (ramp) linked to a sink block (recorder) by their port ids.
 struct LinkedPair {
   explicit LinkedPair(Engine& engine, Waiter& waiter)
-      : blocks(engine), live(engine), links(engine), ports(waiter), linkLog(waiter),
+      : blocks(engine, wake), live(engine), links(engine), ports(waiter), linkLog(waiter),
         ramp(waiter), recorder(waiter), sourceEvents(waiter), sinkEvents(waiter) {
     live.subscribe(ports);
     links.subscribe(linkLog);
-    source = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, ramp, sourceEvents);
-    sink = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recorder, sinkEvents);
+    source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
+    sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, sinkEvents);
   }
+  NoLevelWake wake;
   FilterPortBlocks blocks;
   LiveGraph live;
   Links links;
@@ -240,10 +258,11 @@ TEST_CASE("The engine runs with no daemon, runtime directory or D-Bus, and an un
           "block processes zeros", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = blocks.make("rec", Ports{{"FL", "FR"}, {}}, kFormat, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, events);
 
   REQUIRE(waiter.until([&] { return events.readyCount > 0 && recorder.calls() >= 8; }));
   CHECK(events.readyCount == 1);
@@ -256,7 +275,8 @@ TEST_CASE("The engine runs with no daemon, runtime directory or D-Bus, and an un
 TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   LiveGraph live(*engine);
   PortLog ports(waiter);
   live.subscribe(ports);
@@ -264,8 +284,8 @@ TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   Ramp ramp(waiter);
   Recorder recorder(waiter);
   BlockEvents sourceEvents(waiter), sinkEvents(waiter);
-  auto source = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, ramp, sourceEvents);
-  auto sink = blocks.make("rec", Ports{{"FL", "FR"}, {}}, kFormat, recorder, sinkEvents);
+  auto source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, sinkEvents);
 
   REQUIRE(waiter.until([&] { return ports.appeared.size() >= 3; }));
   const auto out = ports.find("ramp", "OUT");
@@ -319,10 +339,11 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
-  FilterPortBlocks blocks(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, events);
 
   // The clock as a process callback sees it, read by a bare engine node beside the block.
   struct Clock {
@@ -410,4 +431,62 @@ TEST_CASE("SIGTERM reaches the stop-signal handler as a main-loop event", "[engi
   // To the process, as a container runtime sends it, not to this thread.
   REQUIRE(kill(getpid(), SIGTERM) == 0);
   REQUIRE(waiter.until([&] { return stopped; }));
+}
+
+namespace {
+
+/// Reads, inside process(), how the thread running it is scheduled.
+class SchedulingProbe final : public AudioCode {
+public:
+  explicit SchedulingProbe(Waiter& waiter) : waiter_(waiter) {}
+  void prepare(const AudioFormat&) override {}
+  void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+               std::uint32_t) noexcept override {
+    for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0f);
+    if (!seen_.load(std::memory_order_acquire)) {
+      policy_ = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;
+      sched_param param{};
+      sched_getparam(0, &param);
+      priority_ = param.sched_priority;
+      seen_.store(true, std::memory_order_release);
+      waiter_.wake();
+    }
+  }
+  void release() noexcept override {}
+  bool seen() const { return seen_.load(std::memory_order_acquire); }
+  int policy() const { return policy_; }
+  int priority() const { return priority_; }
+
+private:
+  Waiter& waiter_;
+  std::atomic<bool> seen_{false};
+  int policy_ = -1;
+  int priority_ = -1;
+};
+
+}  // namespace
+
+TEST_CASE("The scheduling report is how the thread running process() is scheduled",
+          "[engine][scheduling]") {
+  auto engine = makeEngine();
+  Waiter waiter(*engine);
+  NoLevelWake wake;
+  FilterPortBlocks blocks(*engine, wake);
+  SchedulingProbe probe(waiter);
+  BlockEvents events(waiter);
+  auto block = makeDriven(blocks, "probe", Ports{{}, {"OUT"}}, probe, events);
+  REQUIRE(waiter.until([&] { return probe.seen(); }));
+
+  const Scheduling scheduling = engine->dataThreadScheduling();
+  CHECK(scheduling.realtime == (probe.policy() == SCHED_FIFO || probe.policy() == SCHED_RR));
+  if (probe.policy() == SCHED_FIFO) {
+    CHECK(scheduling.detail == "SCHED_FIFO " + std::to_string(probe.priority()));
+  } else if (probe.policy() == SCHED_RR) {
+    CHECK(scheduling.detail == "SCHED_RR " + std::to_string(probe.priority()));
+  } else {
+    REQUIRE(probe.policy() == SCHED_OTHER);
+    CHECK(scheduling.detail == "SCHED_OTHER");
+  }
+  // The dev container and CI grant no realtime priority (no CAP_SYS_NICE, RLIMIT_RTPRIO 0).
+  CHECK_FALSE(scheduling.realtime);
 }

@@ -1,5 +1,5 @@
-// Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
-// erratum in that page's Errata section and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
+// page's Errata section (section 11) and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <memory>
@@ -53,7 +53,11 @@ public:
   ~Reconciler();
   void subscribe(RouteStatusListener& listener);
   void routeAdded(const Route& route) override;
+  /// Destroys the route's link if any; no status event for a route no longer wanted.
+  void routeRemoved(const Route& route) override;
   void portAppeared(const LivePort& port) override;
+  /// Affects only the port whose live id is `id`; a port of the same name may already have
+  /// reappeared with a newer id (a node removed and re-added).
   void portGone(EnginePortId id) override;
   void linkActive(LinkId link) override;
   void linkFailed(LinkId link, std::string detail) override;

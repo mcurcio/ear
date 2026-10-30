@@ -9,3 +9,9 @@ target_include_directories(ear_catch_main SYSTEM PUBLIC
 add_test(NAME ear_help COMMAND ear --help)
 add_test(NAME ear_help_lists_config COMMAND ear --help)
 set_tests_properties(ear_help_lists_config PROPERTIES PASS_REGULAR_EXPRESSION "--config")
+
+# ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
+# Boost.Beast), for the control port's tests (src/server/tests) and the system tests.
+add_library(ear_ws_client INTERFACE)
+target_include_directories(ear_ws_client INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_link_libraries(ear_ws_client INTERFACE Boost::beast)

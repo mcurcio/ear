@@ -44,14 +44,15 @@ private:
 	std::filesystem::path path_;
 };
 
-/// A graph file routing white noise "noise" to port `to` of file node "rec".
+/// A graph file routing white noise "noise" to port `to` of file node "rec", which writes
+/// rec.wav in the recordings folder.
 std::filesystem::path writeGraph(const TempDirectory& directory, const std::string& to) {
 	const nlohmann::json graph = {
 	    {"graphFrequency", graphFrequency},
 	    {"blockSize", blockSize},
 	    {"nodes",
 	     {{{"name", "noise"}, {"type", "white"}},
-	      {{"name", "rec"}, {"type", "file"}, {"settings", {{"path", (directory.path() / "rec.wav").string()}}}}}},
+	      {{"name", "rec"}, {"type", "file"}, {"settings", {{"path", "rec.wav"}}}}}},
 	    {"routes", {{{"from", {{"node", "noise"}, {"port", "MONO"}}}, {"to", {{"node", "rec"}, {"port", to}}}}}},
 	};
 	const auto path = directory.path() / "ear.json";
@@ -88,7 +89,9 @@ bool headerFinished(const std::filesystem::path& path) {
 void checkNoiseOnOneChannel(const std::string& to, int noisy) {
 	TempDirectory directory;
 	const auto graph = writeGraph(directory, to);
-	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string()});
+	const auto recordings = directory.path() / "recordings";
+	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string(), "--control-port", "0", "--recordings-dir",
+	                                         recordings.string()});
 
 	const bool linked = ear.waitForLine("route noise:MONO -> rec:" + to + " linked", deadline);
 	INFO("ear printed:\n" << ear.output());
@@ -101,7 +104,7 @@ void checkNoiseOnOneChannel(const std::string& to, int noisy) {
 	REQUIRE(exitStatus == 0);
 	CHECK(ear.hasLine("node rec stopped dropped=0"));
 
-	const auto wavPath = directory.path() / "rec.wav";
+	const auto wavPath = recordings / "rec.wav";
 	CHECK(headerFinished(wavPath));
 	const Wav wav = readWav(wavPath);
 	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
@@ -153,9 +156,23 @@ TEST_CASE("White noise routed to file:FR lands on FR only", "[system]") {
 TEST_CASE("A route to an undeclared port stops ear with exit status 1", "[system]") {
 	TempDirectory directory;
 	const auto graph = writeGraph(directory, "FX");
-	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string()});
+	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string(), "--control-port", "0", "--recordings-dir",
+	                                         (directory.path() / "recordings").string()});
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 1);
 	CHECK(ear.output().find("unknown-port rec:FX") != std::string::npos);
+}
+
+TEST_CASE("A recordings folder ear cannot make stops ear with exit status 1", "[system]") {
+	TempDirectory directory;
+	const auto graph = writeGraph(directory, "FL");
+	const auto recordings = directory.path() / "missing" / "recordings";
+	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string(), "--control-port", "0", "--recordings-dir",
+	                                         recordings.string()});
+	const auto exitStatus = ear.waitForExit(deadline);
+	INFO("ear printed:\n" << ear.output());
+	CHECK(exitStatus == 1);
+	CHECK(ear.output().find("recordings folder " + recordings.string() + ": cannot create") != std::string::npos);
+	CHECK_FALSE(std::filesystem::exists(directory.path() / "missing"));
 }
