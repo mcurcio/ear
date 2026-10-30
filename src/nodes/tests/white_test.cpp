@@ -1,5 +1,6 @@
 // The "white" node type through its NodeType contract, and the built-in catalogue list
-// (docs/design/m1-white-to-file.md section 3, slice S5 criteria 1 and 4).
+// (docs/design/m1-white-to-file.md section 3, slice S5 criteria 1 and 4; docs/design/batch2.md
+// E2 criterion 7).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -86,12 +87,12 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	CHECK(std::sqrt(sumOfSquares / static_cast<double>(samples.size())) == Approx(0.577).margin(0.01));
 }
 
-TEST_CASE("The built-in node types are white and file", "[builtin]") {
+TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
 	const auto types = ear::nodes::builtinNodeTypes();
 	std::vector<std::string> names;
 	for (const auto& type : types) {
 		names.emplace_back(type->name());
 	}
 	std::ranges::sort(names);
-	CHECK(names == std::vector<std::string>{"file", "white"});
+	CHECK(names == std::vector<std::string>{"card", "file", "white"});
 }
