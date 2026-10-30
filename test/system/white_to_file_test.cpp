@@ -88,7 +88,7 @@ bool headerFinished(const std::filesystem::path& path) {
 void checkNoiseOnOneChannel(const std::string& to, int noisy) {
 	TempDirectory directory;
 	const auto graph = writeGraph(directory, to);
-	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string()});
+	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string(), "--control-port", "0"});
 
 	const bool linked = ear.waitForLine("route noise:MONO -> rec:" + to + " linked", deadline);
 	INFO("ear printed:\n" << ear.output());
@@ -153,7 +153,7 @@ TEST_CASE("White noise routed to file:FR lands on FR only", "[system]") {
 TEST_CASE("A route to an undeclared port stops ear with exit status 1", "[system]") {
 	TempDirectory directory;
 	const auto graph = writeGraph(directory, "FX");
-	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string()});
+	ear::test::ChildProcess ear(EAR_BINARY, {"--config", graph.string(), "--control-port", "0"});
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 1);

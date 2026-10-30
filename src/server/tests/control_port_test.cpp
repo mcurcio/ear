@@ -2,6 +2,7 @@
 // criteria 1-7): real sockets on 127.0.0.1:0, a fake main loop on its own thread and a fake
 // gateway that answers on it. Every step waits for the event it needs (a reply, a notification,
 // a close); the client's deadline only fails a test.
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -349,15 +350,22 @@ TEST_CASE("stop() closes every client with 1001 while a request is on the main l
 	waiting.send(json{{"jsonrpc", "2.0"}, {"id", 5}, {"method", "graph.get"}}.dump());
 	fixture.gateway.held.get_future().wait();   // the request is on the main loop
 
-	fixture.port->stop();
-	for (WsClient* client : {&idle, &waiting}) {
+	// stop() returns once every client has answered its close: here on another thread, while
+	// each client reads its close frame and answers it, one after the other.
+	auto stopped = std::async(std::launch::async, [&] { fixture.port->stop(); });
+	const auto closeCode = [](WsClient& client) -> int {
 		try {
-			client->read();
+			client.read();
 			FAIL("a message after stop()");
 		} catch (const Closed& closed) {
-			CHECK(closed.code == 1001);
+			return closed.code;
 		}
-	}
+		return 0;
+	};
+	CHECK(closeCode(idle) == 1001);
+	CHECK(stopped.wait_for(std::chrono::seconds(0)) == std::future_status::timeout);   // `waiting` has not answered
+	CHECK(closeCode(waiting) == 1001);
+	REQUIRE(stopped.wait_for(std::chrono::seconds(10)) == std::future_status::ready);   // only fails the test
 
 	// The held reply now reaches the control thread and is dropped (its session has gone).
 	fixture.gateway.release.set_value();

@@ -507,6 +507,28 @@ TEST_CASE("latestLevels holds only blocks that exist and have published", "[bloc
   CHECK(find(after, "keep") != nullptr);
 }
 
+// The control port answers a ring without reading the levels while nobody has subscribed to
+// them; the bell must still ring for the windows after that.
+TEST_CASE("The bell rings for later windows when nobody reads the levels", "[blocks][levels]") {
+  auto engine = makeEngine();
+  Waiter waiter(*engine);
+  Bell bell(waiter);
+  FilterPortBlocks blocks(*engine, bell);
+  BlockEvents firstEvents(waiter), secondEvents(waiter);
+  auto first = blocks.make("first", Ports{{"IN"}, {}}, kFormat, firstEvents);
+  auto second = blocks.make("second", Ports{{}, {"OUT"}}, kFormat, secondEvents);
+  REQUIRE(waiter.until([&] { return bell.rings() >= 3; }));
+
+  // Rung once per window, not once per block: over the next windows, at most one ring each.
+  const auto ringsBefore = bell.rings();
+  const auto windowBefore = newestWindow(blocks.latestLevels());
+  REQUIRE(waiter.until([&] { return bell.rings() >= ringsBefore + 6; }));
+  const auto windowAfter = newestWindow(blocks.latestLevels());
+  const auto rings = bell.rings() - ringsBefore;
+  INFO(rings << " rings from window end " << windowBefore << " to " << windowAfter);
+  CHECK(rings <= (windowAfter - windowBefore) / kWindow + 1);
+}
+
 TEST_CASE("Processing, metering and publishing allocate nothing on the realtime thread",
           "[blocks][levels]") {
   auto engine = makeEngine();

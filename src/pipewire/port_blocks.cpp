@@ -37,9 +37,11 @@ struct RegisteredBlock {
 struct Levels {
   explicit Levels(LevelWake& bell) : wake(bell) {}
   LevelWake& wake;
-  /// The bell's flag: set by the first block to publish, which alone rings `wake`; cleared by
-  /// the reader before it reads. So `wake` is rung at most once until it is answered.
-  std::atomic<bool> rung{false};
+  /// The window the bell was last rung for: the first block to publish a window rings `wake`
+  /// once for it, and the blocks after it see the window already rung. Only the realtime side
+  /// touches it, so no reader has to answer it: a bell answered without reading the levels
+  /// (the control port with no levels subscriber) never silences later windows.
+  std::atomic<std::uint64_t> rungFor{0};
   /// Guards `blocks` and every mailbox's read side. Taken on the main loop (make, destroy) and
   /// by latestLevels' caller, never on the realtime thread.
   std::mutex mutex;
@@ -242,7 +244,10 @@ private:
   void publish(std::uint64_t windowEnd) noexcept {
     const std::span<Level> next = registered_.mailbox.next();
     for (std::size_t i = 0; i < meters_.size(); ++i) next[i] = meters_[i].take();
-    registered_.mailbox.publish(windowEnd);    if (!levels_->rung.exchange(true, std::memory_order_acq_rel)) levels_->wake.levelsPublished();
+    registered_.mailbox.publish(windowEnd);
+    if (levels_->rungFor.exchange(windowEnd, std::memory_order_acq_rel) != windowEnd) {
+      levels_->wake.levelsPublished();
+    }
   }
 
   std::atomic<AudioCode*> code_{nullptr};   // nullptr: every output silent
@@ -297,7 +302,6 @@ std::unique_ptr<PortBlock> FilterPortBlocks::make(const NodeName& node, const Po
 std::vector<NodeLevels> FilterPortBlocks::latestLevels() {
   Levels& levels = *impl_->levels;
   const std::scoped_lock lock(levels.mutex);
-  levels.rung.store(false, std::memory_order_release);
   std::vector<std::pair<const RegisteredBlock*, const PublishedLevels*>> published;
   for (RegisteredBlock* block : levels.blocks) {
     if (const PublishedLevels* latest = block->mailbox.read()) {

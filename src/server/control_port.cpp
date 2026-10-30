@@ -7,7 +7,8 @@
 //
 // No timers: a connection stays until its peer or stop() ends it (the owner's "It's all event
 // driven"). A peer that stops reading holds its socket until it goes or the control thread
-// stops; its queue is bounded, so it holds no more than that.
+// stops; its queue is bounded, so it holds no more than that. stop() waits for every close
+// handshake, so a peer that never answers the close frame (nor goes) holds stop() too.
 #include "ear/server/control_port.hpp"
 
 #include <algorithm>
@@ -123,6 +124,20 @@ constexpr std::size_t maxQueuedMessages = 256;
 class WsSession;
 class HttpSession;
 
+/// stop()'s answer: the promise is kept when the last copy goes, which is once every
+/// connection's close handshake has finished (or failed) and its handler has run, or the
+/// handler was destroyed unrun with the control thread. Event-driven: no deadline.
+class Closing {
+public:
+	explicit Closing(std::promise<void> done) : done_(std::move(done)) {}
+	Closing(const Closing&) = delete;
+	Closing& operator=(const Closing&) = delete;
+	~Closing() { done_.set_value(); }
+
+private:
+	std::promise<void> done_;
+};
+
 /// The port's state, shared with every connection: a connection's handlers may outlive the
 /// ControlPort (a peer that never reads), and they then find it stopped.
 struct Shared {
@@ -155,15 +170,16 @@ public:
 		ws_.async_accept(request, [self = shared_from_this()](error_code ec) { self->accepted(ec); });
 	}
 
-	/// stop(): close with `code` (1001), or drop a connection still in its handshake.
-	void shutdown(websocket::close_code code) {
+	/// stop(): close with `code` (1001), or drop a connection still in its handshake. `closing`
+	/// is held until the close handshake ends.
+	void shutdown(websocket::close_code code, std::shared_ptr<Closing> closing) {
 		if (!accepted_) {
 			forget();
 			error_code ignored;
 			beast::get_lowest_layer(ws_).close(ignored);
 			return;
 		}
-		closeWith(code);
+		closeWith(code, std::move(closing));
 	}
 
 	void send(control::Message message) override {
@@ -243,15 +259,18 @@ private:
 		asio::post(ws_.get_executor(), [self = shared_from_this()] { self->closeWith(websocket::close_code::policy_error); });
 	}
 
-	void closeWith(websocket::close_code code) {
+	/// Beast's async_close writes the close frame (after a write in progress), reads until the
+	/// peer's close frame, discarding what the peer sent meanwhile, and only then closes the
+	/// socket; its handler runs after that. A socket closed with the peer's data unread would
+	/// reset the connection instead (the peer would never see 1001).
+	void closeWith(websocket::close_code code, std::shared_ptr<Closing> closing = nullptr) {
 		closing_ = true;
 		queue_.clear();
 		levels_.reset();
 		forget();
 		if (closeSent_) return;
 		closeSent_ = true;
-		// Beast runs a close beside a write in progress: it waits for the write, then sends.
-		ws_.async_close(code, [self = shared_from_this()](error_code) {});
+		ws_.async_close(code, [self = shared_from_this(), closing = std::move(closing)](error_code) {});
 	}
 
 	/// Detach from the hub and the port. Never inside the session's own calls.
@@ -424,8 +443,9 @@ Opened open(const ControlPortSettings& settings, control::GraphGateway& graph, L
 	return shared;
 }
 
-/// On the control thread: the listener, every connection (1001) and the hub.
-void close(Shared& shared) {
+/// On the control thread: the listener, every connection (1001) and the hub. `closing` is
+/// released once every connection's close handshake has ended.
+void close(Shared& shared, const std::shared_ptr<Closing>& closing) {
 	shared.stopped = true;
 	error_code ignored;
 	shared.acceptor.close(ignored);
@@ -433,7 +453,7 @@ void close(Shared& shared) {
 	shared.bell.release();
 	std::vector<std::shared_ptr<WsSession>> sockets;   // a copy: each shutdown leaves the map
 	for (const auto& [key, socket] : shared.sockets) sockets.push_back(socket);
-	for (const auto& socket : sockets) socket->shutdown(websocket::close_code::going_away);
+	for (const auto& socket : sockets) socket->shutdown(websocket::close_code::going_away, closing);
 	std::vector<std::shared_ptr<HttpSession>> requests;
 	for (const auto& [key, request] : shared.requests)
 		if (auto http = request.lock()) requests.push_back(std::move(http));
@@ -488,8 +508,7 @@ void ControlPort::stop() {
 	std::promise<void> promise;   // as in start(): only the work holds it
 	auto closed = promise.get_future();
 	impl_->thread.post([shared = impl_->shared, promise = std::move(promise)]() mutable {
-		close(*shared);
-		promise.set_value();
+		close(*shared, std::make_shared<Closing>(std::move(promise)));
 	});
 	try {
 		closed.get();
