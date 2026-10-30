@@ -1,6 +1,12 @@
 # On every pull request and on pushes to master (so master's caches are warm for pull
-# requests): builds EAR's build image (docker/Dockerfile) and, inside it, builds everything and
-# runs every test (make test), the same way scripts/dev.sh does on a developer's machine.
+# requests), three jobs in parallel:
+# - test: builds EAR's build image (docker/Dockerfile, target dev) and, inside it, builds
+#   everything and runs every test (make test), the same way scripts/dev.sh does on a
+#   developer's machine.
+# - web: in the same image, the graph editor's checks (make web-test: npm ci, typecheck, vitest,
+#   build).
+# - image: builds the run image (target run, what .github/workflows/image.yml publishes) and
+#   checks it with scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
 name: test
 
 on:
@@ -23,18 +29,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The image, built with buildx and its layers cached in GitHub's cache (type=gha), so an
-      # unchanged Dockerfile restores it instead of reinstalling the packages. load: true puts
-      # it in the runner's Docker as ear-dev, which scripts/dev.sh runs (EAR_DEV_IMAGE below).
+      # The dev image, built with buildx and its layers cached in GitHub's cache (type=gha,
+      # scope dev, shared with the web job), so an unchanged Dockerfile restores it instead of
+      # reinstalling the packages. load: true puts it in the runner's Docker as ear-dev, which
+      # scripts/dev.sh runs (EAR_DEV_IMAGE below).
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/Dockerfile
+          target: dev
           tags: ear-dev
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=dev
+          cache-to: type=gha,scope=dev,mode=max
 
       # The fetched Boost tree (kept_fetchcontent, cmake/KeptFetchContent.cmake). Its marker
       # records its pin, so a tree restored from an older key is fetched again by configure.
@@ -72,3 +80,72 @@ jobs:
           name: ctest-output
           path: out/Testing
           if-no-files-found: ignore
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The dev image, as in the test job (same cache scope).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: dev
+          tags: ear-dev
+          load: true
+          cache-from: type=gha,scope=dev
+          cache-to: type=gha,scope=dev,mode=max
+
+      # npm's download cache, where scripts/dev.sh points npm_config_cache. Keyed by the
+      # lockfile: npm ci installs exactly what it pins.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/npm
+          key: npm-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - run: scripts/dev.sh make web-test
+        env:
+          EAR_DEV_IMAGE: ear-dev
+
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # scripts/version-tags.sh, which image.yml's publish relies on, in a scratch repository:
+      # a v* tag on HEAD gives one image reference; no v* tag gives nothing.
+      - name: version-tags.sh prints the version tags on HEAD
+        run: |
+          script=$PWD/scripts/version-tags.sh
+          scratch=$(mktemp -d)
+          cd "$scratch"
+          git init -q
+          git -c user.name=ci -c user.email=ci@localhost commit -q --allow-empty -m one
+          git tag other
+          none=$("$script")
+          git tag v0.0.0-test
+          tagged=$("$script")
+          test -z "$none" || { echo "no v* tag on HEAD, but it printed: $none"; exit 1; }
+          test "$tagged" = ghcr.io/mcurcio/ear:0.0.0-test \
+            || { echo "v0.0.0-test on HEAD, but it printed: $tagged"; exit 1; }
+
+      # The run image (it builds the dev and build stages first). Its layers are cached in
+      # GitHub's cache under their own scope; the build stage compiles EAR from scratch whenever a
+      # source changed (its ccache and Boost cache mounts are not kept between runs).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: run
+          tags: ear:ci
+          load: true
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,scope=image,mode=max
+
+      - run: scripts/image-smoke.sh ear:ci

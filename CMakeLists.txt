@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
-project(EAR VERSION 0.0.1)
+# The version is release-please's (release-please-config.json): its release pull request
+# rewrites the number on the marked line.
+project(EAR VERSION 0.0.1) # x-release-please-version
 
 # EAR builds on Linux only: it links PipeWire's libraries. On a Mac (or a Linux host without
 # the packages), build in the image: scripts/dev.sh make test. Any other platform stops here,
@@ -46,8 +48,10 @@ unset(CMAKE_POLICY_VERSION_MINIMUM)
 # Boost is built by this project from the official Boost CMake release: nothing is installed.
 # kept_fetchcontent keeps the download and the extracted 800 MB tree across "make clean"
 # (re-extracting it costs 30-40 s); Boost's build tree stays in the build directory.
-# EXCLUDE_FROM_ALL builds only the Boost targets EAR links.
-set(BOOST_INCLUDE_LIBRARIES program_options)
+# EXCLUDE_FROM_ALL builds only the Boost targets EAR links. BOOST_INCLUDE_LIBRARIES names the
+# libraries EAR uses (Boost adds their dependencies): program_options parses the command line;
+# beast (header-only, with Asio) serves the control port.
+set(BOOST_INCLUDE_LIBRARIES program_options beast)
 set(boost_url
 	https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz)
 set(boost_sha256 9bed76128d4e46755dbe818487788c6fceb6f72b378f4daa49b7e1e600d9088d)
@@ -57,6 +61,18 @@ kept_fetchcontent(boost "${boost_url}\n${boost_sha256}"
 	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 	EXCLUDE_FROM_ALL
 )
+# The Boost libraries EAR's targets link must come out of Boost's configure as targets. This
+# checks them by name, not by the list above, so one dropped from that list (or missing from a
+# Boost release) stops configure here, naming it, instead of failing at a target that links it.
+foreach(boost_library IN ITEMS "program_options Boost.ProgramOptions" "beast Boost.Beast")
+	separate_arguments(boost_library)
+	list(GET boost_library 0 target)
+	list(GET boost_library 1 library_name)
+	if(NOT TARGET Boost::${target})
+		message(FATAL_ERROR "${library_name} (Boost::${target}) is not built: add ${target} to "
+			"BOOST_INCLUDE_LIBRARIES (or bump Boost to a release that has it)")
+	endif()
+endforeach()
 # Boost::program_options links Boost::lexical_cast, which links the compiled Boost::container
 # but uses only its header-only container_fwd.hpp. Take container for compilation only there,
 # so program_options stays the only compiled Boost library.
