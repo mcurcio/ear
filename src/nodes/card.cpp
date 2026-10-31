@@ -4,6 +4,7 @@
 // channels arrive on the inside inputs "from_card_1".. and pass straight through to the outputs
 // "capture_1"... The card is named only by a CardId, so no user text reaches ALSA.
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -22,6 +23,10 @@ constexpr std::string_view typeName = "card";
 constexpr std::string_view cardKey = "card";
 constexpr std::string_view playbackKey = "playback";
 constexpr std::string_view captureKey = "capture";
+/// How each key is written in the graph file: the id is text, the channel counts whole numbers.
+constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{cardKey, SettingKind::text},
+                                                                 {playbackKey, SettingKind::wholeNumber},
+                                                                 {captureKey, SettingKind::wholeNumber}}};
 constexpr std::uint32_t maxChannels = 64;
 
 /// "<prefix>1".."<prefix><count>".
@@ -103,6 +108,8 @@ private:
 class CardType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
+
+	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {

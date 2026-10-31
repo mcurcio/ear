@@ -1,5 +1,7 @@
 // Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// page's Errata section (section 11) and a re-cut, never a local edit. graphFile.subscribe and
+// ControlHub::graphFileChanged are docs/design/knobly-config.md's (slice S5); their erratum to
+// batch2.md lands in S7.
 #pragma once
 #include <functional>
 #include <memory>
@@ -33,13 +35,17 @@ private:
   struct Impl; std::unique_ptr<Impl> impl_;
 };
 /// Sessions, subscriptions, the event stream and levels. Control thread only, construction
-/// included. graph.subscribe: the session gets events after its snapshot, never before.
-/// levels.subscribe is answered here, without the main loop.
+/// included. graph.subscribe: the session gets graph events after its snapshot, never before;
+/// graphFile.subscribe: graphFile.changed after its snapshot, never before. A batch's subscribe
+/// snapshots run after its other commands, in request order. levels.subscribe is answered here,
+/// without the main loop.
 class ControlHub final : public EventSink {
 public:
   ControlHub(GraphGateway& graph, LevelReader& levels);   // calls graph.watch(*this)
   ~ControlHub();
-  void graphChanged(GraphEvent event) override;   // encoded once, to subscribed sessions
+  void graphChanged(GraphEvent event) override;   // encoded once, to graph-subscribed sessions
+  /// Encoded once (encodeGraphFileChanged), to graphFile-subscribed sessions.
+  void graphFileChanged(GraphFileChanged change) override;
   void levelsPublished();                         // latestLevels(), encode once, sendLevels
 private:
   struct Impl; std::unique_ptr<Impl> impl_;

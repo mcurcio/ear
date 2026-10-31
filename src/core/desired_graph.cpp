@@ -1,10 +1,12 @@
 // What the user wants: nodes and routes, checked against the catalogue and each node's declared
 // ports (docs/design/batch2.md section 4.1, desired_graph.hpp). It never knows what exists in
-// the engine. Every change is told to the observers first, then to the subscribers (rule 4), and
-// close() shuts it to edits before the node framework stops (rule 5).
+// the engine. plan() works out the changes to a whole wanted graph and commit() applies them in one
+// fixed order (docs/design/knobly-config.md); every change is told to the observers first, then to
+// the subscribers (rule 4), and close() shuts it to edits before the node framework stops (rule 5).
 #include "ear/core/desired_graph.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -42,10 +44,6 @@ bool samePorts(const Ports& a, const Ports& b) {
 	       a.insideOutputs == b.insideOutputs;
 }
 
-bool namesNode(const Route& route, const NodeName& node) {
-	return route.from.node == node || route.to.node == node;
-}
-
 } // namespace
 
 struct DesiredGraph::Impl {
@@ -63,6 +61,8 @@ struct DesiredGraph::Impl {
 	std::vector<DesiredNodeListener*> nodeSubscribers;
 	std::vector<DesiredRouteListener*> routeSubscribers;
 	bool closed = false;
+	/// Bumped by every change; a Plan records it, so commit() can tell a stale plan.
+	std::uint64_t generation = 0;
 
 	explicit Impl(const NodeCatalogue& c) : catalogue(c) {}
 
@@ -84,16 +84,6 @@ struct DesiredGraph::Impl {
 		requireUniquePortNames(node, (*config)->ports());
 		return std::shared_ptr<const NodeConfig>(std::move(*config));
 	}
-
-	/// The node's declared ports, or the reason a route end cannot name them.
-	std::expected<const Ports*, CommandError> portsOf(const PortRef& end) const {
-		const auto it = nodes.find(end.node);
-		if (it == nodes.end()) return std::unexpected(UnknownNode{end.node});
-		const Ports& ports = it->second.config->ports();
-		if (!declares(ports.inputs, end.port) && !declares(ports.outputs, end.port))
-			return std::unexpected(UnknownPort{end});
-		return &ports;
-	}
 };
 
 DesiredGraph::DesiredGraph(const NodeCatalogue& catalogue) : impl_(std::make_unique<Impl>(catalogue)) {}
@@ -108,78 +98,135 @@ void DesiredGraph::subscribe(DesiredNodeListener& listener) { impl_->nodeSubscri
 
 void DesiredGraph::subscribe(DesiredRouteListener& listener) { impl_->routeSubscribers.push_back(&listener); }
 
-std::expected<void, CommandError> DesiredGraph::addNode(const NodeSpec& node) {
+struct Plan::Impl {
+	const void* graph;                 // the graph it was made on (its Impl)
+	std::uint64_t generation;          // that graph's generation then
+	std::vector<Route> routesRemoved;  // Route order
+	std::vector<NodeName> nodesRemoved;   // name order; replaced nodes included
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesUpdated;   // name order
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesAdded;     // name order; replaced included
+	std::vector<Route> routesAdded;    // Route order
+};
+
+Plan::Plan(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+Plan::Plan(Plan&& other) noexcept = default;
+Plan& Plan::operator=(Plan&& other) noexcept = default;
+Plan::~Plan() = default;
+
+bool Plan::empty() const noexcept {
+	return impl_ == nullptr || (impl_->routesRemoved.empty() && impl_->nodesRemoved.empty() &&
+	                            impl_->nodesUpdated.empty() && impl_->nodesAdded.empty() && impl_->routesAdded.empty());
+}
+
+std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> nodes,
+                                                     std::span<const Route> routes) const {
 	if (impl_->closed) return std::unexpected(Stopping{});
-	if (!validName(node.name)) return std::unexpected(InvalidName{node.name});
-	if (const auto existing = impl_->nodes.find(node.name); existing != impl_->nodes.end()) {
-		if (existing->second.spec == node) return {};
-		return std::unexpected(DuplicateNode{node.name});
+
+	// The wanted nodes, checked in the given order; a node equal to a held one keeps its config.
+	std::map<NodeName, Impl::Wanted, std::less<>> wanted;
+	for (const auto& node : nodes) {
+		if (!validName(node.name)) return std::unexpected(InvalidName{node.name});
+		std::shared_ptr<const NodeConfig> config;
+		if (const auto held = impl_->nodes.find(node.name); held != impl_->nodes.end() && held->second.spec == node) {
+			config = held->second.config;
+		} else {
+			auto parsed = impl_->parse(node);
+			if (!parsed) return std::unexpected(std::move(parsed.error()));
+			config = std::move(*parsed);
+		}
+		if (!wanted.emplace(node.name, Impl::Wanted{node, std::move(config)}).second)
+			return std::unexpected(DuplicateNode{node.name});
 	}
-	auto config = impl_->parse(node);
-	if (!config) return std::unexpected(std::move(config.error()));
 
-	const auto& added = impl_->nodes.emplace(node.name, Impl::Wanted{node, std::move(*config)}).first->second;
-	impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeAdded(added.spec, added.config); });
-	return {};
-}
+	// The wanted routes, checked in the given order against the wanted nodes' ports.
+	std::set<Route> wantedRoutes;
+	const auto portsOf = [&](const PortRef& end) -> std::expected<const Ports*, CommandError> {
+		const auto it = wanted.find(end.node);
+		if (it == wanted.end()) return std::unexpected(UnknownNode{end.node});
+		const Ports& ports = it->second.config->ports();
+		if (!declares(ports.inputs, end.port) && !declares(ports.outputs, end.port))
+			return std::unexpected(UnknownPort{end});
+		return &ports;
+	};
+	for (const auto& route : routes) {
+		const auto from = portsOf(route.from);
+		if (!from) return std::unexpected(from.error());
+		const auto to = portsOf(route.to);
+		if (!to) return std::unexpected(to.error());
+		if (!declares((*from)->outputs, route.from.port) || !declares((*to)->inputs, route.to.port))
+			return std::unexpected(WrongDirection{route});
+		wantedRoutes.insert(route);
+	}
 
-std::expected<void, CommandError> DesiredGraph::updateNode(const NodeName& node, const NodeSettings& settings) {
-	if (impl_->closed) return std::unexpected(Stopping{});
-	const auto it = impl_->nodes.find(node);
-	if (it == impl_->nodes.end()) return std::unexpected(UnknownNode{node});
-	auto& wanted = it->second;
-	if (wanted.spec.settings == settings) return {};
-	NodeSpec spec = wanted.spec;
-	spec.settings = settings;
-	auto config = impl_->parse(spec);
-	if (!config) return std::unexpected(std::move(config.error()));
-	if (!samePorts((*config)->ports(), wanted.config->ports())) return std::unexpected(PortsChanged{node});
+	auto changes = std::make_unique<Plan::Impl>();
+	changes->graph = impl_.get();
+	changes->generation = impl_->generation;
 
-	wanted.spec = std::move(spec);
-	wanted.config = std::move(*config);
-	impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeUpdated(wanted.spec, wanted.config); });
-	return {};
-}
+	// Nodes, in name order: removed, replaced (removed and added), updated, added.
+	std::set<NodeName, std::less<>> replaced;
+	for (const auto& [name, held] : impl_->nodes) {
+		const auto it = wanted.find(name);
+		if (it == wanted.end()) {
+			changes->nodesRemoved.push_back(name);
+			continue;
+		}
+		const auto& next = it->second;
+		if (next.spec == held.spec) continue;
+		if (next.spec.type == held.spec.type && samePorts(next.config->ports(), held.config->ports())) {
+			changes->nodesUpdated.emplace_back(next.spec, next.config);
+		} else {
+			changes->nodesRemoved.push_back(name);
+			replaced.insert(name);
+		}
+	}
+	for (const auto& [name, next] : wanted)
+		if (!impl_->nodes.contains(name) || replaced.contains(name)) changes->nodesAdded.emplace_back(next.spec, next.config);
 
-std::expected<void, CommandError> DesiredGraph::removeNode(const NodeName& node) {
-	if (impl_->closed) return std::unexpected(Stopping{});
-	const auto it = impl_->nodes.find(node);
-	if (it == impl_->nodes.end()) return std::unexpected(UnknownNode{node});
-	const NodeName name = it->first;   // `node` may refer to the record erased below
-
-	std::vector<Route> gone;
+	// Routes, in Route order: a held route goes when it is not wanted or names a replaced node; a
+	// wanted route comes when it is not held or names a replaced node.
+	const auto namesReplaced = [&](const Route& route) {
+		return replaced.contains(route.from.node) || replaced.contains(route.to.node);
+	};
 	for (const auto& route : impl_->routes)
-		if (namesNode(route, name)) gone.push_back(route);
-	for (const auto& route : gone) {
+		if (!wantedRoutes.contains(route) || namesReplaced(route)) changes->routesRemoved.push_back(route);
+	for (const auto& route : wantedRoutes)
+		if (!impl_->routes.contains(route) || namesReplaced(route)) changes->routesAdded.push_back(route);
+
+	return Plan(std::move(changes));
+}
+
+std::expected<void, CommandError> DesiredGraph::commit(Plan plan) {
+	if (plan.impl_ == nullptr || plan.impl_->graph != impl_.get())
+		throw std::logic_error("DesiredGraph::commit: the plan was made on another graph");
+	if (impl_->closed) return std::unexpected(Stopping{});
+	if (plan.impl_->generation != impl_->generation)
+		throw std::logic_error("DesiredGraph::commit: the graph changed since the plan was made");
+
+	auto& changes = *plan.impl_;
+	++impl_->generation;
+	for (const auto& route : changes.routesRemoved) {
 		impl_->routes.erase(route);
 		impl_->tellRoutes([&](DesiredRouteListener& listener) { listener.routeRemoved(route); });
 	}
-	impl_->nodes.erase(it);
-	impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeRemoved(name); });
-	return {};
-}
-
-std::expected<void, CommandError> DesiredGraph::addRoute(const Route& route) {
-	if (impl_->closed) return std::unexpected(Stopping{});
-	const auto from = impl_->portsOf(route.from);
-	if (!from) return std::unexpected(from.error());
-	const auto to = impl_->portsOf(route.to);
-	if (!to) return std::unexpected(to.error());
-	if (!declares((*from)->outputs, route.from.port) || !declares((*to)->inputs, route.to.port))
-		return std::unexpected(WrongDirection{route});
-	if (!impl_->routes.insert(route).second) return {};
-
-	impl_->tellRoutes([&](DesiredRouteListener& listener) { listener.routeAdded(route); });
-	return {};
-}
-
-std::expected<void, CommandError> DesiredGraph::removeRoute(const Route& route) {
-	if (impl_->closed) return std::unexpected(Stopping{});
-	const auto it = impl_->routes.find(route);
-	if (it == impl_->routes.end()) return std::unexpected(UnknownRoute{route});
-	const Route removed = *it;   // `route` may refer to the record erased below
-	impl_->routes.erase(it);
-	impl_->tellRoutes([&](DesiredRouteListener& listener) { listener.routeRemoved(removed); });
+	for (const auto& name : changes.nodesRemoved) {
+		impl_->nodes.erase(name);
+		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeRemoved(name); });
+	}
+	for (auto& [spec, config] : changes.nodesUpdated) {
+		auto& held = impl_->nodes.at(spec.name);
+		held.spec = std::move(spec);
+		held.config = std::move(config);
+		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeUpdated(held.spec, held.config); });
+	}
+	for (auto& [spec, config] : changes.nodesAdded) {
+		const auto name = spec.name;
+		const auto& added = impl_->nodes.emplace(name, Impl::Wanted{std::move(spec), std::move(config)}).first->second;
+		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeAdded(added.spec, added.config); });
+	}
+	for (const auto& route : changes.routesAdded) {
+		impl_->routes.insert(route);
+		impl_->tellRoutes([&](DesiredRouteListener& listener) { listener.routeAdded(route); });
+	}
 	return {};
 }
 

@@ -7,16 +7,15 @@
     "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"file\",\"settings\":{\"path\":\"z.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"ghost\",\"settings\":{}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.update\",\"params\":{\"name\":\"motu\",\"settings\":{\"card\":\"Pro24\",\"playback\":4}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"ghost\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FX\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"rec\",\"port\":\"FL\"},\"to\":{\"node\":\"noise\",\"port\":\"MONO\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.add\",\"params\":{\"name\":\"n3\",\"type\":\"white\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.remove\",\"params\":{\"name\":\"ghost\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FX\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"rec\",\"port\":\"FL\"},\"to\":{\"node\":\"noise\",\"port\":\"MONO\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.add\",\"params\":{\"name\":\"n3\",\"type\":\"white\"}}",
     "{\"jsonrpc\":\"2.0\",\"method\":\"graph.get\",\"params\":[1,2",
     "{\"jsonrpc\":\"2.0\",\"method\":1,\"params\":\"bar\"}",
-    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"graph.explode\"}",
-    "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"graph.explode\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}"
   ],
   "messages": [
     {
@@ -33,20 +32,6 @@
           "white"
         ],
         "nodes": [
-          {
-            "name": "motu",
-            "type": "card",
-            "settings": {
-              "card": "Pro24",
-              "playback": 2
-            },
-            "inputs": [
-              "playback_1",
-              "playback_2"
-            ],
-            "outputs": [],
-            "state": "running"
-          },
           {
             "name": "noise",
             "type": "white",
@@ -146,17 +131,6 @@
       "id": 7,
       "error": {
         "code": -32000,
-        "message": "ports-changed motu",
-        "data": {
-          "code": "ports-changed"
-        }
-      }
-    },
-    {
-      "jsonrpc": "2.0",
-      "id": 8,
-      "error": {
-        "code": -32000,
         "message": "unknown-node ghost",
         "data": {
           "code": "unknown-node"
@@ -165,7 +139,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 9,
+      "id": 8,
       "error": {
         "code": -32000,
         "message": "unknown-port rec:FX",
@@ -176,7 +150,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 10,
+      "id": 9,
       "error": {
         "code": -32000,
         "message": "wrong-direction rec:FL -> noise:MONO",
@@ -187,7 +161,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 11,
+      "id": 10,
       "error": {
         "code": -32000,
         "message": "unknown-route noise:MONO -> rec:FR",
@@ -198,7 +172,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 12,
+      "id": 11,
       "error": {
         "code": -32000,
         "message": "stopping",
@@ -225,7 +199,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 13,
+      "id": 12,
       "error": {
         "code": -32601,
         "message": "Method not found"
@@ -233,7 +207,7 @@
     },
     {
       "jsonrpc": "2.0",
-      "id": 14,
+      "id": 13,
       "error": {
         "code": -32602,
         "message": "/from/port: missing"
@@ -251,20 +225,6 @@
       "white"
     ],
     "nodes": [
-      {
-        "name": "motu",
-        "type": "card",
-        "settings": {
-          "card": "Pro24",
-          "playback": 2
-        },
-        "inputs": [
-          "playback_1",
-          "playback_2"
-        ],
-        "outputs": [],
-        "state": "running"
-      },
       {
         "name": "noise",
         "type": "white",

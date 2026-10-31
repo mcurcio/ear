@@ -95,6 +95,8 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
   },
   // Levels live in their own store (levels.ts) and never change the graph.
   levels: (graph) => graph,
+  // The file lives in its own store (graphFile.ts); the graph events it causes follow it.
+  "graphFile.changed": (graph) => graph,
 };
 
 /** The graph after one server text. Responses other than a graph, and errors, change nothing. */

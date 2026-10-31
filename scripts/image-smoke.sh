@@ -14,14 +14,16 @@
 #    capability, so it starts where the capability is not allowed (a marked-effective one would
 #    fail here with EPERM).
 # 2. With --cap-add SYS_NICE: ear --help again.
-# Then ear itself, twice, on a sample graph (white noise into a file node writing rec.wav in the
-# image's recordings folder, /var/lib/ear/recordings, which must be the ear user's),
-# without and with --cap-add SYS_NICE: once it prints "control listening on", GET / must return
-# the built editor's index.html and graph.get must answer (scripts/rpc-call.mjs, run with the dev
-# image's Node in a container sharing ear's network). Without SYS_NICE graph.get says
-# "realtime": false and ear still runs; with it, "realtime": true (the binary's permitted
-# capability, made effective by Engine::create). Each run is stopped with SIGTERM and must exit 0
-# and leave rec.wav in the recordings folder.
+# Then ear itself, twice, on a sample graph file (ear.conf: white noise into a file node writing
+# rec.wav in the image's recordings folder, /var/lib/ear/recordings, which must be the ear user's),
+# in a scratch graph file folder made writable for uid 10001 and mounted read-write at
+# /var/lib/ear/config, without and with --cap-add SYS_NICE: once it prints "control listening on"
+# and the route is linked, GET / must return the built editor's index.html, and graph.get and
+# graphFile.get must answer (scripts/rpc-call.mjs, run with the dev image's Node in a container
+# sharing ear's network): graphFile.get runs the file's version and holds its text. Without
+# SYS_NICE graph.get says "realtime": false and ear still runs; with it, "realtime": true (the
+# binary's permitted capability, made effective by Engine::create). Each run is stopped with
+# SIGTERM and must exit 0 and leave rec.wav in the recordings folder.
 #
 # The dev image (docker/Dockerfile's dev target) is EAR_DEV_IMAGE if set (as scripts/dev.sh), or
 # is built and loaded here as ear-dev from the same Dockerfile (its layers are already cached
@@ -73,24 +75,25 @@ fi
 scratch=$(mktemp -d)
 containers=()
 cleanup() {
-	# --volumes: each run's anonymous recordings volume goes with its container.
+	# --volumes: each run's anonymous recordings volume goes with its container. Files ear made in
+	# the graph file folder (uid 10001) sit in a folder anyone may write, so rm can remove them.
 	if [[ ${#containers[@]} -gt 0 ]]; then docker rm --force --volumes "${containers[@]}" >/dev/null 2>&1 || true; fi
 	rm -rf "$scratch"
 }
 trap cleanup EXIT
 
-cat >"$scratch/ear.json" <<'JSON'
-{
-  "graphFrequency": 48000,
-  "blockSize": 256,
-  "nodes": [
-    {"name": "noise", "type": "white"},
-    {"name": "rec", "type": "file", "settings": {"path": "rec.wav"}}
-  ],
-  "routes": [{"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FL"}}]
-}
-JSON
-chmod 644 "$scratch/ear.json"
+# The graph file folder: ear only reads ear.conf here (nothing edits it), but the folder must be
+# writable by uid 10001, as a real one is.
+mkdir "$scratch/config"
+cat >"$scratch/config/ear.conf" <<'CONF'
+graph_frequency 48000;
+block_size 256;
+node white noise;
+node file rec { path "rec.wav"; }
+route noise:MONO rec:FL;
+CONF
+chmod 777 "$scratch/config"
+chmod 666 "$scratch/config/ear.conf"
 expected_index=$(docker run --rm --entrypoint cat "$image" /opt/ear/web/index.html)
 
 # run_ear <realtime: true|false> [docker run options...]
@@ -98,20 +101,20 @@ run_ear() {
 	local realtime=$1
 	shift
 	local container
-	container=$(docker run --detach "$@" --volume "$scratch/ear.json:/etc/ear/ear.json:ro" "$image")
+	container=$(docker run --detach "$@" --volume "$scratch/config:/var/lib/ear/config" "$image")
 	containers+=("$container")
 
 	# Waits for the line (an event); the read deadline only fails a start that never comes.
-	local line listening=
+	# The file's route is linked after the port listens (the keeper's first offer runs on the loop).
+	local line listening= linked=
 	while IFS= read -r -t 30 line; do
 		echo "  ear: $line"
-		if [[ $line == "control listening on "* ]]; then
-			listening=yes
-			break
-		fi
+		if [[ $line == "control listening on "* ]]; then listening=yes; fi
+		if [[ $line == "route noise:MONO -> rec:FL linked" ]]; then linked=yes; fi
+		if [[ -n $listening && -n $linked ]]; then break; fi
 	done < <(docker logs --follow "$container" 2>&1)
-	if [[ -z $listening ]]; then
-		echo "image-smoke: ear never said it was listening" >&2
+	if [[ -z $listening || -z $linked ]]; then
+		echo "image-smoke: ear never said it was listening with its route linked" >&2
 		docker logs "$container" >&2 || true
 		exit 1
 	fi
@@ -131,6 +134,15 @@ run_ear() {
 	echo "  graph.get: $graph"
 	if [[ $graph != *"\"realtime\":$realtime"* ]]; then
 		echo "image-smoke: graph.get does not say \"realtime\":$realtime" >&2
+		exit 1
+	fi
+
+	local file
+	file=$(docker run --rm --network "container:$container" --volume "$checkout/scripts:/scripts:ro" "$dev_image" \
+		node /scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graphFile.get)
+	echo "  graphFile.get: $file"
+	if [[ $file != *'"running":'* || $file != *'node white noise'* ]]; then
+		echo "image-smoke: graphFile.get does not run the file or does not hold its text" >&2
 		exit 1
 	fi
 

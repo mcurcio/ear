@@ -45,6 +45,19 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(vendor/json SYSTEM)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# knobly, the graph file's language (docs/design/knobly-config.md): its C++ release source tree, which the image
+# builds from a pinned commit (docker/Dockerfile, stage knobly) and puts at /opt/knobly, so configure needs no
+# Python and no network. A Linux build outside the image points EAR_KNOBLY_DIR at such a tree. Compiled mode:
+# knobly's definitions are compiled once, in src/config/knobly_implementation.cpp. As a subproject it builds no
+# tests; SYSTEM keeps its headers' warnings out of EAR's.
+set(EAR_KNOBLY_DIR "/opt/knobly" CACHE PATH "knobly's C++ release source tree (docker/Dockerfile, stage knobly)")
+if(NOT EXISTS "${EAR_KNOBLY_DIR}/include/knobly/knobly.hpp")
+	message(FATAL_ERROR "knobly is not at ${EAR_KNOBLY_DIR} (EAR_KNOBLY_DIR): build in the image "
+		"(scripts/dev.sh make test), whose docker/Dockerfile puts it there")
+endif()
+set(KNOBLY_COMPILED ON)   # knobly's option (CMP0077 NEW): KNOBLY_HEADER_ONLY=0 for every user
+add_subdirectory("${EAR_KNOBLY_DIR}" "${CMAKE_BINARY_DIR}/_deps/knobly-build" SYSTEM)
+
 # Boost is built by this project from the official Boost CMake release: nothing is installed.
 # kept_fetchcontent keeps the download and the extracted 800 MB tree across "make clean"
 # (re-extracting it costs 30-40 s); Boost's build tree stays in the build directory.
@@ -112,7 +125,8 @@ endif()
 
 # Tests are on before src/ so its packages' test directories register theirs with CTest;
 # test/ holds ear_catch_main, the Catch2 runner every test executable links, and the tests of
-# the ear binary itself. Catch.cmake (catch_discover_tests) is on the module path for them.
+# the ear binary itself, and ear_catch_tests (catch_discover_tests from Catch.cmake, on the module
+# path) for every package's test executable.
 if(BUILD_TESTS)
 	enable_testing()
 	list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vendor/catch/contrib")

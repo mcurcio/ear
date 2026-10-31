@@ -4,6 +4,7 @@
 // checked here, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format a
 // closed enum, every number ranged.
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -25,6 +26,14 @@ constexpr std::string_view formatKey = "format";
 constexpr std::string_view channelsKey = "channels";
 constexpr std::string_view rateKey = "rate";
 constexpr std::string_view latencyKey = "latencyMs";
+/// How each key is written in the graph file: the address and format are text, the numbers whole
+/// numbers.
+constexpr std::array<SettingDeclaration, 6> settingDeclarations{{{addressKey, SettingKind::text},
+                                                                 {portKey, SettingKind::wholeNumber},
+                                                                 {formatKey, SettingKind::text},
+                                                                 {channelsKey, SettingKind::wholeNumber},
+                                                                 {rateKey, SettingKind::wholeNumber},
+                                                                 {latencyKey, SettingKind::wholeNumber}}};
 /// The receive buffer when the settings name none: about 100 ms (R2). The one home of this
 /// default; the framework always passes the value on.
 constexpr std::uint32_t defaultLatencyMs = 100;
@@ -114,6 +123,8 @@ std::optional<std::uint32_t> wholeNumber(const NodeSettings& settings, std::stri
 class RtpType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
+
+	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {

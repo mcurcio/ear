@@ -51,10 +51,12 @@ struct Type final : NodeType {
 	bool handoff;
 	Type(std::string n, Ports p, bool h = false) : name_(std::move(n)), ports(std::move(p)), handoff(h) {}
 	std::string_view name() const override { return name_; }
+	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
 	                                                                        const NodeSettings&) const override {
 		return std::make_unique<Config>(ports, handoff);
 	}
+	static constexpr SettingDeclaration kinds[] = {{"seed", SettingKind::wholeNumber}};
 };
 
 std::vector<std::unique_ptr<const NodeType>> types() {
@@ -149,15 +151,19 @@ struct Fixture {
 const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
 const Route noiseToFr{{"noise", "MONO"}, {"rec", "FR"}};
 
+/// Plans `nodes` and `routes` and commits the plan, which must be accepted.
+void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::vector<Route>& routes) {
+	auto plan = graph.plan(nodes, routes);
+	REQUIRE(plan.has_value());
+	REQUIRE(graph.commit(std::move(*plan)).has_value());
+}
+
 } // namespace
 
 TEST_CASE("The graph read joins the wanted graph with node and route status", "[graph_status]") {
 	Fixture f;
-	REQUIRE(f.graph.addNode({"rec", "recorder", {}}).has_value());
-	REQUIRE(f.graph.addNode({"noise", "source", {{"seed", 1}}}).has_value());
-	REQUIRE(f.graph.addNode({"motu", "card", {}}).has_value());
-	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
-	REQUIRE(f.graph.addRoute(noiseToFr).has_value());
+	apply(f.graph, {{"rec", "recorder", {}}, {"noise", "source", {{"seed", 1}}}, {"motu", "card", {}}},
+	      {noiseToFl, noiseToFr});
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
 	f.routes.portAppeared({{"noise", "MONO"}, Direction::output, 1});
@@ -198,22 +204,21 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 
 TEST_CASE("A removed node still stopping is absent, and a re-added name shows the new node", "[graph_status]") {
 	Fixture f;
-	REQUIRE(f.graph.addNode({"rec", "recorder", {}}).has_value());
-	REQUIRE(f.graph.addNode({"noise", "source", {}}).has_value());
-	REQUIRE(f.graph.addRoute(noiseToFl).has_value());
+	apply(f.graph, {{"rec", "recorder", {}}, {"noise", "source", {}}}, {noiseToFl});
 	f.blocks.events.at("rec")->ready();
-	REQUIRE(f.nodes.status().at(0).state == NodeState::running);
+	REQUIRE(f.nodes.status().at(1).name == "rec");   // a commit adds in name order
+	REQUIRE(f.nodes.status().at(1).state == NodeState::running);
 
-	REQUIRE(f.graph.removeNode("rec").has_value());
+	apply(f.graph, {{"noise", "source", {}}}, {});
 	REQUIRE(f.nodes.status().size() == 2);   // rec waits for its handoff to close
-	CHECK(f.nodes.status().at(0).state == NodeState::stopping);
+	CHECK(f.nodes.status().at(1).state == NodeState::stopping);
 
 	GraphView view = f.status.read();
 	REQUIRE(view.nodes.size() == 1);
 	CHECK(view.nodes[0].spec.name == "noise");
 	CHECK(view.routes.empty());
 
-	REQUIRE(f.graph.addNode({"rec", "recorder", {}}).has_value());
+	apply(f.graph, {{"noise", "source", {}}, {"rec", "recorder", {}}}, {});
 	REQUIRE(f.nodes.status().size() == 3);   // the old rec, still stopping, comes first
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);

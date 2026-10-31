@@ -20,7 +20,7 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 |---|---|---|
 | Main loop, context, own connection | `Engine::create` | One process, one loop; every core object and adapter runs on the main loop's thread |
 | `engine.conf` | `src/pipewire/engine.conf`, copied beside `out/ear` | Read by `pw_context_new` (passed as `config.name`); loads the modules and the driver |
-| Clock settings | `contextProperties()` in `engine.cpp` | The graph frequency and block size from `ear.json` |
+| Clock settings | `contextProperties()` in `engine.cpp` | The graph frequency and block size, from `ear.conf`'s `graph_frequency` and `block_size` at boot (else `--graph-frequency` and `--block-size`) |
 | Port blocks | `port_blocks.cpp` | One `pw_filter` per node, one 32-bit float mono port per declared port (public and inside); every block in the graph group; `drive()`; level metering |
 | Level mailbox | `level_mailbox.hpp` | One triple buffer per block: the realtime thread publishes a level window, an ordinary thread reads the latest |
 | Live ports | `live_graph.cpp` | Registry globals joined into node name, port name, direction, port id |
@@ -82,6 +82,15 @@ block size), `clock.power-of-two-quantum = false`, and widens `default.clock.qua
 (default 4) and `quantum-limit` (default 8192) so the block size fits. A port block sees
 `position->clock.duration == blockSize` and `clock.rate.denom == graphFrequency`; the test
 "Blocks process at the graph frequency and block size" checks it with 44100 Hz and 256.
+
+Both are fixed for the engine's life (changing them live is deferred). `main.cpp` reads
+`ear.conf` once before `Engine::create` and takes the two values when both lines read; when
+the file is missing, cannot be read or lacks either line, the engine takes `--graph-frequency`
+and `--block-size` (default 48000 and 256). A later edit or hand edit that changes either value
+is accepted for everything else and reported as pending restart (`pendingRestart` in
+`graphFile.*`, `graph-file pending-restart <keys>` on standard output, PostgreSQL's
+`pending_restart` pattern): it applies at the next start. Nodes always see the engine's
+format (`NodeGrant::format()`), never the file's pending one.
 
 ## The graph group
 

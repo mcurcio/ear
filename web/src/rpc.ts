@@ -1,7 +1,7 @@
 // The control port's client: JSON-RPC 2.0 over one WebSocket (docs/design/batch2.md sections 6
 // and 8). It numbers requests, matches each reply to its request, hands every server text to
-// onMessage in arrival order, and when the socket opens it subscribes to the graph and to the
-// levels. When the socket closes it fails the calls in flight and opens a new socket after a
+// onMessage in arrival order, and when the socket opens it subscribes to the graph, to the graph
+// file and to the levels. When the socket closes it fails the calls in flight and opens a new socket after a
 // growing wait (1 s doubling to 30 s): a stated retry rate, not a schedule. The new socket
 // subscribes again, so the client starts over from a fresh snapshot (list, then watch).
 import type { MethodName, Methods, RpcErrorObject, ServerMessage } from "./protocol";
@@ -128,6 +128,8 @@ export class RpcClient {
         this.options.onStatus("open");
         // The results reach onMessage like every other text; a failure surfaces as the close.
         this.call("graph.subscribe").catch(() => {});
+        // An error answer (an ear without the graph file) leaves the file pane hidden.
+        this.call("graphFile.subscribe").catch(() => {});
         this.call("levels.subscribe").catch(() => {});
       },
       message: (text) => {

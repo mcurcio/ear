@@ -1,7 +1,7 @@
 // The graph as the client sees it (docs/design/batch2.md section 6): the graph notifications
-// (events.hpp), the levels notification, and the Graph that graph.get answers (encodeGraph,
-// declared in commands.hpp). They share one encoding of a node, its state and a route's status,
-// so a snapshot and the events after it always agree.
+// (events.hpp), the levels notification, the Graph that graph.get answers (encodeGraph, declared
+// in commands.hpp), and graphFile.changed (docs/design/knobly-config.md). They share one encoding
+// of a node, its state and a route's status, so a snapshot and the events after it always agree.
 #include "ear/control/commands.hpp"
 #include "ear/control/events.hpp"
 
@@ -96,6 +96,13 @@ std::string encodeLevels(std::span<const NodeLevels> levels) {
 		nodes[node.node] = std::move(ports);
 	}
 	return encodeNotification("levels", {{"nodes", std::move(nodes)}});
+}
+
+std::string encodeGraphFileChanged(const GraphFileChanged& change) {
+	json params = encodeGraphFile(change.file);
+	params["cause"] = causeName(change.cause);
+	if (change.droppedEdits > 0) params["droppedEdits"] = change.droppedEdits;
+	return encodeNotification("graphFile.changed", params);
 }
 
 } // namespace ear::control

@@ -7,8 +7,8 @@
 #include <string_view>
 #include <nlohmann/json.hpp>
 #include "ear/core/graph_spec.hpp"
-// The one home of node and route JSON: ear.json (graph_file) and the control port's commands
-// decode with it, and the control port's results and events encode with it.
+// The one home of node and route JSON: the control port's commands decode with it, and its
+// results and events encode with it.
 namespace ear::control {
 using JsonPointer = nlohmann::json::json_pointer;
 struct JsonError { std::string detail; };   // "<JSON pointer>: <problem>"; "the document" at root

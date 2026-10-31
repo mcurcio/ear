@@ -66,6 +66,9 @@ class WhiteType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
 
+	/// No settings, so nothing to declare.
+	std::span<const SettingDeclaration> settingKinds() const override { return {}; }
+
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
 		if (!settings.is_null() && !settings.is_object()) {

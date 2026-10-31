@@ -33,7 +33,6 @@ target_link_libraries(ear_pipewire PUBLIC ear_core PRIVATE PkgConfig::PIPEWIRE)
 configure_file(engine.conf "${PROJECT_BINARY_DIR}/engine.conf" COPYONLY)
 
 if(BUILD_TESTS)
-	include(Catch)
 	add_executable(ear_pipewire_tests
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
@@ -51,7 +50,7 @@ if(BUILD_TESTS)
 		EAR_ENGINE_CONF="${CMAKE_CURRENT_SOURCE_DIR}/engine.conf"
 		EAR_ALSA_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/alsa")
 	add_dependencies(ear_pipewire_tests ear_pipewire_verify_interface_header_sets)
-	catch_discover_tests(ear_pipewire_tests)
+	ear_catch_tests(ear_pipewire_tests)
 
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")

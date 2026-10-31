@@ -36,7 +36,6 @@ set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTS)
-	include(Catch)
 	add_executable(ear_core_tests
 		tests/desired_graph_test.cpp
 		tests/graph_spec_test.cpp
@@ -49,5 +48,5 @@ if(BUILD_TESTS)
 		tests/sound_card_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets)
-	catch_discover_tests(ear_core_tests)
+	ear_catch_tests(ear_core_tests)
 endif()

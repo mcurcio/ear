@@ -1,11 +1,11 @@
 // W1 criterion (2): the client with a fake socket. Ids are matched; errors reject with code and
-// message; notifications are dispatched; after a close it reconnects, subscribes again, and the
-// new snapshot replaces the graph.
+// message; notifications are dispatched; after a close it reconnects, subscribes again (S6
+// criterion 4: the graph, the graph file and the levels), and the new snapshot replaces the graph.
 import { describe, expect, it } from "vitest";
 import { Editor } from "./editor";
 import type { Graph, JsonValue, ServerMessage } from "./protocol";
 import { ConnectionClosedError, RpcClient, RpcError, firstRetryMs, longestRetryMs, type SocketEvents, type SocketLike } from "./rpc";
-import { fixtures } from "./testFixtures";
+import { fixtures, messagesOf } from "./testFixtures";
 
 class FakeSocket implements SocketLike {
   readonly sent: Array<{ id?: number; method: string; params?: unknown }> = [];
@@ -66,10 +66,13 @@ function connectedClient() {
 
 const graphOf = (graph: Graph): JsonValue => graph as unknown as JsonValue;
 
+/** What every new connection asks for first. */
+const subscriptions = ["graph.subscribe", "graphFile.subscribe", "levels.subscribe"];
+
 describe("the rpc client", () => {
-  it("subscribes to the graph and the levels when the socket opens", () => {
+  it("subscribes to the graph, the graph file and the levels when the socket opens", () => {
     const { socket } = connectedClient();
-    expect(socket.sent.map((request) => request.method)).toEqual(["graph.subscribe", "levels.subscribe"]);
+    expect(socket.sent.map((request) => request.method)).toEqual(subscriptions);
     expect(socket.sent.every((request) => !("params" in request))).toBe(true);
   });
 
@@ -100,7 +103,7 @@ describe("the rpc client", () => {
 
   it("hands every server text to onMessage in order, notifications included", () => {
     const { socket, messages } = connectedClient();
-    const sent = fixtures.edits.messages;
+    const sent = messagesOf(fixtures.edits.messages);
     for (const message of sent) socket.receive(message);
     expect(messages).toEqual(sent);
   });
@@ -126,7 +129,7 @@ describe("the rpc client", () => {
     // An open socket resets the wait and subscribes again.
     const socket = sockets.at(-1)!;
     socket.accept();
-    expect(socket.sent.map((request) => request.method)).toEqual(["graph.subscribe", "levels.subscribe"]);
+    expect(socket.sent.map((request) => request.method)).toEqual(subscriptions);
     socket.drop();
     expect(waits.at(-1)!.ms).toBe(firstRetryMs);
   });
@@ -149,8 +152,9 @@ describe("the editor session", () => {
     first.accept();
     expect(editor.connection()).toBe("open");
     // The edits fixture's snapshot, then n2 added before the connection drops.
-    first.receive({ ...fixtures.edits.messages[0]!, id: first.idOf("graph.subscribe") });
-    first.receive(fixtures.edits.messages[1]);
+    const edits = messagesOf(fixtures.edits.messages);
+    first.receive({ ...edits[0]!, id: first.idOf("graph.subscribe") });
+    first.receive(edits[1]);
     expect(editor.graph.get()!.nodes.map((node) => node.name)).toEqual(["n2", "noise", "rec"]);
     first.receive({ jsonrpc: "2.0", method: "levels", params: { nodes: { noise: { MONO: [0.5, 0.25] } } } });
     expect(editor.levels.get("noise", "MONO")).toEqual([0.5, 0.25]);
@@ -161,8 +165,25 @@ describe("the editor session", () => {
     h.waits[0]!.retry();
     const second = h.sockets[1]!;
     second.accept();
-    expect(second.sent.map((request) => request.method)).toEqual(["graph.subscribe", "levels.subscribe"]);
+    expect(second.sent.map((request) => request.method)).toEqual(subscriptions);
     second.receive({ jsonrpc: "2.0", id: second.idOf("graph.subscribe"), result: graphOf(fixtures.snapshot.graph) });
     expect(editor.graph.get()).toStrictEqual(fixtures.snapshot.graph);
+  });
+
+  it("holds the graph file from graphFile.subscribe's answer, and none when it is refused", async () => {
+    const h = harness();
+    const editor = new Editor(h.options);
+    editor.client.start();
+    const first = h.sockets[0]!;
+    first.accept();
+    first.receive({ jsonrpc: "2.0", id: first.idOf("graphFile.subscribe"), error: { code: -32601, message: "Method not found" } });
+    expect(editor.file.get()).toBeNull();
+    first.drop();
+    h.waits[0]!.retry();
+    const second = h.sockets[1]!;
+    second.accept();
+    const file = fixtures.graphFile.file!;
+    second.receive({ jsonrpc: "2.0", id: second.idOf("graphFile.subscribe"), result: file as unknown as JsonValue });
+    expect(editor.file.get()).toStrictEqual({ file, notices: [] });
   });
 });
