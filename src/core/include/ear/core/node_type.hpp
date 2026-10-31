@@ -117,7 +117,8 @@ public:
   virtual std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
       parse(const NodeName& node, const NodeSettings& settings) const = 0;
   /// Every key parse() accepts, each once, with its kind; the same span every call; pure.
-  /// Non-pure in this slice (default {}); S5 makes it pure once every type declares.
+  /// Still non-pure (default {}): src/config/tests/test_types.cpp's white type does not declare, and
+  /// S5 may not edit src/config (S5 erratum). Every built-in type and core test type declares.
   virtual std::span<const SettingDeclaration> settingKinds() const { return {}; }
 };
 }

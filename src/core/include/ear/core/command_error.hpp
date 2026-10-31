@@ -13,7 +13,9 @@ struct UnknownNode     { NodeName node; };   // a route names a node not in the 
 struct UnknownPort     { PortRef port; };    // node exists, port not declared
 struct WrongDirection  { Route route; };     // from is not an output, or to is not an input
 struct InvalidName     { NodeName node; };   // not 1-64 characters of [A-Za-z0-9_-]
-struct PortsChanged    { NodeName node; };   // updateNode: the new settings would change its ports
+/// Made by nothing: a port change replaces the node (docs/design/knobly-config.md). Kept only until
+/// src/config/tests/main_loop_side_test.cpp drops its row (S5 erratum; S5 may not edit src/config).
+struct PortsChanged    { NodeName node; };
 struct UnknownRoute    { Route route; };     // removeRoute: the route is not wanted
 struct Stopping        {};                   // EAR is stopping: the graph takes no more edits
 using CommandError = std::variant<UnknownNodeType, InvalidSettings, DuplicateNode, UnknownNode,

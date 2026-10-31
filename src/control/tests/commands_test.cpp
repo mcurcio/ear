@@ -1,15 +1,12 @@
-// The control port's commands (docs/design/batch2.md sections 4.5 and 6): decodeCommand for every
-// method and every missing, extra and mistyped key (R1 criterion 2); runCommand calls the one
-// control call each command names; encodeCommandResult and encodeGraph give exactly the
-// fixtures' texts (R1 criterion 3).
+// The control port's commands (docs/design/batch2.md sections 4.5 and 6; docs/design/knobly-config.md,
+// "Wire additions"): decodeCommand for every method and every missing, extra and mistyped key (R1
+// criterion 2); encodeCommandResult and encodeGraph give exactly the fixtures' texts (R1 criterion 3).
 #include <fstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "catch2/catch.hpp"
 #include "ear/control/commands.hpp"
-#include "ear/control/graph_file.hpp"
 
 using namespace ear::control;
 using nlohmann::json;
@@ -38,43 +35,6 @@ std::string invalid(std::string_view method, const std::string& params) {
 const ear::Route noiseToRecFl{{"noise", "MONO"}, {"rec", "FL"}};
 const std::string noiseToRecFlJson =
 	R"({"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FL"}})";
-
-/// Records each control call by name; answers with `answer`.
-class RecordingControl final : public ear::GraphControl {
-public:
-	std::vector<std::string> calls;
-	std::expected<void, ear::CommandError> answer;
-	std::expected<void, ear::CommandError> addNode(const ear::NodeSpec& node) override {
-		calls.push_back("addNode " + node.name);
-		return answer;
-	}
-	std::expected<void, ear::CommandError> updateNode(const ear::NodeName& node, const ear::NodeSettings& s) override {
-		calls.push_back("updateNode " + node + " " + s.dump());
-		return answer;
-	}
-	std::expected<void, ear::CommandError> removeNode(const ear::NodeName& node) override {
-		calls.push_back("removeNode " + node);
-		return answer;
-	}
-	std::expected<void, ear::CommandError> addRoute(const ear::Route& route) override {
-		calls.push_back("addRoute " + route.to.port);
-		return answer;
-	}
-	std::expected<void, ear::CommandError> removeRoute(const ear::Route& route) override {
-		calls.push_back("removeRoute " + route.to.port);
-		return answer;
-	}
-};
-
-class FixedReader final : public ear::GraphReader {
-public:
-	ear::GraphView view;
-	mutable int reads = 0;
-	ear::GraphView read() const override {
-		++reads;
-		return view;
-	}
-};
 
 /// snapshot.json's graph, as GraphStatus would read it.
 ear::GraphView snapshotView() {
@@ -119,6 +79,17 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<AddRoute>(decodeCommand("route.add", json::parse(noiseToRecFlJson)).value()).route == noiseToRecFl);
 	CHECK(std::get<RemoveRoute>(decodeCommand("route.remove", json::parse(noiseToRecFlJson)).value()).route ==
 	      noiseToRecFl);
+
+	for (const std::string_view method : {"graphFile.get", "graphFile.subscribe"}) {
+		INFO(method);
+		CHECK(std::holds_alternative<GetGraphFile>(decodeCommand(method, nullptr).value()));
+		CHECK(std::holds_alternative<GetGraphFile>(decodeCommand(method, json::object()).value()));
+	}
+	const auto set = decodeCommand("graphFile.set", json::parse(R"({"text": "node white n;\n", "version": "a.3"})"));
+	CHECK(std::get<SetGraphFile>(set.value()).text == "node white n;\n");
+	CHECK(std::get<SetGraphFile>(set.value()).version == "a.3");
+	const auto empty = decodeCommand("graphFile.set", json::parse(R"({"text": "", "version": ""})"));
+	CHECK(std::get<SetGraphFile>(empty.value()).text.empty());   // an empty file is a text
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {
@@ -141,6 +112,15 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 	CHECK(invalid("node.remove", "{}") == "/name: missing");
 	CHECK(invalid("node.remove", R"({"name": "a", "force": true})") == "/force: unknown key");
 	CHECK(invalid("node.remove", R"({"name": null})") == "/name: must be a non-empty string");
+
+	CHECK(invalid("graphFile.get", R"({"x": 1})") == "/x: unknown key");
+	CHECK(invalid("graphFile.subscribe", R"({"version": "a.1"})") == "/version: unknown key");
+	CHECK(invalid("graphFile.set", R"({"version": "a.1"})") == "/text: missing");
+	CHECK(invalid("graphFile.set", R"({"text": ""})") == "/version: missing");
+	CHECK(invalid("graphFile.set", R"({"text": "", "version": "a.1", "path": "ear.conf"})") == "/path: unknown key");
+	CHECK(invalid("graphFile.set", R"({"text": 1, "version": "a.1"})") == "/text: must be a string");
+	CHECK(invalid("graphFile.set", R"({"text": "", "version": null})") == "/version: must be a string");
+	CHECK(invalid("graphFile.set", "null") == "/text: missing");
 
 	for (const std::string_view method : {"route.add", "route.remove"}) {
 		INFO(method);
@@ -168,42 +148,6 @@ TEST_CASE("An unknown method is method not found", "[commands]") {
 	CHECK(refusal("levels.subscribe", "{}").code == methodNotFound);   // the hub's, not a graph command
 }
 
-TEST_CASE("The same bad node gives the same text in ear.json and through node.add", "[commands][graph-file]") {
-	const std::string head = R"({"graphFrequency": 48000, "blockSize": 256, "nodes": [)";
-	for (const std::string node : {R"({"type": "white"})", R"({"name": "a", "type": "white", "x": 1})",
-	                               R"({"name": "a", "type": 3})", R"("a")"}) {
-		INFO(node);
-		const auto file = parseGraphFile(head + node + "]}");
-		REQUIRE_FALSE(file.has_value());
-		const std::string command = invalid("node.add", node);
-		const std::string fromCommand = command.starts_with("the document") ? command.substr(12) : command;
-		CHECK(file.error().detail == "/nodes/0" + fromCommand);
-	}
-}
-
-TEST_CASE("runCommand makes the one control call its command names", "[commands]") {
-	RecordingControl control;
-	FixedReader reader;
-	reader.view = snapshotView();
-	CHECK(std::holds_alternative<ear::GraphView>(runCommand(GetGraph{}, control, reader)));
-	CHECK(reader.reads == 1);
-	runCommand(AddNode{{"noise", "white", json::object()}}, control, reader);
-	runCommand(UpdateNode{"rec", {{"path", "y.wav"}}}, control, reader);
-	runCommand(RemoveNode{"rec"}, control, reader);
-	runCommand(AddRoute{noiseToRecFl}, control, reader);
-	control.answer = std::unexpected(ear::UnknownRoute{noiseToRecFl});
-	const CommandResult refused = runCommand(RemoveRoute{noiseToRecFl}, control, reader);
-	CHECK(control.calls == std::vector<std::string>{"addNode noise", R"(updateNode rec {"path":"y.wav"})",
-	                                                "removeNode rec", "addRoute FL", "removeRoute FL"});
-	CHECK(reader.reads == 1);
-	CHECK(ear::errorCode(std::get<std::expected<void, ear::CommandError>>(refused).error()) == "unknown-route");
-	// The graph file keeper answers these (docs/design/knobly-config.md); nothing decodes them yet.
-	CHECK_THROWS_AS(runCommand(GetGraphFile{}, control, reader), std::logic_error);
-	CHECK_THROWS_AS(runCommand(SetGraphFile{"", "v1"}, control, reader), std::logic_error);
-	CHECK(control.calls.size() == 5);
-	CHECK(reader.reads == 1);
-}
-
 TEST_CASE("encodeGraph gives snapshot.json's graph exactly", "[commands][protocol]") {
 	const json expected = fixture("snapshot");
 	CHECK(encodeGraph(snapshotView()) == expected["graph"]);
@@ -219,7 +163,6 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 		ear::InvalidSettings{"tape", "path: missing"},
 		ear::DuplicateNode{"noise"},
 		ear::UnknownNode{"ghost"},
-		ear::PortsChanged{"motu"},
 		ear::UnknownNode{"ghost"},
 		ear::UnknownPort{{"rec", "FX"}},
 		ear::WrongDirection{{{"rec", "FL"}, {"noise", "MONO"}}},

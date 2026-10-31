@@ -651,7 +651,7 @@ TEST_CASE("A node with a card and a receiver runs only once both are ready, in e
 	f.stopAll();
 }
 
-TEST_CASE("A receiver lost after the node ran fails it; an update makes a new receiver behind the "
+TEST_CASE("A receiver lost after the node ran fails it, and an update makes a new receiver behind the "
           "same block", "[node_host][rtp]") {
 	Fixture f;
 	{

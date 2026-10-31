@@ -123,18 +123,20 @@ COPY --from=build /src/web/dist /opt/ear/web
 # CAP_SYS_NICE as a file capability. Permitted only ("=p"): a binary marked effective ("=ep")
 # fails to start with EPERM wherever SYS_NICE is not allowed (a plain "docker run", CI);
 # Engine::create makes it effective at boot when it is allowed. setcap's package is installed
-# and purged in this one step, so it is in no layer. The recordings folder, the only place file
-# nodes write, belongs to the ear user; it is a volume so recordings outlive the container.
+# and purged in this one step, so it is in no layer. The recordings folder (the only place file
+# nodes write) and the graph file folder (ear.conf, which ear writes back as the editor edits
+# it) belong to the ear user; each is a volume, so recordings and the graph outlive the container.
+# The graph file folder must be mounted writable: a read-only mount (a ConfigMap) cannot be edited.
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends libcap2-bin \
 	&& setcap cap_sys_nice=p /opt/ear/ear \
 	&& apt-get purge -y --auto-remove libcap2-bin \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin ear \
-	&& install -d -o ear -g ear -m 0755 /var/lib/ear/recordings
+	&& install -d -o ear -g ear -m 0755 /var/lib/ear/recordings /var/lib/ear/config
 
 USER 10001:10001
-VOLUME /var/lib/ear/recordings
+VOLUME ["/var/lib/ear/config", "/var/lib/ear/recordings"]
 EXPOSE 7777
 ENTRYPOINT ["/opt/ear/ear"]
-CMD ["--config", "/etc/ear/ear.json", "--recordings-dir", "/var/lib/ear/recordings"]
+CMD ["--config-dir", "/var/lib/ear/config", "--recordings-dir", "/var/lib/ear/recordings"]

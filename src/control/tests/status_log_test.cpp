@@ -29,7 +29,7 @@ TEST_CASE("An edit with nothing wrong prints its first line only", "[status_log]
 	CHECK(printed({file("v1", std::nullopt), FileChangeCause::write, 0}) == "graph-file write v1 running=none\n");
 }
 
-TEST_CASE("Each error diagnostic is a line; warnings are not", "[status_log]") {
+TEST_CASE("Each error diagnostic is a line, and warnings are not", "[status_log]") {
 	GraphFile broken = file("v3", "v2");
 	broken.diagnostics = {
 		Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}},

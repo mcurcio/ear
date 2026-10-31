@@ -1,11 +1,17 @@
-// EAR's composition root (docs/design/batch2.md section 4.7): reads the graph file, opens the
-// recordings folder, starts the engine and prints how its audio thread is scheduled, wires the
-// packages together, opens the control port, replays the file as control calls and runs until
-// SIGINT or SIGTERM. Stopping closes the graph to edits, stops every node, then closes the
-// control port, stops the control thread and ends the main loop.
+// EAR's composition root (docs/design/batch2.md section 4.7; docs/design/knobly-config.md, "Boot
+// and stop"): opens the graph file folder and the recordings folder (apart from each other and the
+// web root), reads ear.conf, starts the engine at the file's rate and block size (else the flags')
+// and prints how its audio thread is scheduled, wires the packages together, starts the graph file
+// keeper (its first offer runs the file, or nothing runs and the editor shows why), opens the
+// control port and runs until SIGINT or SIGTERM. Stopping closes the graph to edits, stops the
+// keeper taking edits, stops every node, then closes the control port, stops the control thread
+// and ends the main loop; the keeper's last write runs as its thread is joined.
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
+#include <optional>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -14,8 +20,8 @@
 
 #include <boost/program_options.hpp>
 
+#include "ear/config/graph_file_keeper.hpp"
 #include "ear/control/gateway.hpp"
-#include "ear/control/graph_file.hpp"
 #include "ear/control/status_log.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/graph_view.hpp"
@@ -44,13 +50,24 @@ std::filesystem::path binaryDirectory() {
 	return std::filesystem::read_symlink("/proc/self/exe").parent_path();
 }
 
+/// A whole number above 0 that fits the engine's 32 bits, or nothing.
+std::optional<std::uint32_t> positive(std::int64_t value) {
+	if (value <= 0 || value > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
+	return static_cast<std::uint32_t>(value);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
 	po::options_description options("Options");
 	options.add_options()
 		("help,h", "print these options and exit")
-		("config", po::value<std::string>()->default_value("ear.json"), "graph file path")
+		("config-dir", po::value<std::string>()->default_value("config"),
+		 "the graph file folder (ear.conf; made if missing, not its parents)")
+		("graph-frequency", po::value<std::int64_t>()->default_value(48000),
+		 "the engine's rate when ear.conf cannot be read or does not give one")
+		("block-size", po::value<std::int64_t>()->default_value(256),
+		 "the engine's block size when ear.conf cannot be read or does not give one")
 		("control-address", po::value<std::string>()->default_value("0.0.0.0"),
 		 "address the control port listens on")
 		("control-port", po::value<std::uint16_t>()->default_value(7777),
@@ -84,21 +101,41 @@ int main(int argc, char** argv) {
 	                                                    : std::vector<std::string>{},
 	};
 
-	const auto spec = ear::control::readGraphFile(arguments["config"].as<std::string>());
-	if (!spec) {
-		std::cerr << "ear: " << spec.error().detail << '\n';
+	const auto flagRate = positive(arguments["graph-frequency"].as<std::int64_t>());
+	const auto flagBlock = positive(arguments["block-size"].as<std::int64_t>());
+	if (!flagRate || !flagBlock) {
+		std::cerr << "ear: --graph-frequency and --block-size must be whole numbers above 0\n";
 		return 1;
 	}
-	const ear::AudioFormat format{spec->graphFrequency, spec->blockSize};
 
-	auto recordings = ear::folder::ConfinedFolder::open(arguments["recordings-dir"].as<std::string>());
+	const std::filesystem::path configDir = arguments["config-dir"].as<std::string>();
+	const std::filesystem::path recordingsDir = arguments["recordings-dir"].as<std::string>();
+	auto config = ear::folder::ConfinedFolder::open(configDir);
+	if (!config) {
+		// Each folder names itself "folder <path>"; the role is main's to say.
+		std::cerr << "ear: graph file " << config.error().detail << '\n';
+		return 1;
+	}
+	auto recordings = ear::folder::ConfinedFolder::open(recordingsDir);
 	if (!recordings) {
-		// The folder names itself "folder <path>"; the role is main's to say.
 		std::cerr << "ear: recordings " << recordings.error().detail << '\n';
 		return 1;
 	}
+	const std::array<std::filesystem::path, 3> folders{configDir, recordingsDir, portSettings.webRoot};
+	if (const auto apart = ear::folder::requireApart(folders); !apart) {
+		std::cerr << "ear: " << apart.error().detail << '\n';
+		return 1;
+	}
 
-	// Declaration order is boot order; destruction runs the other way: port, gateway, core,
+	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
+	// format lines set the engine when both read; otherwise the flags do (the file's own values then
+	// show as pending restart).
+	const ear::NodeCatalogue catalogue(
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings))));
+	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
+	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
+
+	// Declaration order is boot order; destruction runs the other way: port, gateway, keeper, core,
 	// adapters, control thread, main-loop executor, engine.
 	auto created = ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock});
 	if (!created) {
@@ -126,15 +163,14 @@ int main(int argc, char** argv) {
 	ear::pipewire::Links links(*engine);
 	ear::pipewire::LiveGraph live(*engine);
 
-	const ear::NodeCatalogue catalogue(
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings))));
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler);
 	ear::control::StatusLog log(std::cout);
 
-	ear::control::MainLoopGateway gateway(mainLoop, control, graph, status);
+	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, mainLoop);
+	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
 
 	// Observers hear each change before the subscribers act on it, so a client gets node.added
 	// before the node.state it causes.
@@ -148,6 +184,16 @@ int main(int argc, char** argv) {
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);
 	links.subscribe(reconciler);
+	// Each graph file change is told to the gateway, then the status log, before its graph events.
+	keeper.subscribe(gateway);
+	keeper.subscribe(log);
+
+	// Before the control port, so every request finds the keeper's thread; after Engine::create, so
+	// the thread inherits the blocked stop signals. Its first offer waits for the main loop to run.
+	if (const auto started = keeper.start(); !started) {
+		std::cerr << "ear: graph file " << started.error() << '\n';
+		return 1;
+	}
 
 	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell);
 	if (!started) {
@@ -157,30 +203,27 @@ int main(int argc, char** argv) {
 	const std::unique_ptr<ear::server::ControlPort> port = std::move(*started);
 	std::cout << "control listening on " << portSettings.address << ':' << port->port() << std::endl;
 
-	// Stopping refuses edits at once (clients get "stopping"), lets every node finish (its file
-	// is closed on the main loop, so the loop runs until then), and only then closes the port,
-	// stops the control thread and ends the loop.
+	// Stopping refuses edits at once (clients get "stopping"), lets the keeper answer what it holds,
+	// lets every node finish (its file is closed on the main loop, so the loop runs until then), and
+	// only then closes the port, stops the control thread and ends the loop. A file that does not
+	// read, or that the graph refuses, runs nothing and keeps ear up, so the editor can fix it.
 	bool stopping = false;
-	bool allGone = false;
 	auto stop = [&] {
 		if (stopping) return;
 		stopping = true;
-		nodes.stopAll(graph.close(), [&] {
-			allGone = true;
+		const ear::GraphClosed closed = graph.close();
+		keeper.stop();
+		nodes.stopAll(closed, [&] {
 			port->stop();
 			control.stop();
 			engine->quit();
 		});
 	};
+	engine->onStopSignal(stop);
+	engine->run();
 
-	int exitStatus = 0;
-	if (const auto replayed = ear::control::replay(*spec, graph); !replayed) {
-		std::cerr << "ear: " << ear::describe(replayed.error()) << '\n';
-		exitStatus = 1;
-		stop();
-	} else {
-		engine->onStopSignal(stop);
-	}
-	if (!allGone) engine->run();
-	return exitStatus;
+	// The keeper's last write runs as its thread ends. Its failure reaches standard output only, in
+	// the status log's words (status_log.hpp, "graph-file write-failed <detail>").
+	if (const auto failed = keeper.join()) std::cout << "graph-file write-failed " << *failed << std::endl;
+	return 0;
 }

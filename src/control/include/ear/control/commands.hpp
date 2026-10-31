@@ -1,6 +1,7 @@
 // Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
 // page's Errata section (section 11) and a re-cut, never a local edit. The graphFile.* commands and
-// results are docs/design/knobly-config.md's (slice S3); their erratum to batch2.md lands in S7.
+// results are docs/design/knobly-config.md's (slices S3 and S5, which deleted runCommand: the graph
+// file keeper runs commands); their erratum to batch2.md lands in S7.
 #pragma once
 #include <expected>
 #include <string>
@@ -24,13 +25,11 @@ using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute
 using CommandResult = std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal>;
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
-/// ("/from/port: missing").
+/// ("/from/port: missing"). graphFile.get and graphFile.subscribe (params absent or {}) are
+/// GetGraphFile; graphFile.set is SetGraphFile (text and version, each a required string). The
+/// graph file keeper runs every command (requests.hpp).
 std::expected<Command, RpcError> decodeCommand(std::string_view method,
                                                const nlohmann::json& params);
-/// Main thread; called only by MainLoopGateway. GetGraphFile and SetGraphFile throw std::logic_error
-/// (nothing decodes them yet; the graph file keeper answers them).
-CommandResult runCommand(const Command& command, GraphControl& control,
-                         const GraphReader& reader);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->
 /// RpcError{commandRefused, describe(e), {"code": errorCode(e)}}; GraphFile -> encodeGraphFile;
 /// FileRefusal -> RpcError{commandRefused, describe(r), {"code": fileRefusalCode(r)}, plus

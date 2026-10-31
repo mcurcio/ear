@@ -8,7 +8,9 @@ target_include_directories(ear_catch_main SYSTEM PUBLIC
 # The ear binary starts, loads its shared libraries and prints its options.
 add_test(NAME ear_help COMMAND ear --help)
 add_test(NAME ear_help_lists_config COMMAND ear --help)
-set_tests_properties(ear_help_lists_config PROPERTIES PASS_REGULAR_EXPRESSION "--config")
+# The graph file folder and the engine's fallback format, in the order --help lists them.
+set_tests_properties(ear_help_lists_config PROPERTIES
+	PASS_REGULAR_EXPRESSION "--config-dir.*--graph-frequency.*--block-size")
 
 # ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
 # Boost.Beast), for the control port's tests (src/server/tests) and the system tests.

@@ -165,7 +165,6 @@ export type CommandErrorCode =
   | "unknown-node"
   | "unknown-port"
   | "wrong-direction"
-  | "ports-changed"
   | "unknown-route"
   | "stopping";
 
@@ -270,7 +269,6 @@ const commandErrorCodeSet: { [C in CommandErrorCode]: true } = {
   "unknown-node": true,
   "unknown-port": true,
   "wrong-direction": true,
-  "ports-changed": true,
   "unknown-route": true,
   stopping: true,
 };

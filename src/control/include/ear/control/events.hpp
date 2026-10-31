@@ -1,6 +1,7 @@
 // Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. encodeGraphFileChanged is
-// docs/design/knobly-config.md's (slice S3); its erratum to batch2.md lands in S7.
+// page's Errata section (section 11) and a re-cut, never a local edit. encodeGraphFileChanged and
+// EventSink::graphFileChanged are docs/design/knobly-config.md's (slices S3 and S5); their erratum
+// to batch2.md lands in S7.
 #pragma once
 #include <cstdint>
 #include <span>
@@ -25,6 +26,7 @@ using GraphEvent = std::variant<NodeAdded, NodeUpdated, NodeRemoved, NodeChanged
 class EventSink {   // control thread
 public:
   virtual void graphChanged(GraphEvent event) = 0;
+  virtual void graphFileChanged(GraphFileChanged change) = 0;
 protected:
   ~EventSink() = default;
 };

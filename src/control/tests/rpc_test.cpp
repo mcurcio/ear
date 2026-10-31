@@ -44,7 +44,7 @@ TEST_CASE("Named params: a request parses and its result encodes as the spec's e
 	CHECK(json::parse(encodeResult(*swapped.id, 19)) == json::parse(R"({"jsonrpc": "2.0", "result": 19, "id": 4})"));
 }
 
-TEST_CASE("A request without id is a notification; string ids and absent params are kept", "[rpc]") {
+TEST_CASE("A request without id is a notification, and string ids and absent params are kept", "[rpc]") {
 	const RpcRequest update = onlyRequest(parseMessage(R"({"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]})"));
 	CHECK_FALSE(update.id.has_value());
 	CHECK(update.params == json::array({1, 2, 3, 4, 5}));
@@ -71,7 +71,7 @@ TEST_CASE("Text that is not JSON is one parse error with id null", "[rpc]") {
 ])")) == parse);
 }
 
-TEST_CASE("An invalid request object is an invalid request; its id is kept when readable", "[rpc]") {
+TEST_CASE("An invalid request object is an invalid request, and its id is kept when readable", "[rpc]") {
 	const json invalidNull =
 		json::parse(R"({"jsonrpc": "2.0", "error": {"code": -32600, "message": "Invalid Request"}, "id": null})");
 	CHECK(onlyError(parseMessage(R"({"jsonrpc": "2.0", "method": 1, "params": "bar"})")) == invalidNull);

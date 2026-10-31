@@ -70,6 +70,26 @@ public:
 		return true;
 	}
 
+	/// Waits until the child has printed a whole line starting with `prefix`, and returns the first
+	/// such line. Nothing if its output ends or the deadline passes first.
+	std::optional<std::string> waitForLineStartingWith(std::string_view prefix, std::chrono::milliseconds deadline) {
+		const auto until = std::chrono::steady_clock::now() + deadline;
+		while (true) {
+			if (auto line = lineStartingWith(prefix)) return line;
+			if (!readMore(until)) return std::nullopt;
+		}
+	}
+
+	/// The first whole line printed so far that starts with `prefix`.
+	std::optional<std::string> lineStartingWith(std::string_view prefix) const {
+		std::size_t start = 0;
+		for (std::size_t end; (end = output_.find('\n', start)) != std::string::npos; start = end + 1) {
+			const std::string_view line = std::string_view(output_).substr(start, end - start);
+			if (line.starts_with(prefix)) return std::string(line);
+		}
+		return std::nullopt;
+	}
+
 	void signal(int signalNumber) { ::kill(pid_, signalNumber); }
 
 	/// Waits for the child's output to end and the child to exit. Its exit status, or nothing
