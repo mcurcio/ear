@@ -11,8 +11,8 @@ sections 5 and 7) and the sources below say the node and pod must give. Each ste
 
 The owner (2026-10-30): "Motu 24ao. Talos 1.13.x I think maybe 1.14.x". The Talos nodes' CPU is
 not known yet, so the image is published for amd64 only (`ghcr.io/mcurcio/ear`, section 7 of
-the design page; it is private until the owner makes it public, so the cluster needs a pull
-secret).
+the design page). The package is public: anonymous pulls work, so the cluster needs no pull
+secret.
 
 ## 1. The node: the USB audio driver
 
@@ -69,9 +69,11 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
 
 - Talos enforces Pod Security "baseline" by default, which forbids adding SYS_NICE (it is not in
   baseline's allowed capabilities). Pod Security never sees device-plugin devices, so SYS_NICE is
-  the only gap. Labelling the namespace `privileged` closes it but lets anything that can patch a
-  deployment there get root on the node; keeping `baseline` and admitting only SYS_NICE through
-  a ValidatingAdmissionPolicy on that namespace is the narrower way. Port 7777 has no login.
+  the only gap. An admission policy can only refuse, never admit, so the namespace must enforce
+  `privileged`; on its own that lets anything that can patch a deployment there get root on the
+  node. The narrower way (what the owner's iac repo does) is `privileged` enforced, `baseline`
+  audited and warned, and a ValidatingAdmissionPolicy on the namespace that re-imposes baseline
+  plus SYS_NICE; it holds only while the policy and its binding exist. Port 7777 has no login.
 - `/dev/snd` reaches the container through a device plugin such as squat/generic-device-plugin
   (a device group with path `/dev/snd`, then a resource limit on that group in the pod), or a
   privileged container.

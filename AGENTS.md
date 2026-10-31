@@ -303,8 +303,8 @@ merging it makes the release, its `v<version>` tag and the version in `CMakeList
 `master`, `sha-<short commit>` and one version per `v*` tag on the commit
 (`scripts/version-tags.sh` reads them from git, so a rerun of a failed publish still pushes the
 version). Never tag or version by hand. After the first merge the owner must let GitHub Actions
-create pull requests (Settings, Actions) for release-please, and the ghcr package stays private
-until he changes it. Running it on Talos with the MOTU: the `ear-on-talos` skill.
+create pull requests (Settings, Actions) for release-please. The ghcr package is public
+(anonymous pulls work). Running it on Talos with the MOTU: the `ear-on-talos` skill.
 
 ## Vendored and fetched code
 
