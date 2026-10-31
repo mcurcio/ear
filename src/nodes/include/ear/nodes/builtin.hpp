@@ -32,6 +32,6 @@ std::unique_ptr<const NodeType> makeCardNodeType();
 /// (from_rtp_i -> channel_i). Start asks the grant for one receiver with blockPorts = the inside
 /// inputs. No packets: the node stays running and its outputs are silent.
 std::unique_ptr<const NodeType> makeRtpNodeType();
-/// white, file (writing into `recordings`), card, and from slice R1 of docs/design/rtp.md, rtp.
+/// white, file (writing into `recordings`), card and rtp.
 std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<const RecordingsFolder> recordings);
 }
