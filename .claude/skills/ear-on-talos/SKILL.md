@@ -82,8 +82,11 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
 - Out of the box `/dev/snd/*` is `root:root 0600` on the node (seen on the owner's node
   2026-10-31): the kernel gives sound devices no mode. Talos runs udevd with
   `--resolve-names=never`, so systemd's stock `SUBSYSTEM=="sound", GROUP="audio"` rule (a named
-  group) does nothing. A numeric-group rule through `machine.udev.rules` was tried and never
-  applied, not even to a card plugged in while udevd ran, so do not rely on one. Instead turn on
+  group) does nothing, and so does a numeric one: Talos has no `/etc/group`, udevd fails to
+  resolve even `GROUP="2029"` (its log: `Failed to resolve group '2029', ignoring: Unknown
+  group`) and drops the whole rule line, `MODE` included (seen on the owner's node 2026-10-31).
+  No udev group rule can work on Talos; only a world-open `MODE="0666"` would, so do not use
+  udev. Instead turn on
   containerd's CRI option `device_ownership_from_security_context` on every node: a device a
   device plugin gives a container is then created in it owned by the container's `runAsUser`
   and `runAsGroup` (each only when set and non-zero), with the host's mode, so the owner's `rw`
