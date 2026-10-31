@@ -3,23 +3,24 @@
 import { describe, expect, it } from "vitest";
 import { GraphStore, reduce, type GraphState } from "./graph";
 import type { JsonValue, ServerMessage } from "./protocol";
-import { fixtures } from "./testFixtures";
+import { fixtures, messagesOf } from "./testFixtures";
 
 function replay(messages: ServerMessage[], start: GraphState = null): GraphState {
   return messages.reduce<GraphState>(reduce, start);
 }
 
-const snapshotMessage = fixtures.edits.messages[0]!;
+const editsMessages = messagesOf(fixtures.edits.messages);
+const snapshotMessage = editsMessages[0]!;
 
 describe("the graph reducer", () => {
   for (const [name, fixture] of Object.entries(fixtures)) {
     it(`turns the ${name} fixture's messages into its graph`, () => {
-      expect(replay(fixture.messages)).toStrictEqual(fixture.graph);
+      expect(replay(messagesOf(fixture.messages))).toStrictEqual(fixture.graph);
     });
   }
 
   it("ignores events before the first snapshot", () => {
-    expect(replay(fixtures.edits.messages.slice(1))).toBeNull();
+    expect(replay(editsMessages.slice(1))).toBeNull();
   });
 
   it("ignores events naming a node or route it does not know", () => {
@@ -49,7 +50,7 @@ describe("the graph reducer", () => {
   });
 
   it("replaces everything with a snapshot", () => {
-    const edited = replay(fixtures.edits.messages);
+    const edited = replay(editsMessages);
     const fresh = fixtures.snapshot.graph;
     const result = fresh as unknown as JsonValue;
     expect(replay([{ jsonrpc: "2.0", id: 9, result }], edited)).toStrictEqual(fresh);

@@ -45,3 +45,23 @@ export function placeNodes(graph: Graph, placed: ReadonlyMap<string, Position>):
   }
   return positions;
 }
+
+/**
+ * Where each node name was last placed, for the page's life. A node removed and added again under
+ * the same name keeps its place: that is how ear replaces a node whose ports change (node.removed,
+ * then node.added, from an edit at the source), and the canvas may draw the graph in between.
+ */
+export class Places {
+  private readonly known = new Map<string, Position>();
+
+  /**
+   * Every node's position in `graph`: where the canvas has it now (`current`, moves included),
+   * else where it was last placed, else a new layout.
+   */
+  place(graph: Graph, current: ReadonlyMap<string, Position>): Map<string, Position> {
+    for (const [name, position] of current) this.known.set(name, position);
+    const positions = placeNodes(graph, this.known);
+    for (const [name, position] of positions) this.known.set(name, position);
+    return positions;
+  }
+}
