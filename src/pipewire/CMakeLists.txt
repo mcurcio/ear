@@ -9,6 +9,7 @@ add_library(ear_pipewire STATIC
 	links.cpp
 	live_graph.cpp
 	main_loop_executor.cpp
+	outside_nodes.cpp
 	port_blocks.cpp
 	rtp_receivers.cpp
 	sound_cards.cpp)
@@ -38,10 +39,12 @@ if(BUILD_TESTS)
 		tests/handoff_test.cpp
 		tests/main_loop_executor_test.cpp
 		tests/port_block_test.cpp
+		tests/rtp_receiver_test.cpp
 		tests/sound_card_test.cpp)
 	# PipeWire directly: the tests drive the engine's loops and sync with its core themselves.
+	# ear_rtp_tone: the RTP receiver tests' sender and tone fit.
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main
-		PkgConfig::PIPEWIRE)
+		PkgConfig::PIPEWIRE ear_rtp_tone)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
 	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it).
 	target_compile_definitions(ear_pipewire_tests PRIVATE

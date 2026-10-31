@@ -94,7 +94,7 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	CHECK(std::sqrt(sumOfSquares / static_cast<double>(samples.size())) == Approx(0.577).margin(0.01));
 }
 
-TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
+TEST_CASE("The built-in node types are white, file, card and rtp", "[builtin]") {
 	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_builtin_" + std::to_string(::getpid()));
 	auto folder = ear::nodes::RecordingsFolder::open(path);
 	REQUIRE(folder.has_value());
@@ -106,5 +106,5 @@ TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
 		names.emplace_back(type->name());
 	}
 	std::ranges::sort(names);
-	CHECK(names == std::vector<std::string>{"card", "file", "white"});
+	CHECK(names == std::vector<std::string>{"card", "file", "rtp", "white"});
 }

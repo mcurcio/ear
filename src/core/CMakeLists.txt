@@ -12,6 +12,7 @@ add_library(ear_core STATIC
 	node_host.cpp
 	node_lifecycle.cpp
 	reconciler.cpp
+	rtp_receiver.cpp
 	sound_card.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
 # of everything that links it, and VERIFY_INTERFACE_HEADER_SETS adds a target that compiles
@@ -44,6 +45,7 @@ if(BUILD_TESTS)
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
 		tests/reconciler_test.cpp
+		tests/rtp_receiver_test.cpp
 		tests/sound_card_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets)

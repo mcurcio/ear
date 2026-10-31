@@ -483,4 +483,24 @@ multicast, a real network's loss and jitter.
 
 ## 13. Errata
 
-None yet.
+1. **(2026-10-31, tracer implementer) One sine fit over a whole second is the wrong check for a
+   received tone: R1b criteria 2-4 and R1c criterion 1.** Alone, each tone test passed. Under
+   `ctest --parallel 8` in the dev image (8 CPUs, no realtime scheduling) they failed in about 1
+   run in 4 (and in 11 of 12 runs with a sender woken every 1 ms). The amplitude in each tenth of
+   a second was 0.4999 throughout, with no gap, yet the 1 s fit read 0.489 with residual 0.15. The
+   receiver steers its resampler with a delay-locked loop driven by the packets' arrival
+   (section 4, finding d), so jitter in arrival moves its rate by parts in ten thousand, and over
+   1 s that moves a 1500 Hz sine's phase by about a radian. Proposed: check every tenth of the
+   same 1 s window (amplitude 0.5 ± 0.01, residual below 0.1, the other tone below 0.01). An
+   unresampled 816 Hz for 750 Hz, a swapped channel or silence still fails every tenth, so each
+   probe still bites. The windowed check belongs in `test/support/rtp_tone.hpp` beside
+   `fitSine`, so both test files share it; that header is frozen (section 7.4), so the
+   implementation repeats the loop in each test file until a re-cut adds it.
+2. **(2026-10-31, tracer implementer) The tests' sender pace touches the other engine tests.**
+   With the sender polling every 250 µs, the existing ramp tests ("A link carries a source
+   block's ramp…", "A block with inside ports…") and the control-port system test's noise RMS
+   failed under the same parallel ctest in 4 of 14 runs. Without the RTP tests the result was 0 of
+   12. CPU use is not the cause (0.2 s of CPU in a 2 s test). The candidate is the wake rate in
+   Docker's VM. The sender now wakes once per packet on an absolute schedule (`sleep_until`), but
+   the dev image's Docker stopped mounting `/Volumes` before that build ran, so this is NOT
+   VERIFIED.

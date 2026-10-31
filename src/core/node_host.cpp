@@ -1,22 +1,39 @@
 // The node framework (docs/design/batch2.md section 4.1, node_host.hpp, rule 1): runs each wanted
 // node's state machine and owns everything the node made. The port block is made when the node
 // is added and goes only when it is removed; the insides (the type's code, its handoffs, its
-// sound cards) start, restart and fail behind it. Insides are torn down in one order: the block
-// stops running their code, release(), sound cards, handoffs, insides, config. It reaches the
-// engine only through the factory interfaces node_host.hpp declares.
+// outside nodes: sound cards and RTP receivers) start, restart and fail behind it. Insides are
+// torn down in one order: the block stops running their code, release(), outside nodes,
+// handoffs, insides, config. Every kind of outside node shares one list, one naming function and
+// one ready and loss path (docs/design/rtp.md section 6, rule 1). It reaches the engine only
+// through the factory interfaces node_host.hpp declares.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
+#include <variant>
 
 namespace ear {
 namespace {
 
-/// The engine node name of a node's sound card: the one home of "<node>.playback" and
-/// "<node>.capture" (a node name never holds '.', so they cannot collide with a node).
-NodeName cardNodeName(const NodeName& node, CardDirection direction) {
-	return node + (direction == CardDirection::playback ? ".playback" : ".capture");
+/// One outside node the insides asked for, of any kind.
+using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
+
+template <typename... Kinds> struct Overloaded : Kinds... { using Kinds::operator()...; };
+
+/// The engine node name of a node's outside node: the one home of "<node>.playback",
+/// "<node>.capture" (sound cards) and "<node>.rtp" (the RTP receiver). A node name never holds
+/// '.', so they cannot collide with a node.
+NodeName outsideNodeName(const NodeName& node, const OutsideRequest& request) {
+	const char* suffix = std::visit(
+	    Overloaded{
+	        [](const SoundCardRequest& card) {
+		        return card.direction == CardDirection::playback ? ".playback" : ".capture";
+	        },
+	        [](const RtpReceiverRequest&) { return ".rtp"; },
+	    },
+	    request);
+	return node + suffix;
 }
 
 } // namespace
@@ -61,7 +78,7 @@ struct NodeHost::Impl {
 		void ready() override {
 			blockReady_ = true;
 			if (lifecycle_.portBlockReady()) host_.changed(*this);
-			makeCards();
+			makeOutsideNodes();
 		}
 		void lost(std::string detail) override {
 			if (lifecycle_.portBlockLost({FailureReason::Code::engineRefused, std::move(detail)}))
@@ -77,23 +94,27 @@ struct NodeHost::Impl {
 		}
 		void soundCard(const SoundCardRequest& request) override {
 			if (!granting_) throw std::logic_error("node " + name_ + ": a sound card was asked for outside start()");
-			cardRequests_.push_back(request);
+			outsideRequests_.emplace_back(request);
 		}
-		// Interface stage (docs/design/rtp.md section 7): the tracer slice R1 replaces this with
-		// the shared outside-node path.
-		void rtpReceiver(const RtpReceiverRequest&) override {
-			throw std::logic_error("node " + name_ + ": RTP receivers arrive with docs/design/rtp.md slice R1");
+		void rtpReceiver(const RtpReceiverRequest& request) override {
+			if (!granting_) throw std::logic_error("node " + name_ + ": an RTP receiver was asked for outside start()");
+			if (std::ranges::any_of(outsideRequests_, [](const OutsideRequest& asked) {
+				    return std::holds_alternative<RtpReceiverRequest>(asked);
+			    }))
+				throw std::logic_error("node " + name_ + ": a second RTP receiver was asked for in one start()");
+			outsideRequests_.emplace_back(request);
 		}
 
 	private:
-		/// One sound card the insides asked for, and its events.
-		class Card final : public OutsideNodeEvents {
+		/// One outside node the insides asked for (a sound card or an RTP receiver), and its
+		/// events.
+		class Outside final : public OutsideNodeEvents {
 		public:
-			Card(Node& node, std::size_t index) : node_(node), index_(index) {}
-			std::unique_ptr<OutsideNode> card;
+			Outside(Node& node, std::size_t index) : node_(node), index_(index) {}
+			std::unique_ptr<OutsideNode> node;
 			bool isReady = false;
-			void ready() override { node_.cardReady(index_); }
-			void lost(std::string detail) override { node_.cardLost(std::move(detail)); }
+			void ready() override { node_.outsideReady(index_); }
+			void lost(std::string detail) override { node_.outsideLost(std::move(detail)); }
 
 		private:
 			Node& node_;
@@ -108,9 +129,9 @@ struct NodeHost::Impl {
 			if (!insides) {
 				// No write happened (the block was never driven by this node's code), so the
 				// handoffs may go now; the consumers they were given went with the type's failed
-				// start. No card was made. The port block stays.
+				// start. No outside node was made. The port block stays.
 				handoffs_.clear();
-				cardRequests_.clear();
+				outsideRequests_.clear();
 				if (lifecycle_.insidesFailed(std::move(insides.error()))) host_.changed(*this);
 				return;
 			}
@@ -119,47 +140,59 @@ struct NodeHost::Impl {
 			code.prepare(host_.format);
 			prepared_ = true;
 			block_->drive(&code);
-			if (cardRequests_.empty()) {
+			if (outsideRequests_.empty()) {
 				if (lifecycle_.insidesReady()) host_.changed(*this);
 				return;
 			}
-			makeCards();
+			makeOutsideNodes();
 		}
 
-		/// The cards the insides asked for, once the block is ready (its ports exist), the
-		/// insides run and no card is made yet.
-		void makeCards() {
+		/// The outside nodes the insides asked for, in request order, once the block is ready
+		/// (its ports exist), the insides run and none is made yet.
+		void makeOutsideNodes() {
 			if (!blockReady_ || !insides_ || tearingDown_ || stopping_ || lifecycle_.blockLost() ||
-			    cardRequests_.empty() || !cards_.empty())
+			    outsideRequests_.empty() || !outside_.empty())
 				return;
-			cards_.reserve(cardRequests_.size());
-			for (std::size_t i = 0; i < cardRequests_.size(); ++i) {
-				auto& card = *cards_.emplace_back(std::make_unique<Card>(*this, i));
-				const auto& request = cardRequests_[i];
-				card.card = host_.cards.make(cardNodeName(name_, request.direction), name_, request, host_.format, card);
+			outside_.reserve(outsideRequests_.size());
+			for (std::size_t i = 0; i < outsideRequests_.size(); ++i) {
+				auto& outside = *outside_.emplace_back(std::make_unique<Outside>(*this, i));
+				const OutsideRequest& request = outsideRequests_[i];
+				const NodeName engineNode = outsideNodeName(name_, request);
+				outside.node = std::visit(
+				    Overloaded{
+				        [&](const SoundCardRequest& card) {
+					        return host_.cards.make(engineNode, name_, card, host_.format, outside);
+				        },
+				        [&](const RtpReceiverRequest& receiver) {
+					        return host_.receivers.make(engineNode, name_, receiver, outside);
+				        },
+				    },
+				    request);
 			}
 		}
 
-		void cardReady(std::size_t index) {
-			cards_.at(index)->isReady = true;
-			if (std::all_of(cards_.begin(), cards_.end(), [](const auto& card) { return card->isReady; }) &&
+		/// The insides are ready once every outside node is.
+		void outsideReady(std::size_t index) {
+			outside_.at(index)->isReady = true;
+			if (std::ranges::all_of(outside_, [](const auto& outside) { return outside->isReady; }) &&
 			    lifecycle_.insidesReady())
 				host_.changed(*this);
 		}
 
-		void cardLost(std::string detail) {
+		/// Any outside node lost, before or after the node ran, fails it.
+		void outsideLost(std::string detail) {
 			if (lifecycle_.insidesFailed({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
 		}
 
-		/// The block stops running the code; release(); cards; handoffs closed. The rest goes
-		/// in finishTeardown once every handoff has closed.
+		/// The block stops running the code; release(); outside nodes; handoffs closed. The rest
+		/// goes in finishTeardown once every handoff has closed.
 		void tearDownInsides() {
 			tearingDown_ = true;
 			if (block_) block_->drive(nullptr);
 			if (prepared_) insides_->audioCode().release();
 			prepared_ = false;
-			cards_.clear();
-			cardRequests_.clear();
+			outside_.clear();
+			outsideRequests_.clear();
 			closed_ = 0;
 			closing_ = true;
 			for (auto& handoff : handoffs_)
@@ -196,8 +229,8 @@ struct NodeHost::Impl {
 		std::shared_ptr<const NodeConfig> config_;
 		std::unique_ptr<NodeInsides> insides_;
 		std::vector<std::unique_ptr<Handoff>> handoffs_;
-		std::vector<SoundCardRequest> cardRequests_;
-		std::vector<std::unique_ptr<Card>> cards_;
+		std::vector<OutsideRequest> outsideRequests_;
+		std::vector<std::unique_ptr<Outside>> outside_;
 		std::unique_ptr<PortBlock> block_;
 		bool blockReady_ = false;
 		bool granting_ = false;
