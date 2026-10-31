@@ -10,6 +10,7 @@ std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<co
 	types.push_back(makeWhiteNodeType());
 	types.push_back(makeFileNodeType(std::move(recordings)));
 	types.push_back(makeCardNodeType());
+	types.push_back(makeRtpNodeType());
 	return types;
 }
 
