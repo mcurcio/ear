@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -137,3 +137,51 @@ machine:
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
+
+## 6. FPP's audio over RTP
+
+The owner runs FPP (Falcon Player) in the same cluster and wants its audio as a source; what FPP
+sends (format, rate, channels, address) is not known yet (`docs/design/rtp.md` section 1), so
+everything here is **[check]**. An `rtp` node (`AGENTS.md`, graph file) receives one stream:
+
+```json
+{ "name": "fpp", "type": "rtp",
+  "settings": { "address": "0.0.0.0", "port": 5004, "format": "L16", "channels": 2 } }
+```
+
+`address` is `0.0.0.0` (any sender, unicast) or an IPv4 multicast group; a unicast address is
+refused (`pipewire-engine` skill, "RTP receivers"). `rate` defaults to the graph frequency and a
+sender at another rate is resampled; about 100 ms of latency is accepted for this source (the
+owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
+
+- **Unicast (the simple way).** Use `"address": "0.0.0.0"`, declare the port in the pod
+  (`containerPort: 5004, protocol: UDP`) and put a Service in front of it with a UDP port whose
+  `targetPort` is the node's `port`. FPP sends to the Service's address. The Service may rewrite
+  the sender's address and port on the way (kube-proxy NAT); `0.0.0.0` hears any sender, so that
+  does not matter. The image's `EXPOSE` names only 7777; that is a label, not a limit. A sender
+  outside the cluster needs a NodePort or LoadBalancer Service, still UDP.
+- **Multicast.** A Service carries unicast only, and pod networks usually do not carry multicast
+  between pods. A multicast `address` needs the pod on the node's own network
+  (`hostNetwork: true`) with FPP on the same network segment (PipeWire's sender uses TTL 1 by
+  default, `net.ttl`). Baseline Pod Security forbids `hostNetwork`, so the ValidatingAdmissionPolicy
+  of section 4 must allow it too, and port 7777 and the RTP port are then the node's own ports.
+  Not tested anywhere yet, not even in CI.
+- **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
+  already holds the UDP port, the node stays `starting` with silent outputs, and only PipeWire's
+  log says why (`bind() failed: Address already in use`). Pick another port.
+- **The sender: FPP's own PipeWire, `libpipewire-module-rtp-sink`** (if FPP's audio runs through
+  PipeWire **[check]**). Its arguments must match the node: `destination.ip` = the Service's
+  address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its
+  default is a random port from 46000), `audio.format` = `S16BE` for `L16` (its default) or
+  `S24BE` for `L24`, `audio.channels` (default 2) and `audio.rate` (default 48000) as the node's
+  `channels` and `rate`. Leave `net.mtu` at 1280 or below: ear's receiver reads at most 1280
+  bytes a packet and garbles longer ones; the sender sizes its packets to its own `net.mtu`. Its
+  SSRC changes when it restarts; ear hears it again. Prefer an IP literal for `destination.ip`
+  (a name is looked up while the sender's loop waits).
+- **No login.** Anyone who can reach the UDP port can play audio into the graph, as anyone who
+  reaches port 7777 can edit it.
+- **Checks.** The rtp node is `running` and its routes `linked`; `levels.subscribe` shows
+  non-zero peaks on `fpp:channel_1` while FPP plays (with no packets the node is still `running`,
+  with peak 0: ear has no "receiving" status yet). Short gaps of silence come from packets lost
+  or out of order: the receiver drops its buffer on any sequence break and refills it
+  (`pipewire-engine` skill).

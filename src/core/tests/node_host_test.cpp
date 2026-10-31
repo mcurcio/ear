@@ -682,6 +682,37 @@ TEST_CASE("A receiver lost after the node ran fails it; an update makes a new re
 	f.stopAll();
 }
 
+TEST_CASE("An outside node lost before the node ran fails it with engine-refused and the outside "
+          "node's detail", "[node_host][rtp]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	config->cards = {motuOut};
+	config->receivers = {fppStream};
+	f.add("mix", config);
+	f.blocks.events.at(0)->ready();
+	REQUIRE(f.cards.events.size() == 1);
+	REQUIRE(f.receivers.events.size() == 1);
+	f.log.clear();
+
+	SECTION("the receiver, with the card ready") {
+		f.cards.events[0]->ready();
+		f.receivers.events[0]->lost("cannot load PipeWire's rtp-source module: No such file or directory");
+		CHECK(f.log == Log{"node mix failed engine-refused: cannot load PipeWire's rtp-source module: "
+		                   "No such file or directory"});
+	}
+	SECTION("the card, with the receiver ready") {
+		f.receivers.events[0]->ready();
+		f.cards.events[0]->lost("the card failed: busy");
+		CHECK(f.log == Log{"node mix failed engine-refused: the card failed: busy"});
+	}
+	SECTION("the receiver, nothing ready") {
+		f.receivers.events[0]->lost("the engine removed the RTP receiver's module");
+		CHECK(f.log == Log{"node mix failed engine-refused: the engine removed the RTP receiver's module"});
+	}
+	CHECK(f.host.status().at(0).state == NodeState::failed);
+	f.stopAll();
+}
+
 TEST_CASE("A node asks for an RTP receiver only inside start, and at most once per start",
           "[node_host][rtp]") {
 	Fixture f;

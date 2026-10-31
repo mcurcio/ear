@@ -24,6 +24,7 @@ namespace ear::pipewire {
 namespace {
 
 constexpr char moduleName[] = "libpipewire-module-rtp-source";
+constexpr char kind[] = "RTP receiver";   // names it in failure details
 
 /// The receiver's port for channel `channel` (from 0): a node.network stream's output ports are
 /// "receive_<position>" (impl-port.c), and its positions are AUX0...
@@ -33,9 +34,6 @@ std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_st
 /// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
 /// user text reaches PipeWire's parsers.
 std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request) {
-  std::string positions = "[";
-  for (std::size_t i = 0; i < request.blockPorts.size(); ++i) positions += " AUX" + std::to_string(i);
-  positions += " ]";
   const std::string name = "\"" + engineNode + "\"";
   return "{ remote.name = \"internal\"" +
          std::string(" source.ip = \"") + request.address.text() + "\"" +
@@ -46,7 +44,7 @@ std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest
          " audio.format = \"" + (request.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
          " audio.rate = " + std::to_string(request.rate) +
          " audio.channels = " + std::to_string(request.blockPorts.size()) +
-         " audio.position = " + positions +
+         " audio.position = " + auxPositions(request.blockPorts.size()) +
          " node.name = " + name + " node.description = " + name + " media.name = " + name +
          " stream.props = { node.always-process = true"
          " adapter.auto-port-config = { mode = dsp monitor = false control = false position = preserve } } }";
@@ -72,8 +70,9 @@ public:
     pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
     pw_core_add_listener(engine_.core(), &coreHook_, &coreEvents(), this);
     coreListening_ = true;
+    // Without the sync's done there is no telling stale nodes from this receiver's: a failure.
     syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
-    if (syncSeq_ < 0) load();   // nothing to wait for
+    if (syncSeq_ < 0) events_.failed(std::string("cannot sync with the engine: ") + spa_strerror(syncSeq_));
   }
 
   ~RtpReceiverBody() override {
@@ -191,13 +190,7 @@ private:
   // 3: RUNNING lets the channels be linked, by the node's global id; ERROR fails it.
   static void onInfo(void* data, const pw_node_info* info) {
     auto* self = static_cast<RtpReceiverBody*>(data);
-    if ((info->change_mask & PW_NODE_CHANGE_MASK_STATE) == 0) return;
-    if (info->state == PW_NODE_STATE_ERROR) {
-      self->events_.failed(std::string("the RTP receiver failed: ") +
-                           (info->error != nullptr ? info->error : "engine error"));
-    } else if (info->state == PW_NODE_STATE_RUNNING) {
-      self->events_.running(self->nodeId_);
-    }
+    tellNodeState(*info, kind, self->nodeId_, self->events_);
   }
 
   static void onModuleDestroy(void* data) {
@@ -239,7 +232,7 @@ std::unique_ptr<OutsideNode> RtpReceivers::make(const NodeName& engineNode, cons
   }
   return joinOutsideNode(
       engine_,
-      OutsideJoin{.kind = "RTP receiver",
+      OutsideJoin{.kind = kind,
                   .blockNode = blockNode,
                   .flow = ChannelFlow::nodeToBlock,
                   .nodePorts = std::move(receiverPorts),
