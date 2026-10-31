@@ -469,6 +469,8 @@ GraphFileModel::GraphFileModel(GraphFileModel&& other) noexcept = default;
 GraphFileModel& GraphFileModel::operator=(GraphFileModel&& other) noexcept = default;
 GraphFileModel::~GraphFileModel() = default;
 
+GraphFileModel GraphFileModel::fresh(const DiskText& disk) const { return load(disk, *impl_->catalogue); }
+
 const std::string& GraphFileModel::text() const noexcept { return impl_->text; }
 
 const GraphFileRead& GraphFileModel::read() const noexcept { return impl_->read; }

@@ -53,6 +53,8 @@ public:
   GraphFileModel(GraphFileModel&& other) noexcept;
   GraphFileModel& operator=(GraphFileModel&& other) noexcept;
   ~GraphFileModel();
+  /// load(disk) against this model's catalogue (the keeper's disk loads and graphFile.set's text). Pure.
+  GraphFileModel fresh(const DiskText& disk) const;
   const std::string& text() const noexcept;      // "" when missing or unreadable
   const GraphFileRead& read() const noexcept;    // worked out at load
   // The graph edits, made at the source (docs/design/knobly-config.md, "File format"; S3's edit rules).
