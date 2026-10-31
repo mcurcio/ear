@@ -22,8 +22,8 @@
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
+#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/builtin.hpp"
-#include "ear/nodes/recordings.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
@@ -90,9 +90,10 @@ int main(int argc, char** argv) {
 	}
 	const ear::AudioFormat format{spec->graphFrequency, spec->blockSize};
 
-	auto recordings = ear::nodes::RecordingsFolder::open(arguments["recordings-dir"].as<std::string>());
+	auto recordings = ear::folder::ConfinedFolder::open(arguments["recordings-dir"].as<std::string>());
 	if (!recordings) {
-		std::cerr << "ear: " << recordings.error() << '\n';
+		// The folder names itself "folder <path>"; the role is main's to say.
+		std::cerr << "ear: recordings " << recordings.error().detail << '\n';
 		return 1;
 	}
 
@@ -124,7 +125,7 @@ int main(int argc, char** argv) {
 	ear::pipewire::LiveGraph live(*engine);
 
 	const ear::NodeCatalogue catalogue(
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*recordings))));
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings))));
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ear::NodeHost nodes(format, blocks, handoffs, cards);

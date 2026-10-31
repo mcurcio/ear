@@ -1,9 +1,11 @@
 # EAR's packages, one directory each with its own CMakeLists.txt (docs/design/batch2.md
 # section 1): ear_core, ear_nodes, ear_pipewire, ear_control and ear_server, each a library the
 # ear binary links (its composition root, main.cpp), and ear_config, the knobly graph file
-# (docs/design/knobly-config.md), which ear does not link yet. Added in dependency order: ear_core
-# first, the packages that use it after.
+# (docs/design/knobly-config.md), which ear does not link yet; ear_folder, the confined folder the
+# recordings and the graph file live beneath, depends on none of them. Added in dependency order:
+# ear_core and ear_folder first, the packages that use them after.
 add_subdirectory(core)
+add_subdirectory(folder)
 add_subdirectory(nodes)
 add_subdirectory(pipewire)
 add_subdirectory(control)
