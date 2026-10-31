@@ -138,7 +138,7 @@ struct TestHandoffs final : HandoffFactory {
 	}
 };
 
-struct TestCard final : SoundCard {
+struct TestCard final : OutsideNode {
 	Log& log;
 	NodeName name;
 	TestCard(Log& l, NodeName n) : log(l), name(std::move(n)) {}
@@ -148,17 +148,27 @@ struct TestCard final : SoundCard {
 /// Cards whose readiness and loss the test tells, as a real card's PCM and links report later.
 struct TestCards final : SoundCardFactory {
 	Log& log;
-	std::vector<SoundCardEvents*> events;
+	std::vector<OutsideNodeEvents*> events;
 	explicit TestCards(Log& l) : log(l) {}
-	std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                const SoundCardRequest& request, const AudioFormat& format,
-	                                SoundCardEvents& e) override {
+	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+	                                  const SoundCardRequest& request, const AudioFormat& format,
+	                                  OutsideNodeEvents& e) override {
 		std::string ports;
 		for (const auto& port : request.blockPorts) ports += (ports.empty() ? "" : ",") + port;
 		log.push_back("card " + engineNode + " of " + blockNode + " " + request.card.text() + " " + ports + " at " +
 		              std::to_string(format.rate));
 		events.push_back(&e);
 		return std::make_unique<TestCard>(log, engineNode);
+	}
+};
+
+/// Interface stage (docs/design/rtp.md section 7): no test asks for a receiver yet; slice R1
+/// replaces this with a fake that records and reports like TestCards.
+struct NoReceivers final : RtpReceiverFactory {
+	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const RtpReceiverRequest&,
+	                                  OutsideNodeEvents&) override {
+		FAIL("an RTP receiver was made");
+		return nullptr;
 	}
 };
 
@@ -180,10 +190,11 @@ struct Fixture {
 	TestBlocks blocks{log};
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
+	NoReceivers receivers;
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};   // only for close(), the proof stopAll takes
-	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards};
+	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards, receivers};
 	int allGone = 0;   // how often stopAll's callback has run
 	Fixture() { host.subscribe(listener); }
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {

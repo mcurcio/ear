@@ -29,6 +29,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/reconciler.hpp
+	include/ear/core/rtp_receiver.hpp
 	include/ear/core/sound_card.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)

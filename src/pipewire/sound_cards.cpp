@@ -40,11 +40,11 @@ std::string channelPort(CardDirection direction, std::size_t channel) {
          std::to_string(channel);
 }
 
-class AlsaSoundCard final : public SoundCard, public LinkEvents {
+class AlsaSoundCard final : public OutsideNode, public LinkEvents {
 public:
   AlsaSoundCard(Engine& engine, const NodeName& engineNode, const NodeName& blockNode,
                 const SoundCardRequest& request, const AudioFormat& format,
-                SoundCardEvents& events)
+                OutsideNodeEvents& events)
       : engine_(engine), engineNode_(engineNode), blockNode_(blockNode),
         direction_(request.direction), blockPorts_(request.blockPorts), rate_(format.rate),
         events_(events) {
@@ -267,7 +267,7 @@ private:
   CardDirection direction_;
   std::vector<PortName> blockPorts_;
   std::uint32_t rate_;
-  SoundCardEvents& events_;
+  OutsideNodeEvents& events_;
   State state_ = State::opening;
   std::string detail_;
   pw_proxy* node_ = nullptr;
@@ -287,11 +287,11 @@ private:
 
 AlsaSoundCards::AlsaSoundCards(Engine& engine) : engine_(engine) {}
 
-std::unique_ptr<SoundCard> AlsaSoundCards::make(const NodeName& engineNode,
+std::unique_ptr<OutsideNode> AlsaSoundCards::make(const NodeName& engineNode,
                                                 const NodeName& blockNode,
                                                 const SoundCardRequest& request,
                                                 const AudioFormat& format,
-                                                SoundCardEvents& events) {
+                                                OutsideNodeEvents& events) {
   return std::make_unique<AlsaSoundCard>(engine_, engineNode, blockNode, request, format,
                                          events);
 }

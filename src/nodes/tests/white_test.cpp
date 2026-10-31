@@ -29,6 +29,9 @@ public:
 	void soundCard(const ear::SoundCardRequest&) override {
 		throw std::logic_error("white asked for a sound card");
 	}
+	void rtpReceiver(const ear::RtpReceiverRequest&) override {
+		throw std::logic_error("white asked for an RTP receiver");
+	}
 
 private:
 	ear::AudioFormat format_;

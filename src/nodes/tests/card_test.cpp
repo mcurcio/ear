@@ -22,6 +22,9 @@ public:
 		throw std::logic_error("card requested a handoff");
 	}
 	void soundCard(const ear::SoundCardRequest& request) override { requests.push_back(request); }
+	void rtpReceiver(const ear::RtpReceiverRequest&) override {
+		throw std::logic_error("card asked for an RTP receiver");
+	}
 
 	std::vector<ear::SoundCardRequest> requests;
 };

@@ -335,7 +335,7 @@ private:
 };
 
 /// What a card tells, with what the registry showed at the moment it was told.
-class CardEvents final : public SoundCardEvents {
+class CardEvents final : public OutsideNodeEvents {
 public:
   CardEvents(Waiter& waiter, Registry& registry, NodeName engineNode)
       : waiter_(waiter), registry_(registry), engineNode_(std::move(engineNode)) {}
@@ -385,7 +385,7 @@ struct Graph {
     otherBlock->drive(nullptr);
   }
 
-  std::unique_ptr<SoundCard> makeCard(const CardId& id, CardEvents& events) {
+  std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
     events.insideMake = true;
     auto card = cards.make("card.playback", "card",
                            SoundCardRequest{id, CardDirection::playback, {"to_card_1", "to_card_2"}},

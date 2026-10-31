@@ -1504,6 +1504,20 @@ file capability (section 7).
 - **Review fix, 2026-10-30: no test drives the built editor in a browser.** A headless-browser
   smoke (load the page from `out/ear`, see the nodes, drag a wire, see it linked) needs a new
   test dependency (Playwright or similar, and a browser in the dev image). Not added here.
+- **rtp node, 2026-10-30: section 4's sound-card headers change for a second kind of outside
+  node** (`docs/design/rtp.md`, the `rtp` node: an RTP stream received by PipeWire's rtp-source
+  module, joined to its port block as a card is). In `node_host.hpp`, `SoundCard` is now
+  `OutsideNode` and `SoundCardEvents` is now `OutsideNodeEvents` (same `ready` and `lost`; `lost`
+  may come before or after `ready`, as the card's already did); `SoundCardFactory::make` returns
+  and takes those; a new `RtpReceiverFactory`; `NodeHost` takes it as a fifth parameter. In
+  `node_type.hpp`, `NodeGrant` gains `rtpReceiver(const RtpReceiverRequest&)`, and new
+  `rtp_receiver.hpp` holds the request and `RtpAddress`. `sound_cards.hpp`'s
+  `AlsaSoundCards::make` takes and returns the renamed types; `builtin.hpp` gains
+  `makeRtpNodeType`. The card's behaviour is unchanged; from rtp.md's slice R1b its lifecycle
+  (section 5's state machine) lives in one place shared with the receiver
+  (`src/pipewire/outside_nodes.hpp`), and its links name the card's engine node by global id
+  instead of by name (rtp.md section 6, rule 4). Its tests stay as they are apart from the
+  renamed types.
 
 ## 12. Design review, 2026-10-30: findings and changes
 

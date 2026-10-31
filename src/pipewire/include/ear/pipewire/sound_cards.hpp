@@ -1,5 +1,6 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4; returns the outside node of
+// docs/design/rtp.md section 7.1, batch2.md section 11's erratum). Change it only through an
+// erratum and a re-cut, never a local edit.
 #pragma once
 #include <memory>
 #include "ear/core/node_host.hpp"
@@ -23,9 +24,9 @@ namespace ear::pipewire {
 class AlsaSoundCards final : public SoundCardFactory {
 public:
   explicit AlsaSoundCards(Engine& engine);   // engine outlives it
-  std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
+  std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
       const SoundCardRequest& request, const AudioFormat& format,
-      SoundCardEvents& events) override;
+      OutsideNodeEvents& events) override;
 private:
   Engine& engine_;
 };

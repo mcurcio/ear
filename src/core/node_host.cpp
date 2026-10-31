@@ -79,13 +79,18 @@ struct NodeHost::Impl {
 			if (!granting_) throw std::logic_error("node " + name_ + ": a sound card was asked for outside start()");
 			cardRequests_.push_back(request);
 		}
+		// Interface stage (docs/design/rtp.md section 7): the tracer slice R1 replaces this with
+		// the shared outside-node path.
+		void rtpReceiver(const RtpReceiverRequest&) override {
+			throw std::logic_error("node " + name_ + ": RTP receivers arrive with docs/design/rtp.md slice R1");
+		}
 
 	private:
 		/// One sound card the insides asked for, and its events.
-		class Card final : public SoundCardEvents {
+		class Card final : public OutsideNodeEvents {
 		public:
 			Card(Node& node, std::size_t index) : node_(node), index_(index) {}
-			std::unique_ptr<SoundCard> card;
+			std::unique_ptr<OutsideNode> card;
 			bool isReady = false;
 			void ready() override { node_.cardReady(index_); }
 			void lost(std::string detail) override { node_.cardLost(std::move(detail)); }
@@ -208,6 +213,7 @@ struct NodeHost::Impl {
 	PortBlockFactory& blocks;
 	HandoffFactory& handoffs;
 	SoundCardFactory& cards;
+	RtpReceiverFactory& receivers;
 	std::vector<NodeStatusListener*> listeners;
 	std::vector<std::unique_ptr<Node>> nodes;   // in arrival order; gone ones are pruned on add
 	bool stopRequested = false;
@@ -244,8 +250,8 @@ struct NodeHost::Impl {
 };
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-                   SoundCardFactory& cards)
-	: impl_(new Impl{format, blocks, handoffs, cards, {}, {}, false, nullptr}) {}
+                   SoundCardFactory& cards, RtpReceiverFactory& receivers)
+	: impl_(new Impl{format, blocks, handoffs, cards, receivers, {}, {}, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
 
