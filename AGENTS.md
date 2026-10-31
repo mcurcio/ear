@@ -14,8 +14,8 @@ hand edit to `ear.conf` is applied and shown in the browser. Its control port (7
 graph editor, with a text pane for `ear.conf`, and a JSON-RPC interface that reads and edits
 the graph and the file and streams every change and per-port audio levels. The built-in node
 types are `white` (white noise), `file` (records a stereo WAV file), `card` (a sound card
-through ALSA) and `rtp` (an RTP audio stream received from the network). It ships as a
-container image published from GitHub Actions. The system design is
+through ALSA) and `rtp` (one RTP audio stream received from the network, such as FPP's). It
+ships as a container image published from GitHub Actions. The system design is
 `docs/design/pipewire-graph.md`; milestone 1's module design is `docs/design/m1-white-to-file.md`,
 batch 2's (control port, graph editor, sound card, image) is `docs/design/batch2.md`, the `rtp`
 node's is `docs/design/rtp.md`, and the graph file's is `docs/design/knobly-config.md` (the
@@ -51,9 +51,11 @@ scripts/dev.sh bash               # a shell in the image
   only compiled library, and Beast and Asio (header-only) serve the control port; configure fails
   naming Beast if it is not there. Its source tree is kept in `.cache/deps/boost-src/` (about 800 MB,
   gitignored), which `make clean` keeps; `cmake/KeptFetchContent.cmake` says when a kept tree is
-  reused and when it is fetched again. A worktree points `CMAKE_ARGS` at the main checkout's tree
-  (as above) instead of fetching its own, when the main checkout has one. Bump Boost by changing
-  `boost_url` and `boost_sha256` in `CMakeLists.txt` together.
+  reused and when it is fetched again. The tree lives in each checkout's own `.cache/deps/`: a
+  worktree with no `CMAKE_ARGS` fetches and keeps its own copy. To avoid that, point `CMAKE_ARGS`
+  at a tree another checkout already keeps (as above); the main checkout may have none, as it
+  may be deleted to save space. Bump Boost by changing `boost_url` and `boost_sha256` in
+  `CMakeLists.txt` together.
 - knobly (the graph file's language) comes from the dev image's `/opt/knobly`: its C++ release
   tree (CMake project and headers, its generated ones included), which the Dockerfile's
   throwaway `knobly` stage builds from a pinned commit with knobly's own release script (it needs
@@ -235,12 +237,20 @@ route noise:MONO desk:playback_1;
   the graph frequency. The card drives the graph's clock only while it works; a card that cannot
   open or is lost makes the node `failed engine-refused: <detail>`, its routes stay, and the rest
   of the graph keeps running on the dummy driver. `node.update` retries it.
-- `rtp` receives one RTP stream (`docs/design/rtp.md` section 3): `address` (text: `0.0.0.0` or
-  an IPv4 multicast group), `port` (1 to 65535), `format` (text: `L16` or `L24`), `channels` (1
-  to 64), and optional `rate` (Hz, default the graph frequency) and `latencyMs` (default 100).
-  Outputs `channel_1`..`channel_N`. It follows the graph's clock and never drives it; with no
-  sender it runs and is silent. For example `node rtp fpp { address "0.0.0.0"; port 5004;
-  format "L24"; channels 2; }`.
+- `rtp` receives one RTP stream (`docs/design/rtp.md`), for example `node rtp fpp { address
+  "0.0.0.0"; port 5004; format "L24"; channels 2; rate 48000; latencyMs 100; }`. `address`
+  (text), `port` (1 to 65535), `format` (text: `L16` or `L24`, big-endian PCM) and `channels` (1
+  to 64) are required; `rate` (8000 to 192000 Hz) defaults to the graph frequency, and a sender
+  at another rate is resampled to it; `latencyMs` (1 to 1000) is the receive buffer, default
+  100. Outputs `channel_1`..`channel_N`, no inputs. `address` is `0.0.0.0` (any sender) or an
+  IPv4 multicast group (224.0.0.0 to 239.255.255.255) as a plain dotted quad. A unicast address
+  is refused, because PipeWire would hear only that sender, and only when it sends from the same
+  port it sends to; a host name is refused, because looking it up blocks the main loop. The
+  stream follows the graph's clock and never drives it. With no packets the node is `running`
+  and silent (its meters show it); a sender that restarts is heard again. A port another program
+  holds leaves the node `starting` for good with silent outputs: PipeWire only logs the failed
+  bind. A packet lost or out of order resets the receiver, so about `latencyMs` of silence
+  follows. Tested only with a sender on 127.0.0.1; multicast is not tested yet.
 
 `ear.json` and its parser are gone; there is no compatibility with it.
 
@@ -251,10 +261,10 @@ Seven libraries, the binary and the editor, each C++ package in `src/<package>/`
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `NodeConfig`, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its insides start, restart and fail behind it), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
+| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `NodeConfig`, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`, `RtpAddress`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its insides start, restart and fail behind it, with the outside nodes they ask for), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: one folder held open from boot, every path resolved beneath it by the kernel (`openat2`): the recordings folder's files made, and the graph file read and replaced only if unchanged (`renameat2`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink; anything else of EAR's |
 | `ear_nodes` (`src/nodes`) | The built-in types `white`, `file`, `card` and `rtp`, each declaring its settings' kinds | PipeWire and ALSA (`file` uses libsndfile; `card` and `rtp` ask the framework for their outside nodes) |
-| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement core's interfaces: port blocks (`pw_filter`, with level metering), links (`link-factory`), live ports (the registry), handoffs (`pw_thread_loop`), sound cards (ALSA adapter nodes with their own links), RTP receivers (`module-rtp-source`), the main-loop executor, the scheduling report | Policy |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement core's interfaces: port blocks (`pw_filter`, with level metering), links (`link-factory`), live ports (the registry), handoffs (`pw_thread_loop`), outside nodes (one lifecycle, `joinOutsideNode`, with two kinds: sound cards as ALSA adapter nodes and RTP receivers as PipeWire's rtp-source module), the main-loop executor, the scheduling report | Policy |
 | `ear_control` (`src/control`) | Status lines; the JSON-RPC protocol (envelope, the one decoder of node and route JSON, commands, events, sessions and subscriptions); the graph file's plain types on the wire (`GraphFile`, `Diagnostic`, the file's refusals); the two interfaces at its edge, `GraphRequests` (where every request goes) and `GraphFileListener` (who hears each file change); `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly; holding the graph on the control thread |
 | `ear_config` (`src/config`) | The graph file keeper (`GraphFileKeeper`): `ear.conf`'s model through knobly (read, diagnostics, edits at the source), the keeper's one background thread (the working copy, the disk base, the folder watch, writes) and its main-loop side (plan and commit through the desired graph, the running version, the last refusal, pending restart); the only package that sees knobly, privately | Judging a graph; letting a knobly type leave its thread; timers |
 | `ear_server` (`src/server`) | The control thread and port 7777 (Boost.Beast): the editor's files, `/rpc`, Host and Origin checks, per-client queues, the level bell | Graph state; PipeWire |
@@ -314,7 +324,7 @@ How audio moves:
    float mono port per declared port. Then its type's `NodeConfig::start` makes the type's
    insides, `AudioCode::prepare` runs and the block is driven with that code; new settings
    restart the insides behind the same block. The node is `running` once the block is ready
-   (its first STREAMING state) and the insides are ready, every sound card they asked for
+   (its first STREAMING state) and the insides are ready, every outside node they asked for
    included (`NodeLifecycle`). Every block processes whether routed or not; an unlinked input
    reads zeros.
 3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
@@ -323,14 +333,20 @@ How audio moves:
    direction, port id). When both ends of a wanted route are live, the `Reconciler` asks `Links`
    for a link by port ids; the route is `linked` once the link is active, and `pending` again
    if an end goes, relinked when it comes back.
-5. A `card` node's port block has inside ports no route can name. Once the block is ready the
-   framework asks `AlsaSoundCards` for one ALSA adapter node per direction; it runs alone until
-   its PCM runs, then links its channels to the inside ports, and through the blocks' graph
-   group (`node.group = ear.graph`) it drives every block. A card that fails tears down its node
-   and links before it is reported lost, so the dummy driver takes over at once. The
-   `pipewire-engine` skill has the details and traps. An `rtp` node's block is joined the same
-   way to an RTP receiver (`RtpReceivers`, PipeWire's `module-rtp-source` loaded in ear's
-   engine), which follows the graph's clock and never drives it (`docs/design/rtp.md`).
+5. Outside nodes. A `card` or `rtp` node's port block has inside ports no route can name. Once
+   the block is ready the framework makes the outside nodes its insides asked for, named
+   `<node>.playback`, `<node>.capture` or `<node>.rtp`. Every kind shares one lifecycle
+   (`NodeHost` in ear_core, `joinOutsideNode` in `src/pipewire/outside_nodes.cpp`): the outside
+   node runs alone until its body says it runs, then one link per channel joins it, by its
+   global id, to the block's inside ports; it is ready once every link is active, and on any
+   failure its links and node are torn down before it is reported lost, so the node is `failed
+   engine-refused: <detail>`, its block and routes stay. Sound cards (`AlsaSoundCards`): one ALSA
+   adapter node per direction, running once its PCM runs; through the blocks' graph group
+   (`node.group = ear.graph`) a linked card drives every block, and a lost one hands the clock
+   back to the dummy driver at once. RTP receivers (`RtpReceivers`): PipeWire's
+   `libpipewire-module-rtp-source` loaded into the engine, running once its socket is bound; it
+   follows the graph's clock and resamples the sender to it. The `pipewire-engine` skill has the
+   details and traps.
 6. Levels: each block meters its public ports every cycle and publishes a window (1/30 s of the
    graph clock, on the same clock positions for every block) into a lock-free mailbox, then
    rings an eventfd; the control thread reads every block's latest window and sends it to levels
@@ -342,7 +358,7 @@ How audio moves:
 8. Stopping: `DesiredGraph::close()` refuses every later edit, the keeper is told to stop
    (edits still queued get `stopping`, reads are still answered), then `NodeHost::stopAll` takes
    each node through `stopping` and tears it down in one order: port block destroyed (no
-   `process` after that), `release`, sound cards destroyed, handoffs drained and finished,
+   `process` after that), `release`, outside nodes destroyed, handoffs drained and finished,
    insides destroyed; then `stopped`. A restart (`node.update`) runs the same teardown but keeps
    the block, only silencing it (`drive(nullptr)`) first. After the last node, the control port
    closes every client (1001), the control thread stops and EAR's main loop quits. Last, the
@@ -353,7 +369,9 @@ Not built yet: serving PipeWire's socket, the program supervisor and the `airpla
 Assistant's Sendspin (next batch), a login on port 7777, card retry and hotplug, arm64 images;
 for the graph file: `@include` (more files than `ear.conf`), a separate writer thread (so an
 edit never waits behind a write), undo, and changing the graph frequency or block size while
-ear runs.
+ear runs. For `rtp` (`docs/design/rtp.md` section 9): a failure for a port that cannot be
+bound, a "receiving" status, multicast tested, a larger datagram size (`net.mtu`) for many
+channels, SAP discovery, IPv6, an RTP sender.
 
 ## Tests
 
@@ -364,12 +382,12 @@ out of test names: CMake splits a name at it.
 
 | Executable | What it proves |
 |---|---|
-| `ear_core_tests` | The desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards, a lost block); the reconciler; levels; the graph read; card ids. Pure, milliseconds |
+| `ear_core_tests` | The desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards and RTP receivers, both in either order, a lost block); the reconciler; levels; the graph read; card ids and RTP addresses. Pure, milliseconds |
 | `ear_folder_tests` | The confined folder on real temporary folders: made if missing (never its parents), `create()` beneath only, `read()` and `replaceIf()` refusing symlinks, directories, FIFOs, large files and paths out, replace-if-unchanged keeping the file's mode, a folder it cannot write, an inotify watch through `heldPath()`, `requireApart()` (one folder twice, nesting, a symlinked alias) |
-| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start); `card`'s and `rtp`'s settings, ports and pass-through; every built-in type's setting kinds |
+| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start); `card`'s settings, ports and pass-through; `rtp`'s settings (each refusal's exact detail), ports, the request it makes and pass-through; every built-in type's setting kinds |
 | `ear_control_tests` | The JSON-RPC envelope (the spec's examples), commands, events, the graph file's types and encoders, status lines, gateway and sessions, all against `test/protocol` (`graph-file.json` included) |
 | `ear_config_tests` | The graph file model (the record's example, each of ear's codes at its place, `@include`, missing and unreadable files, knobly's nesting limit), places in UTF-16 columns, edits at the source (a value changed where it is defined, `shared-definition`, removal with its routes, quoting); the keeper's sequencer stepped by hand on one thread over a real folder (boot offers, accepted and refused edits, both hand-edit collisions, a typo, `graphFile.set`, its own write's watch event, batches, shared writes, write failures, pending restart, stop); the keeper's thread and the whole keeper with inotify |
-| `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card; RTP receivers fed by a sender on loopback: channel for channel, resampling, a sender restarting with a new SSRC, a lost receiver |
+| `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card; RTP receivers fed by a test sender on 127.0.0.1: following the dummy driver, channels by sine fit, L16 at 44100 resampled, a sender restarting with a new SSRC, a lost receiver, a receiver made again at once for the same names |
 | `ear_server_tests` | Port 7777 on real sockets with a fake main loop and gateway: files, Host and Origin, round trips, the 1008 bound, a client that resets, stop with 1001, levels |
 | `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on an `ear.conf`: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); a recordings folder it cannot make exits 1; the graph file (the record's example booted, an editor edit announced, applied, answered and written back, a hand edit winning, a hand typo blocking edits until Save fixes it, `ear.conf` as a symlink out and an `@include` out refused, boots with a typo, a refused route or no file running nothing, the fallback flags, overlapping folders exiting 1); an `rtp` node's tone recorded channel for channel, and its silence with no sender; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |
 | web (vitest, `make web-test`) | The editor's reducer against every `test/protocol` fixture, the graph file's state and the text pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket, connection rules, levels and layout. No browser; rendering is checked by eye |
@@ -377,7 +395,10 @@ out of test names: CMake splits a name at it.
 `test/CMakeLists.txt` also runs `ear --help` (the binary loads its shared libraries), and
 `ear_engine_conf_beside_ear` checks the copy beside the binary matches the source. Tests are
 event-gated: they wait for the event they need, and a deadline only fails a test, never decides
-when something happens. Verify audio here, never on real hardware. Run one, inside the image:
+when something happens. Verify audio here, never on real hardware. The engine, ramp and RTP
+tests need PipeWire's data thread to keep time: on a heavily loaded host it stalls for hundreds
+of milliseconds (graph xruns), and they fail without a bug (`docs/design/rtp.md` erratum 3; the
+`pipewire-engine` skill says how to tell). Run one, inside the image:
 
 ```bash
 scripts/dev.sh ctest --test-dir out -R "lands on FL" --output-on-failure   # by test name regex
@@ -441,12 +462,13 @@ editor's npm packages are pinned by `web/package-lock.json`.
 Repo skills in `.claude/skills/`:
 
 - `pipewire-engine`: running the engine in-process: what `engine.conf` sets and why, the
-  modules, the dummy driver, the graph group, sound cards and the clock, `drive`, levels,
-  realtime priority, running without a session manager, the traps, and how to bump PipeWire.
+  modules, the dummy driver, the graph group, outside nodes (sound cards and the clock, RTP
+  receivers through rtp-source), `drive`, levels, realtime priority, running without a session
+  manager, the traps (xruns on a loaded host among them), and how to bump PipeWire.
   The PipeWire source behind each engine fact is cited in `docs/design/m1-white-to-file.md`
-  section 1 and `docs/design/batch2.md` sections 4.3 and 5.
+  section 1, `docs/design/batch2.md` sections 4.3 and 5 and `docs/design/rtp.md` section 4.
 - `control-port`: talking to port 7777, its Host and Origin rules, the `graphFile.*` calls and
   write-behind, threads, queues, stopping and traps.
 - `ear-on-talos`: the run image on a Talos node with the MOTU 24Ao (kernel module, privileged
   namespace, `/dev/snd`, SYS_NICE, the writable graph file volume, the card's own settings,
-  checks on the hardware).
+  checks on the hardware) and FPP's RTP stream into the pod.

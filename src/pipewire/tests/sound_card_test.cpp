@@ -88,6 +88,7 @@ public:
       : waiter_(waiter), registry_(registry), engineNode_(std::move(engineNode)) {}
   void ready() override {
     ++readyCount;
+    if (onReady) onReady();
     waiter_.wake();
   }
   void lost(std::string detail) override {
@@ -96,6 +97,7 @@ public:
     nodePresentAtLost = registry_.present(engineNode_);
     waiter_.wake();
   }
+  std::function<void()> onReady;   // told inside ready(), to read the engine at that moment
   int readyCount = 0;
   bool insideMake = false;
   std::optional<std::string> lostDetail;
@@ -181,13 +183,25 @@ std::vector<float> readFrames(const std::filesystem::path& file, std::size_t cha
 
 }  // namespace
 
-TEST_CASE("A playback card becomes ready and then drives every port block", "[cards][clock]") {
+TEST_CASE("A playback card becomes ready, every channel's link active, and then drives every port block",
+          "[cards][clock]") {
   Graph graph;
   CardEvents events(graph.waiter, graph.registry, "card.playback");
+  // Ready must come from the last link's ACTIVE. This connection hears each link's state first on
+  // the lifecycle's own proxy (bound when the link was made) and then on the registry's binding
+  // (PipeWire tells a link's resources in the order they were bound, on one ordered socket), so
+  // at ready the registry has heard every other link ACTIVE and not yet the last one; ready on
+  // an earlier link would find fewer.
+  std::optional<std::size_t> activeAtReady;
+  events.onReady = [&] {
+    const auto node = graph.registry.id("card.playback");
+    activeAtReady = node ? graph.registry.activeLinksOf(*node) : 0;
+  };
   const auto card = graph.makeCard(cardId("Test"), events);
   REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
   REQUIRE(events.lostDetail.value_or("") == "");
   CHECK(events.readyCount == 1);
+  CHECK(activeAtReady == std::optional<std::size_t>(1));   // of 2
   const std::uint32_t cardNode = *graph.registry.id("card.playback");
   CHECK(graph.blocksDrivenBy(cardNode));
   CHECK(graph.bothRun(8));

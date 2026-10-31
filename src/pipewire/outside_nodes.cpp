@@ -163,6 +163,26 @@ private:
 
 }  // namespace
 
+std::string auxPositions(std::size_t channels) {
+  std::string positions = "[";
+  for (std::size_t i = 0; i < channels; ++i) positions += " AUX" + std::to_string(i);
+  return positions + " ]";
+}
+
+void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId,
+                   OutsideBodyEvents& events) {
+  if ((info.change_mask & PW_NODE_CHANGE_MASK_STATE) == 0) return;
+  if (info.state == PW_NODE_STATE_ERROR) {
+    events.failed("the " + kind + " failed: " + (info.error != nullptr ? info.error : "engine error"));
+  } else if (info.state == PW_NODE_STATE_RUNNING) {
+    if (nodeId == SPA_ID_INVALID) {
+      events.failed("the " + kind + " runs but the engine gave it no id");
+    } else {
+      events.running(nodeId);
+    }
+  }
+}
+
 std::unique_ptr<OutsideNode> joinOutsideNode(Engine& engine, OutsideJoin join, OutsideNodeEvents& events,
                                              OutsideBodyMaker makeBody) {
   return std::make_unique<JoinedOutsideNode>(engine, std::move(join), events, std::move(makeBody));

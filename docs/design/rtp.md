@@ -432,7 +432,19 @@ applies it, sees the test go red, and restores it.
 - Multicast receive tested (loopback multicast in the container), and the Kubernetes side
   (`hostNetwork` or a multicast-capable network; a UDP Service carries unicast only).
 - `net.mtu` raised so many channels fit a datagram (finding 3); a `latencyMs` bound tied to the
-  ring (finding 5).
+  ring (finding 5): `latencyMs * rate / 1000 * channels * bytesPerSample` under 4 MiB, refused
+  by the `rtp` type's parse (it changes section 3's grammar). Section 11 says why it matters to
+  the whole graph, not only this node.
+- Packet handling off the graph's realtime loop: a second data loop in `engine.conf`
+  (`context.data-loops`, a class such as `data.rtp`) and `node.loop.class` in the module's
+  arguments (`module-rtp-source.c:589` reads it), then a check on the engine that the blocks
+  stay on the Dummy-Driver and the receiver still follows it across loops, and an engine test
+  that sends out-of-order sequence numbers while a second block's ramp must not break.
+- Refusing the local network control block `224.0.0.0/24` (mDNS, IGMP and the like) and other
+  well-known groups in `RtpAddress::parse`; R1a criterion 1 accepts `224.0.0.1` today, so this
+  changes it.
+- A limit on outside nodes (or on `rtp` nodes) in the desired graph, reported as a
+  `CommandError`, or none until port 7777 has a login (section 11).
 - A "receiving" status from `rtp.receiving` (finding h): deferred by Q1.
 - Two `rtp` nodes on one port: both bind (`SO_REUSEADDR`) and unicast packets reach only one.
   A desired-graph check could refuse the second.
@@ -467,6 +479,28 @@ multicast, a real network's loss and jitter.
 - A node whose port cannot be bound says `starting`, not `failed` (section 9).
 - `running` while nothing arrives (Q1). The meters show the silence.
 - The module runs its own internal connection per receiver (one more client in the engine).
+- Each receiver costs a fixed 4 MiB ring (`module-rtp/stream.c:32, 79`), a connection and a UDP
+  socket, whatever its channels and latency, and the graph has no limit on its nodes: anyone who
+  reaches port 7777 can add receivers until the pod runs out of memory (as they can already
+  remove or replace every node).
+- With `sess.ignore-ssrc` and `0.0.0.0`, a second sender to the port is no longer dropped: every
+  packet whose sequence number does not follow the last resyncs the receiver and zeroes its
+  ring (`module-rtp/audio.c:127-136, 152-166`), so two overlapping senders (an old FPP still
+  sending while a new one starts, a stray sender) garble the audio for as long as both send,
+  where without it the first stream would win. Beside section 9's two nodes on one port.
+- The receiver handles packets on the graph's one realtime data loop (`module-rtp-source.c:342,
+  589`; ear passes no loop class). Each resync, any sequence mismatch or an overrun, zeroes the
+  whole 4 MiB ring with a memset there (about 78 µs each on the reviewer's Mac). So a flood of
+  datagrams with changing sequence numbers from anyone who reaches the UDP port (no Host or
+  Origin check; the source address and SSRC do not matter and can be spoofed) stalls every
+  node's processing: cards underrun, `file` nodes drop frames. A `latencyMs` above what the
+  ring holds for the stream (64 channels of L24: about 455 ms at 48 kHz) makes every packet
+  overrun and do the same with no attacker. Section 9 has the fixes; until then the port should
+  be reachable only from the sender's network.
+- Malformed datagrams (short, wrong version or length) log one PipeWire warning each on the
+  realtime thread (`module-rtp/audio.c:116-123, 211-219`), so anyone who reaches the port can
+  flood ear's standard error; joining a group in `224.0.0.0/24` (which the grammar allows) feeds
+  that path steady non-RTP traffic with no attacker at all.
 - Moving the card onto `joinOutsideNode` changes how its links name it (by id instead of name);
   E2's tests must stay green unchanged (R1b(7)).
 - The tracer tests unicast on 127.0.0.1 only; FPP's real stream (format, rate, channel count,
@@ -519,3 +553,52 @@ multicast, a real network's loss and jitter.
    discontinuities the per-tenth check rightly fails. Open, for whoever re-cuts the tests: whether
    the gate is CI's runner (a VM of its own, no neighbours), and that a real network's reordering makes
    the same audible gap (section 9 should name it beside loss and jitter).
+4. **(2026-10-31, end review) R1b criterion 7's probe did not bite.** Reporting ready on the first
+   active link left every `[cards]` test green: the readiness test checked only what holds once
+   both links are up. Reading the engine's own link objects at the moment ready is told did not
+   bite either: both links are already ACTIVE in the engine when the first link's info reaches
+   EAR. What does bite, every run: the tests' registry binds each link and tracks its state on
+   EAR's own connection, which hears a link's state first on the lifecycle's proxy (bound when
+   the link is made) and then on the registry's binding, in order. So at `ready` the registry
+   has heard every link ACTIVE but the last one: `activeAtReady == 1` of 2 in "A playback card
+   becomes ready, every channel's link active, ..." (`[cards][clock]`) and "A receiver is ready
+   once, every channel's link active, ..." (`[rtp][clock]`); the probe gives 0 in both.
+5. **(2026-10-31, end review) R1b criterion 5's test cannot see the teardown's order.** A receiver
+   whose node global is destroyed has lost its node and links before the lifecycle hears of it,
+   so "tell `lost` before the teardown's sync" stayed green there. Added: a receiver that loses
+   one link while its node runs, and one whose module is destroyed; each checks the node and
+   links absent when `lost` is told, and both go red under the probe (and under telling `lost`
+   before the links are destroyed). No client may destroy a module through the registry
+   (PipeWire 1.4.2 gives module globals no such permission: "no permission to destroy"), so the
+   module test calls `pw_impl_module_destroy` in-process, the step rtp-source's own
+   `pw_impl_module_schedule_destroy` ends in; it checks the text `the engine removed the RTP
+   receiver's module`. The worry that EAR's sync could be answered before the module's
+   connection is gone did not show: the node was absent at `lost` in every run.
+6. **(2026-10-31, end review) R1a lacked a criterion for an outside node lost before it is
+   ready.** Section 7.1 says a loss before or after ready fails the node, but every test told
+   `lost` after ready. Added criterion 9: a receiver (with the card ready, or nothing ready) or a
+   card (with the receiver ready) lost before the node runs makes it `failed engine-refused:
+   <its detail>` ("An outside node lost before the node ran fails it ...", `[node_host][rtp]`).
+   Probe: ignore a loss before that outside node is ready (it goes red).
+7. **(2026-10-31, end review) R1b criterion 6's stale-id check cannot be reached; the stale guard
+   is the sync.** Every global present when the receiver's registry is made is announced before
+   its sync's done, so a stale node is always seen while `loading_` is false and is never
+   bound; `!stale_.contains(id)` after the load is defence only (dropping it stays green). The
+   race the criterion feared is real only when a stale node is still there, which the restart
+   test does not ensure (`pw_impl_module_destroy` removes the old node first). Added: "A
+   receiver made while another node of its name is still going binds and links its own node"
+   (`[rtp][restart]`), with a stale `fpp.rtp` from an rtp-source module the test loads; the
+   probe "bind a node of the name seen before the sync" goes red. A failed `pw_core_sync` now
+   fails the receiver (`cannot sync with the engine: ...`) instead of loading without the
+   snapshot, which would have bound a stale node.
+8. **(2026-10-31, end review) The receiver body's own failure paths other than a removed node,
+   a lost link and a destroyed module are not tested:** the module failing to load, the node's
+   info ERROR, no registry, a failed bind, a failed sync. Reaching them needs a seam (a missing
+   module name, a node driven to ERROR) that the frozen interfaces do not have.
+9. **(2026-10-31, end review) R1b criterion 4's window was anchored on the block's clock.** The
+   check started at a frame count read when the second sender started plus half a second, and a
+   data-loop freeze with the driver's catch-up could put the stream switch inside it. The
+   window now starts half a second after the second stream's onset in the data: the first frame
+   that is not silent after at least 50 ms of exact zeros (the receiver's resync on the new
+   stream zeroes its ring). On this host the onset was found every run and the window fit
+   500 Hz up to a single torn tenth, a mid-stream discontinuity of erratum 3's kind.
