@@ -1,7 +1,8 @@
 // The desired graph's control calls, checked against a catalogue of test node types: the errors
 // each call returns, the events it sends, and the catalogue's own boot-time check
 // (docs/design/m1-white-to-file.md section 3, S2 criteria 1-3; docs/design/batch2.md section 4.1,
-// C1 criteria 1-6: removing and updating, the name rule, observers first, close()).
+// C1 criteria 1-6: removing and updating, the name rule, observers first, close()); and plan() and
+// commit(), a whole wanted graph at a time (docs/design/knobly-config.md, S1 criterion 8).
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "ear/core/desired_graph.hpp"
 
 using namespace ear;
+using json = nlohmann::json;
 
 namespace {
 
@@ -43,8 +45,23 @@ private:
 	Ports ports_;
 };
 
+/// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs playback_1..playback_n,
+/// so a new channel count changes its ports.
+class CardType final : public NodeType {
+public:
+	std::string_view name() const override { return "card"; }
+	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
+	                                                                        const NodeSettings& settings) const override {
+		Ports ports;
+		const int playback = settings.value("playback", 0);
+		for (int i = 1; i <= playback; ++i) ports.inputs.push_back("playback_" + std::to_string(i));
+		return std::make_unique<TestConfig>(std::move(ports));
+	}
+};
+
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
+	types.push_back(std::make_unique<CardType>());
 	types.push_back(std::make_unique<TestType>("source", Ports{{}, {"MONO"}}));
 	types.push_back(std::make_unique<TestType>("sink", Ports{{"FL", "FR"}, {}}));
 	types.push_back(std::make_unique<TestType>("broken", Ports{{"X"}, {"X"}}));
@@ -373,4 +390,188 @@ TEST_CASE("After close() every edit returns stopping and tells nobody, and reads
 	CHECK(nodes[0].ports.outputs == std::vector<PortName>{"MONO"});
 	CHECK(nodes[1].spec == NodeSpec{"rec", "sink", {}});
 	CHECK(f.graph.routes() == std::vector<Route>{noiseToFl});
+}
+
+namespace {
+
+const NodeSpec noiseSpec{"noise", "source", json::object()};
+const NodeSpec recSpec{"rec", "sink", json::object()};
+NodeSpec deskSpec(int playback) { return {"desk", "card", {{"card", "MOTU"}, {"playback", playback}}}; }
+const Route noiseToDesk1{{"noise", "MONO"}, {"desk", "playback_1"}};
+
+/// Plans `nodes` and `routes` and commits the plan, which must be accepted.
+void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::vector<Route>& routes) {
+	auto plan = graph.plan(nodes, routes);
+	REQUIRE(plan.has_value());
+	REQUIRE(graph.commit(std::move(*plan)).has_value());
+}
+
+template <class Error> const Error& planErrorOf(const std::expected<Plan, CommandError>& result) {
+	REQUIRE_FALSE(result.has_value());
+	REQUIRE(std::holds_alternative<Error>(result.error()));
+	return std::get<Error>(result.error());
+}
+
+} // namespace
+
+TEST_CASE("plan from empty to a full graph commits every change in the fixed order", "[desired_graph][plan]") {
+	Fixture f;
+	Recorder observer{f.log, "obs"};
+	f.graph.observe(static_cast<DesiredNodeListener&>(observer));
+	f.graph.observe(static_cast<DesiredRouteListener&>(observer));
+	const std::vector<NodeSpec> nodes{recSpec, noiseSpec, deskSpec(2)};
+	const std::vector<Route> routes{noiseToDesk1, noiseToFl};
+
+	auto plan = f.graph.plan(nodes, routes);
+	REQUIRE(plan.has_value());
+	CHECK_FALSE(plan->empty());
+	CHECK(f.log.empty());   // plan changes nothing
+	CHECK(f.graph.nodes().empty());
+	REQUIRE(f.graph.commit(std::move(*plan)).has_value());
+
+	CHECK(f.log == Log{"obs nodeAdded desk", "sub nodeAdded desk", "obs nodeAdded noise", "sub nodeAdded noise",
+	                   "obs nodeAdded rec", "sub nodeAdded rec", "obs routeAdded noise:MONO -> desk:playback_1",
+	                   "sub routeAdded noise:MONO -> desk:playback_1", "obs routeAdded noise:MONO -> rec:FL",
+	                   "sub routeAdded noise:MONO -> rec:FL"});
+	CHECK(f.graph.nodes().size() == 3);
+	CHECK(f.graph.routes() == std::vector<Route>{noiseToDesk1, noiseToFl});
+}
+
+TEST_CASE("plan of what the graph holds is empty, and its commit tells nobody", "[desired_graph][plan]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec, recSpec}, {noiseToFl});
+	f.log.clear();
+
+	SECTION("the same spec") {
+		auto plan = f.graph.plan(std::vector<NodeSpec>{recSpec, noiseSpec}, std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->empty());
+		REQUIRE(f.graph.commit(std::move(*plan)).has_value());
+		CHECK(f.log.empty());
+	}
+	SECTION("identical routes are one route") {
+		auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, recSpec}, std::vector<Route>{noiseToFl, noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->empty());
+	}
+}
+
+TEST_CASE("plan with new settings and the same ports updates the node and keeps its routes",
+          "[desired_graph][plan]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec, deskSpec(2)}, {noiseToDesk1});
+	f.log.clear();
+
+	NodeSpec usb = deskSpec(2);
+	usb.settings["card"] = "USB2";
+	apply(f.graph, {noiseSpec, usb}, {noiseToDesk1});
+	CHECK(f.log == Log{"sub nodeUpdated desk"});
+	REQUIRE(f.recorder.updates.size() == 1);
+	CHECK(f.recorder.updates[0].first == usb);
+	CHECK(f.graph.routes() == std::vector<Route>{noiseToDesk1});
+}
+
+TEST_CASE("plan with other ports replaces the node and adds its routes again", "[desired_graph][plan]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec, recSpec, deskSpec(2)}, {noiseToDesk1, noiseToFl});
+	f.log.clear();
+
+	apply(f.graph, {noiseSpec, recSpec, deskSpec(4)}, {noiseToDesk1, noiseToFl});
+	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> desk:playback_1", "sub nodeRemoved desk", "sub nodeAdded desk",
+	                   "sub routeAdded noise:MONO -> desk:playback_1"});
+	REQUIRE(f.recorder.nodes.size() == 4);
+	CHECK(f.recorder.nodes[3].second->ports().inputs.size() == 4);
+
+	SECTION("another type under the same name is a replacement too") {
+		f.log.clear();
+		apply(f.graph, {noiseSpec, recSpec, {"desk", "sink", json::object()}}, {noiseToFl});
+		CHECK(f.log == Log{"sub routeRemoved noise:MONO -> desk:playback_1", "sub nodeRemoved desk",
+		                   "sub nodeAdded desk"});
+	}
+}
+
+TEST_CASE("plan removes what is no longer wanted, routes before nodes", "[desired_graph][plan]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec, recSpec}, {noiseToFl, noiseToFr});
+	f.log.clear();
+
+	apply(f.graph, {recSpec, {"hiss", "source", json::object()}}, {hissToFl});
+	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FR",
+	                   "sub nodeRemoved noise", "sub nodeAdded hiss", "sub routeAdded hiss:MONO -> rec:FL"});
+}
+
+TEST_CASE("plan refuses a wanted graph the catalogue or the ports refuse, and changes nothing",
+          "[desired_graph][plan]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec, deskSpec(4)}, {{{"noise", "MONO"}, {"desk", "playback_4"}}});
+	f.log.clear();
+
+	SECTION("a wanted route to a port that is gone") {
+		const Route toFour{{"noise", "MONO"}, {"desk", "playback_4"}};
+		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, deskSpec(2)}, std::vector<Route>{toFour});
+		CHECK(planErrorOf<UnknownPort>(plan).port == toFour.to);
+		CHECK(errorCode(plan.error()) == "unknown-port");
+	}
+	SECTION("two wanted nodes share a name") {
+		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, noiseSpec}, std::vector<Route>{});
+		CHECK(planErrorOf<DuplicateNode>(plan).node == "noise");
+		CHECK(errorCode(plan.error()) == "duplicate-node");
+	}
+	SECTION("the first error found, nodes before routes") {
+		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, {"x.y", "source", {}}, {"z", "nope", {}}},
+		                               std::vector<Route>{{{"gone", "MONO"}, {"noise", "MONO"}}});
+		CHECK(planErrorOf<InvalidName>(plan).node == "x.y");
+	}
+	SECTION("each node and route error") {
+		CHECK(planErrorOf<UnknownNodeType>(f.graph.plan(std::vector<NodeSpec>{{"z", "nope", {}}}, {})).type == "nope");
+		CHECK(planErrorOf<InvalidSettings>(
+		          f.graph.plan(std::vector<NodeSpec>{{"z", "source", {{"bad", 1}}}}, {})).node == "z");
+		CHECK(planErrorOf<UnknownNode>(f.graph.plan(std::vector<NodeSpec>{recSpec},
+		                                            std::vector<Route>{noiseToFl})).node == "noise");
+		CHECK(planErrorOf<WrongDirection>(
+		          f.graph.plan(std::vector<NodeSpec>{noiseSpec, recSpec},
+		                       std::vector<Route>{{{"rec", "FL"}, {"noise", "MONO"}}})).route.from.node == "rec");
+	}
+	CHECK(f.log.empty());
+	CHECK(f.graph.nodes().size() == 2);
+	CHECK(f.graph.nodes()[0].ports.inputs.size() == 4);
+}
+
+TEST_CASE("commit of a stale plan or of another graph's plan is a wiring bug", "[desired_graph][plan]") {
+	Fixture f;
+	auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec}, std::vector<Route>{});
+	REQUIRE(plan.has_value());
+
+	SECTION("the graph changed since the plan was made") {
+		REQUIRE(f.graph.addNode(recSpec).has_value());
+		f.log.clear();
+		CHECK_THROWS_AS(f.graph.commit(std::move(*plan)), std::logic_error);
+		CHECK(f.log.empty());
+	}
+	SECTION("a plan made on another graph") {
+		DesiredGraph other{f.catalogue};
+		CHECK_THROWS_AS(other.commit(std::move(*plan)), std::logic_error);
+		CHECK(other.nodes().empty());
+	}
+	SECTION("a plan committed already") {
+		auto again = f.graph.plan(std::vector<NodeSpec>{noiseSpec}, std::vector<Route>{});
+		REQUIRE(again.has_value());
+		REQUIRE(f.graph.commit(std::move(*plan)).has_value());
+		CHECK_THROWS_AS(f.graph.commit(std::move(*again)), std::logic_error);
+	}
+}
+
+TEST_CASE("plan and commit after close() return stopping and change nothing", "[desired_graph][plan]") {
+	Fixture f;
+	auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec}, std::vector<Route>{});
+	REQUIRE(plan.has_value());
+	f.graph.close();
+
+	CHECK(std::holds_alternative<Stopping>(
+	    f.graph.plan(std::vector<NodeSpec>{noiseSpec}, std::vector<Route>{}).error()));
+	const auto committed = f.graph.commit(std::move(*plan));
+	REQUIRE_FALSE(committed.has_value());
+	CHECK(std::holds_alternative<Stopping>(committed.error()));
+	CHECK(f.log.empty());
+	CHECK(f.graph.nodes().empty());
 }
