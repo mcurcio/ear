@@ -1,14 +1,16 @@
 // The "white" node type through its NodeType contract, and the built-in catalogue list
 // (docs/design/m1-white-to-file.md section 3, slice S5 criteria 1 and 4; docs/design/batch2.md
-// E2 criterion 7).
+// E2 criterion 7), and each type's declared setting kinds (docs/design/knobly-config.md).
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -93,10 +95,10 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 
 TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
 	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_builtin_" + std::to_string(::getpid()));
-	auto folder = ear::nodes::RecordingsFolder::open(path);
+	auto folder = ear::folder::ConfinedFolder::open(path);
 	REQUIRE(folder.has_value());
 	const auto types =
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*folder)));
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
 	std::filesystem::remove(path);
 	std::vector<std::string> names;
 	for (const auto& type : types) {
@@ -104,4 +106,34 @@ TEST_CASE("The built-in node types are white, file and card", "[builtin]") {
 	}
 	std::ranges::sort(names);
 	CHECK(names == std::vector<std::string>{"card", "file", "white"});
+}
+
+TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses",
+          "[builtin]") {
+	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_kinds_" + std::to_string(::getpid()));
+	auto folder = ear::folder::ConfinedFolder::open(path);
+	REQUIRE(folder.has_value());
+	const auto types =
+	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
+	std::filesystem::remove(path);
+
+	std::map<std::string, std::vector<std::pair<std::string, ear::SettingKind>>> declared;
+	for (const auto& type : types) {
+		INFO(type->name());
+		// "a" is a valid card id and a valid recordings path; 1 is a valid channel count.
+		ear::NodeSettings settings = ear::NodeSettings::object();
+		auto& keys = declared[std::string(type->name())];
+		for (const auto& [key, kind] : type->settingKinds()) {
+			CHECK_FALSE(settings.contains(std::string(key)));
+			settings[std::string(key)] = kind == ear::SettingKind::text ? ear::NodeSettings("a") : ear::NodeSettings(1);
+			keys.emplace_back(key, kind);
+		}
+		const auto parsed = type->parse("node", settings);
+		CHECK(parsed.has_value());
+	}
+	using enum ear::SettingKind;
+	CHECK(declared["white"].empty());
+	CHECK(declared["file"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"path", text}});
+	CHECK(declared["card"] == std::vector<std::pair<std::string, ear::SettingKind>>{
+	                              {"card", text}, {"playback", wholeNumber}, {"capture", wholeNumber}});
 }
