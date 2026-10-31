@@ -222,3 +222,59 @@ It proves the one thread, the one disk judge, the collision rule and the invalid
 | `--config ear.json`; a read-only mount in the image; "a route to an undeclared port exits 1" | `--config-dir` on a writable volume, plus `--graph-frequency` and `--block-size`. A boot without a runnable file runs nothing and shows why (Q1) | Talos manifest, image smoke test, skills, a system test |
 
 *History: v1-v3 gate drafts 2026-10-30; v4 gate answered 2026-10-31; v6 full scope reviewed 2026-10-31; v7 is the lighter scope picked at sizing (one thread, `ear.conf` alone).*
+
+## Slice results (2026-10-31)
+
+Each slice landed on `claude/knobly-realtime-config-edits-cd4312` (draft pull request 12); its
+commit message says what it built.
+
+| Slice | Commit | Result |
+|---|---|---|
+| S1 | 512d27d953 | knobly in the build (the Dockerfile's `knobly` stage, `EAR_KNOBLY_DIR`, compiled mode); the graph file model's read and diagnostics; `DesiredGraph::plan` and `commit`; `NodeType::settingKinds`; the wire's place and diagnostic types |
+| S2 | cc15cb0ccd | `ear_folder`'s `ConfinedFolder` (read, replace-if-unchanged with `renameat2`, the recordings folder's `create`) and `requireApart`; every built-in type declares its settings' kinds |
+| S3 | 8e4bd41224 | Edits at the source (`shared-definition`, removal with routes, quoting); the `graphFile.*` vocabulary, its encoders and `test/protocol/graph-file.json`; `GraphRequests` and `GraphFileListener`; the `graph-file` status lines |
+| S6 | 0fea379918 | The editor's `ear.conf` text pane: diagnostics, Save, a stale draft kept, banners for refusals, write failures, dropped edits and pending restart |
+| S4 | 2f729bf79d | The keeper: its sequencer, its one thread (eventfd and inotify in `poll()`, no timeout), its main-loop side and `GraphFileKeeper` |
+| S5 | 251a5cd518 | The switch: boot from `ear.conf` with the fallback flags, every request through the keeper, `ear.json`, its parser, `GraphControl` and `runCommand` deleted; system tests T1 to T9 through `out/ear`; the run image's writable `/var/lib/ear/config` |
+| S7 | the docs commit | `AGENTS.md`, `batch2.md` section 6 and its errata (section 11), the errata in `m1-white-to-file.md` and `pipewire-graph.md`, and the three skills |
+
+Q1 (a boot file the graph refuses) is still open for the owner: no answer is recorded in
+`knobly-config-notes.md`. The recommended choice is built (nothing runs, and the refusal is shown
+at its place; system test T6). If he picks "exit 1", only S5's T6 and `main.cpp` change.
+
+Errata and findings from the slices:
+
+- **The pages were cut before the `rtp` node existed.** A merge of master (6da301d05c) brought
+  the `rtp` type (`docs/design/rtp.md`), whose settings declare `address` and `format` as text
+  and `port`, `channels`, `rate` and `latencyMs` as whole numbers. Wherever a page lists the
+  built-in types (`white`, `file`, `card`), `rtp` is included too; S5 converted the rtp system
+  tests to `ear.conf` (T9), and S7's docs cover `rtp` in `ear.conf`.
+- **S1: the page's Dockerfile stage did not build.** knobly's generators write some generated
+  headers as mode 0600, owned by root, and `scripts/dev.sh` builds as the calling user, so the
+  stage ends with `chmod -R a+rX /opt/knobly` (knobly issue 14). The uv image is pinned by
+  digest; the stage builds on linux/arm64 and amd64.
+- **S1 choices:** a byte column inside a multibyte character counts that character (the column
+  lands just after it); knobly's value-reader errors (E4005, E4002) are listed with ear's
+  diagnostics in text order; `ear/include-unsupported` takes E3008's place; plan checks each
+  node's name, then type and settings, then duplicates; `graph_file_model.hpp` does not include
+  knobly (its Impl is hidden). A test name holding `;` registers as two CTest tests
+  (`catch_discover_tests` splits on it); five older names in `ear_control`'s tests still do.
+- **S2:** the folder's errors name the folder, not its role ("folder <path>: ..."), so `main.cpp`
+  prefixes "recordings" and "graph file"; a node's failure says "it leads outside the folder".
+  `read()` opens with `O_NONBLOCK`, so a FIFO is refused without waiting. The page's
+  skip-`fchmod` probe could not fail as written (umask 022 already gives 0640), so a leftover
+  0600 staging file case was added. `AGENTS.md`'s advice to point `CMAKE_ARGS` at the main
+  checkout's Boost tree holds only when the main checkout has one.
+- **S3:** its report was lost; its diff and tests are the record.
+- **S5 left two pieces of `ear_core` behind because it could not edit `src/config`:**
+  `PortsChanged` ("ports-changed") is still in `command_error.hpp` though nothing makes it (only
+  `src/config/tests/main_loop_side_test.cpp` names it), and `NodeType::settingKinds()` still
+  defaults to an empty span rather than being pure (`src/config/tests/test_types.cpp`'s `white`
+  does not declare). Both are for the next change that may touch `src/config`.
+- **Load-sensitive tests, not this branch's:** the PipeWire ramp tests (`engine_test.cpp:336`,
+  `port_block_test.cpp:666`) and the RTP receiver's SSRC restart (`rtp_receiver_test.cpp:187`)
+  fail when the Mac's Docker VM is loaded (load average around 60 on 8 CPUs); their code is
+  master's, unchanged here (`docs/design/rtp.md` section 13, erratum 3).
+- **S7 (docs):** `batch2.md` section 6 is the wire's one home and now carries the graph file;
+  its other sections are history, corrected by section 11's errata. `m1-white-to-file.md`
+  section 2 is corrected by its own erratum.

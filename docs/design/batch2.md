@@ -4,6 +4,9 @@ Status: scope answered by the owner on 2026-10-30; the module design and slice p
 revised the same day after the adversarial design review (section 12 lists each finding and the
 change). Built on branch `claude/batch2` the same day: section 13 records each slice's result,
 section 11 the errata. The system design is `docs/design/pipewire-graph.md`.
+Section 6 (the wire format) is kept current; the other sections are the record as built in
+batch 2, and section 11 lists where later work changed them (the `rtp` node, 2026-10-30; the
+knobly graph file, `ear.conf`, 2026-10-31, which replaced `ear.json`).
 
 ## The owner's answers (chat, 2026-10-30)
 
@@ -1028,11 +1031,23 @@ JSON-RPC 2.0 over WebSocket at `ws://<host>:7777/rpc`, named params only.
 | `graph.get` | none | Graph | none |
 | `graph.subscribe` | none | Graph; afterwards this connection gets every graph notification | none |
 | `levels.subscribe` | none | `{"windowsPerSecond": 30}`; afterwards `levels` notifications | none |
-| `node.add` | `{"name", "type", "settings"?}` | `{}` | invalid-name, unknown-node-type, invalid-settings, duplicate-node, stopping |
-| `node.update` | `{"name", "settings"}` | `{}` | unknown-node, invalid-settings, ports-changed, stopping |
-| `node.remove` | `{"name"}` | `{}` | unknown-node, stopping |
-| `route.add` | `{"from": {"node", "port"}, "to": {...}}` | `{}` | unknown-node, unknown-port, wrong-direction, stopping |
-| `route.remove` | `{"from", "to"}` | `{}` | unknown-route, stopping |
+| `node.add` | `{"name", "type", "settings"?}` | `{}` | invalid-name, unknown-node-type, invalid-settings, duplicate-node, file-invalid, invalid-text, stopping |
+| `node.update` | `{"name", "settings"}` (the node's whole new settings) | `{}` | unknown-node, invalid-settings, shared-definition, file-invalid, invalid-text, stopping |
+| `node.remove` | `{"name"}` | `{}` | unknown-node, shared-definition, file-invalid, invalid-text, stopping |
+| `route.add` | `{"from": {"node", "port"}, "to": {...}}` | `{}` | unknown-node, unknown-port, wrong-direction, file-invalid, invalid-text, stopping |
+| `route.remove` | `{"from", "to"}` | `{}` | unknown-route, shared-definition, file-invalid, invalid-text, stopping |
+| `graphFile.get` | none | GraphFile | none |
+| `graphFile.subscribe` | none | GraphFile; afterwards this connection gets every `graphFile.changed` | none |
+| `graphFile.set` | `{"text", "version"}` | `{}` once the graph runs the text | file-changed, invalid-text, and any code the desired graph refuses the text with, stopping |
+
+The graph file (`ear.conf`, `docs/design/knobly-config.md`) is the source of every wanted node
+and route. `node.*` and `route.*` keep their parameters but **edit at the source**: each is
+made as a change to `ear.conf`'s text on a fresh load of it (a candidate), judged by the desired
+graph, and kept and written only if accepted. A setting defined by `@set` or inside a snippet is
+changed where it is defined, so every node using it changes too. `node.remove` removes the
+node's line and every `route` line that names it. A node whose declared ports change (a card's
+channel count) is replaced: `route.removed` for its routes, `node.removed`, then `node.added`
+and `route.added` again. There is no `ports-changed` any more.
 
 Graph:
 ```json
@@ -1041,7 +1056,7 @@ Graph:
   "blockSize": 256,
   "realtime": false,
   "scheduling": "SCHED_OTHER",
-  "types": ["card", "file", "white"],
+  "types": ["card", "file", "rtp", "white"],
   "nodes": [
     {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["MONO"],
      "state": "running"},
@@ -1065,26 +1080,93 @@ Graph:
 | `route.added` / `route.removed` | `{"from", "to"}` | DesiredGraph |
 | `route.status` | `{"from", "to", "status", "detail"?}` | Reconciler |
 | `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}`, linear, 4 decimals; every block that has a window | port blocks |
+| `graphFile.changed` | GraphFile plus `"cause"` and `"droppedEdits"?` (below) | the graph file keeper |
+
+GraphFile, its change, and the graph file's refusals (TypeScript, as `web/src/protocol.ts` has
+them; an absent optional member is left out, never `null`):
+
+```ts
+type GraphFile = {
+  version: string;              // opaque; changes whenever the text changes
+  text: string;                 // ear.conf's text; "" when it is missing or cannot be read
+  diagnostics: Diagnostic[];    // any error means the file does not apply
+  running?: string;             // the version the graph runs; absent: none yet
+  refusal?: Refusal;            // the desired graph refused `version`
+  pendingRestart: ("graphFrequency" | "blockSize")[];  // the file's value differs from the engine's
+  writeFailed?: string;         // the disk refused the last write
+};
+type GraphFileChanged = GraphFile & {
+  cause: "edit"                 // an editor or pane edit, from any client
+       | "disk"                 // ear.conf changed on disk and ear reloaded it (also ear's boot offer)
+       | "write";               // writeFailed was set or cleared
+  droppedEdits?: number;        // disk only: accepted edits not yet written, now gone
+};
+type Diagnostic = {
+  severity: "error" | "warning";
+  code: string;                 // knobly's ("E2001") or ear's ("ear/include-unsupported")
+  message: string;
+  line: number;                 // from 1
+  column: number;               // from 1, in UTF-16 code units (the browser's)
+};
+type Refusal = { code: string; message: string; line?: number; column?: number };  // code: a data.code below
+```
+
+ear's own diagnostic codes: `ear/missing-file`, `ear/unreadable-file` (a directory, a symlink,
+another kind of file, or more than 1 MiB), `ear/include-unsupported` ("@include is not supported
+yet: write the whole graph in ear.conf"), `ear/unknown-directive` (anything but
+`graph_frequency`, `block_size`, `node` and `route`), `ear/bad-directive` and
+`ear/missing-directive`. Every other code is knobly's.
+
+The graph file's `data.code` values, beside the desired graph's:
+
+| `data.code` | When | `data` also has |
+|---|---|---|
+| `file-changed` | `graphFile.set`: `version` is not the current one | |
+| `invalid-text` | `graphFile.set`, or a `node.*` or `route.*` edit whose candidate text has errors | `diagnostics` |
+| `file-invalid` | a `node.*` or `route.*` edit while the working copy has errors (fix it with `graphFile.set`) | |
+| `shared-definition` | the line the edit must change or remove also makes other nodes or routes (a snippet's line) | `line`, `column` |
 
 - Order (rule 4): a DesiredGraph notification comes before every status it causes. Adding:
   `node.added`, `node.state` starting, then running or failed. Removing: `route.removed` for each
   route, `node.removed`, `node.state` stopping, `node.stopped`. A client ignores events naming a
   node it does not know.
+- Order of a graph file change: `graphFile.changed` first, then the node and route events it
+  causes, then the reply to the request that made it. One change's events come in one fixed
+  order: routes removed, nodes removed, nodes updated, nodes added, routes added. A hand edit to
+  `ear.conf` gives `graphFile.changed` with cause `disk` and the events it causes, and no reply.
+  An edit the graph refuses changes nothing and announces nothing: only its reply carries the
+  refusal. A hand edit the graph refuses is announced, with `refusal` set; the graph keeps what
+  it ran (`running` names that version).
+- Every edit's `graphFile.changed` carries the whole text to every `graphFile.subscribe`
+  client, comments included; there is no diff. `ear.conf` is written after the reply, when the
+  keeper is free; the watch event for that write announces nothing.
 - A route carries one mono channel, so **a route's level is its source port's level**: the
   server sends port levels only, and the UI draws each wire with its `from` port's level. An
   input port's level is what arrives there, which is the sum when several routes mix into it.
 - Each `levels` notification is a complete snapshot: a node missing from it has no level (gone,
   or not yet measured).
 - Errors: code -32000, message `describe(error)`, `data: {"code": errorCode(error)}`; -32602
-  names the JSON pointer; -32700, -32600, -32601 per the spec. A batch runs in order in one
-  crossing.
+  names the JSON pointer; -32700, -32600, -32601 per the spec.
+- Batches (the batch rule): every message, a batch sent whole, goes to the graph file keeper,
+  which runs its requests in order, **each request as its own step** (an edit is judged and
+  committed, or refused, before the next request is taken), and the whole batch before any later
+  message or disk change. Consecutive reads (`graph.get`, `graph.subscribe`, `graphFile.get`,
+  `graphFile.subscribe`) are answered together in one main-loop turn, and the reply is sent in
+  the turn of the batch's last step, after every event the batch caused. A batch is not
+  atomic: an edit refused in it does not undo the edits before it. A client that sends its
+  subscribes last in a batch gets snapshots that include every edit before them.
 - Per client: one message in flight; at most 256 queued responses and notifications (one constant
   in ear_server); a full queue closes the connection with WebSocket code 1008, and the client
   reconnects and subscribes again (a fresh snapshot: the list-then-watch pattern). Levels never
   queue: the newest snapshot replaces the unsent one.
 - Requests whose Host is a DNS name not given with `--allowed-host` get 403, as do WebSocket
   upgrades from another site's page. No login yet (cost, section 10).
-- Conformance: `test/protocol/*.json` (s0 writes them from this section). Each file is
+- Size: a WebSocket message is at most 64 KiB, so an `ear.conf` over about 64 KiB cannot be
+  saved with `graphFile.set` (ear reads up to 1 MiB from disk). Whole texts in a client's queue
+  fill its 256-message bound sooner, so a slow subscriber is closed with 1008 sooner.
+- Conformance: `test/protocol/*.json` (s0 writes them from this section;
+  `test/protocol/graph-file.json` covers the graph file and also holds the `requests` sent and
+  the final `file`). Each file is
   `{"description", "messages": [server texts as JSON, in order], "graph": <Graph after applying
   them>}`: snapshot, edits (add, update, remove, statuses), levels, errors (including stopping).
   ear_control's tests check its encoders produce exactly those messages; the UI's tests check its
@@ -1520,6 +1602,46 @@ file capability (section 7).
   (`src/pipewire/outside_nodes.hpp`), and its links name the card's engine node by global id
   instead of by name (rtp.md section 6, rule 4). Its tests stay as they are apart from the
   renamed types.
+- **Knobly graph file, 2026-10-31: section 4's desired graph, gateway and node catalogue
+  change** (`docs/design/knobly-config.md`, slices S1, S3 and S5). `ear.json` and its reader
+  are gone; `ear.conf` (knobly) is the graph file, kept live by the graph file keeper
+  (`ear_config`).
+  - `GraphControl` and its five edit calls (`addNode`, `updateNode`, `removeNode`, `addRoute`,
+    `removeRoute`) are deleted. `DesiredGraph` has `plan(nodes, routes)` (a `Plan` or a
+    `CommandError`, judged against the whole wanted graph) and `commit(plan)`, whose events come
+    in one order: routes removed, nodes removed, nodes updated, nodes added, routes added. A
+    port change is a replacement, so `PortsChanged` ("ports-changed") is no longer made;
+    `runCommand` is deleted, since the keeper runs commands.
+  - `MainLoopGateway` is built on `GraphRequests` (`control/requests.hpp`, which the keeper
+    implements) instead of `GraphControl`: `MainLoopGateway(mainLoop, control, requests)`. It is
+    still the one crossing between the main loop and the control thread, and it is also a
+    `GraphFileListener`; `EventSink` and `ControlHub` gain `graphFileChanged`, and `Session`
+    gains `graphFile.subscribe`.
+  - `commands.hpp` gains `GetGraphFile` and `SetGraphFile`, and `CommandResult` gains
+    `GraphFile` and `FileRefusal` (`control/graph_file_state.hpp`).
+  - `NodeType` gains `settingKinds()`: each key its `parse()` accepts with its kind (text or
+    whole number), which is how `ear.conf`'s values are read and written.
+- **Knobly graph file, 2026-10-31: section 6's "A batch runs in order in one crossing" is
+  replaced by the batch rule** (section 6, Batches): each request is its own step through the
+  keeper, consecutive reads are answered in one main-loop turn, and the reply comes in the turn
+  of the batch's last step. A batch is no longer one main-loop task. Section 6 also gains
+  `graphFile.get`, `graphFile.subscribe`, `graphFile.set`, `graphFile.changed`, the GraphFile,
+  Diagnostic and Refusal shapes and four `data.code` values; `node.*` and `route.*` edit at the
+  source.
+- **Knobly graph file, 2026-10-31: section 4.4's `RecordingsFolder` (`nodes/recordings.hpp`)
+  becomes `ear_folder`'s `ConfinedFolder`** (`folder/confined_folder.hpp`, slice S2), shared by
+  the recordings folder and the graph file folder. The recordings folder keeps its rules
+  (`create()` is `RecordingsFolder::create`'s contract); the graph file's `read()` and
+  `replaceIf()` refuse any symlink on the path. `makeFileNodeType` and `builtinNodeTypes` take
+  `std::shared_ptr<const ConfinedFolder>`. A node's failure text says "it leads outside the
+  folder" instead of "the recordings folder".
+- **Knobly graph file, 2026-10-31: sections 4.7 and 7.** Boot opens the graph file folder
+  (`--config-dir`) and the recordings folder, refuses them if they overlap each other or the web
+  root, reads `ear.conf`, and takes the engine's rate and block size from it (else from
+  `--graph-frequency` and `--block-size`); a file that has errors or that the graph refuses runs
+  nothing instead of exiting 1. Stop adds the keeper between `close()` and `stopAll`, and its last
+  write after the main loop ends. The run image's default is `--config-dir /var/lib/ear/config
+  --recordings-dir /var/lib/ear/recordings`, both writable volumes; `--config` is gone.
 
 ## 12. Design review, 2026-10-30: findings and changes
 

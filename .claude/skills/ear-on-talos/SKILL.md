@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and its udev group, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and its udev group, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -46,13 +46,13 @@ A `card` node names its card only by its ALSA card id: the name in brackets in
 `src/core/sound_card.cpp`), never an index or an ALSA device string. EAR opens
 `hw:CARD=<id>,DEV=0`. The MOTU's id is whatever the kernel gives it **[check]**.
 
-```json
-{ "name": "motu", "type": "card", "settings": { "card": "<card id>", "playback": 24 } }
+```conf
+node card motu { card <card id>; playback 24; }
 ```
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
 `playback_1`..`playback_N` (inputs) and `capture_1`..`capture_M` (outputs). The card's rate is
-always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
+always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
 
@@ -90,10 +90,28 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
   file capability that EAR makes effective at boot; `allowPrivilegeEscalation: false` sets
   no_new_privs, which ignores file capabilities, and a capability added without the file
   capability never reaches a non-root process (`pipewire-engine` skill, "Realtime priority").
-- `ear.json` mounted at `/etc/ear/ear.json` (the image's default `--config`); port 7777 exposed.
-  A browser reaching it by a DNS name needs `--allowed-host <name>` in the container's args
-  (`control-port` skill). Args replace the image's default command, so they must also carry
-  `--config /etc/ear/ear.json --recordings-dir /var/lib/ear/recordings`.
+- The graph file: `ear.conf` lives in the graph file folder, `/var/lib/ear/config` (the image's
+  default `--config-dir`), and ear writes every accepted editor edit back into it. So mount a
+  writable volume there that uid 10001 can write (a PersistentVolumeClaim with `fsGroup: 10001`,
+  for example): a ConfigMap mount is read-only, so edits would run but never be saved, and a
+  restart would lose them. ear writes by renaming a new file over `ear.conf` inside the folder,
+  so the folder itself must be writable, not just the file, and `ear.conf` must be a regular
+  file, not a symlink (a ConfigMap's files are symlinks, so mounting one into the folder does not
+  work either).
+- Seeding `ear.conf`: either an initContainer that copies it from a ConfigMap into the volume
+  only when it is missing (`[ -e /cfg/ear.conf ] || cp /seed/ear.conf /cfg/`, so later edits are
+  kept), or nothing: a first boot without `ear.conf` runs no nodes, and the editor's text pane
+  writes one with Save. Copying the ConfigMap over it on every start throws away every edit
+  made in the editor. The folder may not be, or be inside, the recordings folder (exit 1).
+- Port 7777 exposed. A browser reaching it by a DNS name needs `--allowed-host <name>` in the
+  container's args (`control-port` skill). Args replace the image's default command, so they
+  must also carry `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`.
+- Stopping: ear writes the last accepted version of `ear.conf` as it stops, after the
+  recordings are finished, and waits on the disk with no deadline: a hung volume delays stop
+  without limit on ear's side, until Kubernetes kills the pod after
+  `terminationGracePeriodSeconds` and the unwritten edits are lost. A failed final
+  write is printed (`graph-file write-failed <detail>`) and reaches only the container's log:
+  check `kubectl logs --previous` after a restart if an edit seems lost.
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
 

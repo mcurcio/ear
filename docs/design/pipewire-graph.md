@@ -25,6 +25,9 @@ own pages and gates: milestone 1 is `docs/design/m1-white-to-file.md`.
 
 - Alignment is for separate zones: PipeWire's drift correction is enough.
 - Live edits need not survive a restart "right now": `ear.json` is what loads at boot.
+  Superseded 2026-10-30 by the owner's "use the mcurcio/knobly project as the config language,
+  and enable bi-directional config edits in real-time via the UI": live edits are written back
+  to the graph file, `ear.conf` (`docs/design/knobly-config.md`).
 - Node types are built into EAR; nodes as separate programs may come later.
 - Nodes, not only routes, can be added, changed and removed while EAR runs.
 - An `airplay` node launches shairport-sync and wires it in; separate containers are the fallback.
@@ -40,8 +43,8 @@ network audio. EAR owns policy: which nodes exist and which links join them.
 
 | Context | Owns | Never does |
 |---|---|---|
-| Control surface | Loading `ear.json` at boot by replaying it as control calls; the control port | Graph rules; engine calls |
-| Desired graph | Wanted nodes, routes and graph frequency; route checks against declared ports | Knowing what exists |
+| Control surface | The graph file (`ear.conf`, knobly), kept live by the graph file keeper: read at boot, edits made at its source, written back, hand edits brought in; the control port | Graph rules; engine calls |
+| Desired graph | Wanted nodes and routes; the one judge of every change, from the file or the control port (plan, then commit); route checks against declared ports | Knowing what exists; files |
 | Node catalogue | The built-in node types | Deciding when nodes exist |
 | Node framework | Each node's one state machine (starting, running, recovering, failed, stopping), from facts its type reports; its port block and inside links | Routes |
 | Program supervisor | Starting programs, their EAR-issued identity, whether each is alive (start to exit event) | What a program is for |
@@ -61,13 +64,13 @@ network audio. EAR owns policy: which nodes exist and which links join them.
 ## Costs
 
 - EAR is in the audio path: a crash, restart or upgrade silences every output until Kubernetes
-  restarts it, and live edits since boot are lost.
+  restarts it, and accepted edits not yet written to `ear.conf` are lost.
 - EAR supervises shairport, repeating part of Kubernetes' job.
 - The runtime is rewritten: the JUCE graph, device code, pipe reader and their tests leave.
 - EAR no longer runs on macOS; development there runs it in a Linux container.
 - Zones, not sample-exact; the control port has no authentication yet.
 
-Deferred: nodes as separate programs, network sinks, plugin processors, persisting live edits,
+Deferred: nodes as separate programs, network sinks, plugin processors,
 control-port authentication, several AirPlay 2 instances, changing graph frequency live.
 Not planned: hotplug, sample-exact alignment, WirePlumber.
 
@@ -88,6 +91,11 @@ the order below:
   the rest of step 6 (the control port, with a graph editor in the browser), and step 8's sound
   card node, tested in CI with a test ALSA card; plus a run image published from GitHub Actions.
   Step 8's check on the Talos hardware is not done yet (the `ear-on-talos` skill lists it).
+- The `rtp` node (page `docs/design/rtp.md`, 2026-10-30): an RTP stream received as a source.
+- The knobly graph file (page `docs/design/knobly-config.md`, branch
+  `claude/knobly-realtime-config-edits-cd4312`, 2026-10-31): `ear.json` is replaced by `ear.conf`
+  in the knobly language, kept live on one background thread, edited at its source from the
+  editor and by hand, with a text pane in the editor.
 - Not started: step 3's socket and marks, step 7. Music Assistant's Sendspin is the next batch.
 
 The original outline:

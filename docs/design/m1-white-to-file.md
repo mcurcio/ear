@@ -680,3 +680,14 @@ NOT RUN: nothing was built or compiled by the architect.
 - test/system/ is added from src/CMakeLists.txt, not the top-level CMakeLists.txt (slice 0's choice): its tests need the ear target.
 - failureCode (node_type.hpp) had no owning slice; S2 defines it, in src/core/node_lifecycle.cpp.
 - Results: every slice landed; ctest in the Debian image passed 60 of 60 tests, and CI passed. S6 checks criterion 1's "no zero inside" as "no two adjacent zero samples" (white can produce an exact 0 with chance 2^-24 per sample).
+- Knobly graph file, 2026-10-31 (`docs/design/knobly-config.md`): section 2's
+  `control/graph_file.hpp` is deleted, with `GraphFileError`, `parseGraphFile`, `readGraphFile`
+  and `replay`. ear reads `ear.conf` (knobly) from `--config-dir`, once on the main thread at
+  boot, and the graph file keeper (`ear_config`) plans its first offer from an empty graph
+  through `DesiredGraph::plan` and `commit`, which replace `GraphControl`. A file that has errors
+  or that the graph refuses runs nothing instead of exiting 1. `StatusLog` (now in
+  `control/status_log.hpp`) is also a `GraphFileListener` and gains the graph file's lines:
+  `graph-file <edit|disk|write> <version> running=<version|none>`, then for that change
+  `graph-file error <line>:<column> <code>: <message>`, `graph-file refused <code>[ at
+  <line>:<column>]`, `graph-file dropped <n> edits`, `graph-file pending-restart <keys>` and
+  `graph-file write-failed <detail>`; and `graph-file written <version>` after each write.
