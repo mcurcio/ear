@@ -1,11 +1,11 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and its udev group, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
 ---
 
 # EAR on Talos with a MOTU 24Ao
 
-Nothing here has run on the hardware yet: it is what the design (`docs/design/batch2.md`
+EAR has run on the owner's node (hawking) since 2026-10-31; the rest is what the design (`docs/design/batch2.md`
 sections 5 and 7) and the sources below say the node and pod must give. Each step marked
 **[check]** is still to be confirmed on the cluster; correct this skill when it is.
 
@@ -35,7 +35,7 @@ machine:
       - name: snd_usb_audio
 ```
 
-Then the card appears in `/proc/asound/cards` **[check]**: `talosctl -n <node> read
+Then the card appears in `/proc/asound/cards` (seen 2026-10-31): `talosctl -n <node> read
 /proc/asound/cards`. Until a sound module loads there is no `/dev/snd` at all, so a pod that
 asks a device plugin for it stays Pending.
 
@@ -44,7 +44,8 @@ asks a device plugin for it stays Pending.
 A `card` node names its card only by its ALSA card id: the name in brackets in
 `/proc/asound/cards` (letters, digits, `-` and `_`, at most 15 characters; `CardId` in
 `src/core/sound_card.cpp`), never an index or an ALSA device string. EAR opens
-`hw:CARD=<id>,DEV=0`. The MOTU's id is whatever the kernel gives it **[check]**.
+`hw:CARD=<id>,DEV=0`. The MOTU 24Ao's id is `D24Ao` (seen on the owner's node 2026-10-31:
+`MOTU 24Ao at usb-0000:00:14.0-7, high speed`, 24 channels each way, 44.1 to 192 kHz).
 
 ```json
 { "name": "motu", "type": "card", "settings": { "card": "<card id>", "playback": 24 } }
@@ -63,7 +64,8 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
   to fails the card when it opens: the node is `failed engine-refused: <detail>`, and every other
   node keeps running on the dummy driver. Fix the rate, then `node.update` the card node (no
   retry happens by itself).
-- Users report that class-compliant mode offers at most 24 channels per direction **[check]**.
+- Class-compliant mode offers 24 channels per direction (the kernel's `stream0` for the card,
+  2026-10-31).
 
 ## 4. The namespace and the pod
 
@@ -77,14 +79,34 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
 - `/dev/snd` reaches the container through a device plugin such as squat/generic-device-plugin
   (a device group with path `/dev/snd`, then a resource limit on that group in the pod), or a
   privileged container.
-- The image runs as uid 10001, which must be in the group that owns `/dev/snd/*` on the node.
-  Out of the box no such group exists: the kernel gives sound devices no mode (root:root 0600),
-  and Talos runs udevd with `--resolve-names=never`, which ignores systemd's stock
-  `SUBSYSTEM=="sound", GROUP="audio"` rule (a named group). containerd copies the host's owner
-  and mode into the container. So give the node a udev rule with a numeric group, through
-  `machine.udev.rules` (applied only on a reboot), for example `SUBSYSTEM=="sound",
-  GROUP="2029", MODE="0660"`, and put the same gid in `securityContext.supplementalGroups`.
-  Check it with `talosctl -n <node> list --long /dev/snd`.
+- Out of the box `/dev/snd/*` is `root:root 0600` on the node (seen on the owner's node
+  2026-10-31): the kernel gives sound devices no mode. Talos runs udevd with
+  `--resolve-names=never`, so systemd's stock `SUBSYSTEM=="sound", GROUP="audio"` rule (a named
+  group) does nothing. A numeric-group rule through `machine.udev.rules` was tried and never
+  applied, not even to a card plugged in while udevd ran, so do not rely on one. Instead turn on
+  containerd's CRI option `device_ownership_from_security_context` on every node: a device a
+  device plugin gives a container is then created in it owned by the container's `runAsUser`
+  and `runAsGroup` (each only when set and non-zero), with the host's mode, so the owner's `rw`
+  is enough. On Talos it is one `machine.files` entry, applied only on a reboot:
+
+```yaml
+machine:
+  files:
+    - path: /etc/cri/conf.d/20-customization.part
+      op: create
+      content: |
+        [plugins."io.containerd.cri.v1.runtime"]
+          device_ownership_from_security_context = true
+```
+
+  Then set `securityContext.runAsUser: 10001` and `runAsGroup: 10001` in the pod (the image's
+  `ear` user), plus `runAsNonRoot: true`; no supplemental group. Without `runAsUser` the kubelet
+  passes the image's numeric user but never its group, so set both. The option does not touch a
+  privileged container's devices or a hostPath mount of `/dev`. Check it with `talosctl -n
+  <node> read /etc/cri/conf.d/cri.toml` (the key under `io.containerd.cri.v1.runtime`), then
+  `ls -ln /dev/snd` in the container shows `10001 10001` **[check]**.
+- A wrong owner shows up as ALSA's `Cannot get card index for <id>` and `playback open failed:
+  No such device`, not as a permission error: alsa-lib cannot open the card's control device.
 - Realtime priority: `securityContext.capabilities.add: [SYS_NICE]`, and leave
   `allowPrivilegeEscalation` unset or true. The binary carries CAP_SYS_NICE as a permitted-only
   file capability that EAR makes effective at boot; `allowPrivilegeEscalation: false` sets
