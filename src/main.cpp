@@ -222,8 +222,7 @@ int main(int argc, char** argv) {
 	engine->onStopSignal(stop);
 	engine->run();
 
-	// The keeper's last write runs as its thread ends. Its failure reaches standard output only, in
-	// the status log's words (status_log.hpp, "graph-file write-failed <detail>").
-	if (const auto failed = keeper.join()) std::cout << "graph-file write-failed " << *failed << std::endl;
+	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
+	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
 	return 0;
 }

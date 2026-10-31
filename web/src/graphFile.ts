@@ -1,9 +1,10 @@
 // The editor's copy of ear.conf (docs/design/knobly-config.md, "Wire additions"): the file as ear
-// last announced it, and the notices a person should see once (edits dropped by a hand edit, a
-// failed write). The browser never parses knobly: ear is the one judge of the text.
+// last announced it, and the notices a person should see once (edits dropped by a hand edit). A
+// failed write is the file's own state (writeFailed, shown while it holds), not a notice. The
+// browser never parses knobly: ear is the one judge of the text.
 import type { GraphFile, Notifications, ServerMessage } from "./protocol";
 
-export type FileNotice = { kind: "dropped"; count: number } | { kind: "writeFailed"; detail: string };
+export type FileNotice = { kind: "dropped"; count: number };
 
 export interface GraphFileState {
   file: GraphFile;
@@ -24,8 +25,8 @@ function isGraphFile(value: unknown): value is GraphFile {
 
 /**
  * A GraphFile result replaces the state; graphFile.changed replaces the file and adds a notice for
- * droppedEdits or a newly set writeFailed; other messages leave it unchanged. A change before the
- * first GraphFile result changes nothing (the subscription's answer comes first).
+ * droppedEdits; other messages leave it unchanged. A change before the first GraphFile result
+ * changes nothing (the subscription's answer comes first).
  */
 export function reduceFile(state: GraphFileState | null, message: ServerMessage): GraphFileState | null {
   if ("result" in message) return isGraphFile(message.result) ? { file: message.result, notices: [] } : state;
@@ -33,9 +34,6 @@ export function reduceFile(state: GraphFileState | null, message: ServerMessage)
   const { cause: _cause, droppedEdits, ...file } = message.params as Notifications["graphFile.changed"];
   const notices = [...state.notices];
   if (droppedEdits !== undefined && droppedEdits > 0) notices.push({ kind: "dropped", count: droppedEdits });
-  if (file.writeFailed !== undefined && file.writeFailed !== state.file.writeFailed) {
-    notices.push({ kind: "writeFailed", detail: file.writeFailed });
-  }
   return { file, notices };
 }
 

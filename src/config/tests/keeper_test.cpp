@@ -66,12 +66,13 @@ public:
 	explicit FakeDisk(std::optional<std::string> text) : text(std::move(text)) {}
 	std::optional<std::string> text;
 	bool failing = false;
+	std::string failure = "disk full";
 	int replaces = 0;
 	DiskText read() override { return text; }
 	std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected,
 	                                                            std::string_view next) override {
 		++replaces;
-		if (failing) return std::unexpected(std::string("disk full"));
+		if (failing) return std::unexpected(failure);
 		if (expected != text) return folder::ReplaceOutcome{folder::Changed{text}};
 		text = std::string(next);
 		return folder::ReplaceOutcome{folder::Replaced{}};
@@ -207,6 +208,20 @@ TEST_CASE("start() offers the boot file: the file change first, then the commit'
 	                           "route.added noise:MONO desk:playback_1", "route.added noise:MONO rec:FL"});
 }
 
+TEST_CASE("start() reads ear.conf again once watching, so a hand edit made after the boot read is run",
+          "[keeper]") {
+	Fixture f("start_reread");   // the boot read: the record's example
+	handEdit(f.file, handText);  // before the watch is armed: no disk event will ever tell of it
+	f.keeper->start();
+	f.pump();
+	REQUIRE(f.fileLog.changes.size() == 2);
+	CHECK(f.fileLog.changes[0].file.text == recordExample);
+	CHECK(f.lastChange().cause == FileChangeCause::disk);
+	CHECK(f.lastChange().file.text == handText);
+	CHECK(f.lastChange().file.running == f.lastChange().file.version);
+	CHECK(f.graph.nodes()[3].spec.settings["path"] == "hand.wav");
+}
+
 TEST_CASE("A boot file with errors is announced with its diagnostics, and nothing runs", "[keeper]") {
 	Fixture f("start_errors", replaced(recordExample, "node white noise;", "nod white noise;"));
 	f.keeper->start();
@@ -301,7 +316,7 @@ TEST_CASE("A hand edit at the swap wins: the write finds it, and leaves it in pl
 	CHECK(f.fileLog.written.empty());
 }
 
-TEST_CASE("A refused hand edit after a dropped edit shows the refusal; the graph keeps the dropped edit", "[keeper]") {
+TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the graph keeps the dropped edit", "[keeper]") {
 	Fixture f("refused_hand");
 	f.start();
 	REQUIRE(ok(f.update("rec", take2)));
@@ -323,7 +338,7 @@ TEST_CASE("A refused hand edit after a dropped edit shows the refusal; the graph
 	CHECK(f.fileLog.written.empty());
 }
 
-TEST_CASE("A hand typo is shown and runs nothing; edits are then file-invalid until a set fixes it", "[keeper]") {
+TEST_CASE("A hand typo is shown and runs nothing, and edits are then file-invalid until a set fixes it", "[keeper]") {
 	Fixture f("typo");
 	f.start();
 	handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
@@ -448,7 +463,65 @@ TEST_CASE("A failed write is shown, retried only after the next accepted change,
 	CHECK(disk.text == replaced(recordExample, "take1.wav", "take3.wav"));
 }
 
-TEST_CASE("A file at another rate is accepted with a pending restart; a missing file is created by a set",
+TEST_CASE("A write failure is announced again only when its detail changes", "[keeper]") {
+	FakeDisk disk(recordExample);
+	Fixture f("write_failed_again", recordExample, &disk);
+	f.start();
+	disk.failing = true;
+	REQUIRE(ok(f.update("rec", take2)));
+	f.free();
+	REQUIRE(f.lastChange().cause == FileChangeCause::write);
+
+	REQUIRE(ok(f.update("rec", take3)));   // the next accepted change retries the write
+	f.log.clear();
+	f.free();
+	CHECK(disk.replaces == 2);
+	CHECK(f.log.lines.empty());            // the same failure: nothing new to say
+
+	disk.failure = "read-only file system";
+	REQUIRE(ok(f.update("rec", take2)));
+	f.log.clear();
+	f.free();
+	CHECK(disk.replaces == 3);
+	CHECK(f.log.lines == Lines{"file write"});
+	CHECK(f.lastChange().file.writeFailed == "read-only file system");
+}
+
+TEST_CASE("The version moves only when the text changes, so a reload of the same text keeps a set valid",
+          "[keeper]") {
+	Fixture f("same_text");
+	f.start();
+	REQUIRE(ok(f.update("rec", take2)));
+	const auto edited = f.graphFile();
+	handEdit(f.file, edited.text);   // a hand save of exactly the working copy, before ear wrote it
+	f.diskEvent();
+	const auto reloaded = f.graphFile();
+	CHECK(reloaded.text == edited.text);
+	CHECK(reloaded.version == edited.version);
+	CHECK(ok(f.set(replaced(edited.text, "take2.wav", "take3.wav"), edited.version)));
+}
+
+TEST_CASE("An edit that would make ear.conf larger than ear reads is refused as invalid-text, and nothing is kept",
+          "[keeper]") {
+	Fixture f("too_large");
+	f.start();
+	const std::string longPath(maxDocumentBytes / 2, 'a');
+	REQUIRE(ok(f.update("rec", {{"path", longPath}})));
+	const auto before = f.graphFile();
+	f.log.clear();
+	auto results = f.run({control::AddNode{{"rec2", "file", {{"path", longPath}}}}});
+	CHECK(code(results[0]) == "invalid-text");
+	REQUIRE(std::holds_alternative<control::FileRefusal>(results[0]));
+	const auto& refused = std::get<control::FileRefusal>(results[0]);
+	REQUIRE(std::holds_alternative<control::InvalidText>(refused));
+	CHECK(std::get<control::InvalidText>(refused).diagnostics[0].code == tooLargeCode);
+	CHECK(f.log.lines == Lines{"reply"});
+	CHECK(f.graphFile().version == before.version);
+	f.free();
+	CHECK(contents(f.file) == before.text);   // the last text that fits is the one written
+}
+
+TEST_CASE("A file at another rate is accepted with a pending restart, and a missing file is created by a set",
           "[keeper]") {
 	SECTION("pending restart") {
 		Fixture f("pending", recordExample, nullptr, {48000, 256});
@@ -481,7 +554,7 @@ TEST_CASE("stop(): queued edits answer stopping, reads are answered, and the las
 		std::optional<std::vector<CommandResult>> edit;
 		f.request({control::UpdateNode{"rec", take2}}, edit);
 		f.main.runOne();   // judged and accepted; its completion waits on the keeper's thread
-		f.graph.close();
+		// The graph stays open, so the late edit's stopping is the keeper's own answer, not the plan's.
 		std::optional<std::vector<CommandResult>> late;
 		std::optional<std::vector<CommandResult>> read;
 		f.request({control::UpdateNode{"rec", take3}}, late);
@@ -497,8 +570,11 @@ TEST_CASE("stop(): queued edits answer stopping, reads are answered, and the las
 		CHECK(contents(f.file) == replaced(recordExample, "take1.wav", "take2.wav"));
 		CHECK_FALSE(f.keeper->finalWriteFailure().has_value());
 
+		CHECK(f.graph.nodes()[3].spec.settings == take2);
+
+		// A text with errors is announced without a plan, so only the stop guards keep it unread.
 		f.log.clear();
-		handEdit(f.file, handText);
+		handEdit(f.file, replaced(recordExample, "node white noise;", "nod white noise;"));
 		f.diskEvent();
 		CHECK(f.log.lines.empty());
 		CHECK(f.main.empty());

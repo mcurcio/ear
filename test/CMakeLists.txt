@@ -1,9 +1,20 @@
 # ear_catch_main: the Catch2 runner (vendored single header, main.cpp) as a library. Every test
 # executable links it and gets Catch's header with it, then registers its test cases with
-# include(Catch) and catch_discover_tests(<target>) (one CTest test per Catch test case).
+# ear_catch_tests(<target>) (one CTest test per Catch test case).
 add_library(ear_catch_main STATIC main.cpp)
 target_include_directories(ear_catch_main SYSTEM PUBLIC
 	"${PROJECT_SOURCE_DIR}/vendor/catch/single_include")
+
+# ear_catch_tests(<target>): catch_discover_tests with --warn NoTests, so a CTest test whose name
+# matches no Catch test case fails (exit 2) instead of passing having run nothing. A Catch name
+# holding ';' is split by CMake into two such tests, and Catch's own "No test cases matched"
+# exits 0; this is what makes that, or any other filter that runs nothing, fail. Catch.cmake is
+# included inside the function: it sets the path of its discovery script as a variable, which a
+# sibling directory (src/<package>) would not see from here.
+function(ear_catch_tests target)
+	include(Catch)
+	catch_discover_tests(${target} EXTRA_ARGS --warn NoTests)
+endfunction()
 
 # The ear binary starts, loads its shared libraries and prints its options.
 add_test(NAME ear_help COMMAND ear --help)

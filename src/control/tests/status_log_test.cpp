@@ -67,3 +67,10 @@ TEST_CASE("A write prints its version", "[status_log]") {
 	log.graphFileWritten("v7");
 	CHECK(out.str() == "graph-file written v7\n");
 }
+
+TEST_CASE("The last write's failure prints the change's write-failed line on its own", "[status_log]") {
+	std::ostringstream out;
+	StatusLog log(out);
+	log.graphFileWriteFailed("ear.conf: No space left on device");
+	CHECK(out.str() == "graph-file write-failed ear.conf: No space left on device\n");
+}

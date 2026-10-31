@@ -62,20 +62,9 @@ describe("the protocol fixtures", () => {
     }
   });
 
-  // graph-file.json (S3's page) never sends graphFile.get; this list is the known gap, and the
-  // second test fails once a fixture sends it, so the gap cannot outlive its fix.
-  const notInAFixtureYet: readonly string[] = ["graphFile.get"];
-
   it("send every method", () => {
     const sent = requestMethods();
-    for (const method of methodNames) {
-      if (!notInAFixtureYet.includes(method)) expect(sent, method).toContain(method);
-    }
-  });
-
-  it("list as missing only methods no fixture sends", () => {
-    const sent = requestMethods();
-    for (const method of notInAFixtureYet) expect(sent, method).not.toContain(method);
+    for (const method of methodNames) expect(sent, method).toContain(method);
   });
 
   it("receive every notification", () => {

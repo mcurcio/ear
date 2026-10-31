@@ -3,6 +3,7 @@
 // object; no knobly type is in this header, and ear_config's headers are its own (no other package
 // includes them).
 #pragma once
+#include <cstddef>
 #include <expected>
 #include <memory>
 #include <optional>
@@ -16,6 +17,9 @@
 #include "ear/core/node_type.hpp"
 namespace ear::config {
 inline constexpr std::string_view rootDocument = "ear.conf";
+/// The most of ear.conf ear reads (the disk refuses a larger file) and so the most it keeps: a text
+/// over it, a candidate's included, does not load (tooLargeCode).
+inline constexpr std::size_t maxDocumentBytes = 1 << 20;
 // ear's own diagnostic codes (knobly program codes must hold a '/'): their one home
 inline constexpr std::string_view missingFileCode = "ear/missing-file";
 inline constexpr std::string_view unreadableFileCode = "ear/unreadable-file";
@@ -23,6 +27,8 @@ inline constexpr std::string_view includeUnsupportedCode = "ear/include-unsuppor
 inline constexpr std::string_view unknownDirectiveCode = "ear/unknown-directive";
 inline constexpr std::string_view badDirectiveCode = "ear/bad-directive";
 inline constexpr std::string_view missingDirectiveCode = "ear/missing-directive";
+inline constexpr std::string_view tooLargeCode = "ear/too-large";
+inline constexpr std::string_view unwritableEditCode = "ear/unwritable-edit";
 /// ear.conf as read from disk: its text; std::nullopt when it is not there; or why it cannot be read.
 using DiskText = std::expected<std::optional<std::string>, std::string>;
 /// Where each wanted item is written: parallel to GraphSpec::nodes and GraphSpec::routes.
@@ -48,7 +54,8 @@ public:
   /// Pure (no I/O): knobly's processor with no extension registered, over knobly's memory source
   /// holding only rootDocument. Missing: text "", exactly one error missingFileCode at 1:1
   /// ("ear.conf is not there"). Unreadable: text "", exactly one error unreadableFileCode at 1:1
-  /// ("ear.conf cannot be read: <detail>"). `catalogue` outlives the model.
+  /// ("ear.conf cannot be read: <detail>"). Over maxDocumentBytes: text "", exactly one error
+  /// tooLargeCode at 1:1. `catalogue` outlives the model.
   static GraphFileModel load(const DiskText& disk, const NodeCatalogue& catalogue);
   GraphFileModel(GraphFileModel&& other) noexcept;
   GraphFileModel& operator=(GraphFileModel&& other) noexcept;
@@ -59,7 +66,10 @@ public:
   const GraphFileRead& read() const noexcept;    // worked out at load
   // The graph edits, made at the source (docs/design/knobly-config.md, "File format"; S3's edit rules).
   // Const: the model they are called on never changes. Precondition: read().wanted is present (the
-  // keeper refuses file-invalid first); otherwise std::logic_error.
+  // keeper refuses file-invalid first); otherwise std::logic_error. A text knobly cannot write (a
+  // control character other than newline, tab and carriage return) is refused before any edit, with
+  // the code the desired graph would give it; anything else knobly's written layer throws is
+  // InvalidText with one error unwritableEditCode at 1:1, never an exception.
   /// Each changed value's definition is set (every node using it changes too); an added key is
   /// appended in the node's own block (one is written when it has none); a removed key's statement
   /// is removed. SharedDefinition when an added or removed key's statement makes more than one

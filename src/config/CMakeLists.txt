@@ -5,7 +5,7 @@
 # to it: its internal headers are in src/config/ (never included by another package), and the one
 # public header (include/ear/config/graph_file_keeper.hpp) holds no knobly type.
 # knobly is in compiled mode (CMakeLists.txt, KNOBLY_COMPILED), so its definitions are compiled
-# once, in knobly_implementation.cpp. The ear binary does not link it yet.
+# once, in knobly_implementation.cpp.
 add_library(ear_config STATIC
 	graph_file_disk.cpp
 	graph_file_keeper.cpp
@@ -22,7 +22,6 @@ set_target_properties(ear_config PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_config PUBLIC ear_core ear_control ear_folder PRIVATE knobly::knobly)
 
 if(BUILD_TESTS)
-	include(Catch)
 	add_executable(ear_config_tests
 		tests/graph_file_edit_test.cpp
 		tests/graph_file_keeper_test.cpp
@@ -35,5 +34,5 @@ if(BUILD_TESTS)
 	target_include_directories(ear_config_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 	target_link_libraries(ear_config_tests PRIVATE ear_config knobly::knobly ear_catch_main)
 	add_dependencies(ear_config_tests ear_config_verify_interface_header_sets)
-	catch_discover_tests(ear_config_tests)
+	ear_catch_tests(ear_config_tests)
 endif()

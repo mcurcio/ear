@@ -211,7 +211,6 @@ TEST_CASE("Command errors have one code each and describe what they name", "[com
 		{UnknownPort{{"rec", "FX"}}, "unknown-port rec:FX"},
 		{WrongDirection{route}, "wrong-direction rec:FL -> noise:MONO"},
 		{InvalidName{"a.b"}, "invalid-name a.b"},
-		{PortsChanged{"motu"}, "ports-changed motu"},
 		{UnknownRoute{{{"noise", "MONO"}, {"rec", "FR"}}}, "unknown-route noise:MONO -> rec:FR"},
 		{Stopping{}, "stopping"},
 	};

@@ -1,5 +1,5 @@
 {
-  "description": "The graph file over the wire (docs/design/knobly-config.md, \"Wire additions\"), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which replaces both cards; a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with graph_frequency 44100 (pendingRestart); a batch [node.update, graph.subscribe] and a batch [graph.subscribe, graphFile.subscribe]. file is the graph file the client holds at the end, graph the graph.",
+  "description": "The graph file over the wire (docs/design/knobly-config.md, \"Wire additions\"), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which replaces both cards; a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with graph_frequency 44100 (pendingRestart); a batch [node.update, graph.subscribe], a batch [graph.subscribe, graphFile.subscribe]; and graphFile.get, answered with the file as it stands. file is the graph file the client holds at the end, graph the graph.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
@@ -14,7 +14,8 @@
     "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take3.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 44100;\\nblock_size 256;\\n@set $ch 4;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take2.wav\\\"; }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:MONO rec:FL;\\nroute noise:MONO desk:playback_1;\\n\",\"version\":\"v9\"}}",
     "[{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take4.wav\"}}},{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"graph.subscribe\"}]",
-    "[{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"graph.subscribe\"},{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"graphFile.subscribe\"}]"
+    "[{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"graph.subscribe\"},{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"graphFile.subscribe\"}]",
+    "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"graphFile.get\"}"
   ],
   "messages": [
     {
@@ -777,7 +778,20 @@
           ]
         }
       }
-    ]
+    ],
+    {
+      "jsonrpc": "2.0",
+      "id": 17,
+      "result": {
+        "version": "v11",
+        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "diagnostics": [],
+        "running": "v11",
+        "pendingRestart": [
+          "graphFrequency"
+        ]
+      }
+    }
   ],
   "graph": {
     "graphFrequency": 48000,

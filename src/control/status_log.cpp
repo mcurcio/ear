@@ -8,6 +8,12 @@ namespace ear::control {
 
 StatusLog::StatusLog(std::ostream& out) : out_(out) {}
 
+namespace {
+
+std::string writeFailedText(const std::string& detail) { return std::format("write-failed {}", detail); }
+
+} // namespace
+
 void StatusLog::nodeChanged(const NodeStatus& status) {
 	if (status.state == NodeState::failed && status.reason)
 		out_ << std::format("node {} failed {}: {}\n", status.name, failureCode(status.reason->code),
@@ -52,7 +58,12 @@ void StatusLog::graphFileChanged(const GraphFileChanged& change) {
 		for (const FormatKey key : file.pendingRestart) pending += std::format(" {}", formatKeyName(key));
 		line(pending);
 	}
-	if (file.writeFailed) line(std::format("write-failed {}", *file.writeFailed));
+	if (file.writeFailed) line(writeFailedText(*file.writeFailed));
+}
+
+void StatusLog::graphFileWriteFailed(const std::string& detail) {
+	out_ << "graph-file " << writeFailedText(detail) << '\n';
+	out_.flush();
 }
 
 void StatusLog::graphFileWritten(const std::string& version) {

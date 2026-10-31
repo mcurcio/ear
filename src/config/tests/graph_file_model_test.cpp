@@ -94,6 +94,8 @@ TEST_CASE("Each of ear's codes is placed where the problem is written, and any e
 		const auto model = f.load(formatLines + "node white noise;\nroute noise rec:FL;\n");
 		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}});
 		CHECK_FALSE(model.read().wanted.has_value());
+		const auto empty = f.load(formatLines + "node white noise;\nroute \":MONO\" \"rec:\";\n");   // an empty part
+		CHECK(placed(empty.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}, {"ear/bad-directive", 4, 15}});
 	}
 	SECTION("a node without its name") {
 		const auto model = f.load(formatLines + "node white;\n");
@@ -162,6 +164,22 @@ TEST_CASE("A missing or unreadable ear.conf is one error and an empty text", "[g
 		CHECK(only.place == control::TextPlace{1, 1});
 		CHECK_FALSE(model.read().wanted.has_value());
 	}
+}
+
+TEST_CASE("A text over 1 MiB is one error and an empty text, and one at 1 MiB loads", "[graph_file_model]") {
+	const Fixture f;
+	const std::string head = "graph_frequency 48000;\nblock_size 256;\n#";
+	const std::string atMost = head + std::string(maxDocumentBytes - head.size() - 1, 'x') + "\n";
+	REQUIRE(atMost.size() == maxDocumentBytes);
+	CHECK(GraphFileModel::load(DiskText{atMost}, f.catalogue).read().diagnostics.empty());
+
+	const auto model = GraphFileModel::load(DiskText{atMost + "\n"}, f.catalogue);
+	CHECK(model.text().empty());
+	CHECK(model.read().diagnostics ==
+	      std::vector<control::Diagnostic>{{control::Severity::error, "ear/too-large",
+	                                        "ear.conf would be larger than 1048576 bytes, the most ear reads",
+	                                        control::TextPlace{1, 1}}});
+	CHECK_FALSE(model.read().wanted.has_value());
 }
 
 TEST_CASE("@include is refused with ear's own error, and another unknown @name keeps knobly's", "[graph_file_model]") {

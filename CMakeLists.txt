@@ -125,7 +125,8 @@ endif()
 
 # Tests are on before src/ so its packages' test directories register theirs with CTest;
 # test/ holds ear_catch_main, the Catch2 runner every test executable links, and the tests of
-# the ear binary itself. Catch.cmake (catch_discover_tests) is on the module path for them.
+# the ear binary itself, and ear_catch_tests (catch_discover_tests from Catch.cmake, on the module
+# path) for every package's test executable.
 if(BUILD_TESTS)
 	enable_testing()
 	list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/vendor/catch/contrib")

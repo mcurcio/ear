@@ -131,7 +131,7 @@ TEST_CASE("A changed value sets its definition, so every node using it changes",
 	}
 }
 
-TEST_CASE("An added key goes in the node's own block; a key made by a shared line is refused", "[graph_file_edit]") {
+TEST_CASE("An added key goes in the node's own block, and a key made by a shared line is refused", "[graph_file_edit]") {
 	const Fixture f;
 	const auto model = f.load(recordExample);
 
@@ -189,7 +189,7 @@ TEST_CASE("Removing a node removes its line and every route line naming it", "[g
 	}
 }
 
-TEST_CASE("Added nodes and routes are appended; an edit that changes nothing gives nothing", "[graph_file_edit]") {
+TEST_CASE("Added nodes and routes are appended, and an edit that changes nothing gives nothing", "[graph_file_edit]") {
 	const Fixture f;
 	const auto model = f.load(recordExample);
 
@@ -243,6 +243,44 @@ TEST_CASE("Unknown items and values that cannot be written are refused", "[graph
 		CHECK(nodeIn(edited, "rec").settings == json{{"path", "take1.wav"}, {"label", "front"}});
 		const auto pink = candidate(model.addNode({"n3", "pink", {{"hue", "red"}, {"depth", 3}}}));
 		CHECK(nodeIn(pink, "n3").settings == json{{"depth", "3"}, {"hue", "red"}});   // read back as text: undeclared
+	}
+}
+
+TEST_CASE("A text with a control character knobly cannot write is refused as the graph would refuse it",
+          "[graph_file_edit]") {
+	const Fixture f;
+	const auto model = f.load(recordExample);
+	const std::string nul("x\0y", 3);
+
+	// Each of these once reached knobly's written layer, which threw on the keeper's thread and ended ear.
+	CHECK(commandDetail(model.updateNode("rec", {{"path", nul}})) ==
+	      "invalid-settings rec: path: holds a control character ear.conf cannot hold");
+	CHECK(commandDetail(model.addNode({"rec2", "file", {{"path", "a\x01" "b"}}})) ==
+	      "invalid-settings rec2: path: holds a control character ear.conf cannot hold");
+	CHECK(commandDetail(model.addNode({"n3", "pink", {{"label", "a\x7f"}}})) ==
+	      "invalid-settings n3: label: holds a control character ear.conf cannot hold");   // undeclared: text too
+	CHECK(commandCode(model.addNode({"a\x02", "white", json::object()})) == "invalid-name");
+	CHECK(commandCode(model.addNode({"n4", "wh\x1fite", json::object()})) == "unknown-node-type");
+	CHECK(commandDetail(model.addRoute({{"noise", "MO" + nul}, {"rec", "FL"}})) == "unknown-port noise:MO" + nul);
+	CHECK(commandCode(model.addRoute({{"noise", "MONO"}, {"gh\x03st", "FL"}})) == "unknown-node");
+	CHECK(commandCode(model.addRoute({{"noise", "MONO"}, {"ghost", "F\x03L"}})) == "unknown-node");
+
+	SECTION("newline, tab, carriage return and U+2028 are written with knobly's escapes and read back") {
+		const std::string path = "a\nb\tc\rd\u2028e";
+		const auto edited = candidate(model.updateNode("rec", {{"path", path}}));
+		CHECK(nodeIn(edited, "rec").settings == json{{"path", path}});
+	}
+	SECTION("anything else knobly's writer refuses is invalid-text, never an exception") {
+		// Not UTF-8: knobly's quote() throws misuse_error. The wire's JSON parser never yields such a
+		// text, so this is the backstop behind the checks above.
+		const EditRefusal refused = refusal(model.updateNode("rec", {{"path", std::string("\xff")}}));
+		const auto* file = std::get_if<control::FileRefusal>(&refused);
+		REQUIRE(file != nullptr);
+		const auto* invalid = std::get_if<control::InvalidText>(file);
+		REQUIRE(invalid != nullptr);
+		REQUIRE(invalid->diagnostics.size() == 1);
+		CHECK(invalid->diagnostics[0].code == "ear/unwritable-edit");
+		CHECK(invalid->diagnostics[0].place == control::TextPlace{1, 1});
 	}
 }
 

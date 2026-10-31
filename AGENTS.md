@@ -357,8 +357,10 @@ ear runs.
 
 ## Tests
 
-Catch2 v2; each package has one test executable, and `catch_discover_tests` makes each test
-case its own CTest test, so `ctest --parallel` runs them side by side.
+Catch2 v2; each package has one test executable, and `ear_catch_tests` (`test/CMakeLists.txt`:
+`catch_discover_tests` with Catch's `--warn NoTests`) makes each test case its own CTest test, so
+`ctest --parallel` runs them side by side; a CTest test that matches no test case fails. Keep `;`
+out of test names: CMake splits a name at it.
 
 | Executable | What it proves |
 |---|---|

@@ -77,6 +77,21 @@ ByteRange rangeOf(const vr::directive& directive) {
 	return ByteRange{span.start().offset(), span.end().offset()};
 }
 
+/// The kind `type` declares for `key`; nothing when it declares none or the type is unknown.
+std::optional<SettingKind> declaredKind(const NodeType* type, std::string_view key) {
+	if (type != nullptr)
+		for (const auto& declared : type->settingKinds())
+			if (declared.key == key) return declared.kind;
+	return std::nullopt;
+}
+
+/// `<node>:<port>`, split at its first ':', each part non-empty; nothing otherwise.
+std::optional<PortRef> splitEnd(const std::string& text) {
+	const auto colon = text.find(':');
+	if (colon == std::string::npos || colon == 0 || colon + 1 == text.size()) return std::nullopt;
+	return PortRef{text.substr(0, colon), text.substr(colon + 1)};
+}
+
 /// One of the two format lines as read: its value when it read, and where it is written.
 struct FormatLine {
 	std::optional<std::uint32_t> value;
@@ -108,16 +123,13 @@ public:
 				                  vl::program_code(missingDirectiveCode)));
 	}
 
-	/// Both format lines read, and no diagnostic (knobly's or ear's) is placed on either.
+	/// Both format lines read, and none of knobly's diagnostics is placed on either. (ear's own never
+	/// is once both read: each of them on a format line leaves its value unset, and a repeated line's
+	/// sits on the repeat, outside the first line's range.)
 	std::optional<AudioFormat> format(const vl::sequence<vl::located_diagnostic>& knobly) const {
 		if (!frequency_.value || !blockSize_.value) return std::nullopt;
-		const auto placedOn = [&](const vl::place& place) {
-			return frequency_.range->holds(place) || blockSize_.range->holds(place);
-		};
 		for (const auto& diagnostic : knobly)
-			if (placedOn(diagnostic.place())) return std::nullopt;
-		for (const auto& diagnostic : found_)
-			if (placedOn(diagnostic.place())) return std::nullopt;
+			if (frequency_.range->holds(diagnostic.place()) || blockSize_.range->holds(diagnostic.place())) return std::nullopt;
 		return AudioFormat{*frequency_.value, *blockSize_.value};
 	}
 
@@ -175,13 +187,6 @@ private:
 		line.value = static_cast<std::uint32_t>(*number);
 	}
 
-	SettingKind kindOf(const NodeType* type, std::string_view key) const {
-		if (type != nullptr)
-			for (const auto& declared : type->settingKinds())
-				if (declared.key == key) return declared.kind;
-		return SettingKind::text;   // undeclared, or an unknown type: the plan judges it
-	}
-
 	void readNode(const vr::directive& directive) {
 		const auto values = directive.values();
 		if (values.size() != 2) {
@@ -207,7 +212,8 @@ private:
 					continue;
 				}
 				const auto value = setting.values().at(0);
-				if (kindOf(nodeType, key) == SettingKind::wholeNumber) {
+				// Undeclared, or an unknown type: read as text, and the plan judges it.
+				if (declaredKind(nodeType, key).value_or(SettingKind::text) == SettingKind::wholeNumber) {
 					if (const auto number = attempt([&] { return value.integer(); })) settings[key] = *number;
 					else ok = false;
 				} else {
@@ -224,12 +230,9 @@ private:
 	std::optional<PortRef> readEnd(const vw::expanded_value& value) {
 		const auto text = attempt([&] { return value.string(); });
 		if (!text) return std::nullopt;
-		const auto colon = text->find(':');
-		if (colon == std::string::npos || colon == 0 || colon + 1 == text->size()) {
-			report(value.error(std::format("{} is not <node>:<port>", *text), vl::program_code(badDirectiveCode)));
-			return std::nullopt;
-		}
-		return PortRef{text->substr(0, colon), text->substr(colon + 1)};
+		auto end = splitEnd(*text);
+		if (!end) report(value.error(std::format("{} is not <node>:<port>", *text), vl::program_code(badDirectiveCode)));
+		return end;
 	}
 
 	void readRoute(const vr::directive& directive) {
@@ -263,6 +266,16 @@ vw::document_graph loadGraph(const std::string& text) {
 
 // ---- Edits at the source (S3's edit rules) ----
 
+/// A text knobly can write as a string: its grammar's STRING has escapes for newline, tab and
+/// carriage return only, so any other control character (U+0000 to U+001F, U+007F) has no written
+/// form, and knobly's quote() would give text its own reader refuses.
+bool writable(std::string_view text) {
+	return std::none_of(text.begin(), text.end(), [](char c) {
+		const auto byte = static_cast<unsigned char>(c);
+		return (byte < 0x20 && c != '\n' && c != '\t' && c != '\r') || byte == 0x7F;
+	});
+}
+
 /// knobly's quote of a text, escapes included.
 std::string quoted(std::string_view text) {
 	const vl::config_text quote = vl::quote(text);
@@ -294,11 +307,10 @@ bool writableKey(std::string_view key) {
 	return !key.empty() && first(key.front()) && std::all_of(key.begin() + 1, key.end(), rest);
 }
 
-std::optional<SettingKind> declaredKind(const NodeType* type, std::string_view key) {
-	if (type != nullptr)
-		for (const auto& declared : type->settingKinds())
-			if (declared.key == key) return declared.kind;
-	return std::nullopt;
+/// A text setting's value as knobly text: quoted, or refused when knobly cannot write it.
+std::expected<std::string, InvalidSettings> textValue(const NodeName& node, const std::string& key, const std::string& text) {
+	if (!writable(text)) return std::unexpected(InvalidSettings{node, key + ": holds a control character ear.conf cannot hold"});
+	return quoted(text);
 }
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the
@@ -309,12 +321,12 @@ std::expected<std::string, InvalidSettings> valueText(const NodeName& node, cons
 	if (const auto kind = declaredKind(type, key)) {
 		if (*kind == SettingKind::text) {
 			if (!value.is_string()) return std::unexpected(InvalidSettings{node, key + ": expected text"});
-			return quoted(value.get<std::string>());
+			return textValue(node, key, value.get<std::string>());
 		}
 		if (!value.is_number_integer()) return std::unexpected(InvalidSettings{node, key + ": expected a whole number"});
 		return value.dump();
 	}
-	if (value.is_string()) return quoted(value.get<std::string>());
+	if (value.is_string()) return textValue(node, key, value.get<std::string>());
 	if (value.is_number_integer()) return value.dump();
 	return std::unexpected(InvalidSettings{node, key + ": cannot be written"});
 }
@@ -386,10 +398,7 @@ private:
 		if (values.size() != 2) return std::nullopt;
 		const auto end = [](const vw::expanded_value& value) -> std::optional<PortRef> {
 			try {
-				const std::string text = value.string();
-				const auto colon = text.find(':');
-				if (colon == std::string::npos) return std::nullopt;
-				return PortRef{text.substr(0, colon), text.substr(colon + 1)};
+				return splitEnd(value.string());
 			} catch (const vl::diagnostic_error&) {
 				return std::nullopt;
 			}
@@ -450,6 +459,25 @@ const NodeSpec* heldNode(const GraphSpec& wanted, const NodeName& name) {
 std::unexpected<EditRefusal> refuse(CommandError error) { return std::unexpected(EditRefusal{std::move(error)}); }
 std::unexpected<EditRefusal> refuse(control::FileRefusal refusal) { return std::unexpected(EditRefusal{std::move(refusal)}); }
 
+/// Runs one edit. Every text an edit writes is checked first, so knobly's written layer throwing is a
+/// backstop: an invalid-text refusal, never an exception escaping to the keeper's thread (which would
+/// end ear). knobly_error: the text is not what the place takes; misuse_error: quote() was given
+/// text that is not UTF-8. ear's own logic_errors are bugs and are not caught.
+template <class Edit> EditOutcome guarded(Edit edit) {
+	const auto unwritable = [](std::string_view what) {
+		return refuse(control::FileRefusal{control::InvalidText{{control::Diagnostic{
+		    control::Severity::error, std::string(unwritableEditCode),
+		    std::format("the edit cannot be written in {}: {}", rootDocument, what), control::TextPlace{1, 1}}}}});
+	};
+	try {
+		return edit();
+	} catch (const vl::knobly_error& error) {
+		return unwritable(error.what());
+	} catch (const vl::misuse_error& error) {
+		return unwritable(error.what());
+	}
+}
+
 } // namespace
 
 bool GraphFileRead::hasErrors() const noexcept {
@@ -484,6 +512,11 @@ GraphFileModel GraphFileModel::load(const DiskText& disk, const NodeCatalogue& c
 	}
 	if (!disk->has_value()) {
 		impl->read = onlyError(missingFileCode, std::format("{} is not there", rootDocument));
+		return GraphFileModel(std::move(impl));
+	}
+	if ((*disk)->size() > maxDocumentBytes) {   // an edit's or a set's candidate: the disk refuses a larger file
+		impl->read = onlyError(tooLargeCode, std::format("{} would be larger than {} bytes, the most ear reads",
+		                                                 rootDocument, maxDocumentBytes));
 		return GraphFileModel(std::move(impl));
 	}
 	impl->text = **disk;
@@ -524,101 +557,122 @@ EditOutcome finish(const Editing& editing, const NodeCatalogue& catalogue) {
 } // namespace
 
 EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings& settings) const {
-	const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
-	if (held == nullptr) return refuse(UnknownNode{name});
-	if (!settings.is_object()) return refuse(InvalidSettings{name, "settings: must be an object"});
-	if (held->settings == settings) return std::optional<GraphFileModel>{};
-	const NodeType* type = impl_->catalogue->find(held->type);
-	std::map<std::string, std::string> written;   // every key's value as knobly text, checked before any edit
-	for (const auto& [key, value] : settings.items()) {
-		auto text = valueText(name, type, key, value);
-		if (!text) return refuse(text.error());
-		written.emplace(key, std::move(*text));
-	}
-
-	const Editing editing(impl_->text);
-	const auto node = editing.node(name);
-	if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
-	std::vector<std::pair<vw::written_value, std::string>> changes;
-	std::vector<vw::statement> removals;
-	std::set<std::string> present;
-	if (const auto block = node->block())
-		for (const vr::directive& setting : *block) {
-			const std::string key = setting.name();
-			present.insert(key);
-			if (!settings.contains(key)) {
-				if (auto shared = editing.shared(setting.written())) return refuse(std::move(*shared));
-				removals.push_back(setting.written());
-			} else if (settings.at(key) != held->settings.at(key)) {
-				const auto value = setting.values().at(0);
-				changes.emplace_back(value.definition().value_or(value.written()), written.at(key));
-			}
+	return guarded([&]() -> EditOutcome {
+		const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
+		if (held == nullptr) return refuse(UnknownNode{name});
+		if (!settings.is_object()) return refuse(InvalidSettings{name, "settings: must be an object"});
+		if (held->settings == settings) return std::optional<GraphFileModel>{};
+		const NodeType* type = impl_->catalogue->find(held->type);
+		std::map<std::string, std::string> written;   // every key's value as knobly text, checked before any edit
+		for (const auto& [key, value] : settings.items()) {
+			auto text = valueText(name, type, key, value);
+			if (!text) return refuse(text.error());
+			written.emplace(key, std::move(*text));
 		}
-	std::vector<std::string> added;   // `<key> <value>;`, in JSON order
-	for (const auto& [key, text] : written)
-		if (!present.contains(key)) added.push_back(std::format("{} {};", key, text));
-	const vw::written_directive statement = node->written();
-	if (!added.empty())
-		if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
 
-	const auto joined = [&](std::string_view between) {
-		std::string all;
-		for (const auto& one : added) all += (all.empty() ? "" : std::string(between)) + one;
-		return all;
-	};
-	for (const auto& [value, text] : changes) value.set(vl::text(text));
-	if (!added.empty()) {
-		if (const auto block = statement.block()) block->add_statements(vl::text(joined("\n")));   // a line each
-		else addBlock(statement, editing.original(), joined(" "));
-	}
-	removeAll(std::move(removals));
-	return finish(editing, *impl_->catalogue);
+		const Editing editing(impl_->text);
+		const auto node = editing.node(name);
+		if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+		std::vector<std::pair<vw::written_value, std::string>> changes;
+		std::vector<vw::statement> removals;
+		std::set<std::string> present;
+		if (const auto block = node->block())
+			for (const vr::directive& setting : *block) {
+				const std::string key = setting.name();
+				present.insert(key);
+				if (!settings.contains(key)) {
+					if (auto shared = editing.shared(setting.written())) return refuse(std::move(*shared));
+					removals.push_back(setting.written());
+				} else if (settings.at(key) != held->settings.at(key)) {
+					const auto value = setting.values().at(0);
+					changes.emplace_back(value.definition().value_or(value.written()), written.at(key));
+				}
+			}
+		std::vector<std::string> added;   // `<key> <value>;`, in JSON order
+		for (const auto& [key, text] : written)
+			if (!present.contains(key)) added.push_back(std::format("{} {};", key, text));
+		const vw::written_directive statement = node->written();
+		if (!added.empty())
+			if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
+
+		const auto joined = [&](std::string_view between) {
+			std::string all;
+			for (const auto& one : added) all += (all.empty() ? "" : std::string(between)) + one;
+			return all;
+		};
+		for (const auto& [value, text] : changes) value.set(vl::text(text));
+		if (!added.empty()) {
+			if (const auto block = statement.block()) block->add_statements(vl::text(joined("\n")));   // a line each
+			else addBlock(statement, editing.original(), joined(" "));
+		}
+		removeAll(std::move(removals));
+		return finish(editing, *impl_->catalogue);
+	});
 }
 
 EditOutcome GraphFileModel::addNode(const NodeSpec& node) const {
-	const NodeSpec* held = heldNode(wantedOf(impl_->read), node.name);
-	if (held != nullptr && *held == node) return std::optional<GraphFileModel>{};
-	if (!node.settings.is_object()) return refuse(InvalidSettings{node.name, "settings: must be an object"});
-	auto settings = settingsText(node.name, impl_->catalogue->find(node.type), node.settings);
-	if (!settings) return refuse(settings.error());
-	const Editing editing(impl_->text);
-	const std::string head = std::format("node {} {}", wordText(node.type), wordText(node.name));
-	editing.append(settings->empty() ? head + ";" : std::format("{} {{ {} }}", head, *settings));
-	return finish(editing, *impl_->catalogue);
+	return guarded([&]() -> EditOutcome {
+		const NodeSpec* held = heldNode(wantedOf(impl_->read), node.name);
+		if (held != nullptr && *held == node) return std::optional<GraphFileModel>{};
+		// No type or valid name holds a control character (InvalidName: 1-64 of [A-Za-z0-9_-]).
+		if (!writable(node.type)) return refuse(UnknownNodeType{node.type});
+		if (!writable(node.name)) return refuse(InvalidName{node.name});
+		if (!node.settings.is_object()) return refuse(InvalidSettings{node.name, "settings: must be an object"});
+		auto settings = settingsText(node.name, impl_->catalogue->find(node.type), node.settings);
+		if (!settings) return refuse(settings.error());
+		const Editing editing(impl_->text);
+		const std::string head = std::format("node {} {}", wordText(node.type), wordText(node.name));
+		editing.append(settings->empty() ? head + ";" : std::format("{} {{ {} }}", head, *settings));
+		return finish(editing, *impl_->catalogue);
+	});
 }
 
 EditOutcome GraphFileModel::removeNode(const NodeName& name) const {
-	if (heldNode(wantedOf(impl_->read), name) == nullptr) return refuse(UnknownNode{name});
-	const Editing editing(impl_->text);
-	const auto node = editing.node(name);
-	if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
-	std::vector<vw::statement> removals{node->written()};
-	for (const vr::directive& route : editing.routesOf(name))
-		if (std::find(removals.begin(), removals.end(), route.written()) == removals.end())
-			removals.push_back(route.written());
-	for (const auto& statement : removals)
-		if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
-	removeAll(std::move(removals));
-	return finish(editing, *impl_->catalogue);
+	return guarded([&]() -> EditOutcome {
+		if (heldNode(wantedOf(impl_->read), name) == nullptr) return refuse(UnknownNode{name});
+		const Editing editing(impl_->text);
+		const auto node = editing.node(name);
+		if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+		std::vector<vw::statement> removals{node->written()};
+		for (const vr::directive& route : editing.routesOf(name))
+			if (std::find(removals.begin(), removals.end(), route.written()) == removals.end())
+				removals.push_back(route.written());
+		for (const auto& statement : removals)
+			if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
+		removeAll(std::move(removals));
+		return finish(editing, *impl_->catalogue);
+	});
 }
 
 EditOutcome GraphFileModel::addRoute(const Route& route) const {
-	const auto& routes = wantedOf(impl_->read).routes;
-	if (std::find(routes.begin(), routes.end(), route) != routes.end()) return std::optional<GraphFileModel>{};
-	const Editing editing(impl_->text);
-	editing.append(std::format("route {} {};", endText(route.from), endText(route.to)));
-	return finish(editing, *impl_->catalogue);
+	return guarded([&]() -> EditOutcome {
+		const GraphSpec& wanted = wantedOf(impl_->read);
+		const auto& routes = wanted.routes;
+		if (std::find(routes.begin(), routes.end(), route) != routes.end()) return std::optional<GraphFileModel>{};
+		// A node in the graph has a valid name and no type declares a port with a control character, so
+		// an end knobly cannot write names nothing in the graph: refused as the plan would refuse it.
+		for (const PortRef& end : {route.from, route.to}) {
+			if (writable(end.node) && writable(end.port)) continue;
+			if (heldNode(wanted, end.node) == nullptr) return refuse(UnknownNode{end.node});
+			return refuse(UnknownPort{end});
+		}
+		const Editing editing(impl_->text);
+		editing.append(std::format("route {} {};", endText(route.from), endText(route.to)));
+		return finish(editing, *impl_->catalogue);
+	});
 }
 
 EditOutcome GraphFileModel::removeRoute(const Route& route) const {
-	const auto& routes = wantedOf(impl_->read).routes;
-	if (std::find(routes.begin(), routes.end(), route) == routes.end()) return refuse(UnknownRoute{route});
-	const Editing editing(impl_->text);
-	const auto found = editing.route(route);
-	if (!found) throw std::logic_error("graph file model: a wanted route is not in its render");
-	if (auto shared = editing.shared(found->written())) return refuse(std::move(*shared));
-	found->written().remove();
-	return finish(editing, *impl_->catalogue);
+	return guarded([&]() -> EditOutcome {
+		const auto& routes = wantedOf(impl_->read).routes;
+		if (std::find(routes.begin(), routes.end(), route) == routes.end()) return refuse(UnknownRoute{route});
+		const Editing editing(impl_->text);
+		const auto found = editing.route(route);
+		if (!found) throw std::logic_error("graph file model: a wanted route is not in its render");
+		if (auto shared = editing.shared(found->written())) return refuse(std::move(*shared));
+		found->written().remove();
+		return finish(editing, *impl_->catalogue);
+	});
 }
 
 } // namespace ear::config

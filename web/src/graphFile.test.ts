@@ -1,6 +1,6 @@
 // S6 criterion 1: the graph file reducer turns graph-file.json's messages into its file exactly,
-// and the other fixtures (no graphFile.subscribe) leave it null; dropped edits and a newly failed
-// write become notices.
+// and the other fixtures (no graphFile.subscribe) leave it null; dropped edits become notices, and a
+// failed write stays the file's own state (the pane's one banner for it), never a notice too.
 import { describe, expect, it } from "vitest";
 import { GraphFileStore, dismissNotice, reduceFile, type GraphFileState } from "./graphFile";
 import type { Notifications, ServerMessage } from "./protocol";
@@ -18,6 +18,9 @@ function until(match: (message: ServerMessage) => boolean): ServerMessage[] {
   expect(at).toBeGreaterThanOrEqual(0);
   return messages.slice(0, at + 1);
 }
+
+/** Where the last batch's graphFile.subscribe answer is (id 16); graphFile.get's answer follows it. */
+const resubscribed = messages.findIndex((message) => "id" in message && message.id === 16);
 
 const changed = (message: ServerMessage): Notifications["graphFile.changed"] | null =>
   "method" in message && message.method === "graphFile.changed"
@@ -37,8 +40,8 @@ describe("the graph file reducer", () => {
   }
 
   it("ignores a change before the first file", () => {
-    // Everything but the first answer and the last (the batch's graphFile.subscribe answer).
-    expect(replay(messages.slice(1, -1))).toBeNull();
+    // Everything after the first answer and before the batch's graphFile.subscribe answer.
+    expect(replay(messages.slice(1, resubscribed))).toBeNull();
   });
 
   it("adds a notice for edits a hand edit dropped", () => {
@@ -48,20 +51,21 @@ describe("the graph file reducer", () => {
     expect(state?.file).not.toHaveProperty("cause");
   });
 
-  it("adds a notice for a newly failed write, once", () => {
+  it("keeps a failed write in the file only, adding no notice", () => {
     const failed = until((message) => changed(message)?.writeFailed !== undefined);
-    const state = replay(failed)!;
-    const detail = state.file.writeFailed!;
-    expect(state.notices.at(-1)).toStrictEqual({ kind: "writeFailed", detail });
-    const again = reduceFile(state, failed.at(-1)!)!;
-    expect(again.notices).toStrictEqual(state.notices);
+    const before = replay(failed.slice(0, -1))!;
+    const state = reduceFile(before, failed.at(-1)!)!;
+    expect(state.file.writeFailed).toBe(changed(failed.at(-1)!)!.writeFailed);
+    expect(state.notices).toStrictEqual(before.notices);
   });
 
   it("is replaced by a GraphFile result, notices and all", () => {
-    const state = replay(messages.slice(0, -1))!;
+    expect(resubscribed).toBeGreaterThan(0);
+    const state = replay(messages.slice(0, resubscribed))!;
     expect(state.notices.length).toBeGreaterThan(0);
-    const fresh = reduceFile(state, messages.at(-1)!)!;
+    const fresh = reduceFile(state, messages[resubscribed]!)!;
     expect(fresh).toStrictEqual({ file: fixtures.graphFile.file, notices: [] });
+    expect(reduceFile(fresh, messages.at(-1)!)).toStrictEqual(fresh); // graphFile.get's answer: the same file
   });
 
   it("is unchanged by graph results, errors and graph events", () => {
@@ -79,7 +83,7 @@ describe("the graph file reducer", () => {
     const store = new GraphFileStore();
     let told = 0;
     store.subscribe(() => told++);
-    for (const message of messages.slice(0, -1)) store.apply(message);
+    for (const message of messages.slice(0, resubscribed)) store.apply(message);
     const before = told;
     store.apply({ jsonrpc: "2.0", method: "node.state", params: { name: "ghost", state: "running" } });
     expect(told).toBe(before);

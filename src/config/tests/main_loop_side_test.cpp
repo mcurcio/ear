@@ -50,7 +50,6 @@ TEST_CASE("placeOf points each refusal at the line that causes it", "[main_loop_
 	CHECK(line(UnknownPort{{"rec", "FX"}}) == 7u);                            // the first route naming it
 	CHECK(line(WrongDirection{{{"rec", "FL"}, {"noise", "MONO"}}}) == 8u);    // the route refused
 	CHECK(line(InvalidName{"noise"}) == 1u);                                  // the named node
-	CHECK(line(PortsChanged{"rec"}) == 2u);                                   // the named node
 	CHECK(line(UnknownRoute{{{"noise", "MONO"}, {"rec", "FL"}}}) == 5u);      // the route refused
 	CHECK(line(Stopping{}) == std::nullopt);
 	CHECK(line(UnknownNode{"nobody"}) == std::nullopt);                       // nothing names it

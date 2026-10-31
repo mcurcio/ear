@@ -690,4 +690,6 @@ NOT RUN: nothing was built or compiled by the architect.
   `graph-file <edit|disk|write> <version> running=<version|none>`, then for that change
   `graph-file error <line>:<column> <code>: <message>`, `graph-file refused <code>[ at
   <line>:<column>]`, `graph-file dropped <n> edits`, `graph-file pending-restart <keys>` and
-  `graph-file write-failed <detail>`; and `graph-file written <version>` after each write.
+  `graph-file write-failed <detail>`; `graph-file written <version>` after each write; and
+  `graphFileWriteFailed(detail)`, the same `graph-file write-failed <detail>` line on its own,
+  for the last write's failure when ear exits (main has no change to report it with).

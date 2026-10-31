@@ -94,7 +94,7 @@ TEST_CASE("Posted work runs in post order on the keeper's thread, and free follo
 	CHECK(lines.front() == "work 1");
 }
 
-TEST_CASE("A rename of ear.conf into the folder is a disk event; another file's is not", "[keeper_thread]") {
+TEST_CASE("A rename of ear.conf into the folder is a disk event, and another file's is not", "[keeper_thread]") {
 	TempDir dir("thread_watch");
 	Seen seen;
 	auto thread = startThread(dir, seen);
@@ -113,7 +113,7 @@ TEST_CASE("A rename of ear.conf into the folder is a disk event; another file's 
 	CHECK(std::find(disk, lines.end(), "free") != lines.end());   // free after the wake's disk event
 }
 
-TEST_CASE("stop() runs the work already posted, then joins; work posted after it is destroyed unrun",
+TEST_CASE("stop() runs the work already posted, then joins, and work posted after it is destroyed unrun",
           "[keeper_thread]") {
 	TempDir dir("thread_stop");
 	Seen seen;

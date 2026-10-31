@@ -1114,8 +1114,12 @@ type Refusal = { code: string; message: string; line?: number; column?: number }
 ear's own diagnostic codes: `ear/missing-file`, `ear/unreadable-file` (a directory, a symlink,
 another kind of file, or more than 1 MiB), `ear/include-unsupported` ("@include is not supported
 yet: write the whole graph in ear.conf"), `ear/unknown-directive` (anything but
-`graph_frequency`, `block_size`, `node` and `route`), `ear/bad-directive` and
-`ear/missing-directive`. Every other code is knobly's.
+`graph_frequency`, `block_size`, `node` and `route`), `ear/bad-directive`,
+`ear/missing-directive`, `ear/too-large` (an edit's or a `graphFile.set`'s text over 1 MiB, the
+most ear reads; answered `invalid-text`) and `ear/unwritable-edit` (an edit knobly could not
+write; answered `invalid-text`). Every other code is knobly's. A text setting, node name or port
+holding a control character other than newline, tab and carriage return cannot be written in
+`ear.conf`, and is refused with the desired graph's code (`invalid-settings` for a setting).
 
 The graph file's `data.code` values, beside the desired graph's:
 
@@ -1610,8 +1614,9 @@ file capability (section 7).
     `removeRoute`) are deleted. `DesiredGraph` has `plan(nodes, routes)` (a `Plan` or a
     `CommandError`, judged against the whole wanted graph) and `commit(plan)`, whose events come
     in one order: routes removed, nodes removed, nodes updated, nodes added, routes added. A
-    port change is a replacement, so `PortsChanged` ("ports-changed") is no longer made;
-    `runCommand` is deleted, since the keeper runs commands.
+    port change is a replacement, so `PortsChanged` ("ports-changed") is deleted from
+    `CommandError`, `errorCode` and `describe`; `runCommand` is deleted, since the keeper runs
+    commands.
   - `MainLoopGateway` is built on `GraphRequests` (`control/requests.hpp`, which the keeper
     implements) instead of `GraphControl`: `MainLoopGateway(mainLoop, control, requests)`. It is
     still the one crossing between the main loop and the control thread, and it is also a
@@ -1619,8 +1624,9 @@ file capability (section 7).
     gains `graphFile.subscribe`.
   - `commands.hpp` gains `GetGraphFile` and `SetGraphFile`, and `CommandResult` gains
     `GraphFile` and `FileRefusal` (`control/graph_file_state.hpp`).
-  - `NodeType` gains `settingKinds()`: each key its `parse()` accepts with its kind (text or
-    whole number), which is how `ear.conf`'s values are read and written.
+  - `NodeType` gains `settingKinds()`, pure (every type declares, `white` with none): each key
+    its `parse()` accepts with its kind (text or whole number), which is how `ear.conf`'s values
+    are read and written.
 - **Knobly graph file, 2026-10-31: section 6's "A batch runs in order in one crossing" is
   replaced by the batch rule** (section 6, Batches): each request is its own step through the
   keeper, consecutive reads are answered in one main-loop turn, and the reply comes in the turn

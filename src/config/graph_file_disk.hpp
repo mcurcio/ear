@@ -2,7 +2,6 @@
 // graph file folder, read and replaced only if it still holds what the keeper last saw. The seam
 // the keeper's tests may replace (S4).
 #pragma once
-#include <cstddef>
 #include <expected>
 #include <optional>
 #include <string>
@@ -10,7 +9,6 @@
 #include "ear/folder/confined_folder.hpp"
 #include "graph_file_model.hpp"
 namespace ear::config {
-inline constexpr std::size_t maxDocumentBytes = 1 << 20;
 class GraphFileDisk {
 public:
   virtual DiskText read() = 0;   // ear.conf's text, nullopt when missing, or why it cannot be read

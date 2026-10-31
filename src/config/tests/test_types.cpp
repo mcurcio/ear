@@ -28,6 +28,7 @@ public:
 		if (!settings.empty()) return std::unexpected(InvalidSettings{node, "white takes no settings"});
 		return std::make_unique<FixedConfig>(Ports{{}, {"MONO"}});
 	}
+	std::span<const SettingDeclaration> settingKinds() const override { return {}; }
 };
 
 class FileType final : public NodeType {

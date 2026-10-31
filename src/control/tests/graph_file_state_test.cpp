@@ -90,7 +90,7 @@ TEST_CASE("A graph file's JSON leaves out each absent optional and holds each pr
 TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph_file_state][protocol]") {
 	const json document = fixture("graph-file");
 	const json& m = document["messages"];
-	REQUIRE(m.size() == 40);
+	REQUIRE(m.size() == 41);
 	const Texts t;
 	const ear::Route toDesk{{"noise", "MONO"}, {"desk", "playback_1"}};
 
@@ -148,7 +148,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		pending.pendingRestart = {FormatKey::graphFrequency};
 		CHECK(changed(pending, FileChangeCause::edit) == m[33]);
 	}
-	SECTION("the two batches, and what the client holds at the end") {
+	SECTION("the two batches, graphFile.get, and what the client holds at the end") {
 		GraphFile last = file("v11", t.t11, "v11");
 		last.pendingRestart = {FormatKey::graphFrequency};
 		CHECK(changed(last, FileChangeCause::edit) == m[36]);
@@ -159,6 +159,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		const std::vector<std::string> second{encodeResult(15, encodeCommandResult(view).value()),
 		                                      encodeResult(16, encodeCommandResult(last).value())};
 		CHECK(json::parse(encodeBatch(second)) == m[39]);
+		CHECK(resultOf(17, last) == m[40]);
 		CHECK(encodeGraph(view) == document["graph"]);
 		CHECK(encodeGraphFile(last) == document["file"]);
 	}

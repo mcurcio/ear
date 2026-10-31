@@ -16,7 +16,6 @@ function place(line: number, column: number): string {
 }
 
 function noticeText(notice: FileNotice): string {
-  if (notice.kind === "writeFailed") return `ear could not write ear.conf: ${notice.detail}`;
   const edits = notice.count === 1 ? "1 editor edit was" : `${notice.count} editor edits were`;
   return `${edits} not saved: ear.conf changed on disk`;
 }

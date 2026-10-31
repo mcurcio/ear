@@ -29,7 +29,6 @@ set_target_properties(ear_control PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_control PUBLIC ear_core)
 
 if(BUILD_TESTS)
-	include(Catch)
 	add_executable(ear_control_tests
 		tests/commands_test.cpp
 		tests/events_test.cpp
@@ -44,5 +43,5 @@ if(BUILD_TESTS)
 	target_compile_definitions(ear_control_tests PRIVATE
 		EAR_PROTOCOL_DIR="${PROJECT_SOURCE_DIR}/test/protocol")
 	add_dependencies(ear_control_tests ear_control_verify_interface_header_sets)
-	catch_discover_tests(ear_control_tests)
+	ear_catch_tests(ear_control_tests)
 endif()

@@ -308,3 +308,53 @@ TEST_CASE("T8: a graph file folder that is or is inside the recordings folder ex
 		CHECK(ear.output().find("overlap") != std::string::npos);
 	}
 }
+
+TEST_CASE("T8: a graph file or recordings folder that is or is inside the web root exits 1, naming both",
+          "[system][graph-file]") {
+	TempDirectory directory;
+	const auto web = directory.path() / "web";
+	std::filesystem::create_directories(web);   // a web root that is not there is not compared
+	struct Case { std::filesystem::path config; std::filesystem::path recordings; std::filesystem::path inside; };
+	for (const auto& [config, recordings, inside] : {Case{web / "config", directory.recordings(), web / "config"},
+	                                                  Case{directory.config(), web, web}}) {
+		INFO(inside);
+		ChildProcess ear(EAR_BINARY, {"--config-dir", config.string(), "--recordings-dir", recordings.string(),
+		                              "--web-root", web.string(), "--control-port", "0"});
+		const auto exitStatus = ear.waitForExit(deadline);
+		INFO("ear printed:\n" << ear.output());
+		CHECK(exitStatus == 1);
+		CHECK(ear.output().find(inside.string() + " ") != std::string::npos);
+		CHECK(ear.output().find(" " + web.string() + " overlap") != std::string::npos);
+	}
+}
+
+TEST_CASE("A --graph-frequency or --block-size that is not a whole number above 0 exits 1", "[system][graph-file]") {
+	TempDirectory directory;
+	for (const auto& [flag, value] : {std::pair{"--graph-frequency", "0"}, std::pair{"--block-size", "0"},
+	                                  std::pair{"--graph-frequency", "-48000"}, std::pair{"--block-size", "4294967296"}}) {
+		INFO(flag << ' ' << value);
+		ChildProcess ear(EAR_BINARY, earArguments(directory, {flag, value}));
+		const auto exitStatus = ear.waitForExit(deadline);
+		INFO("ear printed:\n" << ear.output());
+		CHECK(exitStatus == 1);
+		CHECK(ear.output().find("--graph-frequency and --block-size must be whole numbers above 0") != std::string::npos);
+	}
+}
+
+TEST_CASE("Edits holding a control character ear.conf cannot hold are refused, and ear stays up", "[system][graph-file]") {
+	TempDirectory directory;
+	writeGraphFile(directory, noiseToRec());
+	Ear ear(directory, {linkedLine("noise:MONO", "rec:FL")});
+	INFO("ear printed:\n" << ear.process().output());
+	Rpc rpc(ear.port());
+	const std::string nul("x\0y", 3);   // "\u0000" on the wire; each of these once ended ear (exit 134)
+	const auto code = [](const json& reply) { return reply["error"]["data"]["code"]; };
+	CHECK(code(rpc.call("node.update", {{"name", "rec"}, {"settings", {{"path", nul}}}})) == "invalid-settings");
+	CHECK(code(rpc.call("node.add", {{"name", "rec2"}, {"type", "file"}, {"settings", {{"path", "a\x01" "b"}}}})) ==
+	      "invalid-settings");
+	CHECK(code(rpc.call("route.add", {{"from", {{"node", "noise"}, {"port", "MO" + nul}}}, {"to", {{"node", "rec"}, {"port", "FR"}}}})) ==
+	      "unknown-port");
+	CHECK(rpc.call("graph.get")["result"]["nodes"].size() == 2);
+	CHECK(readText(directory.graphFile()) == noiseToRec());
+	CHECK(ear.stop(rpc) == 0);
+}

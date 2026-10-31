@@ -381,7 +381,7 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	using Code = ear::FailureReason::Code;
 	const json document = fixture("graph-file");
 	const auto requests = requestsOf(document);
-	REQUIRE(requests.size() == 14);
+	REQUIRE(requests.size() == 15);
 	const fx::Texts t;
 	const ear::Route toDesk{{"noise", "MONO"}, {"desk", "playback_1"}};
 	const ear::Ports card2{{"playback_1", "playback_2"}, {}};
@@ -475,13 +475,14 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.graph.script.push_back({R"(updateNode rec {"path":"take4.wav"})", recEdit(last, "take4.wav")});
 	w.receive(session, requests[12]);   // [node.update, graph.subscribe]
 	w.receive(session, requests[13]);   // [graph.subscribe, graphFile.subscribe]
+	w.receive(session, requests[14]);   // graphFile.get
 
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 	CHECK(w.graph.offLoop == 0);
-	// Each batch's snapshots ran after its other commands, in request order.
-	const std::vector<std::string> tail(w.graph.calls.end() - 4, w.graph.calls.end());
-	CHECK(tail == std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile"});
+	// Each batch's snapshots ran after its other commands, in request order; graphFile.get read the file.
+	const std::vector<std::string> tail(w.graph.calls.end() - 5, w.graph.calls.end());
+	CHECK(tail == std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
 }
 
 TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file changes only", "[session][graph-file]") {

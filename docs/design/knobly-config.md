@@ -258,7 +258,8 @@ Errata and findings from the slices:
   diagnostics in text order; `ear/include-unsupported` takes E3008's place; plan checks each
   node's name, then type and settings, then duplicates; `graph_file_model.hpp` does not include
   knobly (its Impl is hidden). A test name holding `;` registers as two CTest tests
-  (`catch_discover_tests` splits on it); five older names in `ear_control`'s tests still do.
+  (`catch_discover_tests` splits on it), each of which ran nothing and passed; the fix pass
+  below made that fail.
 - **S2:** the folder's errors name the folder, not its role ("folder <path>: ..."), so `main.cpp`
   prefixes "recordings" and "graph file"; a node's failure says "it leads outside the folder".
   `read()` opens with `O_NONBLOCK`, so a FIFO is refused without waiting. The page's
@@ -267,10 +268,9 @@ Errata and findings from the slices:
   checkout's Boost tree holds only when the main checkout has one.
 - **S3:** its report was lost; its diff and tests are the record.
 - **S5 left two pieces of `ear_core` behind because it could not edit `src/config`:**
-  `PortsChanged` ("ports-changed") is still in `command_error.hpp` though nothing makes it (only
-  `src/config/tests/main_loop_side_test.cpp` names it), and `NodeType::settingKinds()` still
-  defaults to an empty span rather than being pure (`src/config/tests/test_types.cpp`'s `white`
-  does not declare). Both are for the next change that may touch `src/config`.
+  `PortsChanged` ("ports-changed") stayed in `command_error.hpp` though nothing made it, and
+  `NodeType::settingKinds()` kept a default. The fix pass deleted `PortsChanged` and made
+  `settingKinds()` pure.
 - **Load-sensitive tests, not this branch's:** the PipeWire ramp tests (`engine_test.cpp:336`,
   `port_block_test.cpp:666`) and the RTP receiver's SSRC restart (`rtp_receiver_test.cpp:187`)
   fail when the Mac's Docker VM is loaded (load average around 60 on 8 CPUs); their code is
@@ -278,3 +278,21 @@ Errata and findings from the slices:
 - **S7 (docs):** `batch2.md` section 6 is the wire's one home and now carries the graph file;
   its other sections are history, corrected by section 11's errata. `m1-white-to-file.md`
   section 2 is corrected by its own erratum.
+- **Fix pass (review findings):**
+  - Eight test names held `;`, so CTest ran nothing for them and reported them passed (S4
+    criteria 6, 7, 14 and 16, S3 criteria 3 and 5, and one `rtp` test from master). They are
+    renamed, and every package registers its tests through `ear_catch_tests` (`test/CMakeLists.txt`),
+    which passes Catch `--warn NoTests`: a CTest test that matches no test case now fails.
+  - A text setting, node name, type or route port holding a control character other than
+    newline, tab and carriage return has no knobly string form (knobly's `STRING` has no escape
+    for it), and knobly's `quote()` gave text its writer then refused by throwing on the keeper's
+    thread, which ended ear. Such a value is now refused before the edit with the code the
+    desired graph would give it (`invalid-settings`, `invalid-name`, `unknown-node-type`,
+    `unknown-node`, `unknown-port`), and anything else knobly's writer throws is `invalid-text`
+    with one `ear/unwritable-edit` diagnostic.
+  - Editor edits could grow `ear.conf` past the 1 MiB ear reads, after which ear could neither
+    read its own file nor repair it from the pane. A text over 1 MiB, an edit's or a set's
+    candidate, now does not load (`ear/too-large`), so it is refused as `invalid-text`.
+  - A failed write showed twice in the pane (its banner and a notice); the notice is gone, and
+    the banner stays while the write keeps failing.
+  - `graphFile.get` is now in `test/protocol/graph-file.json`.
