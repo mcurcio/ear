@@ -29,7 +29,6 @@ std::string_view errorCode(const CommandError& error) noexcept {
 			else if constexpr (std::is_same_v<E, UnknownPort>) return "unknown-port";
 			else if constexpr (std::is_same_v<E, WrongDirection>) return "wrong-direction";
 			else if constexpr (std::is_same_v<E, InvalidName>) return "invalid-name";
-			else if constexpr (std::is_same_v<E, PortsChanged>) return "ports-changed";
 			else if constexpr (std::is_same_v<E, UnknownRoute>) return "unknown-route";
 			else {
 				static_assert(std::is_same_v<E, Stopping>);
@@ -48,7 +47,7 @@ std::string describe(const CommandError& error) {
 			else if constexpr (std::is_same_v<E, InvalidSettings>)
 				return std::format("{} {}: {}", code, e.node, e.detail);
 			else if constexpr (std::is_same_v<E, DuplicateNode> || std::is_same_v<E, UnknownNode> ||
-			                   std::is_same_v<E, InvalidName> || std::is_same_v<E, PortsChanged>)
+			                   std::is_same_v<E, InvalidName>)
 				return std::format("{} {}", code, e.node);
 			else if constexpr (std::is_same_v<E, UnknownPort>)
 				return std::format("{} {}", code, portText(e.port));

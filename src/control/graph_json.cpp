@@ -1,6 +1,5 @@
 // The one home of node and route JSON (docs/design/batch2.md section 4.5, graph_json.hpp): the
-// graph file (graph_file.cpp) and the control port's commands (commands.cpp) decode with it, so
-// the same bad JSON gives the same text through either. Every error names its JSON pointer.
+// control port's commands (commands.cpp) decode with it. Every error names its JSON pointer.
 #include "ear/control/graph_json.hpp"
 
 #include <format>

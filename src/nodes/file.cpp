@@ -2,9 +2,10 @@
 // the graph frequency (docs/design/m1-white-to-file.md section 2, builtin.hpp). The realtime
 // thread only hands frames to the handoff; the handoff's own thread writes them with libsndfile,
 // and the file is complete (header finished) once the handoff has finished. The path is relative
-// to the recordings folder and opened beneath it only (recordings.hpp).
+// to the recordings folder and opened beneath it only (ear/folder/confined_folder.hpp).
 #include <sndfile.h>
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -22,10 +23,12 @@ namespace {
 
 constexpr std::string_view typeName = "file";
 constexpr std::string_view pathKey = "path";
+/// How the one key is written in the graph file.
+constexpr std::array<SettingDeclaration, 1> settingDeclarations{{{pathKey, SettingKind::text}}};
 constexpr std::uint32_t channelCount = 2;
 constexpr std::uint32_t ringSeconds = 2;
 
-/// Owns a descriptor from RecordingsFolder::create; libsndfile is told not to close it.
+/// Owns a descriptor from folder::ConfinedFolder::create; libsndfile is told not to close it.
 class Descriptor {
 public:
 	explicit Descriptor(int fd) noexcept : fd_(fd) {}
@@ -108,7 +111,7 @@ private:
 
 class FileConfig final : public NodeConfig {
 public:
-	FileConfig(std::shared_ptr<const RecordingsFolder> recordings, std::string path)
+	FileConfig(std::shared_ptr<const folder::ConfinedFolder> recordings, std::string path)
 	    : recordings_(std::move(recordings)), path_(std::move(path)) {}
 
 	const Ports& ports() const override { return ports_; }
@@ -119,7 +122,7 @@ public:
 		auto opened = recordings_->create(path_);
 		if (!opened) {
 			return std::unexpected(
-			    FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + opened.error()});
+			    FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + opened.error().detail});
 		}
 		Descriptor fd(*opened);
 		SF_INFO info{};
@@ -138,7 +141,7 @@ public:
 
 private:
 	Ports ports_{.inputs = {"FL", "FR"}, .outputs = {}};
-	std::shared_ptr<const RecordingsFolder> recordings_;
+	std::shared_ptr<const folder::ConfinedFolder> recordings_;
 	std::string path_;
 };
 
@@ -156,9 +159,11 @@ bool staysInside(const std::string& path) {
 
 class FileType final : public NodeType {
 public:
-	explicit FileType(std::shared_ptr<const RecordingsFolder> recordings) : recordings_(std::move(recordings)) {}
+	explicit FileType(std::shared_ptr<const folder::ConfinedFolder> recordings) : recordings_(std::move(recordings)) {}
 
 	std::string_view name() const override { return typeName; }
+
+	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
@@ -185,12 +190,12 @@ public:
 	}
 
 private:
-	std::shared_ptr<const RecordingsFolder> recordings_;
+	std::shared_ptr<const folder::ConfinedFolder> recordings_;
 };
 
 }  // namespace
 
-std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const RecordingsFolder> recordings) {
+std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const folder::ConfinedFolder> recordings) {
 	return std::make_unique<const FileType>(std::move(recordings));
 }
 

@@ -1,6 +1,7 @@
-// The graph editor (docs/design/batch2.md section 8): a React Flow canvas of ear's graph. Nodes
-// and wires are exactly what ear announced; dragging a wire between ports, the panels and the
-// delete key send requests, and the canvas changes when ear's events arrive. Node positions
+// The graph editor (docs/design/batch2.md section 8): a React Flow canvas of ear's graph and the
+// ear.conf pane. Nodes and wires are exactly what ear announced; dragging a wire between ports,
+// the panels, the pane's Save and the delete key send requests, and the canvas changes when ear's
+// events arrive. Node positions
 // and selection are the browser's own.
 import {
   Background,
@@ -15,22 +16,26 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { edgeId, handleId, isValidConnection, routeFromConnection } from "./connect";
 import type { GraphState } from "./graph";
-import { placeNodes, type Position } from "./layout";
+import { Places, type Position } from "./layout";
 import { RpcError } from "./rpc";
 import { EarNode, type EarFlowNode } from "./components/EarNode";
-import { useConnection, useEditor, useGraph } from "./components/hooks";
+import { useConnection, useEditor, useGraph, useGraphFile } from "./components/hooks";
 import { LevelEdge, type LevelFlowEdge } from "./components/LevelEdge";
 import { AddNodePanel, EngineFacts, NodePanel } from "./components/Panels";
+import { TextPane } from "./components/TextPane";
 
 const nodeTypes = { ear: EarNode };
 const edgeTypes = { level: LevelEdge };
 
-/** The canvas's nodes for a new graph: kept nodes keep their place, new ones are laid out. */
-function syncNodes(previous: EarFlowNode[], graph: GraphState): EarFlowNode[] {
+/**
+ * The canvas's nodes for a new graph: kept nodes keep their place, a node replaced under the same
+ * name takes its old place, new ones are laid out.
+ */
+function syncNodes(previous: EarFlowNode[], graph: GraphState, places: Places): EarFlowNode[] {
   if (graph === null) return [];
   const kept = new Map(previous.map((node) => [node.id, node]));
-  const placed = new Map<string, Position>(previous.map((node) => [node.id, node.position]));
-  const positions = placeNodes(graph, placed);
+  const current = new Map<string, Position>(previous.map((node) => [node.id, node.position]));
+  const positions = places.place(graph, current);
   return graph.nodes.map((node) => {
     const old = kept.get(node.name);
     if (old !== undefined) return { ...old, data: { node } };
@@ -46,13 +51,15 @@ function describe(error: unknown): string {
 export function App() {
   const { client } = useEditor();
   const graph = useGraph();
+  const file = useGraphFile();
   const connection = useConnection();
   const [nodes, setNodes] = useState<EarFlowNode[]>([]);
   const [selectedEdges, setSelectedEdges] = useState<ReadonlySet<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const showError = useCallback((caught: unknown) => setError(describe(caught)), []);
 
-  useEffect(() => setNodes((previous) => syncNodes(previous, graph)), [graph]);
+  const [places] = useState(() => new Places());
+  useEffect(() => setNodes((previous) => syncNodes(previous, graph, places)), [graph, places]);
 
   const edges = useMemo<LevelFlowEdge[]>(
     () =>
@@ -152,6 +159,7 @@ export function App() {
         {graph !== null && <EngineFacts graph={graph} />}
         {graph !== null && <AddNodePanel types={graph.types} onError={showError} />}
         {selectedNode !== undefined && <NodePanel node={selectedNode} onError={showError} />}
+        {file !== null && <TextPane state={file} onError={showError} />}
       </aside>
     </div>
   );

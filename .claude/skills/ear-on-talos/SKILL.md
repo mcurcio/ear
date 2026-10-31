@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -47,13 +47,13 @@ A `card` node names its card only by its ALSA card id: the name in brackets in
 `hw:CARD=<id>,DEV=0`. The MOTU 24Ao's id is `D24Ao` (seen on the owner's node 2026-10-31:
 `MOTU 24Ao at usb-0000:00:14.0-7, high speed`, 24 channels each way, 44.1 to 192 kHz).
 
-```json
-{ "name": "motu", "type": "card", "settings": { "card": "<card id>", "playback": 24 } }
+```conf
+node card motu { card <card id>; playback 24; }
 ```
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
 `playback_1`..`playback_N` (inputs) and `capture_1`..`capture_M` (outputs). The card's rate is
-always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
+always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
 
@@ -115,10 +115,28 @@ machine:
   file capability that EAR makes effective at boot; `allowPrivilegeEscalation: false` sets
   no_new_privs, which ignores file capabilities, and a capability added without the file
   capability never reaches a non-root process (`pipewire-engine` skill, "Realtime priority").
-- `ear.json` mounted at `/etc/ear/ear.json` (the image's default `--config`); port 7777 exposed.
-  A browser reaching it by a DNS name needs `--allowed-host <name>` in the container's args
-  (`control-port` skill). Args replace the image's default command, so they must also carry
-  `--config /etc/ear/ear.json --recordings-dir /var/lib/ear/recordings`.
+- The graph file: `ear.conf` lives in the graph file folder, `/var/lib/ear/config` (the image's
+  default `--config-dir`), and ear writes every accepted editor edit back into it. So mount a
+  writable volume there that uid 10001 can write (a PersistentVolumeClaim with `fsGroup: 10001`,
+  for example): a ConfigMap mount is read-only, so edits would run but never be saved, and a
+  restart would lose them. ear writes by renaming a new file over `ear.conf` inside the folder,
+  so the folder itself must be writable, not just the file, and `ear.conf` must be a regular
+  file, not a symlink (a ConfigMap's files are symlinks, so mounting one into the folder does not
+  work either).
+- Seeding `ear.conf`: either an initContainer that copies it from a ConfigMap into the volume
+  only when it is missing (`[ -e /cfg/ear.conf ] || cp /seed/ear.conf /cfg/`, so later edits are
+  kept), or nothing: a first boot without `ear.conf` runs no nodes, and the editor's text pane
+  writes one with Save. Copying the ConfigMap over it on every start throws away every edit
+  made in the editor. The folder may not be, or be inside, the recordings folder (exit 1).
+- Port 7777 exposed. A browser reaching it by a DNS name needs `--allowed-host <name>` in the
+  container's args (`control-port` skill). Args replace the image's default command, so they
+  must also carry `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`.
+- Stopping: ear writes the last accepted version of `ear.conf` as it stops, after the
+  recordings are finished, and waits on the disk with no deadline: a hung volume delays stop
+  without limit on ear's side, until Kubernetes kills the pod after
+  `terminationGracePeriodSeconds` and the unwritten edits are lost. A failed final
+  write is printed (`graph-file write-failed <detail>`) and reaches only the container's log:
+  check `kubectl logs --previous` after a restart if an edit seems lost.
 - Recordings: `file` nodes write only beneath `/var/lib/ear/recordings` (their `path` is relative
   to it); mount a volume there writable by uid 10001 (for example `fsGroup: 10001`) to keep them.
 
@@ -132,8 +150,8 @@ machine:
    card (alsa-lib's file and null PCMs), not the MOTU.
 3. A wrong rate fails only the card node (section 3), and unplugging the card fails it too while
    the rest keeps running (no hotplug: plug it back and `node.update`).
-4. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `blockSize /
-   graphFrequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
+4. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
+   graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
@@ -144,9 +162,8 @@ The owner runs FPP (Falcon Player) in the same cluster and wants its audio as a 
 sends (format, rate, channels, address) is not known yet (`docs/design/rtp.md` section 1), so
 everything here is **[check]**. An `rtp` node (`AGENTS.md`, graph file) receives one stream:
 
-```json
-{ "name": "fpp", "type": "rtp",
-  "settings": { "address": "0.0.0.0", "port": 5004, "format": "L16", "channels": 2 } }
+```conf
+node rtp fpp { address "0.0.0.0"; port 5004; format "L16"; channels 2; }
 ```
 
 `address` is `0.0.0.0` (any sender, unicast) or an IPv4 multicast group; a unicast address is
@@ -154,7 +171,7 @@ refused (`pipewire-engine` skill, "RTP receivers"). `rate` defaults to the graph
 sender at another rate is resampled; about 100 ms of latency is accepted for this source (the
 owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
 
-- **Unicast (the simple way).** Use `"address": "0.0.0.0"`, declare the port in the pod
+- **Unicast (the simple way).** Use `address "0.0.0.0";`, declare the port in the pod
   (`containerPort: 5004, protocol: UDP`) and put a Service in front of it with a UDP port whose
   `targetPort` is the node's `port`. FPP sends to the Service's address. The Service may rewrite
   the sender's address and port on the way (kube-proxy NAT); `0.0.0.0` hears any sender, so that

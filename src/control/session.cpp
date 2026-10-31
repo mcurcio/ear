@@ -1,13 +1,14 @@
 // The protocol per connection, and the hub of sessions (docs/design/batch2.md sections 4.5 and 6,
 // session.hpp). Control thread only. A session turns one received text into one gateway run()
-// and its responses; the hub hands each graph event and each levels snapshot, encoded once, to
-// the sessions that subscribed.
+// and its responses; the hub hands each graph event, each graph file change and each levels
+// snapshot, encoded once, to the sessions that subscribed.
 //
-// Snapshot then events: replies and events arrive in one stream in main-loop order (gateway.hpp),
-// so a session marks itself subscribed when its snapshot's reply arrives: every event before it
-// is in the snapshot, every event after it is sent. A batch's graph.subscribe takes its snapshot
-// after the batch's other commands (JSON-RPC lets a server run a batch in any order), so the
-// events those commands cause, which arrive before the reply, are in the snapshot too.
+// Snapshot then events: replies, file changes and events arrive in one stream in main-loop order
+// (gateway.hpp), so a session marks itself subscribed when its snapshot's reply arrives: every
+// change before it is in the snapshot, every change after it is sent. A batch's graph.subscribe and
+// graphFile.subscribe take their snapshots after the batch's other commands, in request order
+// (JSON-RPC lets a server run a batch in any order), so the changes those commands cause, which
+// arrive before the reply, are in the snapshots too.
 #include "ear/control/session.hpp"
 
 #include <optional>
@@ -31,7 +32,8 @@ struct Hub;
 struct SessionState {
 	Hub* hub;
 	Outbox* out;   // null once the session is destroyed
-	bool graph = false;
+	bool graph = false;       // graph.subscribe answered
+	bool graphFile = false;   // graphFile.subscribe answered
 	bool levels = false;
 };
 
@@ -53,10 +55,10 @@ Message share(std::string text) { return std::make_shared<const std::string>(std
 
 /// One entry of a received message, in order: what its response will be.
 struct Slot {
-	enum class Kind { fixed, command, subscribe, levels } kind;
+	enum class Kind { fixed, command, subscribe, fileSubscribe, levels } kind;
 	std::optional<RpcId> id;   // none: a notification, no response
 	std::string text;          // Kind::fixed: the encoded error
-	std::size_t command = 0;   // Kind::command, Kind::subscribe: index into the results
+	std::size_t command = 0;   // Kind::command and the subscribes: index into the results
 };
 
 std::optional<std::string> respond(const Slot& slot, const std::vector<CommandResult>& results) {
@@ -81,6 +83,7 @@ void answer(SessionState& state, bool batch, const std::vector<Slot>& slots,
 	}
 	for (const Slot& slot : slots) {
 		if (slot.kind == Slot::Kind::subscribe) state.graph = true;
+		if (slot.kind == Slot::Kind::fileSubscribe) state.graphFile = true;
 		if (slot.kind == Slot::Kind::levels) state.levels = true;
 	}
 	done();
@@ -113,7 +116,6 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 
 	std::vector<Slot> slots;
 	std::vector<Command> commands;
-	bool snapshot = false;
 	for (auto& entry : message.entries) {
 		if (auto* error = std::get_if<std::string>(&entry)) {
 			slots.push_back({Slot::Kind::fixed, std::nullopt, std::move(*error)});
@@ -136,17 +138,20 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		if (!command) {
 			refuse(command.error());
 		} else if (request.method == "graph.subscribe") {
-			snapshot = true;
 			slots.push_back({Slot::Kind::subscribe, request.id, {}});
+		} else if (request.method == "graphFile.subscribe") {
+			slots.push_back({Slot::Kind::fileSubscribe, request.id, {}});
 		} else {
 			slots.push_back({Slot::Kind::command, request.id, {}, commands.size()});
 			commands.push_back(std::move(*command));
 		}
 	}
-	if (snapshot) {   // last, so it holds every change the batch made (see the top)
-		for (Slot& slot : slots)
-			if (slot.kind == Slot::Kind::subscribe) slot.command = commands.size();
-		commands.push_back(GetGraph{});
+	// The snapshots last, in request order, so they hold every change the batch made (see the top).
+	for (Slot& slot : slots) {
+		if (slot.kind != Slot::Kind::subscribe && slot.kind != Slot::Kind::fileSubscribe) continue;
+		slot.command = commands.size();
+		if (slot.kind == Slot::Kind::subscribe) commands.push_back(GetGraph{});
+		else commands.push_back(GetGraphFile{});
 	}
 
 	if (commands.empty()) {
@@ -182,6 +187,15 @@ void ControlHub::graphChanged(GraphEvent event) {
 	for (const auto& session : impl_->hub.attached()) {
 		if (session->out == nullptr || !session->graph) continue;
 		if (!message) message = share(encodeEvent(event));
+		session->out->send(message);
+	}
+}
+
+void ControlHub::graphFileChanged(GraphFileChanged change) {
+	Message message;
+	for (const auto& session : impl_->hub.attached()) {
+		if (session->out == nullptr || !session->graphFile) continue;
+		if (!message) message = share(encodeGraphFileChanged(change));
 		session->out->send(message);
 	}
 }

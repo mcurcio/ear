@@ -93,13 +93,13 @@ private:
 	std::filesystem::path path_;
 };
 
-std::shared_ptr<const ear::nodes::RecordingsFolder> recordingsIn(const std::filesystem::path& path) {
-	auto folder = ear::nodes::RecordingsFolder::open(path);
+std::shared_ptr<const ear::folder::ConfinedFolder> recordingsIn(const std::filesystem::path& path) {
+	auto folder = ear::folder::ConfinedFolder::open(path);
 	REQUIRE(folder.has_value());
-	return std::make_shared<const ear::nodes::RecordingsFolder>(std::move(*folder));
+	return std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder));
 }
 
-std::unique_ptr<const ear::NodeConfig> parseFile(const std::shared_ptr<const ear::nodes::RecordingsFolder>& folder,
+std::unique_ptr<const ear::NodeConfig> parseFile(const std::shared_ptr<const ear::folder::ConfinedFolder>& folder,
                                                  const std::string& path) {
 	auto config = ear::nodes::makeFileNodeType(folder)->parse("rec", {{"path", path}});
 	REQUIRE(config.has_value());
@@ -171,7 +171,7 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 
 		REQUIRE_FALSE(insides.has_value());
 		CHECK(insides.error().code == ear::FailureReason::Code::startFailed);
-		CHECK(insides.error().detail == "cannot open " + path + ": it leads outside the recordings folder");
+		CHECK(insides.error().detail == "cannot open " + path + ": it leads outside the folder");
 		CHECK(grant.requests.empty());
 	}
 	CHECK(contents(outside) == "keep");

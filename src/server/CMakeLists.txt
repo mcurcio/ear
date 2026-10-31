@@ -15,11 +15,10 @@ set_target_properties(ear_server PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_server PUBLIC ear_control PRIVATE Boost::beast)
 
 if(BUILD_TESTS)
-	include(Catch)
 	add_executable(ear_server_tests
 		tests/control_port_test.cpp)
 	# ear_ws_client (test/CMakeLists.txt): the tests' WebSocket client, on Boost.Beast.
 	target_link_libraries(ear_server_tests PRIVATE ear_server ear_catch_main ear_ws_client)
 	add_dependencies(ear_server_tests ear_server_verify_interface_header_sets)
-	catch_discover_tests(ear_server_tests)
+	ear_catch_tests(ear_server_tests)
 endif()

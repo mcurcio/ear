@@ -63,7 +63,7 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 
 }  // namespace
 
-TEST_CASE("Rtp accepts a full settings object; its ports are channel_i out and from_rtp_i inside", "[rtp]") {
+TEST_CASE("Rtp accepts a full settings object, and its ports are channel_i out and from_rtp_i inside", "[rtp]") {
 	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();

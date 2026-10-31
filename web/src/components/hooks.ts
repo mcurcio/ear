@@ -1,9 +1,10 @@
-// React's view of the editor session: the graph, the connection and one port's level, each read
+// React's view of the editor session: the graph, the graph file, the connection and one port's level, each read
 // from its store with useSyncExternalStore, so a levels message re-renders only the meters and
 // wires of the ports that changed.
 import { createContext, useCallback, useContext, useSyncExternalStore } from "react";
 import type { Editor } from "../editor";
 import type { GraphState } from "../graph";
+import type { GraphFileState } from "../graphFile";
 import type { Level } from "../protocol";
 import type { ConnectionStatus } from "../rpc";
 
@@ -20,6 +21,14 @@ export function useGraph(): GraphState {
   return useSyncExternalStore(
     useCallback((listener) => graph.subscribe(listener), [graph]),
     () => graph.get(),
+  );
+}
+
+export function useGraphFile(): GraphFileState | null {
+  const { file } = useEditor();
+  return useSyncExternalStore(
+    useCallback((listener) => file.subscribe(listener), [file]),
+    () => file.get(),
   );
 }
 

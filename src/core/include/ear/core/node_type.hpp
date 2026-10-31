@@ -102,6 +102,13 @@ public:
   /// Main thread. Error: the node becomes failed with this reason (startFailed).
   virtual std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const = 0;
 };
+/// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
+/// kind and writes a JSON value of this kind back. The one home of each key's kind.
+enum class SettingKind {
+  text,          // JSON string; written quoted (knobly's quote), read with knobly's string reader
+  wholeNumber,   // JSON integer; written as a bare word, read with knobly's integer reader
+};
+struct SettingDeclaration { std::string_view key; SettingKind kind; };
 class NodeType {
 public:
   virtual ~NodeType() = default;
@@ -109,5 +116,7 @@ public:
   /// Pure; the only place settings are checked; unknown keys are invalid.
   virtual std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
       parse(const NodeName& node, const NodeSettings& settings) const = 0;
+  /// Every key parse() accepts, each once, with its kind; the same span every call; pure.
+  virtual std::span<const SettingDeclaration> settingKinds() const = 0;
 };
 }
