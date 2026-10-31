@@ -104,9 +104,17 @@ struct Handoffs final : HandoffFactory {
 };
 
 struct NoCards final : SoundCardFactory {
-	std::unique_ptr<SoundCard> make(const NodeName&, const NodeName&, const SoundCardRequest&, const AudioFormat&,
-	                                SoundCardEvents&) override {
+	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const SoundCardRequest&, const AudioFormat&,
+	                                  OutsideNodeEvents&) override {
 		FAIL("a sound card was made");
+		return nullptr;
+	}
+};
+
+struct NoReceivers final : RtpReceiverFactory {
+	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const RtpReceiverRequest&,
+	                                  OutsideNodeEvents&) override {
+		FAIL("an RTP receiver was made");
 		return nullptr;
 	}
 };
@@ -123,8 +131,9 @@ struct Fixture {
 	Blocks blocks;
 	Handoffs handoffs;
 	NoCards cards;
+	NoReceivers receivers;
 	Links links;
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards};
+	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
 	Fixture() {

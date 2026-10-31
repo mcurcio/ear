@@ -1,5 +1,6 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4; "rtp" by docs/design/rtp.md section 7.3,
+// batch2.md section 11's erratum). Change it only through an erratum and a re-cut, never a
+// local edit.
 #pragma once
 #include <memory>
 #include <vector>
@@ -22,6 +23,15 @@ std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const folder::C
 /// from_card_j -> capture_j). Start asks the grant for one card per direction used. The rate is
 /// the graph frequency (R5), never a setting.
 std::unique_ptr<const NodeType> makeCardNodeType();
-/// white, file (writing into `recordings`), card.
+/// "rtp": one RTP stream received (docs/design/rtp.md section 3). Settings: {"address": an
+/// RtpAddress ("0.0.0.0" or an IPv4 multicast group), "port": 1-65535, "format": "L16" or
+/// "L24", "channels": 1-64, "rate": 8000-192000 Hz (default: the graph frequency, taken at
+/// start), "latencyMs": 1-1000 (default 100, this parser being its one home)}; all but rate and
+/// latencyMs required; unknown keys invalid. Ports: outputs "channel_1".."channel_N", inside
+/// inputs "from_rtp_1".."from_rtp_N" (N = channels). Audio passes straight through
+/// (from_rtp_i -> channel_i). Start asks the grant for one receiver with blockPorts = the inside
+/// inputs. No packets: the node stays running and its outputs are silent.
+std::unique_ptr<const NodeType> makeRtpNodeType();
+/// white, file (writing into `recordings`), card and rtp.
 std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<const folder::ConfinedFolder> recordings);
 }

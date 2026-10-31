@@ -2,8 +2,9 @@
 // running or failed, and the order stopAll takes everything down in
 // (docs/design/m1-white-to-file.md section 3, S2 criterion 5), on batch 2's interfaces
 // (docs/design/batch2.md section 4.1: the port block is made first and the insides drive it;
-// C1 criteria 7-11: restart, sound cards, a lost block, removal). Every step a fake engine would
-// take later (ready, lost, a handoff closing, a card ready or lost) is an event the test sends.
+// C1 criteria 7-11: restart, sound cards, a lost block, removal; docs/design/rtp.md R1a criteria
+// 3-8: RTP receivers on the same outside-node path). Every step a fake engine would take later
+// (ready, lost, a handoff closing, a card or receiver ready or lost) is an event the test sends.
 #include <algorithm>
 #include <functional>
 #include <stdexcept>
@@ -45,14 +46,15 @@ struct TestInsides final : NodeInsides {
 	AudioCode& audioCode() override { return code; }
 };
 
-/// A node config whose start asks for `handoffs` handoffs and `cards` sound cards, then succeeds
-/// or fails. A config with a tag logs its start and its destruction with that tag.
+/// A node config whose start asks for `handoffs` handoffs, `cards` sound cards and `receivers`
+/// RTP receivers, then succeeds or fails. A config with a tag logs its start and its destruction with that tag.
 struct TestConfig final : NodeConfig {
 	Log& log;
 	std::string tag;
 	Ports ports_{{"FL", "FR"}, {}, {"CAP1"}, {"PB1", "PB2"}};
 	int handoffs = 0;
 	std::vector<SoundCardRequest> cards;
+	std::vector<RtpReceiverRequest> receivers;
 	bool fail = false;
 	mutable NodeGrant* grant = nullptr;   // the grant start() was given, kept to misuse it later
 	explicit TestConfig(Log& l, std::string t = {}) : log(l), tag(std::move(t)) {}
@@ -67,6 +69,7 @@ struct TestConfig final : NodeConfig {
 		auto insides = std::make_unique<TestInsides>(log);
 		for (int i = 0; i < handoffs; ++i) g.handoff(2, 1024, insides->consumer);
 		for (const auto& card : cards) g.soundCard(card);
+		for (const auto& receiver : receivers) g.rtpReceiver(receiver);
 		if (fail) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open /nope"});
 		return insides;
 	}
@@ -78,6 +81,14 @@ const SoundCardRequest motuIn{*CardId::parse("Pro24"), CardDirection::capture, {
 std::shared_ptr<TestConfig> withCards(Log& log, std::string tag = {}) {
 	auto config = std::make_shared<TestConfig>(log, std::move(tag));
 	config->cards = {motuOut, motuIn};
+	return config;
+}
+
+const RtpReceiverRequest fppStream{*RtpAddress::parse("239.69.0.1"), 5004, RtpEncoding::l24, 44100, 100, {"CAP1"}};
+
+std::shared_ptr<TestConfig> withReceiver(Log& log, std::string tag = {}) {
+	auto config = std::make_shared<TestConfig>(log, std::move(tag));
+	config->receivers = {fppStream};
 	return config;
 }
 
@@ -138,7 +149,7 @@ struct TestHandoffs final : HandoffFactory {
 	}
 };
 
-struct TestCard final : SoundCard {
+struct TestCard final : OutsideNode {
 	Log& log;
 	NodeName name;
 	TestCard(Log& l, NodeName n) : log(l), name(std::move(n)) {}
@@ -148,17 +159,39 @@ struct TestCard final : SoundCard {
 /// Cards whose readiness and loss the test tells, as a real card's PCM and links report later.
 struct TestCards final : SoundCardFactory {
 	Log& log;
-	std::vector<SoundCardEvents*> events;
+	std::vector<OutsideNodeEvents*> events;
 	explicit TestCards(Log& l) : log(l) {}
-	std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                const SoundCardRequest& request, const AudioFormat& format,
-	                                SoundCardEvents& e) override {
+	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+	                                  const SoundCardRequest& request, const AudioFormat& format,
+	                                  OutsideNodeEvents& e) override {
 		std::string ports;
 		for (const auto& port : request.blockPorts) ports += (ports.empty() ? "" : ",") + port;
 		log.push_back("card " + engineNode + " of " + blockNode + " " + request.card.text() + " " + ports + " at " +
 		              std::to_string(format.rate));
 		events.push_back(&e);
 		return std::make_unique<TestCard>(log, engineNode);
+	}
+};
+
+struct TestReceiver final : OutsideNode {
+	Log& log;
+	NodeName name;
+	TestReceiver(Log& l, NodeName n) : log(l), name(std::move(n)) {}
+	~TestReceiver() override { log.push_back("receiver " + name + " destroyed"); }
+};
+
+/// RTP receivers whose readiness and loss the test tells; each request is kept as it was given.
+struct TestReceivers final : RtpReceiverFactory {
+	Log& log;
+	std::vector<OutsideNodeEvents*> events;
+	std::vector<RtpReceiverRequest> requests;
+	explicit TestReceivers(Log& l) : log(l) {}
+	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+	                                  const RtpReceiverRequest& request, OutsideNodeEvents& e) override {
+		log.push_back("receiver " + engineNode + " of " + blockNode);
+		events.push_back(&e);
+		requests.push_back(request);
+		return std::make_unique<TestReceiver>(log, engineNode);
 	}
 };
 
@@ -180,10 +213,11 @@ struct Fixture {
 	TestBlocks blocks{log};
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
+	TestReceivers receivers{log};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};   // only for close(), the proof stopAll takes
-	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards};
+	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards, receivers};
 	int allGone = 0;   // how often stopAll's callback has run
 	Fixture() { host.subscribe(listener); }
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
@@ -561,4 +595,135 @@ TEST_CASE("After stopAll no node event can reach the node framework", "[node_hos
 	CHECK_THROWS_AS(f.add("noise", std::make_shared<TestConfig>(f.log)), std::logic_error);
 	CHECK_THROWS_AS(f.update("rec", std::make_shared<TestConfig>(f.log)), std::logic_error);
 	CHECK_THROWS_AS(f.host.nodeRemoved("rec"), std::logic_error);
+}
+
+TEST_CASE("A node's RTP receiver is made once its port block is ready, named <node>.rtp, with the "
+          "request unchanged", "[node_host][rtp]") {
+	Fixture f;
+	f.add("fpp", withReceiver(f.log));
+	CHECK(f.receivers.events.empty());   // nothing before the block is ready
+	f.log.clear();
+
+	f.blocks.events.at(0)->ready();
+	CHECK(f.log == Log{"receiver fpp.rtp of fpp"});
+	REQUIRE(f.receivers.requests.size() == 1);
+	const RtpReceiverRequest& made = f.receivers.requests[0];
+	CHECK(made.address == fppStream.address);
+	CHECK(made.port == fppStream.port);
+	CHECK(made.encoding == fppStream.encoding);
+	CHECK(made.rate == fppStream.rate);
+	CHECK(made.latencyMs == fppStream.latencyMs);
+	CHECK(made.blockPorts == fppStream.blockPorts);
+	CHECK(f.host.status().at(0).state == NodeState::starting);
+	f.log.clear();
+
+	f.receivers.events[0]->ready();
+	CHECK(f.log == Log{"node fpp running"});
+	f.stopAll();
+}
+
+TEST_CASE("A node with a card and a receiver runs only once both are ready, in either order",
+          "[node_host][rtp]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	config->cards = {motuOut};
+	config->receivers = {fppStream};
+	f.add("mix", config);
+	f.log.clear();
+	f.blocks.events.at(0)->ready();
+	// Request order: the card first, then the receiver.
+	CHECK(f.log == Log{"card mix.playback of mix Pro24 PB1,PB2 at 44100", "receiver mix.rtp of mix"});
+	REQUIRE(f.cards.events.size() == 1);
+	REQUIRE(f.receivers.events.size() == 1);
+	f.log.clear();
+
+	SECTION("the receiver first") {
+		f.receivers.events[0]->ready();
+		CHECK(f.log.empty());
+		f.cards.events[0]->ready();
+	}
+	SECTION("the card first") {
+		f.cards.events[0]->ready();
+		CHECK(f.log.empty());
+		f.receivers.events[0]->ready();
+	}
+	CHECK(f.log == Log{"node mix running"});
+	f.stopAll();
+}
+
+TEST_CASE("A receiver lost after the node ran fails it; an update makes a new receiver behind the "
+          "same block", "[node_host][rtp]") {
+	Fixture f;
+	{
+		auto a = withReceiver(f.log, "A");
+		a->handoffs = 1;
+		f.add("fpp", std::move(a));
+	}
+	f.blocks.events.at(0)->ready();
+	f.receivers.events.at(0)->ready();
+	REQUIRE(f.host.status().at(0).state == NodeState::running);
+	f.log.clear();
+
+	f.receivers.events[0]->lost("the engine removed the RTP receiver");
+	CHECK(f.log == Log{"node fpp failed engine-refused: the engine removed the RTP receiver"});
+	f.log.clear();
+
+	f.update("fpp", withReceiver(f.log, "B"));
+	CHECK(f.log == Log{"node fpp starting", "drive nothing", "release", "receiver fpp.rtp destroyed", "handoff close"});
+	f.log.clear();
+	f.handoffs.finishOne(0);
+	CHECK(f.log == Log{"handoff destroyed", "insides destroyed", "config A destroyed", "start 44100 B",
+	                   "prepare 44100/256", "drive code", "receiver fpp.rtp of fpp"});
+	REQUIRE(f.receivers.events.size() == 2);   // made once more, not twice
+	CHECK(f.blocks.events.size() == 1);        // the block stayed
+	f.log.clear();
+	f.receivers.events[1]->ready();
+	CHECK(f.log == Log{"node fpp running"});
+	f.stopAll();
+}
+
+TEST_CASE("A node asks for an RTP receiver only inside start, and at most once per start",
+          "[node_host][rtp]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	f.add("fpp", config);
+	REQUIRE(config->grant != nullptr);
+	CHECK_THROWS_AS(config->grant->rtpReceiver(fppStream), std::logic_error);
+
+	auto twice = std::make_shared<TestConfig>(f.log);
+	twice->receivers = {fppStream, fppStream};
+	CHECK_THROWS_AS(f.add("fpp2", twice), std::logic_error);
+	for (auto* events : f.blocks.events) events->ready();
+	CHECK(f.receivers.events.empty());
+}
+
+TEST_CASE("Restart and removal destroy the receiver before the handoffs close and the insides go",
+          "[node_host][rtp]") {
+	Fixture f;
+	auto a = withReceiver(f.log, "A");
+	a->handoffs = 1;
+	f.add("fpp", std::move(a));
+	f.blocks.events.at(0)->ready();
+	f.receivers.events.at(0)->ready();
+	f.log.clear();
+
+	const auto at = [&](const std::string& line) { return std::find(f.log.begin(), f.log.end(), line) - f.log.begin(); };
+	SECTION("restart") {
+		f.update("fpp", withReceiver(f.log, "B"));
+		f.handoffs.finishOne(0);
+	}
+	SECTION("removal") {
+		f.host.nodeRemoved("fpp");
+		f.handoffs.finishOne(0);
+		CHECK(f.log.back() == "node fpp gone dropped=0");
+	}
+	const auto destroyed = at("receiver fpp.rtp destroyed");
+	CHECK(destroyed < static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(at("release") < destroyed);
+	CHECK(destroyed < at("handoff close"));
+	CHECK(destroyed < at("insides destroyed"));
+	f.log.clear();
+	f.stopAll();
+	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
+	CHECK(f.allGone == 1);
 }
