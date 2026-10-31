@@ -1,5 +1,6 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4; NodeGrant::rtpReceiver added by
+// docs/design/rtp.md section 7.1, batch2.md section 11's erratum). Change it only through an
+// erratum and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -9,11 +10,13 @@
 #include <string_view>
 #include <vector>
 #include "ear/core/command_error.hpp"
+#include "ear/core/rtp_receiver.hpp"
 #include "ear/core/sound_card.hpp"
 namespace ear {
 /// Public ports are routable. Inside ports belong to the port block only; nothing but the node's
-/// own sound cards reaches them. Invariant: the four lists' names are unique together
-/// (DesiredGraph::addNode throws std::logic_error otherwise: a type bug, not a user error).
+/// own outside nodes (its sound cards and RTP receivers) reaches them. Invariant: the four
+/// lists' names are unique together (DesiredGraph::addNode throws std::logic_error otherwise: a
+/// type bug, not a user error).
 struct Ports {
   std::vector<PortName> inputs;
   std::vector<PortName> outputs;
@@ -70,7 +73,8 @@ public:
   virtual AudioCode& audioCode() = 0;
 };
 /// Powers granted to one starting node. Everything made here belongs to the node's insides and
-/// is torn down by the framework in order: sound cards, handoffs, insides.
+/// is torn down by the framework in order: outside nodes (sound cards, RTP receivers), handoffs,
+/// insides.
 class NodeGrant {
 public:
   virtual AudioFormat format() const = 0;   // the value prepare() will get
@@ -79,9 +83,14 @@ public:
                             HandoffConsumer& consumer) = 0;
   /// Main thread, inside start() only (else std::logic_error). The framework opens the card at
   /// format().rate with blockPorts.size() channels and joins its channels to blockPorts. The
-  /// node runs once every card it asked for is ready, and fails (engine-refused) when one is
-  /// lost. Cards go with the insides, before the insides are destroyed.
+  /// node runs once every outside node it asked for is ready, and fails (engine-refused) when
+  /// one is lost, before or after it ran. Outside nodes go with the insides, before the insides
+  /// are destroyed.
   virtual void soundCard(const SoundCardRequest& request) = 0;
+  /// Main thread, inside start() only, at most once per start (else std::logic_error). The
+  /// framework receives the stream once the port block is ready and joins its channels to
+  /// request.blockPorts; readiness, loss and teardown as soundCard's.
+  virtual void rtpReceiver(const RtpReceiverRequest& request) = 0;
 protected:
   ~NodeGrant() = default;
 };

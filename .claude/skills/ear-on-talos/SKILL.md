@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): loading snd-usb-audio in the machine config, the privileged namespace, /dev/snd and the audio group, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and its udev group, CAP_SYS_NICE for realtime priority, setting the MOTU's rate and channel count, finding the card id, and the checks to run on the hardware. Use when deploying EAR to the cluster, when a card node fails on the hardware, or when graph.get says "realtime": false in the pod.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -11,26 +11,33 @@ sections 5 and 7) and the sources below say the node and pod must give. Each ste
 
 The owner (2026-10-30): "Motu 24ao. Talos 1.13.x I think maybe 1.14.x". The Talos nodes' CPU is
 not known yet, so the image is published for amd64 only (`ghcr.io/mcurcio/ear`, section 7 of
-the design page; it is private until the owner makes it public, so the cluster needs a pull
-secret).
+the design page). The package is public: anonymous pulls work, so the cluster needs no pull
+secret.
 
 ## 1. The node: the USB audio driver
 
 The MOTU 24Ao is USB class compliant: the kernel's `snd-usb-audio` drives it; no MOTU driver
-exists or is needed, in the image or on the node. Talos builds `snd-usb-audio` as a module from
-1.12 (`CONFIG_SND_USB_AUDIO=m` in siderolabs/pkgs `kernel/build/config-amd64` on release-1.12,
-1.13 and 1.14; not set on 1.11). Talos loads only the modules its machine config names, so add
-to each audio node's machine config:
+exists or is needed, in the image or on the node. The Talos kernel builds it as a module
+(`CONFIG_SND_USB_AUDIO=m` in siderolabs/pkgs `kernel/build/config-amd64`), but Talos's own image
+carries only the modules in `hack/modules-amd64.txt`, which has no sound modules (checked at
+v1.13.10). The ALSA modules (`snd`, `snd-pcm`, `snd-timer`, `snd-usb-audio` and their helpers)
+ship only in the **`siderolabs/usb-audio-drivers` system extension**, so:
+
+1. Add `usb-audio-drivers` to the node's extensions (its Image Factory installer). That changes
+   the install image, so it lands through an OS upgrade, not a config apply.
+2. Load the module in the machine config. `/proc/modules` lists it as `snd_usb_audio` (kmod
+   treats `-` and `_` alike), so a check that compares names must normalise them:
 
 ```yaml
 machine:
   kernel:
     modules:
-      - name: snd-usb-audio
+      - name: snd_usb_audio
 ```
 
 Then the card appears in `/proc/asound/cards` **[check]**: `talosctl -n <node> read
-/proc/asound/cards`.
+/proc/asound/cards`. Until a sound module loads there is no `/dev/snd` at all, so a pod that
+asks a device plugin for it stays Pending.
 
 ## 2. The card id
 
@@ -60,16 +67,24 @@ always the graph frequency (`graphFrequency` in `ear.json`), never a setting.
 
 ## 4. The namespace and the pod
 
-- Talos enforces Pod Security "baseline" by default, which forbids adding SYS_NICE and mounting
-  host devices, so label EAR's namespace `pod-security.kubernetes.io/enforce: privileged`. Cost:
-  that widens what a compromised EAR could do (the card setting takes only a card id, and the
-  control port checks Host, for this reason). Port 7777 has no login.
+- Talos enforces Pod Security "baseline" by default, which forbids adding SYS_NICE (it is not in
+  baseline's allowed capabilities). Pod Security never sees device-plugin devices, so SYS_NICE is
+  the only gap. An admission policy can only refuse, never admit, so the namespace must enforce
+  `privileged`; on its own that lets anything that can patch a deployment there get root on the
+  node. The narrower way (what the owner's iac repo does) is `privileged` enforced, `baseline`
+  audited and warned, and a ValidatingAdmissionPolicy on the namespace that re-imposes baseline
+  plus SYS_NICE; it holds only while the policy and its binding exist. Port 7777 has no login.
 - `/dev/snd` reaches the container through a device plugin such as squat/generic-device-plugin
   (a device group with path `/dev/snd`, then a resource limit on that group in the pod), or a
   privileged container.
-- The image runs as uid 10001, which must be in the group that owns `/dev/snd/*` on the node:
-  add that group's id to `securityContext.supplementalGroups` **[check: read it with `talosctl
-  -n <node> list --long /dev/snd`]**.
+- The image runs as uid 10001, which must be in the group that owns `/dev/snd/*` on the node.
+  Out of the box no such group exists: the kernel gives sound devices no mode (root:root 0600),
+  and Talos runs udevd with `--resolve-names=never`, which ignores systemd's stock
+  `SUBSYSTEM=="sound", GROUP="audio"` rule (a named group). containerd copies the host's owner
+  and mode into the container. So give the node a udev rule with a numeric group, through
+  `machine.udev.rules` (applied only on a reboot), for example `SUBSYSTEM=="sound",
+  GROUP="2029", MODE="0660"`, and put the same gid in `securityContext.supplementalGroups`.
+  Check it with `talosctl -n <node> list --long /dev/snd`.
 - Realtime priority: `securityContext.capabilities.add: [SYS_NICE]`, and leave
   `allowPrivilegeEscalation` unset or true. The binary carries CAP_SYS_NICE as a permitted-only
   file capability that EAR makes effective at boot; `allowPrivilegeEscalation: false` sets

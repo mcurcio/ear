@@ -61,6 +61,9 @@ public:
 	void soundCard(const ear::SoundCardRequest&) override {
 		throw std::logic_error("file asked for a sound card");
 	}
+	void rtpReceiver(const ear::RtpReceiverRequest&) override {
+		throw std::logic_error("file asked for an RTP receiver");
+	}
 
 	struct Request {
 		std::uint32_t channels;
