@@ -3,6 +3,7 @@
 // control call each command names; encodeCommandResult and encodeGraph give exactly the
 // fixtures' texts (R1 criterion 3).
 #include <fstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -196,6 +197,11 @@ TEST_CASE("runCommand makes the one control call its command names", "[commands]
 	                                                "removeNode rec", "addRoute FL", "removeRoute FL"});
 	CHECK(reader.reads == 1);
 	CHECK(ear::errorCode(std::get<std::expected<void, ear::CommandError>>(refused).error()) == "unknown-route");
+	// The graph file keeper answers these (docs/design/knobly-config.md); nothing decodes them yet.
+	CHECK_THROWS_AS(runCommand(GetGraphFile{}, control, reader), std::logic_error);
+	CHECK_THROWS_AS(runCommand(SetGraphFile{"", "v1"}, control, reader), std::logic_error);
+	CHECK(control.calls.size() == 5);
+	CHECK(reader.reads == 1);
 }
 
 TEST_CASE("encodeGraph gives snapshot.json's graph exactly", "[commands][protocol]") {

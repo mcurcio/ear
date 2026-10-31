@@ -13,6 +13,7 @@ target_link_libraries(ear_config PUBLIC ear_core ear_control PRIVATE knobly::kno
 if(BUILD_TESTS)
 	include(Catch)
 	add_executable(ear_config_tests
+		tests/graph_file_edit_test.cpp
 		tests/graph_file_model_test.cpp
 		tests/place_test.cpp
 		tests/test_types.cpp)
