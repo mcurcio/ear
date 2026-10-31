@@ -103,7 +103,8 @@ private:
   Waiter& waiter_;
 };
 
-/// Engine nodes and links as the registry shows them; nodes are bound for their properties.
+/// Engine nodes and links as the registry shows them; nodes are bound for their properties and
+/// links for their state.
 class Registry {
 public:
   Registry(Engine& engine, Waiter& waiter) : waiter_(waiter) {
@@ -116,6 +117,7 @@ public:
       spa_hook_remove(&node.hook);
       pw_proxy_destroy(node.proxy);
     }
+    for (auto& [id, link] : links_) unbindLink(link);
     spa_hook_remove(&hook_);
     pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
   }
@@ -130,6 +132,14 @@ public:
   std::optional<std::uint32_t> id(const NodeName& name) const {
     const Node* node = find(name, false);
     return node ? std::optional(node->id) : std::nullopt;
+  }
+  /// Every present node of this name, in the order the registry announced them.
+  std::vector<std::uint32_t> ids(const NodeName& name) const {
+    std::vector<std::uint32_t> found;
+    for (const Node& node : nodes_) {
+      if (node.name == name && !node.removed) found.push_back(node.id);
+    }
+    return found;
   }
   /// node.driver-id, once the node's info carried it.
   std::optional<std::uint32_t> driverId(const NodeName& name) const {
@@ -146,10 +156,18 @@ public:
   /// Links that touch node `id`, present now.
   std::vector<std::uint32_t> linksOf(std::uint32_t id) const {
     std::vector<std::uint32_t> found;
-    for (const auto& [link, ends] : links_) {
-      if (ends.first == id || ends.second == id) found.push_back(link);
+    for (const auto& [linkId, link] : links_) {
+      if (link.output == id || link.input == id) found.push_back(linkId);
     }
     return found;
+  }
+  /// How many links that touch node `id` this connection has heard are ACTIVE (their info on
+  /// this registry's binding, so it trails any proxy bound to the link before it).
+  std::size_t activeLinksOf(std::uint32_t id) const {
+    return static_cast<std::size_t>(std::ranges::count_if(links_, [&](const auto& entry) {
+      const Link& link = entry.second;
+      return (link.output == id || link.input == id) && link.state == PW_LINK_STATE_ACTIVE;
+    }));
   }
   /// Destroys a global through the registry, as another client or the engine could.
   bool destroy(std::uint32_t id) { return pw_registry_destroy(registry_, id) >= 0; }
@@ -188,6 +206,14 @@ private:
     pw_node_state state = PW_NODE_STATE_CREATING;
     std::map<std::string, std::string> props;
   };
+  struct Link {
+    Registry* owner = nullptr;
+    std::uint32_t output = SPA_ID_INVALID;
+    std::uint32_t input = SPA_ID_INVALID;
+    pw_proxy* proxy = nullptr;
+    spa_hook hook{};
+    pw_link_state state = PW_LINK_STATE_INIT;
+  };
 
   const Node* find(const NodeName& name, bool includeRemoved) const {
     for (const Node& node : nodes_) {
@@ -202,6 +228,15 @@ private:
       events.version = PW_VERSION_REGISTRY_EVENTS;
       events.global = &Registry::onGlobal;
       events.global_remove = &Registry::onGlobalRemove;
+      return events;
+    }();
+    return table;
+  }
+  static const pw_link_events& linkEvents() {
+    static const pw_link_events table = [] {
+      pw_link_events events{};
+      events.version = PW_VERSION_LINK_EVENTS;
+      events.info = &Registry::onLinkInfo;
       return events;
     }();
     return table;
@@ -226,8 +261,12 @@ private:
     auto* self = static_cast<Registry*>(data);
     if (props == nullptr) return;
     if (std::string_view(type) == PW_TYPE_INTERFACE_Link) {
-      self->links_[id] = {number(props, PW_KEY_LINK_OUTPUT_NODE),
-                          number(props, PW_KEY_LINK_INPUT_NODE)};
+      Link& link = self->links_[id];
+      link.owner = self;
+      link.output = number(props, PW_KEY_LINK_OUTPUT_NODE);
+      link.input = number(props, PW_KEY_LINK_INPUT_NODE);
+      link.proxy = static_cast<pw_proxy*>(pw_registry_bind(self->registry_, id, PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, 0));
+      if (link.proxy != nullptr) pw_proxy_add_object_listener(link.proxy, &link.hook, &linkEvents(), &link);
       self->waiter_.wake();
       return;
     }
@@ -251,7 +290,10 @@ private:
 
   static void onGlobalRemove(void* data, std::uint32_t id) {
     auto* self = static_cast<Registry*>(data);
-    self->links_.erase(id);
+    if (const auto link = self->links_.find(id); link != self->links_.end()) {
+      unbindLink(link->second);
+      self->links_.erase(link);
+    }
     for (Node& node : self->nodes_) {
       if (node.id != id || node.removed) continue;
       node.removed = true;
@@ -260,6 +302,19 @@ private:
       node.proxy = nullptr;
     }
     self->waiter_.wake();
+  }
+
+  static void unbindLink(Link& link) {
+    if (link.proxy == nullptr) return;
+    spa_hook_remove(&link.hook);
+    pw_proxy_destroy(link.proxy);
+    link.proxy = nullptr;
+  }
+
+  static void onLinkInfo(void* data, const pw_link_info* info) {
+    auto* link = static_cast<Link*>(data);
+    if ((info->change_mask & PW_LINK_CHANGE_MASK_STATE) != 0) link->state = info->state;
+    link->owner->waiter_.wake();
   }
 
   /// PipeWire 1.4.2 sets a node's node.driver-id when its driver changes but tells no client
@@ -282,7 +337,7 @@ private:
   pw_registry* registry_ = nullptr;
   spa_hook hook_{};
   std::list<Node> nodes_;
-  std::map<std::uint32_t, std::pair<std::uint32_t, std::uint32_t>> links_;   // output, input
+  std::map<std::uint32_t, Link> links_;   // a map's elements stay put: their hooks are registered
 };
 
 }  // namespace ear::pipewire::testing

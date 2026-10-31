@@ -13,6 +13,8 @@
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
 
+struct pw_node_info;
+
 namespace ear::pipewire {
 
 /// Which way an outside node's channels flow.
@@ -45,6 +47,16 @@ public:
 protected:
   ~OutsideBodyEvents() = default;
 };
+
+/// "[ AUX0 AUX1 ... ]", the audio.position of an outside node of `channels` channels: its
+/// channels carry no speaker positions. The one home of this form for every kind.
+std::string auxPositions(std::size_t channels);
+
+/// The one reading of an outside node's info, for every kind's body: a state change to ERROR
+/// tells failed("the <kind> failed: <error>"), one to RUNNING tells running(nodeId) (failed if
+/// the engine gave the node no id); anything else tells nothing.
+void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId,
+                   OutsideBodyEvents& events);
 
 /// One kind's PipeWire object for one outside node. Destroying it (main thread) removes the
 /// engine node and tells nothing more, in any state.

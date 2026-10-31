@@ -25,16 +25,11 @@
 namespace ear::pipewire {
 namespace {
 
+constexpr char kind[] = "card";   // names it in failure details
+
 /// The ALSA device a card id names: device 0 of the card. The one home of this form; the card
 /// id's grammar (CardId) keeps every other ALSA device-name form out of reach.
 std::string alsaPath(const CardId& card) { return "hw:CARD=" + card.text() + ",DEV=0"; }
-
-/// "[ AUX0 AUX1 ... ]": the card's channels carry no speaker positions.
-std::string auxPositions(std::size_t channels) {
-  std::string positions = "[";
-  for (std::size_t i = 0; i < channels; ++i) positions += " AUX" + std::to_string(i);
-  return positions + " ]";
-}
 
 /// The adapter's port for channel `channel` (from 0), as its dsp port configuration names it.
 std::string channelPort(CardDirection direction, std::size_t channel) {
@@ -138,18 +133,7 @@ private:
   // RUNNING: the PCM runs, so the card may be linked, by its global id; ERROR: failed.
   static void onInfo(void* data, const pw_node_info* info) {
     auto* self = static_cast<AlsaCardBody*>(data);
-    if ((info->change_mask & PW_NODE_CHANGE_MASK_STATE) == 0) return;
-    if (info->state == PW_NODE_STATE_ERROR) {
-      self->events_.failed(std::string("the card failed: ") +
-                           (info->error != nullptr ? info->error : "engine error"));
-    } else if (info->state == PW_NODE_STATE_RUNNING) {
-      const std::uint32_t id = pw_proxy_get_bound_id(self->node_);
-      if (id == SPA_ID_INVALID) {
-        self->events_.failed("the card runs but the engine gave it no id");
-      } else {
-        self->events_.running(id);
-      }
-    }
+    tellNodeState(*info, kind, pw_proxy_get_bound_id(self->node_), self->events_);
   }
   static void onError(void* data, int /*seq*/, int res, const char* message) {
     static_cast<AlsaCardBody*>(data)->events_.failed(
@@ -183,7 +167,7 @@ std::unique_ptr<OutsideNode> AlsaSoundCards::make(const NodeName& engineNode,
   }
   return joinOutsideNode(
       engine_,
-      OutsideJoin{.kind = "card",
+      OutsideJoin{.kind = kind,
                   .blockNode = blockNode,
                   .flow = request.direction == CardDirection::playback ? ChannelFlow::blockToNode
                                                                        : ChannelFlow::nodeToBlock,
