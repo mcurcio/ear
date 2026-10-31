@@ -1,5 +1,6 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4; the outside node and RtpReceiverFactory by
+// docs/design/rtp.md section 7.1, batch2.md section 11's erratum). Change it only through an
+// erratum and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -64,46 +65,65 @@ public:
 protected:
   ~HandoffFactory() = default;
 };
-/// A sound card opened through the engine: its engine node plus the links joining its channels
-/// to its port block. Destroying it (main thread) removes both.
-class SoundCard {
+/// An outside node: a PipeWire node a node's insides asked for (a sound card or an RTP
+/// receiver), plus the links joining its channels to the node's inside ports. Destroying it
+/// (main thread) removes both, in any state, and tells nothing.
+class OutsideNode {
 public:
-  virtual ~SoundCard() = default;
+  virtual ~OutsideNode() = default;
 };
-class SoundCardEvents {   // main thread
+/// One outside node's lifecycle, the same for every kind (main thread).
+class OutsideNodeEvents {
 public:
-  /// The card's PCM runs and every channel is linked to its block port; at most once.
+  /// The node runs (a card's PCM runs; a receiver's socket is bound) and every channel is
+  /// linked to its block port; at most once.
   virtual void ready() = 0;
-  /// At most once, never inside make(). When it is told, the card's engine node and links are
-  /// already destroyed, so the card no longer clocks or holds any part of the graph.
+  /// At most once, before or after ready, never inside make(). When it is told, the outside
+  /// node's engine node and links are already destroyed, so it no longer clocks or holds any
+  /// part of the graph.
   virtual void lost(std::string detail) = 0;
 protected:
-  ~SoundCardEvents() = default;
+  ~OutsideNodeEvents() = default;
 };
 class SoundCardFactory {
 public:
   /// Main thread; only once port block `blockNode` is ready (its ports exist). One engine node
   /// named `engineNode` for request.card with request.blockPorts.size() channels at format.rate.
   /// It joins the graph's clock only through its links to `blockNode`, made once its PCM runs.
-  virtual std::unique_ptr<SoundCard> make(const NodeName& engineNode, const NodeName& blockNode,
-      const SoundCardRequest& request, const AudioFormat& format, SoundCardEvents& events) = 0;
+  virtual std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+      const SoundCardRequest& request, const AudioFormat& format, OutsideNodeEvents& events) = 0;
 protected:
   ~SoundCardFactory() = default;
+};
+class RtpReceiverFactory {
+public:
+  /// Main thread; only once port block `blockNode` is ready (its ports exist). One engine node
+  /// named `engineNode` receiving the stream `request` names, with request.blockPorts.size()
+  /// channels. It follows the graph's clock and never drives it; its channels are linked to
+  /// `blockNode` once it runs (its socket is bound). Packets that stop or never come change
+  /// nothing: it stays ready and its channels are silent.
+  virtual std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+      const RtpReceiverRequest& request, OutsideNodeEvents& events) = 0;
+protected:
+  ~RtpReceiverFactory() = default;
 };
 class NodeHost final : public DesiredNodeListener {
 public:
   NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-           SoundCardFactory& cards);   // all outlive it
+           SoundCardFactory& cards, RtpReceiverFactory& receivers);   // all outlive it
   ~NodeHost();   // precondition: stopAll completed (or no node was ever added)
   void subscribe(NodeStatusListener& listener);
-  /// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the cards
-  /// the type asked for are made once the block is ready; insides ready when every card is
-  /// ready (at once with none). A failure fails the node; its port block stays.
+  /// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the
+  /// outside nodes the type asked for are made once the block is ready, in request order, named
+  /// "<node>.playback" / "<node>.capture" (cards) and "<node>.rtp" (the receiver); insides ready
+  /// when every outside node is ready (at once with none). A failure fails the node; its port
+  /// block stays.
   void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-  /// Restart: drive(nullptr), release(), cards destroyed, handoffs closed, insides destroyed and
-  /// then their config let go, then started from `config` as in nodeAdded. The port block and
-  /// routes stay. An update arriving during a restart replaces the config to start. If the
-  /// block was lost: the old insides are torn down, nothing starts, the node stays failed.
+  /// Restart: drive(nullptr), release(), outside nodes destroyed, handoffs closed, insides
+  /// destroyed and then their config let go, then started from `config` as in nodeAdded. The
+  /// port block and routes stay. An update arriving during a restart replaces the config to
+  /// start. If the block was lost: the old insides are torn down, nothing starts, the node stays
+  /// failed.
   void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
   /// stopping; port block destroyed; then as the restart's teardown; nodeGone. Others untouched.
   void nodeRemoved(const NodeName& node) override;

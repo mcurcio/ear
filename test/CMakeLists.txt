@@ -15,3 +15,8 @@ set_tests_properties(ear_help_lists_config PROPERTIES PASS_REGULAR_EXPRESSION "-
 add_library(ear_ws_client INTERFACE)
 target_include_directories(ear_ws_client INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_ws_client INTERFACE Boost::beast)
+
+# ear_rtp_tone: the tests' RTP sender and tone fit (test/support/rtp_tone.hpp, header-only), for
+# the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/design/rtp.md).
+add_library(ear_rtp_tone INTERFACE)
+target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
