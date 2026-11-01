@@ -78,7 +78,16 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   plus SYS_NICE; it holds only while the policy and its binding exist. Port 7777 has no login.
 - `/dev/snd` reaches the container through a device plugin such as squat/generic-device-plugin
   (a device group with path `/dev/snd`, then a resource limit on that group in the pod), or a
-  privileged container.
+  privileged container. Do not make the pod request the card's own USB device (a USB group for
+  07fd:0005): the plugin advertises it only while the MOTU is on, so with it off the pod stays
+  Pending and a deploy waiting on it fails. Every node that loads `snd_usb_audio` has `/dev/snd`
+  (`snd-timer` makes `/dev/snd/timer` with no card), so the owner's iac repo puts the pod on the
+  MOTU's node by a node label (`nodeSelector` `node.iac/device.motu-24ao: "true"`; its node
+  inventory sets the label on the node the card is attached to) and requests only the `/dev/snd`
+  group. With the MOTU off, EAR still starts: the card node is `failed engine-refused` and the
+  control port answers. A container sees only the device files present when it starts, so after
+  the MOTU comes on, restart the pod (`kubectl rollout restart -n audio deploy/ear`); `node.update`
+  alone cannot see a card the container never got.
 - Out of the box `/dev/snd/*` is `root:root 0600` on the node (seen on the owner's node
   2026-10-31): the kernel gives sound devices no mode. Talos runs udevd with
   `--resolve-names=never`, so systemd's stock `SUBSYSTEM=="sound", GROUP="audio"` rule (a named
@@ -148,8 +157,10 @@ machine:
 2. The card drives: the card node is `running`, its routes are `linked`, and audio routed to
    `motu:playback_<n>` comes out of that output only. CI checks the same path with a test ALSA
    card (alsa-lib's file and null PCMs), not the MOTU.
-3. A wrong rate fails only the card node (section 3), and unplugging the card fails it too while
-   the rest keeps running (no hotplug: plug it back and `node.update`).
+3. A wrong rate fails only the card node (section 3), and unplugging the card or switching it
+   off fails it too while the rest keeps running. There is no hotplug, and in a pod the card's
+   device files are fixed when the container starts: plug it back or switch it on, then restart
+   the pod (`kubectl rollout restart -n audio deploy/ear`), not just `node.update`.
 4. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
    graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
