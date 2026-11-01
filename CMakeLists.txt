@@ -1,8 +1,7 @@
 cmake_minimum_required(VERSION 3.28...4.2)
 
-# The version is release-please's (release-please-config.json): its release pull request
-# rewrites the number on the marked line.
-project(EAR VERSION 0.0.1) # x-release-please-version
+# No version here: a release's version is its git tag, v<version> (semantic-release, .releaserc.json).
+project(EAR)
 
 # EAR builds on Linux only: it links PipeWire's libraries. On a Mac (or a Linux host without
 # the packages), build in the image: scripts/dev.sh make test. Any other platform stops here,

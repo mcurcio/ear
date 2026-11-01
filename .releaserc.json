@@ -1,0 +1,21 @@
+{
+  "branches": ["master"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      {
+        "verifyReleaseCmd": "if [ -n \"$GITHUB_OUTPUT\" ]; then echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\"; fi"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "successCommentCondition": false,
+        "failCommentCondition": false,
+        "releasedLabels": false
+      }
+    ]
+  ]
+}

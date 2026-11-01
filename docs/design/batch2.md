@@ -1205,20 +1205,18 @@ The graph file's `data.code` values, beside the desired graph's:
 - `.github/workflows/test.yml` on every pull request: job `test` (as today), job `web` (`make
   web-test` in the dev image: npm ci, typecheck, vitest, build), job `image` (build target `run`,
   load, `scripts/image-smoke.sh ear:ci`). Jobs run in parallel.
-- `.github/workflows/image.yml` on push to master and `workflow_dispatch`, `concurrency: {group:
-  image-${{ github.ref }}, cancel-in-progress: false}` (a publish run is never cancelled):
-  release-please (googleapis/release-please-action, pinned by SHA; config
-  `release-please-config.json`, `.release-please-manifest.json`, release type `simple`, the
-  version in `CMakeLists.txt` marked `x-release-please-version`), then build `run` and push
-  `ghcr.io/mcurcio/ear` tagged `master` and `sha-<short>` (docker/metadata-action), plus one
-  version tag per `v*` tag pointing at the built commit (`scripts/version-tags.sh`, which reads
-  `git tag --points-at HEAD`, never `release_created`). So a rerun of a failed or interrupted run
-  publishes the version: release-please made the tag the first time, and the tag is still on the
-  commit. The version push lives in this workflow because a release made with GITHUB_TOKEN starts
-  no other workflow.
-- Owner actions after merge (not design choices): allow GitHub Actions to create pull requests
-  (Settings, Actions), so release-please can open its release PR; the ghcr package is private
-  until he changes it, so the cluster needs a pull secret or a public package.
+- Releases (owner, 2026-11-01: "I prefer semantic release and auto releases after PRs are
+  merged"): on a push to master, once `test`, `web` and `image` pass, `test.yml`'s `release` job
+  runs semantic-release (`.releaserc.json`, root `package.json`): the Conventional Commits since
+  the last `v*` tag make the `v<version>` tag and its GitHub Release; the version is in no file.
+  Then `publish` builds `run` and pushes `ghcr.io/mcurcio/ear` tagged `master` and `sha-<short>`
+  (docker/metadata-action), plus one version tag per `v*` tag on the built commit
+  (`scripts/version-tags.sh`, which reads `git tag --points-at HEAD`, never the release job's
+  output), so a rerun of a failed publish still pushes the version. Both live in `test.yml`
+  because a release made with GITHUB_TOKEN starts no other workflow; a master run is never
+  cancelled (`cancel-in-progress` only for pull requests).
+- Owner action after merge (not a design choice): the ghcr package is private until he changes
+  it, so the cluster needs a pull secret or a public package.
 
 ## 8. Graph editor (web/)
 
@@ -1262,7 +1260,7 @@ that needs a file outside its list, a new dependency or a signature change appen
 
 | Slice | Goal | Owned files | Size |
 |---|---|---|---|
-| B2 build base | Node in the dev image; Boost.Beast; web toolchain; run image with the file capability; CI jobs; publish and release workflows | `docker/Dockerfile`, `.dockerignore` (allowlist: sources in, `.cache`, `out`, `web/node_modules`, `web/dist`, `.git` out), `CMakeLists.txt` (`BOOST_INCLUDE_LIBRARIES program_options;beast`, configure fails if `Boost::beast` is missing; `x-release-please-version` marker), `Makefile` (`web`, `web-test`), `scripts/dev.sh` (`npm_config_cache` in `.cache/npm`; `EAR_DEV_PUBLISH` adds `--publish`), `scripts/image-smoke.sh`, `scripts/version-tags.sh`, `.gitignore`, `.github/workflows/{test,image}.yml`, `release-please-config.json`, `.release-please-manifest.json`, `web/{package.json,package-lock.json,tsconfig.json,vite.config.ts,.nvmrc,index.html,src/main.tsx}` (placeholder page; deps: react, react-dom, @xyflow/react, @dagrejs/dagre; dev: typescript, vite, @vitejs/plugin-react, vitest, @types/react, @types/react-dom) | 4-6 h |
+| B2 build base | Node in the dev image; Boost.Beast; web toolchain; run image with the file capability; CI jobs; publish and release workflows | `docker/Dockerfile`, `.dockerignore` (allowlist: sources in, `.cache`, `out`, `web/node_modules`, `web/dist`, `.git` out), `CMakeLists.txt` (`BOOST_INCLUDE_LIBRARIES program_options;beast`, configure fails if `Boost::beast` is missing), `Makefile` (`web`, `web-test`), `scripts/dev.sh` (`npm_config_cache` in `.cache/npm`; `EAR_DEV_PUBLISH` adds `--publish`), `scripts/image-smoke.sh`, `scripts/version-tags.sh`, `.gitignore`, `.github/workflows/test.yml` (release and publish jobs), `package.json`, `package-lock.json`, `.releaserc.json`, `web/{package.json,package-lock.json,tsconfig.json,vite.config.ts,.nvmrc,index.html,src/main.tsx}` (placeholder page; deps: react, react-dom, @xyflow/react, @dagrejs/dagre; dev: typescript, vite, @vitejs/plugin-react, vitest, @types/react, @types/react-dom) | 4-6 h |
 | s0 interfaces | section 4 compiles; every new target and placeholder test; fixtures; M1 behaviour kept | headers: `src/core/include/ear/core/{command_error,sound_card,node_type,node_catalogue,desired_graph,node_lifecycle,node_host,reconciler,executor,levels,graph_view}.hpp`, `src/pipewire/include/ear/pipewire/{engine,port_blocks,main_loop_executor,sound_cards}.hpp`, `src/nodes/include/ear/nodes/builtin.hpp`, `src/control/include/ear/control/{graph_json,rpc,commands,events,gateway,session}.hpp`, `src/server/include/ear/server/{control_thread,control_port}.hpp`; `src/{core,nodes,pipewire,control,server}/CMakeLists.txt`, `src/CMakeLists.txt`, `test/CMakeLists.txt` (INTERFACE target `ear_ws_client`: `test/support`, Boost::beast), `test/system/CMakeLists.txt` (+ `control_port_test.cpp`, Boost::beast); `src/core/command_error.cpp` (new arms, complete); `src/pipewire/{engine_names,link_proxy}.hpp`, `src/pipewire/links.cpp` (proxy moved out, unchanged behaviour); stubs: `src/core/{levels,graph_status,sound_card}.cpp`, `src/pipewire/{main_loop_executor,sound_cards}.cpp`, `src/nodes/card.cpp`, `src/control/{graph_json,rpc,commands,events,gateway,session}.cpp`, `src/server/{control_thread,control_port,level_bell}.cpp`; mechanical edits keeping M1 green: `src/core/{desired_graph,node_host,node_lifecycle,reconciler,node_catalogue}.cpp`, `src/pipewire/port_blocks.cpp` (drive stores the pointer, null silences; latestLevels returns {}), `src/pipewire/engine.cpp` (dataThreadScheduling returns {false, "unknown"}), `src/main.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler}_test.cpp`, `src/nodes/tests/{file,white}_test.cpp`, `src/pipewire/tests/engine_test.cpp`; placeholders: `src/core/tests/{levels,graph_status,sound_card}_test.cpp`, `src/pipewire/tests/{port_block,main_loop_executor,sound_card}_test.cpp`, `src/nodes/tests/card_test.cpp`, `src/control/tests/{graph_json,rpc,commands,events,gateway,session}_test.cpp`, `src/server/tests/control_port_test.cpp`, `test/system/control_port_test.cpp`; `test/protocol/{snapshot,edits,levels,errors}.json`; `web/src/protocol.ts`, `web/src/protocol.test.ts` (fixture coverage check; W1 owns it afterwards); test compile definitions `EAR_PROTOCOL_DIR` (control tests) and `EAR_ALSA_TEST_DIR` (pipewire tests) | 4-5 h |
 | C1 graph edits and node framework | remove/update nodes and routes; observers first; close; block-first node framework with restart, removal, sound cards; final block loss; GraphStatus; CardId | `src/core/{desired_graph,node_catalogue,node_host,node_lifecycle,reconciler,graph_status,sound_card}.cpp`, `src/core/tests/{desired_graph,node_host,node_lifecycle,reconciler,graph_status,sound_card}_test.cpp` | 6-8 h |
 | E1 port blocks, crossings, scheduling (tracer of the engine lane) | drive barrier, inside ports, graph group, clock-aligned level windows, main-loop executor, CAP_SYS_NICE and the scheduling report | `src/core/levels.cpp`, `src/core/tests/levels_test.cpp`, `src/pipewire/{port_blocks,main_loop_executor,engine}.cpp`, `src/pipewire/level_mailbox.hpp`, `src/pipewire/tests/{port_block,main_loop_executor,engine}_test.cpp` | 5-7 h |
@@ -1288,10 +1286,10 @@ permitted-only). Probe: `setcap cap_sys_nice=ep` → the run without cap-add fai
 (5) `scripts/version-tags.sh` in a scratch clone: with `v0.0.0-test` on HEAD it prints
 `ghcr.io/mcurcio/ear:0.0.0-test`; with no `v*` tag on HEAD it prints nothing. Probe: derive the
 tag from a `RELEASE_CREATED` variable → the rerun case (tag on HEAD, no release made) prints
-nothing. (6) CI's three jobs pass on the PR; `image.yml` passes actionlint (run in a container)
-and sets `cancel-in-progress: false`; its push, tag and release steps are NOT RUN before merge
-and are checked on master's first run. Probe: misspell a release-please output → actionlint
-flags it [U]. Report the image job's cold and warm times.
+nothing. (6) CI's three jobs pass on the PR; `test.yml` passes actionlint (run in a container)
+and never cancels a master run; `semantic-release --dry-run` prints the next version; the
+release and publish jobs are NOT RUN before merge and are checked on master's first run. Probe:
+misspell the release job's output → actionlint flags it [U]. Report the image job's cold and warm times.
 
 **s0.** (1) Every header compiles alone (header-set verify) and `make test` passes with all M1
 tests unchanged in behaviour, including `ear_system_tests` and the link tests after the proxy

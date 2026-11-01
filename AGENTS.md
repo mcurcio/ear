@@ -412,7 +412,9 @@ scripts/dev.sh out/src/nodes/ear_nodes_tests "[white]"                     # by 
 GitHub's cache), restores the Boost tree and ccache, and runs `scripts/dev.sh make test` with
 `EAR_DEV_IMAGE=ear-dev` (on failure it uploads ctest's logs as `ctest-output`); `web` runs `make
 web-test` in the same image; `image` checks `scripts/version-tags.sh`, builds the run image and
-runs `scripts/image-smoke.sh` on it. Its comments give the reasons for each step and cache.
+runs `scripts/image-smoke.sh` on it. On a push to `master`, once all three pass, `release` and
+then `publish` run (Run image and releases, below). A newer push cancels a pull request's run,
+never a `master` run. Its comments give the reasons for each step and cache.
 
 ## Run image and releases
 
@@ -435,14 +437,17 @@ docker build --target run --tag ear:local --file docker/Dockerfile .
 scripts/image-smoke.sh ear:local   # what CI checks: user, no compiler, files, ear.conf, graph.get, graphFile.get
 ```
 
-`.github/workflows/image.yml` runs on every push to `master` (and by hand), never cancelled:
-release-please keeps a release pull request open from master's Conventional Commits, and
-merging it makes the release, its `v<version>` tag and the version in `CMakeLists.txt` (the
-`x-release-please-version` line). Then the run image is pushed to `ghcr.io/mcurcio/ear` tagged
-`master`, `sha-<short commit>` and one version per `v*` tag on the commit
-(`scripts/version-tags.sh` reads them from git, so a rerun of a failed publish still pushes the
-version). Never tag or version by hand. After the first merge the owner must let GitHub Actions
-create pull requests (Settings, Actions) for release-please. The ghcr package is public
+Releases are automatic: merging a pull request to `master` is the release. After the checks
+pass on that push, `test.yml`'s `release` job runs semantic-release (`.releaserc.json`, with
+its tooling pinned in the root `package.json` and `package-lock.json`, under `web/.nvmrc`'s
+Node): the Conventional Commits since the last `v*` tag decide the bump (`fix` a patch, `feat` a
+minor, `!` or `BREAKING CHANGE:` a major, other types none), and it makes the `v<version>` tag
+and its GitHub Release with the notes. The version lives only in the tag: no file in the repo
+holds it and nothing is committed back. A squash-merge counts only its title, so the title
+must be a Conventional Commit. Then `publish` pushes the run image to `ghcr.io/mcurcio/ear`,
+released or not, tagged `master`, `sha-<short commit>` and one version per `v*` tag on the
+commit (`scripts/version-tags.sh` reads them from git, so a rerun of a failed publish still
+pushes the version). Never tag or version by hand. The ghcr package is public
 (anonymous pulls work). Running it on Talos with the MOTU: the `ear-on-talos` skill.
 
 ## Vendored and fetched code
