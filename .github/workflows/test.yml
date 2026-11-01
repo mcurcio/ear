@@ -1,12 +1,21 @@
 # On every pull request and on pushes to master (so master's caches are warm for pull
-# requests), three jobs in parallel:
+# requests), three check jobs in parallel:
 # - test: builds EAR's build image (docker/Dockerfile, target dev) and, inside it, builds
 #   everything and runs every test (make test), the same way scripts/dev.sh does on a
 #   developer's machine.
 # - web: in the same image, the graph editor's checks (make web-test: npm ci, typecheck, vitest,
 #   build).
-# - image: builds the run image (target run, what .github/workflows/image.yml publishes) and
-#   checks it with scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
+# - image: builds the run image (target run, what publish pushes) and checks it with
+#   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
+# Then, on a push to master only, once all three pass (docs/design/batch2.md section 7):
+# - release: semantic-release (.releaserc.json, the root package.json) reads the Conventional
+#   Commits since the last v* tag and, when one calls for a bump, appends the release notes to
+#   CHANGELOG.md, commits it to master ("chore(release): <version> [skip ci]"), tags that commit
+#   v<version> and makes its GitHub Release.
+# - publish: builds the run target from the release's tag (the merged commit when there is no
+#   release) and pushes it to ghcr.io/mcurcio/ear tagged master and sha-<merged commit>, plus one
+#   tag per v* tag on what it built (scripts/version-tags.sh). A release made with GITHUB_TOKEN
+#   starts no other workflow, so the versioned push happens here.
 name: test
 
 on:
@@ -14,9 +23,11 @@ on:
   push:
     branches: [master]
 
+# A newer push cancels a pull request's run; a master run is never cancelled (a cancelled
+# release or publish could leave a tag without its image), so a new push waits for it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -117,7 +128,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # scripts/version-tags.sh, which image.yml's publish relies on, in a scratch repository:
+      # scripts/version-tags.sh, which the publish job relies on, in a scratch repository:
       # a v* tag on HEAD gives one image reference; no v* tag gives nothing.
       - name: version-tags.sh prints the version tags on HEAD
         run: |
@@ -149,3 +160,115 @@ jobs:
           cache-to: type=gha,scope=image,mode=max
 
       - run: scripts/image-smoke.sh ear:ci
+
+  release:
+    needs: [test, web, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    # contents: write: the CHANGELOG.md commit and the tag are pushed to master (which has no
+    # branch protection), and semantic-release checks push access first, in dry-run too.
+    # Comments, labels and failure issues are off in .releaserc.json, so no issues or
+    # pull-requests scope. The CHANGELOG.md commit starts no workflow: a push made with
+    # GITHUB_TOKEN never does, and its "[skip ci]" is a second guard.
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      # Full history and tags: semantic-release reads every commit since the last v* tag. On a
+      # push, checkout puts the commit on a local master branch (checkout -B), not a detached
+      # HEAD, as the git plugin needs. No stored credentials: semantic-release pushes to a URL
+      # it builds from GITHUB_TOKEN (x-access-token), and the git plugin pushes through it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: web/.nvmrc
+      - run: npm ci
+      # Empty version and tag outputs: no commit since the last release calls for one.
+      # Gap: if this step fails after the git plugin pushed the CHANGELOG.md commit and tag
+      # (say, making the GitHub Release failed), rerunning this job checks out the merged commit,
+      # which is now behind master, so semantic-release releases nothing and publish never runs;
+      # the new head (the [skip ci] commit, already tagged) starts no run either. The GitHub
+      # Release is then made by hand from that version's CHANGELOG.md section, and that version's
+      # image is not published (AGENTS.md, Run image and releases).
+      - id: release
+        name: semantic-release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: npx semantic-release
+
+  publish:
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The release's tag when this run made one (it is on the CHANGELOG.md commit, one after
+      # the merged commit), else the merged commit; full history and tags, so version-tags.sh
+      # finds the tag on HEAD. A rerun of failed jobs keeps the release job's outputs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      # Read from git, from what was checked out.
+      - id: versions
+        name: Version tags on this commit
+        run: |
+          {
+            echo 'tags<<EOF'
+            scripts/version-tags.sh
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Report the release
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          VERSION_TAGS: ${{ steps.versions.outputs.tags }}
+        run: |
+          {
+            echo "release made by this run: ${VERSION:-none}"
+            echo "version tags pushed: ${VERSION_TAGS:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/mcurcio/ear
+          tags: |
+            type=raw,value=master
+            type=sha,prefix=sha-
+
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # amd64 only until the Talos nodes' CPU is known. The layer cache scope is the image job's,
+      # which built the same commit earlier in this run.
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: run
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            ${{ steps.versions.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=image
+          cache-to: type=gha,scope=image,mode=max

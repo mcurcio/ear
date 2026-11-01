@@ -4,7 +4,7 @@
 # - dev: the build and test image, for development (scripts/dev.sh) and CI
 #   (.github/workflows/test.yml). Debian 13 (trixie): PipeWire 1.4, GCC 14 (C++23), Node.js 24.
 # - build: dev plus this checkout, built: "make release" and the graph editor's "npm run build".
-# - run: what ships (.github/workflows/image.yml): the ear binary, its engine.conf and the built
+# - run: what ships (test.yml's publish job): the ear binary, its engine.conf and the built
 #   editor on debian:trixie-slim with the libraries they load at run time, no compiler.
 #
 # Every base is pinned by the digest of its multi-platform index, so the same base serves

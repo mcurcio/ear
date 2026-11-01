@@ -412,7 +412,9 @@ scripts/dev.sh out/src/nodes/ear_nodes_tests "[white]"                     # by 
 GitHub's cache), restores the Boost tree and ccache, and runs `scripts/dev.sh make test` with
 `EAR_DEV_IMAGE=ear-dev` (on failure it uploads ctest's logs as `ctest-output`); `web` runs `make
 web-test` in the same image; `image` checks `scripts/version-tags.sh`, builds the run image and
-runs `scripts/image-smoke.sh` on it. Its comments give the reasons for each step and cache.
+runs `scripts/image-smoke.sh` on it. On a push to `master`, once all three pass, `release` and
+then `publish` run (Run image and releases, below). A newer push cancels a pull request's run,
+never a `master` run. Its comments give the reasons for each step and cache.
 
 ## Run image and releases
 
@@ -435,14 +437,25 @@ docker build --target run --tag ear:local --file docker/Dockerfile .
 scripts/image-smoke.sh ear:local   # what CI checks: user, no compiler, files, ear.conf, graph.get, graphFile.get
 ```
 
-`.github/workflows/image.yml` runs on every push to `master` (and by hand), never cancelled:
-release-please keeps a release pull request open from master's Conventional Commits, and
-merging it makes the release, its `v<version>` tag and the version in `CMakeLists.txt` (the
-`x-release-please-version` line). Then the run image is pushed to `ghcr.io/mcurcio/ear` tagged
-`master`, `sha-<short commit>` and one version per `v*` tag on the commit
-(`scripts/version-tags.sh` reads them from git, so a rerun of a failed publish still pushes the
-version). Never tag or version by hand. After the first merge the owner must let GitHub Actions
-create pull requests (Settings, Actions) for release-please. The ghcr package is public
+Releases are automatic: merging a pull request to `master` is the release. After the checks
+pass on that push, `test.yml`'s `release` job runs semantic-release (`.releaserc.json`, with
+its tooling pinned in the root `package.json` and `package-lock.json`, under `web/.nvmrc`'s
+Node): the Conventional Commits since the last `v*` tag decide the bump (`fix` a patch, `feat` a
+minor, `build(deps)` a patch, `!` or `BREAKING CHANGE:` a major, other types none; the notes
+list Features, Bug Fixes, Performance, Reverts and Dependencies, and hide every other type). It appends the release notes to
+`CHANGELOG.md`, commits that to `master` as `chore(release): <version> [skip ci]` (a push made
+with GITHUB_TOKEN starts no workflow), tags that commit `v<version>` and makes its GitHub
+Release. The version is the tag; no file holds it. A squash-merge counts only its title, so
+the title must be a Conventional Commit. Then `publish` pushes the run image to
+`ghcr.io/mcurcio/ear`, released or not, built from the release's tag (else the merged commit)
+and tagged `master`, `sha-<merged commit>` and one version per `v*` tag on what it built
+(`scripts/version-tags.sh` reads them from git; a rerun of a failed publish keeps the release
+job's tag). One gap: if the release job fails after it pushed the `CHANGELOG.md` commit and
+tag (making the GitHub Release failed), a rerun of it finds `master` ahead of its checkout and
+releases nothing and `publish` never runs, and nothing reruns from the new head (its `[skip
+ci]` commit started no run, and it already carries the tag). The GitHub Release is then made by
+hand from that version's `CHANGELOG.md` section (`gh release create v<version> --verify-tag`),
+and that version's image is not published. Never tag or version by hand otherwise. The ghcr package is public
 (anonymous pulls work). Running it on Talos with the MOTU: the `ear-on-talos` skill.
 
 ## Vendored and fetched code
@@ -450,7 +463,16 @@ create pull requests (Settings, Actions) for release-please. The ghcr package is
 `vendor/json` (nlohmann) and `vendor/catch` (Catch 2.12.2) are used; `vendor/jsonrpccxx`,
 `vendor/jsonrpc` and `vendor/libjsonrpc` are not built (the control port has its own JSON-RPC
 code in `ear_control`; removing them is deferred). All were
-added with `git subtree`; leave them alone unless you are updating a dependency.
+added with `git subtree`; leave them alone unless you are updating a dependency. Update one
+with `git subtree pull --prefix vendor/<x> <repo> <ref> --squash -m "build(deps): upgrade <X> to
+<a.b.c>"`: with `--squash` the upstream commits never enter ear's history, so the release notes
+get only the merge commit's message (one Dependencies line and a patch release); the squash
+commit's own "Squashed '...' changes" message is not a Conventional Commit, so it is ignored.
+Bumps of the fetched dependencies (Boost's `boost_url` and `boost_sha256`, `KNOBLY_COMMIT`) use
+the same message, `build(deps): upgrade <X> to <version>`. The subtrees were first added without
+`--squash`, so their upstream histories (thousands of other projects' commits) are in ear's
+history; the baseline tag `v0.0.0` on cb6d71f64c (the last `git subtree add`, 2020-05-27) ends
+them, since semantic-release reads only the commits after the last `v*` tag.
 `test/main.cpp` turns off Catch's POSIX signal handlers, which do not compile against glibc 2.34
 and newer (its comment says why; Catch 2.13.5 fixes it). Boost is fetched, not vendored (see
 Build and run), and so is knobly, built in the image from a pinned commit (`KNOBLY_COMMIT`).
