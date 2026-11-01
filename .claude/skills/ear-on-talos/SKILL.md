@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -60,12 +60,28 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 - Set the card's sample rate and USB channel count in MOTU's web app, to the graph frequency
   and the channel count the node asks for. EAR cannot change them.
 - The kernel validates every rate a MOTU (USB vendor 0x07fd) reports
-  (`QUIRK_FLAG_VALIDATE_RATES`, `sound/usb/quirks.c`), so a graph frequency the card is not set
+  (`QUIRK_FLAG_VALIDATE_RATES`, `sound/usb/quirks.c`; the quirk flags below turn it off), so a graph frequency the card is not set
   to fails the card when it opens: the node is `failed engine-refused: <detail>`, and every other
   node keeps running on the dummy driver. Fix the rate, then `node.update` the card node (no
-  retry happens by itself).
+  retry happens by itself; issue #19). A `node.update` on the card node has also hung until the
+  pod was restarted (issue #18).
+- Power-cycled, the MOTU comes up at 192 kHz unless its rate was set on the device, so check the
+  rate after every power-cycle. With the quirk flags below it stays at the rate set (48 kHz seen,
+  2026-11-01).
+- Quirk flags: `snd_usb_audio` parameter `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup`
+  (the owner's iac repo sets it) removed the kernel's "clock source 1 is not valid" at connect.
+  The kernel reads the flags only when it probes the card, so they take effect after a MOTU
+  power-cycle or re-plug; a MOTU already attached when the node boots did not get them (seen on
+  hawking, kernel 6.18.48, MOTU firmware 1.4.8+102192). The mainline fix that waits for a valid
+  clock on 07fd:0005 (commit 320e55722ca4) is not in 6.18.y.
 - Class-compliant mode offers 24 channels per direction (the kernel's `stream0` for the card,
-  2026-10-31).
+  2026-10-31), through one playback altsetting only (interface 1 alt 1, 24 channels
+  `S24_3LE`); interfaces 3 to 5 are vendor-only, no use to ALSA.
+- The 24-channel playback frame came out rotated by 8 (2026-11-01): EAR's `playback_N` was heard
+  on MOTU output N-8 (mod 24), so `playback_1` on output 17, `playback_6` on 22, `playback_19` on
+  11. EAR's own channel mapping is correct; the shift is below it (driver, USB or the MOTU's
+  firmware), a known MOTU AVB issue (Drumfix `motu-avb-usb` issue 16, PipeWire issue 2768).
+  Check the map after every restart of the card (section 5).
 
 ## 4. The namespace and the pod
 
@@ -155,13 +171,25 @@ machine:
    `"realtime": true` (`node scripts/rpc-call.mjs ws://<node>:7777/rpc graph.get`). The image
    smoke proved this in a container with `--cap-add SYS_NICE`; the pod is not proven.
 2. The card drives: the card node is `running`, its routes are `linked`, and audio routed to
-   `motu:playback_<n>` comes out of that output only. CI checks the same path with a test ALSA
-   card (alsa-lib's file and null PCMs), not the MOTU.
+   `motu:playback_<n>` comes out of that output only. Play into `playback_1` and listen on
+   output 1: hearing it on output 17 is the rotation in section 3. CI checks the same path with
+   a test ALSA card (alsa-lib's file and null PCMs), not the MOTU. `running` alone is not proof
+   the card is there: a USB card that vanished left the node `running` (issue #17).
 3. A wrong rate fails only the card node (section 3), and unplugging the card or switching it
    off fails it too while the rest keeps running. There is no hotplug, and in a pod the card's
    device files are fixed when the container starts: plug it back or switch it on, then restart
    the pod (`kubectl rollout restart -n audio deploy/ear`), not just `node.update`.
-4. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
+   After the node reboots, the MOTU may fail USB enumeration (`-71` in the kernel log) until it
+   is power-cycled; nothing in the node's roll notices the card is missing.
+4. The MOTU freezes on Linux (2026-10-31 to 2026-11-01, cause unknown): front panel and web
+   app (http://10.0.40.1) dead, only a power-cycle recovers it. Seen with EAR playing; with USB
+   connected and idle, no EAR, after 35 s to 2.5 min; and with USB unplugged (power and network
+   only) after about 12 min, 18 min at 48 kHz, 2 min at 44.1 kHz under heavy polling of its web
+   app, and 32 min with only pings. The owner ran it on a Mac on the same network "for months at
+   a time without issue"; the next test is the Mac over USB for about an hour. To notice a
+   freeze, run a watcher that pings the MOTU and exits after 2 missed pings (EAR does not notice:
+   check 2).
+5. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
    graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
