@@ -6,10 +6,10 @@
 # commit has none. .github/workflows/test.yml's publish job pushes the image it built under
 # these.
 #
-# The tags are read from git, not from the release job's output, so a rerun of a failed or
-# interrupted publish still pushes the version: semantic-release made the tag on the first run
-# and makes no release on a rerun, but the tag is still on the commit. The job fetches tags
-# before it runs this.
+# The tags are read from git: the publish job checks out the release's tag (on its
+# CHANGELOG.md commit) when the release job made one, else the merged commit, with tags
+# fetched. A rerun of a failed publish keeps the release job's output, so it checks out the
+# same tag and still pushes the version.
 set -euo pipefail
 
 image=${1:-ghcr.io/mcurcio/ear}

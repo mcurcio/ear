@@ -1208,11 +1208,14 @@ The graph file's `data.code` values, beside the desired graph's:
 - Releases (owner, 2026-11-01: "I prefer semantic release and auto releases after PRs are
   merged"): on a push to master, once `test`, `web` and `image` pass, `test.yml`'s `release` job
   runs semantic-release (`.releaserc.json`, root `package.json`): the Conventional Commits since
-  the last `v*` tag make the `v<version>` tag and its GitHub Release; the version is in no file.
-  Then `publish` builds `run` and pushes `ghcr.io/mcurcio/ear` tagged `master` and `sha-<short>`
-  (docker/metadata-action), plus one version tag per `v*` tag on the built commit
-  (`scripts/version-tags.sh`, which reads `git tag --points-at HEAD`, never the release job's
-  output), so a rerun of a failed publish still pushes the version. Both live in `test.yml`
+  the last `v*` tag decide the version; the notes are appended to `CHANGELOG.md` (owner,
+  2026-11-01: "Make sure that releases also append to a CHANGELOG.md in the root"), committed to
+  master as `chore(release): <version> [skip ci]`, and that commit gets the `v<version>` tag and
+  its GitHub Release. Then `publish` checks out that tag (else the merged commit), builds `run`
+  and pushes `ghcr.io/mcurcio/ear` tagged `master` and `sha-<merged commit>`
+  (docker/metadata-action), plus one version tag per `v*` tag on what it built
+  (`scripts/version-tags.sh`, `git tag --points-at HEAD`); a rerun of a failed publish keeps the
+  release job's tag output. Both live in `test.yml`
   because a release made with GITHUB_TOKEN starts no other workflow; a master run is never
   cancelled (`cancel-in-progress` only for pull requests).
 - Owner action after merge (not a design choice): the ghcr package is private until he changes

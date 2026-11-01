@@ -3,10 +3,18 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
+    ["@semantic-release/changelog", { "changelogFile": "CHANGELOG.md" }],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["CHANGELOG.md"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
+      }
+    ],
     [
       "@semantic-release/exec",
       {
-        "verifyReleaseCmd": "if [ -n \"$GITHUB_OUTPUT\" ]; then echo \"version=${nextRelease.version}\" >> \"$GITHUB_OUTPUT\"; fi"
+        "verifyReleaseCmd": "if [ -n \"$GITHUB_OUTPUT\" ]; then { echo \"version=${nextRelease.version}\"; echo \"tag=${nextRelease.gitTag}\"; } >> \"$GITHUB_OUTPUT\"; fi"
       }
     ],
     [

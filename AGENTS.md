@@ -441,13 +441,15 @@ Releases are automatic: merging a pull request to `master` is the release. After
 pass on that push, `test.yml`'s `release` job runs semantic-release (`.releaserc.json`, with
 its tooling pinned in the root `package.json` and `package-lock.json`, under `web/.nvmrc`'s
 Node): the Conventional Commits since the last `v*` tag decide the bump (`fix` a patch, `feat` a
-minor, `!` or `BREAKING CHANGE:` a major, other types none), and it makes the `v<version>` tag
-and its GitHub Release with the notes. The version lives only in the tag: no file in the repo
-holds it and nothing is committed back. A squash-merge counts only its title, so the title
-must be a Conventional Commit. Then `publish` pushes the run image to `ghcr.io/mcurcio/ear`,
-released or not, tagged `master`, `sha-<short commit>` and one version per `v*` tag on the
-commit (`scripts/version-tags.sh` reads them from git, so a rerun of a failed publish still
-pushes the version). Never tag or version by hand. The ghcr package is public
+minor, `!` or `BREAKING CHANGE:` a major, other types none). It appends the release notes to
+`CHANGELOG.md`, commits that to `master` as `chore(release): <version> [skip ci]` (a push made
+with GITHUB_TOKEN starts no workflow), tags that commit `v<version>` and makes its GitHub
+Release. The version is the tag; no file holds it. A squash-merge counts only its title, so
+the title must be a Conventional Commit. Then `publish` pushes the run image to
+`ghcr.io/mcurcio/ear`, released or not, built from the release's tag (else the merged commit)
+and tagged `master`, `sha-<merged commit>` and one version per `v*` tag on what it built
+(`scripts/version-tags.sh` reads them from git; a rerun of a failed publish keeps the release
+job's tag). Never tag or version by hand. The ghcr package is public
 (anonymous pulls work). Running it on Talos with the MOTU: the `ear-on-talos` skill.
 
 ## Vendored and fetched code

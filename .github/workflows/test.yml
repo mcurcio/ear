@@ -9,11 +9,13 @@
 #   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
 # Then, on a push to master only, once all three pass (docs/design/batch2.md section 7):
 # - release: semantic-release (.releaserc.json, the root package.json) reads the Conventional
-#   Commits since the last v* tag and, when one calls for a bump, makes the v<version> tag and
-#   its GitHub Release. The version lives only there, never in a file.
-# - publish: builds the run target and pushes it to ghcr.io/mcurcio/ear tagged master and
-#   sha-<short commit>, plus one tag per v* tag on the commit (scripts/version-tags.sh). A
-#   release made with GITHUB_TOKEN starts no other workflow, so the versioned push happens here.
+#   Commits since the last v* tag and, when one calls for a bump, appends the release notes to
+#   CHANGELOG.md, commits it to master ("chore(release): <version> [skip ci]"), tags that commit
+#   v<version> and makes its GitHub Release.
+# - publish: builds the run target from the release's tag (the merged commit when there is no
+#   release) and pushes it to ghcr.io/mcurcio/ear tagged master and sha-<merged commit>, plus one
+#   tag per v* tag on what it built (scripts/version-tags.sh). A release made with GITHUB_TOKEN
+#   starts no other workflow, so the versioned push happens here.
 name: test
 
 on:
@@ -167,15 +169,21 @@ jobs:
     concurrency:
       group: release
       cancel-in-progress: false
-    # contents: write is needed in dry-run too: semantic-release always checks push access first.
+    # contents: write: the CHANGELOG.md commit and the tag are pushed to master (which has no
+    # branch protection), and semantic-release checks push access first, in dry-run too.
     # Comments, labels and failure issues are off in .releaserc.json, so no issues or
-    # pull-requests scope.
+    # pull-requests scope. The CHANGELOG.md commit starts no workflow: a push made with
+    # GITHUB_TOKEN never does, and its "[skip ci]" is a second guard.
     permissions:
       contents: write
     outputs:
       version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      # Full history and tags: semantic-release reads every commit since the last v* tag.
+      # Full history and tags: semantic-release reads every commit since the last v* tag. On a
+      # push, checkout puts the commit on a local master branch (checkout -B), not a detached
+      # HEAD, as the git plugin needs. No stored credentials: semantic-release pushes to a URL
+      # it builds from GITHUB_TOKEN (x-access-token), and the git plugin pushes through it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -184,7 +192,7 @@ jobs:
         with:
           node-version-file: web/.nvmrc
       - run: npm ci
-      # Empty version output: no commit since the last release calls for one.
+      # Empty version and tag outputs: no commit since the last release calls for one.
       - id: release
         name: semantic-release
         env:
@@ -199,13 +207,16 @@ jobs:
       contents: read
       packages: write
     steps:
-      # Full history and tags, so the tag the release job made on this commit is here.
+      # The release's tag when this run made one (it is on the CHANGELOG.md commit, one after
+      # the merged commit), else the merged commit; full history and tags, so version-tags.sh
+      # finds the tag on HEAD. A rerun of failed jobs keeps the release job's outputs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.release.outputs.tag || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
-      # Read from git, not from the release job's output, so a rerun still finds the version.
+      # Read from git, from what was checked out.
       - id: versions
         name: Version tags on this commit
         run: |
