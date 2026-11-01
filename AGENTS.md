@@ -494,3 +494,9 @@ Repo skills in `.claude/skills/`:
 - `ear-on-talos`: the run image on a Talos node with the MOTU 24Ao (kernel module, privileged
   namespace, `/dev/snd`, SYS_NICE, the writable graph file volume, the card's own settings,
   checks on the hardware) and FPP's RTP stream into the pod.
+
+Research notes in `docs/research/`:
+
+- `motu-24ao-drivers/`: MOTU's macOS driver (static analysis) compared with the Linux driver
+  `snd-usb-motu`, and the MOTU 24Ao's USB descriptors; observations, inferences and comparisons
+  kept apart (its `README.md` says how).

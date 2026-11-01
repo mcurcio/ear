@@ -1,0 +1,65 @@
+idVendor=07fd
+idProduct=0005
+bcdDevice=0200
+manufacturer=MOTU
+product=24Ao
+speed=480
+bConfigurationValue=1
+bNumConfigurations=1
+version= 2.00
+== 1-5:1.0
+  bInterfaceNumber=00
+  bAlternateSetting= 0
+  bInterfaceClass=01
+  bInterfaceSubClass=01
+  bInterfaceProtocol=20
+  bNumEndpoints=01
+  driver: 10.0.0.6   Lrwxrwxrwx   0     0     0         Nov  1 13:14:17   system_u:object_r:sysfs_t:s0   driver -> ../../../../../../bus/usb/drivers/snd-usb-audio
+== 1-5:1.1
+  bInterfaceNumber=01
+  bAlternateSetting= 0
+  bInterfaceClass=01
+  bInterfaceSubClass=02
+  bInterfaceProtocol=20
+  bNumEndpoints=00
+  driver: 10.0.0.6   Lrwxrwxrwx   0     0     0         Nov  1 13:14:17   system_u:object_r:sysfs_t:s0   driver -> ../../../../../../bus/usb/drivers/snd-usb-audio
+== 1-5:1.2
+  bInterfaceNumber=02
+  bAlternateSetting= 0
+  bInterfaceClass=01
+  bInterfaceSubClass=02
+  bInterfaceProtocol=20
+  bNumEndpoints=00
+  driver: 10.0.0.6   Lrwxrwxrwx   0     0     0         Nov  1 13:14:18   system_u:object_r:sysfs_t:s0   driver -> ../../../../../../bus/usb/drivers/snd-usb-audio
+== 1-5:1.3
+  bInterfaceNumber=03
+  bAlternateSetting= 0
+  bInterfaceClass=ff
+  bInterfaceSubClass=04
+  bInterfaceProtocol=01
+  bNumEndpoints=02
+  driver: 
+== 1-5:1.4
+  bInterfaceNumber=04
+  bAlternateSetting= 0
+  bInterfaceClass=ff
+  bInterfaceSubClass=04
+  bInterfaceProtocol=02
+  bNumEndpoints=00
+  driver: 
+== 1-5:1.5
+  bInterfaceNumber=05
+  bAlternateSetting= 0
+  bInterfaceClass=ff
+  bInterfaceSubClass=04
+  bInterfaceProtocol=02
+  bNumEndpoints=00
+  driver: 
+== 1-5:1.6
+  bInterfaceNumber=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bInterfaceNumber: no such file or directory
+  bAlternateSetting=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bAlternateSetting: no such file or directory
+  bInterfaceClass=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bInterfaceClass: no such file or directory
+  bInterfaceSubClass=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bInterfaceSubClass: no such file or directory
+  bInterfaceProtocol=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bInterfaceProtocol: no such file or directory
+  bNumEndpoints=error reading: rpc error: code = NotFound desc = stat /sys/bus/usb/devices/1-5:1.6/bNumEndpoints: no such file or directory
+  driver: 

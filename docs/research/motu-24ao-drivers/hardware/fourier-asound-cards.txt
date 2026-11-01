@@ -1,0 +1,2 @@
+ 0 [D24Ao          ]: USB-Audio - 24Ao
+                      MOTU 24Ao at usb-0000:00:14.0-5, high speed
