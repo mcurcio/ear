@@ -193,6 +193,12 @@ jobs:
           node-version-file: web/.nvmrc
       - run: npm ci
       # Empty version and tag outputs: no commit since the last release calls for one.
+      # Gap: if this step fails after the git plugin pushed the CHANGELOG.md commit and tag
+      # (say, making the GitHub Release failed), rerunning this job checks out the merged commit,
+      # which is now behind master, so semantic-release releases nothing and publish never runs;
+      # the new head (the [skip ci] commit, already tagged) starts no run either. The GitHub
+      # Release is then made by hand from that version's CHANGELOG.md section, and that version's
+      # image is not published (AGENTS.md, Run image and releases).
       - id: release
         name: semantic-release
         env:
