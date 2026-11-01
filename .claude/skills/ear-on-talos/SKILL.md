@@ -16,8 +16,10 @@ secret.
 
 ## 1. The node: the USB audio driver
 
-The MOTU 24Ao is USB class compliant: the kernel's `snd-usb-audio` drives it; no MOTU driver
-exists or is needed, in the image or on the node. The Talos kernel builds it as a module
+The MOTU 24Ao is USB class compliant: the kernel's `snd-usb-audio` drives it, with no driver in
+the image or on the node. MOTU ships its own driver only for macOS, and that driver streams on the
+MOTU's vendor interfaces, not the class-compliant ones; the comparison with the unofficial Linux
+driver `snd-usb-motu` is in `docs/research/motu-24ao-drivers/`. The Talos kernel builds it as a module
 (`CONFIG_SND_USB_AUDIO=m` in siderolabs/pkgs `kernel/build/config-amd64`), but Talos's own image
 carries only the modules in `hack/modules-amd64.txt`, which has no sound modules (checked at
 v1.13.10). The ALSA modules (`snd`, `snd-pcm`, `snd-timer`, `snd-usb-audio` and their helpers)
@@ -76,7 +78,9 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   clock on 07fd:0005 (commit 320e55722ca4) is not in 6.18.y.
 - Class-compliant mode offers 24 channels per direction (the kernel's `stream0` for the card,
   2026-10-31), through one playback altsetting only (interface 1 alt 1, 24 channels
-  `S24_3LE`); interfaces 3 to 5 are vendor-only, no use to ALSA.
+  `S24_3LE`); interfaces 3 to 5 are vendor-only (3: bulk commands, 4 and 5: MOTU's own streaming
+  on the same endpoints, whose endpoints Linux drops as duplicates), no use to ALSA. The
+  descriptors are in `docs/research/motu-24ao-drivers/hardware/`.
 - The 24-channel playback frame came out rotated by 8 (2026-11-01): EAR's `playback_N` was heard
   on MOTU output N-8 (mod 24), so `playback_1` on output 17, `playback_6` on 22, `playback_19` on
   11. EAR's own channel mapping is correct; the shift is below it (driver, USB or the MOTU's

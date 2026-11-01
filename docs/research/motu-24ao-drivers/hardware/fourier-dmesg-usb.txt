@@ -1,0 +1,3 @@
+10.0.0.6: kern:    info: [2026-10-31T22:13:18.53865804Z]: usbcore: registered new interface driver snd-usb-audio
+10.0.0.6: kern:  notice: [2026-11-01T21:02:42.494169028Z]: usb 1-5: config 1 interface 4 altsetting 1 has a duplicate endpoint with address 0x9, skipping
+10.0.0.6: kern:  notice: [2026-11-01T21:02:42.494218787Z]: usb 1-5: config 1 interface 5 altsetting 1 has a duplicate endpoint with address 0x87, skipping

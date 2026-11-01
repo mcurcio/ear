@@ -1,0 +1,120 @@
+{
+ "gaps": [
+  {
+   "id": "G1",
+   "title": "Mac takes the device out of class-compliant (UAC) mode and streams on MOTU's vendor isochronous interface; snd-usb-motu stays in UAC mode on the UAC streaming interfaces",
+   "area": "1 Bring-up / 3 Stream start",
+   "mac_behavior": "The HAL plug-in rewrites the device datastore key host/mode from \"UAC\" to \"USB2\" (or \"USB3\"), chosen by the dext's isocMode property. The dext first looks for a vendor isochronous interface (class 0xFF, subclass 0x04, protocol 0x02) and uses the UAC2 streaming interfaces (1/2/0x20) only as a fallback. The re-enumerator forces a re-enumeration whenever Apple's class driver holds 07fd:0005. MOTU never runs this device through the class-compliant path on macOS.",
+   "mac_evidence": "CONFIRMED: SA_Device::ProcessDataStoreChanges compares the key with \"host/mod\"+'e', reads dext property 10 (isocMode) and posts host/mode=\"USB2\" when isocMode is 2 and \"USB3\" when it is 3. CONFIRMED: usb_provider sets fIsocMode=2/3 when an interface with immediates $0xff,$0x4,$0x2 exists, and logs \"Setting fIsocMode to %d\". CONFIRMED: StartAudioDMA calls GetInterfacesAndIsocPipes(0xFF,4,2) first and falls back to (1,2,0x20) (\"opened MOTU isoc interfaces and pipes\" / \"opened UAC isoc interfaces and pipes\"). CONFIRMED: the re-enumerator calls Server::armTimer -> USBDeviceReEnumerate after \"found a MOTU device using Apple class driver\".",
+   "linux_behavior": "No mode switch and no vendor interface. It streams on interface 2 alt 1 (capture) and interface 1 alt 1 (playback), the UAC2 layout, and uses UAC2-style interrupt messages on interface 0. Linux dmesg shows the 24Ao's config 1 has interfaces 4 and 5 with altsetting 1 reusing endpoints 0x09 and 0x87 (\"duplicate endpoint\"). That fits a second, vendor-mode pair of streaming interfaces on the same endpoints (INFERRED; no lsusb -v).",
+   "linux_evidence": "motu-usb-audio.c:601-602 (usb_set_interface(2,1), (1,1)); :662-663 alt 1 endpoint[0]; :1163-1194 claims only interfaces 1 and 2; no set_configuration or mode request anywhere (CONFIRMED by absence). The dmesg lines in /Volumes/Dock/iac-ear-run/motu-quirks/*.log: \"config 1 interface 4 altsetting 1 has a duplicate endpoint with address 0x9\" and \"interface 5 ... 0x87\".",
+   "symptom_link": "Possibly S1 and S4. MOTU's known-good path never exercises the device's UAC streaming firmware, and the stock driver's rotation and freezes happened in UAC mode. snd-usb-motu stays on that same UAC firmware path, so any firmware fault specific to UAC mode stays in reach. S2 and S3 belong to the UAC clock entities, which vendor mode would not use.",
+   "proposed_fix": "Find out from a descriptor dump whether interfaces 4 and 5 (or another one) are class 0xFF/0x04/0x02. If they are, set host/mode=USB2 in the device datastore, either once through the device's web API (the same key tree the Mac uses) or from the driver over the vendor bulk command interface (0xFF/0x04/0x01), and stream on the vendor interfaces. Keep the UAC interfaces only as a fallback.",
+   "confidence": "medium"
+  },
+  {
+   "id": "G2",
+   "title": "Mac sends no vendor control request at stream start or stop; snd-usb-motu sends vendor request 0x01 (interval) before every alt-setting change",
+   "area": "3 Stream start/stop, 6 Interrupt endpoint",
+   "mac_behavior": "The dext issues no USB control request of any kind; the only device-facing actions at start and stop are alt-setting changes and isochronous I/O. Timing comes from the USB frame number and host time, not from a device interrupt.",
+   "mac_evidence": "CONFIRMED: IOUSBHostDevice::DeviceRequest is absent from the dext's imports (nm -u). No interrupt pipe is looked up in usb_provider. StartAudioDMA and StopAudioDMA send nothing besides SelectAlternateSetting and the pipe I/O.",
+   "linux_behavior": "At every stream start it sends bmRequestType 0x40, bRequest 0x01, wValue = period frames, then alt 1 on interface 2, then on interface 1. At stop it sends wValue 0, then alt 0. A period-size change while streaming does stop plus start. Period timing depends entirely on the device's interrupt (info 0x01, attr 0x01) on interface 0.",
+   "linux_evidence": "motu-usb-audio.c:532-547 (request), :568-570 and :600 (sent before set_interface), :621 (wValue 0 at stop), :573-577 (stop/start on interval change), :471-472 (period interrupt drives the PCM).",
+   "symptom_link": "S4 (freezes around stream starts) and long-run reliability. The vendor interval command is extra firmware work at the exact moment the stock driver saw freezes, and the Mac never uses it. Linux also has no period clock without these interrupts (see G5). Whether the request is safe is INFERRED either way, since the Mac shows a design that avoids it, not that it is harmful.",
+   "proposed_fix": "Drive the PCM period from isochronous completions and the frame counter instead of the vendor period interrupt, and stop sending the 0x01 request (or send it once, not at every start and stop). At minimum, never re-send it while streams run (no stop/start on a period change).",
+   "confidence": "medium"
+  },
+  {
+   "id": "G3",
+   "title": "Mac schedules isochronous transfers on explicit frame numbers with a fixed IN to OUT offset; snd-usb-motu uses URB_ISO_ASAP and assumes the playback lag",
+   "area": "4 Isochronous framing / 5 Rate matching",
+   "mac_behavior": "usb_io_stream::Start reads the current frame. The first IN is scheduled at current+0x14 (or 0x13 if GetFrameNumber fails), and the first OUT at first IN frame + 0x140. Each request carries an explicit frame number that advances by 0x14, never as soon as possible. The dext publishes, per OUT chunk, the host time and the start and end byte positions, and the HAL writes output at absolute sample positions taken from them (WriteOutputData). The relation between capture packet sizes and playback position is therefore exact and known.",
+   "mac_evidence": "CONFIRMED: usb_io_stream::Start immediates 0x14 and 0x140, and explicit frame numbers in the request ring. CONFIRMED: chunk fields +0x0, +0x177508 and +0x177510 are used by SA_DeviceUSB::StartAudio, UpdateZeroTimes and WriteOutputData.",
+   "linux_behavior": "All stream URBs use URB_ISO_ASAP. urb->start_frame is never read. The playback write position is set to chase_pos+16-1024 microframes, assuming playback runs exactly two URBs (1024 microframes) behind capture. Any difference is corrected only by the manual pb_adj knob.",
+   "linux_evidence": "motu-usb-audio.c:698 (URB_NO_TRANSFER_DMA_MAP | URB_ISO_ASAP); :416-427 (copy_pos = chase_pos + 16 - 1024); :428-433 (pb_adj); :519-523 (two playback URBs submitted at once on the second capture completion). CONFIRMED.",
+   "symptom_link": "Long-run reliability and latency. If the host controller starts the ASAP playback URBs at a different frame than assumed, the 2 ms write lead is wrong: early or stale audio, or a whole-frame shift. This is not an S1-style channel rotation; pb_adj exists to paper over it.",
+   "proposed_fix": "Read the frame number at start and submit capture and playback URBs at explicit start_frame values with a fixed offset (no ISO_ASAP). Or read urb->start_frame back after submission and derive the playback write position from the real frame numbers. Then pb_adj is no longer needed.",
+   "confidence": "high"
+  },
+  {
+   "id": "G4",
+   "title": "Mac zeroes every OUT buffer before it is submitted; snd-usb-motu leaves old audio in the playback ring, so a late write replays audio from 64 ms earlier",
+   "area": "4 Isochronous framing / 7 Errors",
+   "mac_behavior": "Before each OUT submit the dext clears the request's data area, so a microframe the HAL did not write in time goes out as silence.",
+   "mac_evidence": "CONFIRMED (dext map): memset(block+0x508, 0, 0x177000) before each OUT submit in the SubmitNextOutRequest path.",
+   "linux_behavior": "The playback ring is 512 microframes (64 ms) of one coherent buffer shared by the four URBs and is never cleared after use. Data is written only by copy_period_to_usb or mute_period_to_usb from the period interrupt. If the interrupt is late, skipped (spin_trylock contention) or not yet synced, the URB re-sends whatever that slot held 64 ms earlier.",
+   "linux_evidence": "motu-usb-audio.c:687-699 and :710-715 (one shared 512-slot buffer); :290-325 (copy, no clear); :278 (zeroing only in the mute path); :436-452 (trylock contention skips the period); :401 (early return before sync). CONFIRMED.",
+   "symptom_link": "Long-run reliability: audible 64 ms repeats or glitches under scheduling load instead of a clean dropout. Not S1-S4 directly.",
+   "proposed_fix": "Clear (or mute) each playback URB's slots in capture_complete_urb before resubmitting it, after the period handler has had its chance to write. Or clear slots once transmitted, so a missed write yields silence, as the Mac does.",
+   "confidence": "high"
+  },
+  {
+   "id": "G5",
+   "title": "Mac derives timing and a watchdog from USB frames; snd-usb-motu depends solely on the device's period interrupt and has no watchdog",
+   "area": "5 Rate matching / 7 Errors and recovery",
+   "mac_behavior": "The dext keeps a USB-frame to host-time snapshot (period 1,000,000 ns per frame, drift logging, up to 11 retries). The HAL builds zero timestamps from chunk times (UpdateZeroTimes, FilterZHT with a \u00b1100 \u00b5s gate and a 10-entry average). A 5 ms chase timer keeps reading input whenever IO has not run for 200 ms, and start fails cleanly when no output timestamp appears within 200 ms (\"TIMEOUT STARTING OUTPUT\"). When CoreAudio falls behind it resynchronises (\"CoreAudio fell behind, resynchronizing\"), and MaybeStopAudio repairs run-state mismatches.",
+   "mac_evidence": "CONFIRMED in SA_DeviceUSB::StartAudio (usleep 0x7d loop, 0xBEBC200 ns limit, AddTimer(...,5,1)), SA_Device::FilterZHT (0x186A0), WriteOutputData, MaybeStopAudio; dext snapshot constants 0xF4240 and 0x2dc6c0.",
+   "linux_behavior": "The ALSA position advances only from vendor interval interrupts on interface 0. The interrupt frame field is ignored. URB statuses and every usb_submit_urb result are unchecked. A single lost capture URB silently stops its playback partner. Nothing detects that interrupts or completions have stopped, so the stream just stalls, and ALSA sees only a timeout.",
+   "linux_evidence": "motu-usb-audio.c:466-477 (interrupt handling, unconditional resubmit), :394 and :471 (period from interrupt), :514 and :519-527 (unchecked submits), :480-486 (empty playback completion). CONFIRMED.",
+   "symptom_link": "Long-run reliability and S4 recovery. After a firmware freeze Linux has no detection or restart, while the Mac at least fails or resyncs cleanly. Neither side restarts the stream inside the kernel driver; the Mac's resync lives in the HAL.",
+   "proposed_fix": "Check usb_submit_urb results and URB status. Add a completion-driven liveness check (no capture completion within N ms, or no interrupt) that reports an xrun or disconnects the PCM so ALSA or PipeWire can restart. Ideally take period timing from capture completions and frame numbers rather than the vendor interrupt.",
+   "confidence": "high"
+  },
+  {
+   "id": "G6",
+   "title": "Mac owns the whole device exclusively and evicts the class driver; snd-usb-motu can lose a bind race with snd-usb-audio",
+   "area": "1 Bring-up",
+   "mac_behavior": "The dext opens the whole device and calls SetConfiguration. The re-enumerator retries every 1 s and forces a re-enumeration whenever com_motu_driver_proaudio2_service is missing and Apple's class driver holds the device.",
+   "mac_evidence": "CONFIRMED: usb_provider::initPriv (Open plus the SetConfiguration log text). CONFIRMED: re-enumerator Server::armTimer lambda (VID 0x7fd, PID 0x5, a 33-byte name compare, USBDeviceReEnumerate, 1000 ms re-arm).",
+   "linux_behavior": "It matches 07fd:0005 per interface with no class filter and does work only on interface 0. It claims 1 and 2 with usb_driver_claim_interface, and the result is not acted on beyond failing probe. Nothing blacklists snd-usb-audio (the build script just rmmods it). If interface 1 or 2 probes or binds to snd-usb-audio first, the claim fails with -EBUSY. The probe error path does not release what it took.",
+   "linux_evidence": "motu-usb-audio.c:1281-1284 (match), :1163 and :1246 (only ifnum 0 does work), :1178-1194 (claims), :1249-1252 (error path leaks). CONFIRMED. Probe-order risk INFERRED.",
+   "symptom_link": "Reliability at boot and replug. A host that loads snd-usb-audio (as the Talos node did) gives a half-bound device that brings S2 and S3 back.",
+   "proposed_fix": "Ship a modprobe blacklist or a device-specific quirk telling snd-usb-audio to ignore 07fd:0005 (or match by vendor interface class only). Make probe robust to interface order, and release claimed interfaces and buffers on failure.",
+   "confidence": "medium"
+  },
+  {
+   "id": "G7",
+   "title": "Mac sets the sample rate and clock explicitly through the device datastore and waits for reconfiguration; snd-usb-motu never sets or checks the clock",
+   "area": "2 Clock and sample rate",
+   "mac_behavior": "SetSampleRate posts avb/<uid>/cfg/0/current_sampling_rate. After a config change it stops audio, calls ForceStopAudio and waits up to 100 \u00d7 100 ms. clockLocked and dmaEnabled from the datastore are tracked. USB StartAudio itself does not wait for lock.",
+   "mac_evidence": "CONFIRMED: SA_Device::SetSampleRate (DataStoreService::Post), SA_Device::PerformConfigChange (cmp w22,#0x64; usleep 0x186a0), ProcessDataStoreChanges (clockLocked, dmaEnabled -> fClockLocked).",
+   "linux_behavior": "There is no rate or clock request; the rate is fixed at 48000 at compile time. The device must already be locked at 48 kHz (set over Ethernet) before connect. Clock-validity interrupts are parsed and discarded, and a device at another rate is streamed blindly.",
+   "linux_evidence": "motu-usb-audio.c:19 (SAMPLE_RATE), :134-151 (one rate), :456-464 (status interrupt ignored); readme:27-30.",
+   "symptom_link": "S2 and S3. snd-usb-motu avoids both by never touching the UAC clock entities, which matches the Mac. But it gives no check that the device really runs at 48 kHz, and no reaction to clock loss.",
+   "proposed_fix": "At start, read the device's datastore rate and lock state (the same keys, through the vendor bulk command interface or by documenting the web API) and refuse or warn when it is not 48 kHz and locked. Act on clock-change notifications by stopping the stream with an error instead of ignoring them.",
+   "confidence": "medium"
+  },
+  {
+   "id": "G8",
+   "title": "Mac's ring is 400 ms deep with independent buffers; snd-usb-motu's ring aliases every 64 ms",
+   "area": "4 Isochronous framing",
+   "mac_behavior": "20 requests \u00d7 160 microframes, each with its own 0x177000-byte area (400 ms, kIsocRingBufferDuration 0x17D78400 ns). The shred pattern is re-applied only after 160 frames of a chunk have been consumed.",
+   "mac_evidence": "CONFIRMED: dext ring index wraps at 0x13, request data size 0x177000; HAL ChaseTimerProc constant 0x17D78400; shredPoll threshold 0xA0.",
+   "linux_behavior": "4 URBs \u00d7 512 packets index 2048 slots, but all URBs of a direction share one 512-slot buffer, so memory aliases every 512 microframes (64 ms) while lengths are tracked per 2048 slots. Shred correctness depends on consumed slots being re-shredded before the device writes them again 64 ms later.",
+   "linux_evidence": "motu-usb-audio.c:21-24, :644, :676, :687-699, :710-715. CONFIRMED (the map's reading).",
+   "symptom_link": "Long-run reliability: with large periods or a late handler, stale or mis-detected capture (the shred count is wrong) and the replay described in G4. Not S1.",
+   "proposed_fix": "Give each URB its own buffer (or index the coherent buffer by the full 2048-slot space), so the ring depth matches the length bookkeeping.",
+   "confidence": "medium"
+  }
+ ],
+ "matches": [
+  "Implicit feedback: both copy each capture microframe's actual or complete length into the matching playback microframe (dext SubmitNextOutRequest; motu-usb-audio.c:497-511).",
+  "Both detect capture fill by content with the same shred pattern (byte i = ~i) and count whole 72-byte frames (HAL ChaseInput / dext shred; motu-usb-audio.c:198-266).",
+  "Sample format S24_3LE, 24 channels, 72-byte frames, no per-packet header; channel 0 is aligned only by whole-frame packets, and neither side checks or repairs a rotation.",
+  "Neither sends a UAC2 clock-source or sample-rate class request, so neither reads the 'clock source not valid' state behind S2 and S3.",
+  "Start order: alt settings first, capture submitted first, playback primed only after capture completions (the dext discards the first IN; Linux PRIME state); both run capture and playback together.",
+  "OUT completion status is ignored on both sides (empty dext handler; motu-usb-audio.c:480-486).",
+  "Stop: abort URBs, then alt 0 on both interfaces; neither sends a device command on stop beyond Linux's interval 0.",
+  "Neither kernel-level driver restarts streaming itself on errors; recovery is left to the layer above (the HAL on Mac).",
+  "Pure feature differences (MIDI, other rates, mixer/gain, bus-stall hint, sleep/wake): not reliability gaps for this 48 kHz, 24-channel use, apart from no suspend/resume on Linux."
+ ],
+ "unresolved": [
+  "Whether the 24Ao's interfaces 4 and 5 (alt 1, sharing endpoints 0x09 and 0x87) are the vendor isochronous interface class 0xFF/0x04/0x02, and whether the 0xFF/0x04/0x01 bulk command interface exists: needs lsusb -v.",
+  "What posting host/mode=USB2 does on the 24Ao (re-enumeration, new descriptors, a different clock path) and whether the mode persists across power cycles: needs a USB capture on the Mac or a hardware test.",
+  "Whether streaming in vendor mode avoids S1's rotation by 8 and S4's freezes: hardware test.",
+  "Whether the vendor request 0x40/0x01 (interval) is used by any MOTU host driver, and whether it contributes to firmware freezes: a USB capture of the Mac driver would show it absent or present at the bus level.",
+  "The capture and playback wMaxPacketSize at alt 1 (the 504-byte shred overrun risk on Linux) and whether the device ever sends a packet that is not a multiple of 72 bytes.",
+  "The bulk command opcodes the HAL uses for datastore get and set (SendBusCommandSync cmd byte and the 0x81 HTTP-proxy framing), needed to set host/mode or read the rate from Linux.",
+  "The real ISO_ASAP start latency on the Talos xHCI against snd-usb-motu's assumed 1024-microframe playback lag."
+ ]
+}

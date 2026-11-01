@@ -1,0 +1,32 @@
+DEVICE bcdUSB=0200 class=ef/02/01 maxpkt0=64 vid=07fd pid=0005 bcdDevice=0200 nconf=1
+CONFIG total=291 nif=6 value=1 attr=40 maxpower=0mA
+IAD first_if=0 count=3 class=01/00/20
+INTERFACE 0 alt 0 nep=1 class=01/01/20
+  CS_INTERFACE subtype=0x01 len=9 bytes=01 00 02 08 4b 00 00
+  CS_INTERFACE subtype=0x0a len=8 bytes=0a 01 03 07 10 05
+  CS_INTERFACE subtype=0x02 len=17 bytes=02 10 01 01 00 01 18 00 00 00 00 09 00 00 07
+  CS_INTERFACE subtype=0x03 len=12 bytes=03 24 02 06 00 10 01 00 00 00
+  CS_INTERFACE subtype=0x02 len=17 bytes=02 14 02 06 00 01 18 00 00 00 00 49 00 00 08
+  CS_INTERFACE subtype=0x03 len=12 bytes=03 20 01 01 00 14 01 00 00 00
+  ENDPOINT 0x81 int attr=03 (sync=0 usage=0) wMaxPacketSize=0x0006 (6 bytes x1 per uframe) bInterval=1
+INTERFACE 1 alt 0 nep=0 class=01/02/20
+INTERFACE 1 alt 1 nep=1 class=01/02/20
+  CS_INTERFACE subtype=0x01 len=16 bytes=01 10 00 01 01 00 00 00 18 00 00 00 00 09
+  CS_INTERFACE subtype=0x02 len=6 bytes=02 01 03 18
+  ENDPOINT 0x09 iso attr=05 (sync=1 usage=0) wMaxPacketSize=0x0ba8 (936 bytes x2 per uframe) bInterval=1
+  CS_ENDPOINT len=8 bytes=01 00 00 00 00 00
+INTERFACE 2 alt 0 nep=0 class=01/02/20
+INTERFACE 2 alt 1 nep=1 class=01/02/20
+  CS_INTERFACE subtype=0x01 len=16 bytes=01 20 00 01 01 00 00 00 18 00 00 00 00 49
+  CS_INTERFACE subtype=0x02 len=6 bytes=02 01 03 18
+  ENDPOINT 0x87 iso attr=25 (sync=1 usage=2) wMaxPacketSize=0x0ba8 (936 bytes x2 per uframe) bInterval=1
+  CS_ENDPOINT len=8 bytes=01 00 00 00 00 00
+INTERFACE 3 alt 0 nep=2 class=ff/04/01
+  ENDPOINT 0x83 bulk attr=02 (sync=0 usage=0) wMaxPacketSize=0x0200 (512 bytes x1 per uframe) bInterval=1
+  ENDPOINT 0x04 bulk attr=02 (sync=0 usage=0) wMaxPacketSize=0x0200 (512 bytes x1 per uframe) bInterval=1
+INTERFACE 4 alt 0 nep=0 class=ff/04/02
+INTERFACE 4 alt 1 nep=1 class=ff/04/02
+  ENDPOINT 0x09 iso attr=01 (sync=0 usage=0) wMaxPacketSize=0x0b84 (900 bytes x2 per uframe) bInterval=1
+INTERFACE 5 alt 0 nep=0 class=ff/04/02
+INTERFACE 5 alt 1 nep=1 class=ff/04/02
+  ENDPOINT 0x87 iso attr=01 (sync=0 usage=0) wMaxPacketSize=0x0b84 (900 bytes x2 per uframe) bInterval=1
