@@ -1,0 +1,421 @@
+
+
+===== agent 1 =====
+
+Run 2 (stock, no quirk flags) tripped the safety watcher. Following the rule, all device work stopped, so the second stock run was not run. The traces I did get show the +8 shift comes from the MOTU itself: Linux puts every channel in the right place on the wire, and in run 1 the device sends capture back shifted by 8.
+
+**Run 1, stock-quirk 15 s (all checks passed).** Capture N carried source N+8, with the first ~1.8 s lost.
+- **Load and probe:** modprobe at 18:26:53.849 [10:26:53.849]. Probe traffic ran 53.949–53.971: only GET RANGE and SET_INTERFACE alt 0 resets (card.c:320), no sample-rate SET.
+- **Capture start:** at 54.888–54.898 the driver read the clock (valid=1, 48000) and set interface 2 to alt 1. The first 12 IN URBs went out at 54.901792 (8 packets each, 648 B buffers).
+- **Playback start:** interface 1 alt 1 at 54.962215; first OUT URB at 54.967754. After that, one OUT URB goes out per IN completion.
+- **First audio:** first non-zero OUT at 55.470862. First non-zero IN at 57.061807; IN was exact zeros for 2.160 s before that.
+- **Steady state:** every packet 432 B with status 0. Packets are 360 B about every 4.94 s, and each 360 B OUT packet follows the 360 B IN packet at the same index ~1.26 ms later. Every length is a multiple of 72.
+- **Stop and unload:** OUT stopped 18:27:13.72, IN 15.65, unload 16.33.
+
+**Where the audio sits in the 72-byte frame (run 1):**
+- **OUT (what Linux sends):** tone 1 is at bytes 0–2, and tone k at 3(k-1), for all 24 tones, in every 1 s check.
+- **IN (what the device returns):** byte 0 carries tone 9 and tone 1 is at byte 48, all 24 clean. The first non-zero IN data is only at bytes 21–23 (slot 8) and is source 16's identification burst. The bursts for sources 1–15 came back as zeros.
+
+**Run 2, stock 15 s (FAILED).** The watcher tripped on `xhci_hcd 0000:00:10.0: WARN: buffer overrun event for slot 1 ep 14` at 18:27:39.395 [10:27:39.395]. Endpoint index 14 is 0x87, the capture endpoint (xhci-ring.c:2771).
+- **Probe set 192 kHz:** probe sent SET CUR 192000 Hz (stream.c:1259, the highest rate; it took 805 ms). The clock then read invalid, giving "clock source 1 is not valid" (clock.c:317).
+- **Clock-change interrupts:** endpoint 0x81 delivered 366 sample-rate-change interrupts from 37.697 to 47.454. Run 1 had none.
+- **Capture setup:** SET CUR 48000 also took 805 ms, and the rate still read back as 192000.
+- **Overflow:** IN URBs 1–203 had every packet fail with -75 (EOVERFLOW), 39.395–39.597. That is 1623 packets, matching the 1623 kernel warnings. The overflow ended 31 µs before the first OUT URB was submitted.
+- **Placement:** OUT placement was correct. IN was zeros until 18:27:52.640, then identity (source N in slot N). Analysing the recording on the Mac agrees: 13.16 s silent, then identity.
+- **Mapping summary:** one start of each driver mode, with different results. *Inference:* the device was probably still running at 192 kHz while IN overflowed, and the order it returns slots in seems to depend on how its clock start went. One run of each is too few to say which condition decides it.
+
+**State left on euclid:**
+- DEAD file present; motu-watch failed (it exits when it trips); heartbeat and usbmon still active.
+- snd_usb_audio still loaded and card D24Ao present; aplay and arecord finished on their own.
+- After the failure I ran one extra `sudo motu-alive` at about 18:28 (it answered ALIVE). That was beyond the "touch nothing more" rule.
+
+**Harness bug:** run-step names its usbmon files from `/var/lib/motu-test/usbmon/`, but the running unit writes to `usbmon-full/`. Both runs therefore point to a stale file (`usb-b.pcap07`).
+
+**NOT RUN:**
+- The second stock run.
+- Run 2's unload.
+- A check that Ethernet was unplugged.
+- Kernel source citations are to the 6.18.48 tree, not checked against euclid's 7.0.
+
+Restarting the watcher, clearing DEAD and unloading the module are yours to decide.
+
+Everything is in /Volumes/Dock/motu-mac-driver/rotation/:
+- traces.md
+- pcap/run1-stock-quirk_run2-stock-start.usb.pcap00 (run 1 and the start of run 2)
+- pcap/run2-stock-failed.usb.pcap01 (rest of run 2)
+- tools/usbmon_decode.py
+- tools/usbmon_scan.py
+- decoded/run1-stock-quirk/ and decoded/run2-stock/ (control.txt, iso-0x87.txt, iso-0x09.txt, the *-anomalies.txt files, interrupt.txt, summary.json)
+- runs/20261102T182649Z-stock-quirk-15s/
+- runs/20261102T182732Z-stock-15s/
+
+===== agent 2 =====
+
+I wrote `/Volumes/Dock/motu-mac-driver/rotation/code.md`. This was source reading only: no device step was run, and the pcaps in `rotation/pcap/` were not opened.
+
+**Sources**
+- Mainline v7.0 `sound/usb` is in `/Volumes/Dock/motu-mac-driver/rotation/src/v7.0/`, fetched from kernel.org.
+- Ubuntu's `Ubuntu-7.0.0-42.42` `sound/usb` is in `/Volumes/Dock/motu-mac-driver/rotation/src/ubuntu-7.0.0-42.42/`, fetched from the launchpad resolute git. Its `quirks.h` failed to download; it holds only prototypes.
+- Ubuntu 7.0.0-42 has the same streaming code as 6.18.48: the implicit-feedback clamps, the `packsize` order fix and the `prepare_inbound_urb` bound. Its only additions are cosmetic and the Behringer-only `IFB_SILENCE_ON_EMPTY` flag. So euclid and Talos run the same host algorithm.
+- None of the three trees has the mainline clock-wait quirk for 07fd:0005 (commit 320e557: this model reports its clock invalid for over 2 s after a rate switch).
+
+**Main finding: snd-usb-audio cannot create a 24-byte or 8-channel offset for this device.**
+- Every OUT packet is whole 72-byte frames: pcm.c:1560-1561 for data, endpoint.c U:298-302 for silence. Implicit-feedback sizes are `actual_length / 72`, an integer division (U:1828).
+- Every IN packet is cut to whole frames (pcm.c:1346-1348) and copied at its own offset, with both offset adjustments at 0 for MOTU (stream.c:95-96).
+- So the host re-aligns at every packet. A stable +8 has to be a framing slip inside the MOTU, which the host can trigger only through timing or start order.
+- The channel map is metadata only; the data paths are plain `memcpy` (pcm.c:1373-1380, 1478-1489). The harness opens `hw:`, so alsa-lib does no routing either.
+
+**Ranked mechanisms**
+1. **The OUT stream starts late, is paced by IN, and can run dry** (implicit feedback; most likely trigger).
+   - Playback submits no URBs at start (U:1599-1606).
+   - Each IN completion releases at most one OUT URB (U:1763-1836, U:468-537), so the OUT queue is only about 1 ms deep.
+   - An empty IN URB releases no OUT URB at all (U:1798).
+   - OUT URBs have no `URB_ISO_ASAP` (U:1264).
+   - MOTU AVB users report 8-channel hopping (Drumfix issue 16). The RolandMueller1994 fork blames gaps in the OUT stream and fixes it with 2 ms of queued silence (`time_silent`) and a `start_frame` check (motu.c:518-533).
+   - Trace prediction: the first 0x09 packet comes at least 8 microframes after the first non-empty 0x87 packet. On the lossy starts, about 1.8 s of 0x87 completions with every `actual_length == 0` and no 0x09 submissions. Later, OUT `start_frame` jumps other than +8, or status -18.
+   - It does not by itself explain why it is exactly one 8-channel step every time.
+2. **Capture-first start order** (pcm.c:712-722 and 1757-1761, U:1488-1521).
+   - The only control request at `aplay` start is `SET_INTERFACE(1,1)`, sent while 0x87 is already streaming. There is no `SET_CUR`, because the clock is shared (U:1315-1336, U:1420-1444).
+   - Trace prediction: exactly one `SET_INTERFACE` with wIndex 1 and wValue 1 between capture start and the first OUT packet.
+   - Talos (ear's order) also showed the shift, so start order alone is not enough.
+3. **The IN buffer is 648 bytes per packet, but the device may send up to 1872** (9 frames from 1.5 × nominal; U:1142-1178, U:391).
+   - Trace prediction: 0x87 packets with `actual_length == 648` and status -75 or babble, and 0x09 URBs with fewer than 8 packets (pcm.c:1556-1558).
+   - This loses frames and feeds #1; it cannot shift bytes.
+4. **Rate and interface traffic: the only place the quirk flags act.**
+   - `validate_rates` walks every rate at probe (format.c:556-592); it is on by default for MOTU (quirks.c:2434).
+   - Without `skip_iface_setup`, probe sets the highest rate and the alternate setting (stream.c:1261-1269).
+   - At start, `SET_CUR` is sent only if the rate differs (clock.c:621-623).
+   - With euclid's flags this explains the 1.8 s loss only if the lossy starts show a `SET_CUR` (0x21/0x01, wValue 0x0100, wIndex 0x0100) or a CLOCK_VALID read answering 0. It cannot explain +8.
+5. **Per-packet truncation of IN and the floor in OUT sizing.** A malformed IN packet (length not a multiple of 72) causes a glitch inside that packet, never a lasting offset.
+6. **Ruled out:**
+   - The fixed offset adjustments and the 4-byte length header (`TX_LENGTH`) are not set for MOTU.
+   - Channel maps.
+   - A wrong frame size: there is one alternate setting with 3-byte subslots.
+   - v7.0's `packsize` order bug (M:1382 runs before M:1408): fixed in Ubuntu and 6.18.48, and unused by this device's endpoints.
+   - Vendor interfaces 3-5: Linux never selects them.
+
+**Decisive check, no new device run needed:** in the existing full-packet pcaps, look at bytes 0-2 of each 72-byte frame.
+- If OUT 0x09 frames carry source 1 there and IN 0x87 frames carry source 9, the host sent correct frames and the slip is inside the MOTU.
+- If OUT already carries source 9, the host is wrong, which contradicts the code above.
+
+**Suggested lever:** `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|playback_first`, with aplay started before arecord. OUT URBs then go out at start, before IN starts. This would be a new device step under the safety guards.
+
+===== agent 3 =====
+
+The traces settle where the shift happens but cannot say which direction slips. Linux sends every channel in the right place; the MOTU slips by one 8-channel group when its playback path starts, and the slip then holds for the whole stream. The harness refused to let me write `/Volumes/Dock/motu-mac-driver/rotation/analysis.md` (subagents may not write report files), so the full analysis is below instead.
+
+No device step was run. I re-decoded every fact used here from the two pcaps in `/Volumes/Dock/motu-mac-driver/rotation/pcap/`. The scripts are in `/Volumes/Dock/motu-mac-driver/rotation/tools/analysis/`, and the extracted events are in `/Volumes/Dock/motu-mac-driver/scratch/analysis/run1.pkl` and `run2.pkl`. Times are Pacific with UTC in brackets. "pcap00 #n" is the record number in `run1-stock-quirk_run2-stock-start.usb.pcap00`. Run 1 is stock-quirk (+8); run 2 is stock (identity).
+
+## Verdict
+
+1. **Linux is right.** In both runs, every frame Linux sends on OUT 0x09 has source k in slot k (bytes 3(k-1) of each 72-byte frame). The rotation is already in the bytes the MOTU returns on IN 0x87, from the first non-zero sample.
+2. **The MOTU slips by one 24-byte group (8 channels × 3 bytes), latched when its path starts.** It is not an ongoing framing fault. In run 2, single-microframe gaps in the OUT stream during steady streaming did not move the map.
+3. **Which side: probably OUT, not proven.**
+   - A loopback only measures the OUT slip plus the IN slip, so euclid's traces cannot split them.
+   - The only direct evidence is from Talos: ear's `playback_1` was heard on output 17, i.e. From Computer j = host slot j+8. That is an OUT-side slip of the same size and direction as euclid's.
+   - An IN-side slip with clean OUT fits euclid's data just as well. A one-route loopback test (section 4) separates the two.
+4. **When: inside the device's playback-path start, at or after `SET_INTERFACE(1,1)`.** Two Linux start conditions are left, and these traces cannot separate them:
+   - **T1:** interface 1 is switched to alt 1 while interface 2 is already streaming (capture first).
+   - **T2:** the OUT stream starts paced by IN, with only about one 1 ms URB queued.
+
+   The traces refute every other mechanism ranked in `code.md`.
+
+## 1. Evidence (re-decoded)
+
+| Fact | Run 1 (stock-quirk, +8) | Run 2 (stock, identity) | Script |
+|---|---|---|---|
+| OUT slot → tone | slot k = tone k at 10:26:59.000796 [18:26:59.000796] (pcap00 #16368) and 10:27:08.000834 (#52372) | slot k = tone k at 10:27:45.000 and 10:27:55.000 | `an4.py` |
+| IN slot → tone | slots 1..24 carry tones 9..24, 1..8 at 10:26:59.000781 (#16367), 10:27:08.000818 (#52371), 10:27:13.000867 (#72371) | slot k = tone k at 10:27:52.700, 54.000, 54.600, 57.000 | `an4.py` |
+| Framing | every packet length is a multiple of 72; every sampled window starts at stream byte 0 mod 72 | same | `an4.py` |
+| First non-zero OUT frame | frame 24097, slot 1, submitted 10:26:55.469822 (#2240) | frame 24001, 10:27:40.097215 | `an5.py` |
+| First non-zero IN frame | frame 103631, **slot 8 only**, 10:26:57.061807 [18:26:57.061807] (#8611) | frame 626037, **all 24 slots at once**, 10:27:52.640240 | `an5.py` |
+| First OUT packet to first IN audio | 2.09 s (first OUT URB submitted 10:26:54.967754, #233) | 13.04 s | `an1.py`, `an5.py` |
+| Host traffic between `SET_INTERFACE(1,1)` and stop | none: control #20 (10:26:54.962215, #218) is followed only by motu-alive probes (#22-25); interrupt endpoint 0x81 never completes | 366 sample-rate interrupts, until 10:27:47.454 | `control.txt`, `interrupt.txt` |
+| OUT URBs already queued at each OUT submit | 0 for the first 2 URBs (10:26:54.967754 and .968839), then 1 for all 18750 others | 0 for the first 27 URBs (10:27:39.597199 to .623257), then 1 | `an1.py` |
+| OUT error statuses (-18) or lengths not a multiple of 72 | none | none | `an1.py` |
+| IN -75 overflows | none | 1623 packets, 10:27:39.395 to .597 | `an1.py` |
+| One-microframe OUT phase steps (~125 µs jumps in the time from an IN completion to the OUT completion it released, inferred as one missed microframe) | one, near OUT URB 662 at 10:26:55.6298 (#2884): 1100 → 1225 µs | near URB 920 (10:27:40.517), and URBs 14814 to 17943 (10:27:54.41 to 57.54): 1235 → 1329/1392 µs, flapping | `an6.py` |
+
+**Two corrections to `traces.md`:**
+- **Burst 16 was cut short.** Only the last ~468 frames (about 10 ms) of source 16's burst came back: IN frame 103631, against source 17's onset at IN frame 104099. The device's path opened at an arbitrary moment inside burst 16, not at a burst boundary.
+- **The loopback itself takes about 2 ms.** Source 17's first non-zero OUT frame was submitted at 10:26:57.069822 and arrived in IN slot 9 in the URB completed at 10:26:57.071773. The 65-90 ms end-to-end figures are ALSA buffering, and the 1.8 s "latency" in `rec.summary.txt` comes from the lost bursts.
+
+**usbmon's `start_frame` cannot show OUT gaps on this controller.**
+- IN always has 11 URBs queued, yet consecutive completions report start-frame steps of 0 and 16 (1786 and 1774 times in run 1) instead of a steady 8.
+- So the values come from the controller's microframe counter at submit time (xhci-ring.c:4343-4365), not from contiguous frame numbers (4336-4339).
+- *Inference:* the AMD controller either lacks contiguous frame IDs or schedules these URBs "as soon as possible". The phase steps above are therefore the only gap evidence, and they are inferred.
+
+## 2. Which side, and when
+
+**What a loopback cannot say.**
+- Call the OUT slip a: From Computer j = host OUT slot j+a.
+- Call the IN slip b: host capture slot i = To Computer i+b.
+- The routing sets To Computer j = From Computer j, so capture slot i carries source i+a+b.
+- Euclid measures only a+b = 8 (mod 24).
+
+**For an OUT-side slip (a = 8, b = 0):**
+- On Talos, From Computer 17 = host slot 1, which gives a = +8.
+- That was a different host (Intel controller, kernel 6.18.48), with ear's start order and Ethernet plugged in.
+- One playback-side slip explains both sites.
+
+**For an IN-side slip (a = 0, b = 8):** nothing beyond the fact that it also fits euclid's sum.
+
+**When it happens:**
+- The rotation is complete at the first non-zero IN sample (10:26:57.061807) and unchanged in every check through 10:27:13.
+- Nothing happens on the host side at 10:26:57.06. The last host action that touched streaming was `SET_INTERFACE(1,1)` at 10:26:54.962215, followed by the first OUT URB at 10:26:54.967754.
+- So the device latches the slip during its playback-path start: no earlier than interface 1's alt 1 and the first OUT packets, and no later than when its path opens about 2.1 s later.
+- Once latched, it survives OUT microframe gaps: run 2 kept identity through the steps at 10:27:54.41 to 57.54.
+- Only a device-side restart clears it. Run 2's device re-clocked from 192 kHz (interrupts until 10:27:47.454), opened its path 13 s after OUT began with both streams already steady, and came out aligned.
+
+## 3. Ranked hypotheses, tested against the traces
+
+1. **OUT starts late, is paced by IN, and gaps cause hopping.**
+   - Refuted as an ongoing cause: run 2 shows OUT gaps at 10:27:54.41 to 57.54 with identity both before (54.000) and after (54.600, 57.000).
+   - Refuted as the cause of the ~2 s loss. In run 1, IN carried full 432-byte packets with status 0 from IN URB 0 packet 4 (10:26:54.902749), and an OUT URB went out for every IN URB from 10:26:54.967754. The audio was zeros in content; there were no empty IN packets and no OUT stall.
+   - The prediction of -18 statuses or start-frame jumps fails: there are no -18s, and start frames are unusable here.
+   - Kept only in a narrower form, as T2: the start condition. The first OUT URBs go out with nothing queued (2 in run 1), and the steady queue is one URB.
+2. **Capture first: `SET_INTERFACE(1,1)` while 0x87 is streaming.**
+   - The prediction holds: in run 1, control #20 is the only request between IN start and the first OUT URB, and there is no rate SET.
+   - Run 2 had the same order (alt 1 at 10:27:39.465, 72 ms into IN) and came out identity. But its device restarted its clock afterwards, so run 2 does not refute it.
+   - `code.md` treats Talos as a refutation ("ear's order"), but that order was never recorded.
+   - Kept, as T1.
+3. **648-byte IN buffers.** Refuted. Run 1 has no -75 and no packet over 432 bytes; run 2 overflowed and came out identity.
+4. **Rate or interface traffic.**
+   - Refuted for run 1's 2.1 s loss: no rate SET, the clock read valid (01) at prepare (control #15 and #17), and there were no interrupts.
+   - It does explain run 2's 13 s of silence.
+   - It changes the mapping only by restarting the device (identity in run 2); it never causes +8.
+5. **Malformed IN packets.** Refuted: every length is a multiple of 72.
+6. **Fixed offsets, the 4-byte length header, channel maps, frame size, the packsize order bug, vendor interfaces.** Refuted: the OUT bytes on the wire are correct.
+7. **The ~2 s loss is a separate device behaviour.**
+   - The path opens with no host event, so it is device-internal.
+   - The 2 starts without the loss still rotated by 8.
+   - *Inference:* it belongs with mainline commit 320e557, where this model reports its clock invalid for over 2 s after a switch.
+
+## 4. Mechanism: the two candidates and how to separate them
+
+**Candidate A (preferred): an OUT-side slip.**
+- The MOTU's OUT deframer counts the stream in 24-byte words. When its playback path starts under Linux's start pattern (T1 and/or T2), it ends up one word off: it drops one word, or starts its group counter at 1.
+- From Computer j then gets host slot j+8 for the rest of the stream, and the IN side is correct.
+- MOTU's own Mac driver avoids this start pattern:
+  - It selects both alternate settings before any streaming (`mac-dext.md` D3.3-D3.4).
+  - It starts OUT 320 ms after IN, on explicit frame numbers, with about 300 ms queued (D3.5, D3.8, D4.2, MI-D14).
+- Apple's class driver (correct 3 of 3) also avoids it, though its order and queue depth are unknown.
+
+**Candidate B: an IN-side slip.** The same one-word slip happens in the MOTU's IN framer, and OUT is clean. This needs Talos's playback shift to have had a different cause.
+
+**Test to separate A from B.** Set the MOTU's routing to a single loopback route, From Computer 1 → To Computer 1, with every other route cleared. Then run the same `stock-quirk` step:
+
+| Capture slot carrying a tone | Meaning |
+|---|---|
+| slot 1 carries source 9 | A: OUT slip |
+| slot 17 carries source 1 | B: IN slip |
+| slot 9 carries source 17 | both sides slipped by 16 |
+
+If the front panel meters the outputs, there is a cheaper version: play a tone on host slot 1 only and see whether output 1 or output 17 lights. Output 17 means A.
+
+**Test to separate T1 from T2**, a 2×2 with the current flags:
+
+| | OUT paced by IN, shallow (T2 present) | OUT primed at start with `playback_first` (T2 absent) |
+|---|---|---|
+| capture first (T1 present) | today: +8 | test 2 |
+| playback first (T1 absent) | test 1 | test 3 |
+
+- **Playback first:** start `aplay` before `arecord`. Playback's prepare then sets interface 1 alt 1 and interface 2 alt 1 before any streaming, and the IN endpoint starts as playback's sync source (pcm.c:712-722, Ubuntu endpoint.c:1488-1521). That is the order MOTU's driver uses.
+- **`playback_first`:** submits all 12 OUT URBs at start (Ubuntu endpoint.c:1603-1641). Each IN completion then releases one more (endpoint.c:468-537 and 1763-1836), so about 12 stay queued. The queue-depth count in `an1.py` should read about 12 instead of 1.
+
+## 5. Fixes, in order of preference
+
+### (a) Module parameters and quirk flags only
+
+Each is one guarded `run-step`. After each, check the mapping, the queue depth (`an1.py`) and the time to first IN audio (`an5.py`). Repeat each at least 3 times, since results vary between starts.
+
+1. `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|playback_first`, with `aplay` started before `arecord` (test 3). Removes both triggers and is closest to MOTU's own start. Strongest candidate.
+2. The same string with `arecord` first, as today (test 2). Isolates T2. This matters for ear, which cannot always choose PipeWire's start order.
+3. `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup` (today's flags), with `aplay` first (test 1). Isolates T1 and needs no new flag.
+4. If 1-3 all still rotate: `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|playback_first|iface_delay`. `iface_delay` waits 50 ms after every interface switch (Ubuntu endpoint.c:945-946), which tests whether the device needs time after alt 1 before OUT data arrives.
+5. Diagnostic only, not a fix: `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|skip_implicit_fb`.
+   - OUT becomes self-paced and deeply queued, which tests T2 without IN pacing.
+   - **Risk:** with no feedback, OUT runs at the bus clock. The device runs about 1 frame every 4.94 s slower (the 360-byte packets), so its OUT buffer will eventually overflow and glitch.
+
+Keep `!validate_rates|skip_iface_setup` in every string. Run 2 shows what happens without them: probe leaves the clock at 192 kHz, IN overflows 1623 times, and the watcher trips.
+
+### (b) Small kernel patch (described, not written)
+
+A start quirk for 07fd:0005 in `sound/usb/endpoint.c` and `pcm.c` that reproduces MOTU's own start:
+
+- **Both alt settings first.** When either stream prepares, select alt 1 on both streaming interfaces before 0x87 starts. Never switch interface 1 while 0x87 is running.
+- **Primed OUT.** Submit at least N ms of silent URBs on 0x09 at start and keep that queue depth, instead of one URB per IN completion. N = 2 ms is the RolandMueller1994 fork's `time_silent` floor; MOTU's driver queues about 300 ms. Keep the IN-matched packet sizes after priming.
+- **Clock wait.** Backport the mainline 320e557 clock-valid wait for 0x0005. This covers probe and rate switches, not the shift.
+- Optional: discard the first IN URB before starting OUT, as MOTU's driver does (D3.8, "skipping first in request").
+
+### (c) Workarounds outside the driver
+
+1. **Start playback before capture in ear.** Bring the card's playback outside node up before its capture node.
+   - It costs nothing if test 1 or 3 fixes the shift.
+   - **Risk:** PipeWire may suspend and restart nodes in another order (idle suspend, relinks), so every restart would need the same order.
+2. **A fixed rotation in the application** (send `playback_N` to device slot N+8).
+   - **Risk:** the shift is not guaranteed. Run 2 came out identity, and one earlier start looked N→N. A fixed offset would then put every channel on the wrong output with no warning.
+   - Usable only with a check at every stream start. That check needs a known-good loopback channel, and a loopback measures only the sum of both slips.
+   - Not recommended unless candidate A is confirmed and that check exists.
+3. **Compensate in the MOTU's routing matrix** (From Computer N+8 → output N). Same risk as 2, but stored in the device, so it also applies to a start that came out correct. Not recommended.
+4. **Restart the stream until it is aligned.**
+   - Needs the same per-start check as 2.
+   - Each start can cost about 2 s of the device's own mute.
+   - Run 2 suggests that only a device restart clears a latched slip.
+
+## 6. NOT RUN and limits
+
+- No device step was run. Every test in sections 4 and 5 is a proposal, including the single-route loopback that decides between A and B.
+- Euclid's traces cannot tell OUT from IN; the OUT-side preference rests on the Talos observation from another start.
+- OUT gaps on the bus are inferred from completion timing, not seen on the wire. Whether the AMD controller supports contiguous frame IDs was not read; HCCPARAMS1 bit 11 in debugfs would settle it.
+- These pcaps hold only one start of each driver mode. The 9-of-9 and 2-clean-start figures come from the brief and were not re-decoded.
+- Apple's class driver was not traced (no usbmon on joule), so its order and OUT queue depth are unknown.
+- ear's start order on Talos was not recorded.
+- Kernel citations: `endpoint.c` lines are Ubuntu 7.0.0-42 (`/Volumes/Dock/motu-mac-driver/rotation/src/ubuntu-7.0.0-42.42/`). `xhci-ring.c` lines are 6.18.48 and were not checked against 7.0.
+
+===== agent 4 =====
+
+None of the four candidates ran, because euclid failed the safety check before the first device step. I did not touch the MOTU: no motu-alive call from me, no module load or unload, no audio stream opened, and no change to the harness.
+
+**Why it stopped.** The rule requires no DEAD file and all three units active before any device step. Neither held:
+- **DEAD file:** `/var/lib/motu-test/DEAD` exists, written at 10:27:39 Pacific [18:27:39 UTC]. It holds `xhci_hcd 0000:00:10.0: WARN: buffer overrun event for slot 1 ep 14 on endpoint`.
+- **motu-watch:** it shows `failed` since 18:27:39 UTC. It tripped on that line and exited 1.
+- **The other two units:** motu-heartbeat and motu-usbmon are active. The heartbeat still logs ALIVE every 10 s, the last at 18:55:47 UTC.
+
+**Where the trip came from.** It ended the plain `stock` run, `/var/lib/motu-test/runs/20261102T182732Z-stock-15s`. That is run 2 in the rotation analysis. Its FAILED file reads `stream: waitev exit 10: DEAD: ...`, and just before the trip the kernel log shows `usb 5-1: clock source 1 is not valid, cannot use` at 18:27:37.684 and 18:27:38.579 UTC.
+
+**What was left behind.** run-step does nothing more after a failure, so:
+- `snd_usb_audio` is still loaded, with no quirk flags.
+- Card 2 `[D24Ao]` is present.
+- No aplay or arecord process is left.
+- The MOTU is on bus port 5-1 at 480 Mb/s.
+
+I did not check whether the MOTU's Ethernet is unplugged; the host cannot see that.
+
+**What has to happen before the tests can run.** Each step is yours to approve:
+1. Accept that the trip is the expected failure of a run without the quirk flags, and remove `/var/lib/motu-test/DEAD`.
+2. Unload the driver with `sudo modprobe -r snd_usb_audio`.
+3. Restart motu-watch. It was started with `systemd-run`, so it has to be started the same way again.
+4. Adapt run-step to take a different quirk string.
+
+Candidates 1, 3 and 4 also need aplay started before arecord. That goes beyond the brief's "only a different modprobe parameter string", so it needs your OK too.
+
+| # | quirk_flags=07fd:0005: | Order | Starts | Mapping | Start-up gap | Events | Health |
+|---|---|---|---|---|---|---|---|
+| 1 | !validate_rates\|skip_iface_setup\|playback_first | aplay first | 0/3 | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| 2 | !validate_rates\|skip_iface_setup\|playback_first | arecord first | 0/3 | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| 3 | !validate_rates\|skip_iface_setup | aplay first | 0/3 | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+| 4 | !validate_rates\|skip_iface_setup\|playback_first\|iface_delay | aplay first | 0/3 | NOT RUN | NOT RUN | NOT RUN | NOT RUN |
+
+The euclid harness matches the copy in `/Volumes/Dock/motu-mac-driver/euclid/harness/`. Because nothing ran, I made no change to it and copied nothing back.
+
+Files are in /Volumes/Dock/motu-mac-driver/rotation:
+- tests.md
+
+===== agent 5 =====
+
+I re-derived the analysis from the pcaps, the kernel sources and the run folders on euclid. The wire-level facts hold, but the timing story does not. Recordings already on euclid show the channel map changing while audio streams. No run started cleanly. Three claims about when and how the MOTU slips need to be corrected.
+
+**What I did.** I did not touch the MOTU: no motu-alive, no driver load or unload, no PCM opened. On euclid I only read files and ran `systemctl is-active`. I wrote my own pcap decoder rather than reusing the earlier tools or pickles. I copied four recordings (`rec.wav`) from earlier runs to `/Volumes/Dock/motu-mac-driver/scratch/review/`, and my scripts are in `/private/tmp/claude-501/-Volumes-Dock-Home-Code-ear--claude-worktrees-init-80158b/a5a5bf0a-2ee9-4f5a-b4d6-2e7ba070cceb/scratchpad/rev/`.
+
+## New evidence
+
+**N1. The slip is a 24-byte shift in the byte stream, not a channel swap within each frame.** In run 1, every OUT slot starts and ends its steady tone on the same frame (163297 and 883295). On IN, slots 17-24 (sources 1-8) start one frame earlier than slots 1-16 (166498 against 166499) and end one frame earlier (886496 against 886497). Exact sample matching gives the same one-frame split for every source. Each IN frame therefore holds sources 9-24 of OUT frame q followed by sources 1-8 of OUT frame q+1. Run 2's IN slots all end on the same frame (883284). The split looks the same whichever side slipped, so it says nothing about OUT against IN.
+
+**N2. The map changes during streaming.** Recordings checked per frame (`prog.py`, `wav3.py`):
+- **20261102T180405Z** (one of the two "clean" starts): during the preamble, exactly one frame in every six is shifted by 8 (always the frame at index ≡3 mod 6; 617 of 617 non-zero frames at gap 6). The other five frames are identity. By 3.47 s every frame is shifted by 8, with residual 0.00 on all six positions.
+- **20261102T180549Z** (the other "clean" start): two frames in six are shifted (32-34%) through sources 17-21. During source 22's burst at about 2.68-2.70 s it goes 28% → 70% → 100%, and it stays fully shifted after that.
+- **20261102T174514Z** (the 5 s "identity, glitchy" run): identity in the preamble and in steady state. At about 4.97 s, frame position 3 fits source 9 instead of 1 (one shifted frame per six again), which accounts for its clicks and phase jumps.
+- **20261102T180331Z** (a lossy start) and run 1 are fully shifted from the first audio onward.
+
+**N3. Every start lost the same opening audio.** In all five runs above, the first non-zero capture sample falls inside source 16's burst: run 1 at IN frame 103631 (2.159 s), 180331 at 2.145 s, 180405 at frame 102797 (2.14 s), 180549 at frame 103136, and 174514 at 2.145 s. That is about 2.08-2.09 s after the first OUT packet; run 1's pcap gives 2.094 s.
+- The analyzer reported 65 ms and 73 ms latency for the two "clean" runs because it locked onto the mixed-state preamble. The real start-up gap there is the same as in the lossy runs.
+- In 180405, 180549 and 180331, sources 1-15's bursts produced no capture sample at all. In 174514 the only one heard is source 8's tail, which landed on capture 16 under the identity map.
+
+## Claims
+
+**Verdict 1: Linux sends every channel in the right place. CONFIRMED.**
+- On OUT, slot k carries tone k at every 2 s check, 18:26:59-18:27:11 UTC [10:26:59-10:27:11 PT] in run 1 and 10:27:44-10:27:56 PT in run 2.
+- Every OUT packet is 432 or 360 bytes, all multiples of 72: 150013 + 3 in run 1, 149996 + 4 in run 2. Every IN packet with status 0 is also a multiple of 72.
+- The shift is already in the IN bytes from the first non-zero sample: frame 103631, slot 8 only, at 10:26:57.061807 PT (pcap00 #8611).
+
+**Verdict 2: one 24-byte slip, latched at start, not an ongoing framing fault. CORRECTED.**
+- The 24-byte group is confirmed, and N1 strengthens it.
+- "Latched at start and held for the whole stream" is true of run 1 and the lossy starts only. N2 shows mixed states of one or two shifted frames in every six, transitions mid-stream (around 2.69 s in 180549), and intermittent shifted frames inside an identity run.
+- Run 2 holding identity through its OUT gaps is confirmed, but it is a single run.
+- The 6-frame periodicity points to a frame boundary moving within each microframe's packet. That is an ongoing device-side mechanism, not only a start condition.
+
+**Verdict 3: probably OUT, not proven. CONFIRMED.**
+- A loopback measures only the OUT slip plus the IN slip (a+b = 8), and N1 cannot split it either.
+- The Talos evidence is recorded, not re-measured: `.claude/skills/ear-on-talos/SKILL.md:84-87` and `docs/research/motu-24ao-drivers/README.md:62` ("port 1 on output 17"). That observation involved no capture path, so it is a playback-side slip of +8 on that host.
+
+**Verdict 4 and section 2: the slip happens at or after SET_INTERFACE(1,1), and only T1 or T2 remain. CORRECTED.**
+- "At or after interface 1's alt 1" assumes candidate A. Under candidate B the IN framer could latch at IN start (10:26:54.9018 PT) or when the path opens.
+- N2 shows transitions with no start event at all, so T1 and T2 are not the only remaining conditions.
+- Run 2 had both T1 and T2 (capture first; nothing queued for the first 27 OUT URBs, then a queue of one) and came out identity. That argues against T1 or T2 alone deciding the map, unless the device's re-clock reset it.
+
+**"Only a device-side restart clears it." UNSUPPORTED.** No run shows a slip surviving a stream restart. N2 shows the map changing within a single stream.
+
+**Correction to traces.md, "burst 16 cut short". CONFIRMED with an amendment.** About 468 frames of burst 16 came back: IN slot 9 starts at 104099, against 103631. But the opening point is not arbitrary: it is about 2.09 s after OUT starts in every run checked (N3).
+
+**Correction to traces.md, "the loopback takes about 2 ms". CONFIRMED.** Run 1 lags 3202 or 3201 stream frames, which includes IN starting about 66 ms before OUT. Run 2 lags 85 frames (1.8 ms).
+
+**Evidence table rows. CONFIRMED.** Each value below is from my own decoder:
+
+| Row | Run 1 | Run 2 |
+|---|---|---|
+| First non-zero OUT frame | 24097, slot 1, 10:26:55.469822 PT, #2240 | 24001, 10:27:40.097215 PT |
+| First non-zero IN frame | 103631, slot 8 only | 626037, all 24 slots, 10:27:52.640240 PT |
+| First OUT packet to first IN audio | 2.094 s | 13.043 s |
+| Control requests | only SET_INTERFACE(1,1) #218 between IN start and OUT start; no SET_CUR | |
+| Interrupts on 0x81 | 0 | 366 |
+| OUT queue depth at each submit | {0: 2, 1: 18750} | {0: 27, 1: 18723} |
+| IN -75 overflows | none | 1623 |
+| OUT -18 statuses | none | none |
+
+The one-microframe phase steps also match: 1099 → 1225 µs near 10:26:55.57-55.63 PT in run 1, and 1111 → 1228 µs at 10:27:40.5 PT then flapping 1235 → 1328/1393 µs from 10:27:54.4 PT in run 2. Calling them "missed microframes" remains an inference.
+
+**"usbmon's start_frame cannot show OUT gaps". CONFIRMED with a caveat.**
+- In run 1, consecutive IN start frames step by 0 or 16 instead of 8 (1786 and 1774 times), and OUT does the same 272 times each.
+- Run 2 steps by exactly 8 everywhere: IN 20647 times, apart from 11 zeros among the first 12 URBs; OUT 18749 of 18749.
+- The 12 initial IN URBs, all given the same start frame, show that the start frame is computed from the controller's microframe counter at submit time (6.18.48 xhci-ring.c:4343-4365). With that path, the transfer is scheduled "as soon as possible" (TRB_SIA, xhci-ring.c:4171-4176), so start_frame says nothing about when the packet went on the wire.
+
+**Section 3 rankings. CONFIRMED,** except the last line, which N2 contradicts (see the next claim): the OUT URBs in flight were 0 or 1, 1623 overflows came back in run 2 against none in run 1, and every packet was a multiple of 72.
+
+**Hypothesis 7: "the 2 starts without the loss still rotated". CORRECTED.** Neither start avoided the loss (N3). They rotated in steady state but began in a mixed state (N2).
+
+**Section 4 decision table. CONFIRMED.**
+- With a single route From Computer 1 → To Computer 1: slot 1 carrying source 9 means A (OUT slip); slot 17 carrying source 1 means B (IN slip); slot 9 carrying source 17 means both slipped by 16. The arithmetic checks.
+- The front-panel shortcut also works (output 17 lights under A), provided outputs are routed from From Computer.
+- Other splits of the 8 are possible. Run it more than once, since the map can change mid-stream.
+
+**Code citations. CONFIRMED.**
+- Ubuntu endpoint.c: 1488-1521 (deselect, rate, then alt 1 last), 1597-1641 (no URBs at start for implicit feedback unless playback_first), 468-537 (one OUT URB per queued IN packet), 945-946 (iface_delay sleeps 50 ms).
+- v7.0 pcm.c: 680-695 (prepare does the sync endpoint, interface 2, before the data endpoint, interface 1), 711-722 (playback starts in prepare, because implicit feedback disables low-latency playback at 660), 283-305 (data endpoint started before sync endpoint).
+
+**Fix (a)1: "closest to MOTU's own start". CORRECTED.**
+- With playback_first and aplay first, OUT URBs go out before IN starts (pcm.c:290-305). MOTU's Mac driver does the opposite: IN first, OUT about 320 ms later.
+- Test 1 (aplay first, no playback_first) is the IN-first order, but with a queue of one URB.
+- No combination of flags reproduces MOTU's order together with a deep, IN-sized OUT queue.
+
+**Workarounds c2 and c3 (a fixed rotation in software or in the MOTU's routing). CONFIRMED as not recommended,** and N2 makes the case stronger: the map can be mixed or change within a stream, so a per-start check is not enough either.
+
+**tests.md safety state. CONFIRMED,** read about 19:01 UTC [11:01 PT]:
+- `DEAD` is present, with the xhci buffer-overrun line at 18:27:39.395 UTC [10:27:39.395 PT].
+- motu-watch is failed; motu-heartbeat and motu-usbmon are active.
+
+**The brief's "9 of 9 starts (5 s, 600 s, 8x15 s)". CORRECTED.**
+- Only 9 runs fit "+8 from the start": the 600 s run plus the 8 short ones, with run 1 a 10th.
+- The 5 s run (174514) is identity.
+- Two of the 8 short runs (180405, 180549) were mixed before going fully +8. So "+8 from the start" holds for 6 of 8, not all 8.
+
+**"Apple's class driver also avoids the start pattern". UNSUPPORTED.** Its start order and queue depth are unknown.
+
+## Still unknown
+- **OUT or IN side on euclid.** The single-route loopback test settles it.
+- **What triggers each state.** Whether host OUT gaps or timing line up with the transitions is untested. The old ring `/var/lib/motu-test/usbmon/usb-b.pcap06` (18:02:38-18:05:35 UTC, covering 180405) and `usb-b.pcap07` (from 18:05:35, covering 180549) are snaplen 256. They hold headers, packet descriptors and only the first 64 bytes of data, so packet timing can be checked against the transition but not full frames. 180549's transition at about 2.69 s of its recording is the best target.
+- **Which packet frames are shifted.** In the mixed state, which frame within each USB packet is shifted is not known; it needs a full-payload pcap of a mixed start.
+- **The start-up gap.** Whether the fixed ~2.09 s gap is commit 320e557's clock-invalid period was not tested.
+- **Talos.** ear's start order there and its map stability over time were not recorded.
+- **The AMD controller.** Its support for contiguous frame IDs (HCCPARAMS1 bit 11) was not read.
+- **Not re-decoded.** I did not re-decode the 600 s run, the other five short recordings, or the Apple runs.

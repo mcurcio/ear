@@ -1,0 +1,377 @@
+#!/usr/bin/python3 -I
+"""analyze: judge a 24-channel loopback recording against the tone plan that was played.
+
+  analyze --plan tones.json --rec rec.wav [--json out.json] [--summary out.txt] [--window-ms 250]
+
+Touches no audio device. Writes JSON (default rec.wav -> rec.analysis.json) and a short text
+summary (default rec.summary.txt, also printed). Exit 0 when the analysis ran (whatever it
+found), 2 when the recording cannot be analysed (wrong rate or channel count, unreadable).
+
+What it measures:
+- Latency and preamble map: each source channel's 100 ms identification burst is found on the
+  capture channels; the first burst's onset gives the loopback latency (samples).
+- Steady section, every window (default 250 ms) and every capture channel: which planned tone
+  dominates (FFT, Hann), its level (dBFS peak), SNR (tone vs everything else in the window).
+- Per window, the whole mapping (capture channel -> source channel), classified as identity,
+  rotation r (capture c carries source (c + r) mod 24, the same r for every channel),
+  permutation (a scramble), duplicated or partial (some channel silent). Runs of equal mappings
+  are segments; a segment boundary is a mapping change point.
+- Events, each with its time: silence (dropout: 5 ms blocks below -60 dBFS), click (a residual
+  spike under 2 ms after removing the fitted sine), discontinuity (a longer residual burst),
+  phase jump (the fitted sine's phase steps between 10 ms blocks: samples lost or inserted),
+  level step (window level moved by more than 0.5 dB with the same tone).
+Channel numbers are 1-based in the text summary and 0-based in JSON.
+"""
+import argparse, json, math, os, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import numpy as np
+import motuwav as mw
+
+SILENT_PEAK = 1e-3          # -60 dBFS: a 5 ms block whose sine-equivalent peak is below this is silent
+BLOCK_S = 0.005             # dropout resolution
+FIT_S = 0.010               # phase/amplitude tracking block
+PHASE_JUMP_RAD = 0.02       # one lost sample at 300 Hz is 0.039 rad
+LEVEL_STEP_DB = 0.5
+CLICK_FLOOR = 2e-3          # residual spikes below -54 dBFS are not clicks
+CLICK_SIGMAS = 20.0
+CLICK_MAX_S = 0.002         # a residual burst longer than this is a discontinuity
+MAX_EVENTS = 5000
+
+
+def wrap(p):
+    return (p + np.pi) % (2 * np.pi) - np.pi
+
+
+def classify(mapping, nch):
+    """mapping: list of source index or -1 (silent) per capture channel."""
+    live = [(c, s) for c, s in enumerate(mapping) if s >= 0]
+    if not live:
+        return {"kind": "silent"}
+    offs = {(s - c) % nch for c, s in live}
+    dup = len({s for _, s in live}) != len(live)
+    partial = len(live) != nch
+    if len(offs) == 1 and not dup:
+        r = offs.pop()
+        kind = ("identity" if r == 0 else "rotation") if not partial else "partial"
+        return {"kind": kind, "rotation": r, "silent": [c for c, s in enumerate(mapping) if s < 0]}
+    if dup:
+        return {"kind": "duplicated", "silent": [c for c, s in enumerate(mapping) if s < 0]}
+    return {"kind": "permutation" if not partial else "partial-scramble",
+            "silent": [c for c, s in enumerate(mapping) if s < 0]}
+
+
+def describe(cls):
+    k = cls["kind"]
+    if k == "identity":
+        return "identity (capture N carries source N)"
+    if k == "rotation":
+        return "uniform rotation +%d (capture N carries source N+%d mod 24)" % (cls["rotation"], cls["rotation"])
+    if k == "partial":
+        return "rotation +%d on live channels, silent: %s" % (cls["rotation"], [c + 1 for c in cls["silent"]])
+    if k == "silent":
+        return "all channels silent"
+    return "%s (not a uniform rotation)%s" % (k, ", silent: %s" % [c + 1 for c in cls["silent"]] if cls.get("silent") else "")
+
+
+def tone_amp(x, f, n0, fs):
+    n = n0 + np.arange(len(x))
+    return abs(np.dot(x, np.exp(-2j * np.pi * f * n / fs))) * 2 / len(x)
+
+
+def preamble(rd, plan, fs):
+    """Latency (samples) and which capture channels carry each identification slot."""
+    nch, A, freqs = plan["channels"], plan["amplitude"], plan["freqs_hz"]
+    thr = 0.2 * A
+    search = min(rd.frames, plan["steady_start"] + 3 * fs)
+    x = rd.read(0, search)
+    above = np.abs(x) > thr
+    onsets = {}
+    for c in range(nch):
+        idx = np.flatnonzero(above[:, c])
+        if idx.size:
+            onsets[c] = int(idx[0])
+    if not onsets:
+        return {"found": False, "latency_samples": None, "note": "no channel crossed %.3f in the first %.1f s" % (thr, search / fs)}
+    # which source is each first burst? compare against that source's planned crossing
+    lat = []
+    for c, t in onsets.items():
+        seg = x[t:t + int(0.05 * fs), c]
+        if len(seg) < 32:
+            continue
+        s = int(np.argmax([tone_amp(seg, f, t, fs) for f in freqs]))
+        a = plan["slots_start"] + s * plan["slot_len"]
+        ref = mw.render(plan, a, a + plan["slot_len"])[:, s]
+        exp = a + int(np.flatnonzero(np.abs(ref) > thr)[0])
+        lat.append(t - exp)
+    L = int(np.median(lat))
+    slot_map = [[] for _ in range(nch)]   # capture channel -> sources heard in their slots
+    slot_level = [[None] * nch for _ in range(nch)]
+    for k in range(nch):
+        a = plan["slots_start"] + k * plan["slot_len"] + L
+        lo, hi = a + int(0.02 * fs), a + plan["slot_len"] - int(0.02 * fs)
+        seg = rd.read(lo, hi)
+        if seg.shape[0] < hi - lo:
+            continue
+        pk = np.sqrt(np.mean(seg ** 2, axis=0)) * math.sqrt(2)
+        for c in range(nch):
+            if pk[c] > 0.1 * A:
+                slot_map[c].append(k)
+            slot_level[k][c] = round(20 * math.log10(max(pk[c], 1e-12)), 2)
+    single = [m[0] if len(m) == 1 else -1 for m in slot_map]
+    return {"found": True, "latency_samples": L, "latency_ms": round(1000.0 * L / fs, 3),
+            "latency_spread_samples": int(max(lat) - min(lat)) if lat else None,
+            "slot_map": slot_map, "mapping": single, "class": classify(single, nch)}
+
+
+def analyze(plan_path, rec_path, window_ms=250.0):
+    plan = mw.load_plan(plan_path)
+    rd = mw.WavReader(rec_path)
+    fs, nch, A, freqs = plan["rate"], plan["channels"], plan["amplitude"], np.array(plan["freqs_hz"])
+    res = {"plan": plan_path, "recording": rec_path,
+           "rec": {"frames": rd.frames, "channels": rd.channels, "rate": rd.rate, "format": rd.kind,
+                   "seconds": round(rd.frames / max(rd.rate, 1), 3)}}
+    if rd.rate != fs or rd.channels != nch:
+        res["fatal"] = "recording is %d ch at %d Hz, plan is %d ch at %d Hz" % (rd.channels, rd.rate, nch, fs)
+        return res
+    pre = preamble(rd, plan, fs)
+    res["preamble"] = pre
+    L = pre["latency_samples"] if pre["found"] else 0
+    W = int(round(window_ms / 1000.0 * fs))
+    B = int(round(BLOCK_S * fs))
+    FB = int(round(FIT_S * fs))
+    if W % B or W % FB:
+        raise SystemExit("analyze: window must be a multiple of %d and %d samples" % (B, FB))
+    S0 = plan["steady_start"] + plan["steady_fade"] + L
+    S1 = plan["steady_end"] - plan["steady_fade"] + L
+    nwin = max(0, (S1 - S0) // W)
+    have = max(0, min(nwin, (rd.frames - S0) // W))
+    res["steady"] = {"start_rec_s": round(S0 / fs, 4), "windows_planned": int(nwin), "windows_recorded": int(have),
+                     "window_ms": window_ms, "truncated": bool(have < nwin)}
+    hann = np.hanning(W)
+    hsum = hann.sum()
+    df = fs / W
+    bins = np.round(freqs / df).astype(int)
+    tone_bins = np.stack([bins - 1, bins, bins + 1], axis=1)
+
+    dom = np.full((have, nch), -1, dtype=int)
+    lvl = np.full((have, nch), np.nan)
+    snr = np.full((have, nch), np.nan)
+    events = []
+    counts = {}
+    def ev(kind, c, n, **kw):
+        counts[kind] = counts.get(kind, 0) + 1
+        if len(events) < MAX_EVENTS:
+            e = {"type": kind, "channel": int(c), "t_rec_s": round(n / fs, 4), "t_play_s": round((n - L) / fs, 4)}
+            e.update(kw)
+            events.append(e)
+
+    sil_start = [None] * nch
+    prev_phase = [None] * nch       # (source, phase) of the last good fit block
+    prev_level = [None] * nch       # (source, level dB) of the last clean window
+    for w in range(have):
+        n0 = S0 + w * W
+        x = rd.read(n0, n0 + W)
+        # --- silence by 5 ms blocks
+        bpk = np.sqrt(np.mean(x.reshape(W // B, B, nch) ** 2, axis=1)) * math.sqrt(2)
+        bsil = bpk < SILENT_PEAK
+        for c in range(nch):
+            d = np.diff(np.r_[int(sil_start[c] is not None), bsil[:, c].astype(int)])
+            for j in np.flatnonzero(d):
+                n = n0 + int(j) * B
+                if d[j] > 0:
+                    sil_start[c] = n
+                else:
+                    ev("silence", c, sil_start[c], duration_ms=round(1000.0 * (n - sil_start[c]) / fs, 1))
+                    sil_start[c] = None
+        # --- dominant tone per channel
+        X = np.abs(np.fft.rfft(x * hann[:, None], axis=0))
+        amps = X[tone_bins].max(axis=1) * 2 / hsum          # (24 tones, nch)
+        P = X ** 2
+        total = P[1:].sum(axis=0)
+        win_silent = bsil.all(axis=0)
+        dirty = bsil.any(axis=0)
+        n = n0 + np.arange(W)
+        for c in range(nch):
+            if win_silent[c]:
+                continue
+            s = int(np.argmax(amps[:, c]))
+            dom[w, c] = s
+            b = bins[s]
+            tp = P[max(1, b - 3):b + 4, c].sum()
+            snr[w, c] = 10 * math.log10(max(tp, 1e-30) / max(total[c] - tp, 1e-30))
+            # --- per 10 ms block least-squares fit of the dominant tone
+            om = 2 * np.pi * freqs[s] / fs
+            C = np.cos(om * n).reshape(-1, FB)
+            S = np.sin(om * n).reshape(-1, FB)
+            xb = x[:, c].reshape(-1, FB)
+            scc, sss, scs = (C * C).sum(1), (S * S).sum(1), (C * S).sum(1)
+            sxc, sxs = (xb * C).sum(1), (xb * S).sum(1)
+            det = scc * sss - scs * scs
+            ac = (sxc * sss - sxs * scs) / det
+            bs = (sxs * scc - sxc * scs) / det
+            bamp = np.hypot(ac, bs)
+            bph = np.arctan2(ac, bs)
+            resid = (xb - (ac[:, None] * C + bs[:, None] * S)).reshape(-1)
+            good = bamp > 0.5 * np.median(bamp)
+            # blocks touching silence are excused from phase and residual checks (silence explains them)
+            silent_fit = bsil[:, c].reshape(-1, FB // B).any(axis=1)
+            near_sil = silent_fit | np.r_[False, silent_fit[:-1]] | np.r_[silent_fit[1:], False]
+            good &= ~near_sil
+            # residual spikes
+            sig = 1.4826 * np.median(np.abs(resid)) + 1e-12
+            thr = max(CLICK_FLOOR, CLICK_SIGMAS * sig)
+            mask = np.abs(resid) > thr
+            mask &= ~np.repeat(near_sil, FB)
+            idx = np.flatnonzero(mask)
+            if idx.size:
+                gap = int(0.001 * fs)
+                starts = [idx[0]]
+                ends = []
+                for i0, i1 in zip(idx[:-1], idx[1:]):
+                    if i1 - i0 > gap:
+                        ends.append(i0)
+                        starts.append(i1)
+                ends.append(idx[-1])
+                for a, e in zip(starts, ends):
+                    dur = (e - a + 1) / fs
+                    kind = "click" if dur <= CLICK_MAX_S else "discontinuity"
+                    ev(kind, c, n0 + int(a), duration_ms=round(1000.0 * float(dur), 2),
+                       peak=round(float(np.abs(resid[a:e + 1]).max()), 5))
+            # phase continuity, across window edges too. A block excused (near silence, a residual
+            # spike, low amplitude) keeps the last good phase, so the next good block is compared
+            # with it: a click leaves the phase where it was, lost samples do not.
+            spiky = mask.reshape(-1, FB).any(axis=1)
+            for j in range(len(bph)):
+                if not good[j] or spiky[j]:
+                    continue
+                if prev_phase[c] is not None and prev_phase[c][0] == s:
+                    d = float(wrap(bph[j] - prev_phase[c][1]))
+                    if abs(d) > PHASE_JUMP_RAD:
+                        ev("phase-jump", c, n0 + j * FB, source=s, jump_rad=round(d, 4),
+                           samples_skipped_if_small=round(float(d / om), 2))
+                prev_phase[c] = (s, float(bph[j]))
+            # level
+            ok = bamp[good]
+            if ok.size:
+                L_db = 20 * math.log10(float(np.median(ok)))
+                lvl[w, c] = L_db
+                clean = not dirty[c] and not idx.size
+                if clean and prev_level[c] is not None and prev_level[c][0] == s and abs(L_db - prev_level[c][1]) > LEVEL_STEP_DB:
+                    ev("level-step", c, n0, source=s, from_dbfs=round(prev_level[c][1], 2), to_dbfs=round(L_db, 2))
+                prev_level[c] = (s, L_db) if clean else prev_level[c]
+    for c in range(nch):
+        if sil_start[c] is not None:
+            end = S0 + have * W
+            ev("silence", c, sil_start[c], duration_ms=round(1000.0 * (end - sil_start[c]) / fs, 1), open_at_end=True)
+
+    # --- mapping segments
+    segs = []
+    for w in range(have):
+        m = dom[w].tolist()
+        if segs and segs[-1]["mapping"] == m:
+            segs[-1]["windows"] += 1
+        else:
+            segs.append({"start_window": w, "windows": 1, "mapping": m})
+    for sg in segs:
+        sg["t_rec_s"] = round((S0 + sg["start_window"] * W) / fs, 4)
+        sg["t_play_s"] = round((S0 + sg["start_window"] * W - L) / fs, 4)
+        sg["seconds"] = round(sg["windows"] * W / fs, 3)
+        sg["class"] = classify(sg["mapping"], nch)
+    changes = []
+    for a, b in zip(segs[:-1], segs[1:]):
+        chs = [c for c in range(nch) if a["mapping"][c] != b["mapping"][c]]
+        changes.append({"t_rec_s": b["t_rec_s"], "t_play_s": b["t_play_s"], "window": b["start_window"],
+                        "channels": chs, "from": describe(a["class"]), "to": describe(b["class"])})
+    kinds = {(sg["class"]["kind"], sg["class"].get("rotation")) for sg in segs}
+    rotation = None
+    if len(kinds) == 1:
+        k, r = kinds.pop()
+        if k in ("identity", "rotation"):
+            rotation = r
+    events.sort(key=lambda e: (e["t_rec_s"], e["channel"]))
+    per_ch = []
+    for c in range(nch):
+        v = lvl[:, c][~np.isnan(lvl[:, c])]
+        q = snr[:, c][~np.isnan(snr[:, c])]
+        per_ch.append({"channel": c, "level_median_dbfs": round(float(np.median(v)), 2) if v.size else None,
+                       "level_min_dbfs": round(float(v.min()), 2) if v.size else None,
+                       "snr_min_db": round(float(q.min()), 1) if q.size else None,
+                       "snr_median_db": round(float(np.median(q)), 1) if q.size else None})
+    res["steady"].update({
+        "segments": segs, "mapping_changes": changes, "rotation": rotation,
+        "mapping_stable": len(segs) == 1, "events": events, "event_counts": counts,
+        "events_truncated": sum(counts.values()) > len(events), "channels": per_ch,
+        "windows": {"t_rec_s": [round((S0 + w * W) / fs, 4) for w in range(have)],
+                    "dominant": dom.tolist(),
+                    "level_dbfs": np.round(np.nan_to_num(lvl, nan=-999.0), 2).tolist(),
+                    "snr_db": np.round(np.nan_to_num(snr, nan=-999.0), 1).tolist()}})
+    clean = (pre.get("found") and have > 0 and not res["steady"]["truncated"] and rotation is not None and not counts)
+    res["verdict"] = "clean" if clean else "issues"
+    return res
+
+
+def summary(res):
+    out = []
+    r = res["rec"]
+    out.append("recording: %s, %d ch, %d Hz, %s, %.3f s" % (res["recording"], r["channels"], r["rate"], r["format"], r["seconds"]))
+    if "fatal" in res:
+        out.append("FATAL: " + res["fatal"])
+        return "\n".join(out)
+    p = res["preamble"]
+    if p["found"]:
+        out.append("latency: %d samples (%.3f ms), spread %s" % (p["latency_samples"], p["latency_ms"], p["latency_spread_samples"]))
+        out.append("preamble map: " + describe(p["class"]))
+        odd = [(c + 1, [s + 1 for s in m]) for c, m in enumerate(p["slot_map"]) if len(m) != 1]
+        if odd:
+            out.append("  capture channels not hearing exactly one slot: %s" % odd)
+    else:
+        out.append("preamble: NOT FOUND (%s)" % p["note"])
+    st = res["steady"]
+    out.append("steady: %d of %d windows of %g ms recorded%s" % (st["windows_recorded"], st["windows_planned"], st["window_ms"],
+                                                              " (TRUNCATED)" if st["truncated"] else ""))
+    out.append("mapping: %s" % ("stable, " + describe(st["segments"][0]["class"]) if st["mapping_stable"] and st["segments"]
+                                else "%d segments" % len(st["segments"])))
+    if st["rotation"] is not None:
+        out.append("uniform rotation offset: %d" % st["rotation"])
+    if not st["mapping_stable"]:
+        for sg in st["segments"][:20]:
+            out.append("  from %8.3f s (play %8.3f s) for %7.3f s: %s" % (sg["t_rec_s"], sg["t_play_s"], sg["seconds"], describe(sg["class"])))
+        for ch in st["mapping_changes"][:20]:
+            out.append("  change at %.3f s (play %.3f s): channels %s" % (ch["t_rec_s"], ch["t_play_s"], [c + 1 for c in ch["channels"]]))
+    out.append("events: %s" % (", ".join("%s=%d" % kv for kv in sorted(st["event_counts"].items())) or "none"))
+    for e in st["events"][:15]:
+        extra = {k: v for k, v in e.items() if k not in ("type", "channel", "t_rec_s", "t_play_s")}
+        out.append("  %8.4f s (play %8.4f s) ch %2d %-13s %s" % (e["t_rec_s"], e["t_play_s"], e["channel"] + 1, e["type"], extra or ""))
+    lv = [c["level_median_dbfs"] for c in st["channels"] if c["level_median_dbfs"] is not None]
+    sn = [c["snr_min_db"] for c in st["channels"] if c["snr_min_db"] is not None]
+    if lv:
+        out.append("levels: median %.2f..%.2f dBFS across channels; worst window SNR %.1f dB" % (min(lv), max(lv), min(sn)))
+    out.append("verdict: %s" % res["verdict"].upper())
+    return "\n".join(out)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--plan", required=True)
+    ap.add_argument("--rec", required=True)
+    ap.add_argument("--json")
+    ap.add_argument("--summary")
+    ap.add_argument("--window-ms", type=float, default=250.0)
+    a = ap.parse_args()
+    base = os.path.splitext(a.rec)[0]
+    try:
+        res = analyze(a.plan, a.rec, a.window_ms)
+    except (OSError, ValueError) as e:
+        print("analyze: %s" % e, file=sys.stderr)
+        return 2
+    with open(a.json or base + ".analysis.json", "w") as f:
+        json.dump(res, f, separators=(",", ":"))
+    text = summary(res)
+    with open(a.summary or base + ".summary.txt", "w") as f:
+        f.write(text + "\n")
+    print(text)
+    return 2 if "fatal" in res else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -70,8 +70,11 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 - Power-cycled, the MOTU comes up at 192 kHz unless its rate was set on the device, so check the
   rate after every power-cycle. With the quirk flags below it stays at the rate set (48 kHz seen,
   2026-11-01).
-- Quirk flags: `snd_usb_audio` parameter `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup`
-  (the owner's iac repo sets it) removed the kernel's "clock source 1 is not valid" at connect.
+- Quirk flags: `snd_usb_audio` parameter
+  `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|playback_first` (the owner's iac repo
+  sets it; `playback_first` added 2026-11-02, mcurcio/iac PR 343). The first two removed the
+  kernel's "clock source 1 is not valid" at connect; `playback_first` stops the 8-channel shift
+  (below).
   The kernel reads the flags only when it probes the card, so they take effect after a MOTU
   power-cycle or re-plug; a MOTU already attached when the node boots did not get them (seen on
   hawking, kernel 6.18.48, MOTU firmware 1.4.8+102192). The mainline fix that waits for a valid
@@ -83,9 +86,19 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   descriptors are in `docs/research/motu-24ao-drivers/hardware/`.
 - The 24-channel playback frame came out rotated by 8 (2026-11-01): EAR's `playback_N` was heard
   on MOTU output N-8 (mod 24), so `playback_1` on output 17, `playback_6` on 22, `playback_19` on
-  11. EAR's own channel mapping is correct; the shift is below it (driver, USB or the MOTU's
-  firmware), a known MOTU AVB issue (Drumfix `motu-avb-usb` issue 16, PipeWire issue 2768).
-  Check the map after every restart of the card (section 5).
+  11. EAR's own channel mapping is correct. Linux sends every channel in the right place; the MOTU
+  loses its frame boundary depending on how its playback stream starts (2026-11-02, USB traces).
+  The fix is the `playback_first` quirk flag above: with it, 49 of 49 starts mapped channel N to N
+  through a loopback on an Ubuntu host (AMD xHCI, kernel 7.0), 9 of them after a MOTU power-on;
+  without it, 0 of 12 were clean. It is not yet confirmed on a Talos node or through EAR, so check
+  the map after every restart of the card (section 5). Record:
+  `docs/research/motu-24ao-drivers/hardware/observations-2026-11-02.md`.
+- Each start of the card's streams loses about 2 s of audio: the MOTU returns silence that long
+  (Apple's driver too). In EAR it happens when a `card` node starts or restarts, not per sound.
+- Keep the MOTU's Ethernet port unplugged. On 2026-11-02 the whole unit (USB and front panel)
+  froze minutes to about 45 minutes after connecting, every time Ethernet was in, on Linux and
+  macOS hosts alike. With Ethernet out it ran over 3 hours and about 60 driver loads without a
+  freeze. A frozen MOTU still looks attached on USB and needs a power-cycle.
 
 ## 4. The namespace and the pod
 

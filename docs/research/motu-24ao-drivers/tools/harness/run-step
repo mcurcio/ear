@@ -1,0 +1,214 @@
+#!/bin/bash
+# run-step DRIVER SECONDS [--dry-run]
+#
+# One loopback measurement of the MOTU 24Ao on euclid with one driver:
+#   DRIVER   motu         insmod ~/motu/snd-usb-motu/snd-usb-motu.ko           (card id motuusb)
+#            stock-quirk  modprobe snd_usb_audio quirk_flags=07fd:0005:!validate_rates|skip_iface_setup
+#            stock        modprobe snd_usb_audio                                 (card id D24Ao)
+#   SECONDS  length of the all-channel steady tone section (whole seconds, 1..1100); the file adds
+#            3.65 s (silence, 24 x 100 ms identification bursts, silence) before and 0.25 s after.
+#   --dry-run  do the pre-flight and preparation, none of which touches the MOTU (no motu-alive,
+#              no module, no PCM), print the commands that would, and stop.
+#
+# Order: pre-flight (no driver for the MOTU, no card, watcher and usbmon running) -> checks ->
+# tone file -> load -> wait for the card -> checks -> stream format check (stock) -> checks ->
+# arecord, then aplay once capture runs, wait for both to exit (or DEAD, or a deadline) -> checks
+# -> unload -> wait for the card to go -> checks -> analyze.
+# A check is: motu-watch and motu-heartbeat active, no /var/lib/motu-test/DEAD, `sudo motu-alive` prints ALIVE.
+# At the FIRST failed check or step it stops: it prints the evidence (DEAD line, the last 40
+# kernel.log lines, the current usbmon pcap), writes FAILED in the run dir, touches nothing more
+# (no unload, no kill of aplay/arecord: their PIDs are printed) and exits 1. Exit 3: every check
+# passed but analyze could not read the recording. Exit 0: done; the last line is the run dir.
+set -u
+HERE=$(dirname "$(readlink -f "$0")")
+STATE=/var/lib/motu-test
+DEADF=$STATE/DEAD
+RATE=48000
+MOTU_KO=$HOME/motu/snd-usb-motu/snd-usb-motu.ko
+QUIRK=${MOTU_QUIRK:-'quirk_flags=07fd:0005:!validate_rates|skip_iface_setup'}   # stock-quirk's parameter; MOTU_QUIRK overrides
+ORDER=${MOTU_ORDER:-capture-first}   # capture-first | playback-first: which PCM run-step starts first
+
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+[ $# -ge 2 ] || usage
+DRIVER=$1 SECS=$2 DRY=${3:-}
+case $DRIVER in
+  motu)        CARD=motuusb; MOD=snd_usb_motu;  LOAD=(sudo insmod "$MOTU_KO");            UNLOAD=(sudo rmmod snd_usb_motu) ;;
+  stock-quirk) CARD=D24Ao;   MOD=snd_usb_audio; LOAD=(sudo modprobe snd_usb_audio "$QUIRK"); UNLOAD=(sudo modprobe -r snd_usb_audio) ;;
+  stock)       CARD=D24Ao;   MOD=snd_usb_audio; LOAD=(sudo modprobe snd_usb_audio);          UNLOAD=(sudo modprobe -r snd_usb_audio) ;;
+  *) usage ;;
+esac
+[[ $SECS =~ ^[0-9]+$ ]] && [ "$SECS" -ge 1 ] && [ "$SECS" -le 1100 ] || { echo "run-step: SECONDS must be 1..1100 (arecord's WAV stops at 4 GiB)" >&2; exit 2; }
+[ -z "$DRY" ] || [ "$DRY" = --dry-run ] || usage
+
+RUN=$STATE/runs/$(date -u +%Y%m%dT%H%M%SZ)-$DRIVER-${SECS}s
+mkdir -p "$RUN" || { echo "run-step: cannot make $RUN" >&2; exit 2; }
+exec > >(tee -a "$RUN/run.log") 2>&1
+PCM="hw:CARD=$CARD,DEV=0"
+APID= RPID= CURSOR=
+
+log() { printf '%s %s\n' "$(date -u +%H:%M:%S.%N | cut -c1-12)" "$*"; }
+
+evidence() {
+  echo "----- evidence"
+  if [ -e "$DEADF" ]; then echo "DEAD: $(cat "$DEADF")"; else echo "DEAD: (no file)"; fi
+  echo "motu-watch: $(systemctl is-active motu-watch)   motu-heartbeat: $(systemctl is-active motu-heartbeat)   motu-usbmon: $(systemctl is-active motu-usbmon)"
+  echo "--- last 40 lines of $STATE/kernel.log"
+  tail -n 40 "$STATE/kernel.log"
+  echo "--- current usbmon pcap"
+  ls -l --time-style=+%FT%T "$(ls -t "$STATE"/usbmon/usb*.pcap* 2>/dev/null | head -1)" 2>/dev/null || echo "(none)"
+  echo "--- modules: $(ls -d /sys/module/snd_usb_audio /sys/module/snd_usb_motu 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
+  echo "--- /proc/asound/cards"; cat /proc/asound/cards
+  [ -n "$CURSOR" ] && journalctl -k --after-cursor="$CURSOR" -o short-iso-precise > "$RUN/dmesg.txt" 2>&1 && echo "--- kernel log since start: $RUN/dmesg.txt ($(wc -l < "$RUN/dmesg.txt") lines)"
+  for p in $APID $RPID; do [ -d /proc/$p ] && echo "STILL RUNNING (not killed): $(ps -o pid=,args= -p "$p")"; done
+}
+
+fail() {
+  log "FAILED: $*"
+  echo "$*" > "$RUN/FAILED"
+  evidence
+  echo "run dir: $RUN"
+  exit 1
+}
+
+check() {   # check LABEL: the binding safety check
+  systemctl is-active --quiet motu-watch || fail "check $1: motu-watch is not active"
+  systemctl is-active --quiet motu-heartbeat || fail "check $1: motu-heartbeat is not active"
+  [ -e "$DEADF" ] && fail "check $1: $DEADF exists"
+  local out rc
+  if [ "$DRY" = --dry-run ]; then log "check $1: dry run: motu-watch active, no DEAD; motu-alive NOT run"; return 0; fi
+  out=$(sudo /usr/local/bin/motu-alive 2>&1); rc=$?
+  echo "$(date -u +%FT%T) $1 rc=$rc $out" >> "$RUN/checks.log"
+  [ $rc -eq 0 ] && [[ $out == ALIVE* ]] || fail "check $1: motu-alive rc=$rc: $out"
+  [ -e "$DEADF" ] && fail "check $1: $DEADF appeared"
+  log "check $1: $out"
+}
+
+card_present() { grep -Eq "^ *[0-9]+ \[$CARD *\]" /proc/asound/cards; }
+
+snapshot() {   # snapshot NAME: read-only proc files of the card (no device I/O)
+  local f d=/proc/asound/$CARD
+  {
+    echo "== /proc/asound/cards"; cat /proc/asound/cards
+    for f in "$d"/id "$d"/usbbus "$d"/usbid "$d"/stream* "$d"/pcm0p/info "$d"/pcm0c/info \
+             "$d"/pcm0p/sub0/status "$d"/pcm0p/sub0/hw_params "$d"/pcm0p/sub0/sw_params \
+             "$d"/pcm0c/sub0/status "$d"/pcm0c/sub0/hw_params "$d"/pcm0c/sub0/sw_params; do
+      [ -r "$f" ] && { echo "== $f"; cat "$f"; }
+    done
+    echo "== interface drivers"
+    for f in /sys/bus/usb/devices/"$USBDEV":1.*; do echo "$(basename "$f") $(basename "$(readlink "$f/driver" 2>/dev/null)" 2>/dev/null)"; done
+  } > "$RUN/proc-$1.txt" 2>&1
+}
+
+wait_state() {   # wait_state DIR(p|c) PID: capture/playback RUNNING; /proc has no event, so a 10 ms poll, deadline 5 s fails
+  local f=/proc/asound/$CARD/pcm0$1/sub0/status i
+  for i in $(seq 500); do
+    grep -q 'state: RUNNING' "$f" 2>/dev/null && return 0
+    [ -d /proc/$2 ] || return 1   # sudo-owned: kill -0 would be EPERM
+    [ -e "$DEADF" ] && return 1
+    sleep 0.01
+  done
+  return 1
+}
+
+log "run-step $DRIVER ${SECS}s -> $RUN"
+# ---------------------------------------------------------------- pre-flight (nothing touches the MOTU)
+USBDEV=
+for d in /sys/bus/usb/devices/*; do
+  [ "$(cat "$d/idVendor" 2>/dev/null)" = 07fd ] && [ "$(cat "$d/idProduct" 2>/dev/null)" = 0005 ] && USBDEV=$(basename "$d")
+done
+[ -n "$USBDEV" ] || fail "pre-flight: no 07fd:0005 on the USB bus"
+log "MOTU at $USBDEV, speed $(cat /sys/bus/usb/devices/$USBDEV/speed) Mb/s"
+[ -e /etc/modprobe.d/motu-test.conf ] || fail "pre-flight: /etc/modprobe.d/motu-test.conf is missing"
+for m in snd_usb_audio snd_usb_motu; do [ -e /sys/module/$m ] && fail "pre-flight: $m is loaded (rule 2: one driver at a time, and this step loads $MOD)"; done
+for f in /sys/bus/usb/devices/"$USBDEV":1.*; do [ -e "$f/driver" ] && fail "pre-flight: $(basename "$f") is bound to $(basename "$(readlink "$f/driver")")"; done
+grep -Eq '\[(motuusb|D24Ao) *\]' /proc/asound/cards && fail "pre-flight: a MOTU card is already in /proc/asound/cards"
+systemctl is-active --quiet motu-usbmon || fail "pre-flight: motu-usbmon is not active (no USB evidence would be kept)"
+[ "$DRIVER" != motu ] || [ -r "$MOTU_KO" ] || fail "pre-flight: $MOTU_KO missing"
+need_mb=$(( (SECS + 8) * RATE * 72 / 1000000 + 200 ))
+avail_mb=$(df -Pm "$STATE/runs" | awk 'NR==2{print $4}')
+[ "$avail_mb" -gt "$need_mb" ] || fail "pre-flight: $avail_mb MB free under $STATE/runs, need $need_mb"
+"$HERE"/gen-tones --steady "$SECS" --out "$RUN" --formats s24 > /dev/null || fail "pre-flight: gen-tones failed"
+TOTAL=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["total_frames"])' "$RUN/tones.json")
+CAP=$(( TOTAL + 2 * RATE ))   # capture 2 s longer than playback: start skew and loopback latency
+CURSOR=$(journalctl -k -n 0 --show-cursor 2>/dev/null | sed -n 's/^-- cursor: //p')
+[ -n "$CURSOR" ] || fail "pre-flight: no kernel journal cursor"
+ls -t "$STATE"/usbmon/usb*.pcap* | head -1 > "$RUN/usbmon-first.txt"
+check pre-load
+
+ARECORD=(sudo arecord -D "$PCM" -c 24 -r $RATE -f S24_3LE -t wav -s "$CAP" -v "$RUN/rec.wav")
+APLAY=(sudo aplay -D "$PCM" -v "$RUN/tones-s24.wav")
+if [ "$DRY" = --dry-run ]; then
+  log "dry run: would run: ${LOAD[*]}"
+  log "dry run: would wait for card $CARD, then: ${ARECORD[*]}"
+  log "dry run: then once capture runs: ${APLAY[*]}"
+  log "dry run: then: ${UNLOAD[*]}"
+  echo "$RUN"; exit 0
+fi
+
+# ---------------------------------------------------------------- load
+log "load: ${LOAD[*]}"
+"${LOAD[@]}" || fail "load: '${LOAD[*]}' exited $?"
+udevadm settle --timeout=30 || fail "load: udevadm settle timed out"
+card_present || fail "load: card $CARD not in /proc/asound/cards after the module load and udev settle"
+other=snd_usb_audio; [ "$MOD" = snd_usb_audio ] && other=snd_usb_motu
+[ -e /sys/module/$other ] && fail "load: $other is loaded too (rule 2)"
+check post-load
+snapshot after-load
+if [ "$MOD" = snd_usb_audio ]; then   # 24 ch at 48 kHz offered both ways, before any PCM opens
+  for dir in Playback Capture; do
+    awk -v want="$dir:" '/^[A-Za-z]+:$/{on=($1==want)} on&&/Channels: 24$/{c=1} on&&/Rates:.*48000/{r=1} END{exit !(c&&r)}' \
+      /proc/asound/$CARD/stream0 || fail "format: $CARD stream0 offers no 24 ch at 48000 Hz for $dir (see $RUN/proc-after-load.txt)"
+  done
+fi
+[ -d /proc/asound/$CARD/pcm0p ] && [ -d /proc/asound/$CARD/pcm0c ] || fail "format: $CARD has no pcm0p and pcm0c"
+
+# ---------------------------------------------------------------- stream
+check pre-stream
+start_capture() {
+  log "record: ${ARECORD[*]}"
+  "${ARECORD[@]}" 2> "$RUN/arecord.err" &
+  RPID=$!
+  wait_state c "$RPID" || fail "stream: capture never reached RUNNING (arecord: $(tail -3 "$RUN/arecord.err" | tr '\n' ' '))"
+  log "capture RUNNING"
+}
+start_playback() {
+  log "play: ${APLAY[*]}"
+  "${APLAY[@]}" 2> "$RUN/aplay.err" &
+  APID=$!
+  wait_state p "$APID" || fail "stream: playback never reached RUNNING (aplay: $(tail -3 "$RUN/aplay.err" | tr '\n' ' '))"
+  log "playback RUNNING"
+}
+log "order: $ORDER"
+case $ORDER in
+  capture-first) start_capture; start_playback ;;
+  playback-first) start_playback; start_capture ;;
+  *) fail "MOTU_ORDER must be capture-first or playback-first" ;;
+esac
+snapshot streaming
+log "both RUNNING; waiting for aplay and arecord to exit (aplay ~$(( TOTAL / RATE )) s, arecord ~$(( CAP / RATE )) s)"
+WPID=$(systemctl show -p MainPID --value motu-watch)
+"$HERE"/waitev --pid "$APID" --pid "$RPID" --dead "$DEADF" --watcher-pid "$WPID" --deadline $(( CAP / RATE + 20 )) > "$RUN/waitev.txt"
+wrc=$?
+[ $wrc -eq 0 ] || fail "stream: waitev exit $wrc: $(cat "$RUN/waitev.txt")"
+wait "$APID"; arc=$?
+wait "$RPID"; rrc=$?
+APID= RPID=
+log "aplay exit $arc, arecord exit $rrc; xrun lines: aplay $(grep -Eci 'underrun|overrun|xrun' "$RUN/aplay.err"), arecord $(grep -Eci 'underrun|overrun|xrun' "$RUN/arecord.err")"
+[ $arc -eq 0 ] || fail "stream: aplay exited $arc: $(tail -3 "$RUN/aplay.err" | tr '\n' ' ')"
+[ $rrc -eq 0 ] || fail "stream: arecord exited $rrc: $(tail -3 "$RUN/arecord.err" | tr '\n' ' ')"
+check post-stream
+snapshot after-stream
+
+# ---------------------------------------------------------------- unload
+log "unload: ${UNLOAD[*]}"
+"${UNLOAD[@]}" || fail "unload: '${UNLOAD[*]}' exited $?"
+udevadm settle --timeout=30 || fail "unload: udevadm settle timed out"
+card_present && fail "unload: card $CARD still in /proc/asound/cards"
+[ -e /sys/module/$MOD ] && fail "unload: $MOD still loaded"
+check post-unload
+journalctl -k --after-cursor="$CURSOR" -o short-iso-precise > "$RUN/dmesg.txt" 2>&1
+ls -t "$STATE"/usbmon/usb*.pcap* | head -1 > "$RUN/usbmon-last.txt"
+
+# ---------------------------------------------------------------- analyze
+"$HERE"/analyze --plan "$RUN/tones.json" --rec "$RUN/rec.wav" || { log "analyze could not read the recording"; echo "$RUN"; exit 3; }
+echo "$RUN"

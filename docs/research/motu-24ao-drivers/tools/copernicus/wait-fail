@@ -1,0 +1,8 @@
+#!/usr/bin/perl
+# wait-fail FILE [SECONDS]: follow FILE (from its start, across re-creation) and exit 0 at the first
+# line containing FAIL, printing it; exit 2 when SECONDS (default 10800) pass first. Stops its tail.
+use strict; my ($f, $limit) = (@ARGV, 10800);
+my $pid = open(my $t, "-|", "tail", "-n", "+1", "-F", $f) or die "tail: $!";
+local $SIG{ALRM} = sub { kill 'TERM', $pid; print "no FAIL within ${limit}s\n"; exit 2 };
+alarm $limit;
+while (my $l = <$t>) { if ($l =~ /FAIL/) { kill 'TERM', $pid; print $l; exit 0 } }

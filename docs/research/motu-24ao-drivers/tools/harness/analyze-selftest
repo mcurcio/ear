@@ -1,0 +1,178 @@
+#!/usr/bin/python3 -I
+"""analyze-selftest: prove analyze on synthetic recordings. Touches no audio device.
+
+  analyze-selftest [--dir DIR] [--keep]
+
+Builds a tone plan (6 s steady), then fakes what arecord would capture from the loopback for
+each case below (latency 1537 samples, -120 dBFS noise, S24_3LE), runs analyze on it and checks
+the verdict. Exit 0 when every case passes. DIR defaults to a fresh folder under
+/var/lib/motu-test/runs/selftest-* when that is writable, else under the current directory.
+
+  identity     capture N <- source N                       -> clean, rotation 0
+  rotate8      capture N <- source N+8 mod 24              -> clean, rotation 8
+  remap        identity, then rotation 8 from T            -> 2 segments, change at T
+  scramble     a fixed random permutation                  -> permutation, no rotation
+  dropout      ch 5 zero for 50 ms at T                    -> one silence event, ch 5, ~50 ms
+  click        one-sample +0.4 spike on ch 12 at T         -> one click event, ch 12
+  slip         3 samples lost on every channel at T        -> a phase jump on all 24 channels at T
+  levelstep    ch 3 drops 3 dB from T                      -> one level step on ch 3, -12 -> -15
+"""
+import argparse, json, os, shutil, subprocess, sys, tempfile, time
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import numpy as np
+import motuwav as mw
+
+LAT = 1537
+NCH = 24
+
+
+def build(plan, play, fname, mapping_at, edit=None):
+    """mapping_at(n_play) -> list src per capture channel; edit(rec) mutates the float recording."""
+    fs = plan["rate"]
+    rec = np.zeros((LAT + plan["total_frames"] + fs // 2, NCH))
+    breaks = mapping_at.get("breaks", [])
+    edges = [0] + breaks + [plan["total_frames"]]
+    for a, b in zip(edges[:-1], edges[1:]):
+        m = mapping_at["fn"](a)
+        rec[LAT + a:LAT + b] = play[a:b][:, m]
+    if edit:
+        edit(rec, play)
+    rec += np.random.default_rng(1).normal(0, 1e-6, rec.shape)
+    w = mw.WavWriter(fname, NCH, fs, "s24")
+    w.write(rec)
+    w.close()
+
+
+def run_analyze(plan_path, rec):
+    t = time.time()
+    p = subprocess.run([sys.executable, "-I", os.path.join(HERE, "analyze"), "--plan", plan_path, "--rec", rec],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError("analyze exit %d: %s" % (p.returncode, p.stderr))
+    with open(os.path.splitext(rec)[0] + ".analysis.json") as f:
+        return json.load(f), p.stdout, time.time() - t
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dir")
+    ap.add_argument("--keep", action="store_true", help="keep the synthetic WAVs (about 30 MB each)")
+    a = ap.parse_args()
+    if a.dir:
+        d = a.dir
+        os.makedirs(d, exist_ok=True)
+    else:
+        base = "/var/lib/motu-test/runs" if os.access("/var/lib/motu-test/runs", os.W_OK) else os.getcwd()
+        d = tempfile.mkdtemp(prefix="selftest-", dir=base)
+    t0 = time.time()
+    plan = mw.make_plan(6.0)
+    plan_path = os.path.join(d, "tones.json")
+    with open(plan_path, "w") as f:
+        json.dump(plan, f)
+    fs = plan["rate"]
+    ss = plan["steady_start"]
+    play = mw.render(plan, 0, plan["total_frames"])
+    ident = lambda n: list(range(NCH))
+    rot8 = lambda n: [(c + 8) % NCH for c in range(NCH)]
+    perm = list(np.random.default_rng(7).permutation(NCH))
+    T = {"remap": ss + int(3.1 * fs), "dropout": ss + int(2.0371 * fs), "click": ss + int(4.4003 * fs),
+         "slip": ss + int(3.5017 * fs), "levelstep": ss + int(2.6 * fs)}
+    t_rec = lambda name: (LAT + T[name]) / fs
+
+    def drop(rec, play):
+        rec[LAT + T["dropout"]:LAT + T["dropout"] + int(0.05 * fs), 4] = 0.0
+
+    def click(rec, play):
+        rec[LAT + T["click"], 11] += 0.4
+
+    def slip(rec, play):
+        n = T["slip"]
+        rec[LAT + n:LAT + plan["total_frames"] - 3] = play[n + 3:]
+
+    def lvl(rec, play):
+        rec[LAT + T["levelstep"]:, 2] *= 10 ** (-3 / 20)
+
+    cases = {
+        "identity": ({"fn": ident}, None),
+        "rotate8": ({"fn": rot8}, None),
+        "remap": ({"fn": lambda n: ident(n) if n < T["remap"] else rot8(n), "breaks": [T["remap"]]}, None),
+        "scramble": ({"fn": lambda n: perm}, None),
+        "dropout": ({"fn": ident}, drop),
+        "click": ({"fn": ident}, click),
+        "slip": ({"fn": ident}, slip),
+        "levelstep": ({"fn": ident}, lvl),
+    }
+
+    def evs(r, kind=None):
+        return [e for e in r["steady"]["events"] if kind is None or e["type"] == kind]
+
+    def check(name, r):
+        st, pre = r["steady"], r["preamble"]
+        fails = []
+        def need(cond, what):
+            if not cond:
+                fails.append(what)
+        need(pre["found"] and pre["latency_samples"] == LAT, "latency %s != %d" % (pre.get("latency_samples"), LAT))
+        need(not st["truncated"], "truncated")
+        if name == "identity":
+            need(r["verdict"] == "clean" and st["rotation"] == 0, "not clean identity")
+            need(pre["class"]["kind"] == "identity", "preamble not identity")
+        elif name == "rotate8":
+            need(r["verdict"] == "clean" and st["rotation"] == 8, "rotation %s" % st["rotation"])
+            need(pre["class"].get("rotation") == 8, "preamble rotation %s" % pre["class"])
+        elif name == "remap":
+            segs = st["segments"]
+            need(len(segs) == 2, "%d segments" % len(segs))
+            if len(segs) == 2:
+                need(segs[0]["class"]["kind"] == "identity" and segs[1]["class"].get("rotation") == 8, "segment classes")
+                need(abs(st["mapping_changes"][0]["t_rec_s"] - t_rec("remap")) <= 0.25, "change time %s vs %.3f" % (st["mapping_changes"][0]["t_rec_s"], t_rec("remap")))
+            need(st["rotation"] is None and r["verdict"] == "issues", "should not be a uniform rotation")
+        elif name == "scramble":
+            need(st["segments"][0]["class"]["kind"] == "permutation" and st["rotation"] is None, "class %s" % st["segments"][0]["class"])
+            need(st["mapping_stable"] and not evs(r), "unstable or events")
+        elif name == "dropout":
+            s = evs(r, "silence")
+            need(len(s) == 1 and s[0]["channel"] == 4, "silence events %s" % s)
+            if len(s) == 1:
+                need(abs(s[0]["t_rec_s"] - t_rec("dropout")) <= 0.006, "dropout time %s vs %.4f" % (s[0]["t_rec_s"], t_rec("dropout")))
+                need(40 <= s[0]["duration_ms"] <= 55, "dropout %s ms" % s[0]["duration_ms"])
+            need(len(evs(r)) == 1, "other events %s" % evs(r))
+            need(st["rotation"] == 0, "mapping")
+        elif name == "click":
+            c = evs(r, "click")
+            need(len(c) == 1 and c[0]["channel"] == 11, "clicks %s" % c)
+            if c:
+                need(abs(c[0]["t_rec_s"] - t_rec("click")) <= 0.001, "click time")
+            need(len(evs(r)) == 1, "other events %s" % [e for e in evs(r) if e["type"] != "click"])
+        elif name == "slip":
+            p = evs(r, "phase-jump")
+            need(sorted({e["channel"] for e in p}) == list(range(NCH)), "phase jumps on %s" % sorted({e["channel"] for e in p}))
+            need(all(abs(e["t_rec_s"] - t_rec("slip")) <= 0.011 for e in p), "phase jump times %s" % [e["t_rec_s"] for e in p])
+            need(not evs(r, "silence"), "silence")
+        elif name == "levelstep":
+            l = evs(r, "level-step")
+            need(len(l) == 1 and l[0]["channel"] == 2, "level steps %s" % l)
+            if l:
+                need(abs(l[0]["from_dbfs"] + 12) < 0.1 and abs(l[0]["to_dbfs"] + 15) < 0.1, "levels %s" % l[0])
+                need(abs(l[0]["t_rec_s"] - t_rec("levelstep")) <= 0.25, "step time")
+            need(len(evs(r)) == 1, "other events %s" % evs(r))
+        return fails
+
+    bad = 0
+    for name, (m, edit) in cases.items():
+        wav = os.path.join(d, name + ".wav")
+        build(plan, play, wav, m, edit)
+        r, text, secs = run_analyze(plan_path, wav)
+        fails = check(name, r)
+        bad += bool(fails)
+        print("=== %-10s %s (analyze %.1f s)" % (name, "PASS" if not fails else "FAIL: " + "; ".join(fails), secs))
+        print("\n".join("    " + l for l in text.strip().splitlines()[1:]))
+        if not a.keep:
+            os.remove(wav)
+    print("selftest: %d of %d cases passed in %.1f s (%s)" % (len(cases) - bad, len(cases), time.time() - t0, d))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

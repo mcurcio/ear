@@ -1,5 +1,18 @@
 # MOTU 24Ao: MOTU's Mac driver compared with snd-usb-motu
 
+## Outcome (2026-11-02)
+
+Hardware tests on 2026-11-02 settled the two Linux problems:
+- **The 8-channel shift:** the stock `snd-usb-audio` with
+  `quirk_flags=07fd:0005:!validate_rates|skip_iface_setup|playback_first` mapped channel N to N on
+  49 of 49 starts. Without `playback_first`, 0 of 12 starts were clean.
+- **The freezes:** keep the MOTU's Ethernet unplugged. Every freeze had it connected.
+
+`snd-usb-motu` is not needed. Observations are in `hardware/observations-2026-11-02.md` and
+inferences in `2-inferences/usb-tests-2026-11-02.md`. The agents' reports are in
+`sources/2026-11-02/`, and the test tools are in `tools/`. The rest of this README covers the
+2026-11-01 driver comparison.
+
 ## What this is
 
 Notes from a reverse-engineering run on 2026-11-01. The aim: compare MOTU's Mac driver, which works with the
@@ -83,6 +96,10 @@ snd-usb-audio, not snd-usb-motu (verify-linux G1, verify-mac G1 and G2).
 | `2-inferences/hardware.md` | INFERRED from those descriptors (HI1-HI6) |
 | `3-comparison/gaps.md` | COMPARISON: G1-G8 with both verdicts verbatim and a status each; matches; unresolved |
 | `sources/` | The run's raw output, unedited |
+| `hardware/observations-2026-11-02.md` | OBSERVED, 2026-11-02: every freeze and safe run, the loopback mappings per host, driver and quirk flags, and the USB trace facts |
+| `2-inferences/usb-tests-2026-11-02.md` | INFERRED from those tests (UI1-UI7): Ethernet and the freezes, why the shift happens, why `playback_first` fixes it, the start-up silence |
+| `sources/2026-11-02/` | The agents' reports from those tests (baselines, trace decoding, kernel-source reading), the 30-start repeat log, and the settings diff across the factory reset |
+| `tools/` | The test tools: `harness/` (tone file, analyzer and self-test, the guarded `run-step`), `euclid/` (liveness check, heartbeat, kernel-log watcher), `copernicus/` (CoreAudio watcher, heartbeat over MOTU's web server, Mac runner, failure waiter, network poller), and the usbmon decoders |
 
 Gap status (`3-comparison/gaps.md`): G1 disputed (verify-linux refuted it); G2 refuted (both); G3-G8 survived.
 
