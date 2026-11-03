@@ -1,0 +1,18 @@
+#!/bin/sh
+# Heartbeat for the MOTU 24Ao on copernicus (owner, 2026-11-02: "The heartbeat idea makes sense").
+# Every INTERVAL seconds, one read-only GET of the device's API version through MOTU's own local
+# web server (it goes to the device over USB, as MOTU's web app does). Logs each answer with a UTC
+# time to heartbeat.log; the FIRST failure writes DEAD and exits. Never clears DEAD.
+DIR=${1:-$HOME/motu-test}; INTERVAL=${2:-30}; UID_=${3:-0001f2fffe00f732}
+URL="http://localhost:1280/$UID_/apiversion"
+[ -e "$DIR/DEAD" ] && { echo "DEAD already present"; exit 1; }
+while :; do
+  t=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  out=$(curl -s -m 25 -w ' http=%{http_code} %{time_total}s' "$URL")
+  case "$out" in
+    *http=200*) echo "$t ok $out" >> "$DIR/heartbeat.log" ;;
+    *) echo "$t FAIL $out" >> "$DIR/heartbeat.log"
+       echo "$t heartbeat failed: $out" > "$DIR/DEAD"; exit 1 ;;
+  esac
+  sleep "$INTERVAL"
+done

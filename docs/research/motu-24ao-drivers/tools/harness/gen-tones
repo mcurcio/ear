@@ -1,0 +1,41 @@
+#!/usr/bin/python3 -I
+"""gen-tones: write the 24-channel loopback tone file and its plan. Touches no audio device.
+
+  gen-tones --steady SECONDS --out DIR [--formats s24,f32]
+
+Writes DIR/tones.json (the plan: frequencies, level, layout), DIR/tones-s24.wav (S24_3LE, what
+aplay plays) and DIR/tones-f32.wav (32-bit float, the same signal). Channel k (0-based) carries
+one sine at freqs_hz[k], -12 dBFS peak. Before the steady section each channel plays its tone
+alone for 100 ms in turn (the identification preamble), which also lets analyze measure the
+loopback latency. Prints the plan's path.
+"""
+import argparse, json, os, sys
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import motuwav as mw
+
+ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("--steady", type=float, required=True, help="seconds of all-channel tones")
+ap.add_argument("--out", required=True, help="directory to write into (made if missing)")
+ap.add_argument("--formats", default="s24,f32", help="comma list of s24, f32 (default both)")
+a = ap.parse_args()
+kinds = [k for k in a.formats.split(",") if k]
+if not kinds or any(k not in ("s24", "f32") for k in kinds):
+    sys.exit("gen-tones: --formats takes s24 and/or f32")
+if a.steady <= 0:
+    sys.exit("gen-tones: --steady must be above 0")
+
+os.makedirs(a.out, exist_ok=True)
+plan = mw.make_plan(a.steady)
+writers = {k: mw.WavWriter(os.path.join(a.out, "tones-%s.wav" % k), plan["channels"], plan["rate"], k) for k in kinds}
+CHUNK = plan["rate"]  # one second at a time: memory stays small for long runs
+for start in range(0, plan["total_frames"], CHUNK):
+    x = mw.render(plan, start, min(start + CHUNK, plan["total_frames"]))
+    for w in writers.values():
+        w.write(x)
+for w in writers.values():
+    w.close()
+plan["files"] = {k: "tones-%s.wav" % k for k in kinds}
+p = os.path.join(a.out, "tones.json")
+with open(p, "w") as f:
+    json.dump(plan, f, indent=1)
+print(p)

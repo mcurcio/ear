@@ -1,0 +1,298 @@
+before: datastore-before-reset-20261102T132259Z.json (5384 keys); after: datastore-after-reset-20261102T133926Z.json (5568 keys); 361 keys differ
+avb/0001f2fffe00f732/cfg/0/clock_sources/10/object_name | null -> "AVB Input Stream 5"
+avb/0001f2fffe00f732/cfg/0/clock_sources/10/stream_id | null -> 4
+avb/0001f2fffe00f732/cfg/0/clock_sources/10/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/11/object_name | null -> "AVB Input Stream 6"
+avb/0001f2fffe00f732/cfg/0/clock_sources/11/stream_id | null -> 5
+avb/0001f2fffe00f732/cfg/0/clock_sources/11/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/12/object_name | null -> "AVB Input Stream 7"
+avb/0001f2fffe00f732/cfg/0/clock_sources/12/stream_id | null -> 6
+avb/0001f2fffe00f732/cfg/0/clock_sources/12/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/13/object_name | null -> "AVB Input Stream 8"
+avb/0001f2fffe00f732/cfg/0/clock_sources/13/stream_id | null -> 7
+avb/0001f2fffe00f732/cfg/0/clock_sources/13/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/6/object_name | null -> "AVB Input Stream 1"
+avb/0001f2fffe00f732/cfg/0/clock_sources/6/stream_id | null -> 0
+avb/0001f2fffe00f732/cfg/0/clock_sources/6/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/7/object_name | null -> "AVB Input Stream 2"
+avb/0001f2fffe00f732/cfg/0/clock_sources/7/stream_id | null -> 1
+avb/0001f2fffe00f732/cfg/0/clock_sources/7/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/8/object_name | null -> "AVB Input Stream 3"
+avb/0001f2fffe00f732/cfg/0/clock_sources/8/stream_id | null -> 2
+avb/0001f2fffe00f732/cfg/0/clock_sources/8/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/9/object_name | null -> "AVB Input Stream 4"
+avb/0001f2fffe00f732/cfg/0/clock_sources/9/stream_id | null -> 3
+avb/0001f2fffe00f732/cfg/0/clock_sources/9/type | null -> "stream"
+avb/0001f2fffe00f732/cfg/0/clock_sources/num | 6 -> 14
+avb/0001f2fffe00f732/cfg/0/current_sampling_rate | 192000 -> 48000
+avb/0001f2fffe00f732/cfg/0/input_streams/0/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/0/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/0/object_name | null -> "Input Stream 1"
+avb/0001f2fffe00f732/cfg/0/input_streams/0/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/input_streams/0/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/1/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/1/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/1/object_name | null -> "Input Stream 2"
+avb/0001f2fffe00f732/cfg/0/input_streams/1/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/input_streams/1/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/2/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/2/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/2/object_name | null -> "Input Stream 3"
+avb/0001f2fffe00f732/cfg/0/input_streams/2/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/input_streams/2/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/3/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/3/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/3/object_name | null -> "Input Stream 4"
+avb/0001f2fffe00f732/cfg/0/input_streams/3/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/input_streams/3/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/4/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/4/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/4/object_name | null -> "Input Stream 5"
+avb/0001f2fffe00f732/cfg/0/input_streams/4/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/input_streams/4/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/5/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/5/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/5/object_name | null -> "Input Stream 6"
+avb/0001f2fffe00f732/cfg/0/input_streams/5/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/input_streams/5/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/6/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/6/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/6/object_name | null -> "Input Stream 7"
+avb/0001f2fffe00f732/cfg/0/input_streams/6/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/input_streams/6/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/7/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/input_streams/7/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/7/object_name | null -> "Input Stream 8"
+avb/0001f2fffe00f732/cfg/0/input_streams/7/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/input_streams/7/talker | null -> "0000000000000000:0"
+avb/0001f2fffe00f732/cfg/0/input_streams/num | 0 -> 8
+avb/0001f2fffe00f732/cfg/0/input_streams/requested_num | 0 -> 8
+avb/0001f2fffe00f732/cfg/0/output_streams/0/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/output_streams/0/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/output_streams/0/object_name | null -> "Output Stream 1"
+avb/0001f2fffe00f732/cfg/0/output_streams/0/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/output_streams/1/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/output_streams/1/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/output_streams/1/object_name | null -> "Output Stream 2"
+avb/0001f2fffe00f732/cfg/0/output_streams/1/sample_rates | null -> "44100:48000:88200:96000:176400:192000"
+avb/0001f2fffe00f732/cfg/0/output_streams/2/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/output_streams/2/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/output_streams/2/object_name | null -> "Output Stream 3"
+avb/0001f2fffe00f732/cfg/0/output_streams/2/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/output_streams/3/connection_status | null -> "not_connected"
+avb/0001f2fffe00f732/cfg/0/output_streams/3/num_ch | null -> 8
+avb/0001f2fffe00f732/cfg/0/output_streams/3/object_name | null -> "Output Stream 4"
+avb/0001f2fffe00f732/cfg/0/output_streams/3/sample_rates | null -> "44100:48000:88200:96000"
+avb/0001f2fffe00f732/cfg/0/output_streams/num | 0 -> 4
+avb/0001f2fffe00f732/cfg/0/output_streams/requested_num | 0 -> 4
+ext/configuredRate | 192000 -> 48000
+ext/enableHostVolControls | 0 -> 1
+ext/ibank/0/calcCh | 0 -> 8
+ext/ibank/0/numCh | 0 -> 8
+ext/ibank/0/userCh | 0 -> 8
+ext/ibank/1/calcCh | 0 -> 8
+ext/ibank/1/numCh | 0 -> 8
+ext/ibank/1/userCh | 0 -> 8
+ext/ibank/10/calcCh | 0 -> 8
+ext/ibank/10/ch/0/defaultName | "AVB Stream 7 1" -> "AVB Stream 6 0:1 0"
+ext/ibank/10/ch/1/defaultName | "AVB Stream 7 2" -> "AVB Stream 6 1:1 1"
+ext/ibank/10/ch/2/defaultName | "AVB Stream 7 3" -> "AVB Stream 6 2:1 2"
+ext/ibank/10/ch/3/defaultName | "AVB Stream 7 4" -> "AVB Stream 6 3:1 3"
+ext/ibank/10/ch/4/defaultName | "AVB Stream 7 5" -> "AVB Stream 6 4:1 4"
+ext/ibank/10/ch/5/defaultName | "AVB Stream 7 6" -> "AVB Stream 6 5:1 5"
+ext/ibank/10/ch/6/defaultName | "AVB Stream 7 7" -> "AVB Stream 6 6:1 6"
+ext/ibank/10/ch/7/defaultName | "AVB Stream 7 8" -> "AVB Stream 6 7:1 7"
+ext/ibank/10/numCh | 0 -> 8
+ext/ibank/10/userCh | 0 -> 8
+ext/ibank/11/calcCh | 0 -> 8
+ext/ibank/11/ch/0/defaultName | "AVB Stream 8 1" -> "AVB Stream 7 0:1 0"
+ext/ibank/11/ch/1/defaultName | "AVB Stream 8 2" -> "AVB Stream 7 1:1 1"
+ext/ibank/11/ch/2/defaultName | "AVB Stream 8 3" -> "AVB Stream 7 2:1 2"
+ext/ibank/11/ch/3/defaultName | "AVB Stream 8 4" -> "AVB Stream 7 3:1 3"
+ext/ibank/11/ch/4/defaultName | "AVB Stream 8 5" -> "AVB Stream 7 4:1 4"
+ext/ibank/11/ch/5/defaultName | "AVB Stream 8 6" -> "AVB Stream 7 5:1 5"
+ext/ibank/11/ch/6/defaultName | "AVB Stream 8 7" -> "AVB Stream 7 6:1 6"
+ext/ibank/11/ch/7/defaultName | "AVB Stream 8 8" -> "AVB Stream 7 7:1 7"
+ext/ibank/11/numCh | 0 -> 8
+ext/ibank/11/userCh | 0 -> 8
+ext/ibank/12/calcCh | 16 -> 24
+ext/ibank/12/numCh | 16 -> 48
+ext/ibank/13/calcCh | 0 -> 2
+ext/ibank/13/numCh | 0 -> 2
+ext/ibank/14/calcCh | 4 -> 6
+ext/ibank/14/numCh | 4 -> 6
+ext/ibank/16/calcCh | 6 -> 14
+ext/ibank/16/numCh | 6 -> 14
+ext/ibank/2/calcCh | 0 -> 8
+ext/ibank/2/numCh | 0 -> 8
+ext/ibank/2/userCh | 0 -> 8
+ext/ibank/3/ch/24/connection | 0 -> 1
+ext/ibank/3/ch/25/connection | 0 -> 1
+ext/ibank/3/ch/26/connection | 0 -> 1
+ext/ibank/3/ch/27/connection | 0 -> 1
+ext/ibank/3/ch/28/connection | 0 -> 1
+ext/ibank/3/ch/29/connection | 0 -> 1
+ext/ibank/3/ch/30/connection | 0 -> 1
+ext/ibank/3/ch/31/connection | 0 -> 1
+ext/ibank/3/ch/32/connection | 0 -> 1
+ext/ibank/3/ch/33/connection | 0 -> 1
+ext/ibank/3/ch/34/connection | 0 -> 1
+ext/ibank/3/ch/35/connection | 0 -> 1
+ext/ibank/3/ch/36/connection | 0 -> 1
+ext/ibank/3/ch/37/connection | 0 -> 1
+ext/ibank/3/ch/38/connection | 0 -> 1
+ext/ibank/3/ch/39/connection | 0 -> 1
+ext/ibank/3/ch/40/connection | 0 -> 1
+ext/ibank/3/ch/41/connection | 0 -> 1
+ext/ibank/3/ch/42/connection | 0 -> 1
+ext/ibank/3/ch/43/connection | 0 -> 1
+ext/ibank/3/ch/44/connection | 0 -> 1
+ext/ibank/3/ch/45/connection | 0 -> 1
+ext/ibank/3/ch/46/connection | 0 -> 1
+ext/ibank/3/ch/47/connection | 0 -> 1
+ext/ibank/3/ch/48/connection | 0 -> 1
+ext/ibank/3/ch/49/connection | 0 -> 1
+ext/ibank/3/ch/50/connection | 0 -> 1
+ext/ibank/3/ch/51/connection | 0 -> 1
+ext/ibank/3/ch/52/connection | 0 -> 1
+ext/ibank/3/ch/53/connection | 0 -> 1
+ext/ibank/3/ch/54/connection | 0 -> 1
+ext/ibank/3/ch/55/connection | 0 -> 1
+ext/ibank/3/ch/56/connection | 0 -> 1
+ext/ibank/3/ch/57/connection | 0 -> 1
+ext/ibank/3/ch/58/connection | 0 -> 1
+ext/ibank/3/ch/59/connection | 0 -> 1
+ext/ibank/3/ch/60/connection | 0 -> 1
+ext/ibank/3/ch/61/connection | 0 -> 1
+ext/ibank/3/ch/62/connection | 0 -> 1
+ext/ibank/3/ch/63/connection | 0 -> 1
+ext/ibank/3/numCh | 24 -> 32
+ext/ibank/4/calcCh | 0 -> 8
+ext/ibank/4/ch/0/defaultName | "AVB Stream 1 1" -> "AVB Stream 0 0:1 0"
+ext/ibank/4/ch/1/defaultName | "AVB Stream 1 2" -> "AVB Stream 0 1:1 1"
+ext/ibank/4/ch/2/defaultName | "AVB Stream 1 3" -> "AVB Stream 0 2:1 2"
+ext/ibank/4/ch/3/defaultName | "AVB Stream 1 4" -> "AVB Stream 0 3:1 3"
+ext/ibank/4/ch/4/defaultName | "AVB Stream 1 5" -> "AVB Stream 0 4:1 4"
+ext/ibank/4/ch/5/defaultName | "AVB Stream 1 6" -> "AVB Stream 0 5:1 5"
+ext/ibank/4/ch/6/defaultName | "AVB Stream 1 7" -> "AVB Stream 0 6:1 6"
+ext/ibank/4/ch/7/defaultName | "AVB Stream 1 8" -> "AVB Stream 0 7:1 7"
+ext/ibank/4/userCh | 0 -> 8
+ext/ibank/5/calcCh | 0 -> 8
+ext/ibank/5/ch/0/defaultName | "AVB Stream 2 1" -> "AVB Stream 1 0:1 0"
+ext/ibank/5/ch/1/defaultName | "AVB Stream 2 2" -> "AVB Stream 1 1:1 1"
+ext/ibank/5/ch/2/defaultName | "AVB Stream 2 3" -> "AVB Stream 1 2:1 2"
+ext/ibank/5/ch/3/defaultName | "AVB Stream 2 4" -> "AVB Stream 1 3:1 3"
+ext/ibank/5/ch/4/defaultName | "AVB Stream 2 5" -> "AVB Stream 1 4:1 4"
+ext/ibank/5/ch/5/defaultName | "AVB Stream 2 6" -> "AVB Stream 1 5:1 5"
+ext/ibank/5/ch/6/defaultName | "AVB Stream 2 7" -> "AVB Stream 1 6:1 6"
+ext/ibank/5/ch/7/defaultName | "AVB Stream 2 8" -> "AVB Stream 1 7:1 7"
+ext/ibank/5/userCh | 0 -> 8
+ext/ibank/6/calcCh | 0 -> 8
+ext/ibank/6/ch/0/defaultName | "AVB Stream 3 1" -> "AVB Stream 2 0:1 0"
+ext/ibank/6/ch/1/defaultName | "AVB Stream 3 2" -> "AVB Stream 2 1:1 1"
+ext/ibank/6/ch/2/defaultName | "AVB Stream 3 3" -> "AVB Stream 2 2:1 2"
+ext/ibank/6/ch/3/defaultName | "AVB Stream 3 4" -> "AVB Stream 2 3:1 3"
+ext/ibank/6/ch/4/defaultName | "AVB Stream 3 5" -> "AVB Stream 2 4:1 4"
+ext/ibank/6/ch/5/defaultName | "AVB Stream 3 6" -> "AVB Stream 2 5:1 5"
+ext/ibank/6/ch/6/defaultName | "AVB Stream 3 7" -> "AVB Stream 2 6:1 6"
+ext/ibank/6/ch/7/defaultName | "AVB Stream 3 8" -> "AVB Stream 2 7:1 7"
+ext/ibank/6/userCh | 0 -> 8
+ext/ibank/7/calcCh | 0 -> 8
+ext/ibank/7/ch/0/defaultName | "AVB Stream 4 1" -> "AVB Stream 3 0:1 0"
+ext/ibank/7/ch/1/defaultName | "AVB Stream 4 2" -> "AVB Stream 3 1:1 1"
+ext/ibank/7/ch/2/defaultName | "AVB Stream 4 3" -> "AVB Stream 3 2:1 2"
+ext/ibank/7/ch/3/defaultName | "AVB Stream 4 4" -> "AVB Stream 3 3:1 3"
+ext/ibank/7/ch/4/defaultName | "AVB Stream 4 5" -> "AVB Stream 3 4:1 4"
+ext/ibank/7/ch/5/defaultName | "AVB Stream 4 6" -> "AVB Stream 3 5:1 5"
+ext/ibank/7/ch/6/defaultName | "AVB Stream 4 7" -> "AVB Stream 3 6:1 6"
+ext/ibank/7/ch/7/defaultName | "AVB Stream 4 8" -> "AVB Stream 3 7:1 7"
+ext/ibank/7/userCh | 0 -> 8
+ext/ibank/8/calcCh | 0 -> 8
+ext/ibank/8/ch/0/defaultName | "AVB Stream 5 1" -> "AVB Stream 4 0:1 0"
+ext/ibank/8/ch/1/defaultName | "AVB Stream 5 2" -> "AVB Stream 4 1:1 1"
+ext/ibank/8/ch/2/defaultName | "AVB Stream 5 3" -> "AVB Stream 4 2:1 2"
+ext/ibank/8/ch/3/defaultName | "AVB Stream 5 4" -> "AVB Stream 4 3:1 3"
+ext/ibank/8/ch/4/defaultName | "AVB Stream 5 5" -> "AVB Stream 4 4:1 4"
+ext/ibank/8/ch/5/defaultName | "AVB Stream 5 6" -> "AVB Stream 4 5:1 5"
+ext/ibank/8/ch/6/defaultName | "AVB Stream 5 7" -> "AVB Stream 4 6:1 6"
+ext/ibank/8/ch/7/defaultName | "AVB Stream 5 8" -> "AVB Stream 4 7:1 7"
+ext/ibank/8/numCh | 0 -> 8
+ext/ibank/8/userCh | 0 -> 8
+ext/ibank/9/calcCh | 0 -> 8
+ext/ibank/9/ch/0/defaultName | "AVB Stream 6 1" -> "AVB Stream 5 0:1 0"
+ext/ibank/9/ch/1/defaultName | "AVB Stream 6 2" -> "AVB Stream 5 1:1 1"
+ext/ibank/9/ch/2/defaultName | "AVB Stream 6 3" -> "AVB Stream 5 2:1 2"
+ext/ibank/9/ch/3/defaultName | "AVB Stream 6 4" -> "AVB Stream 5 3:1 3"
+ext/ibank/9/ch/4/defaultName | "AVB Stream 6 5" -> "AVB Stream 5 4:1 4"
+ext/ibank/9/ch/5/defaultName | "AVB Stream 6 6" -> "AVB Stream 5 5:1 5"
+ext/ibank/9/ch/6/defaultName | "AVB Stream 6 7" -> "AVB Stream 5 6:1 6"
+ext/ibank/9/ch/7/defaultName | "AVB Stream 6 8" -> "AVB Stream 5 7:1 7"
+ext/ibank/9/numCh | 0 -> 8
+ext/ibank/9/userCh | 0 -> 8
+ext/need_quick_setup | 0 -> 1
+ext/obank/1/calcCh | 0 -> 8
+ext/obank/1/numCh | 0 -> 8
+ext/obank/2/calcCh | 0 -> 8
+ext/obank/2/numCh | 0 -> 8
+ext/obank/3/calcCh | 0 -> 8
+ext/obank/3/numCh | 0 -> 8
+ext/obank/4/ch/24/connection | null -> 1
+ext/obank/4/ch/25/connection | null -> 1
+ext/obank/4/ch/26/connection | null -> 1
+ext/obank/4/ch/27/connection | null -> 1
+ext/obank/4/ch/28/connection | null -> 1
+ext/obank/4/ch/29/connection | null -> 1
+ext/obank/4/ch/30/connection | null -> 1
+ext/obank/4/ch/31/connection | null -> 1
+ext/obank/4/ch/32/connection | null -> 1
+ext/obank/4/ch/33/connection | null -> 1
+ext/obank/4/ch/34/connection | null -> 1
+ext/obank/4/ch/35/connection | null -> 1
+ext/obank/4/ch/36/connection | null -> 1
+ext/obank/4/ch/37/connection | null -> 1
+ext/obank/4/ch/38/connection | null -> 1
+ext/obank/4/ch/39/connection | null -> 1
+ext/obank/4/ch/40/connection | null -> 1
+ext/obank/4/ch/41/connection | null -> 1
+ext/obank/4/ch/42/connection | null -> 1
+ext/obank/4/ch/43/connection | null -> 1
+ext/obank/4/ch/44/connection | null -> 1
+ext/obank/4/ch/45/connection | null -> 1
+ext/obank/4/ch/46/connection | null -> 1
+ext/obank/4/ch/47/connection | null -> 1
+ext/obank/4/ch/48/connection | null -> 1
+ext/obank/4/ch/49/connection | null -> 1
+ext/obank/4/ch/50/connection | null -> 1
+ext/obank/4/ch/51/connection | null -> 1
+ext/obank/4/ch/52/connection | null -> 1
+ext/obank/4/ch/53/connection | null -> 1
+ext/obank/4/ch/54/connection | null -> 1
+ext/obank/4/ch/55/connection | null -> 1
+ext/obank/4/ch/56/connection | null -> 1
+ext/obank/4/ch/57/connection | null -> 1
+ext/obank/4/ch/58/connection | null -> 1
+ext/obank/4/ch/59/connection | null -> 1
+ext/obank/4/ch/60/connection | null -> 1
+ext/obank/4/ch/61/connection | null -> 1
+ext/obank/4/ch/62/connection | null -> 1
+ext/obank/4/ch/63/connection | null -> 1
+ext/obank/4/numCh | 24 -> 32
+ext/obank/5/calcCh | 0 -> 8
+ext/obank/5/userCh | 0 -> 8
+ext/obank/6/calcCh | 0 -> 8
+ext/obank/6/userCh | 0 -> 8
+ext/obank/7/calcCh | 0 -> 8
+ext/obank/7/numCh | 0 -> 8
+ext/obank/7/userCh | 0 -> 8
+ext/obank/8/calcCh | 0 -> 8
+ext/obank/8/numCh | 0 -> 8
+ext/obank/8/userCh | 0 -> 8
+ext/obank/9/calcCh | 16 -> 24
+ext/obank/9/numCh | 16 -> 48
+mix/ctrls/comp/avail | 0 -> 1
+mix/ctrls/dsp/usage | 100 -> 13
+mix/ctrls/eq/avail | 0 -> 1
+mix/ctrls/gate/avail | 0 -> 1
+mix/ctrls/hpf/avail | 0 -> 1
+mix/ctrls/leveler/avail | 0 -> 1
+mix/ctrls/reverb/avail | 0 -> 1

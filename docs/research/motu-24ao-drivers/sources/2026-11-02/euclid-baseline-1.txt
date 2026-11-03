@@ -1,0 +1,133 @@
+
+
+===== agent 1 =====
+
+HARNESS READY. Nothing touched the MOTU: no module load, no PCM open, no motu-alive run. motu-watch is still active and there is no DEAD file.
+
+BLOCKER, read before any run: motu-watch will write DEAD the moment either driver loads, even if the device is fine. I tested its PAT (copied from /usr/local/bin/motu-watch) against the kernel lines each load is expected to print:
+- `usbcore: registered new interface driver snd-usb-motu` TRIPS. Its pattern alternative `snd-usb-motu` matches the line the kernel prints for any insmod, so `run-step motu` will fail its post-load check every time.
+- `usbcore: deregistering interface driver snd-usb-motu` (rmmod) TRIPS.
+- `usb 5-2: clock source 1 is not valid, cannot use` TRIPS. The owner saw this line at every stock probe, so `stock` and `stock-quirk` will trip at load too.
+- Lines that do NOT trip, so real failures go unseen: the motu driver's own errors (`usb 5-2: rec urb error`, `Failed to set interrupt interval: -110`) and any usb-audio line with an `N:M:` prefix (`usb 5-2: 1:1: cannot set freq ...`, `usb_set_interface failed (-110)`). The pattern's `motu.*(error|fail)` never matches because the driver logs through the usb device (`usb 5-2:`), not under its own name.
+
+run-step obeys the rule: DEAD means stop, leave the driver loaded, print the evidence. So no run can finish until someone fixes motu-watch's pattern, which I was told not to change. That needs a decision from the owner.
+
+Other problems with the plan:
+1. In motu-watch, `journalctl | while` with `exit` inside the loop only ends the subshell. The unit can stay "active" after it trips until the next kernel line arrives. run-step treats the DEAD file as the authority and also checks the unit is active.
+2. The brief says snd-usb-motu claims interfaces 1 and 2, but its probe makes the card on interface 0 (`if (ifnum == 0) snd_card_new(..., "motuusb", ...)`). The card id `motuusb` and PCM name "MOTU Pro Audio" (device 0) are confirmed in motu-usb-audio.c. Its hardware is fixed: S24_3LE, 24 ch, 48000 only, 2 to 16 periods, at most 2048 frames per period.
+3. With snd-usb-motu, starting playback while capture runs calls `usb_set_interface` on both interfaces (lines 601-602). The owner saw firmware freezes around stream starts, so this is the riskiest moment. run-step starts arecord first, as the brief asks. Starting playback first does not avoid it either.
+4. The `D24Ao` card id for the stock driver comes from how ALSA names a product called "24Ao"; I could not check it without loading the driver. If the name differs, the run fails at "card not present" with the driver loaded.
+5. `quirk_flags` on this kernel is `array of quirkp`, which is consistent with the `VID:PID:flag|!flag` string form. The flag names `validate_rates` and `skip_iface_setup` are taken from the Talos setting, not checked against kernel 7.0's source.
+6. The snd-usb-motu README needs the device locked at 48 kHz before the driver binds. The harness cannot check that.
+7. Waiting for capture to reach RUNNING before starting aplay is a 10 ms poll of /proc/asound/<card>/pcm0c/sub0/status, because /proc has no event for it. The 5 s limit only fails the step.
+8. After a DEAD or a deadline mid-stream, run-step does not kill aplay or arecord, because killing them closes the PCM. It prints their PIDs; a person decides.
+9. A recording longer than about 20 min passes arecord's 4 GiB WAV limit, so SECONDS is capped at 1100. analyze runs at about 0.3 × real time on euclid (a 600 s run takes about 3 min).
+
+Selftest output on euclid (`~/motu/harness/analyze-selftest`, exit 0). Every synthetic recording has 1537 samples of latency, and every case measured exactly 1537:
+```
+=== identity   PASS  verdict CLEAN, rotation 0, no events
+=== rotate8    PASS  "uniform rotation +8 (capture N carries source N+8 mod 24)", preamble agrees
+=== remap      PASS  2 segments: identity 3.442 s, then rotation +8 from 6.442 s (change at play 6.53 s, 250 ms windows); discontinuity on 24 ch at 6.442 s
+=== scramble   PASS  "permutation (not a uniform rotation)", rotation null
+=== dropout    PASS  silence=1: 5.4720 s ch 5, 45.0 ms (true 50 ms at 5.4723 s)
+=== click      PASS  click=1: 7.8323 s ch 12, 0.02 ms, peak 0.398
+=== slip       PASS  phase-jump on all 24 ch at 6.932 s, plus 24 discontinuities (3 samples lost)
+=== levelstep  PASS  level-step=1: ch 3 -12.0 -> -15.0 dBFS
+selftest: 8 of 8 cases passed in 44.5 s
+```
+Tone frequencies (Hz, channels 1-24): 300, 408, 516, 624, 720, 840, 948, 1056, 1152, 1272, 1476, 1752, 2016, 2424, 2820, 3328, 3924, 4584, 5376, 6276, 7416, 8676, 10224, 12024. They sit on the 4 Hz grid. No tone is within 24 Hz of another tone's harmonic, and no m·fa is within 24 Hz of n·fb for m, n ≤ 6. The level checked out at -12 dBFS (sox: max amplitude 0.251189).
+
+Other checks:
+- **aplay/arecord options:** checked against alsa-utils 1.2.15.2 on euclid (`--help`; the arecord man page is a link to aplay.1). `-D -c -r -f S24_3LE -t wav -s -v` all exist.
+- **waitev:** each exit tested: process exit 0, DEAD appears 10, watcher exits 11, deadline 12.
+- **Dry runs:** `run-step motu 5 --dry-run` and `stock-quirk 5 --dry-run` exit 0.
+- **Tone files:** sox reads both WAVs as 24 ch, 48000 Hz.
+
+How to run (on euclid, in ~/motu/harness):
+- `./gen-tones --steady SECONDS --out DIR [--formats s24,f32]` writes tones.json, tones-s24.wav and tones-f32.wav.
+- `./analyze --plan tones.json --rec rec.wav` writes rec.analysis.json and rec.summary.txt and prints the summary. It exits 0 if the analysis ran and 2 if the recording can't be read.
+- `./analyze-selftest [--keep]` exits 0 when all 8 cases pass.
+- `./run-step motu|stock-quirk|stock SECONDS [--dry-run]` writes to /var/lib/motu-test/runs/<UTC timestamp>-<driver>-<N>s/ and prints that directory last. Exit codes: 0 done, 1 first failed check (evidence printed, a FAILED file written, driver left as it is), 2 usage, 3 analyze failed.
+- `waitev` is a helper run-step uses.
+
+NOT RUN: any real-device step, `run-step` without `--dry-run`, the evidence path that prints after a failed check, motu-alive.
+
+Files (source of truth on the Mac, copied to euclid ~/motu/harness/ with scp):
+- /Volumes/Dock/motu-mac-driver/euclid/harness/motuwav.py
+- /Volumes/Dock/motu-mac-driver/euclid/harness/gen-tones
+- /Volumes/Dock/motu-mac-driver/euclid/harness/analyze
+- /Volumes/Dock/motu-mac-driver/euclid/harness/analyze-selftest
+- /Volumes/Dock/motu-mac-driver/euclid/harness/run-step
+- /Volumes/Dock/motu-mac-driver/euclid/harness/waitev
+
+Selftest results on euclid: /var/lib/motu-test/runs/selftest-3b592f_5/
+
+===== agent 2 =====
+
+{
+ "summary": "I stopped before any driver load or PCM open, because the device was already dead. No audio run took place.\n\n1. analyze-selftest on euclid passed 8 of 8 (exit 0, 44.7 s). Results are in /var/lib/motu-test/runs/selftest-idx0wi7i and were copied to /Volumes/Dock/motu-mac-driver/euclid/results/selftest-idx0wi7i.\n2. Before the first device step I checked: motu-watch active, no DEAD file, no snd_usb_audio or snd-usb-motu loaded, no interface of 5-2 bound to a driver. The MOTU had enumerated cleanly at 05:16:25 UTC, which is the owner's power-on. I then ran `sudo motu-alive` once, at 06:00:07 UTC, and it printed `DEAD control request at 5-2 /dev/bus/usb/005/006: [Errno 110] Connection timed out` (exit 1). The kernel logged `usb 5-2: usbfs: USBDEVFS_CONTROL failed cmd motu-alive rqt 128 rq 0 len 2 ret -110`, meaning the device did not answer GET_STATUS on endpoint 0. Under safety rule 1 I touched nothing more: no driver load, no retry, no reset.\n\nThe device stopped answering about 44 minutes after power-on with no driver bound and nothing having used it. In sysfs, power/control=on and runtime_status=active (runtime_suspended_time=0), so the kernel did not autosuspend it. bConfigurationValue=1, speed 480. I cannot tell whether it went silent while idle or whether the first control request after power-on fails on its own (compare the ENXIO on first open after power-on that the owner saw). Finding that out needs a fresh power-on followed by one motu-alive soon after.\n\nSeparate findings:\n(a) motu-watch did not trip. Its pattern does not cover `usbfs: USBDEVFS_CONTROL failed ... ret -110`, so a dead device can go unseen.\n(b) The harness agent's blocker is real. I confirmed motu-watch's PAT on euclid: it contains `snd-usb-motu` and `clock source .* (not valid|invalid)`, so any snd-usb-motu insmod or stock probe writes a false DEAD. Meanwhile the motu driver's real errors (`usb 5-2: rec urb error`, `usb 5-2: 1:1: cannot set freq`) do not match. Every run-step would have stopped at its post-load check with the driver left loaded. The pattern needs the owner's decision before any device run.\n(c) The usbmon ring holds only usb.pcap00, 4096 bytes, last written 05:16:33. tcpdump is buffering, so the failed control request is probably not on disk yet. I left the unit running unchanged.\n\nThe owner needs to power-cycle the MOTU.",
+ "device_alive_at_end": false,
+ "died": true,
+ "death_evidence": "Stage: the pre-flight liveness check before run-step motu 5 s (sequence step 2). No driver was loaded, no PCM was opened, and run-step was never started. Only one control request was ever sent: motu-alive, at 06:00:07 UTC.\nmotu-alive printed `DEAD control request at 5-2 /dev/bus/usb/005/006: [Errno 110] Connection timed out` and exited 1.\nKernel line: `2026-11-02T06:00:07.866341+00:00 euclid kernel: usb 5-2: usbfs: USBDEVFS_CONTROL failed cmd motu-alive rqt 128 rq 0 len 2 ret -110`.\nThe kernel line before it is the clean enumeration at 05:16:25: device number 6, Product 24Ao, serial 0001f2fffe00f732. The duplicate-endpoint notes for interface 4 altsetting 1 (0x9) and interface 5 altsetting 1 (0x87) appear at that enumeration as usual. No other kernel line came between them.\n/var/lib/motu-test/DEAD was never written: motu-watch is still active and its pattern does not match usbfs control failures.\nState in sysfs: power/control=on, runtime_status=active, runtime_suspended_time=0, bConfigurationValue=1, speed=480, no interface driver bound.\nEarlier this boot, at 05:00:34-05:00:41, an attempt to enumerate it failed (descriptor read -110/-71, not accepting address, unable to enumerate). That came before the owner's power cycle.\npcap: usb.pcap00 is the only ring file, 4096 bytes, mtime 05:16:33. tcpdump is buffering, so the failing request is probably not on disk yet.\nEvidence copied to /Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T060007Z/: dmesg.txt, journal-kernel.txt, kernel.log, units-and-sysfs.txt, usb.pcap00.",
+ "runs": [],
+ "not_run": [
+  "run-step motu 5 s: the device failed the pre-step liveness check (motu-alive DEAD, -110). Separately, motu-watch's pattern would have written a false DEAD at insmod (it matches `snd-usb-motu`)",
+  "run-step motu 600 s: device dead; sequence stops at the first failed safety check",
+  "run-step stock-quirk 5 s: device dead. Separately, the pattern's `clock source .* not valid` would trip at probe",
+  "run-step stock-quirk 600 s: device dead",
+  "run-step stock (no quirk flags): excluded by the brief",
+  "Any second motu-alive or other recheck: forbidden after a failure (no retry)",
+  "Flushing the usbmon capture (restarting motu-usbmon): not done, to leave the setup unchanged; the pcap on disk may not contain the failure"
+ ]
+}
+
+===== agent 3 =====
+
+**Review of the 2026-11-02 loopback run: there are no audio runs to check. The death report is CONFIRMED, with a few small corrections and some findings the operator missed.**
+
+I did not touch the device. I read only files, sysfs and the kernel log, over ssh on euclid (06:01:32 UTC) and on the Mac. I never ran motu-alive, never loaded a driver and never opened a PCM.
+
+**Per run**
+- Audio runs: none (`runs: []`). No recordings exist, so there was nothing to re-analyze, spot-check by FFT or check for mapping, stability, dropouts or glitches. Run-step motu 5 s and 600 s and stock-quirk 5 s and 600 s are all NOT RUN. Whether the rotation sits in playback or capture is still open. A digital loopback cannot tell them apart, so the test that separates them still has to be done: play one channel, for example channel 1, through the MOTU and have the owner say which physical output he hears it on.
+- Self-test (`selftest-idx0wi7i`): CONFIRMED as a test of the analyzer only. It used synthetic files, not the device. Each of the 8 cases reports the fault it injected, and nothing else:
+  - identity: CLEAN, offset 0.
+  - rotate8: CLEAN, offset +8.
+  - scramble: reported as a permutation.
+  - click: 1 event, channel 12.
+  - dropout: one 45 ms silence, channel 5.
+  - levelstep: −12 to −15 dB, source 2.
+  - remap: identity, then +8 at 6.442 s.
+  - slip: a discontinuity and a phase jump at 6.932 s on all 24 channels.
+  
+  Latency was 1537 samples with spread 0 throughout. The playback/record start offset was not counted as a dropout: "steady: 23 of 23" windows in every case.
+  - Artefact: in remap, the switch itself shows up as a 90 ms "discontinuity" on all 24 channels, and the worst-window SNR drops to 6.1 dB. That comes from the 250 ms window straddling the change. On a real run the same pattern means a mapping change, not 90 ms of lost audio.
+  - Tone choice: all 24 tones fall on 4 Hz bins and are at least 96 Hz apart. Eight harmonics land 24 Hz from another channel's tone, for example 2×300 = 600 against 624, 3×948 = 2844 against 2820, and 4×1152 = 4608 against 4584. A bit-exact digital loopback has no distortion, so this is harmless here. On an analog loop it could cause a false match.
+  - There is a second, earlier self-test directory, `/var/lib/motu-test/runs/selftest-3b592f_5` (05:57–05:58, files only up to `levelstep`). It looks like an aborted first attempt. It was not reported or copied.
+
+**Death report: CONFIRMED**
+- The kernel log, `kernel.log` and the copied journal all agree:
+  - Clean enumeration at 05:16:25, device 6.
+  - Then nothing until `2026-11-02T06:00:07.866341 usb 5-2: usbfs: USBDEVFS_CONTROL failed cmd motu-alive rqt 128 rq 0 len 2 ret -110`.
+  - `rqt 0x80 rq 0 len 2` is GET_STATUS, the first request in `/usr/local/bin/motu-alive`, which uses a 1000 ms timeout.
+- No snd_usb_audio or snd-usb-motu module is loaded, and `/proc/asound/cards` lists only the two HDA cards. So no driver touched the device.
+- Sysfs now shows product `24Ao`, devnum 6, runtime_suspended_time 0. The `runtime_suspended_time=0` claim was not in the copied `units-and-sysfs.txt`. I checked it live and it is true.
+- The earlier enumeration failure (05:00:34–05:00:41: descriptor read −110/−71, "device not accepting address", "unable to enumerate") is real and came before the 05:16 power-on.
+
+**Corrections and findings the operator missed**
+1. **No power cycle shows in the kernel since the failure.** The relayed request says "i just powered the motu back on", but as of 06:01:32 there is no `USB disconnect` and no new enumeration after 06:00:24, and devnum is still 6. Either that message refers to the 05:16:25 power-on that came before this run, or the device is not back yet. Before any new step, a new device number in the kernel log should confirm a fresh enumeration.
+2. **The hang is in firmware, not a lost connection.** No `USB disconnect` or port reset was logged: the hub still sees the device as attached while endpoint 0 does not answer. The −110 is motu-alive's own 1 s timeout. One timed-out GET_STATUS is the only evidence; the rules forbid a second probe, so this is correct but rests on a single request.
+3. **An unreported sysfs read after the failure.** At 06:00:24 the kernel logged `WARNING! power/level is deprecated`, meaning someone read power/level 17 s after the failure. A sysfs read sends nothing to the device, but the report does not mention it.
+4. **Finding (a), CONFIRMED.** motu-watch's pattern has no rule that matches `usbfs: USBDEVFS_CONTROL failed`. The DEAD file is absent and motu-watch is still active.
+5. **Finding (b), CONFIRMED, with a correction.** The driver registers as `.name = "snd-usb-motu"` (motu-usb-audio.c:1289), so insmod prints `usbcore: registered new interface driver snd-usb-motu`, which matches `snd-usb-motu` and writes a false DEAD at load. The `clock source .* not valid` rule also trips a false DEAD at the stock driver's probe. Real errors the pattern misses:
+   - `usb 5-2: rec urb error` (line 508, logged at info level, with no "motu" in the line).
+   - `usb 5-2: 1:1: cannot set freq` (the `1:1: ` breaks the anchored match).
+   - `usb 5-2: Failed to set interrupt interval: <n>` (line 545; the pattern is case-sensitive and the line has no "motu").
+6. **Finding (c), CONFIRMED.** `/var/lib/motu-test/usbmon/usb.pcap00` is 4096 bytes with mtime 05:16 and is the only ring file. The failing request is not on disk. The capture setup should flush each packet (tcpdump `-U`) so this cannot happen again; that is a change to the setup, so it is the owner's call.
+7. **Open question.** Did the device go silent while idle, or does the first request after power-on fail? The evidence cannot separate these. Only a fresh power-on followed by one motu-alive a known short time later can, and the whole test sequence is blocked until the owner decides how to fix motu-watch's pattern.
+
+Files:
+- /Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T060007Z/
+- /Volumes/Dock/motu-mac-driver/euclid/results/selftest-idx0wi7i/
+- /var/lib/motu-test/runs/selftest-3b592f_5 (on euclid, not copied)
+- /usr/local/bin/motu-watch (on euclid)
+- /Volumes/Dock/motu-mac-driver/snd-usb-motu/motu-usb-audio.c

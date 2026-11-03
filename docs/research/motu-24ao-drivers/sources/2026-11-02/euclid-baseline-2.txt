@@ -1,0 +1,133 @@
+
+
+===== agent 1 =====
+
+{
+ "summary": "The run stopped at step 1. The motu driver's 5 s run tripped the death watcher, so steps 2 to 4 did not run. The MOTU is still answering, so this does not look like a freeze. It does look like a broken stream.\n\nStep 0, harness fixes (copied back to /Volumes/Dock/motu-mac-driver/euclid/harness/run-step; sha256 acef9468... on both machines; earlier copies are in /Volumes/Dock/motu-mac-driver/euclid/run-step.orig-20261102 and run-step.patch1-20261102):\n(a) The usbmon glob was `usb.pcap*`, but the live ring is `usb-b.pcap*`, so the evidence would have named a stale file. Changed to `usb*.pcap*`.\n(b) check() did not look at motu-heartbeat. It now does, and the evidence block prints its state too.\n(c) The first real run (09:37:42 PST [17:37:42Z], dir 20261102T173742Z-motu-5s) failed before any PCM opened. arecord said \"Cannot get card index for motuusb: No such device\" because user matt is not in the `audio` group and /dev/snd/* is root:audio 0660. No safety check failed: motu-alive was ALIVE and there was no DEAD. arecord and aplay now run under sudo, and the two `kill -0` checks on their PIDs became `[ -d /proc/PID ]`, because sudo-owned processes return EPERM.\nAfter (c) I unloaded the snd_usb_motu that run-step had left loaded (rmmod at 09:38:24 PST [17:38:24Z]), with motu-alive ALIVE before and after and no DEAD. Then I re-ran step 1. The dry run passed at 09:37:32 PST [17:37:32Z]; `motu-watch --test` passed all cases.\n\nStep 1 re-run (dir 20261102T173830Z-motu-5s):\n- At 09:38:33 PST [17:38:33Z] the driver loaded, all three checks were ALIVE, and capture and playback both reached RUNNING (24 ch, S24_3LE, 48 kHz, period 2048, buffer 8192).\n- At 09:38:34.055 PST [17:38:34.055Z], about 0.17 s after playback started, motu-watch tripped on \"xhci_hcd 0000:00:10.0: ERROR unknown event type 37\".\n- run-step stopped there. I touched nothing more on the MOTU: no motu-alive, no unload, no kill.\n- aplay and arecord then finished their full lengths on their own, with no xrun lines. Over that time the kernel logged 197 \"unknown event type 37\" errors (xHCI TRB type 37 is a Host Controller Event) and 94 \"rec urb error\" lines, until stop_streaming_endpoints at 09:38:46.65 PST [17:38:46.65Z].\n- I ran analyze offline on rec.wav; it does not touch the MOTU. Verdict: ISSUES. Capture channels 1 and 12 to 24 were silent during the identification bursts. Over the steady section the map was \"duplicated (not a uniform rotation)\" across 11 segments, starting at recorded 2.808 s (played 3.410 s), with a full-channel change at every quarter-second window from 3.058 s (played 3.660 s), and 696 silence events. Latency was reported as -601.979 ms, so the recording is corrupt rather than a clean loopback. The loopback's From N -> To N mapping could not be checked.\n\nDevice state now (09:39:19 PST [17:39:19Z]): heartbeat ALIVE every 10 s through and after the trip, last at 17:39:18Z. motu-watch is failed (it exited at the trip). motu-heartbeat and motu-usbmon are active. snd_usb_motu is still loaded, as run-step leaves it. DEAD is present.\n\nYou must decide before any further step:\n- Is \"xhci ERROR unknown event type 37\" a death? motu-watch's FAIL pattern counts it, but ep0 still answers.\n- Clearing DEAD and restarting motu-watch is your action; I did neither.\n- snd_usb_motu has to be unloaded before stock-quirk can run.\n\nAn earlier death this morning, at 09:14:15 PST [17:14:15Z], was a motu-alive control timeout (-110). The watcher's restart archived it as /var/lib/motu-test/evidence-20261102T173605Z on euclid.\n\nAll evidence is in /Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T173834Z/: the three run dirs (dry run, permission failure, failed run with rec.wav and tones), DEAD, heartbeat.log, kernel.log, death-kernel-20261102T173834Z.txt (journal from 17:38:30Z), usb-b.pcap00 (the only usbmon file since the watchers restarted at 17:36Z), step1.out, step1b.out and step1b-analyze.txt.",
+ "device_alive_at_end": true,
+ "died": false,
+ "death_evidence": "No freeze: GET_STATUS and GET_DESCRIPTOR on ep0 kept answering; heartbeat ALIVE at 17:38:38Z, 17:38:48Z, 17:38:58Z, 17:39:08Z and 17:39:18Z (09:38-09:39 PST), after the trip. The motu-watch DEAD trip line is \"2026-11-02T17:38:34.055341+00:00 euclid kernel: xhci_hcd 0000:00:10.0: ERROR unknown event type 37\" (09:38:34 PST), 0.12 s after playback_pcm_trigger start (17:38:33.933Z). It was the stream stage of run-step motu 5, with both PCMs RUNNING. It was followed by 197 'unknown event type 37' lines and 94 'usb 5-1: rec urb error' lines until stop_streaming_endpoints at 17:38:46.650Z. Whether a person needs to power-cycle the MOTU (front panel) is NOT checked: I did no further USB I/O and cannot see the panel. Evidence: /Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T173834Z/ (DEAD, heartbeat.log, kernel.log, death-kernel-20261102T173834Z.txt, usb-b.pcap00, run dirs, analyze output).",
+ "runs": [
+  {
+   "driver": "motu (dry run)",
+   "duration_s": 5,
+   "completed": true,
+   "mapping": "n/a (dry run)",
+   "mapping_stable": "n/a",
+   "dropouts": "n/a",
+   "glitches": "n/a",
+   "xruns_or_errors": "none; checks passed without motu-alive (dry run)",
+   "raw_files": "/Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T173834Z/20261102T173732Z-motu-5s"
+  },
+  {
+   "driver": "motu (attempt 1, harness permission bug)",
+   "duration_s": 5,
+   "completed": false,
+   "mapping": "not measured: arecord could not open hw:CARD=motuusb (matt not in audio group)",
+   "mapping_stable": "n/a",
+   "dropouts": "n/a",
+   "glitches": "n/a",
+   "xruns_or_errors": "arecord: 'Cannot get card index for motuusb' / 'audio open error: No such device'; no PCM opened; all motu-alive checks ALIVE, no DEAD",
+   "raw_files": "/Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T173834Z/20261102T173742Z-motu-5s"
+  },
+  {
+   "driver": "motu",
+   "duration_s": 5,
+   "completed": false,
+   "mapping": "not a uniform rotation: analyze reports 'duplicated' maps; capture ch 1 and 12-24 silent in the preamble, ch 12-24 each hearing slots [2,7,9,12,14,19,21,24]; latency -601.979 ms (implausible), so the recording is corrupt and the loopback mapping cannot be checked",
+   "mapping_stable": "no: 11 segments, every channel changing at each 250 ms window from recorded 2.808 s (played 3.410 s) onward, then 3.058, 3.308, 5.308, 5.558 ... 7.058 s (played 3.660 ... 7.660 s)",
+   "dropouts": "696 silence events (e.g. all 24 channels silent 135 ms at recorded 2.808 s / played 3.410 s)",
+   "glitches": "stream corrupted from the start of playback; full-channel map changes every 250 ms",
+   "xruns_or_errors": "no xrun lines from aplay or arecord (both ran their full length; rec.wav full size). Kernel: 197 'xhci_hcd 0000:00:10.0: ERROR unknown event type 37' (first 17:38:34.055Z = 09:38:34 PST, tripped motu-watch, DEAD written) and 94 'usb 5-1: rec urb error'. Step FAILED: waitev exit 10 (DEAD).",
+   "raw_files": "/Volumes/Dock/motu-mac-driver/euclid/results/death-20261102T173834Z/20261102T173830Z-motu-5s (rec.wav, tones-s24.wav, tones.json, run.log, dmesg.txt, checks.log, proc-*.txt, aplay.err, arecord.err, waitev.txt); analyze output: ../step1b-analyze.txt; on euclid /var/lib/motu-test/runs/20261102T173830Z-motu-5s"
+  }
+ ],
+ "not_run": [
+  "Step 2 run-step motu 600: NOT RUN. Step 1 tripped motu-watch (DEAD written for xhci 'unknown event type 37'), and the rules say stop at the first sign of death.",
+  "Step 3 run-step stock-quirk 5: NOT RUN, same reason. Also snd_usb_motu is still loaded (left by run-step), and only one driver may be loaded at a time.",
+  "Step 4 run-step stock-quirk 600: NOT RUN, same reason.",
+  "Plain 'stock' driver: NOT RUN (excluded by the brief).",
+  "Front-panel and USB freeze check needing a person: NOT RUN. I did no more USB I/O after the trip; only the already-running heartbeat probes (all ALIVE) touched the device.",
+  "Unloading snd_usb_motu, clearing DEAD and restarting motu-watch after the trip: NOT DONE, left for the owner."
+ ]
+}
+
+===== agent 2 =====
+
+**Review of the 2026-11-02 loopback runs.** I re-derived everything from the raw files and touched no audio device. On euclid I only did reads: ls, cat, tail, sha256sum, `systemctl is-active` and `journalctl -k`. I did not load a driver, open a PCM or run motu-alive. My scripts and outputs are in /Volumes/Dock/motu-mac-driver/euclid/review-20261102/ (look.py, look2.py, look3.py, stim.py, pcap.py, pcap2.py, iso-timeline.txt, rec.analysis.json, rec.summary.txt).
+
+## Per run
+
+**1. 20261102T173732Z-motu-5s (dry run): CONFIRMED**
+- run.log shows the checks without motu-alive and only "would run" lines.
+- I also checked the stimulus, which is the same file in all three runs (cmp identical):
+  - In the steady section, channel k's strongest tone is f_k for all 24 channels, at -12.00 dBFS.
+  - In each identification slot k, only channel k carries signal.
+  - So tones-s24.wav is correct.
+
+**2. 20261102T173742Z-motu-5s (permission failure): CONFIRMED**
+- arecord.err says "Cannot get card index for motuusb" and no PCM opened.
+- checks.log shows three ALIVE results, and there was no DEAD.
+
+**3. 20261102T173830Z-motu-5s (motu driver, 5 s): CORRECTED**
+- The operator says the recording is "corrupt", with "duplicated" maps, ch 1 and 12-24 silent, ch 12-24 hearing slots [2,7,9,...], a full map change every 250 ms, 696 silence events and -601.979 ms latency. All of these are artefacts of analyze. The recording contains no audio from the device at all:
+  - rec.wav is 511200 frames (10.65 s). Its SHA-256 (9eb7e0fe…) matches the copy on euclid.
+  - 508,290 frames (99.43%) are exact digital zero on all 24 channels.
+  - The other 2,910 frames are every one the same 72-byte frame: `ff fe fd … b8`. That is the driver's own fill pattern (`motu_shred_pattern[i] = ~i`, motu-usb-audio.c:201), which it writes into capture buffers to mark them unfilled.
+  - Where the pattern frames sit:
+    - frames 0-1049 and 1056-2047, which is the first ALSA period. That is before aplay's stream could have looped back, and the tone file starts with 0.5 s of silence anyway.
+    - then 14 frames ending at frame 2048·(4m+1)−1, every 8192 frames (one ALSA buffer), 62 times.
+  - With the pattern frames removed, the largest sample is 0.0. No frame is anything other than zero or the pattern. No tone appears anywhere.
+- How each analyze figure came out of this:
+  - **Latency:** the first threshold crossing is the pattern at frame 0, so latency = 0 − 28895, which is -601.979 ms.
+  - **"Ch 1 silent":** the pattern's value on ch 1 is about −0.0157, under the 0.2·A threshold.
+  - **"Ch 12-24 hear slots [2,7,…]":** the constant pattern blocks have RMS above 0.1·A on the high channels.
+  - **Full map change every 250 ms:** each 250 ms window holds one or two 14-frame pattern blocks at a different offset, so the strongest tone bin changes each time.
+  - **696 silence events:** these are the zero gaps between pattern blocks, about 29 per channel × 24.
+- The operator's conclusion that the loopback mapping cannot be checked is correct. But the reason is that no audio came back, not a scrambled map. Nothing here says anything about whether the "From Computer N → To Computer N" loopback is set; that is UNSUPPORTED either way.
+- The other facts in the operator's run 3 report check out:
+  - No xrun lines, and rec.wav is full size.
+  - 197 "unknown event type 37" lines (the first at 17:38:34.055341Z) and 94 "rec urb error" lines.
+  - stop_streaming_endpoints at 17:38:46.650Z.
+  - Waitev exit 10 (DEAD).
+- Two small corrections to the operator's report:
+  - The trip came 0.122 s after `playback_pcm_trigger start` (17:38:33.933Z), not "about 0.17 s after playback started".
+  - The final run-step's SHA-256 is dbdef030dd3d… on both machines, not acef9468. acef9468 is run-step.patch1-20261102, the version after fixes (a) and (b). The fix (c) changes are in the current file: sudo arecord/aplay, and `[ -d /proc/PID ]` in place of `kill -0`.
+
+## What the operator missed
+
+1. **Playback stopped reaching the bus.** I decoded usb-b.pcap00 (usbmon, snaplen 256).
+   - **Capture side (IN endpoint 0x87):** the 64 ms URBs were submitted 203 times and completed 199 times without a gap from 17:38:33.894Z to 17:38:46.656Z. Each completed with status 0 and about 221 KB, which is 6 frames per microframe. Every URB had error_count 0, and every visible iso descriptor (the first 12 of 512) was status 0 with 432 bytes. So the device kept sending capture data.
+   - **Playback side (OUT endpoint 0x09):** it shows only 17 submits in the whole stream, at 17:38:34.150-34.919Z and 42.598-43.303Z. It shows nothing for about 7.7 s, 17:38:34.919Z to 17:38:42.598Z (09:38:34-09:38:42 PST), which covers almost all of aplay's playback.
+   - The driver sends each playback URB from `capture_complete_urb` and ignores the return value of `usb_submit_urb`. A failed or skipped submission would leave no trace in usbmon.
+   - The tones most likely never reached the MOTU, which by itself would explain the all-zero capture. The snaplen hides the payload, so I cannot prove whether the capture data was zeros. A short run with a larger snaplen would show it.
+2. **The event-37 cadence matches the driver's period.** The intervals between errors are 42-44 ms (97 times) or 84-86 ms (97 times), which is 1 or 2 ALSA periods of 2048 frames at 48 kHz (42.67 ms). The errors began 32 ms after "PB Copy Sync" and continued after both PCMs had stopped, until stop_streaming_endpoints. Nothing has appeared in the kernel log since 17:38:46.
+   - That fits the driver's period-interrupt work: `handle_interval_interrupt` copies a whole period and scans up to 512 microframe buffers inside the URB completion handler, while the controller's interrupt is being handled.
+   - TRB type 37 is a Host Controller Event. A plausible cause is "Event Ring Full", where the controller drops completion events, which would also explain the "missing" playback URBs. Linux does not print the event's completion code, so this is a hypothesis, not verified.
+   - The "rec urb error" packets do not show in the visible descriptors, and error_count was 0 throughout.
+3. **analyze has no guard for "no signal".** It reported a mapping and a latency from a recording that is zeros plus one constant frame. The selftest set (click, dropout, identity, levelstep, remap, rotate8, scramble, slip) has no all-zero, constant-frame or negative-latency case.
+   - Proposed fix: report the exact-zero fraction and repeated identical frames, refuse a latency below 0, and give the verdict "NO SIGNAL" instead of a map.
+4. **Device state now:**
+   - Heartbeat is ALIVE every 10 s through 17:43:11Z (09:43:11 PST), read live from euclid. The operator's 17:39:08Z and 17:39:18Z entries are not in the copied heartbeat.log, which ends at 17:38:58Z, but the live log confirms the device kept answering.
+   - motu-watch is failed, motu-heartbeat and motu-usbmon are active, snd_usb_motu is still loaded and DEAD is present.
+   - The watcher stopped, so /var/lib/motu-test/kernel.log stops at 17:38:34.055Z. The full record is in journalctl.
+   - By the brief's definition this was not a freeze: ep0 answered for more than 9 minutes afterwards. What failed was the host controller and the driver's streaming. Counting the line as a stream failure is right, but it is not evidence of a MOTU death.
+
+## Telling a playback rotation from a capture rotation
+
+A digital loopback only measures the two combined (capture map ∘ playback map). To separate them, fix one side by something independent of the computer:
+- **Playback alone:** play a tone on one channel only and see which "From Computer" meter, or which physical output, lights in the MOTU's web app. The earlier stock-driver finding (playback N heard on output N-8) was this kind of measurement, if it was taken on physical outputs.
+- **Capture alone:** route one known source to a single "To Computer K" and record:
+  - an input such as optical/ADAT or a cable from a physical output, or
+  - the loopback set to a deliberately non-identity route (only From Computer 1 → To Computer 5, everything else off).
+  Whichever channel it lands on gives the capture map. The playback map is then the measured combination with the capture map taken out.
+- **Both at once:** with an asymmetric routing in the MOTU, the two cases predict different captured channels. A playback rotation moves where the single routed source lands; a capture rotation moves every channel.
+
+## Checks not run
+- analyze-selftest on this Mac: NOT RUN. The interpreter in its `-I` subprocess has no numpy. I ran analyze itself without `-I`; its output matches step1b-analyze.txt line for line.
+- The capture payload in usbmon: NOT CHECKABLE, because the snaplen of 256 keeps only headers and the first 12 descriptors.
+- The xHCI completion code of the type-37 events: NOT AVAILABLE in the kernel log.
+- The front panel and a power-cycle check: NOT RUN, because that needs a person.
+- Earlier result folders: NOT re-reviewed.
+  - death-20261102T060007Z is an earlier death on port 5-2, and the operator's report does not cover it.
+  - selftest-idx0wi7i is analyze's self-test, not a device run; its 8 verdicts look as expected.

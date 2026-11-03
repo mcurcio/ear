@@ -1,0 +1,80 @@
+#!/usr/bin/python3 -I
+"""waitev: block until every given process has exited, or the death watcher trips, or a deadline.
+
+  waitev --pid P [--pid P ...] [--dead FILE] [--watcher-pid W] --deadline SECONDS
+
+Event-driven: pidfds for the processes and the watcher, inotify on FILE's directory for FILE
+appearing. The deadline only fails the wait; it never decides when something happens.
+Exit 0: all --pid processes exited. 10: FILE appeared (its content is printed). 11: the watcher
+process exited. 12: the deadline passed. 2: bad use.
+"""
+import argparse, ctypes, ctypes.util, os, select, sys, time
+
+IN_CREATE, IN_MOVED_TO, IN_CLOSE_WRITE = 0x100, 0x80, 0x8
+
+ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("--pid", type=int, action="append", default=[])
+ap.add_argument("--dead")
+ap.add_argument("--watcher-pid", type=int)
+ap.add_argument("--deadline", type=float, required=True)
+a = ap.parse_args()
+end = time.monotonic() + a.deadline
+
+
+def dead_now():
+    if a.dead and os.path.exists(a.dead):
+        try:
+            print("DEAD: " + open(a.dead).read().strip())
+        except OSError:
+            print("DEAD: %s exists" % a.dead)
+        sys.exit(10)
+
+
+poll = select.poll()
+fds = {}
+ino = None
+if a.dead:
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    ino = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+    if ino < 0 or libc.inotify_add_watch(ino, os.path.dirname(os.path.abspath(a.dead)).encode(),
+                                         IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE) < 0:
+        print("waitev: cannot watch %s" % a.dead, file=sys.stderr)
+        sys.exit(2)
+    poll.register(ino, select.POLLIN)
+dead_now()                                 # armed first, then checked: no gap
+if a.watcher_pid:
+    try:
+        wfd = os.pidfd_open(a.watcher_pid)
+    except ProcessLookupError:
+        print("WATCHER-EXITED: pid %d is gone" % a.watcher_pid)
+        sys.exit(11)
+    fds[wfd] = "watcher"
+    poll.register(wfd, select.POLLIN)
+waiting = set()
+for p in a.pid:
+    try:
+        fd = os.pidfd_open(p)
+    except ProcessLookupError:
+        continue
+    fds[fd] = p
+    waiting.add(fd)
+    poll.register(fd, select.POLLIN)
+while waiting:
+    left = end - time.monotonic()
+    if left <= 0:
+        print("DEADLINE: still running: %s" % sorted(fds[f] for f in waiting))
+        sys.exit(12)
+    for fd, _ in poll.poll(int(left * 1000) + 1):
+        if fd == ino:
+            os.read(ino, 65536)
+            dead_now()
+        elif fds.get(fd) == "watcher":
+            dead_now()
+            print("WATCHER-EXITED: pid %d" % a.watcher_pid)
+            sys.exit(11)
+        elif fd in waiting:
+            waiting.discard(fd)
+            poll.unregister(fd)
+dead_now()
+print("EXITED: %s" % a.pid)
+sys.exit(0)

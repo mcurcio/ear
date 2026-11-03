@@ -1,0 +1,71 @@
+#!/usr/bin/python3
+"""mac-run-step SECONDS: one loopback run on copernicus through MOTU's own macOS driver.
+
+Safety checks before and after (watcher running, no DEAD, the MOTU in CoreAudio and alive), then
+plays the 24-channel tone file to the MOTU and records its 24 inputs in one duplex stream
+(sounddevice.playrec, 48 kHz), writes rec.wav (24-bit), and runs the euclid harness's analyze on it.
+Stops at the first failed check. Output: ~/motu-test/runs/<UTC>-mac-<N>s/, printed last.
+"""
+import datetime, os, subprocess, sys
+import numpy as np, sounddevice as sd, soundfile as sf
+
+HOME = os.path.expanduser("~")
+TEST = HOME + "/motu-test"; HARNESS = HOME + "/motu/harness"
+secs = float(sys.argv[1])
+stamp = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+run = "%s/runs/%s-mac-%ds" % (TEST, stamp, secs); os.makedirs(run)
+note = open(run + "/steps.log", "a")
+
+
+def say(s):
+    line = "%s %s" % (datetime.datetime.utcnow().isoformat() + "Z", s)
+    print(line); note.write(line + "\n"); note.flush()
+
+
+def fail(why):
+    say("FAILED " + why); open(run + "/FAILED", "w").write(why + "\n"); print(run); sys.exit(1)
+
+
+def motu_index():
+    sd._terminate(); sd._initialize()   # re-read CoreAudio's device list
+    for i, d in enumerate(sd.query_devices()):
+        if "24Ao" in d["name"] or "MOTU" in d["name"].upper():
+            return i, d
+    return None, None
+
+
+def check(stage):
+    if os.path.exists(TEST + "/DEAD"):
+        fail("%s: DEAD present: %s" % (stage, open(TEST + "/DEAD").read().strip()))
+    if subprocess.run(["pgrep", "-f", "motu-mac-watch"], capture_output=True).returncode != 0:
+        fail(stage + ": motu-mac-watch is not running")
+    i, d = motu_index()
+    if i is None:
+        fail(stage + ": the MOTU is not in CoreAudio's device list")
+    say("%s ok: device %d %r in=%d out=%d" % (stage, i, d["name"], d["max_input_channels"], d["max_output_channels"]))
+    return i
+
+
+dev = check("pre")
+subprocess.run(["python3", HARNESS + "/gen-tones", "--steady", str(secs), "--out", run, "--formats", "f32"], check=True)
+tones, rate = sf.read(run + "/tones-f32.wav", dtype="float32", always_2d=True)
+if rate != 48000 or tones.shape[1] != 24:
+    fail("tone file is %d Hz, %d ch" % (rate, tones.shape[1]))
+pad = np.zeros((rate, 24), dtype="float32")              # 1 s of silence after, so the tail is recorded
+play = np.vstack([tones, pad])
+say("play+record %d frames on device %d" % (len(play), dev))
+try:
+    rec = sd.playrec(play, samplerate=rate, channels=24, dtype="float32", device=(dev, dev), blocking=True)
+except Exception as e:
+    fail("playrec: %r" % (e,))
+st = sd.get_status() if hasattr(sd, "get_status") else None
+say("stream done%s" % (" status=%s" % st if st else ""))
+sf.write(run + "/rec.wav", rec, rate, subtype="PCM_24")
+check("post")
+r = subprocess.run(["python3", HARNESS + "/analyze", "--plan", run + "/tones.json", "--rec", run + "/rec.wav"],
+                   capture_output=True, text=True)
+open(run + "/analyze.out", "w").write(r.stdout + r.stderr)
+say("analyze exit %d" % r.returncode)
+print(r.stdout)
+print(run)
+sys.exit(0 if r.returncode == 0 else 3)
