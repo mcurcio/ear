@@ -117,7 +117,10 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   (`snd-timer` makes `/dev/snd/timer` with no card), so the owner's iac repo puts the pod on the
   MOTU's node by a node label (`nodeSelector` `node.iac/device.motu-24ao: "true"`; its node
   inventory sets the label on the node the card is attached to) and requests only the `/dev/snd`
-  group. With the MOTU off, EAR still starts: the card node is `failed engine-refused` and the
+  group. That node is **hawking** (iac `stacks/home/cluster/nodes.py`, `attached_devices`, checked
+  2026-11-02): the MOTU must be plugged into hawking, or the inventory changed and rolled, before
+  EAR can reach it. Plugged into another node, it works there for the kernel but EAR's pod never
+  sees it. With the MOTU off, EAR still starts: the card node is `failed engine-refused` and the
   control port answers. A container sees only the device files present when it starts, so after
   the MOTU comes on, restart the pod (`kubectl rollout restart -n audio deploy/ear`); `node.update`
   alone cannot see a card the container never got.

@@ -8,7 +8,7 @@ Hardware tests on 2026-11-02 settled the two Linux problems:
   49 of 49 starts. Without `playback_first`, 0 of 12 starts were clean.
 - **The freezes:** keep the MOTU's Ethernet unplugged. Every freeze had it connected.
 
-`snd-usb-motu` is not needed. Observations are in `hardware/observations-2026-11-02.md` and
+`snd-usb-motu` is not needed. Where things stand and what comes next: `NEXT-STEPS.md`. Observations are in `hardware/observations-2026-11-02.md` and
 inferences in `2-inferences/usb-tests-2026-11-02.md`. The agents' reports are in
 `sources/2026-11-02/`, and the test tools are in `tools/`. The rest of this README covers the
 2026-11-01 driver comparison.

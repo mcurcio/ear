@@ -100,3 +100,37 @@ From `../sources/2026-11-02/rotation-traces.md` and the analysis, re-decoded by 
 - **Start sequence (capture first):** at `aplay`'s start the only control request was
   SET_INTERFACE(1, 1), with the capture endpoint already streaming. Playback URBs then followed IN
   completions with about one 1 ms URB queued.
+
+## Evening: the fix on the cluster, and EAR on hawking (OBSERVED)
+
+- **Rollout** (mcurcio/iac PR 343, rolled by the owner from its branch):
+  - `make talos+ NODE=fourier`, 15:58-16:03 PST.
+  - Then `make talos+` for kepler, galileo, imes and hawking, 17:14-17:22 PST. Final gate ok, exit 0.
+- **fourier, read back at 17:10 PST:** `MachineConfig persistent` and `v1alpha1` both set
+  `module.snd_usb_audio.parameters.quirk_flags: 07fd:0005:!validate_rates|skip_iface_setup|playback_first`.
+  `/sys/module/snd_usb_audio/parameters/quirk_flags` read that value followed by `(null)` slots.
+- **The roll tool's sysfs gate during the fourier canary:** it printed "not in effect" every 16 s
+  for 286 s, while the node already held the new value (read at 16:01 PST). During
+  `apply-config --mode=try` the node lists two `MachineConfig` resources, `persistent` (old value)
+  and `v1alpha1` (new). `talosctl get machineconfig` lists `persistent` first. Fixed in the same PR
+  (`get machineconfig v1alpha1`). With the fix, each of the other four nodes was healthy straight
+  after its apply.
+- **The MOTU's cluster node is hawking.** The iac node inventory gives `motu-24ao` to hawking, only
+  hawking has the label `node.iac/device.motu-24ao=true`, and the `ear` deployment selects it. Its
+  pod ran on hawking.
+- **The deployed EAR at 18:00 PST:**
+  - Image: `ghcr.io/mcurcio/ear:sha-6f36d74`.
+  - Arguments: `--config /etc/ear/ear.json`, read from ConfigMap `ear-config`, so edits stay in
+    memory only.
+  - Types available: `card`, `file` and `white`. No `graphFile.*` methods ("Method not found").
+  - ConfigMap graph: one node, `motu`: `card D24Ao, playback 24, capture 0`. No routes. 48 kHz,
+    block size 512, `SCHED_FIFO 83`.
+- **That pod (started 17:18:30 PST, while the MOTU was on fourier):**
+  - `/dev/snd` held only `timer`.
+  - Log: `Cannot get card index for D24Ao`, `playback open failed: No such device`,
+    `node motu failed engine-refused: the card failed: usage: node.name=<string>`.
+  - `node.update motu` with capture 24: refused, `ports-changed motu`.
+  - `node.update` with the same settings: answered `{}`, with no new log line and state still failed.
+- **Not yet done:** the MOTU was moved to hawking at about 17:58 PST. EAR's pod has not been restarted
+  since, so EAR has not opened the MOTU with the new flags. The kernel's view on hawking (cards,
+  `stream0`, `quirk_flags`) was not read: two 1Password prompts timed out.
