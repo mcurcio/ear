@@ -52,7 +52,7 @@ public:
       : waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
     const std::size_t at = count_.load(std::memory_order_relaxed);
     const std::size_t take = std::min<std::size_t>(frames, kCapacity - at);
@@ -146,13 +146,13 @@ private:
   Registry& registry_;
 };
 
-/// One port block "fpp" (outputs channel_1, channel_2; inside inputs from_rtp_1, from_rtp_2)
+/// One port block "fpp" (outputs stream.1, stream.2; inside inputs from_rtp_1, from_rtp_2)
 /// driven by a Recorder, running on the dummy driver, and the receivers' factory.
 struct Graph {
   Graph()
       : engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
         receivers(*engine), recorder(waiter, 2), blockEvents(waiter) {
-    block = blocks.make("fpp", Ports{{}, {"channel_1", "channel_2"}, {"from_rtp_1", "from_rtp_2"}, {}}, kFormat,
+    block = blocks.make("fpp", Ports{{{Direction::output, "stream", {"1", "2"}}}, {"from_rtp_1", "from_rtp_2"}}, kFormat,
                         blockEvents);
     block->drive(&recorder);
     REQUIRE(waiter.until([&] { return blockEvents.isReady && registry.id("Dummy-Driver") && registry.props("fpp"); }));

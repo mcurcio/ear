@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, and getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, or when an rtp node in the pod is silent or stays starting.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent or stays starting, or when a sendspin node in the pod is not found or loses its pairing.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -54,7 +54,7 @@ node card motu { card <card id>; playback 24; }
 ```
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
-`playback_1`..`playback_N` (inputs) and `capture_1`..`capture_M` (outputs). The card's rate is
+`play.1`..`play.N` (inputs) and `capture.1`..`capture.M` (outputs). The card's rate is
 always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
@@ -64,8 +64,9 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 - The kernel validates every rate a MOTU (USB vendor 0x07fd) reports
   (`QUIRK_FLAG_VALIDATE_RATES`, `sound/usb/quirks.c`; the quirk flags below turn it off), so a graph frequency the card is not set
   to fails the card when it opens: the node is `failed engine-refused: <detail>`, and every other
-  node keeps running on the dummy driver. Fix the rate, then `node.update` the card node (no
-  retry happens by itself; issue #19). A `node.update` on the card node has also hung until the
+  node keeps running on the dummy driver. Fix the rate, then restart the pod, or change a setting of the card node
+  with `node.update` (an update with the same settings changes nothing; no retry happens by
+  itself; issue #19). A `node.update` on the card node has also hung until the
   pod was restarted (issue #18).
 - Power-cycled, the MOTU comes up at 192 kHz unless its rate was set on the device, so check the
   rate after every power-cycle. With the quirk flags below it stays at the rate set (48 kHz seen,
@@ -88,6 +89,7 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   on MOTU output N-8 (mod 24), so `playback_1` on output 17, `playback_6` on 22, `playback_19` on
   11. EAR's own channel mapping is correct. Linux sends every channel in the right place; the MOTU
   loses its frame boundary depending on how its playback stream starts (2026-11-02, USB traces).
+  (`playback_<n>` is the port's name then; it is `play.<n>` since 2026-11-06.)
   The fix is the `playback_first` quirk flag above: with it, 49 of 49 starts mapped channel N to N
   through a loopback on an Ubuntu host (AMD xHCI, kernel 7.0), 9 of them after a MOTU power-on;
   without it, 0 of 12 were clean. It is not yet confirmed on a Talos node or through EAR, so check
@@ -119,8 +121,8 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   inventory sets the label on the node the card is attached to) and requests only the `/dev/snd`
   group. With the MOTU off, EAR still starts: the card node is `failed engine-refused` and the
   control port answers. A container sees only the device files present when it starts, so after
-  the MOTU comes on, restart the pod (`kubectl rollout restart -n audio deploy/ear`); `node.update`
-  alone cannot see a card the container never got.
+  the MOTU comes on, restart the pod (`kubectl rollout restart -n audio deploy/ear`); no `node.update`
+  can see a card the container never got.
 - Out of the box `/dev/snd/*` is `root:root 0600` on the node (seen on the owner's node
   2026-10-31): the kernel gives sound devices no mode. Talos runs udevd with
   `--resolve-names=never`, so systemd's stock `SUBSYSTEM=="sound", GROUP="audio"` rule (a named
@@ -165,6 +167,11 @@ machine:
   so the folder itself must be writable, not just the file, and `ear.conf` must be a regular
   file, not a symlink (a ConfigMap's files are symlinks, so mounting one into the folder does not
   work either).
+- `fsGroup` and the `sendspin` key files: `sendspin-<node>.key` lives in the same folder, and holds
+  a private key and pairing secrets. `fsGroup` widens every file to 0660 on every mount. ear narrows
+  it back to 0600 at each node's start, on its own, so this is no failure. Between the mount and that start, and for a key file
+  whose node was removed (`node.remove` leaves it), it stays 0660: the group, 10001, is ear's. To
+  wipe an identity, delete the file and restart the node.
 - Seeding `ear.conf`: either an initContainer that copies it from a ConfigMap into the volume
   only when it is missing (`[ -e /cfg/ear.conf ] || cp /seed/ear.conf /cfg/`, so later edits are
   kept), or nothing: a first boot without `ear.conf` runs no nodes, and the editor's text pane
@@ -188,7 +195,7 @@ machine:
    `"realtime": true` (`node scripts/rpc-call.mjs ws://<node>:7777/rpc graph.get`). The image
    smoke proved this in a container with `--cap-add SYS_NICE`; the pod is not proven.
 2. The card drives: the card node is `running`, its routes are `linked`, and audio routed to
-   `motu:playback_<n>` comes out of that output only. Play into `playback_1` and listen on
+   `motu:play.<n>` comes out of that output only. Play into `play.1` and listen on
    output 1: hearing it on output 17 is the rotation in section 3. CI checks the same path with
    a test ALSA card (alsa-lib's file and null PCMs), not the MOTU. `running` alone is not proof
    the card is there: a USB card that vanished left the node `running` (issue #17).
@@ -212,6 +219,15 @@ machine:
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
 
+6. **[check]** A `sendspin` node's sync on the MOTU. CI's test card has no clock of its own and runs
+   the graph about 2.1% fast, so the protocol's 1 ms bound is proven only on the dummy driver
+   (`docs/design/sendspin.md` section 16, erratum 1). On the hardware: the card driving, Music
+   Assistant playing, how far the node's `from.*` outputs sit from what the library's time
+   filter predicts, and no repeated corrections in ear's log. The node now puts what the card says it
+   holds (`position->clock.delay`) in the finish time, which no test card has reported, so also
+   measure past the block: a test tone on another Sendspin device and on the MOTU, recorded together,
+   within the protocol's bound once `output_delay` is 0. NOT RUN.
+
 ## 6. FPP's audio over RTP
 
 The owner runs FPP (Falcon Player) in the same cluster and wants its audio as a source; what FPP
@@ -231,7 +247,7 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   (`containerPort: 5004, protocol: UDP`) and put a Service in front of it with a UDP port whose
   `targetPort` is the node's `port`. FPP sends to the Service's address. The Service may rewrite
   the sender's address and port on the way (kube-proxy NAT); `0.0.0.0` hears any sender, so that
-  does not matter. The image's `EXPOSE` names only 7777; that is a label, not a limit. A sender
+  does not matter. The image's `EXPOSE` names 7777 and 8928; that is a label, not a limit. A sender
   outside the cluster needs a NodePort or LoadBalancer Service, still UDP.
 - **Multicast.** A Service carries unicast only, and pod networks usually do not carry multicast
   between pods. A multicast `address` needs the pod on the node's own network
@@ -254,7 +270,38 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
 - **No login.** Anyone who can reach the UDP port can play audio into the graph, as anyone who
   reaches port 7777 can edit it.
 - **Checks.** The rtp node is `running` and its routes `linked`; `levels.subscribe` shows
-  non-zero peaks on `fpp:channel_1` while FPP plays (with no packets the node is still `running`,
+  non-zero peaks on `fpp:stream.1` while FPP plays (with no packets the node is still `running`,
   with peak 0: ear has no "receiving" status yet). Short gaps of silence come from packets lost
   or out of order: the receiver drops its buffer on any sequence break and refills it
   (`pipewire-engine` skill).
+
+## 7. A `sendspin` node in the pod
+
+Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod yet.
+
+- **Dialling is the simple one.** `node sendspin ma { server "ws://<music assistant>:8927/sendspin"; }`
+  only needs the pod to reach that address. A host name is looked up from inside the pod.
+- **Listening** needs the server to reach the pod's port, 8928 by default (the image exposes it).
+  **A pod on an overlay network cannot advertise**: mDNS goes no further than its own network, so
+  Music Assistant will not find it. Either give the pod `hostNetwork: true` (as for multicast RTP,
+  section 6: the policy of section 4 must allow it), or give Music Assistant the URL by hand,
+  `ws://<address>:<port>/sendspin`. `says advertise-failed <detail>` means no mDNS socket opened;
+  no such line does not mean anybody heard it.
+- **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own, on
+  every one of its interfaces, since a listening node has no address setting: filter 8928 and 5353 to the
+  network Music Assistant is on. A peer on 8928 can still hold the node from an unpaired server by finishing the published handshake, though no longer with silent sockets, and a flood can keep servers out while it lasts (`sendspin` skill), so
+  on a network you do not trust, dial instead of listening.
+  The node advertises on one interface, the one the kernel routes 224.0.0.251 through, and the
+  address of that interface, read once when the sendspin node starts, so on a machine with several
+  networks check that route, and restart the sendspin node if the address changes. Music Assistant
+  has to be on that same network segment to hear it: on an overlay itself it hears nothing, and
+  needs the URL by hand. A rolling update's new pod would find these ports held by the old one, so
+  use the `Recreate` strategy.
+- **Give the pod a memory limit.** One connection holds at most about 1 MiB before it proves anything, and a flood runs up to 64 sockets and threads at once, but the
+  library's parsers run in the process with every audio node; a limit keeps whatever else goes wrong in this pod.
+- **Pair once.** The node prints `says pairing-code <123-456>` when Music Assistant starts an attempt;
+  the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the
+  editor. Type it there. The pairing lives in the key file, so the graph file volume must persist
+  (section 4), or every restart asks again.
+- **Stop.** The node's goodbye runs on its own thread and is short, but an inbound half-open socket can
+  take up to 3 s; it all has to fit `terminationGracePeriodSeconds` with the last `ear.conf` write.

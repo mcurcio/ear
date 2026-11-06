@@ -27,8 +27,8 @@
               "playback": 2
             },
             "inputs": [
-              "playback_1",
-              "playback_2"
+              "play.1",
+              "play.2"
             ],
             "outputs": [],
             "state": "failed",
@@ -43,7 +43,7 @@
             "settings": {},
             "inputs": [],
             "outputs": [
-              "MONO"
+              "noise.mono"
             ],
             "state": "running"
           },
@@ -54,8 +54,8 @@
               "path": "x.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "running"
@@ -67,8 +67,8 @@
               "path": "nope/t.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "failed",
@@ -82,33 +82,33 @@
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "motu",
-              "port": "playback_1"
+              "port": "play.1"
             },
             "status": "pending"
           },
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "rec",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "linked"
           },
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "tape",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "refused",
             "detail": "the engine removed the link before it was active"
@@ -138,8 +138,8 @@
               "playback": 2
             },
             "inputs": [
-              "playback_1",
-              "playback_2"
+              "play.1",
+              "play.2"
             ],
             "outputs": [],
             "state": "failed",
@@ -154,7 +154,7 @@
             "settings": {},
             "inputs": [],
             "outputs": [
-              "MONO"
+              "noise.mono"
             ],
             "state": "running"
           },
@@ -165,8 +165,8 @@
               "path": "x.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "running"
@@ -178,8 +178,8 @@
               "path": "nope/t.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "failed",
@@ -193,33 +193,33 @@
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "motu",
-              "port": "playback_1"
+              "port": "play.1"
             },
             "status": "pending"
           },
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "rec",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "linked"
           },
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "tape",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "refused",
             "detail": "the engine removed the link before it was active"
@@ -247,8 +247,8 @@
           "playback": 2
         },
         "inputs": [
-          "playback_1",
-          "playback_2"
+          "play.1",
+          "play.2"
         ],
         "outputs": [],
         "state": "failed",
@@ -263,7 +263,7 @@
         "settings": {},
         "inputs": [],
         "outputs": [
-          "MONO"
+          "noise.mono"
         ],
         "state": "running"
       },
@@ -274,8 +274,8 @@
           "path": "x.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "running"
@@ -287,8 +287,8 @@
           "path": "nope/t.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "failed",
@@ -302,33 +302,33 @@
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "motu",
-          "port": "playback_1"
+          "port": "play.1"
         },
         "status": "pending"
       },
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "linked"
       },
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "tape",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "refused",
         "detail": "the engine removed the link before it was active"

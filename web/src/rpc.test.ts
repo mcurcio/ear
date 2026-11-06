@@ -156,12 +156,12 @@ describe("the editor session", () => {
     first.receive({ ...edits[0]!, id: first.idOf("graph.subscribe") });
     first.receive(edits[1]);
     expect(editor.graph.get()!.nodes.map((node) => node.name)).toEqual(["n2", "noise", "rec"]);
-    first.receive({ jsonrpc: "2.0", method: "levels", params: { nodes: { noise: { MONO: [0.5, 0.25] } } } });
-    expect(editor.levels.get("noise", "MONO")).toEqual([0.5, 0.25]);
+    first.receive({ jsonrpc: "2.0", method: "levels", params: { nodes: { noise: { "noise.mono": [0.5, 0.25] } } } });
+    expect(editor.levels.get("noise", "noise.mono")).toEqual([0.5, 0.25]);
 
     first.drop();
     expect(editor.connection()).toBe("closed");
-    expect(editor.levels.get("noise", "MONO")).toEqual([0, 0]);
+    expect(editor.levels.get("noise", "noise.mono")).toEqual([0, 0]);
     h.waits[0]!.retry();
     const second = h.sockets[1]!;
     second.accept();

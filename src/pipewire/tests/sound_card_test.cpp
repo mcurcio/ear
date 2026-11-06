@@ -60,7 +60,7 @@ public:
       : waiter_(waiter), rampOn_(rampOn) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
     if (rampOn_ && *rampOn_ < outputs.size()) {
       for (std::uint32_t i = 0; i < frames; ++i) {
@@ -117,10 +117,10 @@ struct Graph {
       : out(useTestAlsa()), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
         blocks(*engine, bell), cards(*engine), cardCode(waiter, rampOn), otherCode(waiter),
         cardBlockEvents(waiter), otherBlockEvents(waiter) {
-    cardBlock = blocks.make("card", Ports{{"playback_1", "playback_2"}, {}, {}, {"to_card_1", "to_card_2"}},
+    cardBlock = blocks.make("card", Ports{{{Direction::input, "play", {"1", "2"}}}, {}, {"to_card_1", "to_card_2"}},
                             kFormat, cardBlockEvents);
     cardBlock->drive(&cardCode);
-    otherBlock = blocks.make("other", Ports{{"IN"}, {}}, kFormat, otherBlockEvents);
+    otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
     otherBlock->drive(&otherCode);
     REQUIRE(waiter.until([&] {
       return cardBlockEvents.isReady && otherBlockEvents.isReady && registry.id("Dummy-Driver") &&

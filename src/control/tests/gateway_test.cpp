@@ -159,7 +159,7 @@ TEST_CASE("The reply follows the file change and every event its batch caused", 
 	f.requests.results = {std::expected<void, ear::CommandError>{}};
 	f.requests.step = [&](MainLoopGateway& gateway) {
 		gateway.graphFileChanged(GraphFileChanged{file("b.2"), FileChangeCause::edit, 0});
-		gateway.nodeAdded({"a", "white", json::object()}, std::make_shared<Config>(ear::Ports{{}, {"MONO"}}));
+		gateway.nodeAdded({"a", "white", json::object()}, std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}));
 		gateway.nodeChanged({"a", ear::NodeState::starting, std::nullopt});
 	};
 	f.run({AddNode{{"a", "white", json::object()}}}, [&](std::vector<CommandResult>) {
@@ -186,12 +186,12 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	f.loops.running = &f.loops.main;   // listener calls come from the main loop
 	f.gateway.graphFileChanged(GraphFileChanged{file("b.3"), FileChangeCause::disk, 2});
 	f.gateway.graphFileWritten("b.3");   // a status line only: nothing on the wire
-	f.gateway.nodeAdded({"n", "white", json::object()}, std::make_shared<Config>(ear::Ports{{"IN"}, {"OUT"}, {"I2"}, {"O2"}}));
+	f.gateway.nodeAdded({"n", "white", json::object()}, std::make_shared<Config>(ear::Ports{{{ear::Direction::input, "in", {"a"}}, {ear::Direction::output, "out", {"a"}}}, {"I2"}, {"O2"}}));
 	f.gateway.nodeUpdated({"n", "white", {{"k", 1}}}, std::make_shared<Config>(ear::Ports{}));
 	f.gateway.nodeChanged({"n", ear::NodeState::running, std::nullopt});
-	f.gateway.routeAdded({{"n", "OUT"}, {"m", "IN"}});
-	f.gateway.routeChanged({{{"n", "OUT"}, {"m", "IN"}}, ear::RouteMatch::linked, ""});
-	f.gateway.routeRemoved({{"n", "OUT"}, {"m", "IN"}});
+	f.gateway.routeAdded({{"n", "out.a"}, {"m", "in.a"}});
+	f.gateway.routeChanged({{{"n", "out.a"}, {"m", "in.a"}}, ear::RouteMatch::linked, ""});
+	f.gateway.routeRemoved({{"n", "out.a"}, {"m", "in.a"}});
 	f.gateway.nodeRemoved("n");
 	f.gateway.nodeGone("n", 7);
 	f.loops.running = nullptr;
@@ -207,8 +207,8 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	                                          "node.stopped"});
 	CHECK(json::parse(f.sink.seen[0])["params"]["droppedEdits"] == 2);
 	// node.added carries the public ports only
-	CHECK(json::parse(f.sink.seen[1])["params"]["inputs"] == json::array({"IN"}));
-	CHECK(json::parse(f.sink.seen[1])["params"]["outputs"] == json::array({"OUT"}));
+	CHECK(json::parse(f.sink.seen[1])["params"]["inputs"] == json::array({"in.a"}));
+	CHECK(json::parse(f.sink.seen[1])["params"]["outputs"] == json::array({"out.a"}));
 	CHECK(json::parse(f.sink.seen[8])["params"]["droppedFrames"] == 7);
 }
 

@@ -1,4 +1,4 @@
-// The "white" node type: one output, "MONO", carrying uniform white noise in [-1, 1). It takes
+// The "white" node type: one output, "noise.mono", carrying uniform white noise in [-1, 1). It takes
 // no settings (docs/design/m1-white-to-file.md section 2, builtin.hpp).
 #include <cstdint>
 #include <memory>
@@ -20,7 +20,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (const std::span<float> output : outputs) {
 			for (float& sample : output.first(frames)) {
 				sample = next();
@@ -59,7 +59,7 @@ public:
 	}
 
 private:
-	Ports ports_{.inputs = {}, .outputs = {"MONO"}};
+	Ports ports_{{{Direction::output, "noise", {"mono"}}}};
 };
 
 class WhiteType final : public NodeType {

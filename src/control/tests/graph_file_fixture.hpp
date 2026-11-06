@@ -25,8 +25,8 @@ node white noise;
 node file rec { path "take1.wav"; }
 node card desk { @use card_out MOTU; }
 node card porch { @use card_out USB2; }
-route noise:MONO rec:FL;
-route noise:MONO desk:playback_1;
+route noise:noise.mono rec:record.left;
+route noise:noise.mono desk:play.1;
 )";
 
 inline std::string replaced(std::string text, std::string_view from, std::string_view to) {
@@ -43,7 +43,7 @@ struct Texts {
 	std::string t5 = replaced(t2, "take2.wav", "take3.wav");
 	std::string t7 = replaced(t2, "@set $ch 2;", "@set $ch 4;");
 	std::string t8 = replaced(t7, "take2.wav", "take3.wav");
-	std::string t9 = t7 + "route noise:MONO rec:FX;\n";
+	std::string t9 = t7 + "route noise:noise.mono rec:FX;\n";
 	std::string t10 = replaced(t7, "graph_frequency 48000;", "graph_frequency 44100;");
 	std::string t11 = replaced(t10, "take2.wav", "take4.wav");
 };
@@ -62,20 +62,19 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
 	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
-	ear::Ports cardPorts;
-	for (int i = 1; i <= playback; ++i) cardPorts.inputs.push_back("playback_" + std::to_string(i));
+	const ear::Ports cardPorts{{{ear::Direction::input, "play", ear::numbered(static_cast<std::uint32_t>(playback))}}};
 	view.nodes.push_back({{"desk", "card", {{"card", "MOTU"}, {"playback", playback}}},
 	                      cardPorts,
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"}});
-	view.nodes.push_back({{"noise", "white", nlohmann::json::object()}, {{}, {"MONO"}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"noise", "white", nlohmann::json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, NodeState::running, std::nullopt});
 	view.nodes.push_back({{"porch", "card", {{"card", "USB2"}, {"playback", playback}}},
 	                      cardPorts,
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"}});
-	view.nodes.push_back({{"rec", "file", {{"path", recPath}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
-	view.routes.push_back({{{"noise", "MONO"}, {"desk", "playback_1"}}, ear::RouteMatch::pending, ""});
-	view.routes.push_back({{{"noise", "MONO"}, {"rec", "FL"}}, ear::RouteMatch::linked, ""});
+	view.nodes.push_back({{"rec", "file", {{"path", recPath}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::running, std::nullopt});
+	view.routes.push_back({{{"noise", "noise.mono"}, {"desk", "play.1"}}, ear::RouteMatch::pending, ""});
+	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
 	return view;
 }
 

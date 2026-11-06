@@ -33,17 +33,17 @@ std::filesystem::path writeWebRoot(const TempDirectory& directory) {
 	return root;
 }
 
-/// ear on noise -> rec:FL plus `more` (graph file lines), serving a web root of its own; ready once
-/// `readyLine` is printed (by default, noise -> rec:FL linked).
+/// ear on noise -> rec:record.left plus `more` (graph file lines), serving a web root of its own; ready once
+/// `readyLine` is printed (by default, noise -> rec:record.left linked).
 struct Running {
 	TempDirectory directory;
 	Ear ear;
-	explicit Running(const std::string& more = "", const std::string& readyLine = linkedLine("noise:MONO", "rec:FL"))
+	explicit Running(const std::string& more = "", const std::string& readyLine = linkedLine("noise:noise.mono", "rec:record.left"))
 	    : ear(start(directory, more, readyLine)) {}
 
 private:
 	static Ear start(const TempDirectory& directory, const std::string& more, const std::string& readyLine) {
-		writeGraphFile(directory, noiseToRec("FL", more));
+		writeGraphFile(directory, noiseToRec("record.left", more));
 		return Ear(directory, {readyLine}, {"--web-root", writeWebRoot(directory).string()});
 	}
 };
@@ -108,21 +108,21 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	REQUIRE(graph["nodes"].size() == 2);
 	CHECK(graph["nodes"][0]["name"] == "noise");
 	CHECK(graph["nodes"][0]["type"] == "white");
-	CHECK(graph["nodes"][0]["outputs"] == json{"MONO"});
+	CHECK(graph["nodes"][0]["outputs"] == json{"noise.mono"});
 	CHECK(graph["nodes"][0]["state"] == "running");
 	CHECK(graph["nodes"][1]["name"] == "rec");
 	CHECK(graph["nodes"][1]["type"] == "file");
 	CHECK(graph["nodes"][1]["settings"]["path"] == "rec.wav");
-	CHECK(graph["nodes"][1]["inputs"] == json{"FL", "FR"});
+	CHECK(graph["nodes"][1]["inputs"] == json{"record.left", "record.right"});
 	CHECK(graph["nodes"][1]["state"] == "running");
 	REQUIRE(graph["routes"].size() == 1);
-	CHECK(graph["routes"][0]["from"] == route("noise", "MONO", "rec", "FL")["from"]);
-	CHECK(graph["routes"][0]["to"] == route("noise", "MONO", "rec", "FL")["to"]);
+	CHECK(graph["routes"][0]["from"] == route("noise", "noise.mono", "rec", "record.left")["from"]);
+	CHECK(graph["routes"][0]["to"] == route("noise", "noise.mono", "rec", "record.left")["to"]);
 	CHECK(graph["routes"][0]["status"] == "linked");
 
 	CHECK(rpc.call("node.add", {{"name", "n2"}, {"type", "white"}})["result"] == json::object());
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "n2"}, {"state", "running"}}); });
-	const json added = route("n2", "MONO", "rec", "FR");
+	const json added = route("n2", "noise.mono", "rec", "record.right");
 	CHECK(rpc.call("route.add", added)["result"] == json::object());
 	rpc.waitFor([&](const json& m) { return Rpc::matches(m, "route.status", {{"from", added["from"]}, {"to", added["to"]}, {"status", "linked"}}); });
 
@@ -138,11 +138,11 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	CHECK(routeAdded < linked);
 	CHECK(linked < rpc.notifications.size());
 
-	// Noise has reached rec:FR once a level window of it is measured there.
+	// Noise has reached rec:record.right once a level window of it is measured there.
 	CHECK(rpc.call("levels.subscribe").contains("result"));
 	rpc.waitFor([](const json& m) {
 		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("rec") &&
-		       m["params"]["nodes"]["rec"]["FR"][1].get<double>() > 0.5;
+		       m["params"]["nodes"]["rec"]["record.right"][1].get<double>() > 0.5;
 	});
 
 	CHECK(ear.stop(rpc) == 0);
@@ -160,7 +160,7 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise");
 	});
 	INFO(levels.dump());
-	const json& level = levels["params"]["nodes"]["noise"]["MONO"];
+	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
 	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));
 	CHECK(ear.stop(rpc) == 0);
 }
@@ -171,7 +171,7 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	Rpc rpc(ear.port());
 	REQUIRE(rpc.call("graph.subscribe").contains("result"));
 
-	const json wrong = rpc.call("route.add", route("noise", "MONO", "rec", "FX"));
+	const json wrong = rpc.call("route.add", route("noise", "noise.mono", "rec", "FX"));
 	INFO(wrong.dump());
 	CHECK(wrong["error"]["code"] == -32000);
 	CHECK(wrong["error"]["data"]["code"] == "unknown-port");
@@ -179,7 +179,7 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	CHECK(rpc.call("node.remove", {{"name", "noise"}})["result"] == json::object());
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.stopped", {{"name", "noise"}}); });
 	INFO("notifications: " << json(rpc.notifications).dump());
-	const json removed = route("noise", "MONO", "rec", "FL");
+	const json removed = route("noise", "noise.mono", "rec", "record.left");
 	const std::size_t routeRemoved = rpc.indexOf("route.removed", removed);
 	const std::size_t nodeRemoved = rpc.indexOf("node.removed", {{"name", "noise"}});
 	const std::size_t stopping = rpc.indexOf("node.state", {{"name", "noise"}, {"state", "stopping"}});
@@ -259,9 +259,9 @@ TEST_CASE("A sound card node runs and its route is linked", "[system][control][c
 	REQUIRE(std::filesystem::exists(alsa));
 	::setenv("ALSA_CONFIG_PATH", alsa.c_str(), 1);
 	::setenv("EAR_ALSA_OUT", directory.path().c_str(), 1);
-	writeGraphFile(directory, noiseToRec("FL", "node card out { card \"Test\"; playback 2; }\nroute noise:MONO out:playback_1;\n"));
-	const json toCard = route("noise", "MONO", "out", "playback_1");
-	Ear ear(directory, {linkedLine("noise:MONO", "out:playback_1")});
+	writeGraphFile(directory, noiseToRec("record.left", "node card out { card \"Test\"; playback 2; }\nroute noise:noise.mono out:play.1;\n"));
+	const json toCard = route("noise", "noise.mono", "out", "play.1");
+	Ear ear(directory, {linkedLine("noise:noise.mono", "out:play.1")});
 	INFO("ear printed:\n" << ear.process().output());
 	CHECK(ear.process().waitForLine("node out running", deadline));
 

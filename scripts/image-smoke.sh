@@ -8,7 +8,7 @@
 #
 # Two container starts, both as the image's own user (no --user):
 # 1. Without SYS_NICE: the user is uid 10001; no compiler or build tool is on the PATH; ear's
-#    engine.conf and the built editor (web/index.html) are in /opt/ear; the recordings folder
+#    engine.conf, the built editor (web/index.html) and each fetched dependency's licence are in /opt/ear; the recordings folder
 #    /var/lib/ear/recordings is writable; then ear --help, which
 #    also proves its shared libraries load. ear carries CAP_SYS_NICE as a permitted-only file
 #    capability, so it starts where the capability is not allowed (a marked-effective one would
@@ -49,7 +49,9 @@ docker run --rm --entrypoint /bin/sh "$image" -euc '
 			exit 1
 		fi
 	done
-	for file in /opt/ear/engine.conf /opt/ear/web/index.html; do
+	for file in /opt/ear/engine.conf /opt/ear/web/index.html \
+		/opt/ear/licenses/arduinojson-LICENSE /opt/ear/licenses/ixwebsocket-LICENSE /opt/ear/licenses/micro_flac-LICENSE \
+		/opt/ear/licenses/noise_c-LICENSE /opt/ear/licenses/sendspin-LICENSE /opt/ear/licenses/mdns-LICENSE; do
 		if [ ! -f "$file" ]; then
 			echo "image-smoke: $file is missing" >&2
 			exit 1
@@ -90,7 +92,7 @@ graph_frequency 48000;
 block_size 256;
 node white noise;
 node file rec { path "rec.wav"; }
-route noise:MONO rec:FL;
+route noise:noise.mono rec:record.left;
 CONF
 chmod 777 "$scratch/config"
 chmod 666 "$scratch/config/ear.conf"
@@ -110,7 +112,7 @@ run_ear() {
 	while IFS= read -r -t 30 line; do
 		echo "  ear: $line"
 		if [[ $line == "control listening on "* ]]; then listening=yes; fi
-		if [[ $line == "route noise:MONO -> rec:FL linked" ]]; then linked=yes; fi
+		if [[ $line == "route noise:noise.mono -> rec:record.left linked" ]]; then linked=yes; fi
 		if [[ -n $listening && -n $linked ]]; then break; fi
 	done < <(docker logs --follow "$container" 2>&1)
 	if [[ -z $listening || -z $linked ]]; then

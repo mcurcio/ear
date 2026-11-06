@@ -27,8 +27,8 @@ node white noise;
 node file rec { path "take1.wav"; }
 node card desk { @use card_out MOTU; }
 node card porch { @use card_out USB2; }
-route noise:MONO rec:FL;
-route noise:MONO desk:playback_1;
+route noise:noise.mono rec:record.left;
+route noise:noise.mono desk:play.1;
 )";
 
 const std::string formatLines = "graph_frequency 48000;\nblock_size 256;\n";
@@ -71,8 +71,8 @@ TEST_CASE("The record's example loads with no diagnostic into its wanted graph",
 	                                {"porch", "card", {{"card", "USB2"}, {"playback", 2}}},
 	                            });
 	CHECK(read.wanted->nodes[2].settings["playback"].is_number_integer());   // its declared kind, not text
-	CHECK(read.wanted->routes == std::vector<Route>{{{"noise", "MONO"}, {"rec", "FL"}},
-	                                                {{"noise", "MONO"}, {"desk", "playback_1"}}});
+	CHECK(read.wanted->routes == std::vector<Route>{{{"noise", "noise.mono"}, {"rec", "record.left"}},
+	                                                {{"noise", "noise.mono"}, {"desk", "play.1"}}});
 	REQUIRE(read.placements.nodes.size() == 4);
 	CHECK(read.placements.nodes[1] == control::TextPlace{9, 1});
 	CHECK(read.placements.nodes[2] == control::TextPlace{10, 1});
@@ -91,11 +91,11 @@ TEST_CASE("Each of ear's codes is placed where the problem is written, and any e
 		CHECK(sameFormat(model.read().format, 48000, 256));
 	}
 	SECTION("a route end that is not <node>:<port>") {
-		const auto model = f.load(formatLines + "node white noise;\nroute noise rec:FL;\n");
+		const auto model = f.load(formatLines + "node white noise;\nroute noise rec:record.left;\n");
 		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}});
 		CHECK_FALSE(model.read().wanted.has_value());
-		const auto empty = f.load(formatLines + "node white noise;\nroute \":MONO\" \"rec:\";\n");   // an empty part
-		CHECK(placed(empty.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}, {"ear/bad-directive", 4, 15}});
+		const auto empty = f.load(formatLines + "node white noise;\nroute \":noise.mono\" \"rec:\";\n");   // an empty part
+		CHECK(placed(empty.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}, {"ear/bad-directive", 4, 21}});
 	}
 	SECTION("a node without its name") {
 		const auto model = f.load(formatLines + "node white;\n");

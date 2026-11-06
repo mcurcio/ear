@@ -25,7 +25,7 @@
             "settings": {},
             "inputs": [],
             "outputs": [
-              "MONO"
+              "noise.mono"
             ],
             "state": "running"
           },
@@ -36,8 +36,8 @@
               "path": "x.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "running"
@@ -47,11 +47,11 @@
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "rec",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "linked"
           }
@@ -71,17 +71,17 @@
       "params": {
         "nodes": {
           "noise": {
-            "MONO": [
+            "noise.mono": [
               0.9998,
               0.5771
             ]
           },
           "rec": {
-            "FL": [
+            "record.left": [
               0.9998,
               0.5771
             ],
-            "FR": [
+            "record.right": [
               0,
               0
             ]
@@ -95,11 +95,11 @@
       "params": {
         "nodes": {
           "rec": {
-            "FL": [
+            "record.left": [
               0.9991,
               0.5779
             ],
-            "FR": [
+            "record.right": [
               0,
               0
             ]
@@ -125,7 +125,7 @@
         "settings": {},
         "inputs": [],
         "outputs": [
-          "MONO"
+          "noise.mono"
         ],
         "state": "running"
       },
@@ -136,8 +136,8 @@
           "path": "x.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "running"
@@ -147,11 +147,11 @@
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "linked"
       }

@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,7 +18,7 @@ namespace {
 struct SilentCode final : AudioCode {
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>,
-	             std::uint32_t) noexcept override {}
+	             std::uint32_t, const GraphCycle&) noexcept override {}
 	void release() noexcept override {}
 };
 
@@ -61,9 +62,9 @@ struct Type final : NodeType {
 
 std::vector<std::unique_ptr<const NodeType>> types() {
 	std::vector<std::unique_ptr<const NodeType>> all;
-	all.push_back(std::make_unique<Type>("source", Ports{{}, {"MONO"}}));
-	all.push_back(std::make_unique<Type>("recorder", Ports{{"FL", "FR"}, {}}, true));
-	all.push_back(std::make_unique<Type>("card", Ports{{"OUT1"}, {"IN1"}, {"PB1"}, {"CAP1"}}));
+	all.push_back(std::make_unique<Type>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
+	all.push_back(std::make_unique<Type>("recorder", Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
+	all.push_back(std::make_unique<Type>("card", Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
 	return all;
 }
 
@@ -121,6 +122,11 @@ struct NoReceivers final : RtpReceiverFactory {
 	}
 };
 
+/// Only insides with threads post, and these have none.
+struct NoExecutor final : Executor {
+	void post(std::move_only_function<void()>) override { throw std::logic_error("nothing here posts"); }
+};
+
 struct Links final : LinkMaker {
 	std::vector<LinkId> made;
 	void createLink(LinkId link, EnginePortId, EnginePortId) override { made.push_back(link); }
@@ -135,7 +141,8 @@ struct Fixture {
 	NoCards cards;
 	NoReceivers receivers;
 	Links links;
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers};
+	NoExecutor mainLoop;
+	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers, mainLoop};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
 	Fixture() {
@@ -148,8 +155,8 @@ struct Fixture {
 	}
 };
 
-const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
-const Route noiseToFr{{"noise", "MONO"}, {"rec", "FR"}};
+const Route noiseToFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
+const Route noiseToFr{{"noise", "noise.mono"}, {"rec", "record.right"}};
 
 /// Plans `nodes` and `routes` and commits the plan, which must be accepted.
 void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::vector<Route>& routes) {
@@ -166,8 +173,8 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	      {noiseToFl, noiseToFr});
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
-	f.routes.portAppeared({{"noise", "MONO"}, Direction::output, 1});
-	f.routes.portAppeared({{"rec", "FL"}, Direction::input, 2});
+	f.routes.portAppeared({{"noise", "noise.mono"}, Direction::output, 1});
+	f.routes.portAppeared({{"rec", "record.left"}, Direction::input, 2});
 	REQUIRE(f.links.made.size() == 1);
 	f.routes.linkActive(f.links.made.front());
 
@@ -185,10 +192,10 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	REQUIRE(view.nodes[0].reason.has_value());
 	CHECK(view.nodes[0].reason->detail == "no driver");
 	// Public ports only: inside ports are the card's own.
-	CHECK(view.nodes[0].ports.inputs == std::vector<PortName>{"OUT1"});
-	CHECK(view.nodes[0].ports.outputs == std::vector<PortName>{"IN1"});
-	CHECK(view.nodes[0].ports.insideInputs.empty());
-	CHECK(view.nodes[0].ports.insideOutputs.empty());
+	CHECK(view.nodes[0].ports.inputs() == std::vector<PortName>{"play.1"});
+	CHECK(view.nodes[0].ports.outputs() == std::vector<PortName>{"capture.1"});
+	CHECK(view.nodes[0].ports.insideInputs().empty());
+	CHECK(view.nodes[0].ports.insideOutputs().empty());
 	CHECK(view.nodes[1].spec == NodeSpec{"noise", "source", {{"seed", 1}}});
 	CHECK(view.nodes[1].state == NodeState::running);
 	CHECK_FALSE(view.nodes[1].reason.has_value());
@@ -226,6 +233,11 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.nodes[1].state == NodeState::starting);
 
 	f.blocks.events.at("rec")->ready();
+	view = f.status.read();
+	CHECK(view.nodes[1].state == NodeState::starting);   // its insides wait for the old rec
+
+	f.handoffs.closeAll();
+	REQUIRE(f.nodes.status().size() == 2);
 	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::running);
 }

@@ -205,7 +205,7 @@ TEST_CASE("start() offers the boot file: the file change first, then the commit'
 	CHECK(change.file.diagnostics.empty());
 	CHECK_FALSE(change.file.refusal.has_value());
 	CHECK(f.log.lines == Lines{"file disk", "node.added desk", "node.added noise", "node.added porch", "node.added rec",
-	                           "route.added noise:MONO desk:playback_1", "route.added noise:MONO rec:FL"});
+	                           "route.added noise:noise.mono desk:play.1", "route.added noise:noise.mono rec:record.left"});
 }
 
 TEST_CASE("start() reads ear.conf again once watching, so a hand edit made after the boot read is run",
@@ -235,7 +235,7 @@ TEST_CASE("A boot file with errors is announced with its diagnostics, and nothin
 }
 
 TEST_CASE("A boot file the graph refuses shows the refusal at its place, and nothing runs", "[keeper]") {
-	Fixture f("start_refused", replaced(recordExample, "rec:FL", "rec:FX"));
+	Fixture f("start_refused", replaced(recordExample, "rec:record.left", "rec:FX"));
 	f.keeper->start();
 	f.pump();
 	CHECK(f.log.lines == Lines{"file disk"});
@@ -266,9 +266,9 @@ TEST_CASE("An accepted edit is announced, then runs, then is answered, and is wr
 	f.log.clear();
 	CHECK(ok(f.update("desk", {{"card", "MOTU"}, {"playback", 4}})));
 	CHECK(f.lastChange().file.text.find("@set $ch 4;") != std::string::npos);
-	CHECK(f.log.lines == Lines{"file edit", "route.removed noise:MONO desk:playback_1", "node.removed desk",
+	CHECK(f.log.lines == Lines{"file edit", "route.removed noise:noise.mono desk:play.1", "node.removed desk",
 	                           "node.removed porch", "node.added desk", "node.added porch",
-	                           "route.added noise:MONO desk:playback_1", "reply"});
+	                           "route.added noise:noise.mono desk:play.1", "reply"});
 	CHECK(std::all_of(f.log.turns.begin(), f.log.turns.end(), [&](int turn) { return turn == f.log.turns[0]; }));
 }
 
@@ -277,7 +277,7 @@ TEST_CASE("A refused edit is answered and changes nothing: no announcement, no v
 	f.start();
 	const auto before = f.graphFile();
 	f.log.clear();
-	auto results = f.run({control::AddRoute{{{"noise", "MONO"}, {"rec", "FX"}}}});
+	auto results = f.run({control::AddRoute{{{"noise", "noise.mono"}, {"rec", "FX"}}}});
 	CHECK(code(results[0]) == "unknown-port");
 	CHECK(f.log.lines == Lines{"reply"});
 	const auto after = f.graphFile();
@@ -322,7 +322,7 @@ TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the g
 	REQUIRE(ok(f.update("rec", take2)));
 	const auto edited = f.lastChange().file.version;
 	f.log.clear();
-	const auto hand = replaced(recordExample, "rec:FL", "rec:FX");
+	const auto hand = replaced(recordExample, "rec:record.left", "rec:FX");
 	handEdit(f.file, hand);
 	f.diskEvent();
 	CHECK(f.log.lines == Lines{"file disk dropped=1"});

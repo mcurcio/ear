@@ -33,17 +33,17 @@ describe("the graph reducer", () => {
       {
         jsonrpc: "2.0",
         method: "route.added",
-        params: { from: { node: "ghost", port: "MONO" }, to: { node: "rec", port: "FR" } },
+        params: { from: { node: "ghost", port: "noise.mono" }, to: { node: "rec", port: "record.right" } },
       },
       {
         jsonrpc: "2.0",
         method: "route.status",
-        params: { from: { node: "noise", port: "MONO" }, to: { node: "rec", port: "FR" }, status: "linked" },
+        params: { from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.right" }, status: "linked" },
       },
       {
         jsonrpc: "2.0",
         method: "route.removed",
-        params: { from: { node: "noise", port: "MONO" }, to: { node: "rec", port: "FR" } },
+        params: { from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.right" } },
       },
     ];
     expect(replay(ghostly, start)).toBe(start);

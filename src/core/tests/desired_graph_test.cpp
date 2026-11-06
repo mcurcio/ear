@@ -37,18 +37,16 @@ public:
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
 	                                                                        const NodeSettings& settings) const override {
 		if (settings.contains("bad")) return std::unexpected(InvalidSettings{node, "bad is not a setting"});
-		Ports ports = ports_;   // {"extra": "<name>"} adds an input port of that name
-		if (settings.contains("extra")) ports.inputs.push_back(settings["extra"].get<std::string>());
-		return std::make_unique<TestConfig>(std::move(ports));
+		return std::make_unique<TestConfig>(ports_);
 	}
 
 private:
-	static constexpr SettingDeclaration kinds[] = {{"level", SettingKind::wholeNumber}, {"extra", SettingKind::text}};
+	static constexpr SettingDeclaration kinds[] = {{"level", SettingKind::wholeNumber}};
 	std::string name_;
 	Ports ports_;
 };
 
-/// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs playback_1..playback_n,
+/// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
 /// so a new channel count changes its ports.
 class CardType final : public NodeType {
 public:
@@ -56,10 +54,8 @@ public:
 	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
 	                                                                        const NodeSettings& settings) const override {
-		Ports ports;
-		const int playback = settings.value("playback", 0);
-		for (int i = 1; i <= playback; ++i) ports.inputs.push_back("playback_" + std::to_string(i));
-		return std::make_unique<TestConfig>(std::move(ports));
+		const auto playback = static_cast<std::uint32_t>(settings.value("playback", 0));
+		return std::make_unique<TestConfig>(Ports{{{Direction::input, "play", numbered(playback)}}});
 	}
 
 private:
@@ -69,9 +65,9 @@ private:
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
 	types.push_back(std::make_unique<CardType>());
-	types.push_back(std::make_unique<TestType>("source", Ports{{}, {"MONO"}}));
-	types.push_back(std::make_unique<TestType>("sink", Ports{{"FL", "FR"}, {}}));
-	types.push_back(std::make_unique<TestType>("broken", Ports{{"X"}, {"X"}}));
+	types.push_back(std::make_unique<TestType>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
+	types.push_back(std::make_unique<TestType>("sink", Ports{{{Direction::input, "record", {"left", "right"}}}}));
+	types.push_back(std::make_unique<TestType>("broken", Ports{{{Direction::input, "x", {"a"}}, {Direction::output, "x", {"a"}}}}));
 	return types;
 }
 
@@ -116,14 +112,14 @@ struct Fixture {
 	}
 };
 
-const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
-const Route noiseToFr{{"noise", "MONO"}, {"rec", "FR"}};
-const Route hissToFl{{"hiss", "MONO"}, {"rec", "FL"}};
+const Route noiseToFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
+const Route noiseToFr{{"noise", "noise.mono"}, {"rec", "record.right"}};
+const Route hissToFl{{"hiss", "noise.mono"}, {"rec", "record.left"}};
 
 const NodeSpec noiseSpec{"noise", "source", json::object()};
 const NodeSpec recSpec{"rec", "sink", json::object()};
 NodeSpec deskSpec(int playback) { return {"desk", "card", {{"card", "MOTU"}, {"playback", playback}}}; }
-const Route noiseToDesk1{{"noise", "MONO"}, {"desk", "playback_1"}};
+const Route noiseToDesk1{{"noise", "noise.mono"}, {"desk", "play.1"}};
 
 /// Plans `nodes` and `routes` and commits the plan, which must be accepted.
 void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::vector<Route>& routes) {
@@ -145,7 +141,7 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 	apply(f.graph, {noiseSpec}, {});
 	REQUIRE(f.recorder.nodes.size() == 1);
 	CHECK(f.recorder.nodes[0].first == "noise");
-	CHECK(f.recorder.nodes[0].second->ports().outputs == std::vector<PortName>{"MONO"});
+	CHECK(f.recorder.nodes[0].second->ports().outputs() == std::vector<PortName>{"noise.mono"});
 
 	SECTION("the same spec again is an empty plan") {
 		auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec}, std::vector<Route>{});
@@ -175,16 +171,16 @@ TEST_CASE("A wanted route is checked at both ends: node, port and direction", "[
 	const std::vector<NodeSpec> both{noiseSpec, recSpec};
 	const auto refused = [&](const Route& route) { return f.graph.plan(both, std::vector<Route>{route}); };
 
-	CHECK(planErrorOf<UnknownNode>(refused({{"hiss", "MONO"}, {"rec", "FL"}})).node == "hiss");
-	CHECK(planErrorOf<UnknownNode>(refused({{"noise", "MONO"}, {"tape", "FL"}})).node == "tape");
-	CHECK(planErrorOf<UnknownPort>(refused({{"noise", "MONO"}, {"rec", "FX"}})).port == PortRef{"rec", "FX"});
-	CHECK(planErrorOf<UnknownPort>(refused({{"noise", "L"}, {"rec", "FL"}})).port == PortRef{"noise", "L"});
+	CHECK(planErrorOf<UnknownNode>(refused({{"hiss", "noise.mono"}, {"rec", "record.left"}})).node == "hiss");
+	CHECK(planErrorOf<UnknownNode>(refused({{"noise", "noise.mono"}, {"tape", "record.left"}})).node == "tape");
+	CHECK(planErrorOf<UnknownPort>(refused({{"noise", "noise.mono"}, {"rec", "FX"}})).port == PortRef{"rec", "FX"});
+	CHECK(planErrorOf<UnknownPort>(refused({{"noise", "L"}, {"rec", "record.left"}})).port == PortRef{"noise", "L"});
 
-	const Route backwards{{"rec", "FL"}, {"noise", "MONO"}};
+	const Route backwards{{"rec", "record.left"}, {"noise", "noise.mono"}};
 	CHECK(planErrorOf<WrongDirection>(refused(backwards)).route == backwards);
-	const Route inputToInput{{"rec", "FL"}, {"rec", "FR"}};
+	const Route inputToInput{{"rec", "record.left"}, {"rec", "record.right"}};
 	CHECK(planErrorOf<WrongDirection>(refused(inputToInput)).route == inputToInput);
-	const Route outputToOutput{{"noise", "MONO"}, {"noise", "MONO"}};
+	const Route outputToOutput{{"noise", "noise.mono"}, {"noise", "noise.mono"}};
 	CHECK(planErrorOf<WrongDirection>(refused(outputToOutput)).route == outputToOutput);
 
 	CHECK(f.log.empty());
@@ -197,21 +193,21 @@ TEST_CASE("The catalogue finds types by name and refuses two types with one name
 	CHECK(catalogue.find("pink") == nullptr);
 
 	auto types = testTypes();
-	types.push_back(std::make_unique<TestType>("sink", Ports{{"IN"}, {}}));
+	types.push_back(std::make_unique<TestType>("sink", Ports{{{Direction::input, "in", {"a"}}}}));
 	CHECK_THROWS_AS(NodeCatalogue{std::move(types)}, std::invalid_argument);
 }
 
 TEST_CASE("Command errors have one code each and describe what they name", "[command_error]") {
-	const Route route{{"rec", "FL"}, {"noise", "MONO"}};
+	const Route route{{"rec", "record.left"}, {"noise", "noise.mono"}};
 	const std::vector<std::pair<CommandError, std::string>> cases{
 		{UnknownNodeType{"pink"}, "unknown-node-type pink"},
 		{InvalidSettings{"rec", "path: missing"}, "invalid-settings rec: path: missing"},
 		{DuplicateNode{"rec"}, "duplicate-node rec"},
 		{UnknownNode{"tape"}, "unknown-node tape"},
 		{UnknownPort{{"rec", "FX"}}, "unknown-port rec:FX"},
-		{WrongDirection{route}, "wrong-direction rec:FL -> noise:MONO"},
+		{WrongDirection{route}, "wrong-direction rec:record.left -> noise:noise.mono"},
 		{InvalidName{"a.b"}, "invalid-name a.b"},
-		{UnknownRoute{{{"noise", "MONO"}, {"rec", "FR"}}}, "unknown-route noise:MONO -> rec:FR"},
+		{UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.right"}}}, "unknown-route noise:noise.mono -> rec:record.right"},
 		{Stopping{}, "stopping"},
 	};
 	for (const auto& [error, text] : cases) {
@@ -227,11 +223,11 @@ TEST_CASE("A route no longer wanted is removed alone, and it can be wanted again
 	f.log.clear();
 
 	apply(f.graph, {noiseSpec, recSpec}, {noiseToFr});
-	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL"});
+	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> rec:record.left"});
 	CHECK(f.graph.routes() == std::vector<Route>{noiseToFr});
 
 	apply(f.graph, {noiseSpec, recSpec}, {noiseToFl, noiseToFr});
-	CHECK(f.log.back() == "sub routeAdded noise:MONO -> rec:FL");
+	CHECK(f.log.back() == "sub routeAdded noise:noise.mono -> rec:record.left");
 }
 
 TEST_CASE("A node no longer wanted goes after each of its routes, and the name can come back",
@@ -242,7 +238,7 @@ TEST_CASE("A node no longer wanted goes after each of its routes, and the name c
 	f.log.clear();
 
 	apply(f.graph, {hissSpec, recSpec}, {hissToFl});
-	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FR",
+	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> rec:record.left", "sub routeRemoved noise:noise.mono -> rec:record.right",
 	                   "sub nodeRemoved noise"});
 	CHECK(f.graph.routes() == std::vector<Route>{hissToFl});
 	REQUIRE(f.graph.nodes().size() == 2);
@@ -250,8 +246,8 @@ TEST_CASE("A node no longer wanted goes after each of its routes, and the name c
 	CHECK(f.graph.nodes()[1].spec.name == "rec");
 
 	apply(f.graph, {{"noise", "source", {{"level", 2}}}, hissSpec, recSpec}, {noiseToFl, hissToFl});
-	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FR",
-	                   "sub nodeRemoved noise", "sub nodeAdded noise", "sub routeAdded noise:MONO -> rec:FL"});
+	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> rec:record.left", "sub routeRemoved noise:noise.mono -> rec:record.right",
+	                   "sub nodeRemoved noise", "sub nodeAdded noise", "sub routeAdded noise:noise.mono -> rec:record.left"});
 
 	SECTION("a node with no routes is removed alone") {
 		apply(f.graph, {{"noise", "source", {{"level", 2}}}, hissSpec, recSpec, {"lone", "source", {}}},
@@ -279,7 +275,7 @@ TEST_CASE("New settings with the same ports update the node, which records the n
 		REQUIRE(f.recorder.updates.size() == 1);
 		CHECK(f.recorder.updates[0].first == NodeSpec{"rec", "sink", {{"level", 2}}});
 		CHECK(f.recorder.updates[0].second != f.recorder.nodes.at(0).second);   // a new config
-		CHECK(f.recorder.updates[0].second->ports().inputs == std::vector<PortName>{"FL", "FR"});
+		CHECK(f.recorder.updates[0].second->ports().inputs() == std::vector<PortName>{"record.left", "record.right"});
 		CHECK(f.graph.nodes().at(0).spec.settings == NodeSettings{{"level", 2}});
 		// The recorded spec is the new one: wanting it again is an empty plan.
 		auto again = f.graph.plan(std::vector<NodeSpec>{{"rec", "sink", {{"level", 2}}}}, {});
@@ -315,8 +311,8 @@ TEST_CASE("Observers hear every change before any subscriber, whatever the regis
 		"obs nodeAdded noise", "sub nodeAdded noise",
 		"obs nodeAdded rec", "sub nodeAdded rec",
 		"obs nodeUpdated rec", "sub nodeUpdated rec",
-		"obs routeAdded noise:MONO -> rec:FL", "sub routeAdded noise:MONO -> rec:FL",
-		"obs routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FL",
+		"obs routeAdded noise:noise.mono -> rec:record.left", "sub routeAdded noise:noise.mono -> rec:record.left",
+		"obs routeRemoved noise:noise.mono -> rec:record.left", "sub routeRemoved noise:noise.mono -> rec:record.left",
 		"obs nodeRemoved rec", "sub nodeRemoved rec",
 	});
 }
@@ -341,7 +337,7 @@ TEST_CASE("After close() plan and commit return stopping, and reads still answer
 	const auto nodes = f.graph.nodes();
 	REQUIRE(nodes.size() == 2);
 	CHECK(nodes[0].spec == noiseSpec);
-	CHECK(nodes[0].ports.outputs == std::vector<PortName>{"MONO"});
+	CHECK(nodes[0].ports.outputs() == std::vector<PortName>{"noise.mono"});
 	CHECK(nodes[1].spec == recSpec);
 	CHECK(f.graph.routes() == std::vector<Route>{noiseToFl});
 }
@@ -362,9 +358,9 @@ TEST_CASE("plan from empty to a full graph commits every change in the fixed ord
 	REQUIRE(f.graph.commit(std::move(*plan)).has_value());
 
 	CHECK(f.log == Log{"obs nodeAdded desk", "sub nodeAdded desk", "obs nodeAdded noise", "sub nodeAdded noise",
-	                   "obs nodeAdded rec", "sub nodeAdded rec", "obs routeAdded noise:MONO -> desk:playback_1",
-	                   "sub routeAdded noise:MONO -> desk:playback_1", "obs routeAdded noise:MONO -> rec:FL",
-	                   "sub routeAdded noise:MONO -> rec:FL"});
+	                   "obs nodeAdded rec", "sub nodeAdded rec", "obs routeAdded noise:noise.mono -> desk:play.1",
+	                   "sub routeAdded noise:noise.mono -> desk:play.1", "obs routeAdded noise:noise.mono -> rec:record.left",
+	                   "sub routeAdded noise:noise.mono -> rec:record.left"});
 	CHECK(f.graph.nodes().size() == 3);
 	CHECK(f.graph.routes() == std::vector<Route>{noiseToDesk1, noiseToFl});
 }
@@ -409,15 +405,15 @@ TEST_CASE("plan with other ports replaces the node and adds its routes again", "
 	f.log.clear();
 
 	apply(f.graph, {noiseSpec, recSpec, deskSpec(4)}, {noiseToDesk1, noiseToFl});
-	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> desk:playback_1", "sub nodeRemoved desk", "sub nodeAdded desk",
-	                   "sub routeAdded noise:MONO -> desk:playback_1"});
+	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> desk:play.1", "sub nodeRemoved desk", "sub nodeAdded desk",
+	                   "sub routeAdded noise:noise.mono -> desk:play.1"});
 	REQUIRE(f.recorder.nodes.size() == 4);
-	CHECK(f.recorder.nodes[3].second->ports().inputs.size() == 4);
+	CHECK(f.recorder.nodes[3].second->ports().inputs().size() == 4);
 
 	SECTION("another type under the same name is a replacement too") {
 		f.log.clear();
 		apply(f.graph, {noiseSpec, recSpec, {"desk", "sink", json::object()}}, {noiseToFl});
-		CHECK(f.log == Log{"sub routeRemoved noise:MONO -> desk:playback_1", "sub nodeRemoved desk",
+		CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> desk:play.1", "sub nodeRemoved desk",
 		                   "sub nodeAdded desk"});
 	}
 }
@@ -428,18 +424,18 @@ TEST_CASE("plan removes what is no longer wanted, routes before nodes", "[desire
 	f.log.clear();
 
 	apply(f.graph, {recSpec, {"hiss", "source", json::object()}}, {hissToFl});
-	CHECK(f.log == Log{"sub routeRemoved noise:MONO -> rec:FL", "sub routeRemoved noise:MONO -> rec:FR",
-	                   "sub nodeRemoved noise", "sub nodeAdded hiss", "sub routeAdded hiss:MONO -> rec:FL"});
+	CHECK(f.log == Log{"sub routeRemoved noise:noise.mono -> rec:record.left", "sub routeRemoved noise:noise.mono -> rec:record.right",
+	                   "sub nodeRemoved noise", "sub nodeAdded hiss", "sub routeAdded hiss:noise.mono -> rec:record.left"});
 }
 
 TEST_CASE("plan refuses a wanted graph the catalogue or the ports refuse, and changes nothing",
           "[desired_graph][plan]") {
 	Fixture f;
-	apply(f.graph, {noiseSpec, deskSpec(4)}, {{{"noise", "MONO"}, {"desk", "playback_4"}}});
+	apply(f.graph, {noiseSpec, deskSpec(4)}, {{{"noise", "noise.mono"}, {"desk", "play.4"}}});
 	f.log.clear();
 
 	SECTION("a wanted route to a port that is gone") {
-		const Route toFour{{"noise", "MONO"}, {"desk", "playback_4"}};
+		const Route toFour{{"noise", "noise.mono"}, {"desk", "play.4"}};
 		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, deskSpec(2)}, std::vector<Route>{toFour});
 		CHECK(planErrorOf<UnknownPort>(plan).port == toFour.to);
 		CHECK(errorCode(plan.error()) == "unknown-port");
@@ -451,7 +447,7 @@ TEST_CASE("plan refuses a wanted graph the catalogue or the ports refuse, and ch
 	}
 	SECTION("the first error found, nodes before routes") {
 		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, {"x.y", "source", {}}, {"z", "nope", {}}},
-		                               std::vector<Route>{{{"gone", "MONO"}, {"noise", "MONO"}}});
+		                               std::vector<Route>{{{"gone", "noise.mono"}, {"noise", "noise.mono"}}});
 		CHECK(planErrorOf<InvalidName>(plan).node == "x.y");
 	}
 	SECTION("each node and route error") {
@@ -462,11 +458,11 @@ TEST_CASE("plan refuses a wanted graph the catalogue or the ports refuse, and ch
 		                                            std::vector<Route>{noiseToFl})).node == "noise");
 		CHECK(planErrorOf<WrongDirection>(
 		          f.graph.plan(std::vector<NodeSpec>{noiseSpec, recSpec},
-		                       std::vector<Route>{{{"rec", "FL"}, {"noise", "MONO"}}})).route.from.node == "rec");
+		                       std::vector<Route>{{{"rec", "record.left"}, {"noise", "noise.mono"}}})).route.from.node == "rec");
 	}
 	CHECK(f.log.empty());
 	CHECK(f.graph.nodes().size() == 2);
-	CHECK(f.graph.nodes()[0].ports.inputs.size() == 4);
+	CHECK(f.graph.nodes()[0].ports.inputs().size() == 4);
 }
 
 TEST_CASE("commit of a stale plan or of another graph's plan is a wiring bug", "[desired_graph][plan]") {

@@ -23,6 +23,10 @@ add_test(NAME ear_help_lists_config COMMAND ear --help)
 set_tests_properties(ear_help_lists_config PROPERTIES
 	PASS_REGULAR_EXPRESSION "--config-dir.*--graph-frequency.*--block-size")
 
+# What configure asks of a tree that must carry a patch (cmake/SendspinDeps.cmake).
+add_test(NAME ear_carried_patch_check COMMAND "${CMAKE_COMMAND}"
+	"-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/carried_patch_test" -P "${CMAKE_CURRENT_SOURCE_DIR}/carried_patch_test.cmake")
+
 # ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
 # Boost.Beast), for the control port's tests (src/server/tests) and the system tests.
 add_library(ear_ws_client INTERFACE)
@@ -33,3 +37,11 @@ target_link_libraries(ear_ws_client INTERFACE Boost::beast)
 # the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/design/rtp.md).
 add_library(ear_rtp_tone INTERFACE)
 target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
+# ear_sendspin_server: the real Sendspin server for the sendspin node's clock and system tests (test/support/
+# sendspin_server.py, run by sendspin_server.hpp, header-only, in the venv CMakeLists.txt checks for).
+add_library(ear_sendspin_server INTERFACE)
+target_include_directories(ear_sendspin_server INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_compile_definitions(ear_sendspin_server INTERFACE
+	EAR_SENDSPIN_SERVER_PYTHON="${EAR_SENDSPIN_SERVER_PYTHON}"
+	EAR_SENDSPIN_SERVER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/support/sendspin_server.py")

@@ -130,8 +130,9 @@ how its node is made and heard from (its own proxy) and what fails it:
    the card unplugged, a link that fails or goes) first destroys the links and the adapter, then
    waits for a `pw_core_sync` round trip, and only then tells `lost(detail)`. So a lost card
    never holds the graph: the blocks go back to the dummy and keep processing. The node becomes
-   `failed engine-refused: <detail>`; its block and routes stay. No retry: `node.update`
-   restarts it.
+   `failed engine-refused: <detail>`; its block and routes stay. No retry: a `node.update`
+   with changed settings restarts it, and one with the same settings changes nothing
+   (`graph_file_model.cpp`, `desired_graph.cpp`), so with none to change, restart ear.
 
 CI has no sound card. `src/pipewire/tests/alsa/alsa.conf`, set as `ALSA_CONFIG_PATH` in the
 test process, defines `hw` so `hw:CARD=Test` is alsa-lib's `file` PCM over its `null` PCM
@@ -143,7 +144,7 @@ on a running PCM, the rate a real card refuses, and latency are checked only on 
 
 ## RTP receivers (module-rtp-source in-process)
 
-An `rtp` node is a port block (public outputs `channel_1`..`channel_N`, inside inputs
+An `rtp` node is a port block (public outputs `stream.1`..`stream.N`, inside inputs
 `from_rtp_1`..`from_rtp_N`, passed straight through) plus one RTP receiver, engine node
 `<node>.rtp`, made by `RtpReceivers` (`rtp_receivers.cpp`). Its module arguments are built in one
 place, `moduleArguments`, from parsed values only (`RtpAddress`, an enum, ranged numbers, the
@@ -265,6 +266,10 @@ Nothing like WirePlumber runs. Two things make that work:
 
 ## Traps
 
+- **A dot in a public port's name is safe.** Ports are `<bank>.<member>` since 2026-11-06. In PipeWire 1.4.2 `pw_impl_port_add`
+  (`impl-port.c`) only copies `port.name` and joins it into `port.alias` with a `:`; it never parses the name, and a route's link goes
+  by port ids. `port_block_test.cpp` carries a ramp and levels over dotted names. Read again at a PipeWire bump. Only the outside nodes'
+  links go by name, and those name inside ports and `playback_AUX<i>`, with no dot.
 - **Stop signals kill the process unless blocked first.** `pw_context_new` starts the data-loop
   thread. A SIGTERM sent to the process goes to any thread that does not block it, where its
   default action ends EAR. `Engine::create` blocks SIGINT and SIGTERM before `pw_init`, so every

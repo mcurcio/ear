@@ -26,6 +26,7 @@ public:
 	}
 	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("rtp asked for a sound card"); }
 	void rtpReceiver(const ear::RtpReceiverRequest& request) override { requests.push_back(request); }
+	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for insides events"); }
 
 	std::vector<ear::RtpReceiverRequest> requests;
 
@@ -63,18 +64,18 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 
 }  // namespace
 
-TEST_CASE("Rtp accepts a full settings object, and its ports are channel_i out and from_rtp_i inside", "[rtp]") {
+TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and from_rtp_i inside", "[rtp]") {
 	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
-	CHECK(ports.inputs.empty());
-	CHECK(ports.outputs == Names{"channel_1", "channel_2", "channel_3"});
-	CHECK(ports.insideInputs == Names{"from_rtp_1", "from_rtp_2", "from_rtp_3"});
-	CHECK(ports.insideOutputs.empty());
+	CHECK(ports.inputs().empty());
+	CHECK(ports.outputs() == Names{"stream.1", "stream.2", "stream.3"});
+	CHECK(ports.insideInputs() == Names{"from_rtp_1", "from_rtp_2", "from_rtp_3"});
+	CHECK(ports.insideOutputs().empty());
 
 	const auto wide = parseOk(settingsWith({{"channels", 64}, {"address", "0.0.0.0"}}));
-	CHECK(wide->ports().outputs.size() == 64);
-	CHECK(wide->ports().insideInputs.back() == "from_rtp_64");
+	CHECK(wide->ports().outputs().size() == 64);
+	CHECK(wide->ports().insideInputs().back() == "from_rtp_64");
 }
 
 TEST_CASE("Rtp start asks for exactly one receiver with its settings and its inside inputs", "[rtp]") {
@@ -165,7 +166,7 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 	CHECK(type->parse("fpp", settingsWith({{"rate", 1}, {"latencyMs", 0}})).error().detail == badRate);
 }
 
-TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
+TEST_CASE("Rtp passes from_rtp_i to stream.i sample for sample", "[rtp]") {
 	for (const std::uint32_t channels : {1U, 3U}) {
 		INFO(channels << " channels");
 		constexpr std::uint32_t frames = 200;
@@ -177,7 +178,7 @@ TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
 		ear::AudioCode& code = (*insides)->audioCode();
 		code.prepare(format);
 
-		// Inputs: from_rtp_1..N, each its own ramp. Outputs: channel_1..N, primed with a value no
+		// Inputs: from_rtp_1..N, each its own ramp. Outputs: stream.1..N, primed with a value no
 		// input carries.
 		std::vector<std::vector<float>> in(channels, std::vector<float>(format.maxBlock));
 		for (std::uint32_t c = 0; c < channels; ++c) {
@@ -190,11 +191,11 @@ TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
 		for (const auto& channel : in) inSpans.emplace_back(channel.data(), frames);
 		std::vector<std::span<float>> outSpans;
 		for (auto& channel : out) outSpans.emplace_back(channel);
-		code.process(inSpans, outSpans, frames);
+		code.process(inSpans, outSpans, frames, ear::GraphCycle{0, 0});
 		code.release();
 
 		for (std::uint32_t c = 0; c < channels; ++c) {
-			INFO("from_rtp_" << c + 1 << " -> channel_" << c + 1);
+			INFO("from_rtp_" << c + 1 << " -> stream." << c + 1);
 			CHECK(out[c] == std::vector<float>(in[c].begin(), in[c].begin() + frames));
 		}
 	}

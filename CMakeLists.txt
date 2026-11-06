@@ -118,6 +118,21 @@ if(missing_packages)
 		"(scripts/dev.sh make test), whose docker/Dockerfile installs them.")
 endif()
 
+# The sendspin node's protocol library and what it needs, at pinned commits.
+include(cmake/SendspinDeps.cmake)
+
+# The real server the sendspin node's tests run against (docs/design/sendspin.md section 13): a venv the image builds
+# from test/sendspin/requirements.txt.
+if(BUILD_TESTS)
+	set(EAR_SENDSPIN_SERVER_PYTHON "/opt/sendspin-server/bin/python" CACHE FILEPATH
+		"Python of a venv holding test/sendspin/requirements.txt (docker/Dockerfile, target dev)")
+	if(NOT EXISTS "${EAR_SENDSPIN_SERVER_PYTHON}")
+		message(FATAL_ERROR "the sendspin test server's Python is not at ${EAR_SENDSPIN_SERVER_PYTHON} "
+			"(EAR_SENDSPIN_SERVER_PYTHON): build in the image (scripts/dev.sh make test), whose docker/Dockerfile "
+			"puts it there")
+	endif()
+endif()
+
 #add_subdirectory(benchmark)
 #add_subdirectory(build)
 #add_subdirectory(bin)

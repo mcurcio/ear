@@ -54,8 +54,7 @@ void MainLoopGateway::graphFileChanged(const GraphFileChanged& change) {
 void MainLoopGateway::graphFileWritten(const std::string&) {}
 
 void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
-	const Ports& ports = config->ports();
-	impl_->post(NodeAdded{node, Ports{ports.inputs, ports.outputs}});
+	impl_->post(NodeAdded{node, config->ports().publicOnly()});
 }
 
 void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) {

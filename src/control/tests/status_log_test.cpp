@@ -74,3 +74,10 @@ TEST_CASE("The last write's failure prints the change's write-failed line on its
 	log.graphFileWriteFailed("ear.conf: No space left on device");
 	CHECK(out.str() == "graph-file write-failed ear.conf: No space left on device\n");
 }
+
+TEST_CASE("A node's note has its own line", "[status_log]") {
+	std::ostringstream out;
+	ear::control::StatusLog log(out);
+	log.nodeSays("a", "b");
+	CHECK(out.str() == "node a says b\n");
+}

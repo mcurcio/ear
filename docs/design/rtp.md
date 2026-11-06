@@ -1,5 +1,7 @@
 # The `rtp` node: FPP's audio into ear over RTP
 
+> Port names changed, 2026-11-06: a public port is now `<bank>.<member>` (`record.left`, `play.1`), so this page's older names are history. The names are in `AGENTS.md` (Graph file) and the owner's words in `docs/design/sendspin.md` section 1.
+
 Status: direction approved by the owner at the gate (https://claude.ai/artifact/5qGsXixMQmaS6ZsoGNgZ5v,
 2026-10-30). This page is the short record of that gate, the spike's results and the frozen
 pages of the tracer milestone (slices R1a, R1b, R1n and R1c), written by the code architect on

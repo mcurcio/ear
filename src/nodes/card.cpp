@@ -1,8 +1,8 @@
 // The "card" node type: a sound card behind a port block (docs/design/batch2.md section 4.4,
-// builtin.hpp). Inputs "playback_1".."playback_N" pass straight through to the inside outputs
+// builtin.hpp). Inputs "play.1".."play.N" pass straight through to the inside outputs
 // "to_card_1".., which the framework joins to the playback card's channels; the capture card's
 // channels arrive on the inside inputs "from_card_1".. and pass straight through to the outputs
-// "capture_1"... The card is named only by a CardId, so no user text reaches ALSA.
+// "capture.1"... The card is named only by a CardId, so no user text reaches ALSA.
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -12,7 +12,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "ear/nodes/builtin.hpp"
 
@@ -29,18 +28,8 @@ constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{cardKey, Setti
                                                                  {captureKey, SettingKind::wholeNumber}}};
 constexpr std::uint32_t maxChannels = 64;
 
-/// "<prefix>1".."<prefix><count>".
-std::vector<PortName> numbered(std::string_view prefix, std::uint32_t count) {
-	std::vector<PortName> names;
-	names.reserve(count);
-	for (std::uint32_t i = 1; i <= count; ++i) {
-		names.push_back(std::string(prefix) + std::to_string(i));
-	}
-	return names;
-}
-
-/// Copies playback_i to to_card_i and from_card_j to capture_j. With the framework's order
-/// (inputs then insideInputs, outputs then insideOutputs): inputs are playback then from_card,
+/// Copies play.i to to_card_i and from_card_j to capture.j. With the framework's order
+/// (inputs then insideInputs, outputs then insideOutputs): inputs are play then from_card,
 /// outputs are capture then to_card.
 class PassThrough final : public AudioCode {
 public:
@@ -50,7 +39,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < playback_; ++i) {
 			std::ranges::copy(inputs[i].first(frames), outputs[capture_ + i].begin());
 		}
@@ -81,19 +70,18 @@ public:
 	    : card_(std::move(card)),
 	      playback_(playback),
 	      capture_(capture),
-	      ports_{.inputs = numbered("playback_", playback),
-	             .outputs = numbered("capture_", capture),
-	             .insideInputs = numbered("from_card_", capture),
-	             .insideOutputs = numbered("to_card_", playback)} {}
+	      ports_{{{Direction::input, "play", numbered(playback)}, {Direction::output, "capture", numbered(capture)}},
+	             numbered(capture, "from_card_"),
+	             numbered(playback, "to_card_")} {}
 
 	const Ports& ports() const override { return ports_; }
 
 	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
 		if (playback_ > 0) {
-			grant.soundCard({.card = card_, .direction = CardDirection::playback, .blockPorts = ports_.insideOutputs});
+			grant.soundCard({.card = card_, .direction = CardDirection::playback, .blockPorts = ports_.insideOutputs()});
 		}
 		if (capture_ > 0) {
-			grant.soundCard({.card = card_, .direction = CardDirection::capture, .blockPorts = ports_.insideInputs});
+			grant.soundCard({.card = card_, .direction = CardDirection::capture, .blockPorts = ports_.insideInputs()});
 		}
 		return std::make_unique<CardInsides>(playback_, capture_);
 	}

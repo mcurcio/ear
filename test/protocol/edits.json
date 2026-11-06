@@ -3,11 +3,11 @@
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"n2\",\"type\":\"white\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"noise.mono\"},\"to\":{\"node\":\"rec\",\"port\":\"record.right\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"nope/t.wav\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"tape\",\"port\":\"FL\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"noise.mono\"},\"to\":{\"node\":\"tape\",\"port\":\"record.left\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"y.wav\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FR\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"route.remove\",\"params\":{\"from\":{\"node\":\"n2\",\"port\":\"noise.mono\"},\"to\":{\"node\":\"rec\",\"port\":\"record.right\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.remove\",\"params\":{\"name\":\"noise\"}}"
   ],
   "messages": [
@@ -31,7 +31,7 @@
             "settings": {},
             "inputs": [],
             "outputs": [
-              "MONO"
+              "noise.mono"
             ],
             "state": "running"
           },
@@ -42,8 +42,8 @@
               "path": "x.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "running"
@@ -53,11 +53,11 @@
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "rec",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "linked"
           }
@@ -73,7 +73,7 @@
         "settings": {},
         "inputs": [],
         "outputs": [
-          "MONO"
+          "noise.mono"
         ]
       }
     },
@@ -104,11 +104,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FR"
+          "port": "record.right"
         }
       }
     },
@@ -118,11 +118,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FR"
+          "port": "record.right"
         },
         "status": "pending"
       }
@@ -138,11 +138,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FR"
+          "port": "record.right"
         },
         "status": "linked"
       }
@@ -157,8 +157,8 @@
           "path": "nope/t.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": []
       }
@@ -194,11 +194,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "tape",
-          "port": "FL"
+          "port": "record.left"
         }
       }
     },
@@ -208,11 +208,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "tape",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "pending"
       }
@@ -228,11 +228,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "tape",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "refused",
         "detail": "the engine removed the link before it was active"
@@ -275,11 +275,11 @@
       "params": {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FR"
+          "port": "record.right"
         }
       }
     },
@@ -294,11 +294,11 @@
       "params": {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FL"
+          "port": "record.left"
         }
       }
     },
@@ -356,7 +356,7 @@
         "settings": {},
         "inputs": [],
         "outputs": [
-          "MONO"
+          "noise.mono"
         ],
         "state": "running"
       },
@@ -367,8 +367,8 @@
           "path": "y.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "running"
@@ -380,8 +380,8 @@
           "path": "nope/t.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "failed",
@@ -395,11 +395,11 @@
       {
         "from": {
           "node": "n2",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "tape",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "refused",
         "detail": "the engine removed the link before it was active"

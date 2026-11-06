@@ -1,6 +1,6 @@
 // The "rtp" node type: one RTP stream received behind a port block (docs/design/rtp.md sections 3
 // and 7.3, builtin.hpp). The framework joins the receiver's channels to the inside inputs
-// "from_rtp_1"..; they pass straight through to the outputs "channel_1"... Every setting is
+// "from_rtp_1"..; they pass straight through to the outputs "stream.1"... Every setting is
 // checked here, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format a
 // closed enum, every number ranged.
 #include <algorithm>
@@ -12,7 +12,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <vector>
 
 #include "ear/nodes/builtin.hpp"
 
@@ -38,24 +37,14 @@ constexpr std::array<SettingDeclaration, 6> settingDeclarations{{{addressKey, Se
 /// default; the framework always passes the value on.
 constexpr std::uint32_t defaultLatencyMs = 100;
 
-/// "<prefix>1".."<prefix><count>".
-std::vector<PortName> numbered(std::string_view prefix, std::uint32_t count) {
-	std::vector<PortName> names;
-	names.reserve(count);
-	for (std::uint32_t i = 1; i <= count; ++i) {
-		names.push_back(std::string(prefix) + std::to_string(i));
-	}
-	return names;
-}
-
-/// Copies from_rtp_i to channel_i. The node has no public inputs, so its inputs are the inside
-/// inputs alone; its outputs are channel_1..N.
+/// Copies from_rtp_i to stream.i. The node has no public inputs, so its inputs are the inside
+/// inputs alone; its outputs are stream.1..N.
 class PassThrough final : public AudioCode {
 public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (std::size_t i = 0; i < outputs.size(); ++i) {
 			std::ranges::copy(inputs[i].first(frames), outputs[i].begin());
 		}
@@ -85,9 +74,7 @@ class RtpConfig final : public NodeConfig {
 public:
 	explicit RtpConfig(RtpSettings settings)
 	    : settings_(std::move(settings)),
-	      ports_{.inputs = {},
-	             .outputs = numbered("channel_", settings_.channels),
-	             .insideInputs = numbered("from_rtp_", settings_.channels)} {}
+	      ports_{{{Direction::output, "stream", numbered(settings_.channels)}}, numbered(settings_.channels, "from_rtp_")} {}
 
 	const Ports& ports() const override { return ports_; }
 
@@ -97,7 +84,7 @@ public:
 		                   .encoding = settings_.encoding,
 		                   .rate = settings_.rate.value_or(grant.format().rate),
 		                   .latencyMs = settings_.latencyMs,
-		                   .blockPorts = ports_.insideInputs});
+		                   .blockPorts = ports_.insideInputs()});
 		return std::make_unique<RtpInsides>();
 	}
 

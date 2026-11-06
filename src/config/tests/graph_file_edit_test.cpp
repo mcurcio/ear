@@ -27,8 +27,8 @@ node white noise;
 node file rec { path "take1.wav"; }
 node card desk { @use card_out MOTU; }
 node card porch { @use card_out USB2; }
-route noise:MONO rec:FL;
-route noise:MONO desk:playback_1;
+route noise:noise.mono rec:record.left;
+route noise:noise.mono desk:play.1;
 )";
 
 /// A snippet that makes a node, used twice: its node line makes two rendered nodes.
@@ -175,8 +175,8 @@ TEST_CASE("Removing a node removes its line and every route line naming it", "[g
 	SECTION("noise and both its routes") {
 		const auto edited = candidate(model.removeNode("noise"));
 		std::string expected = replaced(recordExample, "node white noise;\n", "");
-		expected = replaced(expected, "route noise:MONO rec:FL;\n", "");
-		expected = replaced(expected, "route noise:MONO desk:playback_1;\n", "");
+		expected = replaced(expected, "route noise:noise.mono rec:record.left;\n", "");
+		expected = replaced(expected, "route noise:noise.mono desk:play.1;\n", "");
 		CHECK(edited.text() == expected);
 		REQUIRE(edited.read().wanted.has_value());
 		CHECK(edited.read().wanted->routes.empty());
@@ -204,18 +204,18 @@ TEST_CASE("Added nodes and routes are appended, and an edit that changes nothing
 		CHECK(nodeIn(edited, "n2").type == "white");
 	}
 	SECTION("a route") {
-		const auto edited = candidate(model.addRoute({{"noise", "MONO"}, {"rec", "FR"}}));
-		CHECK(edited.text() == recordExample + "route noise:MONO rec:FR;\n");
+		const auto edited = candidate(model.addRoute({{"noise", "noise.mono"}, {"rec", "record.right"}}));
+		CHECK(edited.text() == recordExample + "route noise:noise.mono rec:record.right;\n");
 		REQUIRE(edited.read().wanted.has_value());
 		CHECK(edited.read().wanted->routes.size() == 3);
 	}
 	SECTION("a removed route") {
-		const auto edited = candidate(model.removeRoute({{"noise", "MONO"}, {"rec", "FL"}}));
-		CHECK(edited.text() == replaced(recordExample, "route noise:MONO rec:FL;\n", ""));
+		const auto edited = candidate(model.removeRoute({{"noise", "noise.mono"}, {"rec", "record.left"}}));
+		CHECK(edited.text() == replaced(recordExample, "route noise:noise.mono rec:record.left;\n", ""));
 	}
 	SECTION("nothing changes") {
 		CHECK(model.addNode({"rec", "file", {{"path", "take1.wav"}}}).value() == std::nullopt);
-		CHECK(model.addRoute({{"noise", "MONO"}, {"rec", "FL"}}).value() == std::nullopt);
+		CHECK(model.addRoute({{"noise", "noise.mono"}, {"rec", "record.left"}}).value() == std::nullopt);
 		CHECK(model.updateNode("desk", {{"card", "MOTU"}, {"playback", 2}}).value() == std::nullopt);
 	}
 	SECTION("a node of a held name with other settings is still written: the plan refuses it") {
@@ -230,7 +230,7 @@ TEST_CASE("Unknown items and values that cannot be written are refused", "[graph
 
 	CHECK(commandCode(model.updateNode("ghost", json::object())) == "unknown-node");
 	CHECK(commandCode(model.removeNode("ghost")) == "unknown-node");
-	CHECK(commandCode(model.removeRoute({{"noise", "MONO"}, {"rec", "FR"}})) == "unknown-route");
+	CHECK(commandCode(model.removeRoute({{"noise", "noise.mono"}, {"rec", "record.right"}})) == "unknown-route");
 	CHECK(commandDetail(model.updateNode("desk", {{"card", "MOTU"}, {"playback", "two"}})) ==
 	      "invalid-settings desk: playback: expected a whole number");
 	CHECK(commandDetail(model.updateNode("rec", {{"path", 3}})) == "invalid-settings rec: path: expected text");
@@ -261,9 +261,9 @@ TEST_CASE("A text with a control character knobly cannot write is refused as the
 	      "invalid-settings n3: label: holds a control character ear.conf cannot hold");   // undeclared: text too
 	CHECK(commandCode(model.addNode({"a\x02", "white", json::object()})) == "invalid-name");
 	CHECK(commandCode(model.addNode({"n4", "wh\x1fite", json::object()})) == "unknown-node-type");
-	CHECK(commandDetail(model.addRoute({{"noise", "MO" + nul}, {"rec", "FL"}})) == "unknown-port noise:MO" + nul);
-	CHECK(commandCode(model.addRoute({{"noise", "MONO"}, {"gh\x03st", "FL"}})) == "unknown-node");
-	CHECK(commandCode(model.addRoute({{"noise", "MONO"}, {"ghost", "F\x03L"}})) == "unknown-node");
+	CHECK(commandDetail(model.addRoute({{"noise", "MO" + nul}, {"rec", "record.left"}})) == "unknown-port noise:MO" + nul);
+	CHECK(commandCode(model.addRoute({{"noise", "noise.mono"}, {"gh\x03st", "record.left"}})) == "unknown-node");
+	CHECK(commandCode(model.addRoute({{"noise", "noise.mono"}, {"ghost", "F\x03L"}})) == "unknown-node");
 
 	SECTION("newline, tab, carriage return and U+2028 are written with knobly's escapes and read back") {
 		const std::string path = "a\nb\tc\rd\u2028e";
@@ -292,9 +292,39 @@ TEST_CASE("Names that are not bare words are quoted, and text is never read as a
 	CHECK(spaced.text().ends_with("node file \"my tape\" { path \"$x\"; }\n"));
 	CHECK(nodeIn(spaced, "my tape").settings == json{{"path", "$x"}});
 
-	const auto routed = candidate(spaced.addRoute({{"noise", "MONO"}, {"my tape", "FL"}}));
+	const auto routed = candidate(spaced.addRoute({{"noise", "noise.mono"}, {"my tape", "record.left"}}));
 	REQUIRE(routed.read().wanted.has_value());
-	CHECK(routed.read().wanted->routes.back() == Route{{"noise", "MONO"}, {"my tape", "FL"}});
+	CHECK(routed.read().wanted->routes.back() == Route{{"noise", "noise.mono"}, {"my tape", "record.left"}});
+}
+
+TEST_CASE("A route is written back bare, a port's dot and all, and reads back the same", "[graph_file_edit]") {
+	const Fixture f;
+	const auto model = f.load(recordExample);
+	const Route route{{"noise", "noise.mono"}, {"rec", "record.right"}};
+
+	const auto bare = candidate(model.addRoute(route));
+	CHECK(bare.text().ends_with("\nroute noise:noise.mono rec:record.right;\n"));
+	REQUIRE(bare.read().wanted.has_value());
+	CHECK(bare.read().wanted->routes.back() == route);
+
+	// A node named with nothing but digits, and a number's look on both sides of the port's dot.
+	const auto digits = candidate(model.addNode({"1", "card", {{"card", "MOTU"}, {"playback", 2}}}));
+	const Route toDigits{{"noise", "noise.mono"}, {"1", "play.2"}};
+	const auto numeric = candidate(digits.addRoute(toDigits));
+	CHECK(numeric.text().ends_with("\nroute noise:noise.mono 1:play.2;\n"));
+	REQUIRE(numeric.read().wanted.has_value());
+	CHECK(numeric.read().wanted->routes.back() == toDigits);
+	CHECK(numeric.read().diagnostics.empty());
+
+	// A hand's quotes read the same, and removing the route finds it.
+	const auto quotedByHand = f.load(recordExample + "route \"noise:noise.mono\" \"rec:record.right\";\n");
+	REQUIRE(quotedByHand.read().wanted.has_value());
+	CHECK(quotedByHand.read().wanted->routes.back() == route);
+	CHECK(candidate(quotedByHand.removeRoute(route)).text() == recordExample);
+
+	// A port that is no bare word is still quoted, whole.
+	const auto spaced = candidate(model.addRoute({{"noise", "noise.mono"}, {"rec", "record left"}}));
+	CHECK(spaced.text().ends_with("\nroute noise:noise.mono \"rec:record left\";\n"));
 }
 
 TEST_CASE("An edit never changes the model it is called on", "[graph_file_edit]") {
@@ -318,9 +348,9 @@ TEST_CASE("An edit never changes the model it is called on", "[graph_file_edit]"
 	same();
 	(void)model.addNode({"tape", "file", {{"path", "t.wav"}}});
 	same();
-	(void)model.addRoute({{"noise", "MONO"}, {"rec", "FR"}});
+	(void)model.addRoute({{"noise", "noise.mono"}, {"rec", "record.right"}});
 	same();
-	(void)model.removeRoute({{"noise", "MONO"}, {"rec", "FL"}});
+	(void)model.removeRoute({{"noise", "noise.mono"}, {"rec", "record.left"}});
 	same();
 }
 
@@ -328,5 +358,5 @@ TEST_CASE("An edit on a file with errors is a programming error", "[graph_file_e
 	const Fixture f;
 	const auto broken = f.load("graph_frequency 48000;\nblock_size 256;\nvolume 3;\n");
 	CHECK_THROWS_AS(broken.updateNode("rec", json::object()), std::logic_error);
-	CHECK_THROWS_AS(broken.addRoute({{"noise", "MONO"}, {"rec", "FL"}}), std::logic_error);
+	CHECK_THROWS_AS(broken.addRoute({{"noise", "noise.mono"}, {"rec", "record.left"}}), std::logic_error);
 }

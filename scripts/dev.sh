@@ -23,6 +23,9 @@
 # worktree and cached by CI. npm's cache (npm_config_cache) is the main checkout's .cache/npm
 # the same way.
 #
+# git: every repository counts as safe (GIT_CONFIG_*), because Docker Desktop's mount can show a clone FetchContent
+# made as another user's, which git otherwise refuses.
+#
 # Ports: EAR_DEV_PUBLISH, when set, is passed to docker run as --publish (for example 5173:5173
 # for the editor's dev server, or 7777:7777 for ear's control port).
 set -euo pipefail
@@ -64,5 +67,8 @@ exec docker run --rm ${tty[@]+"${tty[@]}"} ${publish[@]+"${publish[@]}"} "${moun
 	--env HOME=/tmp \
 	--env CCACHE_DIR="$main_checkout/.cache/ccache" \
 	--env npm_config_cache="$main_checkout/.cache/npm" \
+	--env GIT_CONFIG_COUNT=1 \
+	--env GIT_CONFIG_KEY_0=safe.directory \
+	--env 'GIT_CONFIG_VALUE_0=*' \
 	--workdir "$checkout" \
 	"$image" "$@"

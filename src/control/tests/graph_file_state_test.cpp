@@ -92,7 +92,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 	const json& m = document["messages"];
 	REQUIRE(m.size() == 41);
 	const Texts t;
-	const ear::Route toDesk{{"noise", "MONO"}, {"desk", "playback_1"}};
+	const ear::Route toDesk{{"noise", "noise.mono"}, {"desk", "play.1"}};
 
 	SECTION("graphFile.subscribe, graph.subscribe and the first edit") {
 		CHECK(resultOf(1, file("v1", t.t1, "v1")) == m[0]);
@@ -119,8 +119,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}}) == m[15]);
 	}
 	SECTION("playback 4 through @set $ch replaces both cards") {
-		ear::Ports four;
-		for (int i = 1; i <= 4; ++i) four.inputs.push_back("playback_" + std::to_string(i));
+		const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
 		CHECK(changed(file("v7", t.t7, "v7"), FileChangeCause::edit) == m[17]);
 		CHECK(event(RouteRemoved{toDesk}) == m[18]);
 		CHECK(event(NodeRemoved{"desk"}) == m[19]);

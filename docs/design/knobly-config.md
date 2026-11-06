@@ -171,8 +171,8 @@ node white noise;
 node file rec { path "take1.wav"; }
 node card desk { @use card_out MOTU; }
 node card porch { @use card_out USB2; }
-route noise:MONO rec:FL;
-route noise:MONO desk:playback_1;
+route noise:noise.mono rec:record.left;
+route noise:noise.mono desk:play.1;
 ```
 
 - Setting `playback 4` on `desk` rewrites `@set $ch 4;`, which replaces both cards in one commit. Setting `card` on `desk` rewrites only `MOTU` on its `@use` line.

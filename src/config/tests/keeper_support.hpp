@@ -28,8 +28,8 @@ node white noise;
 node file rec { path "take1.wav"; }
 node card desk { @use card_out MOTU; }
 node card porch { @use card_out USB2; }
-route noise:MONO rec:FL;
-route noise:MONO desk:playback_1;
+route noise:noise.mono rec:record.left;
+route noise:noise.mono desk:play.1;
 )";
 
 /// `text` with its first `from` replaced by `to` (which must be there).
@@ -97,7 +97,7 @@ struct Log {
 	}
 };
 
-/// Graph events, as one log line each ("node.added desk", "route.removed noise:MONO desk:playback_1").
+/// Graph events, as one log line each ("node.added desk", "route.removed noise:noise.mono desk:play.1").
 class GraphLog final : public DesiredNodeListener, public DesiredRouteListener {
 public:
 	explicit GraphLog(Log& log) : log_(log) {}

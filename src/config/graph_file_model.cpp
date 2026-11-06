@@ -282,18 +282,23 @@ std::string quoted(std::string_view text) {
 	return std::string(quote.view());
 }
 
-/// A name, type or port: bare when every character is in [A-Za-z0-9_-], otherwise quoted.
-std::string wordText(std::string_view word) {
-	const bool bare = !word.empty() && std::all_of(word.begin(), word.end(), [](char c) {
-		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+/// Every character is in [A-Za-z0-9_-] or `more`.
+bool bareWord(std::string_view word, std::string_view more = "") {
+	return !word.empty() && std::all_of(word.begin(), word.end(), [more](char c) {
+		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-' ||
+		       more.find(c) != std::string_view::npos;
 	});
-	return bare ? std::string(word) : quoted(word);
 }
 
+/// A name or type: bare when it is a bare word, otherwise quoted.
+std::string wordText(std::string_view word) {
+	return bareWord(word) ? std::string(word) : quoted(word);
+}
+
+/// A route's end: bare when its node is a bare word and its port one with a port's '.', otherwise quoted.
 std::string endText(const PortRef& end) {
 	const std::string joined = end.node + ":" + end.port;
-	return wordText(end.node) == end.node && wordText(end.port) == end.port ? joined
-	                                                                        : quoted(joined);
+	return bareWord(end.node) && bareWord(end.port, ".") ? joined : quoted(joined);
 }
 
 /// A setting's key is written as a directive name: a word starting with a letter or one of _ . / * ?,

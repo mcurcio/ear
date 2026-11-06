@@ -325,6 +325,71 @@ TEST_CASE("replaceIf() in a folder it cannot write is an error and the file is u
 	CHECK(names(dir.path() / "folder") == std::vector<std::string>{"ear.conf"});
 }
 
+TEST_CASE("replaceIf() creates a file with the mode asked for under any umask, and keeps an existing file's", "[folder]") {
+	TempDir dir{"createmode"};
+	const auto folder = openFolder(dir.path() / "folder");
+	const auto file = dir.path() / "folder" / "secret.key";
+
+	for (const mode_t mask : {mode_t{0}, mode_t{022}, mode_t{077}, mode_t{0277}}) {
+		INFO("umask " << mask);
+		const mode_t before = ::umask(mask);
+		std::filesystem::remove(file);
+		const auto outcome = folder.replaceIf("secret.key", std::nullopt, "text", maxBytes, 0600);
+		::umask(before);
+		REQUIRE(outcome.has_value());
+		CHECK(std::holds_alternative<Replaced>(*outcome));
+		CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+	}
+
+	std::filesystem::permissions(file, std::filesystem::perms(0640));
+	const auto again = folder.replaceIf("secret.key", std::string("text"), "more", maxBytes, 0600);
+	REQUIRE(again.has_value());
+	CHECK(std::holds_alternative<Replaced>(*again));
+	CHECK(contents(file) == "more");
+	CHECK(permissionsOf(file) == std::filesystem::perms(0640));
+}
+
+// --- restrictMode() ---
+
+TEST_CASE("restrictMode() clears the bits outside what it is given and adds none", "[folder]") {
+	TempDir dir{"restrict"};
+	const auto folder = openFolder(dir.path() / "folder");
+	const auto file = dir.path() / "folder" / "secret.key";
+	write(file, "text");
+
+	std::filesystem::permissions(file, std::filesystem::perms(0660));
+	REQUIRE(folder.restrictMode("secret.key", 0600).has_value());
+	CHECK(permissionsOf(file) == std::filesystem::perms(0600));
+
+	std::filesystem::permissions(file, std::filesystem::perms(0400));
+	REQUIRE(folder.restrictMode("secret.key", 0600).has_value());
+	CHECK(permissionsOf(file) == std::filesystem::perms(0400));
+	CHECK(contents(file) == "text");
+}
+
+TEST_CASE("restrictMode() refuses a symlink, a path out, a directory, a FIFO and a missing file", "[folder]") {
+	TempDir dir{"restrictrefuses"};
+	const auto folder = openFolder(dir.path() / "folder");
+	const auto outside = dir.path() / "outside.key";
+	write(outside, "text");
+	std::filesystem::permissions(outside, std::filesystem::perms(0644));
+	std::filesystem::create_symlink(outside, dir.path() / "folder" / "link.key");
+	std::filesystem::create_directory(dir.path() / "folder" / "a-directory");
+	REQUIRE(::mkfifo((dir.path() / "folder" / "a-fifo").c_str(), 0644) == 0);
+
+	const auto detail = [&](const std::string& relative) {
+		const auto restricted = folder.restrictMode(relative, 0600);
+		REQUIRE_FALSE(restricted.has_value());
+		return restricted.error().detail;
+	};
+	CHECK(detail("link.key") == "link.key: a symlink is on its path");
+	CHECK(detail("../outside.key") == "../outside.key: it leads outside the folder");
+	CHECK(detail("a-directory") == "a-directory: not a regular file");
+	CHECK(detail("a-fifo") == "a-fifo: not a regular file");
+	CHECK(detail("missing.key") == "missing.key: No such file or directory");
+	CHECK(permissionsOf(outside) == std::filesystem::perms(0644));
+}
+
 // --- heldPath() ---
 
 TEST_CASE("heldPath() names the held folder, and an inotify watch through it sees a rename into it", "[folder]") {
@@ -397,4 +462,20 @@ TEST_CASE("requireApart() passes folders apart and skips a path that does not ex
 	std::filesystem::create_directories(dir.path() / "config2");
 	const std::vector<std::filesystem::path> prefixed = {dir.path() / "config", dir.path() / "config2"};
 	CHECK(ear::folder::requireApart(prefixed).has_value());
+}
+
+TEST_CASE("fileNames() lists the regular files directly in the folder, no symlink or directory among them", "[folder]") {
+	TempDir dir{"names"};
+	const auto path = dir.path() / "f";
+	auto folder = ConfinedFolder::open(path);
+	REQUIRE(folder.has_value());
+	write(path / "a.txt", "a");
+	write(path / ".hidden", "b");
+	std::filesystem::create_directory(path / "sub");
+	write(path / "sub" / "deep.txt", "c");
+	std::filesystem::create_symlink(path / "a.txt", path / "link");
+	auto names = folder->fileNames();
+	REQUIRE(names.has_value());
+	std::ranges::sort(*names);
+	CHECK(*names == std::vector<std::string>{".hidden", "a.txt"});
 }

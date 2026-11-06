@@ -38,6 +38,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/sendspin/sendspin_type.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -110,12 +111,13 @@ int main(int argc, char** argv) {
 
 	const std::filesystem::path configDir = arguments["config-dir"].as<std::string>();
 	const std::filesystem::path recordingsDir = arguments["recordings-dir"].as<std::string>();
-	auto config = ear::folder::ConfinedFolder::open(configDir);
-	if (!config) {
+	auto opened = ear::folder::ConfinedFolder::open(configDir);
+	if (!opened) {
 		// Each folder names itself "folder <path>"; the role is main's to say.
-		std::cerr << "ear: graph file " << config.error().detail << '\n';
+		std::cerr << "ear: graph file " << opened.error().detail << '\n';
 		return 1;
 	}
+	const auto config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*opened));
 	auto recordings = ear::folder::ConfinedFolder::open(recordingsDir);
 	if (!recordings) {
 		std::cerr << "ear: recordings " << recordings.error().detail << '\n';
@@ -130,8 +132,9 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
 	// format lines set the engine when both read; otherwise the flags do (the file's own values then
 	// show as pending restart).
-	const ear::NodeCatalogue catalogue(
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings))));
+	auto nodeTypes = ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)));
+	nodeTypes.push_back(ear::sendspin::makeSendspinNodeType(config));
+	const ear::NodeCatalogue catalogue(std::move(nodeTypes));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 
@@ -165,7 +168,7 @@ int main(int argc, char** argv) {
 
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
-	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers);
+	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler);
 	ear::control::StatusLog log(std::cout);
 
@@ -180,6 +183,7 @@ int main(int argc, char** argv) {
 	graph.subscribe(reconciler);
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
+	nodes.subscribeNotes(log);
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);

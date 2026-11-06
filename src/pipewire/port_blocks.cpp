@@ -49,8 +49,8 @@ struct Levels {
 };
 
 std::vector<PortName> publicPorts(const Ports& ports) {
-  std::vector<PortName> names = ports.inputs;
-  names.insert(names.end(), ports.outputs.begin(), ports.outputs.end());
+  std::vector<PortName> names = ports.inputs();
+  names.insert(names.end(), ports.outputs().begin(), ports.outputs().end());
   return names;
 }
 
@@ -61,10 +61,10 @@ public:
       : events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
         windowFrames_(std::max(levelWindowFrames(format.rate), 1U)),
         zeros_(format.maxBlock, 0.0f),
-        inputs_(ports.inputs.size() + ports.insideInputs.size()),
-        outputs_(ports.outputs.size() + ports.insideOutputs.size()),
-        publicInputs_(ports.inputs.size()), publicOutputs_(ports.outputs.size()),
-        meters_(ports.inputs.size() + ports.outputs.size()), levels_(std::move(levels)),
+        inputs_(ports.inputs().size() + ports.insideInputs().size()),
+        outputs_(ports.outputs().size() + ports.insideOutputs().size()),
+        publicInputs_(ports.inputs().size()), publicOutputs_(ports.outputs().size()),
+        meters_(ports.inputs().size() + ports.outputs().size()), levels_(std::move(levels)),
         registered_(node, publicPorts(ports)) {
     for (std::size_t i = 0; i < outputs_.size(); ++i) {
       scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -88,10 +88,10 @@ public:
     }
     pw_filter_add_listener(filter_, &listener_, &filterEvents(), this);
     // AudioCode::process sees inputs then inside inputs, outputs then inside outputs.
-    addPorts(PW_DIRECTION_INPUT, ports.inputs, inputPorts_);
-    addPorts(PW_DIRECTION_INPUT, ports.insideInputs, inputPorts_);
-    addPorts(PW_DIRECTION_OUTPUT, ports.outputs, outputPorts_);
-    addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs, outputPorts_);
+    addPorts(PW_DIRECTION_INPUT, ports.inputs(), inputPorts_);
+    addPorts(PW_DIRECTION_INPUT, ports.insideInputs(), inputPorts_);
+    addPorts(PW_DIRECTION_OUTPUT, ports.outputs(), outputPorts_);
+    addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs(), outputPorts_);
     if (const int res = pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0);
         res < 0) {
       fail(std::string("cannot connect the engine node: ") + spa_strerror(res));
@@ -201,7 +201,8 @@ private:
     auto* self = static_cast<FilterPortBlock*>(data);
     const auto frames = static_cast<std::uint32_t>(position->clock.duration);
     if (frames <= self->maxBlock_) {
-      self->processCycle(frames);
+      self->processCycle(frames, GraphCycle{static_cast<std::int64_t>(position->clock.nsec), position->clock.position,
+                                             static_cast<std::uint32_t>(std::max<std::int64_t>(position->clock.delay, 0))});
     } else {
       for (void* port : self->outputPorts_) {
         if (port == nullptr) continue;
@@ -217,7 +218,7 @@ private:
     if (boundary != start / self->windowFrames_) self->publish(boundary * self->windowFrames_);
   }
 
-  void processCycle(std::uint32_t frames) noexcept {
+  void processCycle(std::uint32_t frames, const GraphCycle& cycle) noexcept {
     for (std::size_t i = 0; i < inputPorts_.size(); ++i) {
       const auto* in = inputPorts_[i] == nullptr
                            ? nullptr
@@ -232,7 +233,7 @@ private:
       outputs_[i] = std::span<float>(out != nullptr ? out : scratch_[i].data(), frames);
     }
     if (AudioCode* code = code_.load(std::memory_order_acquire)) {
-      code->process(inputs_, outputs_, frames);
+      code->process(inputs_, outputs_, frames, cycle);
     } else {
       for (const std::span<float> out : outputs_) std::ranges::fill(out, 0.0f);
     }

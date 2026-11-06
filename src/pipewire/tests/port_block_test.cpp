@@ -156,7 +156,7 @@ public:
   Constant(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t) noexcept override {
+               std::uint32_t, const ear::GraphCycle&) noexcept override {
     countAllocations = countHere.load(std::memory_order_acquire);
     for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
     calls_.fetch_add(1, std::memory_order_release);
@@ -177,7 +177,7 @@ class Ramp final : public AudioCode {
 public:
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
   }
   void release() noexcept override {}
@@ -191,7 +191,7 @@ class PassThrough final : public AudioCode {
 public:
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs,
-               std::span<const std::span<float>> outputs, std::uint32_t) noexcept override {
+               std::span<const std::span<float>> outputs, std::uint32_t, const ear::GraphCycle&) noexcept override {
     std::ranges::copy(inputs[0], outputs[0].begin());
   }
   void release() noexcept override {}
@@ -203,7 +203,7 @@ public:
   explicit Recorder(Waiter& waiter) : waiter_(waiter), samples_(8 * kRate) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     std::size_t at = recorded_.load(std::memory_order_relaxed);
     for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
     recorded_.store(at, std::memory_order_release);
@@ -406,11 +406,11 @@ TEST_CASE("A linked output and input carry the source's level and an unlinked in
   Constant quarter(waiter, 0.25F);
   Constant half(waiter, 0.5F);
   BlockEvents srcEvents(waiter), dstEvents(waiter);
-  auto src = blocks.make("src", Ports{{}, {"OUT"}}, kFormat, srcEvents);
+  auto src = blocks.make("src", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
   src->drive(&quarter);
-  auto dst = blocks.make("dst", Ports{{"IN", "SPARE"}, {"THRU"}}, kFormat, dstEvents);
+  auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"a", "b"}}, {Direction::output, "thru", {"a"}}}}, kFormat, dstEvents);
   dst->drive(&half);
-  REQUIRE(wiring.link(waiter, {"src", "OUT"}, {"dst", "IN"}));
+  REQUIRE(wiring.link(waiter, {"src", "out.a"}, {"dst", "in.a"}));
 
   // Two whole windows after the first window published once the link was active.
   std::uint64_t linkedBy = 0;
@@ -425,18 +425,18 @@ TEST_CASE("A linked output and input carry the source's level and an unlinked in
   const NodeLevels& srcLevels = *find(snapshot, "src");
   const NodeLevels& dstLevels = *find(snapshot, "dst");
   REQUIRE(srcLevels.ports.size() == 1);
-  CHECK(srcLevels.ports[0].port == "OUT");
+  CHECK(srcLevels.ports[0].port == "out.a");
   CHECK(srcLevels.ports[0].level.peak == 0.25F);
   CHECK(srcLevels.ports[0].level.rms == Approx(0.25F).margin(1e-6));
   // Inputs then outputs, declaration order.
   REQUIRE(dstLevels.ports.size() == 3);
-  CHECK(dstLevels.ports[0].port == "IN");
+  CHECK(dstLevels.ports[0].port == "in.a");
   CHECK(dstLevels.ports[0].level.peak == 0.25F);
   CHECK(dstLevels.ports[0].level.rms == Approx(0.25F).margin(1e-6));
-  CHECK(dstLevels.ports[1].port == "SPARE");
+  CHECK(dstLevels.ports[1].port == "in.b");
   CHECK(dstLevels.ports[1].level.peak == 0.0F);
   CHECK(dstLevels.ports[1].level.rms == 0.0F);
-  CHECK(dstLevels.ports[2].port == "THRU");
+  CHECK(dstLevels.ports[2].port == "thru.a");
   CHECK(dstLevels.ports[2].level.peak == 0.5F);
   CHECK(dstLevels.ports[2].level.rms == Approx(0.5F).margin(1e-6));
 }
@@ -449,13 +449,13 @@ TEST_CASE("Blocks made in different cycles publish the same windows of the graph
   FilterPortBlocks blocks(*engine, bell);
   Constant a(waiter, 0.0F), b(waiter, 0.0F), c(waiter, 0.0F);
   BlockEvents aEvents(waiter), bEvents(waiter), cEvents(waiter);
-  auto blockA = blocks.make("a", Ports{{"IN"}, {}}, kFormat, aEvents);
+  auto blockA = blocks.make("a", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, aEvents);
   blockA->drive(&a);
   REQUIRE(waiter.until([&] { return a.calls() >= 3; }));
-  auto blockB = blocks.make("b", Ports{{"IN"}, {}}, kFormat, bEvents);
+  auto blockB = blocks.make("b", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, bEvents);
   blockB->drive(&b);
   REQUIRE(waiter.until([&] { return b.calls() >= 5; }));
-  auto blockC = blocks.make("c", Ports{{"IN"}, {}}, kFormat, cEvents);
+  auto blockC = blocks.make("c", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, cEvents);
   blockC->drive(&c);
   // Each started in its own cycle: a ran before b existed, b before c.
   CHECK(a.calls() > b.calls());
@@ -495,10 +495,10 @@ TEST_CASE("latestLevels holds only blocks that exist and have published", "[bloc
   Bell bell(waiter);
   FilterPortBlocks blocks(*engine, bell);
   BlockEvents keepEvents(waiter), goEvents(waiter);
-  auto keep = blocks.make("keep", Ports{{"IN"}, {}}, kFormat, keepEvents);
+  auto keep = blocks.make("keep", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, keepEvents);
   REQUIRE(waiter.until([&] { return find(blocks.latestLevels(), "keep") != nullptr; }));
 
-  auto go = blocks.make("go", Ports{{"IN"}, {}}, kFormat, goEvents);
+  auto go = blocks.make("go", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, goEvents);
   CHECK(find(blocks.latestLevels(), "go") == nullptr);   // no window yet
   REQUIRE(waiter.until([&] { return find(blocks.latestLevels(), "go") != nullptr; }));
   go.reset();
@@ -515,8 +515,8 @@ TEST_CASE("The bell rings for later windows when nobody reads the levels", "[blo
   Bell bell(waiter);
   FilterPortBlocks blocks(*engine, bell);
   BlockEvents firstEvents(waiter), secondEvents(waiter);
-  auto first = blocks.make("first", Ports{{"IN"}, {}}, kFormat, firstEvents);
-  auto second = blocks.make("second", Ports{{}, {"OUT"}}, kFormat, secondEvents);
+  auto first = blocks.make("first", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, firstEvents);
+  auto second = blocks.make("second", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, secondEvents);
   REQUIRE(waiter.until([&] { return bell.rings() >= 3; }));
 
   // Rung once per window, not once per block: over the next windows, at most one ring each.
@@ -538,10 +538,10 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
   Wiring wiring(*engine, waiter);
   Constant source(waiter, 0.5F);
   BlockEvents srcEvents(waiter), dstEvents(waiter);
-  auto src = blocks.make("src", Ports{{}, {"OUT"}}, kFormat, srcEvents);
+  auto src = blocks.make("src", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
   src->drive(&source);
-  auto dst = blocks.make("dst", Ports{{"IN", "SPARE"}, {}}, kFormat, dstEvents);
-  REQUIRE(wiring.link(waiter, {"src", "OUT"}, {"dst", "IN"}));
+  auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"a", "b"}}}}, kFormat, dstEvents);
+  REQUIRE(wiring.link(waiter, {"src", "out.a"}, {"dst", "in.a"}));
   REQUIRE(waiter.until([&] { return blocks.latestLevels().size() == 2; }));
 
   // From the source's next process() on, the realtime thread counts its allocations, over
@@ -572,7 +572,7 @@ TEST_CASE("drive returns only when the old code can no longer run, and nullptr s
   SECTION("a stops when drive(&b) returns") {
     Constant a(waiter, 0.0F), b(waiter, 0.0F);
     BlockEvents events(waiter);
-    auto block = blocks.make("switch", Ports{{}, {"OUT"}}, kFormat, events);
+    auto block = blocks.make("switch", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
     block->drive(&a);
     REQUIRE(waiter.until([&] { return a.calls() >= 3; }));
     block->drive(&b);
@@ -586,11 +586,11 @@ TEST_CASE("drive returns only when the old code can no longer run, and nullptr s
     Ramp ramp;
     Recorder recorder(waiter);
     BlockEvents srcEvents(waiter), recEvents(waiter);
-    auto src = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, srcEvents);
+    auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
     src->drive(&ramp);
-    auto rec = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recEvents);
+    auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
     rec->drive(&recorder);
-    REQUIRE(wiring.link(waiter, {"ramp", "OUT"}, {"rec", "FL"}));
+    REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"rec", "record.left"}));
     REQUIRE(waiter.until([&] {
       const auto samples = recorder.samples();
       return firstSound(samples) + 4 * kBlock <= samples.size();
@@ -613,9 +613,9 @@ TEST_CASE("drive on a block whose engine node is gone returns, and its code neve
   EngineNodes nodes(*engine, waiter);
   Constant alive(waiter, 0.0F), before(waiter, 0.0F), after(waiter, 0.0F);
   BlockEvents aliveEvents(waiter), goneEvents(waiter);
-  auto keep = blocks.make("alive", Ports{{}, {"OUT"}}, kFormat, aliveEvents);
+  auto keep = blocks.make("alive", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, aliveEvents);
   keep->drive(&alive);
-  auto gone = blocks.make("gone", Ports{{}, {"OUT"}}, kFormat, goneEvents);
+  auto gone = blocks.make("gone", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, goneEvents);
   gone->drive(&before);
   REQUIRE(waiter.until([&] { return before.calls() > 0 && nodes.props("gone") != nullptr; }));
 
@@ -640,15 +640,15 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
   PassThrough through;
   Recorder recorder(waiter);
   BlockEvents srcEvents(waiter), cardEvents(waiter), recEvents(waiter);
-  auto src = blocks.make("ramp", Ports{{}, {"OUT"}}, kFormat, srcEvents);
+  auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
   src->drive(&ramp);
-  auto card = blocks.make("card", Ports{{"IN"}, {}, {}, {"TO"}}, kFormat, cardEvents);
+  auto card = blocks.make("card", Ports{{{Direction::input, "in", {"a"}}}, {}, {"TO"}}, kFormat, cardEvents);
   card->drive(&through);
-  auto rec = blocks.make("rec", Ports{{"FL"}, {}}, kFormat, recEvents);
+  auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
   rec->drive(&recorder);
 
-  REQUIRE(wiring.link(waiter, {"ramp", "OUT"}, {"card", "IN"}));
-  REQUIRE(wiring.link(waiter, {"card", "TO"}, {"rec", "FL"}));
+  REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"card", "in.a"}));
+  REQUIRE(wiring.link(waiter, {"card", "TO"}, {"rec", "record.left"}));
   CHECK(wiring.ports.find("card", "TO")->direction == Direction::output);
 
   constexpr std::size_t kWanted = 32 * kBlock;
@@ -672,7 +672,7 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
   }));
   const NodeLevels& cardLevels = *find(snapshot, "card");
   REQUIRE(cardLevels.ports.size() == 1);
-  CHECK(cardLevels.ports[0].port == "IN");
+  CHECK(cardLevels.ports[0].port == "in.a");
 }
 
 TEST_CASE("Every block is in the ear.graph group and processes on the dummy driver alone",
@@ -684,9 +684,9 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
   EngineNodes nodes(*engine, waiter);
   Constant one(waiter, 0.0F), two(waiter, 0.0F);
   BlockEvents oneEvents(waiter), twoEvents(waiter);
-  auto first = blocks.make("one", Ports{{"IN"}, {}}, kFormat, oneEvents);
+  auto first = blocks.make("one", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, oneEvents);
   first->drive(&one);
-  auto second = blocks.make("two", Ports{{}, {"OUT"}}, kFormat, twoEvents);
+  auto second = blocks.make("two", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, twoEvents);
   second->drive(&two);
 
   REQUIRE(waiter.until([&] {
@@ -698,4 +698,70 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
     REQUIRE(group != props->end());
     CHECK(group->second == "ear.graph");
   }
+}
+
+namespace {
+
+/// Records each cycle as process() was told it, and what time it was then, up to a fixed count.
+class CycleLog final : public AudioCode {
+public:
+  explicit CycleLog(Waiter& waiter) : waiter_(waiter), seen_(kCapacity) {}
+  void prepare(const AudioFormat&) override {}
+  void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+               std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+    for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+    const std::size_t at = count_.load(std::memory_order_relaxed);
+    if (at < kCapacity) {
+      timespec now{};
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      seen_[at] = {cycle, frames, static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec};
+      count_.store(at + 1, std::memory_order_release);
+    }
+    waiter_.wake();
+  }
+  void release() noexcept override {}
+  struct Seen {
+    ear::GraphCycle cycle;
+    std::uint32_t frames;
+    std::int64_t nowNs;
+  };
+  std::size_t count() const { return count_.load(std::memory_order_acquire); }
+  const Seen& at(std::size_t index) const { return seen_[index]; }
+  static constexpr std::size_t kCapacity = 64;
+
+private:
+  Waiter& waiter_;
+  std::vector<Seen> seen_;
+  std::atomic<std::size_t> count_{0};
+};
+
+}  // namespace
+
+TEST_CASE("Each cycle's position advances by its frames and its start is no later than now", "[port_blocks]") {
+  auto engine = makeEngine();
+  Waiter waiter(*engine);
+  Bell bell(waiter);
+  FilterPortBlocks blocks(*engine, bell);
+  CycleLog log(waiter);
+  BlockEvents events(waiter);
+  auto block = blocks.make("timed", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+  block->drive(&log);
+  REQUIRE(waiter.until([&] { return log.count() == CycleLog::kCapacity; }));
+  block->drive(nullptr);
+
+  std::size_t advancedByFrames = 0;
+  for (std::size_t i = 1; i < CycleLog::kCapacity; ++i) {
+    const auto& before = log.at(i - 1);
+    const auto& now = log.at(i);
+    // A loaded host's skipped cycle is a jump of whole blocks, the very thing the position tells.
+    if (now.cycle.position == before.cycle.position + before.frames) ++advancedByFrames;
+    CHECK((now.cycle.position - before.cycle.position) % kBlock == 0);
+    CHECK(now.cycle.startNs > before.cycle.startNs);
+  }
+  for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
+    CHECK(log.at(i).frames == kBlock);
+    CHECK(log.at(i).cycle.startNs <= log.at(i).nowNs);
+    CHECK(log.at(i).nowNs - log.at(i).cycle.startNs < 1000000000);   // the same clock: within a second, not an epoch away
+  }
+  CHECK(advancedByFrames >= (CycleLog::kCapacity - 1) / 2);
 }

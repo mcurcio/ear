@@ -19,14 +19,14 @@ TEST_CASE("A node spec equals another only with the same name, type and settings
 }
 
 TEST_CASE("Routes compare by both ends, port by port", "[graph_spec]") {
-	const Route toLeft{{"noise", "MONO"}, {"rec", "FL"}};
-	const Route toRight{{"noise", "MONO"}, {"rec", "FR"}};
+	const Route toLeft{{"noise", "noise.mono"}, {"rec", "record.left"}};
+	const Route toRight{{"noise", "noise.mono"}, {"rec", "record.right"}};
 
-	CHECK(toLeft == Route{PortRef{"noise", "MONO"}, PortRef{"rec", "FL"}});
+	CHECK(toLeft == Route{PortRef{"noise", "noise.mono"}, PortRef{"rec", "record.left"}});
 	CHECK(toLeft != toRight);
-	CHECK(toLeft != Route{{"rec", "FL"}, {"noise", "MONO"}});
+	CHECK(toLeft != Route{{"rec", "record.left"}, {"noise", "noise.mono"}});
 
 	const std::set<Route> routes{toLeft, toRight, toLeft};
 	CHECK(routes.size() == 2);
-	CHECK(routes.contains(Route{{"noise", "MONO"}, {"rec", "FR"}}));
+	CHECK(routes.contains(Route{{"noise", "noise.mono"}, {"rec", "record.right"}}));
 }

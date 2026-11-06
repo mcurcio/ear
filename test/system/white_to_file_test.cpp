@@ -21,7 +21,7 @@ void recordNoise(const std::string& to, int noisy) {
 	writeGraphFile(directory, noiseToRec(to));
 	ChildProcess ear(EAR_BINARY, earArguments(directory));
 
-	const bool linked = ear.waitForLine(linkedLine("noise:MONO", "rec:" + to), deadline);
+	const bool linked = ear.waitForLine(linkedLine("noise:noise.mono", "rec:" + to), deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(linked);
 	// The recording window the criterion asks for; the checks below need at least half of it.
@@ -36,12 +36,12 @@ void recordNoise(const std::string& to, int noisy) {
 
 } // namespace
 
-TEST_CASE("White noise routed to file:FL lands on FL only", "[system]") {
-	recordNoise("FL", 0);
+TEST_CASE("White noise routed to record.left lands on left only", "[system]") {
+	recordNoise("record.left", 0);
 }
 
-TEST_CASE("White noise routed to file:FR lands on FR only", "[system]") {
-	recordNoise("FR", 1);
+TEST_CASE("White noise routed to record.right lands on right only", "[system]") {
+	recordNoise("record.right", 1);
 }
 
 TEST_CASE("A recordings folder ear cannot make stops ear with exit status 1", "[system]") {

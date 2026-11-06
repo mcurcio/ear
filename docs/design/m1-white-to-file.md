@@ -1,4 +1,7 @@
 # Milestone 1 (white noise → file sink): module design, frozen interfaces, slice cut
+
+> Port names changed, 2026-11-06: a public port is now `<bank>.<member>` (`record.left`, `play.1`), so this page's older names are history. The names are in `AGENTS.md` (Graph file) and the owner's words in `docs/design/sendspin.md` section 1.
+
 Source: code architect, 2026-10-29. Owner answers (gate page, 2026-10-29): container base Debian 13; remove JUCE in this milestone (slice B). System design: docs/design/pipewire-graph.md and the design page.
 Owner gate page: https://claude.ai/artifact/9rHQzmUcx6kdhguft7LBtP. PipeWire
 sources fetched: scratchpad/pw-m1/, pwsrc/, pwsrc2/. [V] = verified in source, [U] = unverified
@@ -675,6 +678,8 @@ Handoff (ring + wake + ordinary thread), Live port, Graph file (ear.json v2), St
 NOT RUN: nothing was built or compiled by the architect.
 
 ## Errata (corrected after the work, slice D)
+
+- **2026-11-06, port names:** `graph_spec.hpp`'s `PortName` comment now names a bank's port (`docs/design/batch2.md` section 11). The type is unchanged.
 - Land command named branch claude/pipewire-design; the work landed on claude/m1-white-to-file.
 - engine.conf's path was not given; it is src/pipewire/engine.conf (configure copies it beside out/ear).
 - test/system/ is added from src/CMakeLists.txt, not the top-level CMakeLists.txt (slice 0's choice): its tests need the ear target.

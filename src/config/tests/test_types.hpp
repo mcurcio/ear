@@ -1,6 +1,6 @@
 // Node types for ear_config's tests, shaped like the built-in ones and declaring their settings'
-// kinds: "white" (output MONO, no settings), "file" (inputs FL and FR; path: text) and "card"
-// (card: text; playback and capture: whole numbers, inputs playback_1..playback_N).
+// kinds: "white" (output noise.mono, no settings), "file" (inputs record.left and record.right; path: text) and "card"
+// (card: text; playback and capture: whole numbers, inputs play.1..play.N).
 #pragma once
 #include <memory>
 #include <vector>

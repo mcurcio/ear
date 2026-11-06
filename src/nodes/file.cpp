@@ -1,4 +1,4 @@
-// The "file" node type: inputs "FL" and "FR", recorded into a 32-bit float stereo WAV file at
+// The "file" node type: inputs "record.left" and "record.right", recorded into a 32-bit float stereo WAV file at
 // the graph frequency (docs/design/m1-white-to-file.md section 2, builtin.hpp). The realtime
 // thread only hands frames to the handoff; the handoff's own thread writes them with libsndfile,
 // and the file is complete (header finished) once the handoff has finished. The path is relative
@@ -77,7 +77,7 @@ private:
 	Descriptor fd_;
 };
 
-/// Passes FL then FR, in declaration order, to the handoff.
+/// Passes left then right, in declaration order, to the handoff.
 class Recorder final : public AudioCode {
 public:
 	void connect(RtWriter& writer) noexcept { writer_ = &writer; }
@@ -85,7 +85,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		// Frames the ring refuses are dropped and counted by the framework.
 		writer_->write(inputs, frames);
 	}
@@ -140,7 +140,7 @@ public:
 	}
 
 private:
-	Ports ports_{.inputs = {"FL", "FR"}, .outputs = {}};
+	Ports ports_{{{Direction::input, "record", {"left", "right"}}}};
 	std::shared_ptr<const folder::ConfinedFolder> recordings_;
 	std::string path_;
 };
