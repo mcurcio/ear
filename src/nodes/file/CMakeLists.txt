@@ -10,7 +10,7 @@ target_link_libraries(ear_node_file PUBLIC ear_core ear_folder PRIVATE PkgConfig
 if(BUILD_TESTS)
 	add_executable(ear_node_file_tests tests/file_test.cpp)
 	# libsndfile: the tests read back the WAV files the node wrote.
-	target_link_libraries(ear_node_file_tests PRIVATE ear_node_file ear_catch_main PkgConfig::SNDFILE)
+	target_link_libraries(ear_node_file_tests PRIVATE ear_node_file ear_catch_main PkgConfig::SNDFILE ear_temp_folder)
 	add_dependencies(ear_node_file_tests ear_node_file_verify_interface_header_sets)
 	ear_catch_tests(ear_node_file_tests)
 endif()

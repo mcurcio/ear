@@ -16,6 +16,7 @@
 #include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/sendspin.hpp"
 #include "key_store.hpp"
+#include "temp_folder.hpp"
 
 namespace {
 
@@ -30,20 +31,13 @@ public:
 };
 
 struct Rig {
+	ear::test::TempFolder dir{"keys"}; // first, so it is removed last
 	Rig() {
-		std::string pattern = (std::filesystem::temp_directory_path() / "ear-keys-XXXXXX").string();
-		REQUIRE(::mkdtemp(pattern.data()) != nullptr);
-		root = pattern;
+		root = dir.path();
 		auto opened = ear::folder::ConfinedFolder::open(root / "config");
 		REQUIRE(opened.has_value());
 		folder = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*opened));
 		file = root / "config" / "sendspin-ma.key";
-	}
-	~Rig() {
-		std::error_code ignored;
-		std::filesystem::permissions(root / "config", std::filesystem::perms::owner_all,
-		                             std::filesystem::perm_options::add, ignored);
-		std::filesystem::remove_all(root, ignored);
 	}
 	std::unique_ptr<NodeKeyStore> open() {
 		auto store = NodeKeyStore::open(folder, "ma", heard);

@@ -38,7 +38,7 @@ if(BUILD_TESTS)
 	target_include_directories(ear_node_sendspin_tests PRIVATE
 		"${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/pipewire/tests")
 	target_link_libraries(ear_node_sendspin_tests PRIVATE ear_node_sendspin ear_pipewire ear_catch_main
-		PkgConfig::PIPEWIRE ear_sendspin_server sendspin)
+		PkgConfig::PIPEWIRE ear_sendspin_server ear_temp_folder sendspin)
 	target_compile_definitions(ear_node_sendspin_tests PRIVATE
 		EAR_ENGINE_CONF="${PROJECT_SOURCE_DIR}/src/pipewire/engine.conf"
 		EAR_ALSA_TEST_DIR="${PROJECT_SOURCE_DIR}/src/pipewire/tests/alsa")

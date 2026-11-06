@@ -27,6 +27,7 @@
 
 #include "catch2/catch.hpp"
 #include "child_process.hpp"
+#include "temp_folder.hpp"
 #include "ws_client.hpp"
 
 namespace ear::test {
@@ -38,24 +39,13 @@ using nlohmann::json;
 inline constexpr auto deadline = 10s;
 inline constexpr std::string_view listeningPrefix = "control listening on 127.0.0.1:";
 
-/// A fresh directory for one test's folders and files, removed afterwards.
-class TempDirectory {
+/// A fresh folder for one test, holding its config folder and recordings folder, removed afterwards.
+class TempDirectory : public TempFolder {
 public:
-	TempDirectory() {
-		std::string pattern = (std::filesystem::temp_directory_path() / "ear-system-XXXXXX").string();
-		if (::mkdtemp(pattern.data()) == nullptr) throw std::runtime_error("mkdtemp failed");
-		path_ = pattern;
-	}
-	~TempDirectory() { std::filesystem::remove_all(path_); }
-	TempDirectory(const TempDirectory&) = delete;
-	TempDirectory& operator=(const TempDirectory&) = delete;
-	const std::filesystem::path& path() const noexcept { return path_; }
-	std::filesystem::path config() const { return path_ / "config"; }         // --config-dir
-	std::filesystem::path recordings() const { return path_ / "recordings"; } // --recordings-dir
+	TempDirectory() : TempFolder("system") {}
+	std::filesystem::path config() const { return path() / "config"; }         // --config-dir
+	std::filesystem::path recordings() const { return path() / "recordings"; } // --recordings-dir
 	std::filesystem::path graphFile() const { return config() / "ear.conf"; }
-
-private:
-	std::filesystem::path path_;
 };
 
 inline std::string readText(const std::filesystem::path& path) {

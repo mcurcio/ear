@@ -33,6 +33,11 @@ add_library(ear_ws_client INTERFACE)
 target_include_directories(ear_ws_client INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_ws_client INTERFACE Boost::beast)
 
+# ear_temp_folder: the tests' temporary folder (test/support/temp_folder.hpp, header-only), for every test
+# program that makes folders on disk.
+add_library(ear_temp_folder INTERFACE)
+target_include_directories(ear_temp_folder INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
 # ear_rtp_tone: the tests' RTP sender and tone fit (test/support/rtp_tone.hpp, header-only), for
 # the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/design/rtp.md).
 add_library(ear_rtp_tone INTERFACE)

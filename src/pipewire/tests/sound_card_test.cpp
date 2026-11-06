@@ -30,6 +30,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "engine_harness.hpp"
+#include "temp_folder.hpp"
 
 namespace {
 using namespace ear;
@@ -37,13 +38,11 @@ using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
 using namespace std::chrono_literals;
 
-/// The test ALSA configuration, and a fresh folder for card Test's file. Returns the file.
-std::filesystem::path useTestAlsa() {
+/// The test ALSA configuration, with card Test's file in `folder`. Returns the file.
+std::filesystem::path useTestAlsa(const ear::test::TempFolder& folder) {
 	setenv("ALSA_CONFIG_PATH", EAR_ALSA_TEST_DIR "/alsa.conf", 1);
-	std::string folder = (std::filesystem::temp_directory_path() / "ear-card-XXXXXX").string();
-	REQUIRE(mkdtemp(folder.data()) != nullptr);
-	setenv("EAR_ALSA_OUT", folder.c_str(), 1);
-	return std::filesystem::path(folder) / "card.raw";
+	setenv("EAR_ALSA_OUT", folder.path().c_str(), 1);
+	return folder.path() / "card.raw";
 }
 
 CardId cardId(std::string_view text) {
@@ -113,8 +112,8 @@ private:
 /// (one input), each driven by its own code, both running on the dummy driver.
 struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt)
-		: out(useTestAlsa()), engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
-		  cards(*engine), cardCode(waiter, rampOn), otherCode(waiter), cardBlockEvents(waiter),
+		: out(useTestAlsa(alsaOut)), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
+		  blocks(*engine, bell), cards(*engine), cardCode(waiter, rampOn), otherCode(waiter), cardBlockEvents(waiter),
 		  otherBlockEvents(waiter) {
 		cardBlock = blocks.make("card", Ports{{{Direction::input, "play", {"1", "2"}}}, {}, {"to_card_1", "to_card_2"}},
 		                        kFormat, cardBlockEvents);
@@ -154,6 +153,7 @@ struct Graph {
 		       registry.driverId("other") == driver;
 	}
 
+	ear::test::TempFolder alsaOut{"card"}; // declared before `out`, so removed after the engine
 	std::filesystem::path out;
 	std::unique_ptr<Engine> engine;
 	Waiter waiter;

@@ -25,6 +25,7 @@
 #include "catch2/catch.hpp"
 #include "ear/control/rpc.hpp"
 #include "ear/server/control_port.hpp"
+#include "temp_folder.hpp"
 #include "ws_client.hpp"
 
 using namespace ear::server;
@@ -143,11 +144,8 @@ public:
 	std::vector<ear::NodeLevels> levels;
 };
 
-std::filesystem::path makeWebRoot() {
-	static int count = 0;
-	const auto top = std::filesystem::temp_directory_path() /
-	                 ("ear-control-port-" + std::to_string(::getpid()) + "-" + std::to_string(++count));
-	std::filesystem::remove_all(top);
+/// The web root and a file outside it, made in `top`.
+std::filesystem::path makeWebRoot(const std::filesystem::path& top) {
 	std::filesystem::create_directories(top / "web" / "sub");
 	std::ofstream(top / "web" / "index.html") << "<html>graph editor</html>";
 	std::ofstream(top / "web" / "app.js") << "export {};";
@@ -172,12 +170,12 @@ struct Fixture {
 		}
 		port.reset();
 		mainLoop.drain();
-		std::filesystem::remove_all(top);
 	}
 	std::uint16_t number() const { return port->port(); }
 	std::string host() const { return "127.0.0.1:" + std::to_string(number()); }
 
-	std::filesystem::path top = makeWebRoot();
+	ear::test::TempFolder topFolder{"control-port"};
+	std::filesystem::path top = makeWebRoot(topFolder.path());
 	ControlThread control;
 	FakeMainLoop mainLoop;
 	FakeGateway gateway{mainLoop, control};

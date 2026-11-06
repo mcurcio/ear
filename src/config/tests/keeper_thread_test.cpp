@@ -54,7 +54,7 @@ private:
 	std::vector<std::string> lines_;
 };
 
-std::unique_ptr<KeeperThread> startThread(const TempDir& dir, Seen& seen) {
+std::unique_ptr<KeeperThread> startThread(const TempFolder& dir, Seen& seen) {
 	auto thread =
 		KeeperThread::start(dir.path().string(), "ear.conf",
 	                        KeeperThread::Handlers{[&seen] { seen.add("disk"); }, [&seen] { seen.add("free"); }});
@@ -75,7 +75,7 @@ void settle(KeeperThread& thread, Seen& seen, int& markers) {
 } // namespace
 
 TEST_CASE("Posted work runs in post order on the keeper's thread, and free follows each wake", "[keeper_thread]") {
-	TempDir dir("thread_order");
+	TempFolder dir("thread_order");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	std::atomic<bool> elsewhere = true;
@@ -98,7 +98,7 @@ TEST_CASE("Posted work runs in post order on the keeper's thread, and free follo
 }
 
 TEST_CASE("A rename of ear.conf into the folder is a disk event, and another file's is not", "[keeper_thread]") {
-	TempDir dir("thread_watch");
+	TempFolder dir("thread_watch");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	int markers = 0;
@@ -118,7 +118,7 @@ TEST_CASE("A rename of ear.conf into the folder is a disk event, and another fil
 
 TEST_CASE("stop() runs the work already posted, then joins, and work posted after it is destroyed unrun",
           "[keeper_thread]") {
-	TempDir dir("thread_stop");
+	TempFolder dir("thread_stop");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	for (int i = 1; i <= 3; ++i) thread->post([&seen, i] { seen.add("work " + std::to_string(i)); });

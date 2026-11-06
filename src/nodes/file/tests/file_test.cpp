@@ -15,12 +15,13 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
-
 #include "catch2/catch.hpp"
 #include "ear/nodes/file.hpp"
+#include "temp_folder.hpp"
 
 namespace {
+
+using ear::test::TempFolder;
 
 /// A handoff without a ring or a thread: write() interleaves its channels and gives them to the
 /// consumer at once, as the framework's handoff thread would later.
@@ -75,23 +76,6 @@ private:
 	ear::AudioFormat format_;
 };
 
-/// A path in a fresh directory of its own, removed with it.
-class TempDir {
-public:
-	explicit TempDir(const std::string& name)
-		: path_(std::filesystem::temp_directory_path() / ("ear_nodes_" + name + "_" + std::to_string(getpid()))) {
-		std::filesystem::remove_all(path_);
-		std::filesystem::create_directories(path_);
-	}
-	~TempDir() { std::filesystem::remove_all(path_); }
-	TempDir(const TempDir&) = delete;
-	TempDir& operator=(const TempDir&) = delete;
-	const std::filesystem::path& path() const noexcept { return path_; }
-
-private:
-	std::filesystem::path path_;
-};
-
 std::shared_ptr<const ear::folder::ConfinedFolder> recordingsIn(const std::filesystem::path& path) {
 	auto folder = ear::folder::ConfinedFolder::open(path);
 	REQUIRE(folder.has_value());
@@ -113,7 +97,7 @@ std::string contents(const std::filesystem::path& path) {
 } // namespace
 
 TEST_CASE("File declares inputs record.left and record.right and no outputs", "[file]") {
-	TempDir dir{"ports"};
+	TempFolder dir{"ports"};
 	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
 	CHECK(type->name() == "file");
 	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
@@ -122,7 +106,7 @@ TEST_CASE("File declares inputs record.left and record.right and no outputs", "[
 }
 
 TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
-	TempDir dir{"settings"};
+	TempFolder dir{"settings"};
 	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
 	for (const ear::NodeSettings& settings :
 	     {ear::NodeSettings{}, ear::NodeSettings::object(), ear::NodeSettings{{"path", ""}},
@@ -137,7 +121,7 @@ TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 }
 
 TEST_CASE("File refuses an absolute path or a .. component as invalid settings", "[file]") {
-	TempDir dir{"outside"};
+	TempFolder dir{"outside"};
 	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path() / "recordings"));
 	for (const std::string& path :
 	     {std::string("/tmp/rec.wav"), (dir.path() / "rec.wav").string(), std::string("../x.wav"), std::string(".."),
@@ -155,7 +139,7 @@ TEST_CASE("File refuses an absolute path or a .. component as invalid settings",
 }
 
 TEST_CASE("File refuses at start a symlink in the folder that leads outside it", "[file]") {
-	TempDir dir{"symlink"};
+	TempFolder dir{"symlink"};
 	const auto outside = dir.path() / "outside.wav";
 	std::ofstream(outside, std::ios::binary) << "keep";
 	const auto folder = recordingsIn(dir.path() / "recordings");
@@ -179,7 +163,7 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 }
 
 TEST_CASE("File records record.left and record.right as a 32-bit float stereo WAV at the format's rate", "[file]") {
-	TempDir dir{"records"};
+	TempFolder dir{"records"};
 	const auto wav = dir.path() / "rec.wav";
 	{
 		// Longer than what the node writes: the node must truncate it.
@@ -237,7 +221,7 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 }
 
 TEST_CASE("File fails to start on a path it cannot open, and asks for no handoff", "[file]") {
-	TempDir dir{"unopenable"};
+	TempFolder dir{"unopenable"};
 	const auto config = parseFile(recordingsIn(dir.path()), "missing-dir/rec.wav");
 	FakeGrant grant{{.rate = 48000, .maxBlock = 256}};
 

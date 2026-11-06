@@ -9,10 +9,9 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
-
 #include "ear/control/requests.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "temp_folder.hpp"
 
 namespace ear::config::test {
 
@@ -39,24 +38,8 @@ inline std::string replaced(std::string text, const std::string& from, const std
 	return text.replace(at, from.size(), to);
 }
 
-class TempDir {
-public:
-	explicit TempDir(const std::string& name)
-		: path_(std::filesystem::temp_directory_path() / ("ear_config_" + name + "_" + std::to_string(getpid()))) {
-		std::filesystem::remove_all(path_);
-		std::filesystem::create_directories(path_);
-	}
-	~TempDir() {
-		std::error_code ignored;
-		std::filesystem::remove_all(path_, ignored);
-	}
-	TempDir(const TempDir&) = delete;
-	TempDir& operator=(const TempDir&) = delete;
-	const std::filesystem::path& path() const noexcept { return path_; }
-
-private:
-	std::filesystem::path path_;
-};
+/// The tests' temporary folder (test/support/temp_folder.hpp), by the name this namespace's tests use.
+using TempFolder = ::ear::test::TempFolder;
 
 inline std::string contents(const std::filesystem::path& path) {
 	std::ifstream file(path, std::ios::binary);

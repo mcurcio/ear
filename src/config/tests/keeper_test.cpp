@@ -156,7 +156,7 @@ struct Fixture {
 		return fileLog.changes.back();
 	}
 
-	TempDir dir;
+	TempFolder dir;
 	std::filesystem::path file;
 	folder::ConfinedFolder folder;
 	FolderGraphFileDisk realDisk{folder};

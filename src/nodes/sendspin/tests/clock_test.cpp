@@ -30,6 +30,7 @@
 #include "sendspin_code.hpp"
 #include "sendspin_server.hpp"
 #include "settings.hpp"
+#include "temp_folder.hpp"
 #include "worker.hpp"
 
 namespace {
@@ -175,17 +176,12 @@ public:
 /// The folder of the node's key file.
 struct KeyFolder {
 	KeyFolder() {
-		std::string pattern = (std::filesystem::temp_directory_path() / "ear-sendspin-keys-XXXXXX").string();
-		REQUIRE(mkdtemp(pattern.data()) != nullptr);
-		path = pattern;
+		path = dir.path();
 		auto opened = folder::ConfinedFolder::open(path);
 		REQUIRE(opened.has_value());
 		held = std::make_shared<const folder::ConfinedFolder>(std::move(*opened));
 	}
-	~KeyFolder() {
-		std::error_code ignored;
-		std::filesystem::remove_all(path, ignored);
-	}
+	ear::test::TempFolder dir{"sendspin-keys"}; // first, so it is removed last
 	std::filesystem::path path;
 	std::shared_ptr<const folder::ConfinedFolder> held;
 };
@@ -247,10 +243,9 @@ struct Rig {
 	struct AlsaFirst {
 		AlsaFirst() {
 			setenv("ALSA_CONFIG_PATH", EAR_ALSA_TEST_DIR "/alsa.conf", 1);
-			std::string folder = (std::filesystem::temp_directory_path() / "ear-sendspin-card-XXXXXX").string();
-			REQUIRE(mkdtemp(folder.data()) != nullptr);
-			setenv("EAR_ALSA_OUT", folder.c_str(), 1);
+			setenv("EAR_ALSA_OUT", out.path().c_str(), 1);
 		}
+		ear::test::TempFolder out{"sendspin-card"}; // last to go: Rig's first member
 	} alsa;
 	SendspinTestServer server;
 	KeyFolder keys;
