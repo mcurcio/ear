@@ -1,6 +1,6 @@
 # EAR's C++ style, enforced by CI (make format-check) and applied with make format. Measured
 # from the code as it stood: tabs for indent with spaces for continuation lines, 4 wide, lines
-# up to 100 columns, attached braces, pointers and references hug the type, namespaces not
+# up to 120 columns, attached braces, pointers and references hug the type, namespaces not
 # indented, short functions kept on one line. Includes are never reordered. Only git-tracked
 # files under src/ and test/ are formatted (the Makefile's list), so vendor/ and fetched trees
 # are never touched.

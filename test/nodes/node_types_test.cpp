@@ -36,7 +36,7 @@ TEST_CASE("The node types are card, file, rtp, sendspin and white", "[nodes]") {
 	CHECK(catalogue.names() == std::vector<std::string_view>{"card", "file", "rtp", "sendspin", "white"});
 }
 
-TEST_CASE("Each node type declares every key once, and a value of each declared kind parses", "[nodes]") {
+TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses", "[nodes]") {
 	std::map<std::string, std::vector<std::pair<std::string, ear::SettingKind>>> declared;
 	for (const auto& type : nodeTypes()) {
 		INFO(type->name());
