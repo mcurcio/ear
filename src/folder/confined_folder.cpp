@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/openat2.h>
 #include <sys/stat.h>
@@ -313,6 +314,24 @@ std::expected<void, FolderError> ConfinedFolder::restrictMode(const std::string&
 		return std::unexpected(failure(relative, std::strerror(errno)));
 	}
 	return {};
+}
+
+std::expected<std::vector<std::string>, FolderError> ConfinedFolder::fileNames() const {
+	const int reading = ::openat(fd_, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (reading < 0) return std::unexpected(failure(".", std::strerror(errno)));
+	DIR* directory = ::fdopendir(reading);
+	if (directory == nullptr) {
+		const std::string why = std::strerror(errno);
+		::close(reading);
+		return std::unexpected(failure(".", why));
+	}
+	std::vector<std::string> names;
+	while (const dirent* entry = ::readdir(directory)) {
+		struct stat status{};
+		if (::fstatat(reading, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(status.st_mode)) names.emplace_back(entry->d_name);
+	}
+	::closedir(directory);
+	return names;
 }
 
 std::expected<void, FolderError> requireApart(std::span<const std::filesystem::path> folders) {

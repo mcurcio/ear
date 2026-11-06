@@ -14,6 +14,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/folder/confined_folder.hpp"
+#include "ear/sendspin/sendspin_type.hpp"
 #include "key_store.hpp"
 
 namespace {
@@ -134,7 +135,7 @@ TEST_CASE("A file already wider than 0600 is 0600 after open, its text unchanged
 	CHECK(rig.text() == oldRecord);
 }
 
-TEST_CASE("A file that is no key file fails open with the reason, unchanged", "[sendspin][keys]") {
+TEST_CASE("A file that is no key file fails open with the reason, its text unchanged and its mode narrowed", "[sendspin][keys]") {
 	Rig rig;
 	const std::vector<std::pair<std::string, std::string>> cases{
 	    {"{ not json", "sendspin-ma.key: malformed: not JSON"},
@@ -155,7 +156,7 @@ TEST_CASE("A file that is no key file fails open with the reason, unchanged", "[
 		std::filesystem::permissions(rig.file, std::filesystem::perms(0644));
 		CHECK(rig.refusal() == detail);
 		CHECK(rig.text() == text);
-		CHECK(rig.mode() == std::filesystem::perms(0644));
+		CHECK(rig.mode() == std::filesystem::perms(0600));   // a refused file may still hold a private key
 	}
 }
 
@@ -231,4 +232,46 @@ TEST_CASE("A file something else changed or removed stands, and the write fails"
 	}
 	REQUIRE(rig.heard.said.size() == 1);
 	CHECK(rig.heard.said[0] == "key-write-failed sendspin-ma.key: changed by something else");
+}
+
+TEST_CASE("A mode widened mid-run does not outlive the next write", "[sendspin][keys]") {
+	Rig rig;
+	const auto store = rig.open();
+	std::filesystem::permissions(rig.file, std::filesystem::perms(0660));
+	const auto blob = bytes({1});
+	REQUIRE(store->save_blob("rec_0", blob.data(), blob.size()));
+	CHECK(rig.mode() == std::filesystem::perms(0600));
+}
+
+TEST_CASE("A blob that would take the file over 64 KiB fails the write, and the file stands", "[sendspin][keys]") {
+	Rig rig;
+	const auto store = rig.open();
+	const std::string before = rig.text();
+	const std::vector<std::uint8_t> blob(64 * 1024, 7);
+	CHECK_FALSE(store->save_blob("rec_0", blob.data(), blob.size()));
+	REQUIRE(rig.heard.said.size() == 1);
+	CHECK(rig.heard.said[0].starts_with("key-write-failed sendspin-ma.key: larger than 65536 bytes"));
+	CHECK(rig.text() == before);
+}
+
+TEST_CASE("Making the node type narrows every key file and its staging file, whatever its node or its text, and nothing else", "[sendspin][keys]") {
+	Rig rig;
+	const auto config = rig.root / "config";
+	const auto write = [&](const char* name, int mode) {
+		std::ofstream(config / name, std::ios::binary) << "whatever";
+		std::filesystem::permissions(config / name, std::filesystem::perms(mode));
+	};
+	write("sendspin-removed.key", 0660);
+	write(".sendspin-removed.key.ear-staging", 0660);
+	write("sendspin-malformed.key", 0644);
+	write("ear.conf", 0664);
+	std::filesystem::create_symlink(config / "ear.conf", config / "sendspin-link.key");
+
+	CHECK(ear::sendspin::makeSendspinNodeType(rig.folder) != nullptr);
+
+	const auto modeOf = [&](const char* name) { return std::filesystem::symlink_status(config / name).permissions() & std::filesystem::perms::mask; };
+	CHECK(modeOf("sendspin-removed.key") == std::filesystem::perms(0600));
+	CHECK(modeOf(".sendspin-removed.key.ear-staging") == std::filesystem::perms(0600));
+	CHECK(modeOf("sendspin-malformed.key") == std::filesystem::perms(0600));
+	CHECK(modeOf("ear.conf") == std::filesystem::perms(0664));
 }

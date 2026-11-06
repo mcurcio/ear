@@ -14,10 +14,14 @@
 #include "ear/folder/confined_folder.hpp"
 #include "sendspin/client.h"
 namespace ear::sendspin {
+/// Boot. Every `sendspin-*.key` in `folder` and each one's staging file a crash left, narrowed to 0600 whatever its node and
+/// whatever it holds: an fsGroup widens them on every mount, and nothing else opens the file of a node no longer in the
+/// graph (section 8). What it could not narrow, one detail each.
+std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder);
 class NodeKeyStore final : public ::sendspin::SendspinPersistenceProvider {
 public:
   /// Worker, before client.start(). Reads and narrows to 0600, or creates it empty. Error: `lost` with this detail, and
-  /// the file left as it was.
+  /// the file's text left as it was.
   static std::expected<std::unique_ptr<NodeKeyStore>, std::string> open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events);
   std::optional<std::vector<std::uint8_t>> load_blob(const std::string& key) override;
   /// Failure: `key-write-failed`. The blob stays in memory, so a later write that works carries it too (the library's

@@ -47,6 +47,19 @@ std::optional<std::string> whyMalformed(const json& record) {
 
 } // namespace
 
+std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder) {
+	std::vector<std::string> failures;
+	auto names = folder.fileNames();
+	if (!names) return {names.error().detail};
+	for (const std::string& name : *names) {
+		const bool keyFile = name.starts_with("sendspin-") && name.ends_with(".key");
+		const bool staged = name.starts_with(".sendspin-") && name.ends_with(".key.ear-staging");
+		if (!keyFile && !staged) continue;
+		if (auto narrowed = folder.restrictMode(name, fileMode); !narrowed) failures.push_back(narrowed.error().detail);
+	}
+	return failures;
+}
+
 std::expected<std::unique_ptr<NodeKeyStore>, std::string>
 NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events) {
 	const std::string file = "sendspin-" + node + ".key";
@@ -56,12 +69,13 @@ NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const N
 	json record;
 	std::string text;
 	if (*read) {
+		// Every open, because an fsGroup widens the file on every mount, and before its text is judged, because a file
+		// refused for its text may still hold a private key (section 8).
+		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed) return std::unexpected(narrowed.error().detail);
 		text = std::move(**read);
 		record = json::parse(text, nullptr, false);
 		if (record.is_discarded()) return std::unexpected(file + ": malformed: not JSON");
 		if (const auto why = whyMalformed(record)) return std::unexpected(file + ": malformed: " + *why);
-		// Every open, because an fsGroup widens the file on every mount (section 8).
-		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed) return std::unexpected(narrowed.error().detail);
 	} else {
 		// Now, because the library only warns when it cannot save a new key, and would run a fresh identity each boot.
 		const std::string at = now();
@@ -92,6 +106,13 @@ bool NodeKeyStore::save_blob(const std::string& key, const std::uint8_t* data, s
 	std::string text = render(record_);
 	if (text.size() > maxFileBytes) {
 		events_.say(notes::keyWriteFailed(std::format("{}: larger than {} bytes", file_, maxFileBytes)));
+		return false;
+	}
+	// Staged with the mode of what it replaces, so narrowed first: a mode widened mid-run must not outlive this write.
+	if (const auto narrowed = folder_->restrictMode(file_, fileMode); !narrowed) {
+		const auto there = folder_->read(file_, maxFileBytes);
+		const bool missing = there && !*there;
+		events_.say(notes::keyWriteFailed(missing ? file_ + ": changed by something else" : narrowed.error().detail));
 		return false;
 	}
 	const auto replaced = folder_->replaceIf(file_, text_, text, maxFileBytes, fileMode);

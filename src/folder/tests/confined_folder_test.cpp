@@ -463,3 +463,19 @@ TEST_CASE("requireApart() passes folders apart and skips a path that does not ex
 	const std::vector<std::filesystem::path> prefixed = {dir.path() / "config", dir.path() / "config2"};
 	CHECK(ear::folder::requireApart(prefixed).has_value());
 }
+
+TEST_CASE("fileNames() lists the regular files directly in the folder, no symlink or directory among them", "[folder]") {
+	TempDir dir{"names"};
+	const auto path = dir.path() / "f";
+	auto folder = ConfinedFolder::open(path);
+	REQUIRE(folder.has_value());
+	write(path / "a.txt", "a");
+	write(path / ".hidden", "b");
+	std::filesystem::create_directory(path / "sub");
+	write(path / "sub" / "deep.txt", "c");
+	std::filesystem::create_symlink(path / "a.txt", path / "link");
+	auto names = folder->fileNames();
+	REQUIRE(names.has_value());
+	std::ranges::sort(*names);
+	CHECK(*names == std::vector<std::string>{".hidden", "a.txt"});
+}
