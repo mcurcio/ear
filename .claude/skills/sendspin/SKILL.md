@@ -167,7 +167,7 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **Every 127/8 address is this host's, so one test can be peers on many addresses** (`connectFrom` binds its source). Peers on 127.0.0.1 share the server's own.
 - **`ChildProcess::waitForLine` finds a line an earlier wait already saw.** A second `says connected ... paired` needs `waitForNthLine`.
 - **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
-  the role, by a 5 ms poll: `aiosendspin` has no event for it. The encoder also holds back the stream's tail, so 68607 of 72000
+  the role, by a 5 ms poll: `aiosendspin` has no event for it. Under load it can still join late, so the tests ask for 1 s of the 1.5 s. The encoder also holds back the stream's tail, so 68607 of 72000
   frames arrive.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
   instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused". A test's listening port comes from below the kernel's

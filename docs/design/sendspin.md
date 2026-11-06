@@ -302,8 +302,9 @@ Where it departs from the spec, or the spec leaves a hole:
    What it gives up:
    - **A peer behind the same address (NAT, proxy) can knock an honest server off while it is still proving itself,** so a server there
      may have to reconnect, at the backoff it already has. Holding sockets does not do this: the room only turns over as fast as the peer
-     connects, and a server takes milliseconds. An honest server's slow upgrade beside two silent sockets renewed every 100 ms from its
-     own address is answered (a test), at 8 sockets an address.
+     connects, and a server takes milliseconds. An honest server's slow upgrade beside two silent sockets renewed every 500 ms from its
+     own address is answered (a test), at 8 sockets an address. Renewed every 100 ms on a loaded host, sockets still closing can fill that
+     share, and the upgrade then gives way (erratum 38); a holder must renew only within the 30 s reap, where they cannot.
    - **A sustained flood keeps servers out for as long as it lasts, and only stopping it lets them in (erratum 34).** A server is one of
      those turning over until its Noise handshake ends, and upgraded sockets closing (300 ms for a peer that will not answer) cannot give
      way, so past some rate of connects it never finishes. On loopback in Docker on one arm64 Mac, upgrades answered and closed as fast as
@@ -644,6 +645,7 @@ Errata, from verifying that patch through `out/ear` (2026-11-06):
 35. **Configure now asks git whether the tree holds the whole patch (`cmake/CarriedPatch.cmake`), which replaces erratum 16's check.** A tree with the patch's previous version, named by `FETCHCONTENT_SOURCE_DIR_IXWEBSOCKET`, passed with no `admitConnection` in it, as the marker it read predated this change. A marker per file, or bumped per version, is a convention to remember; `git apply --reverse --check` needs none, and drops a parameter. `git apply` in a subfolder of another repository skips the patch and exits 0, so it is stopped from looking above the tree.
 36. **Three behaviours that only a verifier's scripts held now have tests:** a playing server beside bare sockets past its own address's share, a slow upgrade beside one address past its share, and the transport's bound of twice its budget, by threads in `/proc` (up to 88 at the bound over 13 idle, 102 and up without it, so a margin of 16 for threads ending as others begin). Section 11's list of branches no test drives lacked three, now named.
 37. **A test's listening port now comes from below the kernel's range for outgoing sockets.** A port the kernel handed out could be taken, by the time ear listened, as the near end of a socket in a flood test running beside it: `node ma failed start-failed: cannot listen on port 54273: Address already in use`, seen at `ctest -j8`, one pass in about ten. No product code changed.
+38. **CI's two reds at that fix's head were tests asking more than the design gives; no product code changed.** S1-10's 1.2 s of ramp becomes 1 s: a `play` soon after a connect can still join its ramp late, as in erratum 6, and on a loaded host a server lost mid-stream resumed with 50688 frames, all exact. And section 11's slow upgrade beside sockets renewed every 100 ms was closed by ear, read as end of file after about 1.07 s, 9 runs of 48 side by side with a flood: upgraded sockets cannot give way, so while those still closing fill the address's share the upgrade is the one left to go. That is this section's stated cost, reached sooner than it said; the test renews every 500 ms.
 
 Reviewed 2026-11-05; its findings were taken, but for these:
 
