@@ -27,6 +27,19 @@ Gate answers, 2026-11-05 (his current choices; later evidence may reopen them):
 | Connection | "Both, chosen per node": with a `server` setting ear dials that URL (e.g. `ws://<host>:8927/sendspin`); without it ear listens (default 8928) and advertises `_sendspin._tcp` over mDNS |
 | Permission | "Pairing code required": unpaired access stays off; ear prints a short-lived code on a status line and the operator types it into Music Assistant. Either way ear keeps a private key on disk in the graph file folder, mode 0600, so its identity survives restarts |
 
+Answers, 2026-11-06:
+
+| Question | His answer |
+|---|---|
+| The two costs left on a listening node, a hostile peer holding its one place (section 11, item 2) and a sustained flood keeping servers out (item 6) | "Accept both" |
+| The port names | "i dont like the port names. instead of route kitchen:from_server_FL desk:playback_1;, i would like something closer to route kitchen:out.left desk:in.1;". Then: "the port name left should be a member of the out bank of channels. or some better idea -- im open to suggestions" |
+| What banks are named | "Banks named per type" |
+| Routes naming a whole bank | "Later (Recommended)" |
+| The sendspin names | "Shorter sendspin names" |
+| Where it lands | "Add to PR 23" |
+
+So a port is `<bank>.<member>`, each type's names in `AGENTS.md` (Graph file). The example: `route kitchen:from.left desk:play.1;`.
+
 ## 2. Current choices (revisable; none is his requirement)
 
 - The official client library sendspin-cpp, pinned at commit `7be2278a252dd8c71da55732e93fe28871a9021d`
@@ -59,8 +72,8 @@ flowchart LR
   F -- "read, no lock" --> C
   C -- "played frames and their time, bell" --> N
   C -- "write, no lock" --> H
-  C --> OUT[from_server_FL/FR]
-  IN[to_server_FL/FR] --> C
+  C --> OUT[from.left, from.right]
+  IN[to.left, to.right] --> C
   W -- "notes and lost, through the main loop" --> S[NodeHost, StatusLog]
 ```
 
@@ -110,7 +123,7 @@ node sendspin study;                                                            
 
 The first failure is told, in this order: object, unknown keys (in the object's order), server, port, name. A host name is looked up on the library's transport thread, never on the main loop.
 
-- Ports, fixed: outputs `from_server_FL`, `from_server_FR`; inputs `to_server_FL`, `to_server_FR`. No inside
+- Ports, fixed: outputs `from.left`, `from.right` (bank `from`); inputs `to.left`, `to.right` (bank `to`). No inside
   ports. Engine node: `<node>`, the block alone.
 - The key file: `<config-dir>/sendspin-<node>.key`; node names are safe there, and renaming a node makes a new identity (re-pair).
 - On the network (S3): instance and host label `ear-<first 50 bytes of node>-<first 8 of client id>`, within a DNS
@@ -374,6 +387,8 @@ Frozen headers change through this page, as their first comment asks.
 - Configure with `BUILD_TESTS=ON` stops naming `EAR_SENDSPIN_SERVER_PYTHON` when `/opt/sendspin-server/bin/python` is missing.
 
 ## 14. Slices
+
+The port names below are those of their day; since 2026-11-06 they are section 4's (`to_server_FL` is `to.left`).
 
 Series: S1, S2, S3, each green alone. Land per slice: `git add -A -- <owned> && git commit -m '<msg>' -- <owned>`, then
 push. A slice that needs a file outside its list or a signature change adds an erratum here and stops.

@@ -22,10 +22,10 @@ GraphSpec wanted() {
 	                  {"rec", "file", {{"path", "a.wav"}}},
 	                  {"rec", "file", {{"path", "b.wav"}}},
 	                  {"x", "bogus", json::object()}},
-	                 {{{"noise", "MONO"}, {"rec", "FL"}},
-	                  {{"noise", "MONO"}, {"ghost", "FL"}},
-	                  {{"noise", "MONO"}, {"rec", "FX"}},
-	                  {{"rec", "FL"}, {"noise", "MONO"}}}};
+	                 {{{"noise", "noise.mono"}, {"rec", "record.left"}},
+	                  {{"noise", "noise.mono"}, {"ghost", "record.left"}},
+	                  {{"noise", "noise.mono"}, {"rec", "FX"}},
+	                  {{"rec", "record.left"}, {"noise", "noise.mono"}}}};
 }
 
 Placements placements() {
@@ -48,9 +48,9 @@ TEST_CASE("placeOf points each refusal at the line that causes it", "[main_loop_
 	CHECK(line(DuplicateNode{"rec"}) == 3u);                                  // the second of the two
 	CHECK(line(UnknownNode{"ghost"}) == 6u);                                  // the first route naming it
 	CHECK(line(UnknownPort{{"rec", "FX"}}) == 7u);                            // the first route naming it
-	CHECK(line(WrongDirection{{{"rec", "FL"}, {"noise", "MONO"}}}) == 8u);    // the route refused
+	CHECK(line(WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}}) == 8u);    // the route refused
 	CHECK(line(InvalidName{"noise"}) == 1u);                                  // the named node
-	CHECK(line(UnknownRoute{{{"noise", "MONO"}, {"rec", "FL"}}}) == 5u);      // the route refused
+	CHECK(line(UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.left"}}}) == 5u);      // the route refused
 	CHECK(line(Stopping{}) == std::nullopt);
 	CHECK(line(UnknownNode{"nobody"}) == std::nullopt);                       // nothing names it
 	CHECK(line(UnknownNodeType{"other"}) == std::nullopt);

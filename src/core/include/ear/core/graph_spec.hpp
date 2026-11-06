@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 namespace ear {
 using NodeName = std::string;           // unique in the graph; also the engine node.name
-using PortName = std::string;           // declared by the node type: "FL", "FR", "MONO"
+using PortName = std::string;           // a public port is declared in a bank of its node type: "record.left" (node_type.hpp)
 using NodeSettings = nlohmann::json;    // unchecked; only NodeType::parse reads it
 enum class Direction { input, output };
 struct PortRef { NodeName node; PortName port;

@@ -233,8 +233,8 @@ struct LinkedPair {
         ramp(waiter), recorder(waiter), sourceEvents(waiter), sinkEvents(waiter) {
     live.subscribe(ports);
     links.subscribe(linkLog);
-    source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
-    sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, sinkEvents);
+    source = makeDriven(blocks, "ramp", Ports{{{Direction::output, "out", {"a"}}}}, ramp, sourceEvents);
+    sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left"}}}}, recorder, sinkEvents);
   }
   NoLevelWake wake;
   FilterPortBlocks blocks;
@@ -262,7 +262,7 @@ TEST_CASE("The engine runs with no daemon, runtime directory or D-Bus, and an un
   FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left", "right"}}}}, recorder, events);
 
   REQUIRE(waiter.until([&] { return events.readyCount > 0 && recorder.calls() >= 8; }));
   CHECK(events.readyCount == 1);
@@ -284,13 +284,13 @@ TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   Ramp ramp(waiter);
   Recorder recorder(waiter);
   BlockEvents sourceEvents(waiter), sinkEvents(waiter);
-  auto source = makeDriven(blocks, "ramp", Ports{{}, {"OUT"}}, ramp, sourceEvents);
-  auto sink = makeDriven(blocks, "rec", Ports{{"FL", "FR"}, {}}, recorder, sinkEvents);
+  auto source = makeDriven(blocks, "ramp", Ports{{{Direction::output, "out", {"a"}}}}, ramp, sourceEvents);
+  auto sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left", "right"}}}}, recorder, sinkEvents);
 
   REQUIRE(waiter.until([&] { return ports.appeared.size() >= 3; }));
-  const auto out = ports.find("ramp", "OUT");
-  const auto fl = ports.find("rec", "FL");
-  const auto fr = ports.find("rec", "FR");
+  const auto out = ports.find("ramp", "out.a");
+  const auto fl = ports.find("rec", "record.left");
+  const auto fr = ports.find("rec", "record.right");
   REQUIRE(out);
   REQUIRE(fl);
   REQUIRE(fr);
@@ -305,17 +305,17 @@ TEST_CASE("Live ports name their node, port and direction", "[engine]") {
   live.subscribe(late);
   CHECK(late.appeared.empty());
   REQUIRE(waiter.until([&] { return late.appeared.size() >= 3; }));
-  REQUIRE(late.find("rec", "FR"));
-  CHECK(late.find("rec", "FR")->id == fr->id);
+  REQUIRE(late.find("rec", "record.right"));
+  CHECK(late.find("rec", "record.right")->id == fr->id);
 }
 
 TEST_CASE("A link carries a source block's ramp to a sink block sample for sample", "[engine]") {
   auto engine = makeEngine();
   Waiter waiter(*engine);
   LinkedPair pair(*engine, waiter);
-  REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "OUT") && pair.ports.find("rec", "FL"); }));
+  REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "out.a") && pair.ports.find("rec", "record.left"); }));
 
-  pair.links.createLink(kLink, pair.ports.find("ramp", "OUT")->id, pair.ports.find("rec", "FL")->id);
+  pair.links.createLink(kLink, pair.ports.find("ramp", "out.a")->id, pair.ports.find("rec", "record.left")->id);
   CHECK(pair.linkLog.active.empty());   // never inside createLink
   REQUIRE(waiter.until([&] { return !pair.linkLog.active.empty() || !pair.linkLog.failed.empty(); }));
   REQUIRE(pair.linkLog.failed.empty());
@@ -343,7 +343,7 @@ TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
   FilterPortBlocks blocks(*engine, wake);
   Recorder recorder(waiter);
   BlockEvents events(waiter);
-  auto sink = makeDriven(blocks, "rec", Ports{{"FL"}, {}}, recorder, events);
+  auto sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left"}}}}, recorder, events);
 
   // The clock as a process callback sees it, read by a bare engine node beside the block.
   struct Clock {
@@ -385,9 +385,9 @@ TEST_CASE("Destroying a sink block removes its ports and link, and it never proc
   auto engine = makeEngine();
   Waiter waiter(*engine);
   LinkedPair pair(*engine, waiter);
-  REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "OUT") && pair.ports.find("rec", "FL"); }));
-  const EnginePortId fl = pair.ports.find("rec", "FL")->id;
-  pair.links.createLink(kLink, pair.ports.find("ramp", "OUT")->id, fl);
+  REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "out.a") && pair.ports.find("rec", "record.left"); }));
+  const EnginePortId fl = pair.ports.find("rec", "record.left")->id;
+  pair.links.createLink(kLink, pair.ports.find("ramp", "out.a")->id, fl);
   REQUIRE(waiter.until([&] { return !pair.linkLog.active.empty(); }));
 
   pair.sink.reset();
@@ -474,7 +474,7 @@ TEST_CASE("The scheduling report is how the thread running process() is schedule
   FilterPortBlocks blocks(*engine, wake);
   SchedulingProbe probe(waiter);
   BlockEvents events(waiter);
-  auto block = makeDriven(blocks, "probe", Ports{{}, {"OUT"}}, probe, events);
+  auto block = makeDriven(blocks, "probe", Ports{{{Direction::output, "out", {"a"}}}}, probe, events);
   REQUIRE(waiter.until([&] { return probe.seen(); }));
 
   const Scheduling scheduling = engine->dataThreadScheduling();

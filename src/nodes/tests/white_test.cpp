@@ -42,15 +42,15 @@ private:
 
 }  // namespace
 
-TEST_CASE("White declares one output, MONO, and no inputs", "[white]") {
+TEST_CASE("White declares one output, noise.mono, and no inputs", "[white]") {
 	const auto type = ear::nodes::makeWhiteNodeType();
 	CHECK(type->name() == "white");
 
 	for (const ear::NodeSettings& settings : {ear::NodeSettings{}, ear::NodeSettings::object()}) {
 		const auto config = type->parse("noise", settings);
 		REQUIRE(config.has_value());
-		CHECK((*config)->ports().inputs.empty());
-		CHECK((*config)->ports().outputs == std::vector<ear::PortName>{"MONO"});
+		CHECK((*config)->ports().inputs().empty());
+		CHECK((*config)->ports().outputs() == std::vector<ear::PortName>{"noise.mono"});
 	}
 }
 

@@ -68,14 +68,14 @@ TEST_CASE("Rtp accepts a full settings object, and its ports are channel_i out a
 	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
-	CHECK(ports.inputs.empty());
-	CHECK(ports.outputs == Names{"channel_1", "channel_2", "channel_3"});
-	CHECK(ports.insideInputs == Names{"from_rtp_1", "from_rtp_2", "from_rtp_3"});
-	CHECK(ports.insideOutputs.empty());
+	CHECK(ports.inputs().empty());
+	CHECK(ports.outputs() == Names{"stream.1", "stream.2", "stream.3"});
+	CHECK(ports.insideInputs() == Names{"from_rtp_1", "from_rtp_2", "from_rtp_3"});
+	CHECK(ports.insideOutputs().empty());
 
 	const auto wide = parseOk(settingsWith({{"channels", 64}, {"address", "0.0.0.0"}}));
-	CHECK(wide->ports().outputs.size() == 64);
-	CHECK(wide->ports().insideInputs.back() == "from_rtp_64");
+	CHECK(wide->ports().outputs().size() == 64);
+	CHECK(wide->ports().insideInputs().back() == "from_rtp_64");
 }
 
 TEST_CASE("Rtp start asks for exactly one receiver with its settings and its inside inputs", "[rtp]") {
@@ -178,7 +178,7 @@ TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
 		ear::AudioCode& code = (*insides)->audioCode();
 		code.prepare(format);
 
-		// Inputs: from_rtp_1..N, each its own ramp. Outputs: channel_1..N, primed with a value no
+		// Inputs: from_rtp_1..N, each its own ramp. Outputs: stream.1..N, primed with a value no
 		// input carries.
 		std::vector<std::vector<float>> in(channels, std::vector<float>(format.maxBlock));
 		for (std::uint32_t c = 0; c < channels; ++c) {

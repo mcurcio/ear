@@ -92,7 +92,7 @@ graph_frequency 48000;
 block_size 256;
 node white noise;
 node file rec { path "rec.wav"; }
-route noise:MONO rec:FL;
+route noise:noise.mono rec:record.left;
 CONF
 chmod 777 "$scratch/config"
 chmod 666 "$scratch/config/ear.conf"
@@ -112,7 +112,7 @@ run_ear() {
 	while IFS= read -r -t 30 line; do
 		echo "  ear: $line"
 		if [[ $line == "control listening on "* ]]; then listening=yes; fi
-		if [[ $line == "route noise:MONO -> rec:FL linked" ]]; then linked=yes; fi
+		if [[ $line == "route noise:noise.mono -> rec:record.left linked" ]]; then linked=yes; fi
 		if [[ -n $listening && -n $linked ]]; then break; fi
 	done < <(docker logs --follow "$container" 2>&1)
 	if [[ -z $listening || -z $linked ]]; then

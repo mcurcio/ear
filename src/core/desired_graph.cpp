@@ -23,7 +23,7 @@ bool declares(const std::vector<PortName>& ports, const PortName& port) {
 /// The node type's ports invariant (node_type.hpp): a breach is a type bug, not a user error.
 void requireUniquePortNames(const NodeSpec& node, const Ports& ports) {
 	std::set<PortName> seen;
-	for (const auto* list : {&ports.inputs, &ports.outputs, &ports.insideInputs, &ports.insideOutputs})
+	for (const auto* list : {&ports.inputs(), &ports.outputs(), &ports.insideInputs(), &ports.insideOutputs()})
 		for (const auto& port : *list)
 			if (!seen.insert(port).second)
 				throw std::logic_error("node type " + node.type + " declares port " + port + " twice on node " +
@@ -37,11 +37,6 @@ bool validName(const NodeName& name) {
 	return std::all_of(name.begin(), name.end(), [](char c) {
 		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
 	});
-}
-
-bool samePorts(const Ports& a, const Ports& b) {
-	return a.inputs == b.inputs && a.outputs == b.outputs && a.insideInputs == b.insideInputs &&
-	       a.insideOutputs == b.insideOutputs;
 }
 
 } // namespace
@@ -144,7 +139,7 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		const auto it = wanted.find(end.node);
 		if (it == wanted.end()) return std::unexpected(UnknownNode{end.node});
 		const Ports& ports = it->second.config->ports();
-		if (!declares(ports.inputs, end.port) && !declares(ports.outputs, end.port))
+		if (!declares(ports.inputs(), end.port) && !declares(ports.outputs(), end.port))
 			return std::unexpected(UnknownPort{end});
 		return &ports;
 	};
@@ -153,7 +148,7 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		if (!from) return std::unexpected(from.error());
 		const auto to = portsOf(route.to);
 		if (!to) return std::unexpected(to.error());
-		if (!declares((*from)->outputs, route.from.port) || !declares((*to)->inputs, route.to.port))
+		if (!declares((*from)->outputs(), route.from.port) || !declares((*to)->inputs(), route.to.port))
 			return std::unexpected(WrongDirection{route});
 		wantedRoutes.insert(route);
 	}
@@ -172,7 +167,7 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		}
 		const auto& next = it->second;
 		if (next.spec == held.spec) continue;
-		if (next.spec.type == held.spec.type && samePorts(next.config->ports(), held.config->ports())) {
+		if (next.spec.type == held.spec.type && next.config->ports() == held.config->ports()) {
 			changes->nodesUpdated.emplace_back(next.spec, next.config);
 		} else {
 			changes->nodesRemoved.push_back(name);

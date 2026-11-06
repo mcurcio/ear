@@ -67,8 +67,8 @@ constexpr std::int64_t captureToArrivalBoundUs = 500000;
 std::string maToRec(const std::string& settings) {
 	return graphFileText("node sendspin ma { " + settings + " }\n"
 	                     "node file rec { path \"rec.wav\"; }\n"
-	                     "route ma:from_server_FL rec:FL;\n"
-	                     "route ma:from_server_FR rec:FR;\n",
+	                     "route ma:from.left rec:record.left;\n"
+	                     "route ma:from.right rec:record.right;\n",
 	                     graphFrequency, blockSize);
 }
 
@@ -85,8 +85,8 @@ const std::string pairingCodePrefix = "node ma says pairing-code ";
 const std::vector<std::string> runningAndLinked{
     "node ma running",
     "node rec running",
-    "route ma:from_server_FL -> rec:FL linked",
-    "route ma:from_server_FR -> rec:FR linked",
+    "route ma:from.left -> rec:record.left linked",
+    "route ma:from.right -> rec:record.right linked",
 };
 
 bool waitForLines(ChildProcess& ear, const std::vector<std::string>& lines) {
@@ -637,10 +637,10 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	TempDirectory directory;
 	writeGraphFile(directory, graphFileText("node white noise;\n"
 	                                        "node sendspin ma { server \"" + server.url() + "\"; }\n"
-	                                        "route noise:MONO ma:to_server_FL;\n",
+	                                        "route noise:noise.mono ma:to.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
-	const bool ready = ear.waitForLine("route noise:MONO -> ma:to_server_FL linked", deadline) && ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready = ear.waitForLine("route noise:noise.mono -> ma:to.left linked", deadline) && ear.waitForLine(connectedUnpaired, deadline);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
@@ -738,7 +738,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	writeGraphFile(directory, graphFileText("node sendspin ma { server \"" + url + "\"; }\n"
 	                                        "node white noise;\n"
 	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route noise:MONO rec:FL;\n",
+	                                        "route noise:noise.mono rec:record.left;\n",
 	                                        graphFrequency, blockSize));
 	const auto keyFile = directory.config() / "sendspin-ma.key";
 	const std::string corrupt = "{ this is no key file";
@@ -747,7 +747,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 
 	auto ear = runEar(directory);
 	const auto failed = ear.waitForLineStartingWith("node ma failed start-failed: ", deadline);
-	const bool others = waitForLines(ear, {"node rec running", "route noise:MONO -> rec:FL linked"});
+	const bool others = waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
 	CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
@@ -762,7 +762,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 		for (;;) {
 			const json levels = json::parse(ws.read());
 			if (levels.value("method", "") == "levels" && levels["params"]["nodes"].contains("rec") &&
-			    levels["params"]["nodes"]["rec"]["FL"][0].get<double>() > 0.0) {
+			    levels["params"]["nodes"]["rec"]["record.left"][0].get<double>() > 0.0) {
 				break;
 			}
 		}
@@ -789,7 +789,7 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 			if (levels.value("method", "") == "levels" && levels["params"]["nodes"].contains("ma")) break;
 		}
 		INFO(levels.dump());
-		for (const char* port : {"from_server_FL", "from_server_FR"}) {
+		for (const char* port : {"from.left", "from.right"}) {
 			const json& meter = levels["params"]["nodes"]["ma"][port];
 			CHECK(meter[0].get<double>() == 0.0);   // peak
 			CHECK(meter[1].get<double>() == 0.0);   // RMS
@@ -938,9 +938,9 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	                                        "node file rec { path \"rec.wav\"; }\n"
 	                                        "node white noise;\n"
 	                                        "node file other { path \"other.wav\"; }\n"
-	                                        "route ma:from_server_FL rec:FL;\n"
-	                                        "route ma:from_server_FR rec:FR;\n"
-	                                        "route noise:MONO other:FL;\n",
+	                                        "route ma:from.left rec:record.left;\n"
+	                                        "route ma:from.right rec:record.right;\n"
+	                                        "route noise:noise.mono other:record.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	waitForInstance(ear, "ma", port);
@@ -963,12 +963,12 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 		REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 		pairOnce(ear, server);
 		server.send("play 30");
-		REQUIRE_SEEN(ear, heard("ma", "from_server_FR"));   // the ramp's high half: mid-stream, past its first 1.4 s
+		REQUIRE_SEEN(ear, heard("ma", "from.right"));   // the ramp's high half: mid-stream, past its first 1.4 s
 	}
 	REQUIRE_SEEN(ear, ear.waitForLine("node ma says disconnected", playDeadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	CHECK_FALSE(ear.hasLine("node ma stopping"));
-	CHECK(heard("other", "FL"));
+	CHECK(heard("other", "record.left"));
 
 	const std::size_t connectsBefore = countLines(ear, "node ma says connected ");
 	SendspinTestServer server({"--dial", url, "--state", state.string()});
@@ -995,11 +995,11 @@ TEST_CASE("A port another program holds fails the node with the kernel's reason,
 	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(held) + "; }\n"
 	                                        "node white noise;\n"
 	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route noise:MONO rec:FL;\n",
+	                                        "route noise:noise.mono rec:record.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	const bool failed = ear.waitForLine("node ma failed start-failed: cannot listen on port " + std::to_string(held) + ": Address already in use", deadline) &&
-	                    waitForLines(ear, {"node rec running", "route noise:MONO -> rec:FL linked"});
+	                    waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
 	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
@@ -1107,10 +1107,10 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	                                        "node sendspin in { port " + std::to_string(port) + "; }\n"
 	                                        "node file recOut { path \"out.wav\"; }\n"
 	                                        "node file recIn { path \"in.wav\"; }\n"
-	                                        "route out:from_server_FL recOut:FL;\n"
-	                                        "route out:from_server_FR recOut:FR;\n"
-	                                        "route in:from_server_FL recIn:FL;\n"
-	                                        "route in:from_server_FR recIn:FR;\n",
+	                                        "route out:from.left recOut:record.left;\n"
+	                                        "route out:from.right recOut:record.right;\n"
+	                                        "route in:from.left recIn:record.left;\n"
+	                                        "route in:from.right recIn:record.right;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "in", port);

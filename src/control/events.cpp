@@ -19,7 +19,7 @@ using nlohmann::json;
 /// {"name", "type", "settings", "inputs", "outputs"}: public ports only.
 json encodeNode(const NodeSpec& node, const Ports& ports) {
 	return {{"name", node.name},     {"type", node.type},       {"settings", node.settings},
-	        {"inputs", ports.inputs}, {"outputs", ports.outputs}};
+	        {"inputs", ports.inputs()}, {"outputs", ports.outputs()}};
 }
 
 /// Adds "state" and, while failed, "reason": {"code", "detail"}.

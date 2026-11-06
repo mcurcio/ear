@@ -27,43 +27,43 @@ describe("the level store", () => {
   it("draws a wire with its from port's level", () => {
     const store = new LevelStore();
     store.replace(levelMessages[0]!);
-    const route = { from: { node: "noise", port: "MONO" }, to: { node: "rec", port: "FR" } };
+    const route = { from: { node: "noise", port: "noise.mono" }, to: { node: "rec", port: "record.right" } };
     expect(wireLevel(store, route)).toEqual([0.9998, 0.5771]);
   });
 
   it("is replaced by each levels message: a node missing from it reads silent", () => {
     const store = new LevelStore();
     store.replace(levelMessages[0]!);
-    expect(store.get("noise", "MONO")).toEqual([0.9998, 0.5771]);
+    expect(store.get("noise", "noise.mono")).toEqual([0.9998, 0.5771]);
     store.replace(levelMessages[1]!);
-    expect(store.get("noise", "MONO")).toEqual([0, 0]);
-    expect(store.get("rec", "FL")).toEqual([0.9991, 0.5779]);
+    expect(store.get("noise", "noise.mono")).toEqual([0, 0]);
+    expect(store.get("rec", "record.left")).toEqual([0.9991, 0.5779]);
     expect(store.get("nobody", "X")).toEqual([0, 0]);
   });
 
   it("tells only the listeners of a port whose level changed", () => {
     const store = new LevelStore();
     const told: string[] = [];
-    store.subscribe("noise", "MONO", () => told.push("noise:MONO"));
-    store.subscribe("rec", "FL", () => told.push("rec:FL"));
-    store.subscribe("rec", "FR", () => told.push("rec:FR"));
-    store.replace({ noise: { MONO: [0.5, 0.25] }, rec: { FL: [0.5, 0.25], FR: [0, 0] } });
-    expect(told.sort()).toEqual(["noise:MONO", "rec:FL"]);
+    store.subscribe("noise", "noise.mono", () => told.push("noise:noise.mono"));
+    store.subscribe("rec", "record.left", () => told.push("rec:record.left"));
+    store.subscribe("rec", "record.right", () => told.push("rec:record.right"));
+    store.replace({ noise: { "noise.mono": [0.5, 0.25] }, rec: { "record.left": [0.5, 0.25], "record.right": [0, 0] } });
+    expect(told.sort()).toEqual(["noise:noise.mono", "rec:record.left"]);
     told.length = 0;
-    store.replace({ noise: { MONO: [0.5, 0.25] }, rec: { FL: [0.4, 0.2], FR: [0, 0] } });
-    expect(told).toEqual(["rec:FL"]);
+    store.replace({ noise: { "noise.mono": [0.5, 0.25] }, rec: { "record.left": [0.4, 0.2], "record.right": [0, 0] } });
+    expect(told).toEqual(["rec:record.left"]);
     told.length = 0;
     // noise is gone from the next message: its meter goes silent and is told so.
-    store.replace({ rec: { FL: [0.4, 0.2], FR: [0, 0] } });
-    expect(told).toEqual(["noise:MONO"]);
+    store.replace({ rec: { "record.left": [0.4, 0.2], "record.right": [0, 0] } });
+    expect(told).toEqual(["noise:noise.mono"]);
   });
 
   it("stops telling a listener after it unsubscribes", () => {
     const store = new LevelStore();
     let told = 0;
-    const unsubscribe = store.subscribe("noise", "MONO", () => told++);
+    const unsubscribe = store.subscribe("noise", "noise.mono", () => told++);
     unsubscribe();
-    store.replace({ noise: { MONO: [0.5, 0.25] } });
+    store.replace({ noise: { "noise.mono": [0.5, 0.25] } });
     expect(told).toBe(0);
   });
 });

@@ -56,7 +56,7 @@ struct TestInsides final : NodeInsides {
 struct TestConfig final : NodeConfig {
 	Log& log;
 	std::string tag;
-	Ports ports_{{"FL", "FR"}, {}, {"CAP1"}, {"PB1", "PB2"}};
+	Ports ports_{{{Direction::input, "record", {"left", "right"}}}, {"CAP1"}, {"PB1", "PB2"}};
 	int handoffs = 0;
 	std::vector<SoundCardRequest> cards;
 	std::vector<RtpReceiverRequest> receivers;
@@ -110,7 +110,7 @@ struct TestBlocks final : PortBlockFactory {
 	explicit TestBlocks(Log& l) : log(l) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
-		log.push_back("make " + node + " " + std::to_string(ports.inputs.size()) + " inputs");
+		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		events.push_back(&e);
 		return std::make_unique<TestBlock>(log);
 	}
@@ -828,7 +828,7 @@ struct ThreadedInsides final : NodeInsides {
 
 struct ThreadedConfig final : NodeConfig {
 	Log& log;
-	Ports ports_{{"IN"}, {}};
+	Ports ports_{{{Direction::input, "in", {"a"}}}};
 	int handoffs = 0;
 	mutable ThreadedInsides* insides = nullptr;
 	mutable InsidesEvents* events = nullptr;

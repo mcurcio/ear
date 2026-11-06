@@ -107,8 +107,8 @@ TEST_CASE("The type declares its ports and its settings' kinds, and refuses thro
 	const auto config = type->parse("ma", {{"server", url}});
 	REQUIRE(config.has_value());
 	const ear::Ports& ports = (*config)->ports();
-	CHECK(ports.inputs == std::vector<ear::PortName>{"to_server_FL", "to_server_FR"});
-	CHECK(ports.outputs == std::vector<ear::PortName>{"from_server_FL", "from_server_FR"});
-	CHECK(ports.insideInputs.empty());
-	CHECK(ports.insideOutputs.empty());
+	CHECK(ports.inputs() == std::vector<ear::PortName>{"to.left", "to.right"});
+	CHECK(ports.outputs() == std::vector<ear::PortName>{"from.left", "from.right"});
+	CHECK(ports.insideInputs().empty());
+	CHECK(ports.insideOutputs().empty());
 }

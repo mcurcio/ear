@@ -4,15 +4,15 @@
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take2.wav\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 48000;\\nblock_size 256;\\n@set $ch 2;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take3.wav\\\"; }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:MONO rec:FL;\\nroute noise:MONO desk:playback_1;\\n\",\"version\":\"v1\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 48000;\\nblock_size 256;\\n@set $ch 2;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take2.wav\\\" }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:MONO rec:FL;\\nroute noise:MONO desk:playback_1;\\n\",\"version\":\"v2\"}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"MONO\"},\"to\":{\"node\":\"rec\",\"port\":\"FX\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 48000;\\nblock_size 256;\\n@set $ch 2;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take3.wav\\\"; }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:noise.mono rec:record.left;\\nroute noise:noise.mono desk:play.1;\\n\",\"version\":\"v1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 48000;\\nblock_size 256;\\n@set $ch 2;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take2.wav\\\" }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:noise.mono rec:record.left;\\nroute noise:noise.mono desk:play.1;\\n\",\"version\":\"v2\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"route.add\",\"params\":{\"from\":{\"node\":\"noise\",\"port\":\"noise.mono\"},\"to\":{\"node\":\"rec\",\"port\":\"FX\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take3.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take3.wav\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.update\",\"params\":{\"name\":\"desk\",\"settings\":{\"card\":\"MOTU\"}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.update\",\"params\":{\"name\":\"desk\",\"settings\":{\"card\":\"MOTU\",\"playback\":4}}}",
     "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take3.wav\"}}}",
-    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 44100;\\nblock_size 256;\\n@set $ch 4;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take2.wav\\\"; }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:MONO rec:FL;\\nroute noise:MONO desk:playback_1;\\n\",\"version\":\"v9\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"graphFile.set\",\"params\":{\"text\":\"graph_frequency 44100;\\nblock_size 256;\\n@set $ch 4;                      # comments survive every edit\\n@snippet card_out $id {          # written once, used by both cards\\n    card $id;\\n    playback $ch;\\n}\\nnode white noise;\\nnode file rec { path \\\"take2.wav\\\"; }\\nnode card desk { @use card_out MOTU; }\\nnode card porch { @use card_out USB2; }\\nroute noise:noise.mono rec:record.left;\\nroute noise:noise.mono desk:play.1;\\n\",\"version\":\"v9\"}}",
     "[{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.update\",\"params\":{\"name\":\"rec\",\"settings\":{\"path\":\"take4.wav\"}}},{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"graph.subscribe\"}]",
     "[{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"graph.subscribe\"},{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"graphFile.subscribe\"}]",
     "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"graphFile.get\"}"
@@ -23,7 +23,7 @@
       "id": 1,
       "result": {
         "version": "v1",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take1.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take1.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v1",
         "pendingRestart": []
@@ -51,8 +51,8 @@
               "playback": 2
             },
             "inputs": [
-              "playback_1",
-              "playback_2"
+              "play.1",
+              "play.2"
             ],
             "outputs": [],
             "state": "failed",
@@ -67,7 +67,7 @@
             "settings": {},
             "inputs": [],
             "outputs": [
-              "MONO"
+              "noise.mono"
             ],
             "state": "running"
           },
@@ -79,8 +79,8 @@
               "playback": 2
             },
             "inputs": [
-              "playback_1",
-              "playback_2"
+              "play.1",
+              "play.2"
             ],
             "outputs": [],
             "state": "failed",
@@ -96,8 +96,8 @@
               "path": "take1.wav"
             },
             "inputs": [
-              "FL",
-              "FR"
+              "record.left",
+              "record.right"
             ],
             "outputs": [],
             "state": "running"
@@ -107,22 +107,22 @@
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "desk",
-              "port": "playback_1"
+              "port": "play.1"
             },
             "status": "pending"
           },
           {
             "from": {
               "node": "noise",
-              "port": "MONO"
+              "port": "noise.mono"
             },
             "to": {
               "node": "rec",
-              "port": "FL"
+              "port": "record.left"
             },
             "status": "linked"
           }
@@ -134,7 +134,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v2",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v2",
         "pendingRestart": [],
@@ -203,7 +203,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v3",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n@include \"more.conf\";\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n@include \"more.conf\";\n",
         "diagnostics": [
           {
             "severity": "error",
@@ -234,7 +234,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v4",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v4",
         "pendingRestart": [],
@@ -246,7 +246,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v5",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take3.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take3.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v5",
         "pendingRestart": [],
@@ -273,7 +273,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v6",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 2;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v6",
         "pendingRestart": [],
@@ -309,7 +309,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v7",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v7",
         "pendingRestart": [],
@@ -322,11 +322,11 @@
       "params": {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "desk",
-          "port": "playback_1"
+          "port": "play.1"
         }
       }
     },
@@ -355,10 +355,10 @@
           "playback": 4
         },
         "inputs": [
-          "playback_1",
-          "playback_2",
-          "playback_3",
-          "playback_4"
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
         ],
         "outputs": []
       }
@@ -374,10 +374,10 @@
           "playback": 4
         },
         "inputs": [
-          "playback_1",
-          "playback_2",
-          "playback_3",
-          "playback_4"
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
         ],
         "outputs": []
       }
@@ -388,11 +388,11 @@
       "params": {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "desk",
-          "port": "playback_1"
+          "port": "play.1"
         }
       }
     },
@@ -430,7 +430,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v7",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v7",
         "pendingRestart": [],
@@ -443,7 +443,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v7",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v7",
         "pendingRestart": [],
@@ -455,7 +455,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v8",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take3.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take3.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v8",
         "pendingRestart": [],
@@ -482,7 +482,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v9",
-        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\nroute noise:MONO rec:FX;\n",
+        "text": "graph_frequency 48000;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\nroute noise:noise.mono rec:FX;\n",
         "diagnostics": [],
         "running": "v8",
         "refusal": {
@@ -501,7 +501,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v10",
-        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take2.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v10",
         "pendingRestart": [
@@ -530,7 +530,7 @@
       "method": "graphFile.changed",
       "params": {
         "version": "v11",
-        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v11",
         "pendingRestart": [
@@ -577,10 +577,10 @@
                 "playback": 4
               },
               "inputs": [
-                "playback_1",
-                "playback_2",
-                "playback_3",
-                "playback_4"
+                "play.1",
+                "play.2",
+                "play.3",
+                "play.4"
               ],
               "outputs": [],
               "state": "failed",
@@ -595,7 +595,7 @@
               "settings": {},
               "inputs": [],
               "outputs": [
-                "MONO"
+                "noise.mono"
               ],
               "state": "running"
             },
@@ -607,10 +607,10 @@
                 "playback": 4
               },
               "inputs": [
-                "playback_1",
-                "playback_2",
-                "playback_3",
-                "playback_4"
+                "play.1",
+                "play.2",
+                "play.3",
+                "play.4"
               ],
               "outputs": [],
               "state": "failed",
@@ -626,8 +626,8 @@
                 "path": "take4.wav"
               },
               "inputs": [
-                "FL",
-                "FR"
+                "record.left",
+                "record.right"
               ],
               "outputs": [],
               "state": "running"
@@ -637,22 +637,22 @@
             {
               "from": {
                 "node": "noise",
-                "port": "MONO"
+                "port": "noise.mono"
               },
               "to": {
                 "node": "desk",
-                "port": "playback_1"
+                "port": "play.1"
               },
               "status": "pending"
             },
             {
               "from": {
                 "node": "noise",
-                "port": "MONO"
+                "port": "noise.mono"
               },
               "to": {
                 "node": "rec",
-                "port": "FL"
+                "port": "record.left"
               },
               "status": "linked"
             }
@@ -683,10 +683,10 @@
                 "playback": 4
               },
               "inputs": [
-                "playback_1",
-                "playback_2",
-                "playback_3",
-                "playback_4"
+                "play.1",
+                "play.2",
+                "play.3",
+                "play.4"
               ],
               "outputs": [],
               "state": "failed",
@@ -701,7 +701,7 @@
               "settings": {},
               "inputs": [],
               "outputs": [
-                "MONO"
+                "noise.mono"
               ],
               "state": "running"
             },
@@ -713,10 +713,10 @@
                 "playback": 4
               },
               "inputs": [
-                "playback_1",
-                "playback_2",
-                "playback_3",
-                "playback_4"
+                "play.1",
+                "play.2",
+                "play.3",
+                "play.4"
               ],
               "outputs": [],
               "state": "failed",
@@ -732,8 +732,8 @@
                 "path": "take4.wav"
               },
               "inputs": [
-                "FL",
-                "FR"
+                "record.left",
+                "record.right"
               ],
               "outputs": [],
               "state": "running"
@@ -743,22 +743,22 @@
             {
               "from": {
                 "node": "noise",
-                "port": "MONO"
+                "port": "noise.mono"
               },
               "to": {
                 "node": "desk",
-                "port": "playback_1"
+                "port": "play.1"
               },
               "status": "pending"
             },
             {
               "from": {
                 "node": "noise",
-                "port": "MONO"
+                "port": "noise.mono"
               },
               "to": {
                 "node": "rec",
-                "port": "FL"
+                "port": "record.left"
               },
               "status": "linked"
             }
@@ -770,7 +770,7 @@
         "id": 16,
         "result": {
           "version": "v11",
-          "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+          "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
           "diagnostics": [],
           "running": "v11",
           "pendingRestart": [
@@ -784,7 +784,7 @@
       "id": 17,
       "result": {
         "version": "v11",
-        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+        "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
         "diagnostics": [],
         "running": "v11",
         "pendingRestart": [
@@ -812,10 +812,10 @@
           "playback": 4
         },
         "inputs": [
-          "playback_1",
-          "playback_2",
-          "playback_3",
-          "playback_4"
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
         ],
         "outputs": [],
         "state": "failed",
@@ -830,7 +830,7 @@
         "settings": {},
         "inputs": [],
         "outputs": [
-          "MONO"
+          "noise.mono"
         ],
         "state": "running"
       },
@@ -842,10 +842,10 @@
           "playback": 4
         },
         "inputs": [
-          "playback_1",
-          "playback_2",
-          "playback_3",
-          "playback_4"
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
         ],
         "outputs": [],
         "state": "failed",
@@ -861,8 +861,8 @@
           "path": "take4.wav"
         },
         "inputs": [
-          "FL",
-          "FR"
+          "record.left",
+          "record.right"
         ],
         "outputs": [],
         "state": "running"
@@ -872,22 +872,22 @@
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "desk",
-          "port": "playback_1"
+          "port": "play.1"
         },
         "status": "pending"
       },
       {
         "from": {
           "node": "noise",
-          "port": "MONO"
+          "port": "noise.mono"
         },
         "to": {
           "node": "rec",
-          "port": "FL"
+          "port": "record.left"
         },
         "status": "linked"
       }
@@ -895,7 +895,7 @@
   },
   "file": {
     "version": "v11",
-    "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:MONO rec:FL;\nroute noise:MONO desk:playback_1;\n",
+    "text": "graph_frequency 44100;\nblock_size 256;\n@set $ch 4;                      # comments survive every edit\n@snippet card_out $id {          # written once, used by both cards\n    card $id;\n    playback $ch;\n}\nnode white noise;\nnode file rec { path \"take4.wav\"; }\nnode card desk { @use card_out MOTU; }\nnode card porch { @use card_out USB2; }\nroute noise:noise.mono rec:record.left;\nroute noise:noise.mono desk:play.1;\n",
     "diagnostics": [],
     "running": "v11",
     "pendingRestart": [

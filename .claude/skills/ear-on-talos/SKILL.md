@@ -54,7 +54,7 @@ node card motu { card <card id>; playback 24; }
 ```
 
 `playback` and `capture` are channel counts (0 to 64, at least one above 0); the ports are
-`playback_1`..`playback_N` (inputs) and `capture_1`..`capture_M` (outputs). The card's rate is
+`play.1`..`play.N` (inputs) and `capture.1`..`capture.M` (outputs). The card's rate is
 always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 
 ## 3. The MOTU's own settings
@@ -89,6 +89,7 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   on MOTU output N-8 (mod 24), so `playback_1` on output 17, `playback_6` on 22, `playback_19` on
   11. EAR's own channel mapping is correct. Linux sends every channel in the right place; the MOTU
   loses its frame boundary depending on how its playback stream starts (2026-11-02, USB traces).
+  (`playback_<n>` is the port's name then; it is `play.<n>` since 2026-11-06.)
   The fix is the `playback_first` quirk flag above: with it, 49 of 49 starts mapped channel N to N
   through a loopback on an Ubuntu host (AMD xHCI, kernel 7.0), 9 of them after a MOTU power-on;
   without it, 0 of 12 were clean. It is not yet confirmed on a Talos node or through EAR, so check
@@ -194,7 +195,7 @@ machine:
    `"realtime": true` (`node scripts/rpc-call.mjs ws://<node>:7777/rpc graph.get`). The image
    smoke proved this in a container with `--cap-add SYS_NICE`; the pod is not proven.
 2. The card drives: the card node is `running`, its routes are `linked`, and audio routed to
-   `motu:playback_<n>` comes out of that output only. Play into `playback_1` and listen on
+   `motu:play.<n>` comes out of that output only. Play into `play.1` and listen on
    output 1: hearing it on output 17 is the rotation in section 3. CI checks the same path with
    a test ALSA card (alsa-lib's file and null PCMs), not the MOTU. `running` alone is not proof
    the card is there: a USB card that vanished left the node `running` (issue #17).
@@ -221,7 +222,7 @@ machine:
 6. **[check]** A `sendspin` node's sync on the MOTU. CI's test card has no clock of its own and runs
    the graph about 2.1% fast, so the protocol's 1 ms bound is proven only on the dummy driver
    (`docs/design/sendspin.md` section 16, erratum 1). On the hardware: the card driving, Music
-   Assistant playing, how far the node's `from_server_*` output sits from what the library's time
+   Assistant playing, how far the node's `from.*` outputs sit from what the library's time
    filter predicts, and no repeated corrections in ear's log. The node now puts what the card says it
    holds (`position->clock.delay`) in the finish time, which no test card has reported, so also
    measure past the block: a test tone on another Sendspin device and on the MOTU, recorded together,
@@ -269,7 +270,7 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
 - **No login.** Anyone who can reach the UDP port can play audio into the graph, as anyone who
   reaches port 7777 can edit it.
 - **Checks.** The rtp node is `running` and its routes `linked`; `levels.subscribe` shows
-  non-zero peaks on `fpp:channel_1` while FPP plays (with no packets the node is still `running`,
+  non-zero peaks on `fpp:stream.1` while FPP plays (with no packets the node is still `running`,
   with peak 0: ear has no "receiving" status yet). Short gaps of silence come from packets lost
   or out of order: the receiver drops its buffer on any sequence break and refills it
   (`pipewire-engine` skill).

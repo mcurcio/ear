@@ -189,7 +189,7 @@ struct Rig {
 	      worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed, notes),
 	      code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()), tap(code, waiter), blockEvents(waiter) {
 		notes.connectTap(tap);
-		block = blocks.make("clock", Ports{{"to_server_FL", "to_server_FR"}, {"from_server_FL", "from_server_FR"}}, kFormat, blockEvents);
+		block = blocks.make("clock", Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}}, kFormat, blockEvents);
 		tap.prepare(kFormat);
 		block->drive(&tap);
 		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
@@ -288,7 +288,7 @@ private:
 struct TestCard {
 	explicit TestCard(Rig& rig)
 	    : cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
-		block = rig.blocks.make("card", Ports{{}, {}, {}, {"to_card_1", "to_card_2"}}, kFormat, blockEvents);
+		block = rig.blocks.make("card", Ports{{}, {}, {"to_card_1", "to_card_2"}}, kFormat, blockEvents);
 		block->drive(&silence);
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
 		card = cards.make("card.playback", "card",

@@ -42,20 +42,20 @@ TEST_CASE("Card accepts a card id with playback and capture channel counts", "[c
 	CHECK(ear::nodes::makeCardNodeType()->name() == "card");
 	const auto config = parseOk({{"card", "Pro24"}, {"playback", 3}, {"capture", 2}});
 	const ear::Ports& ports = config->ports();
-	CHECK(ports.inputs == Names{"playback_1", "playback_2", "playback_3"});
-	CHECK(ports.insideOutputs == Names{"to_card_1", "to_card_2", "to_card_3"});
-	CHECK(ports.outputs == Names{"capture_1", "capture_2"});
-	CHECK(ports.insideInputs == Names{"from_card_1", "from_card_2"});
+	CHECK(ports.inputs() == Names{"play.1", "play.2", "play.3"});
+	CHECK(ports.insideOutputs() == Names{"to_card_1", "to_card_2", "to_card_3"});
+	CHECK(ports.outputs() == Names{"capture.1", "capture.2"});
+	CHECK(ports.insideInputs() == Names{"from_card_1", "from_card_2"});
 
 	// Each direction defaults to 0 channels.
 	const auto playbackOnly = parseOk({{"card", "Test"}, {"playback", 1}});
-	CHECK(playbackOnly->ports().inputs == Names{"playback_1"});
-	CHECK(playbackOnly->ports().outputs.empty());
-	CHECK(playbackOnly->ports().insideInputs.empty());
+	CHECK(playbackOnly->ports().inputs() == Names{"play.1"});
+	CHECK(playbackOnly->ports().outputs().empty());
+	CHECK(playbackOnly->ports().insideInputs().empty());
 	const auto captureOnly = parseOk({{"card", "Test"}, {"capture", 64}});
-	CHECK(captureOnly->ports().inputs.empty());
-	CHECK(captureOnly->ports().outputs.size() == 64);
-	CHECK(captureOnly->ports().outputs.back() == "capture_64");
+	CHECK(captureOnly->ports().inputs().empty());
+	CHECK(captureOnly->ports().outputs().size() == 64);
+	CHECK(captureOnly->ports().outputs().back() == "capture.64");
 }
 
 TEST_CASE("Card rejects settings outside section 4.4's rules", "[card]") {
@@ -125,8 +125,8 @@ TEST_CASE("Card passes playback_i to to_card_i and from_card_j to capture_j samp
 	ear::AudioCode& code = (*insides)->audioCode();
 	code.prepare(format);
 
-	// Inputs: playback_1..3 then from_card_1..2; each channel carries its own distinct ramp.
-	// Outputs: capture_1..2 then to_card_1..3, primed with a value no input carries.
+	// Inputs: play.1..3 then from_card_1..2; each channel carries its own distinct ramp.
+	// Outputs: capture.1..2 then to_card_1..3, primed with a value no input carries.
 	auto ramp = [](std::uint32_t channel, std::uint32_t frame) {
 		return static_cast<float>(channel + 1) + static_cast<float>(frame) / 1000.0F;
 	};
@@ -149,7 +149,7 @@ TEST_CASE("Card passes playback_i to to_card_i and from_card_j to capture_j samp
 	code.release();
 
 	for (std::uint32_t i = 0; i < playback; ++i) {
-		INFO("playback_" << i + 1 << " -> to_card_" << i + 1);
+		INFO("play." << i + 1 << " -> to_card_" << i + 1);
 		CHECK(out[capture + i] == std::vector<float>(in[i].begin(), in[i].begin() + frames));
 	}
 	for (std::uint32_t j = 0; j < capture; ++j) {

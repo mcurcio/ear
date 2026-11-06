@@ -49,8 +49,8 @@ struct Levels {
 };
 
 std::vector<PortName> publicPorts(const Ports& ports) {
-  std::vector<PortName> names = ports.inputs;
-  names.insert(names.end(), ports.outputs.begin(), ports.outputs.end());
+  std::vector<PortName> names = ports.inputs();
+  names.insert(names.end(), ports.outputs().begin(), ports.outputs().end());
   return names;
 }
 
@@ -61,10 +61,10 @@ public:
       : events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
         windowFrames_(std::max(levelWindowFrames(format.rate), 1U)),
         zeros_(format.maxBlock, 0.0f),
-        inputs_(ports.inputs.size() + ports.insideInputs.size()),
-        outputs_(ports.outputs.size() + ports.insideOutputs.size()),
-        publicInputs_(ports.inputs.size()), publicOutputs_(ports.outputs.size()),
-        meters_(ports.inputs.size() + ports.outputs.size()), levels_(std::move(levels)),
+        inputs_(ports.inputs().size() + ports.insideInputs().size()),
+        outputs_(ports.outputs().size() + ports.insideOutputs().size()),
+        publicInputs_(ports.inputs().size()), publicOutputs_(ports.outputs().size()),
+        meters_(ports.inputs().size() + ports.outputs().size()), levels_(std::move(levels)),
         registered_(node, publicPorts(ports)) {
     for (std::size_t i = 0; i < outputs_.size(); ++i) {
       scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -88,10 +88,10 @@ public:
     }
     pw_filter_add_listener(filter_, &listener_, &filterEvents(), this);
     // AudioCode::process sees inputs then inside inputs, outputs then inside outputs.
-    addPorts(PW_DIRECTION_INPUT, ports.inputs, inputPorts_);
-    addPorts(PW_DIRECTION_INPUT, ports.insideInputs, inputPorts_);
-    addPorts(PW_DIRECTION_OUTPUT, ports.outputs, outputPorts_);
-    addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs, outputPorts_);
+    addPorts(PW_DIRECTION_INPUT, ports.inputs(), inputPorts_);
+    addPorts(PW_DIRECTION_INPUT, ports.insideInputs(), inputPorts_);
+    addPorts(PW_DIRECTION_OUTPUT, ports.outputs(), outputPorts_);
+    addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs(), outputPorts_);
     if (const int res = pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0);
         res < 0) {
       fail(std::string("cannot connect the engine node: ") + spa_strerror(res));

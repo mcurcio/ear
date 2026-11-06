@@ -1,7 +1,8 @@
 // Frozen interface (docs/design/batch2.md section 4; NodeGrant::rtpReceiver added by
 // docs/design/rtp.md section 7.1, batch2.md section 11's erratum; GraphCycle, InsidesEvents,
-// NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1; delayFrames by its erratum 22). Change it
-// only through an erratum and a re-cut, never a local edit.
+// NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1; delayFrames by its erratum 22; PortBank
+// and Ports' banks by batch2.md section 11's erratum of 2026-11-06). Change it only through an erratum and a re-cut, never a
+// local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -15,15 +16,41 @@
 #include "ear/core/rtp_receiver.hpp"
 #include "ear/core/sound_card.hpp"
 namespace ear {
-/// Public ports are routable. Inside ports belong to the port block only; nothing but the node's
-/// own outside nodes (its sound cards and RTP receivers) reaches them. Invariant: the four
-/// lists' names are unique together (DesiredGraph::addNode throws std::logic_error otherwise: a
-/// type bug, not a user error).
-struct Ports {
-  std::vector<PortName> inputs;
-  std::vector<PortName> outputs;
-  std::vector<PortName> insideInputs = {};
-  std::vector<PortName> insideOutputs = {};
+/// One named group of a node's public ports, all one way. Each is "<name>.<member>" (portName).
+struct PortBank {
+  Direction direction;
+  std::string_view name;
+  std::vector<std::string> members;
+};
+/// A public port's whole name, the one place it is made: "<bank>.<member>", each part 1 or more of
+/// [A-Za-z0-9_-]. Throws std::logic_error otherwise: a type bug, not a user error.
+PortName portName(std::string_view bank, std::string_view member);
+/// "<prefix>1".."<prefix><count>": a numbered bank's members, or numbered inside ports.
+std::vector<std::string> numbered(std::uint32_t count, std::string_view prefix = "");
+/// Public ports are routable, and only banks declare them, so no type spells one's name. Inside
+/// ports belong to the port block only; nothing but the node's own outside nodes (its sound cards
+/// and RTP receivers) reaches them, and their names are the type's own. Invariant: the four lists'
+/// names are unique together (DesiredGraph::plan throws std::logic_error otherwise: a type bug,
+/// not a user error).
+class Ports {
+public:
+  Ports() = default;
+  explicit Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs = {},
+                 std::vector<PortName> insideOutputs = {});
+  /// Whole names, the banks' in declaration order, each bank's members in order.
+  const std::vector<PortName>& inputs() const noexcept { return inputs_; }
+  const std::vector<PortName>& outputs() const noexcept { return outputs_; }
+  const std::vector<PortName>& insideInputs() const noexcept { return insideInputs_; }
+  const std::vector<PortName>& insideOutputs() const noexcept { return insideOutputs_; }
+  /// These ports without the inside ones: what the graph read and the wire show.
+  Ports publicOnly() const;
+  friend bool operator==(const Ports&, const Ports&) = default;
+
+private:
+  std::vector<PortName> inputs_;
+  std::vector<PortName> outputs_;
+  std::vector<PortName> insideInputs_;
+  std::vector<PortName> insideOutputs_;
 };
 /// Why a node is failed. Part of status; never returned by a control call.
 struct FailureReason { enum class Code { engineRefused, startFailed }; Code code; std::string detail; };

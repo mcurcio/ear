@@ -117,10 +117,10 @@ struct Graph {
       : out(useTestAlsa()), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
         blocks(*engine, bell), cards(*engine), cardCode(waiter, rampOn), otherCode(waiter),
         cardBlockEvents(waiter), otherBlockEvents(waiter) {
-    cardBlock = blocks.make("card", Ports{{"playback_1", "playback_2"}, {}, {}, {"to_card_1", "to_card_2"}},
+    cardBlock = blocks.make("card", Ports{{{Direction::input, "play", {"1", "2"}}}, {}, {"to_card_1", "to_card_2"}},
                             kFormat, cardBlockEvents);
     cardBlock->drive(&cardCode);
-    otherBlock = blocks.make("other", Ports{{"IN"}, {}}, kFormat, otherBlockEvents);
+    otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
     otherBlock->drive(&otherCode);
     REQUIRE(waiter.until([&] {
       return cardBlockEvents.isReady && otherBlockEvents.isReady && registry.id("Dummy-Driver") &&

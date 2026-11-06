@@ -145,8 +145,8 @@ graph_frequency 48000;
 block_size 256;
 node sendspin ma;
 node file rec { path "ma.wav"; }
-route ma:from_server_FL rec:FL;
-route ma:from_server_FR rec:FR;
+route ma:from.left rec:record.left;
+route ma:from.right rec:record.right;
 ```
 
 ```bash

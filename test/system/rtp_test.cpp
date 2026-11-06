@@ -40,8 +40,8 @@ void writeGraph(const TempDirectory& directory, std::uint16_t port) {
 	writeGraphFile(directory, graphFileText("node rtp fpp { address \"0.0.0.0\"; port " + std::to_string(port) +
 	                                        "; format \"L24\"; channels 2; }\n"
 	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route fpp:channel_1 rec:FL;\n"
-	                                        "route fpp:channel_2 rec:FR;\n",
+	                                        "route fpp:stream.1 rec:record.left;\n"
+	                                        "route fpp:stream.2 rec:record.right;\n",
 	                                        graphFrequency, blockSize));
 }
 
@@ -58,8 +58,8 @@ bool waitForLines(ChildProcess& ear, const std::vector<std::string>& lines) {
 
 const std::vector<std::string> runningAndLinked{
     "node fpp running",
-    "route fpp:channel_1 -> rec:FL linked",
-    "route fpp:channel_2 -> rec:FR linked",
+    "route fpp:stream.1 -> rec:record.left linked",
+    "route fpp:stream.2 -> rec:record.right linked",
 };
 
 /// Channel `channel` of a stereo WAV, frames [from, from + frames).
@@ -158,7 +158,7 @@ TEST_CASE("With no sender the rtp node runs and its meters show silence", "[syst
 			if (levels.value("method", "") == "levels" && levels["params"]["nodes"].contains("fpp")) break;
 		}
 		INFO(levels.dump());
-		const json& channel1 = levels["params"]["nodes"]["fpp"]["channel_1"];
+		const json& channel1 = levels["params"]["nodes"]["fpp"]["stream.1"];
 		CHECK(channel1[0].get<double>() == 0.0);   // peak
 		CHECK(channel1[1].get<double>() == 0.0);   // RMS
 	}

@@ -27,10 +27,10 @@ struct StatusLog final : RouteStatusListener {
 	void routeChanged(const RouteStatus& status) override { changes.push_back(status); }
 };
 
-const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
-const LivePort noiseOut{{"noise", "MONO"}, Direction::output, 10};
-const LivePort recFl{{"rec", "FL"}, Direction::input, 20};
-const LivePort recFr{{"rec", "FR"}, Direction::input, 21};
+const Route noiseToFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
+const LivePort noiseOut{{"noise", "noise.mono"}, Direction::output, 10};
+const LivePort recFl{{"rec", "record.left"}, Direction::input, 20};
+const LivePort recFr{{"rec", "record.right"}, Direction::input, 21};
 
 struct Fixture {
 	FakeLinks links;
@@ -175,8 +175,8 @@ TEST_CASE("Ports of routes nobody wants are never linked", "[reconciler]") {
 	f.reconciler.routeAdded(noiseToFl);
 	f.reconciler.portAppeared(noiseOut);
 	f.reconciler.portAppeared(recFr);
-	f.reconciler.portAppeared({{"other", "MONO"}, Direction::output, 40});
-	f.reconciler.portAppeared({{"rec", "FL"}, Direction::output, 41});   // right name, wrong direction
+	f.reconciler.portAppeared({{"other", "noise.mono"}, Direction::output, 40});
+	f.reconciler.portAppeared({{"rec", "record.left"}, Direction::output, 41});   // right name, wrong direction
 	CHECK(f.links.made.empty());
 	CHECK(f.match() == RouteMatch::pending);
 
@@ -252,7 +252,7 @@ TEST_CASE("A port that reappears with a new id before its old id goes is linked 
 	CHECK(f.match() == RouteMatch::linked);
 
 	SECTION("a route added after the old id went links to the new one") {
-		const Route noiseToFlAgain{{"noise", "MONO"}, {"rec", "FL"}};
+		const Route noiseToFlAgain{{"noise", "noise.mono"}, {"rec", "record.left"}};
 		f.reconciler.routeRemoved(noiseToFl);
 		f.reconciler.routeAdded(noiseToFlAgain);
 		REQUIRE(f.links.made.size() == 3);

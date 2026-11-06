@@ -26,7 +26,7 @@ public:
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
 	                                                                        const NodeSettings& settings) const override {
 		if (!settings.empty()) return std::unexpected(InvalidSettings{node, "white takes no settings"});
-		return std::make_unique<FixedConfig>(Ports{{}, {"MONO"}});
+		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "noise", {"mono"}}}});
 	}
 	std::span<const SettingDeclaration> settingKinds() const override { return {}; }
 };
@@ -38,7 +38,7 @@ public:
 	                                                                        const NodeSettings& settings) const override {
 		if (!settings.contains("path") || !settings["path"].is_string())
 			return std::unexpected(InvalidSettings{node, "file needs a path"});
-		return std::make_unique<FixedConfig>(Ports{{"FL", "FR"}, {}});
+		return std::make_unique<FixedConfig>(Ports{{{Direction::input, "record", {"left", "right"}}}});
 	}
 	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
 
@@ -51,12 +51,9 @@ public:
 	std::string_view name() const override { return "card"; }
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
 	                                                                        const NodeSettings& settings) const override {
-		Ports ports;
-		const auto playback = settings.value("playback", 0);
-		for (int i = 1; i <= playback; ++i) ports.inputs.push_back("playback_" + std::to_string(i));
-		const auto capture = settings.value("capture", 0);
-		for (int i = 1; i <= capture; ++i) ports.outputs.push_back("capture_" + std::to_string(i));
-		return std::make_unique<FixedConfig>(std::move(ports));
+		const auto channels = [&](const char* key) { return numbered(static_cast<std::uint32_t>(settings.value(key, 0))); };
+		return std::make_unique<FixedConfig>(
+		    Ports{{{Direction::input, "play", channels("playback")}, {Direction::output, "capture", channels("capture")}}});
 	}
 	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
 

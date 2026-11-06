@@ -469,10 +469,10 @@ TEST_CASE("The level bell sends levels subscribers one complete snapshot", "[con
 	CHECK(call(client, 2, "levels.subscribe")["result"] == json{{"windowsPerSecond", ear::levelWindowsPerSecond}});
 	{
 		const std::scoped_lock lock(fixture.levels.mutex);
-		fixture.levels.levels = {{"noise", 1600, {{"MONO", {0.5F, 0.25F}}}}};
+		fixture.levels.levels = {{"noise", 1600, {{"noise.mono", {0.5F, 0.25F}}}}};
 	}
 	fixture.bell.levelsPublished();
 	const json levels = json::parse(client.read());
 	CHECK(levels["method"] == "levels");
-	CHECK(levels["params"]["nodes"]["noise"]["MONO"] == json{0.5, 0.25});
+	CHECK(levels["params"]["nodes"]["noise"]["noise.mono"] == json{0.5, 0.25});
 }

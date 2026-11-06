@@ -79,9 +79,9 @@ inline std::string graphFileText(const std::string& body, std::uint32_t rate = 4
 	return "graph_frequency " + std::to_string(rate) + ";\nblock_size " + std::to_string(block) + ";\n" + body;
 }
 
-/// white "noise" routed to file "rec":FL (rec.wav in the recordings folder), plus `more`.
-inline std::string noiseToRec(const std::string& to = "FL", const std::string& more = "") {
-	return graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\nroute noise:MONO rec:" + to + ";\n" + more);
+/// white "noise" routed to file "rec":record.left (rec.wav in the recordings folder), plus `more`.
+inline std::string noiseToRec(const std::string& to = "record.left", const std::string& more = "") {
+	return graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\nroute noise:noise.mono rec:" + to + ";\n" + more);
 }
 
 /// --config-dir and --recordings-dir in `directory`, the control port on 127.0.0.1 at a free port,

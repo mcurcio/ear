@@ -98,7 +98,7 @@ private:
 	std::shared_ptr<PortClaims> claims_;
 	NodeName node_;
 	SendspinSettings settings_;
-	Ports ports_{.inputs = {"to_server_FL", "to_server_FR"}, .outputs = {"from_server_FL", "from_server_FR"}};
+	Ports ports_{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}};
 };
 
 class SendspinType final : public NodeType {

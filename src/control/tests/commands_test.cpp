@@ -32,9 +32,9 @@ std::string invalid(std::string_view method, const std::string& params) {
 	return error.message;
 }
 
-const ear::Route noiseToRecFl{{"noise", "MONO"}, {"rec", "FL"}};
+const ear::Route noiseToRecFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
 const std::string noiseToRecFlJson =
-	R"({"from": {"node": "noise", "port": "MONO"}, "to": {"node": "rec", "port": "FL"}})";
+	R"({"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "rec", "port": "record.left"}})";
 
 /// snapshot.json's graph, as GraphStatus would read it.
 ear::GraphView snapshotView() {
@@ -42,18 +42,18 @@ ear::GraphView snapshotView() {
 	using Code = ear::FailureReason::Code;
 	ear::GraphView view{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back({{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
-	                      {{"playback_1", "playback_2"}, {}},
+	                      ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	view.nodes.push_back({{"noise", "white", json::object()}, {{}, {"MONO"}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, {{"FL", "FR"}, {}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"noise", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::running, std::nullopt});
 	view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}},
-	                      {{"FL", "FR"}, {}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
-	view.routes.push_back({{{"noise", "MONO"}, {"motu", "playback_1"}}, ear::RouteMatch::pending, ""});
+	view.routes.push_back({{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
 	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
-	view.routes.push_back({{{"noise", "MONO"}, {"tape", "FL"}},
+	view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
 	                       ear::RouteMatch::refused,
 	                       "the engine removed the link before it was active"});
 	return view;
@@ -124,14 +124,14 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 
 	for (const std::string_view method : {"route.add", "route.remove"}) {
 		INFO(method);
-		CHECK(invalid(method, R"({"from": {"node": "noise"}, "to": {"node": "rec", "port": "FR"}})") ==
+		CHECK(invalid(method, R"({"from": {"node": "noise"}, "to": {"node": "rec", "port": "record.right"}})") ==
 		      "/from/port: missing");
-		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "MONO"}})") == "/to: missing");
+		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono"}})") == "/to: missing");
 		CHECK(invalid(method, noiseToRecFlJson.substr(0, noiseToRecFlJson.size() - 1) + R"(, "gain": 1})") ==
 		      "/gain: unknown key");
-		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "MONO", "x": 0}, "to": {"node": "rec", "port": "FR"}})") ==
+		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono", "x": 0}, "to": {"node": "rec", "port": "record.right"}})") ==
 		      "/from/x: unknown key");
-		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "MONO"}, "to": {"node": 1, "port": "FR"}})") ==
+		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": 1, "port": "record.right"}})") ==
 		      "/to/node: must be a non-empty string");
 	}
 }
@@ -165,8 +165,8 @@ TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[c
 		ear::UnknownNode{"ghost"},
 		ear::UnknownNode{"ghost"},
 		ear::UnknownPort{{"rec", "FX"}},
-		ear::WrongDirection{{{"rec", "FL"}, {"noise", "MONO"}}},
-		ear::UnknownRoute{{{"noise", "MONO"}, {"rec", "FR"}}},
+		ear::WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}},
+		ear::UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.right"}}},
 		ear::Stopping{},
 	};
 	for (std::size_t i = 0; i < errors.size(); ++i) {

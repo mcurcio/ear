@@ -1,5 +1,7 @@
 # Knobly graph file: module design
 
+> Port names changed, 2026-11-06: a public port is now `<bank>.<member>` (`record.left`, `play.1`), so this page's older names are history. The names are in `AGENTS.md` (Graph file) and the owner's words in `docs/design/sendspin.md` section 1.
+
 **Status:** module design record v7, 2026-10-31. It covers the lighter scope the owner picked at sizing: one background thread, and `ear.conf` as the only file. It sits beside `batch2.md` and builds on the owner's answers in `docs/design/knobly-config-notes.md`.
 **Layer:** System · **▶ Module** · Feature
 Every shape below is a current choice and can be revised. Signatures and mechanisms belong in the code architect's slice pages.

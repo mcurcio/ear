@@ -11,6 +11,7 @@ add_library(ear_core STATIC
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
+	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
 	sound_card.cpp)
@@ -45,6 +46,7 @@ if(BUILD_TESTS)
 		tests/levels_test.cpp
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
+		tests/ports_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/sound_card_test.cpp)

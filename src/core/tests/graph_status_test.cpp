@@ -62,9 +62,9 @@ struct Type final : NodeType {
 
 std::vector<std::unique_ptr<const NodeType>> types() {
 	std::vector<std::unique_ptr<const NodeType>> all;
-	all.push_back(std::make_unique<Type>("source", Ports{{}, {"MONO"}}));
-	all.push_back(std::make_unique<Type>("recorder", Ports{{"FL", "FR"}, {}}, true));
-	all.push_back(std::make_unique<Type>("card", Ports{{"OUT1"}, {"IN1"}, {"PB1"}, {"CAP1"}}));
+	all.push_back(std::make_unique<Type>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
+	all.push_back(std::make_unique<Type>("recorder", Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
+	all.push_back(std::make_unique<Type>("card", Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
 	return all;
 }
 
@@ -155,8 +155,8 @@ struct Fixture {
 	}
 };
 
-const Route noiseToFl{{"noise", "MONO"}, {"rec", "FL"}};
-const Route noiseToFr{{"noise", "MONO"}, {"rec", "FR"}};
+const Route noiseToFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
+const Route noiseToFr{{"noise", "noise.mono"}, {"rec", "record.right"}};
 
 /// Plans `nodes` and `routes` and commits the plan, which must be accepted.
 void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::vector<Route>& routes) {
@@ -173,8 +173,8 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	      {noiseToFl, noiseToFr});
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
-	f.routes.portAppeared({{"noise", "MONO"}, Direction::output, 1});
-	f.routes.portAppeared({{"rec", "FL"}, Direction::input, 2});
+	f.routes.portAppeared({{"noise", "noise.mono"}, Direction::output, 1});
+	f.routes.portAppeared({{"rec", "record.left"}, Direction::input, 2});
 	REQUIRE(f.links.made.size() == 1);
 	f.routes.linkActive(f.links.made.front());
 
@@ -192,10 +192,10 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	REQUIRE(view.nodes[0].reason.has_value());
 	CHECK(view.nodes[0].reason->detail == "no driver");
 	// Public ports only: inside ports are the card's own.
-	CHECK(view.nodes[0].ports.inputs == std::vector<PortName>{"OUT1"});
-	CHECK(view.nodes[0].ports.outputs == std::vector<PortName>{"IN1"});
-	CHECK(view.nodes[0].ports.insideInputs.empty());
-	CHECK(view.nodes[0].ports.insideOutputs.empty());
+	CHECK(view.nodes[0].ports.inputs() == std::vector<PortName>{"play.1"});
+	CHECK(view.nodes[0].ports.outputs() == std::vector<PortName>{"capture.1"});
+	CHECK(view.nodes[0].ports.insideInputs().empty());
+	CHECK(view.nodes[0].ports.insideOutputs().empty());
 	CHECK(view.nodes[1].spec == NodeSpec{"noise", "source", {{"seed", 1}}});
 	CHECK(view.nodes[1].state == NodeState::running);
 	CHECK_FALSE(view.nodes[1].reason.has_value());

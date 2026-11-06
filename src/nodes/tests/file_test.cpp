@@ -114,13 +114,13 @@ std::string contents(const std::filesystem::path& path) {
 
 }  // namespace
 
-TEST_CASE("File declares inputs FL and FR and no outputs", "[file]") {
+TEST_CASE("File declares inputs record.left and record.right and no outputs", "[file]") {
 	TempDir dir{"ports"};
 	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
 	CHECK(type->name() == "file");
 	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
-	CHECK(config->ports().inputs == std::vector<ear::PortName>{"FL", "FR"});
-	CHECK(config->ports().outputs.empty());
+	CHECK(config->ports().inputs() == std::vector<ear::PortName>{"record.left", "record.right"});
+	CHECK(config->ports().outputs().empty());
 }
 
 TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
@@ -179,7 +179,7 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 	CHECK_FALSE(std::filesystem::exists(dir.path() / "new.wav"));
 }
 
-TEST_CASE("File records FL and FR as a 32-bit float stereo WAV at the format's rate", "[file]") {
+TEST_CASE("File records record.left and record.right as a 32-bit float stereo WAV at the format's rate", "[file]") {
 	TempDir dir{"records"};
 	const auto wav = dir.path() / "rec.wav";
 	{

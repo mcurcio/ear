@@ -1,5 +1,7 @@
 # Batch 2: run image, control port, graph UI, sound card
 
+> Port names changed, 2026-11-06: a public port is now `<bank>.<member>` (`record.left`, `play.1`), so this page's older names are history. The names are in `AGENTS.md` (Graph file) and the owner's words in `docs/design/sendspin.md` section 1.
+
 Status: scope answered by the owner on 2026-10-30; the module design and slice pages are below,
 revised the same day after the adversarial design review (section 12 lists each finding and the
 change). Built on branch `claude/batch2` the same day: section 13 records each slice's result,
@@ -1522,6 +1524,11 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **Port banks, 2026-11-06: `ear/core/node_type.hpp` changes.** The owner's new port names (`docs/design/sendspin.md`
+  section 1) make a bank part of how a type declares its ports: `PortBank` (direction, name, members) and `Ports` built only
+  from banks, its lists behind accessors, so no type spells a public port's name; `portName`, the one place that name is
+  made, refuses a mis-shaped part; `numbered` replaces `card.cpp`'s and `rtp.cpp`'s copies. `graph_spec.hpp`'s `PortRef`
+  and the wire keep the whole name as text, split nowhere. `nodes/builtin.hpp`'s comments name the new ports.
 - **J, 2026-10-30: J needed `test/system/white_to_file_test.cpp`, which was not in its owned
   files.** With the control port wired, `ear` listens on 7777 by default, and M1's system tests
   started it without `--control-port`; under `ctest --parallel` they collided on the port. J

@@ -21,7 +21,7 @@ GraphView GraphStatus::read() const {
 	std::map<NodeName, NodeStatus> latest;
 	for (auto& status : nodes_.status()) latest.insert_or_assign(status.name, std::move(status));
 	for (auto& wanted : desired_.nodes()) {
-		NodeView node{std::move(wanted.spec), Ports{std::move(wanted.ports.inputs), std::move(wanted.ports.outputs)},
+		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(),
 		              NodeState::starting, std::nullopt};
 		if (const auto it = latest.find(node.spec.name); it != latest.end()) {
 			node.state = it->second.state;
