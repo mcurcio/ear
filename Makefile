@@ -58,6 +58,19 @@ web-test:
 	${WEB} npm run build
 .PHONY: web-test
 
+# One C++ style (.clang-format): "format" rewrites the git-tracked C++ under src/ and test/ (so
+# never vendor/ or a fetched tree), "format-check" fails on any file it would change (CI's
+# format job, in the dev image's clang-format).
+CXX_FILES = git ls-files -z 'src/*.cpp' 'src/*.hpp' 'test/*.cpp' 'test/*.hpp'
+
+format:
+	${CXX_FILES} | xargs -0 clang-format -i
+.PHONY: format
+
+format-check:
+	${CXX_FILES} | xargs -0 clang-format --dry-run --Werror
+.PHONY: format-check
+
 cmake_debug: ${BUILDDIR}
 	$(call configure,Debug,OFF)
 .PHONY: cmake_debug

@@ -53,12 +53,14 @@ FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d
 # - libpipewire-0.3-modules, libspa-0.2-modules: the modules and SPA plugins EAR's in-process
 #   engine loads at run time (protocol, client-node, link-factory, the dummy driver).
 # - libsndfile1-dev: the file node writes WAV files with libsndfile.
+# - clang-format: make format and make format-check (.clang-format), the one C++ style CI enforces.
 # - git: FetchContent clones the sendspin node's dependencies (micro-flac's submodule needs a clone).
 # - python3, python3-venv: the real Sendspin server the sendspin node's tests run against (below).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		ca-certificates \
 		ccache \
+		clang-format \
 		cmake \
 		g++ \
 		git \

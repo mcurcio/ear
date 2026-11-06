@@ -1,13 +1,14 @@
 # On every pull request and on pushes to master (so master's caches are warm for pull
-# requests), three check jobs in parallel:
+# requests), four check jobs in parallel:
 # - test: builds EAR's build image (docker/Dockerfile, target dev) and, inside it, builds
 #   everything and runs every test (make test), the same way scripts/dev.sh does on a
 #   developer's machine.
 # - web: in the same image, the graph editor's checks (make web-test: npm ci, typecheck, vitest,
 #   build).
+# - format: in the same image, clang-format's check of every C++ file (make format-check).
 # - image: builds the run image (target run, what publish pushes) and checks it with
 #   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
-# Then, on a push to master only, once all three pass (docs/design/batch2.md section 7):
+# Then, on a push to master only, once all four pass (docs/design/batch2.md section 7):
 # - release: semantic-release (.releaserc.json, the root package.json) reads the Conventional
 #   Commits since the last v* tag and, when one calls for a bump, appends the release notes to
 #   CHANGELOG.md, commits it to master ("chore(release): <version> [skip ci]"), tags that commit
@@ -129,6 +130,30 @@ jobs:
         env:
           EAR_DEV_IMAGE: ear-dev
 
+  # One C++ style, enforced: make format-check runs the image's clang-format over the tracked
+  # C++ under src/ and test/ and fails on any file .clang-format would change.
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The dev image, as in the test job (same cache scope).
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: dev
+          tags: ear-dev
+          load: true
+          cache-from: type=gha,scope=dev
+          cache-to: type=gha,scope=dev,mode=max
+
+      - run: scripts/dev.sh make format-check
+        env:
+          EAR_DEV_IMAGE: ear-dev
+
   image:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -169,7 +194,7 @@ jobs:
       - run: scripts/image-smoke.sh ear:ci
 
   release:
-    needs: [test, web, image]
+    needs: [test, web, format, image]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
