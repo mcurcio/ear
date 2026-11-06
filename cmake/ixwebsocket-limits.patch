@@ -1,0 +1,59 @@
+diff --git a/ixwebsocket/IXSocketServer.cpp b/ixwebsocket/IXSocketServer.cpp
+index bf9d20aa..facf1f1d 100644
+--- a/ixwebsocket/IXSocketServer.cpp
++++ b/ixwebsocket/IXSocketServer.cpp
+@@ -14,6 +14,8 @@
+ #include "IXSocketConnect.h"
+ #include "IXSocketFactory.h"
+ #include <assert.h>
++#include <atomic>
++#include <chrono>
+ #include <sstream>
+ #include <stdio.h>
+ #include <string.h>
+@@ -49,6 +51,18 @@ namespace ix
+     void SocketServer::logError(const std::string& str)
+     {
+         std::lock_guard<std::mutex> lock(_logMutex);
++        // ear: ixwebsocket-limits.patch. Any peer can cause a line per connection, so at most one
++        // every 10 s reaches the log: a peer must not be able to fill the disk. Every server in
++        // the process shares the one limit, so it needs no lock of its own.
++        static std::atomic<long long> nextLine {0};
++        const long long now = std::chrono::duration_cast<std::chrono::seconds>(
++                                  std::chrono::steady_clock::now().time_since_epoch())
++                                  .count();
++        long long due = nextLine.load();
++        if (now < due || !nextLine.compare_exchange_strong(due, now + 10))
++        {
++            return;
++        }
+         fprintf(stderr, "%s\n", str.c_str());
+     }
+ 
+diff --git a/ixwebsocket/IXWebSocketTransport.cpp b/ixwebsocket/IXWebSocketTransport.cpp
+index fb3c40a7..b87b9809 100644
+--- a/ixwebsocket/IXWebSocketTransport.cpp
++++ b/ixwebsocket/IXWebSocketTransport.cpp
+@@ -548,6 +548,22 @@ namespace ix
+                 return;
+             }
+ 
++            // ear: ixwebsocket-limits.patch. A frame's claimed length, and the message its
++            // fragments add up to, are judged before any of it accumulates: a peer that has not
++            // proved anything must not fill this process's memory. 1 MiB is sendspin-cpp's own
++            // limit, MAX_REASSEMBLED_MESSAGE_BYTES, which it can only apply after reassembly.
++            {
++                const uint64_t maxMessageBytes(1ULL << 20);
++                const size_t maxFragments(1024);
++                uint64_t message = ws.N;
++                for (const auto& chunk : _chunks) message += chunk.size();
++                if (message > maxMessageBytes || _chunks.size() >= maxFragments)
++                {
++                    close(1009, "message too big", _rxbuf.size());
++                    return;
++                }
++            }
++
+             if (_rxbuf.size() < ws.header_size + ws.N)
+             {
+                 _rxbufWanted = ws.header_size + ws.N;
