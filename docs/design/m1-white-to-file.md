@@ -1,6 +1,7 @@
 # Milestone 1 (white noise → file sink): module design, frozen interfaces, slice cut
 
 > Port names changed, 2026-11-06: a public port is now `<bank>.<member>` (`record.left`, `play.1`), so this page's older names are history. The names are in `AGENTS.md` (Graph file) and the owner's words in `docs/design/sendspin.md` section 1.
+
 Source: code architect, 2026-10-29. Owner answers (gate page, 2026-10-29): container base Debian 13; remove JUCE in this milestone (slice B). System design: docs/design/pipewire-graph.md and the design page.
 Owner gate page: https://claude.ai/artifact/9rHQzmUcx6kdhguft7LBtP. PipeWire
 sources fetched: scratchpad/pw-m1/, pwsrc/, pwsrc2/. [V] = verified in source, [U] = unverified
