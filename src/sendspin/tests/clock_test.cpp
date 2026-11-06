@@ -51,6 +51,7 @@ struct Cycle {
 	std::uint32_t got;          // frames of ramp in it (the rest zeros), if they name their place
 	std::uint32_t firstAt;      // where in the cycle the first of them is, when got > 0
 	std::uint32_t firstIndex;   // the ramp index that one names
+	std::uint32_t lastIndex;    // the ramp index the last of them names
 	bool ramp;                  // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
 };
 
@@ -86,6 +87,7 @@ public:
 		out.got = 0;
 		out.firstAt = 0;
 		out.firstIndex = 0;
+		out.lastIndex = 0;
 		out.ramp = true;
 		// Zeros, ramp, zeros: silence the library primed with, or what the feed did not hold.
 		for (std::uint32_t i = 0; i < frames; ++i) {
@@ -103,6 +105,7 @@ public:
 			} else if (*index != out.firstIndex + (i - out.firstAt)) {
 				out.ramp = false;
 			}
+			out.lastIndex = *index;
 			++out.got;
 		}
 		count_.store(at + 1, std::memory_order_release);
@@ -315,7 +318,7 @@ struct Errors {
 	double worstUs = 0.0;
 	std::size_t skips = 0;
 	std::size_t badCycles = 0;
-	std::size_t badSteps = 0;
+	std::vector<std::uint32_t> badSteps;   // each step's size, so a red names it
 	std::uint64_t contiguousFrames = 0;   // and how long they took: the graph's real rate
 	std::int64_t contiguousNs = 0;
 	std::vector<double> sorted;
@@ -365,10 +368,14 @@ private:
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
 		if (lastIndex_) {
 			const auto step = cycle.firstIndex - *lastIndex_;
-			if (step != 1 && (step - 1) % kBlock != 0) ++errors.badSteps;
+			// The library's dropped frame: frame n goes and n+1 is blended, so no ramp frame names n or n+1. Inside a cycle
+			// that is only a bad cycle; when the blend falls on the cycle's edge, the indices either side of it are 3 apart.
+			const bool blendOnEdge = step == 3 && !(cycle.ramp && lastCycleRamp_);
+			if (step != 1 && (step - 1) % kBlock != 0 && !blendOnEdge) errors.badSteps.push_back(step);
 			plusOneRun_ = step == 1 && cycle.ramp && cycle.got == cycle.frames ? plusOneRun_ + 1 : 0;
 		}
-		lastIndex_ = cycle.firstIndex + cycle.got - 1;
+		lastIndex_ = cycle.lastIndex;
+		lastCycleRamp_ = cycle.ramp;
 
 		const std::int64_t rampUs = playStartUs_ + static_cast<std::int64_t>(cycle.firstIndex) * 1000000 / kRate;
 		// When the first of them is heard: at the block's port, plus what the driver holds ahead of it (section 7).
@@ -390,6 +397,7 @@ private:
 	std::size_t next_ = 0;
 	std::optional<Cycle> previous_;
 	std::optional<std::uint32_t> lastIndex_;
+	bool lastCycleRamp_ = true;
 	std::optional<std::int64_t> firstFrameNs_;
 	std::optional<std::int64_t> lastSkipNs_;
 	std::size_t plusOneRun_ = 0;
@@ -399,7 +407,7 @@ void report(const Errors& errors) {
 	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
 	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most " << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 " << errors.percentile(0.5)
 	     << " us, p99 " << errors.percentile(0.99) << " us, worst " << errors.worstUs << " us, skips " << errors.skips
-	     << ", bad cycles " << errors.badCycles << ", bad steps " << errors.badSteps << ", the graph's rate "
+	     << ", bad cycles " << errors.badCycles << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
 	     << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
 }
 
@@ -411,9 +419,9 @@ void checkSync(const Errors& errors) {
 	REQUIRE(errors.afterFirst3s > 0);
 	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
-	CHECK(errors.badSteps == 0);
+	CHECK(errors.badSteps.empty());
 	// A frame the library interpolates to correct an error past 100 us (section 7) is no exact ramp frame, and is allowed: CI's
-	// amd64 host sits at -88 us, and made two in one run. More than a few would be something else.
+	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be something else.
 	CHECK(static_cast<double>(errors.badCycles) <= 0.01 * static_cast<double>(errors.judged));
 }
 
