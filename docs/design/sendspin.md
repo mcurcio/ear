@@ -556,6 +556,11 @@ Errata, from building S3 (2026-11-06):
 18. **After a `node.update` the goodbye is `shutdown`, and aiosendspin's server, having dialled by hand (`connect_to_client`), did not redial within 30 s** [V], though the spec has a server auto-reconnect on that reason. So S3-5's last sentence is tested by a server dialling again. A browsing server is back by itself: `service-removed`, then a new announcement, then its dial; a test holds that.
 19. **Four test names from S1 and S2 held a `;`, which `AGENTS.md` forbids** (CMake splits a name at it). Renamed; nothing else about them changed.
 
+Errata, from the docs step (2026-11-06):
+
+20. **Teardown's order differs from section 6: the worker stops and joins the notifier first, then calls `client.stop()` and destroys the client (`worker.cpp`, `finish`).** So nothing calls `notify_audio_played` while the client goes. Section 6 has the notifier joined after.
+21. **Erratum 17's line is added: `test.yml`'s deps cache now lists `.cache/deps/mdns-src`,** so section 13 holds. Not run until CI's first restore.
+
 Reviewed 2026-11-05; its findings were taken, but for these:
 
 | Claim | Answer | Evidence |

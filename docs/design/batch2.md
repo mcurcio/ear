@@ -14,7 +14,7 @@ The question page: https://claude.ai/artifact/DraHdKRyZDB4WwBWxDTn4k
 
 | Question | His words | What it means here |
 |---|---|---|
-| Scope | "Ok" (to the recommended scope) | Run image, control port, web UI, sound card node. Sendspin (Music Assistant) is the next batch. |
+| Scope | "Ok" (to the recommended scope) | Run image, control port, web UI, sound card node. Sendspin (Music Assistant) is the next batch (built since: `docs/design/sendspin.md`). |
 | Web UI | "Graph view is the goal. Dynamically wiring up nodes and edges in a UI is the goal. I want to see all of the graph information in real time, like the audio levels per-channel / per edge" | A drawn graph editor: nodes as boxes, routes as wires added and removed in the UI, with live status and live audio levels per channel and per route. |
 | Hardware | "Motu 24ao. Talos 1.13.x I think maybe 1.14.x" | A MOTU 24Ao (AVB series, USB class compliant). Talos 1.13 or later includes the USB audio driver (added in 1.12). |
 | File node paths (review P0, after the cut) | He picked the option "confine file node paths to one recordings folder (a new --recordings-dir flag; reject anything outside it)" | A `file` node's path is relative to one folder given at boot; absolute paths, `..` and symlinks that lead out are refused (sections 4.4, 4.7, 11). |
@@ -40,7 +40,7 @@ themselves cannot move.
   The image already carries PipeWire's ALSA plugin. The work is a sound card node type, with the
   card driving the clock while it works.
 - "support home assistant network audio as source + sink": Music Assistant's Sendspin protocol
-  (deferred to the next batch).
+  (deferred to the next batch; built since: `docs/design/sendspin.md`).
 - "add control socket": port 7777, JSON-RPC 2.0 over WebSocket (Snapcast's pattern).
 - "add web UI": served by EAR on the same port.
 

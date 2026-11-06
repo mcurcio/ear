@@ -96,7 +96,10 @@ the order below:
   `claude/knobly-realtime-config-edits-cd4312`, 2026-10-31): `ear.json` is replaced by `ear.conf`
   in the knobly language, kept live on one background thread, edited at its source from the
   editor and by hand, with a text pane in the editor.
-- Not started: step 3's socket and marks, step 7. Music Assistant's Sendspin is the next batch.
+- The `sendspin` node (page `docs/design/sendspin.md`, branch `claude/loving-wu-c7a66c`,
+  2026-11-06): Music Assistant's audio in and out over the Sendspin protocol, one node each way,
+  dialling or listening per node, paired by a code. Not yet run against a real Music Assistant.
+- Not started: step 3's socket and marks, step 7.
 
 The original outline:
 

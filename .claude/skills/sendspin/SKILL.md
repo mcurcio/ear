@@ -1,6 +1,6 @@
 ---
 name: sendspin
-description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), the protocol library sendspin-cpp's traps, the carried Origin patch and bumping the pin, the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-origin.patch or test/support/sendspin_server.py.
+description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried Origin patch and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-origin.patch or test/support/sendspin_server.py.
 ---
 
 # The `sendspin` node
@@ -19,11 +19,31 @@ operate it, and what bites.
 - **20 wrong rounds hold pairing back** (`says pairing-failed pairing-code-mismatch`, `says pairing-held`), for this
   client's life: the count is in memory. Change a setting (`name`, and back) or restart ear to release it. Any network peer
   can burn these rounds (spec: not partitioned by server or address).
+- **The code is on standard output only.** Notes never reach the control port or the editor (deferred), so whoever pairs
+  needs ear's log open.
+- **What Music Assistant does** (read in its `providers/sendspin/{provider,player}.py`, never run): `start_pin_pairing` for a
+  client that `is_connected`, whichever side dialled, and a dynamic code when digits are offered. So a node must be connected
+  before Music Assistant can offer pairing: `says connected <server> unpaired` comes first.
 - **The same settings change nothing.** `node.update` with what the node already has is no restart, for a failed node too.
   To retry, change a setting or restart ear.
-- **Identity.** `<config-dir>/sendspin-<node>.key`: the private key, the pairings, the output delay. Renaming a node makes a
-  new identity, and adding a removed name back inherits the old one. To wipe one, delete the file and restart the node. A
-  file it cannot trust fails the node, left unchanged: delete or fix it. Never log it or send it to the editor.
+- **A server that dialled by hand may not come back after a restart of the node.** After a `node.update` the goodbye is
+  `shutdown`, and `aiosendspin`, having dialled by hand, did not redial within 30 s, though the spec has a server reconnect on
+  that reason. One browsing mDNS comes back by itself.
+
+## The identity file
+
+- `<config-dir>/sendspin-<node>.key`, mode 0600, one JSON object with its audit fields (`createdAt`, `createdBy`, `changedAt`,
+  `changedBy`) and the library's blobs in base64url: the private key, the pairing secrets, the output delay. At most 64 KiB, and
+  written whole on each change, through `ConfinedFolder`, swapped in as `ear.conf` is. The keeper's watch ignores it. Never log
+  it or send it to the editor.
+- A wider mode is narrowed, not refused, at each start, because the `fsGroup` that `ear-on-talos` prescribes widens it on every
+  mount.
+- Renaming a node makes a new identity, and adding a removed name back inherits the old one (`node.remove` leaves the file). To
+  wipe one, delete the file and restart the node: a file something else changed or removed fails the write
+  (`key-write-failed`), so ear never puts it back.
+- A file it cannot trust (not JSON, a missing field, a `keypair` of the wrong size, a symlink, too large) fails the node, left
+  unchanged, mode included: delete or fix it. No new identity is minted over it, or the server's trust would be lost silently.
+- No file at all and a folder it cannot write fails the node too, rather than run a fresh identity each boot.
 
 ## What a line means
 
@@ -58,12 +78,30 @@ operate it, and what bites.
   the raw clock), never from when the thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
 - **A skipped cycle counts as played**, or it costs 25 ms: the library sees -5.3 ms, drops a chunk and inserts silence. A
   jump larger than the feed, or backward, is a change of driver (a card joining or lost), not a skip.
-- **The feed is small on purpose**, about 43 ms: with 2.7 s a correction lands 2.7 s late.
+- **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
+- **A card's clock.** Joining a card, the position goes from 2.3e10 to 0, and losing it forward by 2.3e10; both are outside the
+  feed's capacity, so neither is a skip. **CI's test card cannot prove 1 ms:** it has no clock of its own and runs the graph about
+  2.1% fast, past the library's ±0.5%, so its test holds the hard sync's bound (5 ms, asserted under 20) and the recovery.
+  Only the dummy driver has shown 1 ms; the real card is a check in `ear-on-talos`.
+- **The output's sync stops at the block's port.** The card's buffer and about one block more are left to the output delay in
+  Music Assistant, which the library keeps in the key file.
 - `loop()` needs a timer, because the inbox has no wake hook, and nothing tells of a lost connection or a failed dial. So a 10 ms
   poll and the connection watch stay inside the worker; they never act on a live attempt.
 - **Opus is off.** libsndfile pulls in `libopus.so`, and micro-opus's static C symbols would interpose on it.
 - Teardown: block gone, handoff drained, `close`: the worker says goodbye, stops and destroys the client, then posts `closed`.
   Never a wait on the main loop. A dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s.
+
+## What the spike learned
+
+Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the real `aiosendspin`, on the dummy driver.
+
+- PCM 16, FLAC 16 and FLAC 24 at the graph frequency arrive exact, and the server resamples other rates. The source role only
+  activates once paired, and the server decides when it streams.
+- Two clients in one process run side by side, which is what lets each node be its own.
+- The library has no retry after a lost dial (hence the watch) and only logs a port it cannot take (hence the check in `start`).
+- `stop()` takes under 10 ms and the destructor 1 ms, even while dialling a dead address. Ear fixes the library's log level at
+  WARN, for noise.
+- A correction is one frame per chunk at most, -0.084% over 150 ms against the spec's ±0.5%.
 
 ## The pin and the patch
 
@@ -76,11 +114,35 @@ operate it, and what bites.
   it too. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
   `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers.
 
+## Trying it without Music Assistant
+
+In one `scripts/dev.sh bash`, after `scripts/dev.sh make debug`, with `/tmp/c/ear.conf` as:
+
+```conf
+graph_frequency 48000;
+block_size 256;
+node sendspin ma;
+node file rec { path "ma.wav"; }
+route ma:from_server_FL rec:FL;
+route ma:from_server_FR rec:FR;
+```
+
+```bash
+mkdir -p /tmp/r
+out/ear --config-dir /tmp/c --recordings-dir /tmp/r --control-port 0 > /tmp/ear.log &
+/opt/sendspin-server/bin/python test/support/sendspin_server.py --listen 0 --dial ws://127.0.0.1:8928/sendspin
+```
+
+The server reads commands from its standard input. On `connected <id>`, type `pair`; `/tmp/ear.log` then says `pairing-code
+123-456`; type `code 123456`, then `play 2`, then `quit`. Stop ear with `kill %1`, and `/tmp/r/ma.wav` holds the ramp.
+
 ## Tests
 
 - `test/support/sendspin_server.py` is the real `aiosendspin` server, Music Assistant's pin, a command per stdin line and an event
   per stdout line (its header lists them). `sendspin_server.hpp` spawns it. Its identity and pairings persist with `--state`.
-- **A stream started right after a role change joins the ramp late**, so `play` waits for the role.
+- **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
+  the role, by a 5 ms poll: `aiosendspin` has no event for it. The encoder also holds back the stream's tail, so 68607 of 72000
+  frames arrive.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
   instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused".
 - **A comma in a Catch filter means OR, and a filter that matches nothing exits 0.** A probe that filters on a name holding a

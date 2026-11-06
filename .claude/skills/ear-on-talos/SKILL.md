@@ -243,7 +243,7 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   (`containerPort: 5004, protocol: UDP`) and put a Service in front of it with a UDP port whose
   `targetPort` is the node's `port`. FPP sends to the Service's address. The Service may rewrite
   the sender's address and port on the way (kube-proxy NAT); `0.0.0.0` hears any sender, so that
-  does not matter. The image's `EXPOSE` names only 7777; that is a label, not a limit. A sender
+  does not matter. The image's `EXPOSE` names 7777 and 8928; that is a label, not a limit. A sender
   outside the cluster needs a NodePort or LoadBalancer Service, still UDP.
 - **Multicast.** A Service carries unicast only, and pod networks usually do not carry multicast
   between pods. A multicast `address` needs the pod on the node's own network
@@ -283,8 +283,16 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   section 6: the policy of section 4 must allow it), or give Music Assistant the URL by hand,
   `ws://<address>:<port>/sendspin`. `says advertise-failed <detail>` means no mDNS socket opened;
   no such line does not mean anybody heard it.
+- **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own.
+  The node advertises on one interface, the one the kernel routes 224.0.0.251 through, and the
+  address of that interface, read once when the sendspin node starts, so on a machine with several
+  networks check that route, and restart the sendspin node if the address changes. Music Assistant
+  has to be on that same network segment to hear it: on an overlay itself it hears nothing, and
+  needs the URL by hand. A rolling update's new pod would find these ports held by the old one, so
+  use the `Recreate` strategy.
 - **Pair once.** The node prints `says pairing-code <123-456>` when Music Assistant starts an attempt;
-  type it there. The pairing lives in the key file, so the graph file volume must persist
+  the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the
+  editor. Type it there. The pairing lives in the key file, so the graph file volume must persist
   (section 4), or every restart asks again.
 - **Stop.** The node's goodbye runs on its own thread and is short, but an inbound half-open socket can
   take up to 3 s; it all has to fit `terminationGracePeriodSeconds` with the last `ear.conf` write.

@@ -4,8 +4,8 @@
 # - dev: the build and test image, for development (scripts/dev.sh) and CI
 #   (.github/workflows/test.yml). Debian 13 (trixie): PipeWire 1.4, GCC 14 (C++23), Node.js 24.
 # - build: dev plus this checkout, built: "make release" and the graph editor's "npm run build".
-# - run: what ships (test.yml's publish job): the ear binary, its engine.conf and the built
-#   editor on debian:trixie-slim with the libraries they load at run time, no compiler.
+# - run: what ships (test.yml's publish job): the ear binary, its engine.conf, the built editor
+#   and the sendspin node's dependencies' licences on debian:trixie-slim with the libraries they load at run time, no compiler.
 #
 # Every base is pinned by the digest of its multi-platform index, so the same base serves
 # linux/amd64 (CI, the published image) and linux/arm64 (Docker on Apple Silicon). Bump one by
@@ -98,7 +98,7 @@ ENV CMAKE_C_COMPILER_LAUNCHER=ccache \
 
 FROM dev AS build
 
-# The sources .dockerignore lets in. The cache mounts keep the fetched Boost tree, ccache and
+# The sources .dockerignore lets in. The cache mounts keep the fetched trees, ccache and
 # npm's cache between local builds; they are not part of any image (in CI, which keeps only
 # layers, the build stage compiles from scratch whenever a source changed).
 WORKDIR /src
