@@ -81,7 +81,7 @@ TEST_CASE("A name is 1 to 64 bytes of UTF-8 with no control characters, and abse
 
 	CHECK_FALSE(parseSettings("ma", name(std::string(65, 'x'))).has_value());
 	for (const char* bad : {"a\x01z", "a\x7fz", "a\nz", "\xff", "\xC3", "\xC0\x80", "\xE0\x80\x80", "\xED\xA0\x80",
-	                        "\xF4\x90\x80\x80", "\xF0\x9F\x8E"}) {
+	                        "\xF4\x90\x80\x80", "\xF0\x9F\x8E", "a\xC2\x9Bz", "a\xC2\x85z", "a\xE2\x80\xA8z", "a\xE2\x80\xA9z"}) {
 		INFO(bad);
 		CHECK_FALSE(parseSettings("ma", name(bad)).has_value());
 	}

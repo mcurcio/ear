@@ -4,6 +4,8 @@
 #include <charconv>
 #include <cstddef>
 
+#include "peer_text.hpp"
+
 namespace ear::sendspin {
 namespace {
 
@@ -25,42 +27,14 @@ bool validPort(std::string_view text) noexcept {
 	return error == std::errc{} && stopped == end && port >= 1 && port <= 65535;
 }
 
-/// RFC 3629's UTF-8: no overlong form, no surrogate, nothing above U+10FFFF.
-bool validUtf8(std::string_view text) noexcept {
-	const auto byte = [&](std::size_t at) { return static_cast<unsigned char>(text[at]); };
-	for (std::size_t i = 0; i < text.size();) {
-		const unsigned char lead = byte(i);
-		std::size_t continuation = 0;
-		unsigned char low = 0x80;
-		unsigned char high = 0xBF;
-		if (lead < 0x80) {
-		} else if (lead >= 0xC2 && lead <= 0xDF) {
-			continuation = 1;
-		} else if (lead >= 0xE0 && lead <= 0xEF) {
-			continuation = 2;
-			if (lead == 0xE0) low = 0xA0;
-			if (lead == 0xED) high = 0x9F;
-		} else if (lead >= 0xF0 && lead <= 0xF4) {
-			continuation = 3;
-			if (lead == 0xF0) low = 0x90;
-			if (lead == 0xF4) high = 0x8F;
-		} else {
-			return false;
-		}
-		if (i + continuation >= text.size() + (continuation == 0 ? 1 : 0)) return false;
-		for (std::size_t c = 1; c <= continuation; ++c) {
-			if (byte(i + c) < low || byte(i + c) > high) return false;
-			low = 0x80;
-			high = 0xBF;
-		}
-		i += continuation + 1;
+bool validName(std::string_view name) noexcept {
+	if (name.empty() || name.size() > maxNameBytes) return false;
+	for (std::size_t at = 0; at < name.size();) {
+		const auto character = characterAt(name, at);
+		if (!character || isControl(character->code)) return false;
+		at += character->bytes;
 	}
 	return true;
-}
-
-bool validName(std::string_view name) noexcept {
-	return !name.empty() && name.size() <= maxNameBytes && validUtf8(name) &&
-	       std::ranges::none_of(name, [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; });
 }
 
 } // namespace

@@ -92,6 +92,9 @@ public:
 
 	void signal(int signalNumber) { ::kill(pid_, signalNumber); }
 
+	/// Its process id while it runs.
+	pid_t pid() const noexcept { return pid_; }
+
 	/// Waits for the child's output to end and the child to exit. Its exit status, or nothing
 	/// if it was killed by a signal or the deadline passed first.
 	std::optional<int> waitForExit(std::chrono::milliseconds deadline) {

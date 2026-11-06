@@ -2,8 +2,6 @@
 
 #include <ctime>
 
-#include <unistd.h>
-
 namespace ear::sendspin {
 namespace {
 
@@ -15,7 +13,7 @@ std::int64_t nowNs(clockid_t clock) noexcept {
 
 } // namespace
 
-SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, int bell, std::uint32_t rate, RtWriter& toServer,
+SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate, RtWriter& toServer,
                            Mailbox<CaptureAnchor>& capture) noexcept
     : feed_(feed), progress_(progress), bell_(bell), rate_(rate), toServer_(toServer), capture_(capture) {}
 
@@ -50,9 +48,10 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	if (skipped == 0 && got == 0) return;
 
 	totalFrames_ += static_cast<std::uint64_t>(skipped) + got;
-	progress_.publish({totalFrames_, startRawNs + static_cast<std::int64_t>(got) * 1'000'000'000 / rate_});
-	const std::uint64_t one = 1;
-	[[maybe_unused]] const auto ignored = ::write(bell_, &one, sizeof one);
+	// What this cycle writes is heard once what the driver holds has played (section 7).
+	const std::int64_t heardFrames = static_cast<std::int64_t>(got) + cycle.delayFrames;
+	progress_.publish({totalFrames_, startRawNs + heardFrames * 1'000'000'000 / rate_});
+	bell_.ring();
 }
 
 } // namespace ear::sendspin

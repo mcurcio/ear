@@ -59,6 +59,18 @@ void writeRamp(Feed& feed, std::uint32_t total, std::uint32_t chunk) {
 	}
 }
 
+/// Once the writer says it waits, and well past its second look at the ring, so only a wake can end its wait. The sleep only
+/// strengthens this: without it the test could pass on that second look, never on anything else.
+bool writerIsInItsWait(const Feed& feed) {
+	const auto until = std::chrono::steady_clock::now() + 10s;
+	while (!feed.writerWaiting()) {
+		if (std::chrono::steady_clock::now() >= until) return false;
+		std::this_thread::yield();
+	}
+	std::this_thread::sleep_for(50ms);
+	return true;
+}
+
 } // namespace
 
 TEST_CASE("A ramp of 10 s written by one thread is read back exact by another", "[feed]") {
@@ -123,24 +135,21 @@ TEST_CASE("A full feed's write wakes on a read and takes what fits", "[feed]") {
 	REQUIRE(feed.write(samples, capacity, 0ms) == capacity);
 
 	std::atomic<std::uint32_t> accepted{0};
-	std::atomic<bool> returned{false};
+	const auto patience = 20s;
 	std::thread writer([&] {
 		std::vector<float> more;
 		fill(more, capacity, 512);
-		// Far more patience than this test takes: it returns because the read woke it.
-		accepted = feed.write(more, 512, 60s);
-		returned = true;
+		accepted = feed.write(more, 512, patience);
 	});
-	// Whether the writer is waiting yet or not, it must see the room.
+	REQUIRE(writerIsInItsWait(feed));
 	std::array<float, 256> left{};
 	std::array<float, 256> right{};
 	const std::array<std::span<float>, 2> out{left, right};
-	CHECK(feed.read(out, 256) == 256);
 	const auto before = std::chrono::steady_clock::now();
+	CHECK(feed.read(out, 256) == 256);
 	writer.join();
-	CHECK(returned);
 	CHECK(accepted == 256);
-	CHECK(std::chrono::steady_clock::now() - before < 30s);
+	CHECK(std::chrono::steady_clock::now() - before < patience / 2);   // the wake ended it, not its patience
 }
 
 TEST_CASE("After clear the next read returns nothing, and what is written after it plays", "[feed]") {
@@ -172,7 +181,10 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	fill(samples, 0, capacity);
 	REQUIRE(feed.write(samples, capacity, 0ms) == capacity);
 	std::atomic<std::uint32_t> accepted{0};
-	std::thread writer([&] { accepted = feed.write(samples, 16, 60s); });
+	const auto patience = 20s;
+	std::thread writer([&] { accepted = feed.write(samples, 16, patience); });
+	REQUIRE(writerIsInItsWait(feed));
+	const auto before = std::chrono::steady_clock::now();
 	feed.clear();
 	std::array<float, 8> left{};
 	std::array<float, 8> right{};
@@ -180,6 +192,7 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	CHECK(feed.read(out, 8) == 0);
 	writer.join();
 	CHECK(accepted == 16);
+	CHECK(std::chrono::steady_clock::now() - before < patience / 2);
 }
 
 TEST_CASE("skip discards the oldest frames and says how many", "[feed]") {

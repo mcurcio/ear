@@ -14,15 +14,18 @@
 #include "sendspin_code.hpp"
 #include "settings.hpp"
 namespace ear::sendspin {
+/// The lead a player reports (spec "required_lead_time_ms": at least what still plays after a stream/clear): all a feed
+/// of `feedFrames` holds, and the block being played. The library reports its own pipeline's lead if that is larger.
+std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, std::uint32_t rate) noexcept;
 class SendspinWorker {
 public:
   /// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's
   /// key file lives in `folder`.
   SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
-                 AudioFormat format, Feed& feed, InsidesEvents& events, std::uint32_t feedFrames);
+                 AudioFormat format, Feed& feed, InsidesEvents& events);
   void stop(std::move_only_function<void()> stopped);   // main thread; the insides' close()
   ~SendspinWorker();                                    // after `stopped`; joins a finished thread
-  int bell() const noexcept;                            // the eventfd the code rings
+  const EventFd& bell() const noexcept;                 // what the code rings
   Mailbox<PlayProgress>& progress() noexcept;
   HandoffConsumer& toServer() noexcept;                 // the handoff's far end: write_audio; closed before stop()
   Mailbox<CaptureAnchor>& capture() noexcept;           // when what the handoff holds was captured

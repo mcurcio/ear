@@ -2,18 +2,19 @@
 // section 14, S1 criterion 7).
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <span>
+#include <thread>
 #include <vector>
-
-#include <sys/eventfd.h>
-#include <unistd.h>
 
 #include "catch2/catch.hpp"
 #include "feed.hpp"
 #include "sendspin_code.hpp"
+#include "worker.hpp"
 
 using namespace ear::sendspin;
 using namespace std::chrono_literals;
@@ -49,13 +50,12 @@ public:
 
 struct Rig {
 	Rig()
-	    : feed(2, capacity), bell(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)), code(feed, progress, bell, rate, toServer, capture),
+	    : feed(2, capacity), code(feed, progress, bell, rate, toServer, capture),
 	      inLeft(block, 0.25F), inRight(block, -0.5F) {
 		code.prepare({rate, block});
 		left.resize(block);
 		right.resize(block);
 	}
-	~Rig() { close(bell); }
 
 	/// Frames whose left channel counts on from what was written before.
 	void write(std::uint32_t frames) {
@@ -66,22 +66,19 @@ struct Rig {
 		}
 		REQUIRE(feed.write(samples, frames, 0ms) == frames);
 	}
-	void cycle(std::uint64_t position, std::int64_t startNs = 1000) {
+	void cycle(std::uint64_t position, std::int64_t startNs = 1000, std::uint32_t delayFrames = 0) {
 		const std::array<std::span<float>, 2> outputs{left, right};
 		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
-		code.process(inputs, outputs, block, ear::GraphCycle{startNs, position});
+		code.process(inputs, outputs, block, ear::GraphCycle{startNs, position, delayFrames});
 	}
 	/// Whether the bell rang since the last look.
-	bool rang() {
-		std::uint64_t rings = 0;
-		return read(bell, &rings, sizeof rings) == sizeof rings;
-	}
+	bool rang() { return bell.drain(); }
 
 	Feed feed;
 	Mailbox<PlayProgress> progress;
 	Mailbox<CaptureAnchor> capture;
 	FakeWriter toServer;
-	int bell;
+	EventFd bell;
 	SendspinCode code;
 	std::vector<float> inLeft;
 	std::vector<float> inRight;
@@ -115,6 +112,27 @@ TEST_CASE("A block read counts its frames, and finishes at the cycle's start plu
 	CHECK(rig.rang());
 	CHECK(rig.left[0] == 1.0F);
 	CHECK(rig.left[block - 1] == static_cast<float>(block));
+}
+
+TEST_CASE("What the driver still holds is added: a frame finishes when the device has played it", "[sendspin][code]") {
+	const std::uint32_t held = 512;
+	Rig plain;
+	plain.write(block);
+	Rig delayed;
+	delayed.write(block);
+	const std::int64_t start = nowNs(CLOCK_MONOTONIC);
+	plain.cycle(0, start);
+	delayed.cycle(0, start, held);
+	const std::int64_t heldNs = std::int64_t{held} * 1000000000 / rate;
+	const std::int64_t difference = delayed.progress.read()->finishRawNs - plain.progress.read()->finishRawNs;
+	INFO("difference " << difference);
+	CHECK(std::abs(difference - heldNs) < 1000000);   // the two calls read their clocks apart, by far less than this
+}
+
+TEST_CASE("The lead a player reports covers what still plays after a clear, whatever the block", "[sendspin][code]") {
+	CHECK(requiredLeadMs(2048, 256, 48000) == 48);     // 42.67 + 5.33 ms; the library's own 150 ms then rules
+	CHECK(requiredLeadMs(8192, 4096, 48000) == 256);   // past it: a block of 2049 to 4096 frames
+	CHECK(requiredLeadMs(8193, 4096, 48000) == 257);   // rounded up, never under
 }
 
 TEST_CASE("A position ahead by a block skips that block and counts it played", "[sendspin][code]") {
@@ -249,4 +267,33 @@ TEST_CASE("The mailbox holds the newest value, and nothing before the first", "[
 	REQUIRE(value.has_value());
 	CHECK(value->totalFrames == 3);
 	CHECK(value->finishRawNs == 4);
+}
+
+TEST_CASE("The mailbox's fields, read while it is written from another thread, always belong together", "[sendspin][code]") {
+	Mailbox<PlayProgress> mailbox;
+	std::atomic<bool> done{false};
+	std::thread writer([&] {
+		for (std::uint64_t value = 1; !done.load(std::memory_order_relaxed); ++value) {
+			mailbox.publish({value, static_cast<std::int64_t>(value) * 3});
+		}
+	});
+	std::uint64_t mixed = 0;
+	std::uint64_t reads = 0;
+	std::uint64_t newest = 0;
+	std::uint64_t backwards = 0;
+	const auto until = std::chrono::steady_clock::now() + 500ms;
+	while (std::chrono::steady_clock::now() < until) {
+		const auto value = mailbox.read();
+		if (!value) continue;
+		++reads;
+		if (value->finishRawNs != static_cast<std::int64_t>(value->totalFrames) * 3) ++mixed;
+		if (value->totalFrames < newest) ++backwards;
+		newest = value->totalFrames;
+	}
+	done = true;
+	writer.join();
+	INFO(reads << " reads");
+	CHECK(reads > 0);
+	CHECK(mixed == 0);
+	CHECK(backwards == 0);
 }

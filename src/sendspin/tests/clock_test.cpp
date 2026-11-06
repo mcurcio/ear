@@ -47,6 +47,7 @@ struct Cycle {
 	std::int64_t startRawNs;
 	std::uint64_t position;
 	std::uint32_t frames;
+	std::uint32_t delayFrames;  // what the driver still held
 	std::uint32_t got;          // frames of ramp in it (the rest zeros), if they name their place
 	std::uint32_t firstAt;      // where in the cycle the first of them is, when got > 0
 	std::uint32_t firstIndex;   // the ramp index that one names
@@ -81,6 +82,7 @@ public:
 		out.startRawNs = cycle.startNs + ((raw.tv_sec - mono.tv_sec) * 1000000000 + (raw.tv_nsec - mono.tv_nsec));
 		out.position = cycle.position;
 		out.frames = frames;
+		out.delayFrames = cycle.delayFrames;
 		out.got = 0;
 		out.firstAt = 0;
 		out.firstIndex = 0;
@@ -184,8 +186,7 @@ struct KeyFolder {
 struct Rig {
 	Rig()
 	    : engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
-	      worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed,
-	             notes, kFeedFrames),
+	      worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed, notes),
 	      code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()), tap(code, waiter), blockEvents(waiter) {
 		notes.connectTap(tap);
 		block = blocks.make("clock", Ports{{"to_server_FL", "to_server_FR"}, {"from_server_FL", "from_server_FR"}}, kFormat, blockEvents);
@@ -214,7 +215,7 @@ struct Rig {
 		std::string code = notes.lineStarting("pairing-code ")->substr(13);
 		std::erase(code, '-');
 		server.send("code " + code);
-		REQUIRE(waiter.until([&] { return notes.heard("connected ear-test-server paired"); }, 20s));
+		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
 		server.send("play " + std::to_string(seconds));
 		const auto start = server.waitForEvent("play-start ", 20s);
 		REQUIRE(start.has_value());
@@ -308,6 +309,8 @@ struct TestCard {
 
 struct Errors {
 	std::size_t judged = 0;
+	std::size_t afterFirst3s = 0;   // the cycles that could have been judged, skipped ones' 1.5 s among them
+	std::uint32_t mostDelayFrames = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
 	std::size_t skips = 0;
@@ -368,11 +371,14 @@ private:
 		lastIndex_ = cycle.firstIndex + cycle.got - 1;
 
 		const std::int64_t rampUs = playStartUs_ + static_cast<std::int64_t>(cycle.firstIndex) * 1000000 / kRate;
-		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 + static_cast<double>(cycle.firstAt) * 1e6 / kRate;
+		// When the first of them is heard: at the block's port, plus what the driver holds ahead of it (section 7).
+		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
+		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
+		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
-		const bool settled = cycle.startRawNs - *firstFrameNs_ > 3000000000 &&
-		                     (!lastSkipNs_ || cycle.startRawNs - *lastSkipNs_ > 1500000000);
-		if (!settled) return;
+		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
+		++errors.afterFirst3s;
+		if (lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000) return;
 		++errors.judged;
 		if (std::abs(errorUs) < 1000.0) ++errors.within;
 		if (std::abs(errorUs) > std::abs(errors.worstUs)) errors.worstUs = errorUs;
@@ -391,7 +397,7 @@ private:
 
 void report(const Errors& errors) {
 	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
-	WARN("judged " << errors.judged << " cycles, within 1 ms " << errors.within << ", p50 " << errors.percentile(0.5)
+	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most " << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 " << errors.percentile(0.5)
 	     << " us, p99 " << errors.percentile(0.99) << " us, worst " << errors.worstUs << " us, skips " << errors.skips
 	     << ", bad cycles " << errors.badCycles << ", bad steps " << errors.badSteps << ", the graph's rate "
 	     << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
@@ -399,8 +405,11 @@ void report(const Errors& errors) {
 
 void checkSync(const Errors& errors) {
 	report(errors);
-	REQUIRE(errors.judged > 0);
-	INFO("judged " << errors.judged << " within " << errors.within);
+	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about half a
+	// second's worth of cycles; a host worse than that fails here, without a bug (the rtp.md erratum 3 trap).
+	INFO("judged " << errors.judged << " of " << errors.afterFirst3s << ", within " << errors.within);
+	REQUIRE(errors.afterFirst3s > 0);
+	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
 	CHECK(errors.badSteps == 0);
 	CHECK(errors.badCycles == 0);

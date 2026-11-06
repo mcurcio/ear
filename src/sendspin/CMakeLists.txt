@@ -7,10 +7,12 @@ add_library(ear_sendspin STATIC
 	connection_watch.cpp
 	feed.cpp
 	key_store.cpp
+	note_gate.cpp
 	port_claims.cpp
 	sendspin_code.cpp
 	sendspin_type.cpp
 	settings.cpp
+	to_server.cpp
 	worker.cpp)
 # Header set and its standalone compile check: see src/core/CMakeLists.txt.
 target_sources(ear_sendspin PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
@@ -26,9 +28,11 @@ if(BUILD_TESTS)
 		tests/code_test.cpp
 		tests/feed_test.cpp
 		tests/keys_test.cpp
+		tests/notes_test.cpp
 		tests/pcm_test.cpp
 		tests/port_claims_test.cpp
 		tests/settings_test.cpp
+		tests/to_server_test.cpp
 		tests/watch_test.cpp)
 	# Its private headers by path; the engine and the test card for the clock's tests, which share the engine tests'
 	# harness; the real server through ear_sendspin_server; the library for the key store's provider base.

@@ -1,6 +1,6 @@
 // Frozen interface (docs/design/batch2.md section 4; NodeGrant::rtpReceiver added by
 // docs/design/rtp.md section 7.1, batch2.md section 11's erratum; GraphCycle, InsidesEvents,
-// NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1). Change it
+// NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1; delayFrames by its erratum 22). Change it
 // only through an erratum and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
@@ -34,6 +34,7 @@ struct AudioFormat { std::uint32_t rate; std::uint32_t maxBlock; };   // fixed a
 struct GraphCycle {
   std::int64_t startNs;     // its start, CLOCK_MONOTONIC
   std::uint64_t position;   // the driver's frames at its start
+  std::uint32_t delayFrames = 0;   // how long what this cycle writes waits in the driver before it is heard (0: no device)
 };
 
 class AudioCode {

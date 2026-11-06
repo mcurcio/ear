@@ -2,17 +2,18 @@
 """The sendspin node's test server (docs/design/sendspin.md section 14): a real SendspinServer, a command per stdin line,
 an event per stdout line, so a test moves when an event arrives.
 
-Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>]. It always listens
+Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>] [--name <text>]. It always listens
 (a dialling node needs that, and the tests' spawn always asks); --dial also dials a listening node, retrying until it answers.
 --state keeps its identity and its pairings in <dir> across restarts. --discover browses mDNS with aiosendspin's own discovery,
 which dials what it finds, among only the instances starting with <prefix>, since tests running side by side share a network.
 Commands: dial <url>, use <client id> (later commands act on that client; each `connected` moves them to the new one), trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
-end (stream/end now), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
-typed: one per round), source-start, source-stop, quit.
+end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
+typed: one per round), source-start, source-stop, quit. --name is what the server calls itself.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
 play-start <us>, play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
 pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
-source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk>,
+source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk> <first
+chunk's arrival on this server's clock - its stamp, us>, prefer-16 <true|false: whether the player took it>, lead <ms>,
 disconnected <reason>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
@@ -27,7 +28,7 @@ import sys
 from pathlib import Path
 
 from aiohttp import web
-from aiosendspin.models.types import PairingCodeFormat, PairMethod
+from aiosendspin.models.types import AudioCodec, PairingCodeFormat, PairMethod
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.pairing import PairingAbortError, PairingAttempt
 from aiosendspin.noise.trust_store import FileServerPairingStore, InMemoryServerPairingStore, ServerPairingStore
@@ -106,6 +107,7 @@ class TestServer:
         slow_upgrade: float,
         identity: Identity,
         pairing_store: ServerPairingStore,
+        name: str,
     ) -> None:
         self._slow_upgrade = slow_upgrade
         self._client_id: str | None = None
@@ -119,7 +121,7 @@ class TestServer:
         self._server = DiscoveringServer(
             loop,
             identity,
-            SERVER_NAME,
+            name,
             pairing_store=pairing_store,
             allow_noncompliant_clients=False,
         )
@@ -156,10 +158,12 @@ class TestServer:
         right_nonzero = 0
         first_us = None
         last_us = 0
+        arrival_lag_us = 0
         said_heard = False
         async for pcm, timestamp_us in started.handle:
             if first_us is None:
                 first_us = timestamp_us
+                arrival_lag_us = self._server.clock.now_us() - timestamp_us
             last_us = timestamp_us
             frames_before_last = frames
             for at in range(0, len(pcm), SOURCE_BYTES_PER_FRAME):
@@ -172,7 +176,7 @@ class TestServer:
                 emit("source-heard")
         rms = (squares / frames) ** 0.5 if frames else 0.0
         stamps = last_us - first_us if first_us is not None else 0
-        emit(f"source-ended {frames} {rms:.4f} {right_nonzero} {stamps} {frames_before_last}")
+        emit(f"source-ended {frames} {rms:.4f} {right_nonzero} {stamps} {frames_before_last} {arrival_lag_us}")
 
     async def _upgrade(self, request: web.Request) -> web.StreamResponse:
         emit("upgrade")
@@ -237,6 +241,15 @@ class TestServer:
 
     def code(self, digits: str) -> None:
         self._codes.put_nowait(digits)
+
+    def prefer_16(self) -> None:
+        role = self._server.get_client(self._client_id).roles_by_family("player")[0]
+        taken = role.set_preferred_format(AudioFormat(RATE, 16, 2), AudioCodec.FLAC)
+        emit(f"prefer-16 {str(taken).lower()}")
+
+    async def say_lead(self) -> None:
+        client = await self._player_active(self._client_id)
+        emit(f"lead {client.roles_by_family('player')[0].required_lead_time_ms}")
 
     def _source_role(self):
         client = self._server.get_client(self._client_id)
@@ -309,11 +322,12 @@ async def main() -> None:
     parser.add_argument("--dial")
     parser.add_argument("--state")
     parser.add_argument("--discover")
+    parser.add_argument("--name", default=SERVER_NAME)
     arguments = parser.parse_args()
 
     loop = asyncio.get_running_loop()
     identity, pairing_store = await open_state(arguments.state)
-    server = TestServer(loop, arguments.slow_upgrade, identity, pairing_store)
+    server = TestServer(loop, arguments.slow_upgrade, identity, pairing_store, arguments.name)
     if arguments.discover is not None:
         await server.discover(arguments.discover)
     else:
@@ -333,6 +347,10 @@ async def main() -> None:
             await server.trust()
         elif command == "roles":
             server.say_roles()
+        elif command == "prefer-16":
+            server.prefer_16()
+        elif command == "lead":
+            await server.say_lead()
         elif command == "pair":
             server.pair()
         elif command == "code":

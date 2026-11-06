@@ -201,7 +201,8 @@ private:
     auto* self = static_cast<FilterPortBlock*>(data);
     const auto frames = static_cast<std::uint32_t>(position->clock.duration);
     if (frames <= self->maxBlock_) {
-      self->processCycle(frames, GraphCycle{static_cast<std::int64_t>(position->clock.nsec), position->clock.position});
+      self->processCycle(frames, GraphCycle{static_cast<std::int64_t>(position->clock.nsec), position->clock.position,
+                                             static_cast<std::uint32_t>(std::max<std::int64_t>(position->clock.delay, 0))});
     } else {
       for (void* port : self->outputPorts_) {
         if (port == nullptr) continue;

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <iostream>
 #include <optional>
 #include <span>
 #include <string>
@@ -16,6 +17,7 @@
 #include <utility>
 
 #include "feed.hpp"
+#include "key_store.hpp"
 #include "port_claims.hpp"
 #include "sendspin_code.hpp"
 #include "settings.hpp"
@@ -28,7 +30,6 @@ constexpr std::string_view typeName = "sendspin";
 constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{"server", SettingKind::text},
                                                                  {"port", SettingKind::wholeNumber},
                                                                  {"name", SettingKind::text}}};
-constexpr std::uint32_t channelCount = 2;
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
 std::uint32_t feedFramesFor(const AudioFormat& format) {
@@ -53,10 +54,10 @@ class SendspinInsides final : public NodeInsides {
 public:
 	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, SendspinSettings settings,
 	                NodeGrant& grant, std::optional<HeldPort> port)
-	    : port_(std::move(port)), feed_(channelCount, feedFramesFor(grant.format())),
-	      worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events(), feed_.capacityFrames()),
+	    : port_(std::move(port)), feed_(nodeChannels, feedFramesFor(grant.format())),
+	      worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events()),
 	      code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
-	            grant.handoff(channelCount, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
+	            grant.handoff(nodeChannels, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
 	AudioCode& audioCode() override { return code_; }
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
 
@@ -123,6 +124,10 @@ private:
 } // namespace
 
 std::unique_ptr<const NodeType> makeSendspinNodeType(std::shared_ptr<const folder::ConfinedFolder> folder) {
+	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
+	if (folder) {
+		for (const std::string& failure : narrowKeyFiles(*folder)) std::cerr << "sendspin: " << failure << '\n';
+	}
 	return std::make_unique<const SendspinType>(std::move(folder));
 }
 

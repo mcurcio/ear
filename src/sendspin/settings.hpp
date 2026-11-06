@@ -21,6 +21,8 @@ private:
   std::string text_;
 };
 inline constexpr std::uint16_t defaultListenPort = 8928;
+/// Every port pair of the node and each direction's audio: stereo (section 4).
+inline constexpr std::uint32_t nodeChannels = 2;
 struct SendspinSettings {
   std::optional<ServerUrl> server;   // with it, ear dials; without it, ear listens on `port`
   std::uint16_t port;
