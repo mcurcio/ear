@@ -1,7 +1,9 @@
 // A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/design/sendspin.md section 7,
 // section 14, S1 criterion 7).
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <ctime>
 #include <span>
 #include <vector>
@@ -28,8 +30,27 @@ std::int64_t nowNs(clockid_t clock) {
 	return static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
 }
 
+/// The handoff's realtime end: keeps the frames it accepts, up to a limit.
+class FakeWriter final : public ear::RtWriter {
+public:
+	std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept override {
+		const std::uint32_t accepted = std::min(frames, room);
+		room -= accepted;
+		for (std::uint32_t frame = 0; frame < accepted; ++frame) {
+			fromLeft.push_back(channels[0][frame]);
+			fromRight.push_back(channels[1][frame]);
+		}
+		return accepted;
+	}
+	std::uint32_t room = 1000000;
+	std::vector<float> fromLeft;
+	std::vector<float> fromRight;
+};
+
 struct Rig {
-	Rig() : feed(2, capacity), bell(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)), code(feed, progress, bell, rate) {
+	Rig()
+	    : feed(2, capacity), bell(eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK)), code(feed, progress, bell, rate, toServer, capture),
+	      inLeft(block, 0.25F), inRight(block, -0.5F) {
 		code.prepare({rate, block});
 		left.resize(block);
 		right.resize(block);
@@ -47,7 +68,8 @@ struct Rig {
 	}
 	void cycle(std::uint64_t position, std::int64_t startNs = 1000) {
 		const std::array<std::span<float>, 2> outputs{left, right};
-		code.process({}, outputs, block, ear::GraphCycle{startNs, position});
+		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
+		code.process(inputs, outputs, block, ear::GraphCycle{startNs, position});
 	}
 	/// Whether the bell rang since the last look.
 	bool rang() {
@@ -57,8 +79,12 @@ struct Rig {
 
 	Feed feed;
 	Mailbox<PlayProgress> progress;
+	Mailbox<CaptureAnchor> capture;
+	FakeWriter toServer;
 	int bell;
 	SendspinCode code;
+	std::vector<float> inLeft;
+	std::vector<float> inRight;
 	std::vector<float> left;
 	std::vector<float> right;
 	std::uint32_t written = 0;
@@ -174,6 +200,44 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	rig.cycle(3 * block);
 	CHECK(rig.progress.read()->totalFrames == block);
 	CHECK_FALSE(rig.rang());
+}
+
+TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {
+	Rig rig;
+	rig.cycle(0);
+	REQUIRE(rig.toServer.fromLeft.size() == block);
+	CHECK(rig.toServer.fromLeft[0] == 0.25F);
+	CHECK(rig.toServer.fromRight[block - 1] == -0.5F);
+}
+
+TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's start on the raw clock", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t rawBefore = nowNs(CLOCK_MONOTONIC_RAW);
+	const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
+	const std::int64_t start = monoBefore - 5000000;   // a wake 5 ms late cancels out
+	rig.cycle(0, start);
+	const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
+	const std::int64_t rawAfter = nowNs(CLOCK_MONOTONIC_RAW);
+
+	const auto first = rig.capture.read();
+	REQUIRE(first.has_value());
+	CHECK(first->framesWritten == 0);
+	const std::int64_t expected = start + (rawBefore - monoBefore);
+	const std::int64_t slack = (rawAfter - rawBefore) + (monoAfter - monoBefore);
+	CHECK(std::abs(first->atRawNs - expected) <= slack);
+
+	rig.cycle(block, start);
+	CHECK(rig.capture.read()->framesWritten == block);
+}
+
+TEST_CASE("Frames the handoff refuses are not counted in the anchor, so what it took stays dated", "[sendspin][code]") {
+	Rig rig;
+	rig.toServer.room = block + 10;
+	rig.cycle(0);
+	rig.cycle(block);
+	rig.cycle(2 * block);
+	rig.cycle(3 * block);
+	CHECK(rig.capture.read()->framesWritten == block + 10);
 }
 
 TEST_CASE("The mailbox holds the newest value, and nothing before the first", "[sendspin][code]") {

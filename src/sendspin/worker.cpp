@@ -11,6 +11,7 @@
 #include <exception>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -23,16 +24,20 @@
 #include <unistd.h>
 
 #include "connection_watch.hpp"
+#include "key_store.hpp"
 #include "notes.hpp"
 #include "pcm.hpp"
 #include "sendspin/client.h"
 #include "sendspin/player_role.h"
+#include "sendspin/source_role.h"
 
 namespace ear::sendspin {
 namespace {
 
 constexpr int loopPollMs = 10;
 constexpr std::uint32_t channelCount = 2;
+constexpr std::uint32_t sourceBits = 24;
+constexpr std::uint32_t sourceBytesPerFrame = channelCount * sourceBits / 8;
 
 int makeEventFd() {
 	const int fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -60,13 +65,83 @@ std::string_view codecName(::sendspin::SendspinCodecFormat codec) noexcept {
 	}
 }
 
+std::string_view abortReasonName(::sendspin::SendspinPairAbortReason reason) noexcept {
+	using Reason = ::sendspin::SendspinPairAbortReason;
+	switch (reason) {
+	case Reason::ATTEMPT_TIMEOUT: return "attempt-timeout";
+	case Reason::CONCURRENT_ATTEMPT: return "concurrent-attempt";
+	case Reason::METHOD_NOT_SUPPORTED: return "method-not-supported";
+	case Reason::PAIRING_CODE_MISMATCH: return "pairing-code-mismatch";
+	case Reason::USER_CANCELLED: return "user-cancelled";
+	default: return "unknown";
+	}
+}
+
+/// The source role's two ends: the handoff's thread hands it the inputs, and the server's commands, on the worker, say
+/// whether anyone wants them. While nobody does they are dropped here, so a server decides when the source streams and
+/// the handoff never fills. The client outlives every consume(): the handoff closes before the worker stops.
+class ToServer final : public HandoffConsumer, public ::sendspin::SourceRoleListener {
+public:
+	ToServer(std::uint32_t rate, InsidesEvents& events, const Mailbox<CaptureAnchor>& anchor)
+	    : rate_(rate), events_(events), anchor_(anchor), pieceFrames_(rate / 10), scratch_(std::size_t{pieceFrames_} * sourceBytesPerFrame) {}
+
+	/// Worker, before the client starts, so before any callback here.
+	void connect(::sendspin::SourceRole& role) noexcept { role_ = &role; }
+
+	void on_streaming_started() override {
+		streaming_.store(true, std::memory_order_release);
+		events_.say(notes::sending(rate_, channelCount, sourceBits));
+	}
+	void on_streaming_stopped() override {
+		streaming_.store(false, std::memory_order_release);
+		events_.say(notes::sendingStopped());
+	}
+
+	/// Pieces of at most 100 ms: one write must fit 5/8 of the 500 ms capture buffer (section 6). Each dated from the
+	/// newest anchor, so when this thread woke does not move it (section 7).
+	void consume(std::span<const float> interleaved, std::uint32_t frames) override {
+		const std::uint64_t first = consumed_;
+		consumed_ += frames;
+		if (!streaming_.load(std::memory_order_acquire)) return;
+		const std::optional<CaptureAnchor> anchor = anchor_.read();
+		for (std::uint32_t done = 0; done < frames;) {
+			const std::uint32_t piece = std::min(frames - done, pieceFrames_);
+			pcm::fromFloat(interleaved.data() + std::size_t{done} * channelCount, std::size_t{piece} * channelCount, sourceBits / 8, scratch_.data());
+			// 0 asks the library to stamp it as ending now, for the moment before the first anchor.
+			const std::int64_t stampUs = anchor ? capturedAtUs(*anchor, first + done) : 0;
+			role_->write_audio(scratch_.data(), std::size_t{piece} * sourceBytesPerFrame, stampUs);
+			done += piece;
+		}
+	}
+	void finish() override {}
+
+private:
+	std::int64_t capturedAtUs(const CaptureAnchor& anchor, std::uint64_t frame) const noexcept {
+		const auto after = static_cast<std::int64_t>(frame) - static_cast<std::int64_t>(anchor.framesWritten);
+		return (anchor.atRawNs + after * 1'000'000'000 / rate_) / 1000;
+	}
+
+	std::uint32_t rate_;
+	InsidesEvents& events_;
+	const Mailbox<CaptureAnchor>& anchor_;
+	std::uint32_t pieceFrames_;
+	std::vector<std::uint8_t> scratch_;      // the handoff thread's
+	std::uint64_t consumed_ = 0;             // the handoff thread's
+	std::atomic<bool> streaming_{false};
+	::sendspin::SourceRole* role_ = nullptr;
+};
+
 } // namespace
 
-class SendspinWorker::Impl final : public ::sendspin::PlayerRoleListener, public ::sendspin::SendspinNetworkProvider {
+class SendspinWorker::Impl final : public ::sendspin::PlayerRoleListener,
+                                   public ::sendspin::SendspinNetworkProvider,
+                                   public ::sendspin::SendspinClientListener {
 public:
-	Impl(SendspinSettings settings, AudioFormat format, Feed& feed, InsidesEvents& events, std::uint32_t feedFrames)
-	    : settings_(std::move(settings)), format_(format), feed_(feed), events_(events), maxFrames_(feedFrames),
-	      scratch_(static_cast<std::size_t>(feedFrames) * channelCount), bell_(makeEventFd()), stop_(makeEventFd()) {
+	Impl(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings, AudioFormat format,
+	     Feed& feed, InsidesEvents& events, std::uint32_t feedFrames)
+	    : folder_(std::move(folder)), node_(std::move(node)), settings_(std::move(settings)), format_(format), feed_(feed),
+	      events_(events), maxFrames_(feedFrames), scratch_(static_cast<std::size_t>(feedFrames) * channelCount),
+	      bell_(makeEventFd()), stop_(makeEventFd()), toServer_(format.rate, events, capture_) {
 		worker_ = std::thread([this] { run(); });
 	}
 
@@ -88,6 +163,8 @@ public:
 
 	int bell() const noexcept { return bell_; }
 	Mailbox<PlayProgress>& progress() noexcept { return progress_; }
+	HandoffConsumer& toServer() noexcept { return toServer_; }
+	Mailbox<CaptureAnchor>& capture() noexcept { return capture_; }
 
 	std::int64_t clientTimeOf(std::int64_t serverUs) const {
 		const std::scoped_lock lock(clientMutex_);
@@ -130,31 +207,59 @@ public:
 		if (std::exchange(streaming_, false)) events_.say(notes::streamEnded());
 	}
 
+	// SendspinClientListener. The worker. Pairing is the connection's domain: notes, never node states.
+	void on_pairing_succeeded(const std::string& server_id) override { events_.say(notes::paired(server_id)); }
+
+	/// Only a dynamic code is offered, so a mismatch reaches here when the library ended the attempt at its round limit
+	/// (`connection_manager_pairing.cpp`), which holds later attempts back for the client's life.
+	void on_pairing_failed(const std::string&, ::sendspin::SendspinPairAbortReason reason) override {
+		events_.say(notes::pairingFailed(abortReasonName(reason)));
+		if (reason == ::sendspin::SendspinPairAbortReason::PAIRING_CODE_MISMATCH) events_.say(notes::pairingHeld());
+	}
+	void on_display_pairing_code(const std::string& code, ::sendspin::SendspinPairingCodeFormat) override {
+		events_.say(notes::pairingCode(code));
+	}
+	void on_clear_pairing_code() override { events_.say(notes::pairingCodeCleared()); }
+	/// A dynamic code asks for this only for an attempt the round limit held back, and ear offers no gesture to confirm
+	/// it: section 10's action is a new client.
+	void on_open_pairing_window() override { events_.say(notes::pairingHeld()); }
+
 private:
 	void run() noexcept {
-		nameThread("ear-sendspin ", settings_.name);
+		nameThread("ear-sendspin ", node_);
+		std::unique_ptr<NodeKeyStore> keys;
 		std::unique_ptr<::sendspin::SendspinClient> client;
 		try {
-			client = makeClient();
-			if (client->start()) {
-				notifier_ = std::thread([this] { notify(); });
-				loop(*client);
+			auto opened = NodeKeyStore::open(folder_, node_, events_);
+			if (opened) {
+				keys = std::move(*opened);
+				client = makeClient(*keys);
+				if (client->start()) {
+					events_.say(notes::id(client->client_id()));
+					notifier_ = std::thread([this] { notify(); });
+					loop(*client);
+				} else {
+					events_.lost("the Sendspin client did not start");
+				}
 			} else {
-				events_.lost("the Sendspin client did not start");
+				events_.lost(opened.error());   // no new identity is minted over a key file it cannot trust
 			}
 		} catch (const std::exception& error) {
 			events_.lost(std::string("the Sendspin client died: ") + error.what());
 		}
 		waitForStop();
-		finish(std::move(client));
+		finish(std::move(client), std::move(keys));
 	}
 
-	std::unique_ptr<::sendspin::SendspinClient> makeClient() {
+	std::unique_ptr<::sendspin::SendspinClient> makeClient(NodeKeyStore& keys) {
 		::sendspin::SendspinClient::set_log_level(::sendspin::LogLevel::WARN);
 		::sendspin::SendspinClientConfig config;
 		config.name = settings_.name;
 		config.product_name = "ear";
 		config.accept_inbound_connections = false;   // it dials: nothing else may reach it
+		// His Permission answer: a code on a status line, typed into Music Assistant.
+		config.pairing_code_out_channels = {::sendspin::SendspinPairingCodeChannel::DISPLAY};
+		config.pairing_code_formats = {::sendspin::SendspinPairingCodeFormat::DIGITS};
 		auto client = std::make_unique<::sendspin::SendspinClient>(std::move(config));
 
 		// The graph frequency only: the server resamples (R5, spec "player@v1").
@@ -167,8 +272,22 @@ private:
 		player_->set_listener(this);
 		player_->set_volume_adjustable(false);   // deferred (section 2)
 		player_->set_mute_adjustable(false);
+
+		// The graph frequency, PCM 24 stereo, 20 ms chunks, the library's own defaults for the rest.
+		::sendspin::SourceRoleConfig sourceConfig;
+		sourceConfig.sample_rate = format_.rate;
+		sourceConfig.channels = channelCount;
+		sourceConfig.bit_depth = sourceBits;
+		sourceConfig.codec = Codec::PCM;
+		sourceConfig.chunk_duration_ms = 20;
+		::sendspin::SourceRole& source = client->add_source(sourceConfig);
+		source.set_listener(&toServer_);
+		toServer_.connect(source);
+
+		client->set_listener(this);
 		client->set_network_provider(this);
-		client->set_unpaired_access_enabled(true);   // the test's server approves the client until pairing arrives
+		client->set_persistence_provider(&keys);
+		client->set_unpaired_access_enabled(false);   // no roles and no audio before pairing
 		{
 			const std::scoped_lock lock(clientMutex_);
 			client_ = client.get();
@@ -207,7 +326,7 @@ private:
 	/// Tells the library what played, one call per bell. Apart from the worker, whose writes sync to disk: a late
 	/// notify can cost a hard sync (section 6).
 	void notify() noexcept {
-		nameThread("ear-notify ", settings_.name);
+		nameThread("ear-notify ", node_);
 		std::uint64_t reported = 0;
 		pollfd rung{bell_, POLLIN, 0};
 		for (;;) {
@@ -223,9 +342,10 @@ private:
 		}
 	}
 
-	/// The block is gone by now, so nothing rings the bell. The client goes last of the threads that use it. `stopped`
-	/// is the last thing this thread touches of anything the insides hold.
-	void finish(std::unique_ptr<::sendspin::SendspinClient> client) noexcept {
+	/// The block is gone by now, so nothing rings the bell, and the handoff has closed, so nothing writes audio. The
+	/// client goes last of the threads that use it, the key file after the client. `stopped` is the last thing this
+	/// thread touches of anything the insides hold.
+	void finish(std::unique_ptr<::sendspin::SendspinClient> client, std::unique_ptr<NodeKeyStore> keys) noexcept {
 		notifierStops_.store(true, std::memory_order_release);
 		ring(bell_);
 		if (notifier_.joinable()) notifier_.join();
@@ -236,6 +356,7 @@ private:
 				client_ = nullptr;
 			}
 			client.reset();
+			keys.reset();
 		} catch (const std::exception&) {
 			// The node is going; nothing is left to tell.
 		}
@@ -247,6 +368,8 @@ private:
 		if (stopped) stopped();
 	}
 
+	std::shared_ptr<const folder::ConfinedFolder> folder_;
+	NodeName node_;
 	SendspinSettings settings_;
 	AudioFormat format_;
 	Feed& feed_;
@@ -256,6 +379,8 @@ private:
 	int bell_;
 	int stop_;
 	Mailbox<PlayProgress> progress_;
+	Mailbox<CaptureAnchor> capture_;
+	ToServer toServer_;
 	std::atomic<std::uint32_t> bytesPerSample_{0};   // 0: nothing the node asked for is streaming
 	std::atomic<bool> notifierStops_{false};
 	bool streaming_ = false;                         // worker only
@@ -267,9 +392,9 @@ private:
 	std::thread worker_;
 };
 
-SendspinWorker::SendspinWorker(SendspinSettings settings, AudioFormat format, Feed& feed, InsidesEvents& events,
-                               std::uint32_t feedFrames)
-    : impl_(std::make_unique<Impl>(std::move(settings), format, feed, events, feedFrames)) {}
+SendspinWorker::SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
+                               AudioFormat format, Feed& feed, InsidesEvents& events, std::uint32_t feedFrames)
+    : impl_(std::make_unique<Impl>(std::move(folder), std::move(node), std::move(settings), format, feed, events, feedFrames)) {}
 
 SendspinWorker::~SendspinWorker() = default;
 
@@ -278,6 +403,10 @@ void SendspinWorker::stop(std::move_only_function<void()> stopped) { impl_->stop
 int SendspinWorker::bell() const noexcept { return impl_->bell(); }
 
 Mailbox<PlayProgress>& SendspinWorker::progress() noexcept { return impl_->progress(); }
+
+HandoffConsumer& SendspinWorker::toServer() noexcept { return impl_->toServer(); }
+
+Mailbox<CaptureAnchor>& SendspinWorker::capture() noexcept { return impl_->capture(); }
 
 std::int64_t SendspinWorker::clientTimeOf(std::int64_t serverUs) const { return impl_->clientTimeOf(serverUs); }
 

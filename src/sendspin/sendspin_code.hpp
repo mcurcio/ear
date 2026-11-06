@@ -1,6 +1,6 @@
 // A sendspin node's audio code (docs/design/sendspin.md section 7): on each cycle the feed goes to the outputs, and
-// what was played goes, with the time it finishes on the library's clock, to the notifier. Inputs are dropped in this
-// slice.
+// what was played goes, with the time it finishes on the library's clock, to the notifier; the inputs go to the handoff,
+// and when they were captured to its consumer.
 #pragma once
 #include <cstdint>
 #include <span>
@@ -10,10 +10,14 @@
 namespace ear::sendspin {
 /// Frames played so far, and when the last of them finishes, on CLOCK_MONOTONIC_RAW.
 struct PlayProgress { std::uint64_t totalFrames; std::int64_t finishRawNs; };
+/// The frame the handoff took as number `framesWritten` is this cycle's first, captured at `atRawNs` on
+/// CLOCK_MONOTONIC_RAW, so a late wake of the handoff's thread does not move the stamp of what it hands on.
+struct CaptureAnchor { std::uint64_t framesWritten; std::int64_t atRawNs; };
 class SendspinCode final : public AudioCode {
 public:
   /// `bell`: an eventfd rung when progress changed. All outlive the code.
-  SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, int bell, std::uint32_t rate) noexcept;
+  SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, int bell, std::uint32_t rate, RtWriter& toServer,
+               Mailbox<CaptureAnchor>& capture) noexcept;
   void prepare(const AudioFormat& format) override;
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
                std::uint32_t frames, const GraphCycle& cycle) noexcept override;
@@ -26,6 +30,9 @@ private:
   Mailbox<PlayProgress>& progress_;
   int bell_;
   std::uint32_t rate_;
+  RtWriter& toServer_;
+  Mailbox<CaptureAnchor>& capture_;
+  std::uint64_t framesWritten_ = 0;
   bool started_ = false;
   std::uint64_t nextPosition_ = 0;
   std::uint64_t totalFrames_ = 0;

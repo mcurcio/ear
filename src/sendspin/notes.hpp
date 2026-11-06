@@ -22,6 +22,7 @@ inline std::string printable(std::string_view text) {
   }
   return safe;
 }
+inline std::string id(std::string_view clientId) { return std::format("id {}", clientId); }
 inline std::string dialling(std::string_view url) { return std::format("dialling {}", url); }
 inline std::string connected(std::string_view serverName, bool paired) {
   return std::format("connected {} {}", printable(serverName), paired ? "paired" : "unpaired");
@@ -31,4 +32,17 @@ inline std::string stream(std::string_view codec, std::uint32_t rate, std::uint3
   return std::format("stream {} {} {} {}", codec, rate, channels, bits);
 }
 inline std::string streamEnded() { return "stream-ended"; }
+/// Six digits, grouped as an operator reads them.
+inline std::string pairingCode(std::string_view digits) {
+  return std::format("pairing-code {}-{}", digits.substr(0, digits.size() / 2), digits.substr(digits.size() / 2));
+}
+inline std::string pairingCodeCleared() { return "pairing-code-cleared"; }
+inline std::string paired(std::string_view serverId) { return std::format("paired {}", printable(serverId)); }
+inline std::string pairingFailed(std::string_view reason) { return std::format("pairing-failed {}", reason); }
+inline std::string pairingHeld() { return "pairing-held"; }
+inline std::string sending(std::uint32_t rate, std::uint32_t channels, std::uint32_t bits) {
+  return std::format("sending {} {} {}", rate, channels, bits);
+}
+inline std::string sendingStopped() { return "sending-stopped"; }
+inline std::string keyWriteFailed(std::string_view detail) { return std::format("key-write-failed {}", detail); }
 }

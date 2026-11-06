@@ -3,8 +3,13 @@
 an event per stdout line, so a test moves when an event arrives.
 
 Arguments: --listen 0 [--slow-upgrade <seconds>] (a later slice adds --dial and --state).
-Commands: trust (approve the client for unpaired playback), play <seconds> (the ramp), end (stream/end now), quit.
-Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, play-start <us>, play-finished <frames>,
+Commands: trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
+end (stream/end now), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
+typed: one per round), source-start, source-stop, quit.
+Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
+play-start <us>, play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
+pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
+source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk>,
 disconnected <reason>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
@@ -18,10 +23,13 @@ import logging
 import sys
 
 from aiohttp import web
+from aiosendspin.models.types import PairingCodeFormat, PairMethod
 from aiosendspin.noise.keys import Identity
+from aiosendspin.noise.pairing import PairingAbortError, PairingAttempt
 from aiosendspin.noise.trust_store import InMemoryServerPairingStore
 from aiosendspin.server.audio import AudioFormat
 from aiosendspin.server.push_stream import StreamStoppedError
+from aiosendspin.server.roles.source.events import SourceStreamStartedEvent
 from aiosendspin.server.server import (
     ClientConnectedEvent,
     ClientDisconnectedEvent,
@@ -33,6 +41,8 @@ CHUNK_FRAMES = 1200  # 25 ms
 MAX_AHEAD_US = 1_000_000
 PLAYED_OUT_MARGIN_S = 0.2
 SERVER_NAME = "ear-test-server"
+SOURCE_BYTES_PER_FRAME = 6  # PCM 24 stereo
+SOURCE_SAMPLE_SCALE = 8388608.0
 
 
 def emit(event: str) -> None:
@@ -51,6 +61,10 @@ class TestServer:
         self._slow_upgrade = slow_upgrade
         self._client_id: str | None = None
         self._play: asyncio.Task[None] | None = None
+        self._pairing: asyncio.Task[None] | None = None
+        self._codes: asyncio.Queue[str] = asyncio.Queue()
+        self._heard: asyncio.Task[None] | None = None
+        self._subscribed: set[str] = set()
         # Music Assistant's default: a client off the spec is refused.
         self._server = SendspinServer(
             loop,
@@ -64,10 +78,51 @@ class TestServer:
     def _on_event(self, _server: SendspinServer, event: object) -> None:
         if isinstance(event, ClientConnectedEvent):
             self._client_id = event.client_id
+            self._subscribe(event.client_id)
             emit(f"connected {event.client_id}")
         elif isinstance(event, ClientDisconnectedEvent):
             reason = event.goodbye_reason.value if event.goodbye_reason is not None else "none"
             emit(f"disconnected {reason}")
+
+    def _subscribe(self, client_id: str) -> None:
+        """Once per client: a client object outlives its connections."""
+        client = self._server.get_client(client_id)
+        if client is not None and client_id not in self._subscribed:
+            self._subscribed.add(client_id)
+            client.add_event_listener(self._on_client_event)
+
+    def _on_client_event(self, _client: object, event: object) -> None:
+        if isinstance(event, SourceStreamStartedEvent):
+            self._heard = asyncio.ensure_future(self._hear_source(event))
+            self._heard.add_done_callback(self._done)
+
+    async def _hear_source(self, started: SourceStreamStartedEvent) -> None:
+        """Until the client ends the stream: what arrived, in one line at its end."""
+        audio_format = started.audio_format
+        emit(f"source-started {audio_format.sample_rate} {audio_format.channels} {audio_format.bit_depth}")
+        frames = 0
+        frames_before_last = 0
+        squares = 0.0
+        right_nonzero = 0
+        first_us = None
+        last_us = 0
+        said_heard = False
+        async for pcm, timestamp_us in started.handle:
+            if first_us is None:
+                first_us = timestamp_us
+            last_us = timestamp_us
+            frames_before_last = frames
+            for at in range(0, len(pcm), SOURCE_BYTES_PER_FRAME):
+                left = int.from_bytes(pcm[at : at + 3], "little", signed=True) / SOURCE_SAMPLE_SCALE
+                squares += left * left
+                right_nonzero += any(pcm[at + 3 : at + 6])
+            frames += len(pcm) // SOURCE_BYTES_PER_FRAME
+            if not said_heard and frames >= audio_format.sample_rate:
+                said_heard = True
+                emit("source-heard")
+        rms = (squares / frames) ** 0.5 if frames else 0.0
+        stamps = last_us - first_us if first_us is not None else 0
+        emit(f"source-ended {frames} {rms:.4f} {right_nonzero} {stamps} {frames_before_last}")
 
     async def _upgrade(self, request: web.Request) -> web.StreamResponse:
         emit("upgrade")
@@ -93,6 +148,42 @@ class TestServer:
 
     async def trust(self) -> None:
         await self._server.trust_unpaired(self._client_id)
+        emit("trusted")
+
+    def say_roles(self) -> None:
+        client = self._server.get_client(self._client_id)
+        held = [family for family in ("player", "source") if client is not None and client.roles_by_family(family)]
+        emit(f"roles {','.join(held) if held else 'none'}")
+
+    async def _pair(self) -> None:
+        attempt = PairingAttempt(
+            method=PairMethod.DYNAMIC_PAIRING_CODE,
+            pairing_code_provider=self._codes.get,
+            pairing_format=PairingCodeFormat.DIGITS,
+            on_pair_pending=lambda _message: emit("pair-pending"),
+        )
+        try:
+            await self._server.initiate_pairing(self._client_id, attempt)
+        except PairingAbortError as err:
+            emit(f"pair-failed {err.reason.value}")
+        except Exception as err:  # noqa: BLE001  the connection went under it, as a restarted client's does
+            emit(f"pair-failed {type(err).__name__}")
+        else:
+            emit("pair-finished")
+
+    def pair(self) -> None:
+        if self._pairing is not None:
+            self._pairing.cancel()
+        self._codes = asyncio.Queue()
+        self._pairing = asyncio.ensure_future(self._pair())
+        self._pairing.add_done_callback(self._done)
+
+    def code(self, digits: str) -> None:
+        self._codes.put_nowait(digits)
+
+    def _source_role(self):
+        client = self._server.get_client(self._client_id)
+        return client.roles_by_family("source")[0]
 
     async def _player_active(self) -> None:
         """Until the client's player role takes audio: `trust` activates it, and the client answers in its own time.
@@ -129,12 +220,12 @@ class TestServer:
 
     def play(self, seconds: float) -> None:
         self._play = asyncio.ensure_future(self._play_ramp(seconds))
-        self._play.add_done_callback(self._played)
+        self._play.add_done_callback(self._done)
 
     @staticmethod
-    def _played(task: asyncio.Task[None]) -> None:
+    def _done(task: asyncio.Task[None]) -> None:
         if not task.cancelled() and task.exception() is not None:
-            logging.error("play failed", exc_info=task.exception())
+            logging.error("a task failed", exc_info=task.exception())
 
     def end(self) -> None:
         if self._play is not None:
@@ -143,8 +234,9 @@ class TestServer:
         self._group().stop_stream()
 
     async def close(self) -> None:
-        if self._play is not None:
-            self._play.cancel()
+        for task in (self._play, self._pairing, self._heard):
+            if task is not None:
+                task.cancel()
         await self._server.close()
         await self._runner.cleanup()
 
@@ -165,6 +257,16 @@ async def main() -> None:
         command, *rest = line.decode().split()
         if command == "trust":
             await server.trust()
+        elif command == "roles":
+            server.say_roles()
+        elif command == "pair":
+            server.pair()
+        elif command == "code":
+            server.code(rest[0])
+        elif command == "source-start":
+            server._source_role().request_start()
+        elif command == "source-stop":
+            server._source_role().request_stop()
         elif command == "play":
             server.play(float(rest[0]))
         elif command == "end":

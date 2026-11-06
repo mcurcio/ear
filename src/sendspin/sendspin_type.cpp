@@ -33,10 +33,12 @@ std::uint32_t feedFramesFor(const AudioFormat& format) {
 
 class SendspinInsides final : public NodeInsides {
 public:
-	SendspinInsides(SendspinSettings settings, const AudioFormat& format, InsidesEvents& events)
-	    : feed_(channelCount, feedFramesFor(format)),
-	      worker_(std::move(settings), format, feed_, events, feed_.capacityFrames()),
-	      code_(feed_, worker_.progress(), worker_.bell(), format.rate) {}
+	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, SendspinSettings settings,
+	                NodeGrant& grant)
+	    : feed_(channelCount, feedFramesFor(grant.format())),
+	      worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events(), feed_.capacityFrames()),
+	      code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
+	            grant.handoff(channelCount, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
 	AudioCode& audioCode() override { return code_; }
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
 
@@ -48,19 +50,22 @@ private:
 
 class SendspinConfig final : public NodeConfig {
 public:
-	explicit SendspinConfig(SendspinSettings settings) : settings_(std::move(settings)) {}
+	SendspinConfig(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings)
+	    : folder_(std::move(folder)), node_(std::move(node)), settings_(std::move(settings)) {}
 
 	const Ports& ports() const override { return ports_; }
 
 	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
 		try {
-			return std::make_unique<SendspinInsides>(settings_, grant.format(), grant.events());
+			return std::make_unique<SendspinInsides>(folder_, node_, settings_, grant);
 		} catch (const std::system_error& error) {
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
 	}
 
 private:
+	std::shared_ptr<const folder::ConfinedFolder> folder_;
+	NodeName node_;
 	SendspinSettings settings_;
 	Ports ports_{.inputs = {"to_server_FL", "to_server_FR"}, .outputs = {"from_server_FL", "from_server_FR"}};
 };
@@ -77,11 +82,11 @@ public:
 	parse(const NodeName& node, const NodeSettings& settings) const override {
 		auto parsed = parseSettings(node, settings);
 		if (!parsed) return std::unexpected(InvalidSettings{node, std::move(parsed.error())});
-		return std::make_unique<const SendspinConfig>(std::move(*parsed));
+		return std::make_unique<const SendspinConfig>(folder_, node, std::move(*parsed));
 	}
 
 private:
-	std::shared_ptr<const folder::ConfinedFolder> folder_;   // each node's key file arrives with pairing
+	std::shared_ptr<const folder::ConfinedFolder> folder_;   // the graph file folder: each node's key file
 };
 
 } // namespace

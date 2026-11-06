@@ -212,7 +212,8 @@ std::expected<std::optional<std::string>, FolderError> ConfinedFolder::read(cons
 
 std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::string& relative,
                                                                     const std::optional<std::string>& expected,
-                                                                    std::string_view text, std::size_t maxBytes) const {
+                                                                    std::string_view text, std::size_t maxBytes,
+                                                                    mode_t createMode) const {
 	const std::filesystem::path target(relative);
 	const std::string name = target.filename().string();
 	if (name.empty() || name == "." || name == "..") return std::unexpected(failure(relative, "not a file name"));
@@ -234,7 +235,7 @@ std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::
 	const std::string staging = "." + name + ".ear-staging";
 	const auto removeStaging = [&] { ::unlinkat(directory.get(), staging.c_str(), 0); };
 	{
-		const mode_t mode = exists ? (status.st_mode & 07777) : 0644;
+		const mode_t mode = exists ? (status.st_mode & 07777) : createMode;
 		const Descriptor staged(
 		    openBeneath(directory.get(), staging.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, mode, noSymlinks));
 		if (!staged) return std::unexpected(failure(relative, "cannot stage the new text: " + reason(errno)));
@@ -298,6 +299,20 @@ std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::
 	if (!replaced) return std::unexpected(failure(relative, replaced.error()));
 	if (!*replaced) return std::unexpected(failure(relative, "it went while being replaced"));
 	return ReplaceOutcome{Changed{std::move(**replaced)}};
+}
+
+std::expected<void, FolderError> ConfinedFolder::restrictMode(const std::string& relative, mode_t most) const {
+	// O_NONBLOCK: as in readFile, a FIFO must not wait for a writer.
+	const Descriptor fd(openBeneath(fd_, relative.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC, 0, noSymlinks));
+	if (!fd) return std::unexpected(failure(relative, reason(errno)));
+	struct stat status{};
+	if (::fstat(fd.get(), &status) != 0) return std::unexpected(failure(relative, std::strerror(errno)));
+	if (!S_ISREG(status.st_mode)) return std::unexpected(failure(relative, "not a regular file"));
+	const mode_t mode = status.st_mode & 07777;
+	if ((mode & ~most) != 0 && ::fchmod(fd.get(), mode & most) != 0) {
+		return std::unexpected(failure(relative, std::strerror(errno)));
+	}
+	return {};
 }
 
 std::expected<void, FolderError> requireApart(std::span<const std::filesystem::path> folders) {

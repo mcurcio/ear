@@ -21,6 +21,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/folder/confined_folder.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -130,9 +131,11 @@ public:
 		waiter_.wake();
 	}
 	void lost(std::string detail) override { say("LOST " + detail); }
-	bool heard(std::string_view prefix) {
+	bool heard(std::string_view prefix) { return lineStarting(prefix).has_value(); }
+	std::optional<std::string> lineStarting(std::string_view prefix) {
 		const std::scoped_lock lock(mutex_);
-		return std::ranges::any_of(said_, [&](const std::string& text) { return text.starts_with(prefix); });
+		const auto line = std::ranges::find_if(said_, [&](const std::string& text) { return text.starts_with(prefix); });
+		return line == said_.end() ? std::nullopt : std::optional<std::string>(*line);
 	}
 	std::optional<std::size_t> endedAt() {
 		const std::scoped_lock lock(mutex_);
@@ -153,12 +156,37 @@ private:
 	std::optional<std::size_t> endedAt_;
 };
 
+/// The handoff's realtime end, where these tests need none: only the audio from the server is timed.
+class DropWriter final : public RtWriter {
+public:
+	std::uint32_t write(std::span<const std::span<const float>>, std::uint32_t frames) noexcept override { return frames; }
+};
+
+/// The folder of the node's key file.
+struct KeyFolder {
+	KeyFolder() {
+		std::string pattern = (std::filesystem::temp_directory_path() / "ear-sendspin-keys-XXXXXX").string();
+		REQUIRE(mkdtemp(pattern.data()) != nullptr);
+		path = pattern;
+		auto opened = folder::ConfinedFolder::open(path);
+		REQUIRE(opened.has_value());
+		held = std::make_shared<const folder::ConfinedFolder>(std::move(*opened));
+	}
+	~KeyFolder() {
+		std::error_code ignored;
+		std::filesystem::remove_all(path, ignored);
+	}
+	std::filesystem::path path;
+	std::shared_ptr<const folder::ConfinedFolder> held;
+};
+
 /// An output block with the real insides, as NodeHost would run them, dialling the real server.
 struct Rig {
 	Rig()
 	    : engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
-	      worker(SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed, notes, kFeedFrames),
-	      code(feed, worker.progress(), worker.bell(), kRate), tap(code, waiter), blockEvents(waiter) {
+	      worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed,
+	             notes, kFeedFrames),
+	      code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()), tap(code, waiter), blockEvents(waiter) {
 		notes.connectTap(tap);
 		block = blocks.make("clock", Ports{{"to_server_FL", "to_server_FR"}, {"from_server_FL", "from_server_FR"}}, kFormat, blockEvents);
 		tap.prepare(kFormat);
@@ -177,11 +205,16 @@ struct Rig {
 		CHECK(waiter.until([&] { return stopped.load(); }, 10s));
 	}
 
-	/// Connected and approved, then the server's clock has a play time for the ramp's first frame.
+	/// Connected and paired, then the server's clock has a play time for the ramp's first frame.
 	std::int64_t play(double seconds) {
 		INFO("the node said:\n" << notes.all());
 		REQUIRE(waiter.until([&] { return notes.heard("connected "); }, 20s));
-		server.send("trust");
+		server.send("pair");
+		REQUIRE(waiter.until([&] { return notes.heard("pairing-code "); }, 20s));
+		std::string code = notes.lineStarting("pairing-code ")->substr(13);
+		std::erase(code, '-');
+		server.send("code " + code);
+		REQUIRE(waiter.until([&] { return notes.heard("connected ear-test-server paired"); }, 20s));
 		server.send("play " + std::to_string(seconds));
 		const auto start = server.waitForEvent("play-start ", 20s);
 		REQUIRE(start.has_value());
@@ -206,12 +239,14 @@ struct Rig {
 		}
 	} alsa;
 	SendspinTestServer server;
+	KeyFolder keys;
 	std::unique_ptr<Engine> engine;
 	Waiter waiter;
 	NoBell bell;
 	FilterPortBlocks blocks;
 	Feed feed;
 	Notes notes;
+	DropWriter toServer;
 	SendspinWorker worker;
 	SendspinCode code;
 	Tap tap;

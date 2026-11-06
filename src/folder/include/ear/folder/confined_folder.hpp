@@ -1,5 +1,6 @@
-// Frozen interface (docs/design/knobly-config.md, the confined folder). Change it only through an
-// erratum and a re-cut, never a local edit.
+// Frozen interface (docs/design/knobly-config.md, the confined folder; replaceIf's createMode and
+// restrictMode by docs/design/sendspin.md section 14, S2). Change it only through an erratum and a
+// re-cut, never a local edit.
 #pragma once
 #include <cstddef>
 #include <expected>
@@ -9,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <sys/types.h>
 namespace ear::folder {
 struct FolderError {
 	std::string detail;   // a sentence naming the path and the reason
@@ -43,9 +45,14 @@ public:
 	/// directory, another kind, or more than maxBytes is a FolderError.
 	std::expected<std::optional<std::string>, FolderError> read(const std::string& relative, std::size_t maxBytes) const;
 	/// Puts `text` at `relative` only if it held `expected` (nullopt: nothing there), resolved as
-	/// read() resolves. Error: nothing changed, except as the error says.
+	/// read() resolves. A file it replaces keeps its mode; one it creates has exactly `createMode`,
+	/// whatever the umask. Error: nothing changed, except as the error says.
 	std::expected<ReplaceOutcome, FolderError> replaceIf(const std::string& relative,
-	    const std::optional<std::string>& expected, std::string_view text, std::size_t maxBytes) const;
+	    const std::optional<std::string>& expected, std::string_view text, std::size_t maxBytes,
+	    mode_t createMode = 0644) const;
+	/// Clears every mode bit outside `most`; no write, no sync. Resolved as read() resolves: a
+	/// symlink, a path out, a missing file or anything but a regular file is a FolderError.
+	std::expected<void, FolderError> restrictMode(const std::string& relative, mode_t most) const;
 
 private:
 	ConfinedFolder(int fd, std::filesystem::path path) noexcept;
