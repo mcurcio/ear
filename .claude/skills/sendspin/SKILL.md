@@ -1,6 +1,6 @@
 ---
 name: sendspin
-description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried Origin patch and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-origin.patch or test/support/sendspin_server.py.
+description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried patches and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-listener.patch, cmake/ixwebsocket-limits.patch or test/support/sendspin_server.py.
 ---
 
 # The `sendspin` node
@@ -91,9 +91,12 @@ operate it, and what bites.
   keeps in the key file. It has never run on a card that reports one: the test card's null PCM says 0.
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
-- **A listening node on an untrusted network:** two silent sockets fill the library's two-slot nursery and lock every server out,
-  renewed every 28 s for as long as anyone likes (`docs/design/sendspin.md` section 11, item 6, the owner's call). Port 8928 and
-  mDNS's 5353 are on every interface, with no address setting. Dial there, or filter both. A dialling node has no listener.
+- **A listening node on an untrusted network:** sockets that prove nothing give way to newcomers, so holding them keeps no server
+  out (`docs/design/sendspin.md` section 11, item 6). What a peer can still do: flood from several addresses, which a server wins in
+  a few seconds, and knock a server behind its own address off while it is still in its handshake, which only costs a reconnect. A
+  peer that finishes the published Sentinel handshake and activates nothing does hold the node from an unpaired server, and a paired one
+  that has never played (the spec's rule, item 2). Port 8928 and mDNS's 5353 are on every interface, with no address setting. Dial there
+  or filter both if that matters. A dialling node has no listener.
 - `loop()` needs a timer, because the inbox has no wake hook, and nothing tells of a lost connection or a failed dial. So a 10 ms
   poll and the connection watch stay inside the worker; they never act on a live attempt.
 - **Opus is off.** libsndfile pulls in `libopus.so`, and micro-opus's static C symbols would interpose on it.
@@ -117,14 +120,19 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
 - sendspin-cpp is pinned at a master commit, not a tag: `accept_inbound_connections` came after v0.9.5.
 - `cmake/ixwebsocket-limits.patch` is carried: IXWebSocket buffers whatever a frame header claims, before any Sendspin message. It
   refuses a frame or a fragmented message over 1 MiB (the library's own limit, reachable only after reassembly) and over 1024
-  fragments, and lets one transport log line through every 10 s. Rebase it the same way, in `.cache/deps/ixwebsocket-src`.
-- `cmake/sendspin-origin.patch` is carried: the spec says a client MUST reject an upgrade carrying `Origin`, and the library's
+  fragments, and lets one transport log line through every 10 s. It also makes a socket still to upgrade give way to a newcomer
+  (8 an address), since its four sockets closed the surplus at accept, and keeps a close racing a peer's reset from ending the
+  process. Rebase it the same way, in `.cache/deps/ixwebsocket-src`.
+- `cmake/sendspin-listener.patch` is carried: the spec says a client MUST reject an upgrade carrying `Origin`, and the library's
   host server accepts it. Without it a web page speaking Noise could declare `pairing`, knock an idle server off and burn the
-  20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook.
+  20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook. It also makes an unproved connection give way
+  in the nursery, its own address's first, and lengthens the listen queue, whose 5 dropped a server's SYN under a burst.
+- **Worker's `server_max_connections` is 32,** the room those two need to turn over in; it was the library's 4.
 - **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the patch (`git diff` in `.cache/deps/sendspin-src`), read
   the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without it stops
   it too. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
-  `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers.
+  `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers. The IXWebSocket limits are not
+  reported either, the owner's decision (2026-11-06: "Don't report for now").
 
 ## Trying it without Music Assistant
 
@@ -152,6 +160,10 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 
 - `test/support/sendspin_server.py` is the real `aiosendspin` server, Music Assistant's pin, a command per stdin line and an event
   per stdout line (its header lists them). `sendspin_server.hpp` spawns it. Its identity and pairings persist with `--state`.
+- **`--hold-activate` stops a real server between its hellos and its first `server/activate`,** the one place a server can sit
+  unadmitted. `activate-ended close` is what a socket giving way looks like from the server: no goodbye.
+- **Every 127/8 address is this host's, so one test can be peers on many addresses** (`connectFrom` binds its source). Peers on 127.0.0.1 share the server's own.
+- **`ChildProcess::waitForLine` finds a line an earlier wait already saw.** A second `says connected ... paired` needs `waitForNthLine`.
 - **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
   the role, by a 5 ms poll: `aiosendspin` has no event for it. The encoder also holds back the stream's tail, so 68607 of 72000
   frames arrive.

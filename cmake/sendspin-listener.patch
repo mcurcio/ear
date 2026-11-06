@@ -1,0 +1,155 @@
+diff --git a/src/connection.h b/src/connection.h
+index e8e3384..4663bc2 100644
+--- a/src/connection.h
++++ b/src/connection.h
+@@ -282,6 +282,15 @@ public:
+         this->provisional_time_us_ = t;
+     }
+ 
++    /// @brief ear: sendspin-listener.patch. The address an inbound peer connected from, or empty.
++    /// Set once before the connection reaches the manager; the nursery's displacement reads it.
++    void set_peer_address(std::string address) {
++        this->peer_address_ = std::move(address);
++    }
++    const std::string& get_peer_address() const {
++        return this->peer_address_;
++    }
++
+     /// @brief Returns the accept/provisional timestamp, or 0 if not yet set.
+     int64_t get_provisional_time_us() const {
+         return this->provisional_time_us_;
+@@ -1071,6 +1080,8 @@ protected:
+     /// began its latest re-proving window. Protocol task only. 0 = not yet set.
+     int64_t provisional_time_us_{0};
+ 
++    std::string peer_address_;
++
+     /// Process-unique connection identity (see get_instance_id()). Assigned once at construction.
+     const uint64_t instance_id{next_instance_id()};
+ 
+diff --git a/src/connection_manager.cpp b/src/connection_manager.cpp
+index a22aa47..2f4e5e1 100644
+--- a/src/connection_manager.cpp
++++ b/src/connection_manager.cpp
+@@ -40,6 +40,7 @@
+ #include <cinttypes>
+ #include <memory>
+ #include <string>
++#include <tuple>
+ #include <utility>
+ 
+ namespace sendspin {
+@@ -392,20 +393,48 @@ void ConnectionManager::accept(std::shared_ptr<SendspinConnection> conn) {
+ 
+     // The newcomer has not completed the hello handshake, so it never touches an admitted slot;
+     // it enters the bounded nursery and is admitted only once it establishes. Only inbound
+-    // entries count against the capacity (see NURSERY_CAPACITY). If the inbound slots are full,
+-    // reject the newcomer: every occupant speaks WebSocket, so there is no safe eviction
+-    // candidate. The goodbye reaches the peer because its session is already upgraded, provided
+-    // the transport had a socket to accept it on (the socket budget in NURSERY_CAPACITY).
++    // entries count against the capacity (see NURSERY_CAPACITY).
++    //
++    // ear: sendspin-listener.patch. If the inbound slots are full, an occupant that has proved
++    // nothing gives way, or two silent sockets, renewed before the establish reap, would keep every
++    // server out. What decides is what cannot be had for nothing: an occupant from the newcomer's
++    // own address goes first, so one address, however fast, touches no other's; then one with its
++    // Noise handshake unfinished; then, of those, the oldest. Finished with the Sentinel or Pairing
++    // PSK it has proved nothing either (anyone holds the first, and the second is checked only
++    // after this point), so it goes only when no weaker one is there. Only a long-term PSK proves a
++    // server: its first Noise message needs that server's private key, so it, and an operational
++    // entry about to be admitted, never gives way, and
++    // the newcomer is rejected only when those fill the slots. No goodbye: the Noise session that
++    // would carry one may not exist, and connection.md's another_server would tell an honest
++    // server not to come back, where a close with none tells it to reconnect (messaging.md).
++    const auto yield_rank = [&conn](const SendspinConnection& occupant) {
++        const bool finished = occupant.is_noise_handshake_complete();
++        return std::make_tuple(occupant.get_peer_address() != conn->get_peer_address(), finished,
++                               occupant.get_provisional_time_us());
++    };
+     size_t inbound_count = 0;
+-    for (const auto& entry : this->nursery_) {
+-        if (!entry.conn->is_outbound()) {
+-            ++inbound_count;
++    NurseryEntry* yields = nullptr;
++    for (auto& entry : this->nursery_) {
++        const SendspinConnection& occupant = *entry.conn;
++        if (occupant.is_outbound()) {
++            continue;
++        }
++        ++inbound_count;
++        const bool proved = occupant.is_operational() ||
++                            (occupant.is_noise_handshake_complete() &&
++                             occupant.get_psk_category() == PskCategory::LONG_TERM);
++        if (!proved && (yields == nullptr || yield_rank(occupant) < yield_rank(*yields->conn))) {
++            yields = &entry;
+         }
+     }
+     if (inbound_count >= NURSERY_CAPACITY) {
+-        SS_LOGW(TAG, "Nursery full of live connections, rejecting new connection");
+-        this->release_connection(std::move(conn), SendspinGoodbyeReason::ANOTHER_SERVER);
+-        return;
++        if (yields == nullptr) {
++            SS_LOGD(TAG, "Nursery full of proved connections, rejecting new connection");
++            this->release_connection(std::move(conn), SendspinGoodbyeReason::ANOTHER_SERVER);
++            return;
++        }
++        SS_LOGD(TAG, "Nursery full, an unproved occupant gives way");
++        this->release_nursery_entry(yields, std::nullopt);
+     }
+ 
+     SS_LOGD(TAG, "Admitting new connection into the nursery");
+diff --git a/src/host/ws_server.cpp b/src/host/ws_server.cpp
+index 9f6b20b..7d6532c 100644
+--- a/src/host/ws_server.cpp
++++ b/src/host/ws_server.cpp
+@@ -66,13 +66,15 @@ bool SendspinWsServer::start(SendspinClient* client, bool /*task_stack_in_psram*
+     // Create IXWebSocket server on the configured port. max_connections_ is enforced here (IX
+     // closes surplus sockets at accept), so the configured budget is real on host, matching the
+     // ESP build's httpd max_open_sockets.
++    // ear: sendspin-listener.patch. IXWebSocket's backlog of 5 lets a burst of connects drop an honest
++    // server's SYN, and its retry is a second away, so the queue is as long as the accept loop's room.
+     this->server_ = std::make_unique<ix::WebSocketServer>(
+-        this->server_port_, "0.0.0.0", ix::SocketServer::kDefaultTcpBacklog, this->max_connections_,
++        this->server_port_, "0.0.0.0", 2 * this->max_connections_, this->max_connections_,
+         WS_HANDSHAKE_TIMEOUT_SECS);
+ 
+     this->server_->setOnConnectionCallback(
+         [this](const std::weak_ptr<ix::WebSocket>& weak_ws,
+-               const std::shared_ptr<ix::ConnectionState>& /*state*/) {
++               const std::shared_ptr<ix::ConnectionState>& state) {
+             auto ws = weak_ws.lock();
+             if (!ws) {
+                 return;
+@@ -102,8 +104,9 @@ bool SendspinWsServer::start(SendspinClient* client, bool /*task_stack_in_psram*
+             // never knew the connection existed). Every callback below runs on this socket's
+             // own IXWebSocket thread, so it needs no lock.
+             auto delivered = std::make_shared<std::weak_ptr<SendspinServerConnection>>();
+-            ws->setOnMessageCallback([this, synthetic_sockfd, weak_ws,
+-                                      delivered](const ix::WebSocketMessagePtr& msg) {
++            ws->setOnMessageCallback([this, synthetic_sockfd, weak_ws, delivered,
++                                      peer_address = state->getRemoteIp()](
++                                         const ix::WebSocketMessagePtr& msg) {
+                 int64_t receive_time = platform_time_us();
+ 
+                 if (msg->type == ix::WebSocketMessageType::Message) {
+@@ -127,6 +130,12 @@ bool SendspinWsServer::start(SendspinClient* client, bool /*task_stack_in_psram*
+                     if (!self_ws) {
+                         return;
+                     }
++                    // ear: sendspin-listener.patch. connection.md: a client MUST reject an upgrade
++                    // carrying Origin. No hook comes earlier, so the peer sees 101, then this close.
++                    if (msg->openInfo.headers.count("Origin") != 0) {
++                        self_ws->close();
++                        return;
++                    }
+                     if (!this->new_connection_callback_) {
+                         SS_LOGW(TAG, "No new connection callback set, closing connection");
+                         self_ws->close();
+@@ -135,6 +144,7 @@ bool SendspinWsServer::start(SendspinClient* client, bool /*task_stack_in_psram*
+                     auto connection =
+                         std::make_shared<SendspinServerConnection>(std::move(self_ws));
+                     connection->mark_ws_upgraded();
++                    connection->set_peer_address(peer_address);
+                     *delivered = connection;
+                     if (!this->new_connection_callback_(connection)) {
+                         // Refused: close the socket. The connection is released here, after the

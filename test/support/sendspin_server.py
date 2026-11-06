@@ -2,19 +2,19 @@
 """The sendspin node's test server (docs/design/sendspin.md section 14): a real SendspinServer, a command per stdin line,
 an event per stdout line, so a test moves when an event arrives.
 
-Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>] [--name <text>]. It always listens
+Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>] [--name <text>] [--hold-activate]. It always listens
 (a dialling node needs that, and the tests' spawn always asks); --dial also dials a listening node, retrying until it answers.
 --state keeps its identity and its pairings in <dir> across restarts. --discover browses mDNS with aiosendspin's own discovery,
 which dials what it finds, among only the instances starting with <prefix>, since tests running side by side share a network.
 Commands: dial <url>, use <client id> (later commands act on that client; each `connected` moves them to the new one), trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
 end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
-typed: one per round), source-start, source-stop, quit. --name is what the server calls itself.
+typed: one per round), source-start, source-stop, quit. --name is what the server calls itself. --hold-activate stops each connection after the hellos, before its first server/activate, until the command activate-release: a server the client has proved or not by its Noise handshake, and not yet admitted.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
 play-start <us>, play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
 pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
 source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk> <first
 chunk's arrival on this server's clock - its stamp, us>, prefer-16 <true|false: whether the player took it>, lead <ms>,
-disconnected <reason>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
+disconnected <reason>, activate-held, activate-ended <close|message: what ended the hold, the socket closing or the client saying something>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
 """
@@ -27,12 +27,13 @@ import logging
 import sys
 from pathlib import Path
 
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from aiosendspin.models.types import AudioCodec, PairingCodeFormat, PairMethod
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.pairing import PairingAbortError, PairingAttempt
 from aiosendspin.noise.trust_store import FileServerPairingStore, InMemoryServerPairingStore, ServerPairingStore
 from aiosendspin.server.audio import AudioFormat
+from aiosendspin.server.connection import SendspinConnection
 from aiosendspin.server.push_stream import StreamStoppedError
 from aiosendspin.server.roles.source.events import SourceStreamStartedEvent
 from aiosendspin.server.server import (
@@ -98,6 +99,31 @@ async def open_state(directory: str | None) -> tuple[Identity, ServerPairingStor
         identity = Identity.generate()
         key_file.write_bytes(identity.private_bytes)
     return identity, await FileServerPairingStore.open(folder / "pairings.json")
+
+
+def hold_first_activation(released: asyncio.Event) -> None:
+    """Every connection waits after its hellos until `released`: aiosendspin has no seam here, so its step is wrapped."""
+    activate = SendspinConnection._activate  # noqa: SLF001
+
+    async def held(self: SendspinConnection) -> None:
+        if self._declared_activities is not None:  # noqa: SLF001
+            await activate(self)
+            return
+        emit("activate-held")
+        wait = asyncio.ensure_future(released.wait())
+        heard = asyncio.ensure_future(self._transport.receive())  # noqa: SLF001
+        await asyncio.wait((wait, heard), return_when=asyncio.FIRST_COMPLETED)
+        if not heard.done():
+            heard.cancel()
+            await asyncio.gather(heard, return_exceptions=True)
+            await activate(self)
+            return
+        wait.cancel()
+        closed = heard.result().type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED)
+        emit(f"activate-ended {'close' if closed else 'message'}")
+        await released.wait()
+
+    SendspinConnection._activate = held  # noqa: SLF001
 
 
 class TestServer:
@@ -323,9 +349,13 @@ async def main() -> None:
     parser.add_argument("--state")
     parser.add_argument("--discover")
     parser.add_argument("--name", default=SERVER_NAME)
+    parser.add_argument("--hold-activate", action="store_true")
     arguments = parser.parse_args()
 
     loop = asyncio.get_running_loop()
+    activate_released = asyncio.Event()
+    if arguments.hold_activate:
+        hold_first_activation(activate_released)
     identity, pairing_store = await open_state(arguments.state)
     server = TestServer(loop, arguments.slow_upgrade, identity, pairing_store, arguments.name)
     if arguments.discover is not None:
@@ -341,6 +371,8 @@ async def main() -> None:
         command, *rest = line.decode().split()
         if command == "dial":
             server.dial(rest[0])
+        elif command == "activate-release":
+            activate_released.set()
         elif command == "use":
             server.use(rest[0])
         elif command == "trust":

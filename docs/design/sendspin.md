@@ -79,7 +79,7 @@ Design it twice:
 | | A: the library behind the block (current choice) | B: ear speaks the protocol itself (Beast, noise-c, FLAC decoder) |
 |---|---|---|
 | Interop | The official client, proven against the server in sections 5(c)-(d) | Every pairing round, re-handshake, Sentinel fallback and time filter written and kept up by us |
-| Cost | Five fetched dependencies; a master-branch pin; two carried patches (`Origin`; the transport's limits); no event for a lost connection or failed dial, so a 10 ms timer and a watch over `is_connected()` on the worker | About 5 000 lines of security-critical code and a moving spec; no timer |
+| Cost | Five fetched dependencies; a master-branch pin; two carried patches (the listener's admission; the transport's limits); no event for a lost connection or failed dial, so a 10 ms timer and a watch over `is_connected()` on the worker | About 5 000 lines of security-critical code and a moving spec; no timer |
 
 A third outside node (a `pw_stream`) costs a second PipeWire node and links carrying what a function call can, and its
 `ready` would mean nothing: the node must be `running` with no server (R3). The block with audio code is `file`'s shape;
@@ -271,7 +271,12 @@ Where it departs from the spec, or the spec leaves a hole:
    idle connection, knock it off with `another_server`, which Music Assistant files as held elsewhere, and burn the 20 rounds.
    One branch in the Open event closes the socket before any Sendspin message; the peer sees 101, then the close (no earlier hook).
 2. **Peers that are not web pages can still do all that:** the spec's rank rule and its round count ("not partitioned by
-   `server_id` or source address"). Any network peer can hold pairing back until the operator acts.
+   `server_id` or source address"). Any network peer can hold pairing back until the operator acts. And a peer that speaks the
+   protocol can hold the one admitted place: the Sentinel PSK is published, so it finishes the handshake, activates nothing and stays.
+   The spec has a second connection with empty `activities` win "only if its `server_id` matches the last-playback server", so
+   [V, 2026-11-06, the real server, not a test kept] an unpaired server is refused with `concurrent_attempt`, and a paired one that has
+   never played stayed out for the 8 s measured. A server activating `playback` outranks it. Item 6 does not reach this: the peer has
+   done all the protocol asks, and letting a server past it departs from the spec's rule.
 3. **Sync is compensated at the driving card's buffer, and measured nowhere past the block's port.** The spec has the client
    compensate for its own buffers: `delayFrames` does, for the card that drives the graph. Left out, and so on the operator's
    output delay until PipeWire's port latency is read (deferred): a second card, a resampler's delay, a card that does not report
@@ -282,22 +287,46 @@ Where it departs from the spec, or the spec leaves a hole:
 5. **The spec's hold after 20 rounds does not survive a restart.** The spec says the client MUST hold attempts back until a deliberate
    operator action; the count is the library's, in memory, so any restart resets it, including a crash a peer caused. That gives
    another 20 guesses at a 6-digit code, 2e-5 a restart. Holding it across restarts needs the library to persist it.
-6. **Two silent sockets lock every server out of a listening node. OPEN, the owner's call.** The library holds inbound connections
-   in a two-slot nursery until they prove an identity, for 30 s each, and rejects a newcomer with `another_server` while it is full
-   (`connection_manager.cpp`). Renewing two bare sockets every 28 s keeps the node unreachable for as long as they do (probed:
-   7 rejections, no connection in 70 s). A dialling node has no listener and is not exposed. Today's answer is this cost, and dialling
-   on an untrusted network (`sendspin`, `ear-on-talos`); the alternatives are a carried or upstream change: a far shorter stall deadline
-   before `client/init` is answered, a limit per address, or evicting the oldest silent occupant.
-7. **A peer's connects still cost something.** The transport's lines are held to one per 10 s (under 1 MB of log a day), a node's
-   notes to 32 at once and then one a second (`NoteGate`, about 5 MB a day under a sustained attack), and a pairing code can be held
-   back with them, its `notes-dropped` saying so. A connection holds at most about 1 MiB until the library reaps it at 30 s; the pod's
+6. **Sockets that prove nothing give way to newcomers, so holding them keeps nobody out** (the owner, 2026-11-06: "Patch before
+   merge"; erratum 31). Two places ran out, and each refused the newcomer: the library's two-slot nursery of upgraded connections, for
+   30 s each, and the transport's four sockets, closed at accept, of which a socket that never upgrades holds one for 3 s. Now a full
+   room makes room. In the nursery (`cmake/sendspin-listener.patch`) one from the newcomer's own address goes first, then one with its
+   Noise handshake unfinished, then the oldest; it is closed with no goodbye, as `another_server` would tell an honest server not to come
+   back and a close with none tells it to reconnect. A connection with a long-term PSK has proved a server, as its first Noise message
+   needs that server's private key, and never gives way; an admitted one is not in the room at all, so a server waiting for a human to
+   type a code cannot be displaced. At accept (`cmake/ixwebsocket-limits.patch`) a socket still to upgrade gives way: the newcomer's own
+   address's oldest once that address holds its 8, else the oldest of the address holding most. So one address, however fast, touches
+   no other's, and the node's 32 sockets take four addresses filling their shares. Neither place takes a lock anyone waits on: the protocol
+   task closes without waiting, and the accept thread shuts a duplicate of the socket down, so its own thread ends the read.
+
+   What it gives up:
+   - **A peer behind the same address (NAT, proxy) can knock an honest server off while it is still proving itself,** so a server there
+     may have to reconnect, at the backoff it already has. Holding sockets does not do this: the room only turns over as fast as the peer
+     connects, and a server takes milliseconds. An honest server's slow upgrade beside two silent sockets renewed every 100 ms from its
+     own address is answered (a test), at 8 sockets an address.
+   - **Flooding from several addresses is a race, not a lock-out.** A server is one of those turning over until its Noise handshake ends,
+     and upgraded sockets closing (300 ms for a peer that will not answer) cannot give way. Measured with 2, 4, 8 and 16 addresses each
+     holding 8 sockets, renewed as fast as they connect: the server got in, in 0.9 s, 0.9 s, 8 s and 2 s. A silent flood cannot displace a server
+     past its handshake; one that also finishes the published Sentinel handshake can, and pays for an X25519 each time.
+   - **It costs more under attack:** a thread per connect while a flood lasts, where closing at accept cost none, and up to 64 sockets and
+     threads at once (twice the 32) where it was 4. They run on no realtime thread and the main loop waits on none of them, but a
+     flood's CPU does compete with an audio thread that has no realtime priority (a host without `SYS_NICE`).
+   - **No shorter deadline and no address limit alone:** a shorter wait only shortens the renewal, and hurts a slow honest upgrade; a limit
+     per address alone leaves a holder with a few addresses, and refuses a server behind the same NAT.
+   - **The spec does not describe it:** it lets a client cap provisional connections "rejecting further incoming connections as if they
+     were lower priority", and drops one after 30 s; closing an older one before that is ours, and a server sees only the close that a
+     client "MAY" make without a goodbye. What a peer that finishes the handshake and activates can hold is item 2. A dialling node has no listener and is not exposed.
+7. **A peer's connects still cost something.** The transport's lines are held to one per 10 s (under 1 MB of log a day), the library's
+   line for a full nursery is gone below WARN (erratum 31: it printed one per connect), a node's
+   notes are held to 32 at once and then one a second (`NoteGate`, about 5 MB a day under a sustained attack), and a pairing code can be held
+   back with them, its `notes-dropped` saying so. A connection holds at most about 1 MiB until it gives way or the library reaps it at 30 s; the pod's
    memory limit is the outer bound (`ear-on-talos`).
 
-For upstream, not filed yet: the `Origin` refusal; IXWebSocket's unbounded frames and fragments (`cmake/ixwebsocket-limits.patch`; it reaches the peer before any authentication, so it should go to its maintainers privately first); connection-lost and dial-failed events, which would delete the watch's timers; `on_audio_write` carrying the chunk's format, so more than one depth could be listed; a persisted round count; mjansson/mdns's `mdns_socket_listen` reading a question's type and class past the buffer, and a short datagram's header from the last one.
+For upstream, not filed yet: the `Origin` refusal; unproved sockets giving way, in both the library and IXWebSocket; IXWebSocket's unbounded frames and fragments, and its close racing a reset, which ends the process (`cmake/ixwebsocket-limits.patch`; both reach any peer before authentication. The owner, 2026-11-06, on reporting the memory exhaustion to its maintainers: "Don't report for now"); connection-lost and dial-failed events, which would delete the watch's timers; `on_audio_write` carrying the chunk's format, so more than one depth could be listed; a persisted round count; mjansson/mdns's `mdns_socket_listen` reading a question's type and class past the buffer, and a short datagram's header from the last one.
 
 Anyone who reaches port 7777 can still edit the graph: pairing guards Music Assistant's side.
 
-Branches no test drives, on purpose (a seam for each would cost more than it proves): a stream format not listed, and `on_audio_write` waiting on it; a `stream/start` the library calls incomplete; `client->start()` false; an exception on the worker; `advertise-failed` (a socket that will not open); a pairing abort other than a mismatch; `narrowKeyFiles` printing what it could not narrow; `fileNames` when the folder cannot be read. The last two only print or return a detail; the others go through paths other tests hold (`lost`, a note).
+Branches no test drives, on purpose (a seam for each would cost more than it proves): a stream format not listed, and `on_audio_write` waiting on it; a `stream/start` the library calls incomplete; `client->start()` false; an exception on the worker; `advertise-failed` (a socket that will not open); a pairing abort other than a mismatch; `narrowKeyFiles` printing what it could not narrow; `fileNames` when the folder cannot be read; a newcomer rejected because long-term connections fill the nursery, an operational entry there kept from giving way, and the transport's bound of twice its budget. The two that print or return a detail do only that; the others go through paths other tests hold (`lost`, a note, the rejection as it was).
 
 Deferred: volume and mute; line sense (`signal`), so no autostart; PipeWire's port latency in the clock; the editor showing notes
 and the code; a restart verb on the control port; IPv6; `wss://`; several servers at once; choosing the advertised interface
@@ -328,7 +357,7 @@ Frozen headers change through this page, as their first comment asks.
 | IXWebSocket v12.0.1 | `64fae7676bd8fe31f7cb4bcde7a6841892dad65e` | BSD-3 | `PATCH_COMMAND git apply cmake/ixwebsocket-limits.patch`, as sendspin-cpp's below (erratum 27) |
 | micro-flac v0.3.0 | `f9c27d4d0166021db977d7fc37d205b21d81e9f2` | Apache-2.0 | `GIT_SUBMODULES lib/micro-ogg-demuxer`, hence `git` |
 | noise-c v0.1.13 | `a1e08809a1b8f65cd91765ba7d68a6d00648ad61` | MIT | `SOURCE_SUBDIR no-such-directory`: the library builds it |
-| sendspin-cpp | `7be2278a252dd8c71da55732e93fe28871a9021d` | Apache-2.0 | `SENDSPIN_ENABLE_{CONTROLLER,METADATA,ARTWORK,VISUALIZER,COLOR,OPUS}=OFF`. S3: `PATCH_COMMAND git apply cmake/sendspin-origin.patch`; the pin names the patch's SHA-256; a failed apply stops configure |
+| sendspin-cpp | `7be2278a252dd8c71da55732e93fe28871a9021d` | Apache-2.0 | `SENDSPIN_ENABLE_{CONTROLLER,METADATA,ARTWORK,VISUALIZER,COLOR,OPUS}=OFF`. S3: `PATCH_COMMAND git apply cmake/sendspin-listener.patch` (erratum 31); the pin names the patch's SHA-256; a failed apply stops configure |
 | mjansson/mdns 1.4.3 (S3) | archive SHA-256 `be1fd8e35599cb7de179decbd0633c121d11a2dcb9cc193ff5c590bd0d480483` | public domain | `URL`; header only |
 
 - Licences: configure copies each to `out/licenses/`, the `run` stage to `/opt/ear/licenses`.
@@ -598,6 +627,12 @@ Errata, from the final review's fixes (2026-11-06):
 28. **The advertiser answers only queries from this link (`onLink`; QR, opcode and rcode zero; a whole header), each answer once per datagram, by multicast once a second, and by unicast at most 16 a second.** It looks at a datagram with `MSG_PEEK`, as `mdns_socket_listen` takes them all alike, and tells that function 8 bytes less than the buffer. Tests now hold the one-shot querier erratum 14 left out, and the announcement, with a listener started before ear. A question within the second of its last multicast goes unanswered, as the querier's own retries expect.
 29. **Private shapes moved, no frozen header but those above:** `EventFd` (`event_fd.hpp`) replaces raw descriptors, so `SendspinCode` takes `const EventFd&`; `SendspinWorker` loses `feedFrames`, since its `Feed&` knows; `nodeChannels` in `settings.hpp` is the one channel count; `ToServer` left `worker.cpp` for `to_server.hpp` behind a `SourceSink`, so a test can hold its stamps; `Feed::writerWaiting` is the tests' window on the wake. `sendspin_type.hpp`'s comment now says section 4's grammar.
 30. **The test server gains `--name <text>`, the commands `prefer-16` and `lead`, their events, and a last field on `source-ended`: the first chunk's arrival on its clock minus its stamp.** The `[sendspin][clock]` tests now need a tenth of the cycles after the first 3 s judged, not just one, and allow 1% of cycles to hold a frame the library interpolated: CI's amd64 run sat at p50 -88 µs, worst -104 µs, close enough to the library's 100 µs to correct twice in 8 s, which S1-9 did not foresee. The system tests' `badFrames == 0` have the same exposure over shorter streams, and have not shown it in CI.
+
+Errata, from closing section 11's item 6 (2026-11-06):
+
+31. **`cmake/sendspin-origin.patch` is now `cmake/sendspin-listener.patch` and carries the nursery's rule, `ixwebsocket-limits.patch` carries the accept's, and `config.server_max_connections` is 32 (section 11, item 6).** Section 11 named a far shorter deadline, a limit per address or evicting the oldest, as options, and each alone fails: a deadline only shortens the renewal, and a limit per address alone a few addresses beat, while evicting the oldest alone lets a fast peer flush a server off. Reading the transport showed the design page's two slots were half of it: four bare sockets renewed every 3 s closed everything else at accept, so a patch to the nursery alone would have left the failure. So did IXWebSocket's backlog of 5: a burst of connects dropped an honest server's SYN, its retry a second off, so the listener's backlog is now 64. Seen red first on the code as it stood: `A server pairs and plays beside two silent sockets renewed from its own address` never saw `says connected` in 10 s, and the two tests of bare sockets, a flood and two speaking peers failed the same way.
+32. **That run also found a remote crash, now fixed: a peer resetting a socket while the library closes it ended the process.** `WebSocketTransport::close` on the protocol task can pass its state check as the socket's own thread closes it, clears its message callback and leaves; the close frame's failed send then called the empty callback on the protocol task, `std::bad_function_call` out of a thread, and `terminate`. It ended ear in six runs of six; the stack, in the three resolved: `release_connection`, `WebSocketTransport::close`, `sendCloseFrame`, `flushSendBuffer`, `setReadyState`, `IXWebSocket.cpp:50`. Any peer that can connect could do this, and a crash silences every node (section 11). The callback is now read under a lock and skipped when empty (`ixwebsocket-limits.patch`). A flood reproduces it in about a second: a test holds it.
+33. **The test server gains `--hold-activate`, its command `activate-release` and events `activate-held` and `activate-ended <close|message>`, wrapping aiosendspin's first `_activate`.** Nothing else stops a real server between its hellos and its activation. `ChildProcess::waitForLine` returns a line an earlier wait already saw, which let a first version of the paired test pass on the pairing's own `connected` line; it uses `waitForNthLine`. Catch 2.12's reporter aborted on one long test name with a colon, in `TextFlow`, so these names have none.
 
 Reviewed 2026-11-05; its findings were taken, but for these:
 

@@ -288,7 +288,7 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   no such line does not mean anybody heard it.
 - **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own, on
   every one of its interfaces, since a listening node has no address setting: filter 8928 and 5353 to the
-  network Music Assistant is on. Two silent sockets on 8928 can keep every server out (`sendspin` skill), so
+  network Music Assistant is on. A peer on 8928 can still hold the node from an unpaired server by finishing the published handshake, though no longer with silent sockets (`sendspin` skill), so
   on a network you do not trust, dial instead of listening.
   The node advertises on one interface, the one the kernel routes 224.0.0.251 through, and the
   address of that interface, read once when the sendspin node starts, so on a machine with several
@@ -296,7 +296,7 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   has to be on that same network segment to hear it: on an overlay itself it hears nothing, and
   needs the URL by hand. A rolling update's new pod would find these ports held by the old one, so
   use the `Recreate` strategy.
-- **Give the pod a memory limit.** One connection holds at most about 1 MiB before it proves anything, but the
+- **Give the pod a memory limit.** One connection holds at most about 1 MiB before it proves anything, and a flood runs up to 64 sockets and threads at once, but the
   library's parsers run in the process with every audio node; a limit keeps whatever else goes wrong in this pod.
 - **Pair once.** The node prints `says pairing-code <123-456>` when Music Assistant starts an attempt;
   the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the

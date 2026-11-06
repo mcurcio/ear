@@ -58,8 +58,9 @@ endfunction()
 # The trees' folders are named by kept_fetchcontent in lower case, as FetchContent names its properties.
 sendspin_dep(arduinojson https://github.com/bblanchon/ArduinoJson.git
 	32520135092970120a5ac165cf45f48e658c421d)   # v7.4.1, MIT
-# The carried patch bounds what an unproved peer can cost before any Sendspin message (section 11): frames, fragments, and
-# the transport's per-connection log lines.
+# The carried patch bounds what an unproved peer can cost before any Sendspin message (section 11): frames, fragments, the
+# transport's per-connection log lines, and the sockets it holds, which give way to newcomers. It also keeps a close racing a
+# peer's reset from ending the process.
 sendspin_patched_dep(ixwebsocket https://github.com/machinezone/IXWebSocket.git
 	64fae7676bd8fe31f7cb4bcde7a6841892dad65e   # v12.0.1, BSD-3
 	"${CMAKE_CURRENT_LIST_DIR}/ixwebsocket-limits.patch" ixwebsocket/IXWebSocketTransport.cpp)
@@ -71,10 +72,10 @@ sendspin_dep(noise_c https://github.com/esphome-libs/noise-c.git
 	a1e08809a1b8f65cd91765ba7d68a6d00648ad61    # v0.1.13, MIT
 	SOURCE_SUBDIR no-such-directory)
 
-# The carried patch refuses an upgrade carrying Origin (section 11).
+# The carried patch refuses an upgrade carrying Origin, and makes unproved connections give way to newcomers (section 11).
 sendspin_patched_dep(sendspin https://github.com/Sendspin/sendspin-cpp.git
 	7be2278a252dd8c71da55732e93fe28871a9021d   # master: accept_inbound_connections came after v0.9.5, Apache-2.0
-	"${CMAKE_CURRENT_LIST_DIR}/sendspin-origin.patch" src/host/ws_server.cpp)
+	"${CMAKE_CURRENT_LIST_DIR}/sendspin-listener.patch" src/host/ws_server.cpp)
 
 # ear's mDNS: one header, so nothing of the project is added (its example would be built). Public domain.
 set(mdns_url https://github.com/mjansson/mdns/archive/refs/tags/1.4.3.tar.gz)

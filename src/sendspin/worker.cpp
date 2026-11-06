@@ -207,6 +207,9 @@ private:
 		// Per node: a dialling node must not be reachable by anything else (section 2).
 		config.accept_inbound_connections = !settings_.server.has_value();
 		config.server_port = settings_.port;
+		// Room for sockets that prove nothing to give way to newcomers, not to refuse them (section 11, item 6); the transport
+		// holds one address to 8 of these and all of them to twice this.
+		config.server_max_connections = 32;
 		// His Permission answer: a code on a status line, typed into Music Assistant.
 		config.pairing_code_out_channels = {::sendspin::SendspinPairingCodeChannel::DISPLAY};
 		config.pairing_code_formats = {::sendspin::SendspinPairingCodeFormat::DIGITS};

@@ -1,5 +1,5 @@
 diff --git a/ixwebsocket/IXSocketServer.cpp b/ixwebsocket/IXSocketServer.cpp
-index bf9d20aa..facf1f1d 100644
+index bf9d20aa..8f656d96 100644
 --- a/ixwebsocket/IXSocketServer.cpp
 +++ b/ixwebsocket/IXSocketServer.cpp
 @@ -14,6 +14,8 @@
@@ -30,6 +30,241 @@ index bf9d20aa..facf1f1d 100644
          fprintf(stderr, "%s\n", str.c_str());
      }
  
+@@ -345,18 +359,6 @@ namespace ix
+                 continue;
+             }
+ 
+-            if (getConnectedClientsCount() >= _maxConnections)
+-            {
+-                std::stringstream ss;
+-                ss << "SocketServer::run() reached max connections = " << _maxConnections << ". "
+-                   << "Not accepting connection";
+-                logError(ss.str());
+-
+-                Socket::closeSocket(clientFd);
+-
+-                continue;
+-            }
+-
+             // Retrieve connection info, the ip address of the remote peer/client)
+             std::string remoteIp;
+             int remotePort;
+@@ -436,6 +438,17 @@ namespace ix
+                 continue;
+             }
+ 
++            // ear: ixwebsocket-limits.patch. Judged here, with the peer's address known. The socket's
++            // destructor closes what is refused.
++            if (!admitConnection(connectionState, clientFd))
++            {
++                std::stringstream ss;
++                ss << "SocketServer::run() reached max connections = " << _maxConnections << ". "
++                   << "Not accepting connection";
++                logError(ss.str());
++                continue;
++            }
++
+             // Launch the handleConnection work asynchronously in its own thread.
+             std::lock_guard<std::mutex> lock(_connectionsThreadsMutex);
+             _connectionsThreads.push_back(std::make_pair(
+diff --git a/ixwebsocket/IXSocketServer.h b/ixwebsocket/IXSocketServer.h
+index c56b650e..bcd93c34 100644
+--- a/ixwebsocket/IXSocketServer.h
++++ b/ixwebsocket/IXSocketServer.h
+@@ -113,6 +113,14 @@ namespace ix
+                                       std::shared_ptr<ConnectionState> connectionState) = 0;
+         virtual size_t getConnectedClientsCount() = 0;
+ 
++        // ear: ixwebsocket-limits.patch. Whether to serve this accepted socket.
++        virtual bool admitConnection(const std::shared_ptr<ConnectionState>& connectionState, int fd)
++        {
++            (void) connectionState;
++            (void) fd;
++            return getConnectedClientsCount() < _maxConnections;
++        }
++
+         // Returns true if all connection threads are joined
+         void closeTerminatedThreads();
+         size_t getConnectionsThreadsCount();
+diff --git a/ixwebsocket/IXWebSocket.cpp b/ixwebsocket/IXWebSocket.cpp
+index f9b8075d..12f17c73 100644
+--- a/ixwebsocket/IXWebSocket.cpp
++++ b/ixwebsocket/IXWebSocket.cpp
+@@ -46,7 +46,16 @@ namespace ix
+         _ws.setOnCloseCallback(
+             [this](uint16_t code, const std::string& reason, size_t wireSize, bool remote)
+             {
+-                _onMessageCallback(
++                // ear: ixwebsocket-limits.patch. A close racing the peer's reset can reach here on
++                // the closer's thread after the server's thread cleared the callback, which threw
++                // std::bad_function_call and ended the process: any peer could cause it.
++                OnMessageCallback callback;
++                {
++                    std::lock_guard<std::mutex> lock(_onMessageCallbackMutex);
++                    callback = _onMessageCallback;
++                }
++                if (!callback) return;
++                callback(
+                     ix::make_unique<WebSocketMessage>(WebSocketMessageType::Close,
+                                                       emptyMsg,
+                                                       wireSize,
+@@ -455,6 +464,7 @@ namespace ix
+ 
+     void WebSocket::setOnMessageCallback(const OnMessageCallback& callback)
+     {
++        std::lock_guard<std::mutex> lock(_onMessageCallbackMutex);
+         _onMessageCallback = callback;
+     }
+ 
+diff --git a/ixwebsocket/IXWebSocket.h b/ixwebsocket/IXWebSocket.h
+index 1070836f..cbf2a481 100644
+--- a/ixwebsocket/IXWebSocket.h
++++ b/ixwebsocket/IXWebSocket.h
+@@ -150,6 +150,8 @@ namespace ix
+         mutable std::mutex _configMutex; // protect all config variables access
+ 
+         OnMessageCallback _onMessageCallback;
++        // ear: ixwebsocket-limits.patch. The close callback runs on any thread that closes.
++        std::mutex _onMessageCallbackMutex;
+         static OnTrafficTrackerCallback _onTrafficTrackerCallback;
+ 
+         std::atomic<bool> _stop;
+diff --git a/ixwebsocket/IXWebSocketServer.cpp b/ixwebsocket/IXWebSocketServer.cpp
+index 70f9568f..873464cd 100644
+--- a/ixwebsocket/IXWebSocketServer.cpp
++++ b/ixwebsocket/IXWebSocketServer.cpp
+@@ -14,9 +14,79 @@
+ #include <future>
+ #include <sstream>
+ #include <string.h>
++#include <sys/socket.h>
++#include <unistd.h>
+ 
+ namespace ix
+ {
++    // ear: ixwebsocket-limits.patch. The most sockets one address holds: twice sendspin-cpp's own
++    // budget for a whole listener (a connection admitted, two proving themselves, one spare), as
++    // honest servers can share an address behind a NAT or a proxy.
++    static const size_t kSocketsPerAddress(8);
++
++    bool WebSocketServer::admitConnection(const std::shared_ptr<ConnectionState>& connectionState,
++                                          int fd)
++    {
++        // A socket that has not upgraded proves nothing, so a full room never refuses the newcomer
++        // while one of those is in it: it gives way, the oldest of the newcomer's own address once
++        // that address has its share, or else the oldest of the address holding most. So a holder
++        // of sockets keeps no one out, and one address, however fast, touches no other's. The
++        // second bound holds the threads if sockets that gave way are slow to go.
++        std::lock_guard<std::mutex> lock(_clientsMutex);
++        const std::string& address = connectionState->getRemoteIp();
++        const auto held = [this](const std::string& ip)
++        {
++            size_t count = 0;
++            for (const auto& socket : _admittedSockets)
++            {
++                if (socket.state->getRemoteIp() == ip) ++count;
++            }
++            return count;
++        };
++        const bool ownShareFull = held(address) >= kSocketsPerAddress;
++        if (ownShareFull || _admittedSockets.size() >= getMaxConnections())
++        {
++            if (_admittedSockets.size() >= 2 * getMaxConnections()) return false;
++            AdmittedSocket* yields = nullptr;
++            size_t yieldsHeld = 0;
++            for (auto& socket : _admittedSockets)
++            {
++                if (socket.upgradeFd < 0) continue;
++                if (ownShareFull && socket.state->getRemoteIp() != address) continue;
++                const size_t count = held(socket.state->getRemoteIp());
++                if (count > yieldsHeld)
++                {
++                    yields = &socket;
++                    yieldsHeld = count;
++                }
++            }
++            if (yields == nullptr) return false;
++            // Its read ends at once on its own thread, which never blocks this one. The dup keeps
++            // the number from meaning another file by now.
++            ::shutdown(yields->upgradeFd, SHUT_RDWR);
++            ::close(yields->upgradeFd);
++            yields->upgradeFd = -1;
++        }
++        const int upgradeFd = ::dup(fd);
++        if (upgradeFd < 0) return false;
++        _admittedSockets.push_back({connectionState, upgradeFd});
++        return true;
++    }
++
++    void WebSocketServer::settleUpgrade(const std::shared_ptr<ConnectionState>& connectionState,
++                                        bool forget)
++    {
++        std::lock_guard<std::mutex> lock(_clientsMutex);
++        for (auto it = _admittedSockets.begin(); it != _admittedSockets.end(); ++it)
++        {
++            if (it->state != connectionState) continue;
++            if (it->upgradeFd >= 0) ::close(it->upgradeFd);
++            it->upgradeFd = -1;
++            if (forget) _admittedSockets.erase(it);
++            return;
++        }
++    }
++
+     const int WebSocketServer::kDefaultHandShakeTimeoutSecs(3); // 3 seconds
+     const bool WebSocketServer::kDefaultEnablePong(true);
+     const int WebSocketServer::kPingIntervalSeconds(-1); // disable heartbeat
+@@ -87,6 +157,7 @@ namespace ix
+     {
+         handleUpgrade(std::move(socket), connectionState);
+ 
++        settleUpgrade(connectionState, true);
+         connectionState->setTerminated();
+     }
+ 
+@@ -152,6 +223,7 @@ namespace ix
+                                                  _enablePerMessageDeflate,
+                                                  request,
+                                                  _sendTimeoutSeconds);
++        settleUpgrade(connectionState, false);
+         if (status.success)
+         {
+             // Process incoming messages and execute callbacks
+diff --git a/ixwebsocket/IXWebSocketServer.h b/ixwebsocket/IXWebSocketServer.h
+index a4a1d79f..a3654a3c 100644
+--- a/ixwebsocket/IXWebSocketServer.h
++++ b/ixwebsocket/IXWebSocketServer.h
+@@ -10,6 +10,7 @@
+ #include "IXWebSocket.h"
+ #include <condition_variable>
+ #include <functional>
++#include <list>
+ #include <memory>
+ #include <mutex>
+ #include <set>
+@@ -72,6 +73,14 @@ namespace ix
+         std::mutex _clientsMutex;
+         std::set<std::shared_ptr<WebSocket>> _clients;
+ 
++        // ear: ixwebsocket-limits.patch. Every socket being served, oldest first, under _clientsMutex.
++        struct AdmittedSocket
++        {
++            std::shared_ptr<ConnectionState> state;
++            int upgradeFd; // a dup of the socket while it has not finished its upgrade, else -1
++        };
++        std::list<AdmittedSocket> _admittedSockets;
++
+         const static bool kDefaultEnablePong;
+         const static int kPingIntervalSeconds;
+         const static int kSendTimeoutSeconds;
+@@ -80,6 +89,8 @@ namespace ix
+         virtual void handleConnection(std::unique_ptr<Socket> socket,
+                                       std::shared_ptr<ConnectionState> connectionState);
+         virtual size_t getConnectedClientsCount() final;
++        bool admitConnection(const std::shared_ptr<ConnectionState>& connectionState, int fd) final;
++        void settleUpgrade(const std::shared_ptr<ConnectionState>& connectionState, bool forget);
+ 
+     protected:
+         void handleUpgrade(std::unique_ptr<Socket> socket,
 diff --git a/ixwebsocket/IXWebSocketTransport.cpp b/ixwebsocket/IXWebSocketTransport.cpp
 index fb3c40a7..b87b9809 100644
 --- a/ixwebsocket/IXWebSocketTransport.cpp
