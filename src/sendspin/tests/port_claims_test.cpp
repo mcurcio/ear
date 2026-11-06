@@ -23,7 +23,8 @@ TEST_CASE("A port is claimed by one node until it is released", "[sendspin][port
 	CHECK(claims.claim(9000, "b").has_value());
 }
 
-TEST_CASE("The probe refuses a live listener with the kernel's reason, and passes once it is gone", "[sendspin][port_claims]") {
+TEST_CASE("The probe refuses a live listener with the kernel's reason, and passes once it is gone",
+          "[sendspin][port_claims]") {
 	const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
 	REQUIRE(listener >= 0);
 	sockaddr_in address{};
@@ -65,9 +66,9 @@ TEST_CASE("The probe passes on a port in TIME_WAIT, the server side having close
 	const int accepted = ::accept(listener, nullptr, nullptr);
 	REQUIRE(accepted >= 0);
 	::close(listener);
-	::close(accepted);            // the server side first: it is this side that waits
+	::close(accepted); // the server side first: it is this side that waits
 	char nothing = 0;
-	REQUIRE(::read(peer, &nothing, 1) == 0);   // the peer has seen the close
+	REQUIRE(::read(peer, &nothing, 1) == 0); // the peer has seen the close
 	::close(peer);
 
 	// A plain bind, as a program without the option would, finds the port still taken: that is what proves the TIME_WAIT.

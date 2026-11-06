@@ -24,7 +24,8 @@ TEST_CASE("Every 16-bit value round-trips exact", "[sendspin][pcm]") {
 }
 
 TEST_CASE("24-bit edges round-trip exact", "[sendspin][pcm]") {
-	for (const std::int32_t value : {-8388608, -8388607, -4194304, -65536, -256, -1, 0, 1, 255, 256, 65535, 4194304, 8388606, 8388607}) {
+	for (const std::int32_t value :
+	     {-8388608, -8388607, -4194304, -65536, -256, -1, 0, 1, 255, 256, 65535, 4194304, 8388606, 8388607}) {
 		INFO(value);
 		const auto word = static_cast<std::uint32_t>(value);
 		const std::array<std::uint8_t, 3> in{static_cast<std::uint8_t>(word), static_cast<std::uint8_t>(word >> 8U),

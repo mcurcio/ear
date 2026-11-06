@@ -76,14 +76,14 @@ public:
 		}
 		if (!settings.empty()) {
 			return std::unexpected(
-			    InvalidSettings{node, "unknown key " + settings.begin().key() + " (white takes no settings)"});
+				InvalidSettings{node, "unknown key " + settings.begin().key() + " (white takes no settings)"});
 		}
 		return std::make_unique<const WhiteConfig>();
 	}
 };
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<const NodeType> makeWhiteNodeType() { return std::make_unique<const WhiteType>(); }
 
-}  // namespace ear::nodes
+} // namespace ear::nodes

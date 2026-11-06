@@ -11,18 +11,23 @@
 namespace ear::config {
 class GraphFileDisk {
 public:
-  virtual DiskText read() = 0;   // ear.conf's text, nullopt when missing, or why it cannot be read
-  /// Puts `text` in place only if ear.conf still holds `expected` (ConfinedFolder::replaceIf). Error: nothing changed.
-  virtual std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected, std::string_view text) = 0;
+	virtual DiskText read() = 0; // ear.conf's text, nullopt when missing, or why it cannot be read
+	/// Puts `text` in place only if ear.conf still holds `expected` (ConfinedFolder::replaceIf). Error: nothing changed.
+	virtual std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected,
+	                                                                     std::string_view text) = 0;
+
 protected:
-  ~GraphFileDisk() = default;
+	~GraphFileDisk() = default;
 };
-class FolderGraphFileDisk final : public GraphFileDisk {   // rootDocument in `folder`, maxDocumentBytes; FolderError -> its detail
+class FolderGraphFileDisk final
+	: public GraphFileDisk { // rootDocument in `folder`, maxDocumentBytes; FolderError -> its detail
 public:
-  explicit FolderGraphFileDisk(const folder::ConfinedFolder& folder);   // folder outlives it
-  DiskText read() override;
-  std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected, std::string_view text) override;
+	explicit FolderGraphFileDisk(const folder::ConfinedFolder& folder); // folder outlives it
+	DiskText read() override;
+	std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected,
+	                                                             std::string_view text) override;
+
 private:
-  const folder::ConfinedFolder& folder_;
+	const folder::ConfinedFolder& folder_;
 };
-}
+} // namespace ear::config

@@ -57,7 +57,8 @@ public:
 
 } // namespace
 
-TEST_CASE("The graph file keeper on its thread: start announces, an edit replies and is written, stop then join",
+TEST_CASE("The graph file keeper on its thread: start announces, an edit replies and is written, "
+          "stop then join",
           "[graph_file_keeper]") {
 	TempDir dir("facade");
 	const auto file = dir.path() / "ear.conf";

@@ -8,10 +8,11 @@ struct pw_loop;
 namespace ear::pipewire {
 class ThreadHandoffs final : public HandoffFactory {
 public:
-  explicit ThreadHandoffs(pw_loop* mainLoop);   // where `closed` runs; no Engine needed
-  std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels,
-      std::uint32_t capacityFrames, HandoffConsumer& consumer) override;
+	explicit ThreadHandoffs(pw_loop* mainLoop); // where `closed` runs; no Engine needed
+	std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels, std::uint32_t capacityFrames,
+	                              HandoffConsumer& consumer) override;
+
 private:
-  pw_loop* mainLoop_;
+	pw_loop* mainLoop_;
 };
-}
+} // namespace ear::pipewire

@@ -22,7 +22,8 @@ TEST_CASE("A port's whole name is its bank, a dot and its member", "[ports]") {
 }
 
 TEST_CASE("A part that would mis-shape a port's name is a type bug", "[ports]") {
-	const auto part = GENERATE(as<std::string>{}, "", "a.b", "a:b", "a b", "a\"b", "caf\xC3\xA9", std::string("a\0b", 3));
+	const auto part =
+		GENERATE(as<std::string>{}, "", "a.b", "a:b", "a b", "a\"b", "caf\xC3\xA9", std::string("a\0b", 3));
 	CHECK_THROWS_AS(portName(part, "left"), std::logic_error);
 	CHECK_THROWS_AS(portName("from", part), std::logic_error);
 	CHECK_THROWS_AS((Ports{{{Direction::input, part, {"left"}}}}), std::logic_error);

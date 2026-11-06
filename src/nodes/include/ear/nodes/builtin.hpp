@@ -34,4 +34,4 @@ std::unique_ptr<const NodeType> makeCardNodeType();
 std::unique_ptr<const NodeType> makeRtpNodeType();
 /// white, file (writing into `recordings`), card and rtp.
 std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<const folder::ConfinedFolder> recordings);
-}
+} // namespace ear::nodes

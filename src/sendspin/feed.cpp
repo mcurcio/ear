@@ -11,8 +11,7 @@ constexpr std::uint64_t clearPending = std::uint64_t{1} << 32U;
 
 } // namespace
 
-Feed::Feed(std::uint32_t channels, std::uint32_t capacityFrames)
-    : ring_(channels, capacityFrames) {}
+Feed::Feed(std::uint32_t channels, std::uint32_t capacityFrames) : ring_(channels, capacityFrames) {}
 
 bool Feed::applyClear() noexcept {
 	const std::uint64_t asked = clearTo_.exchange(0, std::memory_order_acq_rel);
@@ -43,7 +42,8 @@ std::uint32_t Feed::skip(std::uint32_t frames) noexcept {
 	return got;
 }
 
-std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience) {
+std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,
+                          std::chrono::milliseconds patience) {
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
 		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0 || frames == 0) {
@@ -67,8 +67,6 @@ std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t fram
 	}
 }
 
-void Feed::clear() noexcept {
-	clearTo_.store(clearPending | ring_.writePosition(), std::memory_order_release);
-}
+void Feed::clear() noexcept { clearTo_.store(clearPending | ring_.writePosition(), std::memory_order_release); }
 
 } // namespace ear::sendspin

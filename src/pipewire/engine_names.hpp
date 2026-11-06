@@ -11,4 +11,4 @@ inline constexpr char graphGroup[] = "ear.graph";
 /// Dummy-Driver (200000), so a card running alone is never the fallback driver.
 inline constexpr int cardPriority = 1;
 
-}  // namespace ear::pipewire
+} // namespace ear::pipewire

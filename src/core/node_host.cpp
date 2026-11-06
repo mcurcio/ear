@@ -20,20 +20,21 @@ namespace {
 /// One outside node the insides asked for, of any kind.
 using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
 
-template <typename... Kinds> struct Overloaded : Kinds... { using Kinds::operator()...; };
+template <typename... Kinds> struct Overloaded : Kinds... {
+	using Kinds::operator()...;
+};
 
 /// The engine node name of a node's outside node: the one home of "<node>.playback",
 /// "<node>.capture" (sound cards) and "<node>.rtp" (the RTP receiver). A node name never holds
 /// '.', so they cannot collide with a node.
 NodeName outsideNodeName(const NodeName& node, const OutsideRequest& request) {
-	const char* suffix = std::visit(
-	    Overloaded{
-	        [](const SoundCardRequest& card) {
-		        return card.direction == CardDirection::playback ? ".playback" : ".capture";
-	        },
-	        [](const RtpReceiverRequest&) { return ".rtp"; },
-	    },
-	    request);
+	const char* suffix = std::visit(Overloaded{
+										[](const SoundCardRequest& card) {
+											return card.direction == CardDirection::playback ? ".playback" : ".capture";
+										},
+										[](const RtpReceiverRequest&) { return ".rtp"; },
+									},
+	                                request);
 	return node + suffix;
 }
 
@@ -57,10 +58,8 @@ struct NodeHost::Impl {
 		/// never share what the name owns (a listening port, a key file).
 		void add(std::shared_ptr<const NodeConfig> config, bool olderGoing) {
 			block_ = host_.blocks.make(name_, config->ports(), host_.format, *this);
-			if (olderGoing)
-				waiting_ = std::move(config);
-			else
-				startInsides(std::move(config));
+			if (olderGoing) waiting_ = std::move(config);
+			else startInsides(std::move(config));
 		}
 
 		/// The older node of this name is gone.
@@ -76,7 +75,7 @@ struct NodeHost::Impl {
 				return;
 			}
 			if (lifecycle_.restartRequested()) host_.changed(*this);
-			next_ = lifecycle_.blockLost() ? nullptr : std::move(config);   // a lost block is final
+			next_ = lifecycle_.blockLost() ? nullptr : std::move(config); // a lost block is final
 			if (!tearingDown_) tearDownInsides();
 		}
 
@@ -97,8 +96,7 @@ struct NodeHost::Impl {
 			makeOutsideNodes();
 		}
 		void lost(std::string detail) override {
-			if (lifecycle_.portBlockLost({FailureReason::Code::engineRefused, std::move(detail)}))
-				host_.changed(*this);
+			if (lifecycle_.portBlockLost({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
 		}
 
 		// NodeGrant
@@ -119,8 +117,8 @@ struct NodeHost::Impl {
 		void rtpReceiver(const RtpReceiverRequest& request) override {
 			if (!granting_) throw std::logic_error("node " + name_ + ": an RTP receiver was asked for outside start()");
 			if (std::ranges::any_of(outsideRequests_, [](const OutsideRequest& asked) {
-				    return std::holds_alternative<RtpReceiverRequest>(asked);
-			    }))
+					return std::holds_alternative<RtpReceiverRequest>(asked);
+				}))
 				throw std::logic_error("node " + name_ + ": a second RTP receiver was asked for in one start()");
 			outsideRequests_.emplace_back(request);
 		}
@@ -184,11 +182,11 @@ struct NodeHost::Impl {
 			}
 
 		private:
-			Node* node_;   // main thread only
+			Node* node_; // main thread only
 			Executor& mainLoop_;
-			bool closing_ = false;        // main thread only
-			bool insideClose_ = false;    // main thread only
-			bool closedInside_ = false;   // main thread only
+			bool closing_ = false;      // main thread only
+			bool insideClose_ = false;  // main thread only
+			bool closedInside_ = false; // main thread only
 		};
 
 		void startInsides(std::shared_ptr<const NodeConfig> config) {
@@ -231,16 +229,16 @@ struct NodeHost::Impl {
 				auto& outside = *outside_.emplace_back(std::make_unique<Outside>(*this, i));
 				const OutsideRequest& request = outsideRequests_[i];
 				const NodeName engineNode = outsideNodeName(name_, request);
-				outside.node = std::visit(
-				    Overloaded{
-				        [&](const SoundCardRequest& card) {
-					        return host_.cards.make(engineNode, name_, card, host_.format, outside);
-				        },
-				        [&](const RtpReceiverRequest& receiver) {
-					        return host_.receivers.make(engineNode, name_, receiver, outside);
-				        },
-				    },
-				    request);
+				outside.node =
+					std::visit(Overloaded{
+								   [&](const SoundCardRequest& card) {
+									   return host_.cards.make(engineNode, name_, card, host_.format, outside);
+								   },
+								   [&](const RtpReceiverRequest& receiver) {
+									   return host_.receivers.make(engineNode, name_, receiver, outside);
+								   },
+							   },
+				               request);
 			}
 		}
 
@@ -315,10 +313,10 @@ struct NodeHost::Impl {
 		Impl& host_;
 		NodeName name_;
 		NodeLifecycle lifecycle_;
-		std::shared_ptr<const NodeConfig> next_;   // the config a restart starts once teardown ends
-		std::shared_ptr<const NodeConfig> waiting_;   // the config to start once an older node of this name has gone
+		std::shared_ptr<const NodeConfig> next_;    // the config a restart starts once teardown ends
+		std::shared_ptr<const NodeConfig> waiting_; // the config to start once an older node of this name has gone
 		std::shared_ptr<const NodeConfig> config_;
-		std::shared_ptr<Channel> channel_;         // from each start until its insides closed
+		std::shared_ptr<Channel> channel_; // from each start until its insides closed
 		std::unique_ptr<NodeInsides> insides_;
 		std::vector<std::unique_ptr<Handoff>> handoffs_;
 		std::vector<OutsideRequest> outsideRequests_;
@@ -343,7 +341,7 @@ struct NodeHost::Impl {
 	Executor& mainLoop;
 	std::vector<NodeStatusListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
-	std::vector<std::unique_ptr<Node>> nodes;   // in arrival order; gone ones are pruned on add
+	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; gone ones are pruned on add
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 
@@ -376,7 +374,8 @@ struct NodeHost::Impl {
 
 	/// The oldest node left of this name may start now, if it is one that waited.
 	void olderGone(const NodeName& name) {
-		const auto next = std::ranges::find_if(nodes, [&](const auto& known) { return known->name() == name && !known->lifecycle().gone(); });
+		const auto next = std::ranges::find_if(
+			nodes, [&](const auto& known) { return known->name() == name && !known->lifecycle().gone(); });
 		if (next != nodes.end()) (*next)->olderGone();
 	}
 
@@ -388,8 +387,8 @@ struct NodeHost::Impl {
 	}
 };
 
-NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-                   SoundCardFactory& cards, RtpReceiverFactory& receivers, Executor& mainLoop)
+NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs, SoundCardFactory& cards,
+                   RtpReceiverFactory& receivers, Executor& mainLoop)
 	: impl_(new Impl{format, blocks, handoffs, cards, receivers, mainLoop, {}, {}, {}, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
@@ -401,7 +400,8 @@ void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);
 	std::erase_if(impl_->nodes, [](const auto& known) { return known->lifecycle().gone(); });
-	const bool olderGoing = std::ranges::any_of(impl_->nodes, [&](const auto& known) { return known->name() == node.name; });
+	const bool olderGoing =
+		std::ranges::any_of(impl_->nodes, [&](const auto& known) { return known->name() == node.name; });
 	auto& added = *impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name));
 	impl_->changed(added);
 	added.add(std::move(config), olderGoing);

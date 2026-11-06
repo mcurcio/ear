@@ -18,9 +18,9 @@
 namespace ear {
 /// One named group of a node's public ports, all one way. Each is "<name>.<member>" (portName).
 struct PortBank {
-  Direction direction;
-  std::string_view name;
-  std::vector<std::string> members;
+	Direction direction;
+	std::string_view name;
+	std::vector<std::string> members;
 };
 /// A public port's whole name, the one place it is made: "<bank>.<member>", each part 1 or more of
 /// [A-Za-z0-9_-]. Throws std::logic_error otherwise: a type bug, not a user error.
@@ -34,140 +34,150 @@ std::vector<std::string> numbered(std::uint32_t count, std::string_view prefix =
 /// not a user error).
 class Ports {
 public:
-  Ports() = default;
-  explicit Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs = {},
-                 std::vector<PortName> insideOutputs = {});
-  /// Whole names, the banks' in declaration order, each bank's members in order.
-  const std::vector<PortName>& inputs() const noexcept { return inputs_; }
-  const std::vector<PortName>& outputs() const noexcept { return outputs_; }
-  const std::vector<PortName>& insideInputs() const noexcept { return insideInputs_; }
-  const std::vector<PortName>& insideOutputs() const noexcept { return insideOutputs_; }
-  /// These ports without the inside ones: what the graph read and the wire show.
-  Ports publicOnly() const;
-  friend bool operator==(const Ports&, const Ports&) = default;
+	Ports() = default;
+	explicit Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs = {},
+	               std::vector<PortName> insideOutputs = {});
+	/// Whole names, the banks' in declaration order, each bank's members in order.
+	const std::vector<PortName>& inputs() const noexcept { return inputs_; }
+	const std::vector<PortName>& outputs() const noexcept { return outputs_; }
+	const std::vector<PortName>& insideInputs() const noexcept { return insideInputs_; }
+	const std::vector<PortName>& insideOutputs() const noexcept { return insideOutputs_; }
+	/// These ports without the inside ones: what the graph read and the wire show.
+	Ports publicOnly() const;
+	friend bool operator==(const Ports&, const Ports&) = default;
 
 private:
-  std::vector<PortName> inputs_;
-  std::vector<PortName> outputs_;
-  std::vector<PortName> insideInputs_;
-  std::vector<PortName> insideOutputs_;
+	std::vector<PortName> inputs_;
+	std::vector<PortName> outputs_;
+	std::vector<PortName> insideInputs_;
+	std::vector<PortName> insideOutputs_;
 };
 /// Why a node is failed. Part of status; never returned by a control call.
-struct FailureReason { enum class Code { engineRefused, startFailed }; Code code; std::string detail; };
-std::string_view failureCode(FailureReason::Code code) noexcept;  // "engine-refused" | "start-failed"
-struct AudioFormat { std::uint32_t rate; std::uint32_t maxBlock; };   // fixed at boot in M1
+struct FailureReason {
+	enum class Code { engineRefused, startFailed };
+	Code code;
+	std::string detail;
+};
+std::string_view failureCode(FailureReason::Code code) noexcept; // "engine-refused" | "start-failed"
+struct AudioFormat {
+	std::uint32_t rate;
+	std::uint32_t maxBlock;
+}; // fixed at boot in M1
 
 /// This cycle of the graph, on the driver's clock.
 struct GraphCycle {
-  std::int64_t startNs;     // its start, CLOCK_MONOTONIC
-  std::uint64_t position;   // the driver's frames at its start
-  std::uint32_t delayFrames = 0;   // how long what this cycle writes waits in the driver before it is heard (0: no device)
+	std::int64_t startNs;   // its start, CLOCK_MONOTONIC
+	std::uint64_t position; // the driver's frames at its start
+	std::uint32_t delayFrames =
+		0; // how long what this cycle writes waits in the driver before it is heard (0: no device)
 };
 
 class AudioCode {
 public:
-  virtual ~AudioCode() = default;
-  /// Main thread, before the first process(), never concurrently with it. May allocate.
-  virtual void prepare(const AudioFormat& format) = 0;
-  /// Realtime: no locks, allocation, file/network access or waiting. `inputs` = inputs then
-  /// insideInputs, `outputs` = outputs then insideOutputs, each in declaration order, each span
-  /// exactly `frames` long, frames <= maxBlock. An unlinked input reads zeros. Every output
-  /// sample must be written.
-  virtual void process(std::span<const std::span<const float>> inputs,
-                       std::span<const std::span<float>> outputs,
-                       std::uint32_t frames, const GraphCycle& cycle) noexcept = 0;
-  /// Main thread, after the last process() returned.
-  virtual void release() noexcept = 0;
+	virtual ~AudioCode() = default;
+	/// Main thread, before the first process(), never concurrently with it. May allocate.
+	virtual void prepare(const AudioFormat& format) = 0;
+	/// Realtime: no locks, allocation, file/network access or waiting. `inputs` = inputs then
+	/// insideInputs, `outputs` = outputs then insideOutputs, each in declaration order, each span
+	/// exactly `frames` long, frames <= maxBlock. An unlinked input reads zeros. Every output
+	/// sample must be written.
+	virtual void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
+	                     std::uint32_t frames, const GraphCycle& cycle) noexcept = 0;
+	/// Main thread, after the last process() returned.
+	virtual void release() noexcept = 0;
 };
 /// Realtime end of a handoff. Valid until the node's port block is gone.
 class RtWriter {
 public:
-  /// Realtime thread only. Interleaves `frames` frames of planar `channels` (size == the
-  /// handoff's channel count, each span >= frames) into the ring. Never blocks, locks or
-  /// allocates. Returns frames accepted; the rest are dropped and counted by the framework.
-  virtual std::uint32_t write(std::span<const std::span<const float>> channels,
-                              std::uint32_t frames) noexcept = 0;
+	/// Realtime thread only. Interleaves `frames` frames of planar `channels` (size == the
+	/// handoff's channel count, each span >= frames) into the ring. Never blocks, locks or
+	/// allocates. Returns frames accepted; the rest are dropped and counted by the framework.
+	virtual std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept = 0;
+
 protected:
-  ~RtWriter() = default;
+	~RtWriter() = default;
 };
 /// Ordinary-thread end of a handoff, implemented by the node type.
 class HandoffConsumer {
 public:
-  virtual ~HandoffConsumer() = default;
-  /// The handoff's own thread (never realtime or main). May block on I/O. In write order;
-  /// interleaved.size() == frames * channels.
-  virtual void consume(std::span<const float> interleaved, std::uint32_t frames) = 0;
-  /// Same thread, exactly once, after the last consume().
-  virtual void finish() = 0;
+	virtual ~HandoffConsumer() = default;
+	/// The handoff's own thread (never realtime or main). May block on I/O. In write order;
+	/// interleaved.size() == frames * channels.
+	virtual void consume(std::span<const float> interleaved, std::uint32_t frames) = 0;
+	/// Same thread, exactly once, after the last consume().
+	virtual void finish() = 0;
 };
 /// What a node's insides tell, from their own threads; never blocks. Told on the main loop in
 /// order, nothing after close()'s `closed`.
 class InsidesEvents {
 public:
-  virtual void say(std::string text) = 0;      // a note: `node <n> says <text>`; never a state
-  virtual void lost(std::string detail) = 0;   // `failed start-failed: <detail>`; ignored once close() began
+	virtual void say(std::string text) = 0;    // a note: `node <n> says <text>`; never a state
+	virtual void lost(std::string detail) = 0; // `failed start-failed: <detail>`; ignored once close() began
 protected:
-  ~InsidesEvents() = default;
+	~InsidesEvents() = default;
 };
 /// The type's own objects for one node. Destroyed by the framework last.
 class NodeInsides {
 public:
-  virtual ~NodeInsides() = default;
-  /// Drives this node's one port block (the framework makes it; the type cannot make two
-  /// or none). Same object every call; lives as long as the insides.
-  virtual AudioCode& audioCode() = 0;
-  /// Main thread, once, after every handoff closed. Insides with threads stop them and call
-  /// `closed`, last, from any thread; the framework destroys them only after that.
-  virtual void close(std::move_only_function<void()> closed) { closed(); }
+	virtual ~NodeInsides() = default;
+	/// Drives this node's one port block (the framework makes it; the type cannot make two
+	/// or none). Same object every call; lives as long as the insides.
+	virtual AudioCode& audioCode() = 0;
+	/// Main thread, once, after every handoff closed. Insides with threads stop them and call
+	/// `closed`, last, from any thread; the framework destroys them only after that.
+	virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 /// Powers granted to one starting node. Everything made here belongs to the node's insides and
 /// is torn down by the framework in order: outside nodes (sound cards, RTP receivers), handoffs,
 /// insides.
 class NodeGrant {
 public:
-  virtual AudioFormat format() const = 0;   // the value prepare() will get
-  /// `consumer` must live in the returned NodeInsides.
-  virtual RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames,
-                            HandoffConsumer& consumer) = 0;
-  /// Main thread, inside start() only (else std::logic_error). The framework opens the card at
-  /// format().rate with blockPorts.size() channels and joins its channels to blockPorts. The
-  /// node runs once every outside node it asked for is ready, and fails (engine-refused) when
-  /// one is lost, before or after it ran. Outside nodes go with the insides, before the insides
-  /// are destroyed.
-  virtual void soundCard(const SoundCardRequest& request) = 0;
-  /// Main thread, inside start() only, at most once per start (else std::logic_error). The
-  /// framework receives the stream once the port block is ready and joins its channels to
-  /// request.blockPorts; readiness, loss and teardown as soundCard's.
-  virtual void rtpReceiver(const RtpReceiverRequest& request) = 0;
-  /// Main thread, inside start() only (else std::logic_error). Lives until `closed`; may be kept
-  /// by the insides' threads.
-  virtual InsidesEvents& events() = 0;
+	virtual AudioFormat format() const = 0; // the value prepare() will get
+	/// `consumer` must live in the returned NodeInsides.
+	virtual RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames, HandoffConsumer& consumer) = 0;
+	/// Main thread, inside start() only (else std::logic_error). The framework opens the card at
+	/// format().rate with blockPorts.size() channels and joins its channels to blockPorts. The
+	/// node runs once every outside node it asked for is ready, and fails (engine-refused) when
+	/// one is lost, before or after it ran. Outside nodes go with the insides, before the insides
+	/// are destroyed.
+	virtual void soundCard(const SoundCardRequest& request) = 0;
+	/// Main thread, inside start() only, at most once per start (else std::logic_error). The
+	/// framework receives the stream once the port block is ready and joins its channels to
+	/// request.blockPorts; readiness, loss and teardown as soundCard's.
+	virtual void rtpReceiver(const RtpReceiverRequest& request) = 0;
+	/// Main thread, inside start() only (else std::logic_error). Lives until `closed`; may be kept
+	/// by the insides' threads.
+	virtual InsidesEvents& events() = 0;
+
 protected:
-  ~NodeGrant() = default;
+	~NodeGrant() = default;
 };
 /// One node's checked settings; made only by its type's parse().
 class NodeConfig {
 public:
-  virtual ~NodeConfig() = default;
-  virtual const Ports& ports() const = 0;   // pure; the only place this node's ports are declared
-  /// Main thread. Error: the node becomes failed with this reason (startFailed).
-  virtual std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const = 0;
+	virtual ~NodeConfig() = default;
+	virtual const Ports& ports() const = 0; // pure; the only place this node's ports are declared
+	/// Main thread. Error: the node becomes failed with this reason (startFailed).
+	virtual std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const = 0;
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
 enum class SettingKind {
-  text,          // JSON string; written quoted (knobly's quote), read with knobly's string reader
-  wholeNumber,   // JSON integer; written as a bare word, read with knobly's integer reader
+	text,        // JSON string; written quoted (knobly's quote), read with knobly's string reader
+	wholeNumber, // JSON integer; written as a bare word, read with knobly's integer reader
 };
-struct SettingDeclaration { std::string_view key; SettingKind kind; };
+struct SettingDeclaration {
+	std::string_view key;
+	SettingKind kind;
+};
 class NodeType {
 public:
-  virtual ~NodeType() = default;
-  virtual std::string_view name() const = 0;          // the NodeSpec `type`
-  /// Pure; the only place settings are checked; unknown keys are invalid.
-  virtual std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-      parse(const NodeName& node, const NodeSettings& settings) const = 0;
-  /// Every key parse() accepts, each once, with its kind; the same span every call; pure.
-  virtual std::span<const SettingDeclaration> settingKinds() const = 0;
+	virtual ~NodeType() = default;
+	virtual std::string_view name() const = 0; // the NodeSpec `type`
+	/// Pure; the only place settings are checked; unknown keys are invalid.
+	virtual std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
+	parse(const NodeName& node, const NodeSettings& settings) const = 0;
+	/// Every key parse() accepts, each once, with its kind; the same span every call; pure.
+	virtual std::span<const SettingDeclaration> settingKinds() const = 0;
 };
-}
+} // namespace ear

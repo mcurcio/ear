@@ -43,11 +43,11 @@
 #include "sendspin_server.hpp"
 
 /// REQUIRE on a wait for what ear prints, naming all it printed by the time the wait ended.
-#define REQUIRE_SEEN(ear, wait)                     \
-	do {                                            \
-		const bool seen = static_cast<bool>(wait);  \
-		INFO("ear printed:\n" << (ear).output());   \
-		REQUIRE(seen);                              \
+#define REQUIRE_SEEN(ear, wait)                                                                                        \
+	do {                                                                                                               \
+		const bool seen = static_cast<bool>(wait);                                                                     \
+		INFO("ear printed:\n" << (ear).output());                                                                      \
+		REQUIRE(seen);                                                                                                 \
 	} while (false)
 
 namespace {
@@ -65,10 +65,11 @@ constexpr std::int64_t captureToArrivalBoundUs = 500000;
 
 /// A sendspin node called "ma" with these settings, routed side for side into file node "rec".
 std::string maToRec(const std::string& settings) {
-	return graphFileText("node sendspin ma { " + settings + " }\n"
-	                     "node file rec { path \"rec.wav\"; }\n"
-	                     "route ma:from.left rec:record.left;\n"
-	                     "route ma:from.right rec:record.right;\n",
+	return graphFileText("node sendspin ma { " + settings +
+	                         " }\n"
+	                         "node file rec { path \"rec.wav\"; }\n"
+	                         "route ma:from.left rec:record.left;\n"
+	                         "route ma:from.right rec:record.right;\n",
 	                     graphFrequency, blockSize);
 }
 
@@ -83,10 +84,10 @@ constexpr std::string_view connectedPaired = "node ma says connected \"ear-test-
 const std::string pairingCodePrefix = "node ma says pairing-code ";
 
 const std::vector<std::string> runningAndLinked{
-    "node ma running",
-    "node rec running",
-    "route ma:from.left -> rec:record.left linked",
-    "route ma:from.right -> rec:record.right linked",
+	"node ma running",
+	"node rec running",
+	"route ma:from.left -> rec:record.left linked",
+	"route ma:from.right -> rec:record.right linked",
 };
 
 bool waitForLines(ChildProcess& ear, const std::vector<std::string>& lines) {
@@ -98,7 +99,8 @@ bool waitForLines(ChildProcess& ear, const std::vector<std::string>& lines) {
 
 /// The `index`th line (from 0) starting with `prefix`, once ear has printed it. ChildProcess gives only the first, and
 /// offers no wake on "something new", so this reads what arrives in short bounded reads; the line arriving ends the wait.
-std::optional<std::string> waitForNthLine(ChildProcess& ear, const std::string& prefix, std::size_t index, std::chrono::milliseconds patience) {
+std::optional<std::string> waitForNthLine(ChildProcess& ear, const std::string& prefix, std::size_t index,
+                                          std::chrono::milliseconds patience) {
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
 		std::istringstream lines(ear.output());
@@ -225,7 +227,8 @@ bool connectRefused(std::uint16_t port) {
 	address.sin_family = AF_INET;
 	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	address.sin_port = htons(port);
-	const bool refused = ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 && errno == ECONNREFUSED;
+	const bool refused =
+		::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) != 0 && errno == ECONNREFUSED;
 	::close(fd);
 	return refused;
 }
@@ -274,7 +277,8 @@ public:
 		address.sin_port = htons(port);
 		REQUIRE(::connect(fd_, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
 		const std::string upgrade = "GET /sendspin HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
-		                            "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		                            "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "
+		                            "dGhlIHNhbXBsZSBub25jZQ==\r\n"
 		                            "Sec-WebSocket-Version: 13\r\n\r\n";
 		REQUIRE(::send(fd_, upgrade.data(), upgrade.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(upgrade.size()));
 		std::string answer;
@@ -290,8 +294,7 @@ public:
 
 	/// Sends `next(offset)`'s bytes for as long as ear keeps the connection, up to `most`. How much went out before ear closed
 	/// it, or nothing if it never did within that much or the deadline.
-	template <typename Next>
-	std::optional<std::size_t> sendUntilClosed(std::size_t most, Next next) {
+	template <typename Next> std::optional<std::size_t> sendUntilClosed(std::size_t most, Next next) {
 		std::size_t sent = 0;
 		std::string pending;
 		std::array<char, 4096> inbound{};
@@ -327,7 +330,8 @@ std::string frameHeader(std::uint8_t first, std::uint64_t length) {
 		header += static_cast<char>(0x80U | length);
 	} else {
 		header += static_cast<char>(0x80U | 127U);
-		for (int shift = 56; shift >= 0; shift -= 8) header += static_cast<char>((length >> static_cast<unsigned>(shift)) & 0xFFU);
+		for (int shift = 56; shift >= 0; shift -= 8)
+			header += static_cast<char>((length >> static_cast<unsigned>(shift)) & 0xFFU);
 	}
 	return header + std::string(4, '\0');
 }
@@ -347,7 +351,7 @@ std::string mdnsQuery(std::size_t questions, std::uint16_t flags = 0, std::uint1
 	packet[3] = static_cast<char>(flags & 0xFFU);
 	packet[4] = static_cast<char>(questions >> 8U);
 	packet[5] = static_cast<char>(questions & 0xFFU);
-	const std::string typeAndClass("\0\x0c\0\x01", 4);   // PTR, IN
+	const std::string typeAndClass("\0\x0c\0\x01", 4); // PTR, IN
 	packet += std::string("\x09_sendspin\x04_tcp\x05local\0", 22) + typeAndClass;
 	for (std::size_t i = 1; i < questions; ++i) packet += std::string("\xc0\x0c", 2) + typeAndClass;
 	return packet;
@@ -385,7 +389,8 @@ public:
 		to.sin_family = AF_INET;
 		to.sin_port = htons(mdnsPort);
 		REQUIRE(::inet_pton(AF_INET, std::string(address).c_str(), &to.sin_addr) == 1);
-		REQUIRE(::sendto(fd_, packet.data(), packet.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to) == static_cast<ssize_t>(packet.size()));
+		REQUIRE(::sendto(fd_, packet.data(), packet.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to) ==
+		        static_cast<ssize_t>(packet.size()));
 	}
 
 	/// The next response (a datagram marked QR=1) that holds `text`, within `patience`; nothing otherwise. Queries, and other
@@ -394,30 +399,35 @@ public:
 		const auto until = std::chrono::steady_clock::now() + patience;
 		std::array<char, 9000> buffer{};
 		for (;;) {
-			const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
+			const auto left =
+				std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now()).count();
 			if (left <= 0) return std::nullopt;
 			pollfd ready{fd_, POLLIN, 0};
 			if (::poll(&ready, 1, static_cast<int>(left)) <= 0) continue;
 			const auto got = ::recv(fd_, buffer.data(), buffer.size(), 0);
 			if (got < static_cast<ssize_t>(mdnsHeaderBytes)) continue;
 			const std::string packet(buffer.data(), static_cast<std::size_t>(got));
-			if ((static_cast<unsigned char>(packet[2]) & 0x80U) != 0 && packet.find(text) != std::string::npos) return packet;
+			if ((static_cast<unsigned char>(packet[2]) & 0x80U) != 0 && packet.find(text) != std::string::npos)
+				return packet;
 		}
 	}
 
 	/// How many answers `packet` drew from a socket that answers in turn: a query marked by its id goes after it, and answers
 	/// are counted until the marked one comes back, however long that takes.
-	std::optional<std::size_t> answersTo(std::string_view address, const std::string& packet, std::string_view text, std::chrono::milliseconds patience) {
+	std::optional<std::size_t> answersTo(std::string_view address, const std::string& packet, std::string_view text,
+	                                     std::chrono::milliseconds patience) {
 		constexpr std::uint16_t marker = 0x7E57;
 		sendTo(address, packet);
 		sendTo(address, mdnsQuery(1, 0, marker));
 		const auto until = std::chrono::steady_clock::now() + patience;
 		std::size_t found = 0;
 		for (;;) {
-			const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+			const auto left =
+				std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
 			const auto answer = nextResponse(text, left);
 			if (!answer) return std::nullopt;
-			const auto id = static_cast<std::uint16_t>((static_cast<unsigned char>((*answer)[0]) << 8U) | static_cast<unsigned char>((*answer)[1]));
+			const auto id = static_cast<std::uint16_t>((static_cast<unsigned char>((*answer)[0]) << 8U) |
+			                                           static_cast<unsigned char>((*answer)[1]));
 			if (id == marker) return found;
 			++found;
 		}
@@ -428,7 +438,8 @@ public:
 		const auto until = std::chrono::steady_clock::now() + patience;
 		std::size_t found = 0;
 		for (;;) {
-			const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+			const auto left =
+				std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
 			if (left.count() <= 0 || !nextResponse(text, left)) return found;
 			++found;
 		}
@@ -443,7 +454,8 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 	writeGraphFile(directory, dialToRec(url));
 	{
 		auto ear = runEar(directory);
-		const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
+		const bool ready =
+			waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
 		INFO("ear printed:\n" << ear.output());
 		REQUIRE(ready);
 		const std::uint16_t port = controlPort(ear);
@@ -451,10 +463,12 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 		REQUIRE(rpc.call("graph.subscribe").contains("result"));
 
 		const auto before = std::chrono::steady_clock::now();
-		const json update = rpc.call("node.update", {{"name", "ma"}, {"settings", {{"server", url}, {"name", "Other"}}}});
+		const json update =
+			rpc.call("node.update", {{"name", "ma"}, {"settings", {{"server", url}, {"name", "Other"}}}});
 		INFO(update.dump());
 		REQUIRE(update.contains("result"));
-		rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"state", "running"}}); });
+		rpc.waitFor(
+			[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "ma"}, {"state", "running"}}); });
 		CHECK(std::chrono::steady_clock::now() - before < stopBound);
 
 		ear.signal(SIGTERM);
@@ -480,7 +494,7 @@ struct RampCheck {
 	std::size_t zeroFramesInside = 0;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
-	std::size_t lastRunFrames = 0;   // frames since the last step that was neither +1 nor a block's multiple
+	std::size_t lastRunFrames = 0; // frames since the last step that was neither +1 nor a block's multiple
 };
 
 RampCheck checkRamp(const Wav& wav) {
@@ -509,7 +523,9 @@ RampCheck checkRamp(const Wav& wav) {
 			++result.badFrames;
 			continue;
 		}
-		const auto word = [](float value) { return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU; };
+		const auto word = [](float value) {
+			return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU;
+		};
 		const std::uint32_t index = word(lo) | (word(hi) << 16U);
 		if (previous) {
 			const std::uint32_t step = index - *previous;
@@ -530,7 +546,8 @@ RampCheck checkRamp(const Wav& wav) {
 
 } // namespace
 
-TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server plays lands in the WAV, frame for frame",
+TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server plays lands in the "
+          "WAV, frame for frame",
           "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
@@ -554,7 +571,7 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	REQUIRE(ear.waitForLineStartingWith("node ma says paired ", deadline));
 	REQUIRE(ear.waitForLine(connectedPaired, deadline));
 	CHECK(ear.hasLine("node ma says pairing-code-cleared"));
-	CHECK(countLines(ear, pairingCodePrefix) == 1);   // the wrong round kept the code
+	CHECK(countLines(ear, pairingCodePrefix) == 1); // the wrong round kept the code
 	CHECK_FALSE(ear.lineStartingWith("node ma says pairing-failed"));
 	CHECK_FALSE(ear.hasLine("node ma says disconnected"));
 
@@ -573,13 +590,15 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	REQUIRE(wav.info.channels == 2);
 	const RampCheck ramp = checkRamp(wav);
 	INFO("ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps " << ramp.badSteps
-	                    << ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex);
+	                    << ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to "
+	                    << ramp.lastIndex);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
 }
 
-TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is asked for no code", "[system][sendspin]") {
+TEST_CASE("A restarted ear keeps its identity and its pairing, at 0600, and is asked for no code",
+          "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
@@ -632,15 +651,19 @@ TEST_CASE("A server that trusts without pairing gets no stream and no source rol
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("Paired, routed noise reaches the server on the routed channel, with exact zeros on the other", "[system][sendspin]") {
+TEST_CASE("Paired, routed noise reaches the server on the routed channel, with exact zeros on the other",
+          "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
 	writeGraphFile(directory, graphFileText("node white noise;\n"
-	                                        "node sendspin ma { server \"" + server.url() + "\"; }\n"
-	                                        "route noise:noise.mono ma:to.left;\n",
+	                                        "node sendspin ma { server \"" +
+	                                            server.url() +
+	                                            "\"; }\n"
+	                                            "route noise:noise.mono ma:to.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
-	const bool ready = ear.waitForLine("route noise:noise.mono -> ma:to.left linked", deadline) && ear.waitForLine(connectedUnpaired, deadline);
+	const bool ready = ear.waitForLine("route noise:noise.mono -> ma:to.left linked", deadline) &&
+	                   ear.waitForLine(connectedUnpaired, deadline);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
@@ -666,7 +689,7 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	std::int64_t arrivalLagUs = 0;
 	fields >> frames >> rms >> rightNonZero >> stampsUs >> framesBeforeLast >> arrivalLagUs;
 	CHECK(frames >= graphFrequency);
-	CHECK(rms == Approx(0.577).margin(0.03));   // uniform noise in [-1, 1)
+	CHECK(rms == Approx(0.577).margin(0.03)); // uniform noise in [-1, 1)
 	CHECK(rightNonZero == 0);
 	const auto durationUs = static_cast<std::int64_t>(framesBeforeLast) * 1000000 / graphFrequency;
 	CHECK(std::abs(stampsUs - durationUs) <= 50000);
@@ -681,7 +704,9 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	CHECK(ear.hasLine("node ma stopped dropped=0"));
 }
 
-TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings leaves it held, a new name releases it", "[system][sendspin]") {
+TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings leaves it held, a "
+          "new name releases it",
+          "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
@@ -714,7 +739,8 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 	// A new name is a new client, on the same key file, and the round limit lives in memory.
 	const std::size_t idsBefore = countLines(ear, "node ma says id ");
 	const std::size_t connectsBefore = countLines(ear, "node ma says connected ");
-	const json renamed = rpc.call("node.update", {{"name", "ma"}, {"settings", {{"server", server.url()}, {"name", "Other"}}}});
+	const json renamed =
+		rpc.call("node.update", {{"name", "ma"}, {"settings", {{"server", server.url()}, {"name", "Other"}}}});
 	INFO(renamed.dump());
 	REQUIRE(renamed.contains("result"));
 	REQUIRE(waitForNthLine(ear, "node ma says id ", idsBefore, deadline));
@@ -735,10 +761,11 @@ TEST_CASE("20 wrong rounds hold pairing back: an update with the same settings l
 TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the graph runs", "[system][sendspin]") {
 	TempDirectory directory;
 	const std::string url = "ws://127.0.0.1:" + std::to_string(freeTcpPort()) + "/sendspin";
-	writeGraphFile(directory, graphFileText("node sendspin ma { server \"" + url + "\"; }\n"
-	                                        "node white noise;\n"
-	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route noise:noise.mono rec:record.left;\n",
+	writeGraphFile(directory, graphFileText("node sendspin ma { server \"" + url +
+	                                            "\"; }\n"
+	                                            "node white noise;\n"
+	                                            "node file rec { path \"rec.wav\"; }\n"
+	                                            "route noise:noise.mono rec:record.left;\n",
 	                                        graphFrequency, blockSize));
 	const auto keyFile = directory.config() / "sendspin-ma.key";
 	const std::string corrupt = "{ this is no key file";
@@ -753,7 +780,7 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	CHECK(*failed == "node ma failed start-failed: sendspin-ma.key: malformed: not JSON");
 	REQUIRE(others);
 	CHECK(readText(keyFile) == corrupt);
-	CHECK(modeOf(keyFile) == std::filesystem::perms(0600));   // a refused file may still hold a private key
+	CHECK(modeOf(keyFile) == std::filesystem::perms(0600)); // a refused file may still hold a private key
 	CHECK_FALSE(ear.lineStartingWith("node ma says id "));
 
 	{
@@ -772,7 +799,8 @@ TEST_CASE("A corrupt key file fails the node, unchanged, and the rest of the gra
 	CHECK(readText(keyFile) == corrupt);
 }
 
-TEST_CASE("With no server at all the sendspin node runs, its meters silent, and SIGTERM exits 0", "[system][sendspin]") {
+TEST_CASE("With no server at all the sendspin node runs, its meters silent, and SIGTERM exits 0",
+          "[system][sendspin]") {
 	TempDirectory directory;
 	const std::string url = "ws://127.0.0.1:" + std::to_string(freeTcpPort()) + "/sendspin";
 	writeGraphFile(directory, dialToRec(url));
@@ -791,8 +819,8 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 		INFO(levels.dump());
 		for (const char* port : {"from.left", "from.right"}) {
 			const json& meter = levels["params"]["nodes"]["ma"][port];
-			CHECK(meter[0].get<double>() == 0.0);   // peak
-			CHECK(meter[1].get<double>() == 0.0);   // RMS
+			CHECK(meter[0].get<double>() == 0.0); // peak
+			CHECK(meter[1].get<double>() == 0.0); // RMS
 		}
 	}
 	ear.signal(SIGTERM);
@@ -820,8 +848,8 @@ TEST_CASE("A slow upgrade sees one connection and no another_server, then connec
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	const bool ready = waitForLines(ear, runningAndLinked) &&
-	                   ear.waitForLine(std::string(connectedUnpaired), playDeadline);
+	const bool ready =
+		waitForLines(ear, runningAndLinked) && ear.waitForLine(std::string(connectedUnpaired), playDeadline);
 	INFO("ear printed:\n" << ear.output());
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(ready);
@@ -864,7 +892,9 @@ namespace {
 void checkFoundOverMdns(const std::string& node, const std::string& settings, const std::string& name) {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin " + node + " { port " + std::to_string(port) + "; " + settings + " }\n", graphFrequency, blockSize));
+	writeGraphFile(directory,
+	               graphFileText("node sendspin " + node + " { port " + std::to_string(port) + "; " + settings + " }\n",
+	                             graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, node, port);
 	CHECK(instance.size() <= 63);
@@ -897,7 +927,9 @@ void checkFoundOverMdns(const std::string& node, const std::string& settings, co
 
 } // namespace
 
-TEST_CASE("A server browsing mDNS finds a listening node, its TXT says its path and name, and it is gone after SIGTERM", "[system][sendspin]") {
+TEST_CASE("A server browsing mDNS finds a listening node, its TXT says its path and name, and it "
+          "is gone after SIGTERM",
+          "[system][sendspin]") {
 	checkFoundOverMdns("found", "name \"Front Room\";", "Front Room");
 }
 
@@ -909,7 +941,8 @@ TEST_CASE("A 64-character node name is found over mDNS too", "[system][sendspin]
 TEST_CASE("A server browsing mDNS comes back by itself after a new name restarts the node", "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin back { port " + std::to_string(port) + "; }\n", graphFrequency, blockSize));
+	writeGraphFile(directory, graphFileText("node sendspin back { port " + std::to_string(port) + "; }\n",
+	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "back", port);
 	SendspinTestServer server({"--discover", instance});
@@ -928,19 +961,22 @@ TEST_CASE("A server browsing mDNS comes back by itself after a new name restarts
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it resumes paired with no action", "[system][sendspin]") {
+TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it "
+          "resumes paired with no action",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	const std::string url = "ws://127.0.0.1:" + std::to_string(port) + "/sendspin";
 	TempDirectory directory;
 	const auto state = directory.path() / "server-state";
 	std::filesystem::create_directories(state);
-	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(port) + "; }\n"
-	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "node white noise;\n"
-	                                        "node file other { path \"other.wav\"; }\n"
-	                                        "route ma:from.left rec:record.left;\n"
-	                                        "route ma:from.right rec:record.right;\n"
-	                                        "route noise:noise.mono other:record.left;\n",
+	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(port) +
+	                                            "; }\n"
+	                                            "node file rec { path \"rec.wav\"; }\n"
+	                                            "node white noise;\n"
+	                                            "node file other { path \"other.wav\"; }\n"
+	                                            "route ma:from.left rec:record.left;\n"
+	                                            "route ma:from.right rec:record.right;\n"
+	                                            "route noise:noise.mono other:record.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	waitForInstance(ear, "ma", port);
@@ -963,7 +999,7 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 		REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 		pairOnce(ear, server);
 		server.send("play 30");
-		REQUIRE_SEEN(ear, heard("ma", "from.right"));   // the ramp's high half: mid-stream, past its first 1.4 s
+		REQUIRE_SEEN(ear, heard("ma", "from.right")); // the ramp's high half: mid-stream, past its first 1.4 s
 	}
 	REQUIRE_SEEN(ear, ear.waitForLine("node ma says disconnected", playDeadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
@@ -983,22 +1019,28 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
-	INFO("frames of the last run " << ramp.lastRunFrames << ", last index " << ramp.lastIndex << ", not ramp " << ramp.badFrames);
+	INFO("frames of the last run " << ramp.lastRunFrames << ", last index " << ramp.lastIndex << ", not ramp "
+	                               << ramp.badFrames);
 	CHECK(ramp.lastRunFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 }
 
-TEST_CASE("A port another program holds fails the node with the kernel's reason, and a free port recovers it", "[system][sendspin]") {
+TEST_CASE("A port another program holds fails the node with the kernel's reason, and a free port "
+          "recovers it",
+          "[system][sendspin]") {
 	Listener holder(16);
 	const std::uint16_t held = holder.port();
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(held) + "; }\n"
-	                                        "node white noise;\n"
-	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route noise:noise.mono rec:record.left;\n",
+	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(held) +
+	                                            "; }\n"
+	                                            "node white noise;\n"
+	                                            "node file rec { path \"rec.wav\"; }\n"
+	                                            "route noise:noise.mono rec:record.left;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
-	const bool failed = ear.waitForLine("node ma failed start-failed: cannot listen on port " + std::to_string(held) + ": Address already in use", deadline) &&
+	const bool failed = ear.waitForLine("node ma failed start-failed: cannot listen on port " + std::to_string(held) +
+	                                        ": Address already in use",
+	                                    deadline) &&
 	                    waitForLines(ear, {"node rec running", "route noise:noise.mono -> rec:record.left linked"});
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(failed);
@@ -1016,15 +1058,20 @@ TEST_CASE("A port another program holds fails the node with the kernel's reason,
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, and a free port recovers it", "[system][sendspin]") {
+TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, and a free port "
+          "recovers it",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	const std::string saying = " says listening " + std::to_string(port) + " as ";
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin a { port " + std::to_string(port) + "; }\n"
-	                                        "node sendspin b { port " + std::to_string(port) + "; }\n",
+	writeGraphFile(directory, graphFileText("node sendspin a { port " + std::to_string(port) +
+	                                            "; }\n"
+	                                            "node sendspin b { port " +
+	                                            std::to_string(port) + "; }\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
-	const std::string refusal = "failed start-failed: cannot listen on port " + std::to_string(port) + ": held by node ";
+	const std::string refusal =
+		"failed start-failed: cannot listen on port " + std::to_string(port) + ": held by node ";
 	// Which of the two starts first is not this test's business.
 	const auto until = std::chrono::steady_clock::now() + deadline;
 	std::optional<std::string> refused;
@@ -1053,7 +1100,9 @@ TEST_CASE("Two sendspin nodes on one port: the second fails naming the first, an
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A new name while a server is connected keeps the port: the node still listens and a server reaches it", "[system][sendspin]") {
+TEST_CASE("A new name while a server is connected keeps the port: the node still listens and a "
+          "server reaches it",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, listenToRec(port));
@@ -1069,7 +1118,7 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	REQUIRE(update.contains("result"));
 	const auto again = waitForNthLine(ear, saying, 1, playDeadline);
 	REQUIRE_SEEN(ear, again);
-	CHECK(*again == *ear.lineStartingWith(saying));   // the same key file, so the same instance
+	CHECK(*again == *ear.lineStartingWith(saying)); // the same key file, so the same instance
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	const auto gone = server.waitForEvent("disconnected ", deadline);
 	INFO("the server printed:\n" << server.events());
@@ -1083,7 +1132,9 @@ TEST_CASE("A new name while a server is connected keeps the port: the node still
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("An upgrade carrying Origin is closed before any client/init, and the same without it gets client/init", "[system][sendspin]") {
+TEST_CASE("An upgrade carrying Origin is closed before any client/init, and the same without it "
+          "gets client/init",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, listenToRec(port));
@@ -1099,18 +1150,22 @@ TEST_CASE("An upgrade carrying Origin is closed before any client/init, and the 
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("One dialling and one listening node have separate identities, on one server, and both play", "[system][sendspin]") {
+TEST_CASE("One dialling and one listening node have separate identities, on one server, and both play",
+          "[system][sendspin]") {
 	SendspinTestServer server;
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin out { server \"" + server.url() + "\"; }\n"
-	                                        "node sendspin in { port " + std::to_string(port) + "; }\n"
-	                                        "node file recOut { path \"out.wav\"; }\n"
-	                                        "node file recIn { path \"in.wav\"; }\n"
-	                                        "route out:from.left recOut:record.left;\n"
-	                                        "route out:from.right recOut:record.right;\n"
-	                                        "route in:from.left recIn:record.left;\n"
-	                                        "route in:from.right recIn:record.right;\n",
+	writeGraphFile(directory, graphFileText("node sendspin out { server \"" + server.url() +
+	                                            "\"; }\n"
+	                                            "node sendspin in { port " +
+	                                            std::to_string(port) +
+	                                            "; }\n"
+	                                            "node file recOut { path \"out.wav\"; }\n"
+	                                            "node file recIn { path \"in.wav\"; }\n"
+	                                            "route out:from.left recOut:record.left;\n"
+	                                            "route out:from.right recOut:record.right;\n"
+	                                            "route in:from.left recIn:record.left;\n"
+	                                            "route in:from.right recIn:record.right;\n",
 	                                        graphFrequency, blockSize));
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "in", port);
@@ -1139,7 +1194,7 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-out.key"));
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-in.key"));
 
-	server.send("play 1.5");   // the node paired last
+	server.send("play 1.5"); // the node paired last
 	server.send("use " + outId);
 	server.send("play 1.5");
 	REQUIRE_SEEN(ear, ear.waitForLine("node in says stream-ended", playDeadline));
@@ -1149,7 +1204,8 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	for (const char* file : {"out.wav", "in.wav"}) {
 		const RampCheck ramp = checkRamp(readWav(directory.recordings() / file));
-		INFO(file << ": ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps " << ramp.badSteps);
+		INFO(file << ": ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps "
+		          << ramp.badSteps);
 		CHECK(ramp.rampFrames >= rampFramesAtLeast);
 		CHECK(ramp.badFrames == 0);
 		CHECK(ramp.badSteps == 0);
@@ -1164,13 +1220,15 @@ TEST_CASE("A dialling node opens no listening socket", "[system][sendspin]") {
 	const bool ready = waitForLines(ear, runningAndLinked) && ear.waitForLine("node ma says dialling " + url, deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
-	CHECK(connectRefused(8928));   // the library's default, and no test here listens on it
+	CHECK(connectRefused(8928)); // the library's default, and no test here listens on it
 	CHECK_FALSE(ear.lineStartingWith("node ma says listening"));
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A frame that claims more than a message may hold is closed before it costs any memory, and the node runs on", "[system][sendspin]") {
+TEST_CASE("A frame that claims more than a message may hold is closed before it costs any memory, "
+          "and the node runs on",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, listenToRec(port));
@@ -1195,7 +1253,7 @@ TEST_CASE("A frame that claims more than a message may hold is closed before it 
 		RawPeer peer(port);
 		bool first = true;
 		const auto sent = peer.sendUntilClosed(flood, [&] {
-			std::string next = frameHeader(first ? 0x02 : 0x00, 65536);   // never the last of a message
+			std::string next = frameHeader(first ? 0x02 : 0x00, 65536); // never the last of a message
 			first = false;
 			next.resize(next.size() + 65536);
 			return next;
@@ -1245,18 +1303,22 @@ TEST_CASE("Bare connects cannot fill the log", "[system][sendspin]") {
 	const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 	std::istringstream lines(ear.output());
 	std::size_t transportLines = 0;
-	for (std::string line; std::getline(lines, line);) transportLines += line.find("handleConnection") != std::string::npos ? 1U : 0U;
+	for (std::string line; std::getline(lines, line);)
+		transportLines += line.find("handleConnection") != std::string::npos ? 1U : 0U;
 	INFO(connects << " connects in " << seconds << " s, " << transportLines << " lines");
-	CHECK(static_cast<double>(transportLines) <= seconds / 10.0 + 2.0);   // one every 10 s, whatever the connects
+	CHECK(static_cast<double>(transportLines) <= seconds / 10.0 + 2.0); // one every 10 s, whatever the connects
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A node removed and added back while a server is connected takes its port back, once the old one has let go", "[system][sendspin]") {
+TEST_CASE("A node removed and added back while a server is connected takes its port back, once the "
+          "old one has let go",
+          "[system][sendspin]") {
 	const std::uint16_t port = freeTcpPort();
 	const std::string url = "ws://127.0.0.1:" + std::to_string(port) + "/sendspin";
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(port) + "; }\n", graphFrequency, blockSize));
+	writeGraphFile(directory, graphFileText("node sendspin ma { port " + std::to_string(port) + "; }\n", graphFrequency,
+	                                        blockSize));
 	auto ear = runEar(directory);
 	waitForInstance(ear, "ma", port);
 	SendspinTestServer server({"--dial", url});
@@ -1273,7 +1335,7 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma running", 1, deadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	const std::string printed = ear.output();
-	CHECK(printed.find("node ma stopped") < printed.rfind(saying));   // the old one was gone first
+	CHECK(printed.find("node ma stopped") < printed.rfind(saying)); // the old one was gone first
 	server.send("dial " + url);
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);
@@ -1281,18 +1343,22 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A server's name with control characters and a line break stays on one status line, quoted", "[system][sendspin]") {
+TEST_CASE("A server's name with control characters and a line break stays on one status line, quoted",
+          "[system][sendspin]") {
 	SendspinTestServer server({"--name", "line\nnode ma says paired x\xc2\x9b\xe2\x80\xa8 \"q\""});
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
 	auto ear = runEar(directory);
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says connected \"line?node ma says paired x?? ?q?\" unpaired", deadline));
+	REQUIRE_SEEN(ear,
+	             ear.waitForLine("node ma says connected \"line?node ma says paired x?? ?q?\" unpaired", deadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma says paired"));
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
-TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bits it refuses, and the WAV holds the ramp", "[system][sendspin]") {
+TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bits it refuses, and "
+          "the WAV holds the ramp",
+          "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
 	writeGraphFile(directory, dialToRec(server.url()));
@@ -1323,7 +1389,8 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 TEST_CASE("A large block raises the lead the player reports to what still plays after a clear", "[system][sendspin]") {
 	SendspinTestServer server;
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node sendspin ma { server \"" + server.url() + "\"; }\n", graphFrequency, 4096));
+	writeGraphFile(directory,
+	               graphFileText("node sendspin ma { server \"" + server.url() + "\"; }\n", graphFrequency, 4096));
 	auto ear = runEar(directory);
 	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 	pairOnce(ear, server);
@@ -1331,13 +1398,13 @@ TEST_CASE("A large block raises the lead the player reports to what still plays 
 	const auto lead = server.waitForEvent("lead ", playDeadline);
 	INFO("the server printed:\n" << server.events());
 	REQUIRE(lead);
-	CHECK(*lead == "lead 256");   // the feed's 8192 frames and a block of 4096, at 48 kHz
+	CHECK(*lead == "lead 256"); // the feed's 8192 frames and a block of 4096, at 48 kHz
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
 
 TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and A", "[system][sendspin]") {
-	MdnsSocket browser(true);   // before ear: only an announcement can reach it
+	MdnsSocket browser(true); // before ear: only an announcement can reach it
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, listenToRec(port));
@@ -1348,10 +1415,13 @@ TEST_CASE("A listening node announces itself unasked, with its PTR, SRV, TXT and
 	REQUIRE_SEEN(ear, announcement);
 	CHECK(announcement->find("path=/sendspin") != std::string::npos);
 	CHECK(announcement->find("name=ma") != std::string::npos);
-	const auto count = [&](std::size_t at) { return (static_cast<unsigned char>((*announcement)[at]) << 8U) | static_cast<unsigned char>((*announcement)[at + 1]); };
-	CHECK(count(4) == 0);                            // no questions: nobody asked
-	CHECK(count(6) == 1);                            // the PTR
-	CHECK(count(10) >= 3);                           // the SRV, the A and the TXT
+	const auto count = [&](std::size_t at) {
+		return (static_cast<unsigned char>((*announcement)[at]) << 8U) |
+		       static_cast<unsigned char>((*announcement)[at + 1]);
+	};
+	CHECK(count(4) == 0);  // no questions: nobody asked
+	CHECK(count(6) == 1);  // the PTR
+	CHECK(count(10) >= 3); // the SRV, the A and the TXT
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
@@ -1382,9 +1452,9 @@ TEST_CASE("One datagram of many questions gets one answer, and a response or a r
 	REQUIRE(many.size() <= 2040);
 	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));
 	CHECK(answers(many) == std::optional<std::size_t>(1));
-	CHECK(answers(mdnsQuery(330, 0x8000)) == std::optional<std::size_t>(0));   // QR=1
-	CHECK(answers(many.substr(0, 6)) == std::optional<std::size_t>(0));        // shorter than a header
-	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));             // and it still answers
+	CHECK(answers(mdnsQuery(330, 0x8000)) == std::optional<std::size_t>(0)); // QR=1
+	CHECK(answers(many.substr(0, 6)) == std::optional<std::size_t>(0));      // shorter than a header
+	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));           // and it still answers
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
@@ -1407,7 +1477,7 @@ TEST_CASE("A burst of multicast queries gets at most an answer a second", "[syst
 	const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 	INFO(answers << " answers in " << seconds << " s");
 	CHECK(answers >= 1);
-	CHECK(static_cast<double>(answers) <= seconds + 2.0);   // one at each whole second, the announcement among them
+	CHECK(static_cast<double>(answers) <= seconds + 2.0); // one at each whole second, the announcement among them
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
@@ -1440,7 +1510,8 @@ int connectFrom(const std::string& source, std::uint16_t port) {
 
 std::string upgradeRequest(std::uint16_t port) {
 	return "GET /sendspin HTTP/1.1\r\nHost: 127.0.0.1:" + std::to_string(port) +
-	       "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+	       "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: "
+	       "dGhlIHNhbXBsZSBub25jZQ==\r\n"
 	       "Sec-WebSocket-Version: 13\r\n\r\n";
 }
 
@@ -1460,13 +1531,12 @@ public:
 	struct Shape {
 		std::vector<std::string> sources;
 		std::size_t perSource;
-		bool upgrades;   // false: a bare connect, no byte sent
+		bool upgrades; // false: a bare connect, no byte sent
 		std::chrono::milliseconds hold;
 		bool renewing;
 	};
 
-	SilentPeers(std::uint16_t port, Shape shape)
-	    : port_(port), shape_(std::move(shape)), thread_([this] { run(); }) {}
+	SilentPeers(std::uint16_t port, Shape shape) : port_(port), shape_(std::move(shape)), thread_([this] { run(); }) {}
 
 	~SilentPeers() {
 		{
@@ -1503,7 +1573,8 @@ private:
 					const int fd = connectFrom(source, port_);
 					if (fd < 0) continue;
 					round.push_back(fd);
-					if (shape_.upgrades && ::send(fd, request.data(), request.size(), MSG_NOSIGNAL) > 0) answeredUpgrade(fd);
+					if (shape_.upgrades && ::send(fd, request.data(), request.size(), MSG_NOSIGNAL) > 0)
+						answeredUpgrade(fd);
 				}
 			}
 			closeAll(held);
@@ -1527,7 +1598,9 @@ private:
 
 /// Two upgraded sockets from `source`, renewed each `every`: the holder of section 11, item 6, with the renewal shortened
 /// from 28 s so a test sees several.
-SilentPeers::Shape holder(const std::string& source, std::chrono::milliseconds every = 1s) { return {{source}, 2, true, every, true}; }
+SilentPeers::Shape holder(const std::string& source, std::chrono::milliseconds every = 1s) {
+	return {{source}, 2, true, every, true};
+}
 /// Upgraded sockets from these sources, as fast as a test should ask of a shared host.
 SilentPeers::Shape flood(std::vector<std::string> sources) { return {std::move(sources), 2, true, 20ms, false}; }
 /// How many threads past the sockets' bound a test allows, for those ending as the next begins: peaks of up to 88 were seen
@@ -1539,10 +1612,10 @@ struct ListeningEar {
 	TempDirectory directory;
 	ChildProcess ear;
 	ListeningEar()
-	    : ear([this] {
-		      writeGraphFile(directory, listenToRec(port));
-		      return runEar(directory);
-	      }()) {
+		: ear([this] {
+			  writeGraphFile(directory, listenToRec(port));
+			  return runEar(directory);
+		  }()) {
 		waitForInstance(ear, "ma", port);
 	}
 	std::string url() const { return "ws://127.0.0.1:" + std::to_string(port) + "/sendspin"; }
@@ -1575,7 +1648,8 @@ bool answersSlowUpgrade(SilentPeers& peers, const std::string& source, std::uint
 	const auto started = std::chrono::steady_clock::now();
 	REQUIRE(peers.waitForRounds(rounds));
 	const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-	const bool sent = ::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL) == static_cast<ssize_t>(request.size() - half);
+	const bool sent = ::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL) ==
+	                  static_cast<ssize_t>(request.size() - half);
 	const bool answered = sent && answeredUpgrade(fd);
 	::close(fd);
 	INFO("the upgrade took " << took.count() << " ms, of the 3 s the transport gives one");
@@ -1583,7 +1657,7 @@ bool answersSlowUpgrade(SilentPeers& peers, const std::string& source, std::uint
 	return answered;
 }
 
-}  // namespace
+} // namespace
 
 // Section 11, item 6: what an unproved peer can keep a server out of. Peers on 127.0.0.1 share the server's address, as a
 // peer behind the same NAT or proxy does; a peer on another 127/8 address does not.
@@ -1595,7 +1669,9 @@ TEST_CASE("A server pairs and plays beside two silent sockets renewed from its o
 	checkPairsAndPlays(node.ear, node.directory, server);
 }
 
-TEST_CASE("Bare sockets filling an address's share and renewed before their upgrade is due keep nobody out", "[system][sendspin]") {
+TEST_CASE("Bare sockets filling an address's share and renewed before their upgrade is due keep "
+          "nobody out",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 2s, true});
 	REQUIRE(peers.waitForRounds(1));
@@ -1630,7 +1706,7 @@ TEST_CASE("A peer still proving itself is not displaced by a flood from one othe
 	REQUIRE(::send(fd, request.data(), request.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(request.size()));
 	REQUIRE(answeredUpgrade(fd));
 	std::array<char, 4096> init{};
-	REQUIRE(::recv(fd, init.data(), init.size(), 0) > 0);   // client/init: it is in the room
+	REQUIRE(::recv(fd, init.data(), init.size(), 0) > 0); // client/init: it is in the room
 	{
 		SilentPeers peers(node.port, {{"127.0.0.2"}, 8, true, 1ms, false});
 		REQUIRE(peers.waitForRounds(50));
@@ -1643,7 +1719,9 @@ TEST_CASE("A peer still proving itself is not displaced by a flood from one othe
 	::close(fd);
 }
 
-TEST_CASE("A server waiting for its code is not displaced by silent sockets and neither is the stream it then plays", "[system][sendspin]") {
+TEST_CASE("A server waiting for its code is not displaced by silent sockets and neither is the "
+          "stream it then plays",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SendspinTestServer server({"--dial", node.url()});
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
@@ -1664,7 +1742,9 @@ TEST_CASE("A server waiting for its code is not displaced by silent sockets and 
 	CHECK_FALSE(node.ear.hasLine("node ma says disconnected"));
 }
 
-TEST_CASE("A paired server that has proved itself and not yet activated is never displaced by a silent socket", "[system][sendspin]") {
+TEST_CASE("A paired server that has proved itself and not yet activated is never displaced by a "
+          "silent socket",
+          "[system][sendspin]") {
 	ListeningEar node;
 	TempDirectory state;
 	{
@@ -1684,13 +1764,15 @@ TEST_CASE("A paired server that has proved itself and not yet activated is never
 		SilentPeers peers(node.port, flood({"127.0.0.1", "127.0.0.2"}));
 		REQUIRE(peers.waitForRounds(20));
 		server.send("activate-release");
-		REQUIRE_SEEN(node.ear, waitForNthLine(node.ear, std::string(connectedPaired), 1, deadline));   // the first was the pairing
+		REQUIRE_SEEN(node.ear, waitForNthLine(node.ear, std::string(connectedPaired), 1,
+		                                      deadline)); // the first was the pairing
 	}
 	INFO("the server printed:\n" << server.events());
 	CHECK(server.count("activate-held") == 1);
 }
 
-TEST_CASE("An unpaired server that has finished its Noise handshake outlasts sockets that have not", "[system][sendspin]") {
+TEST_CASE("An unpaired server that has finished its Noise handshake outlasts sockets that have not",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SendspinTestServer server({"--dial", node.url(), "--hold-activate"});
 	REQUIRE(server.waitForEvent("activate-held", deadline));
@@ -1717,7 +1799,8 @@ TEST_CASE("Two peers that do speak and never activate keep a third server out of
 	CHECK(*ended == "activate-ended close");
 }
 
-TEST_CASE("A paired server playing keeps its socket while bare sockets fill its own address's share", "[system][sendspin]") {
+TEST_CASE("A paired server playing keeps its socket while bare sockets fill its own address's share",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SendspinTestServer server({"--dial", node.url()});
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
@@ -1733,7 +1816,8 @@ TEST_CASE("A paired server playing keeps its socket while bare sockets fill its 
 	CHECK_FALSE(node.ear.hasLine("node ma says disconnected"));
 }
 
-TEST_CASE("One address holding all it may of upgraded sockets leaves other addresses their upgrades", "[system][sendspin]") {
+TEST_CASE("One address holding all it may of upgraded sockets leaves other addresses their upgrades",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
 	REQUIRE(peers.waitForRounds(1));
@@ -1748,7 +1832,8 @@ TEST_CASE("One address holding all it may of upgraded sockets leaves other addre
 	}
 }
 
-TEST_CASE("One address past its share gives way alone and a slow upgrade from another is answered", "[system][sendspin]") {
+TEST_CASE("One address past its share gives way alone and a slow upgrade from another is answered",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
 	REQUIRE(peers.waitForRounds(1));
@@ -1762,13 +1847,15 @@ TEST_CASE("One address past its share gives way alone and a slow upgrade from an
 TEST_CASE("A flood from every address holds the transport to twice its budget of threads", "[system][sendspin]") {
 	ListeningEar node;
 	const auto threads = [&node] {
-		const std::filesystem::directory_iterator tasks(std::filesystem::path("/proc") / std::to_string(node.ear.pid()) / "task");
+		const std::filesystem::directory_iterator tasks(std::filesystem::path("/proc") /
+		                                                std::to_string(node.ear.pid()) / "task");
 		return static_cast<std::size_t>(std::distance(begin(tasks), end(tasks)));
 	};
 	const std::size_t idle = threads();
 	std::vector<std::unique_ptr<SilentPeers>> peers;
 	for (int i = 2; i < 18; ++i) {
-		peers.push_back(std::make_unique<SilentPeers>(node.port, SilentPeers::Shape{{"127.0.0." + std::to_string(i)}, 8, true, 0ms, false}));
+		peers.push_back(std::make_unique<SilentPeers>(
+			node.port, SilentPeers::Shape{{"127.0.0." + std::to_string(i)}, 8, true, 0ms, false}));
 	}
 	std::size_t peak = 0;
 	for (int sample = 0; sample < 3000; ++sample) {
@@ -1780,7 +1867,8 @@ TEST_CASE("A flood from every address holds the transport to twice its budget of
 	CHECK(peak <= idle + 64 + socketThreadsEnding);
 }
 
-TEST_CASE("A slow honest upgrade is answered through a flood of bare sockets from another address", "[system][sendspin]") {
+TEST_CASE("A slow honest upgrade is answered through a flood of bare sockets from another address",
+          "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 8, false, 5ms, false});
 	REQUIRE(peers.waitForRounds(10));
@@ -1788,7 +1876,8 @@ TEST_CASE("A slow honest upgrade is answered through a flood of bare sockets fro
 	CHECK(answered);
 }
 
-TEST_CASE("A slow honest upgrade is answered while bare sockets from many addresses fill every socket", "[system][sendspin]") {
+TEST_CASE("A slow honest upgrade is answered while bare sockets from many addresses fill every socket",
+          "[system][sendspin]") {
 	ListeningEar node;
 	std::vector<std::string> sources;
 	for (int i = 2; i < 12; ++i) sources.push_back("127.0.0." + std::to_string(i));
@@ -1798,7 +1887,8 @@ TEST_CASE("A slow honest upgrade is answered while bare sockets from many addres
 	CHECK(answered);
 }
 
-TEST_CASE("A slow honest upgrade is answered beside two silent sockets renewed from its own address", "[system][sendspin]") {
+TEST_CASE("A slow honest upgrade is answered beside two silent sockets renewed from its own address",
+          "[system][sendspin]") {
 	ListeningEar node;
 	// Renewed far faster than a holder must, but slower than sockets still closing can fill the address's share on a loaded
 	// host: past that the upgrade does give way (section 11, item 6).

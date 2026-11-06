@@ -28,9 +28,7 @@ public:
 	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
 		throw std::logic_error("white requested a handoff");
 	}
-	void soundCard(const ear::SoundCardRequest&) override {
-		throw std::logic_error("white asked for a sound card");
-	}
+	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("white asked for a sound card"); }
 	void rtpReceiver(const ear::RtpReceiverRequest&) override {
 		throw std::logic_error("white asked for an RTP receiver");
 	}
@@ -40,7 +38,7 @@ private:
 	ear::AudioFormat format_;
 };
 
-}  // namespace
+} // namespace
 
 TEST_CASE("White declares one output, noise.mono, and no inputs", "[white]") {
 	const auto type = ear::nodes::makeWhiteNodeType();
@@ -102,7 +100,7 @@ TEST_CASE("The built-in node types are white, file, card and rtp", "[builtin]") 
 	auto folder = ear::folder::ConfinedFolder::open(path);
 	REQUIRE(folder.has_value());
 	const auto types =
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
+		ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
 	std::filesystem::remove(path);
 	std::vector<std::string> names;
 	for (const auto& type : types) {
@@ -112,13 +110,12 @@ TEST_CASE("The built-in node types are white, file, card and rtp", "[builtin]") 
 	CHECK(names == std::vector<std::string>{"card", "file", "rtp", "white"});
 }
 
-TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses",
-          "[builtin]") {
+TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses", "[builtin]") {
 	const auto path = std::filesystem::temp_directory_path() / ("ear_nodes_kinds_" + std::to_string(::getpid()));
 	auto folder = ear::folder::ConfinedFolder::open(path);
 	REQUIRE(folder.has_value());
 	const auto types =
-	    ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
+		ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
 	std::filesystem::remove(path);
 
 	std::map<std::string, std::vector<std::pair<std::string, ear::SettingKind>>> declared;
@@ -127,13 +124,13 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 		// "a" is a valid card id and a valid recordings path; 1 is a valid channel count, port and
 		// latency. The rtp keys whose values those are not get a valid value of the same kind.
 		const std::map<std::string, ear::NodeSettings> valid{
-		    {"address", "0.0.0.0"}, {"format", "L16"}, {"rate", 48000}};
+			{"address", "0.0.0.0"}, {"format", "L16"}, {"rate", 48000}};
 		ear::NodeSettings settings = ear::NodeSettings::object();
 		auto& keys = declared[std::string(type->name())];
 		for (const auto& [key, kind] : type->settingKinds()) {
 			CHECK_FALSE(settings.contains(std::string(key)));
 			const auto special = valid.find(std::string(key));
-			settings[std::string(key)] = special != valid.end()          ? special->second
+			settings[std::string(key)] = special != valid.end()           ? special->second
 			                             : kind == ear::SettingKind::text ? ear::NodeSettings("a")
 			                                                              : ear::NodeSettings(1);
 			CHECK((kind == ear::SettingKind::text) == settings[std::string(key)].is_string());
@@ -146,11 +143,11 @@ TEST_CASE("Each built-in type declares every key once, and a value of each decla
 	CHECK(declared["white"].empty());
 	CHECK(declared["file"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"path", text}});
 	CHECK(declared["card"] == std::vector<std::pair<std::string, ear::SettingKind>>{
-	                              {"card", text}, {"playback", wholeNumber}, {"capture", wholeNumber}});
+								  {"card", text}, {"playback", wholeNumber}, {"capture", wholeNumber}});
 	CHECK(declared["rtp"] == std::vector<std::pair<std::string, ear::SettingKind>>{{"address", text},
-	                                                                              {"port", wholeNumber},
-	                                                                              {"format", text},
-	                                                                              {"channels", wholeNumber},
-	                                                                              {"rate", wholeNumber},
-	                                                                              {"latencyMs", wholeNumber}});
+	                                                                               {"port", wholeNumber},
+	                                                                               {"format", text},
+	                                                                               {"channels", wholeNumber},
+	                                                                               {"rate", wholeNumber},
+	                                                                               {"latencyMs", wholeNumber}});
 }

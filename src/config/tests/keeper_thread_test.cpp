@@ -46,15 +46,18 @@ public:
 	}
 
 private:
-	std::size_t count(const std::string& line) const { return static_cast<std::size_t>(std::ranges::count(lines_, line)); }
+	std::size_t count(const std::string& line) const {
+		return static_cast<std::size_t>(std::ranges::count(lines_, line));
+	}
 	std::mutex mutex_;
 	std::condition_variable changed_;
 	std::vector<std::string> lines_;
 };
 
 std::unique_ptr<KeeperThread> startThread(const TempDir& dir, Seen& seen) {
-	auto thread = KeeperThread::start(dir.path().string(), "ear.conf",
-	                                  KeeperThread::Handlers{[&seen] { seen.add("disk"); }, [&seen] { seen.add("free"); }});
+	auto thread =
+		KeeperThread::start(dir.path().string(), "ear.conf",
+	                        KeeperThread::Handlers{[&seen] { seen.add("disk"); }, [&seen] { seen.add("free"); }});
 	REQUIRE(thread.has_value());
 	return std::move(*thread);
 }
@@ -110,7 +113,7 @@ TEST_CASE("A rename of ear.conf into the folder is a disk event, and another fil
 	settle(*thread, seen, markers);
 	const auto lines = seen.lines();
 	const auto disk = std::ranges::find(lines, "disk");
-	CHECK(std::find(disk, lines.end(), "free") != lines.end());   // free after the wake's disk event
+	CHECK(std::find(disk, lines.end(), "free") != lines.end()); // free after the wake's disk event
 }
 
 TEST_CASE("stop() runs the work already posted, then joins, and work posted after it is destroyed unrun",
@@ -126,7 +129,7 @@ TEST_CASE("stop() runs the work already posted, then joins, and work posted afte
 
 	auto sentinel = std::make_shared<int>(0);
 	thread->post([&seen, sentinel] { seen.add("late"); });
-	CHECK(sentinel.use_count() == 1);   // destroyed
-	thread->stop();                      // idempotent
+	CHECK(sentinel.use_count() == 1); // destroyed
+	thread->stop();                   // idempotent
 	CHECK(seen.countOf("late") == 0);
 }

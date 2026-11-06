@@ -27,7 +27,7 @@ namespace {
 class SynchronousWriter final : public ear::RtWriter {
 public:
 	SynchronousWriter(std::uint32_t channels, ear::HandoffConsumer& consumer)
-	    : channels_(channels), consumer_(consumer) {}
+		: channels_(channels), consumer_(consumer) {}
 
 	std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept override {
 		std::vector<float> interleaved;
@@ -58,9 +58,7 @@ public:
 		writers.push_back(std::make_unique<SynchronousWriter>(channels, consumer));
 		return *writers.back();
 	}
-	void soundCard(const ear::SoundCardRequest&) override {
-		throw std::logic_error("file asked for a sound card");
-	}
+	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("file asked for a sound card"); }
 	void rtpReceiver(const ear::RtpReceiverRequest&) override {
 		throw std::logic_error("file asked for an RTP receiver");
 	}
@@ -81,7 +79,7 @@ private:
 class TempDir {
 public:
 	explicit TempDir(const std::string& name)
-	    : path_(std::filesystem::temp_directory_path() / ("ear_nodes_" + name + "_" + std::to_string(getpid()))) {
+		: path_(std::filesystem::temp_directory_path() / ("ear_nodes_" + name + "_" + std::to_string(getpid()))) {
 		std::filesystem::remove_all(path_);
 		std::filesystem::create_directories(path_);
 	}
@@ -112,7 +110,7 @@ std::string contents(const std::filesystem::path& path) {
 	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
-}  // namespace
+} // namespace
 
 TEST_CASE("File declares inputs record.left and record.right and no outputs", "[file]") {
 	TempDir dir{"ports"};
@@ -141,8 +139,9 @@ TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 TEST_CASE("File refuses an absolute path or a .. component as invalid settings", "[file]") {
 	TempDir dir{"outside"};
 	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path() / "recordings"));
-	for (const std::string& path : {std::string("/tmp/rec.wav"), (dir.path() / "rec.wav").string(), std::string("../x.wav"),
-	                               std::string(".."), std::string("take/../../x.wav"), std::string("take/..")}) {
+	for (const std::string& path :
+	     {std::string("/tmp/rec.wav"), (dir.path() / "rec.wav").string(), std::string("../x.wav"), std::string(".."),
+	      std::string("take/../../x.wav"), std::string("take/..")}) {
 		INFO(path);
 		const auto config = type->parse("rec", {{"path", path}});
 		REQUIRE_FALSE(config.has_value());
@@ -196,7 +195,7 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	REQUIRE(insides.has_value());
 	REQUIRE(grant.requests.size() == 1);
 	CHECK(grant.requests[0].channels == 2);
-	CHECK(grant.requests[0].capacityFrames == 2 * format.rate);   // 2 s ring
+	CHECK(grant.requests[0].capacityFrames == 2 * format.rate); // 2 s ring
 
 	ear::AudioCode& code = (*insides)->audioCode();
 	code.prepare(format);

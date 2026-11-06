@@ -38,7 +38,8 @@ std::optional<std::string> whyMalformed(const json& record) {
 		if (!blob.is_string()) return std::format("blob {} is not text", key);
 		const auto bytes = ::sendspin::base64url_decode(blob.get_ref<const std::string&>());
 		if (!bytes) return std::format("blob {} is not base64url", key);
-		if (key == ::sendspin::persistence_keys::KEYPAIR && bytes->size() != ::sendspin::persistence_keys::KEYPAIR_SIZE) {
+		if (key == ::sendspin::persistence_keys::KEYPAIR &&
+		    bytes->size() != ::sendspin::persistence_keys::KEYPAIR_SIZE) {
 			return std::format("blob {} has the wrong size", key);
 		}
 	}
@@ -71,7 +72,8 @@ NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const N
 	if (*read) {
 		// Every open, because an fsGroup widens the file on every mount, and before its text is judged, because a file
 		// refused for its text may still hold a private key (section 8).
-		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed) return std::unexpected(narrowed.error().detail);
+		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed)
+			return std::unexpected(narrowed.error().detail);
 		text = std::move(**read);
 		record = json::parse(text, nullptr, false);
 		if (record.is_discarded()) return std::unexpected(file + ": malformed: not JSON");
@@ -79,18 +81,25 @@ NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const N
 	} else {
 		// Now, because the library only warns when it cannot save a new key, and would run a fresh identity each boot.
 		const std::string at = now();
-		record = {{"createdAt", at}, {"createdBy", writer}, {"changedAt", at}, {"changedBy", writer}, {"blobs", json::object()}};
+		record = {{"createdAt", at},
+		          {"createdBy", writer},
+		          {"changedAt", at},
+		          {"changedBy", writer},
+		          {"blobs", json::object()}};
 		text = render(record);
 		auto created = folder->replaceIf(file, std::nullopt, text, maxFileBytes, fileMode);
 		if (!created) return std::unexpected(created.error().detail);
-		if (!std::holds_alternative<folder::Replaced>(*created)) return std::unexpected(file + ": appeared while being created");
+		if (!std::holds_alternative<folder::Replaced>(*created))
+			return std::unexpected(file + ": appeared while being created");
 	}
-	return std::unique_ptr<NodeKeyStore>(new NodeKeyStore(std::move(folder), file, events, std::move(record), std::move(text)));
+	return std::unique_ptr<NodeKeyStore>(
+		new NodeKeyStore(std::move(folder), file, events, std::move(record), std::move(text)));
 }
 
-NodeKeyStore::NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file, InsidesEvents& events,
-                           nlohmann::json record, std::string text) noexcept
-    : folder_(std::move(folder)), file_(std::move(file)), events_(events), record_(std::move(record)), text_(std::move(text)) {}
+NodeKeyStore::NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file,
+                           InsidesEvents& events, nlohmann::json record, std::string text) noexcept
+	: folder_(std::move(folder)), file_(std::move(file)), events_(events), record_(std::move(record)),
+	  text_(std::move(text)) {}
 
 std::optional<std::vector<std::uint8_t>> NodeKeyStore::load_blob(const std::string& key) {
 	const json& blobs = record_["blobs"];

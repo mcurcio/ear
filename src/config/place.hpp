@@ -9,4 +9,4 @@ namespace ear::config {
 /// past the end is clamped to the last line; a column past a line's end is clamped to one past its
 /// last character. Pure.
 control::TextPlace placeIn(std::string_view text, std::uint32_t line0, std::uint32_t byteColumn0);
-}
+} // namespace ear::config

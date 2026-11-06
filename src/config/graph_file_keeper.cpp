@@ -76,8 +76,9 @@ void GraphFileKeeper::subscribe(control::GraphFileListener& listener) { impl_->s
 std::expected<void, std::string> GraphFileKeeper::start() {
 	if (impl_->thread) throw std::logic_error("GraphFileKeeper::start called twice");
 	Keeper& keeper = impl_->keeper;
-	auto thread = KeeperThread::start(impl_->folder.heldPath(), std::string(rootDocument),
-	                                  KeeperThread::Handlers{[&keeper] { keeper.diskEvent(); }, [&keeper] { keeper.free(); }});
+	auto thread =
+		KeeperThread::start(impl_->folder.heldPath(), std::string(rootDocument),
+	                        KeeperThread::Handlers{[&keeper] { keeper.diskEvent(); }, [&keeper] { keeper.free(); }});
 	if (!thread) return std::unexpected(std::move(thread.error()));
 	impl_->thread = std::move(*thread);
 	impl_->self.thread = impl_->thread.get();
@@ -99,8 +100,8 @@ void GraphFileKeeper::stop() {
 std::optional<std::string> GraphFileKeeper::join() {
 	if (!impl_->joined) {
 		impl_->joined = true;
-		if (impl_->thread) impl_->thread->stop();   // runs Keeper::stop and every completion already posted
-		impl_->keeper.finish();                     // the thread has ended: the last write, if it has not run
+		if (impl_->thread) impl_->thread->stop(); // runs Keeper::stop and every completion already posted
+		impl_->keeper.finish();                   // the thread has ended: the last write, if it has not run
 	}
 	return impl_->keeper.finalWriteFailure();
 }

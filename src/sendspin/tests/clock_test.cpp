@@ -47,12 +47,12 @@ struct Cycle {
 	std::int64_t startRawNs;
 	std::uint64_t position;
 	std::uint32_t frames;
-	std::uint32_t delayFrames;  // what the driver still held
-	std::uint32_t got;          // frames of ramp in it (the rest zeros), if they name their place
-	std::uint32_t firstAt;      // where in the cycle the first of them is, when got > 0
-	std::uint32_t firstIndex;   // the ramp index that one names
-	std::uint32_t lastIndex;    // the ramp index the last of them names
-	bool ramp;                  // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
+	std::uint32_t delayFrames; // what the driver still held
+	std::uint32_t got;         // frames of ramp in it (the rest zeros), if they name their place
+	std::uint32_t firstAt;     // where in the cycle the first of them is, when got > 0
+	std::uint32_t firstIndex;  // the ramp index that one names
+	std::uint32_t lastIndex;   // the ramp index the last of them names
+	bool ramp;                 // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
 };
 
 /// The ramp index a frame names, or nothing when it is no exact ramp frame (or silence).
@@ -60,7 +60,9 @@ std::optional<std::uint32_t> indexOf(float left, float right) {
 	const float lo = left * 32768.0F;
 	const float hi = right * 32768.0F;
 	if (lo != std::trunc(lo) || hi != std::trunc(hi)) return std::nullopt;
-	const auto word = [](float value) { return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU; };
+	const auto word = [](float value) {
+		return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU;
+	};
 	return word(lo) | (word(hi) << 16U);
 }
 
@@ -139,7 +141,8 @@ public:
 	bool heard(std::string_view prefix) { return lineStarting(prefix).has_value(); }
 	std::optional<std::string> lineStarting(std::string_view prefix) {
 		const std::scoped_lock lock(mutex_);
-		const auto line = std::ranges::find_if(said_, [&](const std::string& text) { return text.starts_with(prefix); });
+		const auto line =
+			std::ranges::find_if(said_, [&](const std::string& text) { return text.starts_with(prefix); });
 		return line == said_.end() ? std::nullopt : std::optional<std::string>(*line);
 	}
 	std::optional<std::size_t> endedAt() {
@@ -164,7 +167,9 @@ private:
 /// The handoff's realtime end, where these tests need none: only the audio from the server is timed.
 class DropWriter final : public RtWriter {
 public:
-	std::uint32_t write(std::span<const std::span<const float>>, std::uint32_t frames) noexcept override { return frames; }
+	std::uint32_t write(std::span<const std::span<const float>>, std::uint32_t frames) noexcept override {
+		return frames;
+	}
 };
 
 /// The folder of the node's key file.
@@ -188,11 +193,16 @@ struct KeyFolder {
 /// An output block with the real insides, as NodeHost would run them, dialling the real server.
 struct Rig {
 	Rig()
-	    : engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
-	      worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"}, kFormat, feed, notes),
-	      code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()), tap(code, waiter), blockEvents(waiter) {
+		: engine(makeEngine()), waiter(*engine), blocks(*engine, bell), feed(2, kFeedFrames), notes(waiter),
+		  worker(keys.held, "clock", SendspinSettings{ServerUrl::parse(server.url()), defaultListenPort, "clock"},
+	             kFormat, feed, notes),
+		  code(feed, worker.progress(), worker.bell(), kRate, toServer, worker.capture()), tap(code, waiter),
+		  blockEvents(waiter) {
 		notes.connectTap(tap);
-		block = blocks.make("clock", Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}}, kFormat, blockEvents);
+		block = blocks.make(
+			"clock",
+			Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}},
+			kFormat, blockEvents);
 		tap.prepare(kFormat);
 		block->drive(&tap);
 		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
@@ -290,7 +300,7 @@ private:
 /// Card "Test" of the test ALSA configuration, behind its own block, driving the graph.
 struct TestCard {
 	explicit TestCard(Rig& rig)
-	    : cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
+		: cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
 		block = rig.blocks.make("card", Ports{{}, {}, {"to_card_1", "to_card_2"}}, kFormat, blockEvents);
 		block->drive(&silence);
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
@@ -312,18 +322,19 @@ struct TestCard {
 
 struct Errors {
 	std::size_t judged = 0;
-	std::size_t afterFirst3s = 0;   // the cycles that could have been judged, skipped ones' 1.5 s among them
+	std::size_t afterFirst3s = 0; // the cycles that could have been judged, skipped ones' 1.5 s among them
 	std::uint32_t mostDelayFrames = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
 	std::size_t skips = 0;
 	std::size_t badCycles = 0;
-	std::vector<std::uint32_t> badSteps;   // each step's size, so a red names it
-	std::uint64_t contiguousFrames = 0;   // and how long they took: the graph's real rate
+	std::vector<std::uint32_t> badSteps; // each step's size, so a red names it
+	std::uint64_t contiguousFrames = 0;  // and how long they took: the graph's real rate
 	std::int64_t contiguousNs = 0;
 	std::vector<double> sorted;
 	double percentile(double fraction) const {
-		return sorted.empty() ? 0.0 : sorted[static_cast<std::size_t>(fraction * static_cast<double>(sorted.size() - 1))];
+		return sorted.empty() ? 0.0
+		                      : sorted[static_cast<std::size_t>(fraction * static_cast<double>(sorted.size() - 1))];
 	}
 };
 
@@ -349,7 +360,8 @@ public:
 private:
 	void one(const Cycle& cycle) {
 		if (previous_ && cycle.position != previous_->position + previous_->frames) {
-			const auto gap = static_cast<std::int64_t>(cycle.position) - static_cast<std::int64_t>(previous_->position + previous_->frames);
+			const auto gap = static_cast<std::int64_t>(cycle.position) -
+			                 static_cast<std::int64_t>(previous_->position + previous_->frames);
 			if (gap > 0 && gap <= kFeedFrames) {
 				++errors.skips;
 				lastSkipNs_ = cycle.startRawNs;
@@ -405,10 +417,12 @@ private:
 
 void report(const Errors& errors) {
 	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
-	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most " << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 " << errors.percentile(0.5)
-	     << " us, p99 " << errors.percentile(0.99) << " us, worst " << errors.worstUs << " us, skips " << errors.skips
-	     << ", bad cycles " << errors.badCycles << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
-	     << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
+	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most "
+	               << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 "
+	               << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99) << " us, worst "
+	               << errors.worstUs << " us, skips " << errors.skips << ", bad cycles " << errors.badCycles
+	               << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
+	               << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
 }
 
 void checkSync(const Errors& errors) {
@@ -468,10 +482,12 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 	Judge judge(rig, playStart);
 	INFO("the node said:\n" << rig.notes.all());
 	// Well into the stream: two seconds of the ramp are out.
-	REQUIRE(rig.waiter.until([&] {
-		judge.read();
-		return judge.lastIndex() > 2 * kRate;
-	}, 20s));
+	REQUIRE(rig.waiter.until(
+		[&] {
+			judge.read();
+			return judge.lastIndex() > 2 * kRate;
+		},
+		20s));
 
 	const auto node = card.registry.id("card.playback");
 	REQUIRE(node.has_value());
@@ -485,10 +501,12 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 	judge.restartRun();
 
 	// The library may still be correcting, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
-	CHECK(rig.waiter.until([&] {
-		judge.read();
-		return judge.plusOneRun() >= 3;
-	}, 3s));
+	CHECK(rig.waiter.until(
+		[&] {
+			judge.read();
+			return judge.plusOneRun() >= 3;
+		},
+		3s));
 	report(judge.errors);
 }
 
@@ -497,10 +515,12 @@ TEST_CASE("A stream ended mid-play leaves zeros within two blocks", "[sendspin][
 	rig.play(8.0);
 	INFO("the node said:\n" << rig.notes.all());
 	// The ramp is flowing.
-	REQUIRE(rig.waiter.until([&] {
-		const std::size_t first = rig.firstRampCycle();
-		return first < rig.tap.count() && rig.tap.count() > first + 32;
-	}, 20s));
+	REQUIRE(rig.waiter.until(
+		[&] {
+			const std::size_t first = rig.firstRampCycle();
+			return first < rig.tap.count() && rig.tap.count() > first + 32;
+		},
+		20s));
 
 	rig.server.send("end");
 	REQUIRE(rig.waiter.until([&] { return rig.notes.endedAt().has_value(); }, 10s));

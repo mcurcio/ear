@@ -27,9 +27,8 @@ namespace ear::sendspin {
 namespace {
 
 constexpr std::string_view typeName = "sendspin";
-constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{"server", SettingKind::text},
-                                                                 {"port", SettingKind::wholeNumber},
-                                                                 {"name", SettingKind::text}}};
+constexpr std::array<SettingDeclaration, 3> settingDeclarations{
+	{{"server", SettingKind::text}, {"port", SettingKind::wholeNumber}, {"name", SettingKind::text}}};
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
 std::uint32_t feedFramesFor(const AudioFormat& format) {
@@ -52,11 +51,11 @@ private:
 
 class SendspinInsides final : public NodeInsides {
 public:
-	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, SendspinSettings settings,
-	                NodeGrant& grant, std::optional<HeldPort> port)
-	    : port_(std::move(port)), feed_(nodeChannels, feedFramesFor(grant.format())),
-	      worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events()),
-	      code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
+	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node,
+	                SendspinSettings settings, NodeGrant& grant, std::optional<HeldPort> port)
+		: port_(std::move(port)), feed_(nodeChannels, feedFramesFor(grant.format())),
+		  worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events()),
+		  code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
 	            grant.handoff(nodeChannels, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
 	AudioCode& audioCode() override { return code_; }
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
@@ -70,8 +69,10 @@ private:
 
 class SendspinConfig final : public NodeConfig {
 public:
-	SendspinConfig(std::shared_ptr<const folder::ConfinedFolder> folder, std::shared_ptr<PortClaims> claims, NodeName node, SendspinSettings settings)
-	    : folder_(std::move(folder)), claims_(std::move(claims)), node_(std::move(node)), settings_(std::move(settings)) {}
+	SendspinConfig(std::shared_ptr<const folder::ConfinedFolder> folder, std::shared_ptr<PortClaims> claims,
+	               NodeName node, SendspinSettings settings)
+		: folder_(std::move(folder)), claims_(std::move(claims)), node_(std::move(node)),
+		  settings_(std::move(settings)) {}
 
 	const Ports& ports() const override { return ports_; }
 
@@ -79,8 +80,9 @@ public:
 		std::optional<HeldPort> port;
 		if (!settings_.server) {
 			const auto refused = [&](const std::string& reason) {
-				return std::unexpected(FailureReason{FailureReason::Code::startFailed,
-				                                     "cannot listen on port " + std::to_string(settings_.port) + ": " + reason});
+				return std::unexpected(
+					FailureReason{FailureReason::Code::startFailed,
+				                  "cannot listen on port " + std::to_string(settings_.port) + ": " + reason});
 			};
 			if (auto claimed = claims_->claim(settings_.port, node_); !claimed) return refused(claimed.error());
 			port.emplace(claims_, settings_.port);
@@ -117,7 +119,7 @@ public:
 	}
 
 private:
-	std::shared_ptr<const folder::ConfinedFolder> folder_;   // the graph file folder: each node's key file
+	std::shared_ptr<const folder::ConfinedFolder> folder_; // the graph file folder: each node's key file
 	std::shared_ptr<PortClaims> claims_ = std::make_shared<PortClaims>();
 };
 

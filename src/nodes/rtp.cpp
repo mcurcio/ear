@@ -66,15 +66,15 @@ struct RtpSettings {
 	std::uint16_t port;
 	RtpEncoding encoding;
 	std::uint32_t channels;
-	std::optional<std::uint32_t> rate;   // absent: the graph frequency, taken at start
+	std::optional<std::uint32_t> rate; // absent: the graph frequency, taken at start
 	std::uint32_t latencyMs;
 };
 
 class RtpConfig final : public NodeConfig {
 public:
 	explicit RtpConfig(RtpSettings settings)
-	    : settings_(std::move(settings)),
-	      ports_{{{Direction::output, "stream", numbered(settings_.channels)}}, numbered(settings_.channels, "from_rtp_")} {}
+		: settings_(std::move(settings)), ports_{{{Direction::output, "stream", numbered(settings_.channels)}},
+	                                             numbered(settings_.channels, "from_rtp_")} {}
 
 	const Ports& ports() const override { return ports_; }
 
@@ -133,9 +133,10 @@ public:
 			return invalid("address: missing");
 		}
 		std::optional<RtpAddress> rtpAddress =
-		    address->is_string() ? RtpAddress::parse(address->get_ref<const std::string&>()) : std::nullopt;
+			address->is_string() ? RtpAddress::parse(address->get_ref<const std::string&>()) : std::nullopt;
 		if (!rtpAddress) {
-			return invalid(R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)");
+			return invalid(
+				R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)");
 		}
 
 		if (!settings.contains(portKey)) {
@@ -191,8 +192,8 @@ public:
 	}
 };
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<const NodeType> makeRtpNodeType() { return std::make_unique<const RtpType>(); }
 
-}  // namespace ear::nodes
+} // namespace ear::nodes

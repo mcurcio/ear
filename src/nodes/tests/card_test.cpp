@@ -36,7 +36,7 @@ std::unique_ptr<const ear::NodeConfig> parseOk(const ear::NodeSettings& settings
 	return std::move(*config);
 }
 
-}  // namespace
+} // namespace
 
 TEST_CASE("Card accepts a card id with playback and capture channel counts", "[card]") {
 	CHECK(ear::nodes::makeCardNodeType()->name() == "card");
@@ -61,24 +61,24 @@ TEST_CASE("Card accepts a card id with playback and capture channel counts", "[c
 TEST_CASE("Card rejects settings outside section 4.4's rules", "[card]") {
 	const auto type = ear::nodes::makeCardNodeType();
 	const std::vector<ear::NodeSettings> invalid{
-	    // A raw ALSA device name: the file plugin's "|command" form, and hw:0 under an unknown key.
-	    {{"card", "file:'|touch x'"}, {"playback", 2}},
-	    {{"device", "hw:0"}},
-	    {{"device", "hw:0"}, {"card", "Pro24"}, {"playback", 2}},
-	    {{"card", "hw:0"}, {"playback", 2}},
-	    {{"card", "0123456789abcdef"}, {"playback", 2}},   // 16 characters
-	    {{"card", ""}, {"playback", 2}},
-	    {{"card", 3}, {"playback", 2}},
-	    {{"playback", 2}},                                  // no card
-	    {{"card", "Pro24"}},                                // no channels
-	    {{"card", "Pro24"}, {"playback", 0}, {"capture", 0}},
-	    {{"card", "Pro24"}, {"playback", 65}},
-	    {{"card", "Pro24"}, {"capture", -1}},
-	    {{"card", "Pro24"}, {"playback", 1.5}},
-	    {{"card", "Pro24"}, {"playback", "2"}},
-	    {{"card", "Pro24"}, {"rate", 48000}, {"playback", 2}},
-	    ear::NodeSettings{},
-	    ear::NodeSettings(3),
+		// A raw ALSA device name: the file plugin's "|command" form, and hw:0 under an unknown key.
+		{{"card", "file:'|touch x'"}, {"playback", 2}},
+		{{"device", "hw:0"}},
+		{{"device", "hw:0"}, {"card", "Pro24"}, {"playback", 2}},
+		{{"card", "hw:0"}, {"playback", 2}},
+		{{"card", "0123456789abcdef"}, {"playback", 2}}, // 16 characters
+		{{"card", ""}, {"playback", 2}},
+		{{"card", 3}, {"playback", 2}},
+		{{"playback", 2}},   // no card
+		{{"card", "Pro24"}}, // no channels
+		{{"card", "Pro24"}, {"playback", 0}, {"capture", 0}},
+		{{"card", "Pro24"}, {"playback", 65}},
+		{{"card", "Pro24"}, {"capture", -1}},
+		{{"card", "Pro24"}, {"playback", 1.5}},
+		{{"card", "Pro24"}, {"playback", "2"}},
+		{{"card", "Pro24"}, {"rate", 48000}, {"playback", 2}},
+		ear::NodeSettings{},
+		ear::NodeSettings(3),
 	};
 	for (const auto& settings : invalid) {
 		INFO(settings.dump());

@@ -11,17 +11,17 @@
 namespace ear::sendspin {
 class NoteGate final : public InsidesEvents {
 public:
-  using Clock = std::chrono::steady_clock;
-  /// `next` outlives this. `now`: the clock, a test's own.
-  explicit NoteGate(InsidesEvents& next, std::function<Clock::time_point()> now = Clock::now);
-  void say(std::string text) override;
-  void lost(std::string detail) override;   // never held back
+	using Clock = std::chrono::steady_clock;
+	/// `next` outlives this. `now`: the clock, a test's own.
+	explicit NoteGate(InsidesEvents& next, std::function<Clock::time_point()> now = Clock::now);
+	void say(std::string text) override;
+	void lost(std::string detail) override; // never held back
 private:
-  InsidesEvents& next_;
-  std::function<Clock::time_point()> now_;
-  std::mutex mutex_;
-  double tokens_;
-  Clock::time_point refilled_;
-  std::uint64_t dropped_ = 0;
+	InsidesEvents& next_;
+	std::function<Clock::time_point()> now_;
+	std::mutex mutex_;
+	double tokens_;
+	Clock::time_point refilled_;
+	std::uint64_t dropped_ = 0;
 };
-}
+} // namespace ear::sendspin

@@ -50,8 +50,8 @@ public:
 
 struct Rig {
 	Rig()
-	    : feed(2, capacity), code(feed, progress, bell, rate, toServer, capture),
-	      inLeft(block, 0.25F), inRight(block, -0.5F) {
+		: feed(2, capacity), code(feed, progress, bell, rate, toServer, capture), inLeft(block, 0.25F),
+		  inRight(block, -0.5F) {
 		code.prepare({rate, block});
 		left.resize(block);
 		right.resize(block);
@@ -89,13 +89,14 @@ struct Rig {
 
 } // namespace
 
-TEST_CASE("A block read counts its frames, and finishes at the cycle's start plus the frames' duration on the raw clock",
+TEST_CASE("A block read counts its frames, and finishes at the cycle's start plus the frames' "
+          "duration on the raw clock",
           "[sendspin][code]") {
 	Rig rig;
 	rig.write(block);
 	const std::int64_t rawBefore = nowNs(CLOCK_MONOTONIC_RAW);
 	const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t start = monoBefore - 5000000;   // a wake 5 ms late cancels out
+	const std::int64_t start = monoBefore - 5000000; // a wake 5 ms late cancels out
 	rig.cycle(0, start);
 	const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
 	const std::int64_t rawAfter = nowNs(CLOCK_MONOTONIC_RAW);
@@ -126,33 +127,34 @@ TEST_CASE("What the driver still holds is added: a frame finishes when the devic
 	const std::int64_t heldNs = std::int64_t{held} * 1000000000 / rate;
 	const std::int64_t difference = delayed.progress.read()->finishRawNs - plain.progress.read()->finishRawNs;
 	INFO("difference " << difference);
-	CHECK(std::abs(difference - heldNs) < 1000000);   // the two calls read their clocks apart, by far less than this
+	CHECK(std::abs(difference - heldNs) < 1000000); // the two calls read their clocks apart, by far less than this
 }
 
 TEST_CASE("The lead a player reports covers what still plays after a clear, whatever the block", "[sendspin][code]") {
-	CHECK(requiredLeadMs(2048, 256, 48000) == 48);     // 42.67 + 5.33 ms; the library's own 150 ms then rules
-	CHECK(requiredLeadMs(8192, 4096, 48000) == 256);   // past it: a block of 2049 to 4096 frames
-	CHECK(requiredLeadMs(8193, 4096, 48000) == 257);   // rounded up, never under
+	CHECK(requiredLeadMs(2048, 256, 48000) == 48);   // 42.67 + 5.33 ms; the library's own 150 ms then rules
+	CHECK(requiredLeadMs(8192, 4096, 48000) == 256); // past it: a block of 2049 to 4096 frames
+	CHECK(requiredLeadMs(8193, 4096, 48000) == 257); // rounded up, never under
 }
 
 TEST_CASE("A position ahead by a block skips that block and counts it played", "[sendspin][code]") {
 	Rig rig;
 	rig.write(3 * block);
 	rig.cycle(0);
-	rig.cycle(2 * block);   // the driver missed the cycle at `block`
+	rig.cycle(2 * block); // the driver missed the cycle at `block`
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
 	CHECK(progress->totalFrames == 3 * block);
-	CHECK(rig.left[0] == static_cast<float>(2 * block + 1));   // that block's frames are gone
+	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
 }
 
-TEST_CASE("A position ahead by the feed's capacity still skips, and by more, or behind, skips none", "[sendspin][code]") {
+TEST_CASE("A position ahead by the feed's capacity still skips, and by more, or behind, skips none",
+          "[sendspin][code]") {
 	SECTION("just within") {
 		Rig rig;
 		rig.write(capacity);
 		rig.cycle(0);
 		rig.cycle(block + capacity);
-		CHECK(rig.progress.read()->totalFrames == capacity);   // what it held, all of it skipped
+		CHECK(rig.progress.read()->totalFrames == capacity); // what it held, all of it skipped
 	}
 	SECTION("further: a change of driver") {
 		Rig rig;
@@ -228,11 +230,12 @@ TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[s
 	CHECK(rig.toServer.fromRight[block - 1] == -0.5F);
 }
 
-TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's start on the raw clock", "[sendspin][code]") {
+TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's start on the raw clock",
+          "[sendspin][code]") {
 	Rig rig;
 	const std::int64_t rawBefore = nowNs(CLOCK_MONOTONIC_RAW);
 	const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t start = monoBefore - 5000000;   // a wake 5 ms late cancels out
+	const std::int64_t start = monoBefore - 5000000; // a wake 5 ms late cancels out
 	rig.cycle(0, start);
 	const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
 	const std::int64_t rawAfter = nowNs(CLOCK_MONOTONIC_RAW);
@@ -269,7 +272,8 @@ TEST_CASE("The mailbox holds the newest value, and nothing before the first", "[
 	CHECK(value->finishRawNs == 4);
 }
 
-TEST_CASE("The mailbox's fields, read while it is written from another thread, always belong together", "[sendspin][code]") {
+TEST_CASE("The mailbox's fields, read while it is written from another thread, always belong together",
+          "[sendspin][code]") {
 	Mailbox<PlayProgress> mailbox;
 	std::atomic<bool> done{false};
 	std::thread writer([&] {

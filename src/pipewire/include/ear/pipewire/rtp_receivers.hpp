@@ -26,10 +26,11 @@ namespace ear::pipewire {
 /// the EAR node stays starting (docs/design/rtp.md section 4, finding g).
 class RtpReceivers final : public RtpReceiverFactory {
 public:
-  explicit RtpReceivers(Engine& engine);   // engine outlives it
-  std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-      const RtpReceiverRequest& request, OutsideNodeEvents& events) override;
+	explicit RtpReceivers(Engine& engine); // engine outlives it
+	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+	                                  const RtpReceiverRequest& request, OutsideNodeEvents& events) override;
+
 private:
-  Engine& engine_;
+	Engine& engine_;
 };
-}
+} // namespace ear::pipewire

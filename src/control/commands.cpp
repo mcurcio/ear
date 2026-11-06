@@ -36,7 +36,7 @@ std::expected<Command, RpcError> decodeUpdateNode(const json& params, const Json
 	if (auto checked = requireObject(params, at, {"name", "settings"}); !checked) return refuse(checked.error());
 	auto name = requireName(params, at, "name");
 	if (!name) return refuse(name.error());
-	auto settings = requireMember(params, at, "settings");   // passed through unchecked: the node's type judges it
+	auto settings = requireMember(params, at, "settings"); // passed through unchecked: the node's type judges it
 	if (!settings) return refuse(settings.error());
 	return UpdateNode{std::move(*name), **settings};
 }
@@ -100,22 +100,31 @@ json encodeDiagnostics(const std::vector<Diagnostic>& diagnostics) {
 
 RpcError encodeFileRefusal(const FileRefusal& refusal) {
 	json data = {{"code", std::string(fileRefusalCode(refusal))}};
-	if (const auto* invalid = std::get_if<InvalidText>(&refusal)) data["diagnostics"] = encodeDiagnostics(invalid->diagnostics);
+	if (const auto* invalid = std::get_if<InvalidText>(&refusal))
+		data["diagnostics"] = encodeDiagnostics(invalid->diagnostics);
 	if (const auto* shared = std::get_if<SharedDefinition>(&refusal)) addPlace(data, shared->place);
 	return RpcError{commandRefused, describe(refusal), std::move(data)};
 }
 
 using Decoder = std::expected<Command, RpcError> (*)(const json&, const JsonPointer&);
-struct Method { std::string_view name; Decoder decode; };
+struct Method {
+	std::string_view name;
+	Decoder decode;
+};
 
 /// The graph and graph file methods of section 6 and docs/design/knobly-config.md (levels.subscribe
 /// is the hub's, not a graph command).
 constexpr Method methods[] = {
-	{"graph.get", decodeGetGraph},          {"graph.subscribe", decodeGetGraph},
-	{"node.add", decodeAddNode},            {"node.update", decodeUpdateNode},
-	{"node.remove", decodeRemoveNode},      {"route.add", decodeAddRoute},
-	{"route.remove", decodeRemoveRoute},    {"graphFile.get", decodeGetGraphFile},
-	{"graphFile.subscribe", decodeGetGraphFile}, {"graphFile.set", decodeSetGraphFile},
+	{"graph.get", decodeGetGraph},
+	{"graph.subscribe", decodeGetGraph},
+	{"node.add", decodeAddNode},
+	{"node.update", decodeUpdateNode},
+	{"node.remove", decodeRemoveNode},
+	{"route.add", decodeAddRoute},
+	{"route.remove", decodeRemoveRoute},
+	{"graphFile.get", decodeGetGraphFile},
+	{"graphFile.subscribe", decodeGetGraphFile},
+	{"graphFile.set", decodeSetGraphFile},
 };
 
 } // namespace
@@ -125,7 +134,7 @@ std::expected<Command, RpcError> decodeCommand(std::string_view method, const js
 	// Named params only: positional params are refused whatever the method (section 6).
 	if (params.is_array()) return refuse(requireObject(params, root, {}).error());
 	const json empty = json::object();
-	const json& named = params.is_null() ? empty : params;   // null: params absent
+	const json& named = params.is_null() ? empty : params; // null: params absent
 	for (const Method& known : methods)
 		if (known.name == method) return known.decode(named, root);
 	return std::unexpected(RpcError{methodNotFound, "Method not found", nullptr});
@@ -145,7 +154,8 @@ json encodeGraphFile(const GraphFile& file) {
 	json out = {{"version", file.version}, {"text", file.text}, {"diagnostics", encodeDiagnostics(file.diagnostics)}};
 	if (file.running) out["running"] = *file.running;
 	if (file.refusal) {
-		json refusal = {{"code", std::string(errorCode(file.refusal->error))}, {"message", describe(file.refusal->error)}};
+		json refusal = {{"code", std::string(errorCode(file.refusal->error))},
+		                {"message", describe(file.refusal->error)}};
 		if (file.refusal->place) addPlace(refusal, *file.refusal->place);
 		out["refusal"] = std::move(refusal);
 	}

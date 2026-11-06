@@ -50,12 +50,12 @@ std::optional<ServerUrl> ServerUrl::parse(std::string_view text) {
 	const std::size_t colon = authority.find(':');
 	const std::string_view host = authority.substr(0, colon);
 	if (host.empty() || host.size() > maxHostBytes) return std::nullopt;
-	if (!std::ranges::all_of(host, [](char c) { return isAlphanumeric(c) || c == '-' || c == '.'; })) return std::nullopt;
+	if (!std::ranges::all_of(host, [](char c) { return isAlphanumeric(c) || c == '-' || c == '.'; }))
+		return std::nullopt;
 	if (colon != std::string_view::npos && !validPort(authority.substr(colon + 1))) return std::nullopt;
 
-	const bool goodPath = std::ranges::all_of(path, [](char c) {
-		return isAlphanumeric(c) || c == '/' || c == '.' || c == '_' || c == '~' || c == '-';
-	});
+	const bool goodPath = std::ranges::all_of(
+		path, [](char c) { return isAlphanumeric(c) || c == '/' || c == '.' || c == '_' || c == '~' || c == '-'; });
 	if (!goodPath) return std::nullopt;
 	return ServerUrl(std::string(text));
 }
@@ -77,7 +77,8 @@ std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node,
 	std::uint16_t port = defaultListenPort;
 	if (const auto given = settings.find(portKey); given != settings.end()) {
 		if (url) return std::unexpected(R"(port: only without "server")");
-		if (!given->is_number_integer() || *given < 1 || *given > 65535) return std::unexpected("port: must be a whole number, 1-65535");
+		if (!given->is_number_integer() || *given < 1 || *given > 65535)
+			return std::unexpected("port: must be a whole number, 1-65535");
 		port = given->get<std::uint16_t>();
 	}
 

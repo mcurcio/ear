@@ -108,8 +108,8 @@ struct Advertiser::State {
 	using Clock = std::chrono::steady_clock;
 
 	State(const std::string& instance, std::string friendlyName, std::uint16_t port, in_addr address, in_addr netmask)
-	    : local(address), mask(netmask), qualifiedInstance(instance + "." + std::string(serviceType)), host(instance + ".local."),
-	      name(std::move(friendlyName)) {
+		: local(address), mask(netmask), qualifiedInstance(instance + "." + std::string(serviceType)),
+		  host(instance + ".local."), name(std::move(friendlyName)) {
 		pointer.name = text(serviceType);
 		pointer.type = MDNS_RECORDTYPE_PTR;
 		pointer.data.ptr.name = text(qualifiedInstance);
@@ -142,7 +142,9 @@ struct Advertiser::State {
 	/// Whether `answer` may go out by multicast now. Taking it counts the records that go with it, so a question for the
 	/// service right after one for the pointer does not send the service twice in the second.
 	bool mayMulticast(Answer answer, Clock::time_point at) noexcept {
-		const auto recent = [&](Answer each) { return lastMulticast[each] && at - *lastMulticast[each] < multicastInterval; };
+		const auto recent = [&](Answer each) {
+			return lastMulticast[each] && at - *lastMulticast[each] < multicastInterval;
+		};
 		if (recent(answer)) return false;
 		stampMulticast(answer, at);
 		return true;
@@ -162,7 +164,7 @@ struct Advertiser::State {
 
 	in_addr local;
 	in_addr mask;
-	std::array<bool, answerCount> answered{};                                  // in this datagram
+	std::array<bool, answerCount> answered{}; // in this datagram
 	std::array<std::optional<Clock::time_point>, answerCount> lastMulticast{};
 	Clock::time_point unicastWindow{};
 	int unicastSent = 0;
@@ -185,17 +187,21 @@ namespace {
 /// another socket on this host sharing port 5353 may be handed a unicast reply, and a multicast one reaches everybody (RFC
 /// 6762 section 5.4 allows it). A query from any other port is a one-shot querier, which only a unicast reply reaches
 /// (section 6.7).
-void reply(Advertiser::State& state, Advertiser::State::Answer which, int socket, const sockaddr* from, std::size_t fromLength, std::uint16_t queryId,
-           std::uint16_t type, mdns_string_t asked, const mdns_record_t& answer, const mdns_record_t* additional, std::size_t additionalCount) noexcept {
+void reply(Advertiser::State& state, Advertiser::State::Answer which, int socket, const sockaddr* from,
+           std::size_t fromLength, std::uint16_t queryId, std::uint16_t type, mdns_string_t asked,
+           const mdns_record_t& answer, const mdns_record_t* additional, std::size_t additionalCount) noexcept {
 	if (std::exchange(state.answered[which], true)) return;
 	const auto at = Advertiser::State::Clock::now();
 	sockaddr_in source{};
 	std::memcpy(&source, from, std::min(fromLength, sizeof source));
 	if (ntohs(source.sin_port) == MDNS_PORT) {
-		if (state.mayMulticast(which, at)) mdns_query_answer_multicast(socket, state.sending.data(), packetBytes, answer, nullptr, 0, additional, additionalCount);
+		if (state.mayMulticast(which, at))
+			mdns_query_answer_multicast(socket, state.sending.data(), packetBytes, answer, nullptr, 0, additional,
+			                            additionalCount);
 	} else if (state.mayUnicast(at)) {
-		mdns_query_answer_unicast(socket, from, fromLength, state.sending.data(), packetBytes, queryId, static_cast<mdns_record_type_t>(type), asked.str,
-		                          asked.length, answer, nullptr, 0, additional, additionalCount);
+		mdns_query_answer_unicast(socket, from, fromLength, state.sending.data(), packetBytes, queryId,
+		                          static_cast<mdns_record_type_t>(type), asked.str, asked.length, answer, nullptr, 0,
+		                          additional, additionalCount);
 	}
 }
 
@@ -206,7 +212,8 @@ bool queryIsNext(const Advertiser::State& state, int socket) noexcept {
 	std::array<std::uint8_t, headerBytes> header{};
 	sockaddr_in from{};
 	socklen_t fromLength = sizeof from;
-	const auto got = ::recvfrom(socket, header.data(), header.size(), MSG_PEEK, reinterpret_cast<sockaddr*>(&from), &fromLength);
+	const auto got =
+		::recvfrom(socket, header.data(), header.size(), MSG_PEEK, reinterpret_cast<sockaddr*>(&from), &fromLength);
 	if (got < 0) return false;
 	const auto flags = static_cast<std::uint16_t>((header[2] << 8U) | header[3]);
 	const bool query = static_cast<std::size_t>(got) == headerBytes && (flags & notAQuery) == 0 &&
@@ -217,7 +224,8 @@ bool queryIsNext(const Advertiser::State& state, int socket) noexcept {
 
 } // namespace
 
-std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(std::string instance, std::string name, std::uint16_t port) {
+std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(std::string instance, std::string name,
+                                                                         std::uint16_t port) {
 	const auto address = addressTowardsGroup();
 	if (!address) return std::unexpected(address.error());
 	auto state = std::make_unique<State>(instance, std::move(name), port, *address, netmaskOf(*address));
@@ -229,11 +237,13 @@ std::expected<std::unique_ptr<Advertiser>, std::string> Advertiser::open(std::st
 	bound.sin_port = htons(MDNS_PORT);
 	bound.sin_addr = *address;
 	if (mdns_socket_setup_ipv4(state->socket, &bound) != 0) {
-		return std::unexpected("cannot join " + std::string(mdnsGroup) + " on port " + std::to_string(MDNS_PORT) + ": " + lastError());
+		return std::unexpected("cannot join " + std::string(mdnsGroup) + " on port " + std::to_string(MDNS_PORT) +
+		                       ": " + lastError());
 	}
 
 	const std::array<mdns_record_t, 4> details{state->service, state->hostAddress, state->txtPath, state->txtName};
-	if (mdns_announce_multicast(state->socket, state->sending.data(), packetBytes, state->pointer, nullptr, 0, details.data(), details.size()) != 0) {
+	if (mdns_announce_multicast(state->socket, state->sending.data(), packetBytes, state->pointer, nullptr, 0,
+	                            details.data(), details.size()) != 0) {
 		return std::unexpected("cannot announce: " + lastError());
 	}
 	state->stampMulticast(State::pointerAndAll, State::Clock::now());
@@ -244,14 +254,15 @@ Advertiser::Advertiser(std::unique_ptr<State> state) : state_(std::move(state)) 
 
 Advertiser::~Advertiser() {
 	const std::array<mdns_record_t, 4> details{state_->service, state_->hostAddress, state_->txtPath, state_->txtName};
-	mdns_goodbye_multicast(state_->socket, state_->sending.data(), packetBytes, state_->pointer, nullptr, 0, details.data(), details.size());
+	mdns_goodbye_multicast(state_->socket, state_->sending.data(), packetBytes, state_->pointer, nullptr, 0,
+	                       details.data(), details.size());
 }
 
 void Advertiser::answer() noexcept {
-	static constexpr mdns_record_callback_fn onRecord = [](int socket, const sockaddr* from, std::size_t fromLength, mdns_entry_type_t entry,
-	                                                       std::uint16_t queryId, std::uint16_t type, std::uint16_t, std::uint32_t,
-	                                                       const void* data, std::size_t size, std::size_t nameOffset, std::size_t,
-	                                                       std::size_t, std::size_t, void* self) -> int {
+	static constexpr mdns_record_callback_fn onRecord =
+		[](int socket, const sockaddr* from, std::size_t fromLength, mdns_entry_type_t entry, std::uint16_t queryId,
+	       std::uint16_t type, std::uint16_t, std::uint32_t, const void* data, std::size_t size, std::size_t nameOffset,
+	       std::size_t, std::size_t, std::size_t, void* self) -> int {
 		if (entry != MDNS_ENTRYTYPE_QUESTION) return 0;
 		State& state = *static_cast<State*>(self);
 		std::array<char, 256> nameBuffer;
@@ -259,7 +270,8 @@ void Advertiser::answer() noexcept {
 		const mdns_string_t asked = mdns_string_extract(data, size, &offset, nameBuffer.data(), nameBuffer.size());
 		const bool any = type == MDNS_RECORDTYPE_ANY;
 		const auto send = [&](State::Answer which, const mdns_record_t& answer, const auto& additional) {
-			reply(state, which, socket, from, fromLength, queryId, type, asked, answer, additional.data(), additional.size());
+			reply(state, which, socket, from, fromLength, queryId, type, asked, answer, additional.data(),
+			      additional.size());
 		};
 		if (sameName(asked, allServices) && (any || type == MDNS_RECORDTYPE_PTR)) {
 			mdns_record_t types{};
@@ -268,8 +280,10 @@ void Advertiser::answer() noexcept {
 			types.data.ptr.name = text(serviceType);
 			send(State::types, types, std::array<mdns_record_t, 0>{});
 		} else if (sameName(asked, serviceType) && (any || type == MDNS_RECORDTYPE_PTR)) {
-			send(State::pointerAndAll, state.pointer, std::array{state.service, state.hostAddress, state.txtPath, state.txtName});
-		} else if (sameName(asked, state.qualifiedInstance) && (any || type == MDNS_RECORDTYPE_SRV || type == MDNS_RECORDTYPE_TXT)) {
+			send(State::pointerAndAll, state.pointer,
+			     std::array{state.service, state.hostAddress, state.txtPath, state.txtName});
+		} else if (sameName(asked, state.qualifiedInstance) &&
+		           (any || type == MDNS_RECORDTYPE_SRV || type == MDNS_RECORDTYPE_TXT)) {
 			// The SRV answers a question about the TXT too: a multicast answer carries no question, and the TXT is with it.
 			send(State::serviceAndAll, state.service, std::array{state.hostAddress, state.txtPath, state.txtName});
 		} else if (sameName(asked, state.host) && (any || type == MDNS_RECORDTYPE_A)) {

@@ -14,11 +14,13 @@
 #include <sys/types.h>
 namespace ear::folder {
 struct FolderError {
-	std::string detail;   // a sentence naming the path and the reason
+	std::string detail; // a sentence naming the path and the reason
 	friend bool operator==(const FolderError&, const FolderError&) = default;
 };
-struct Replaced {};                                        // it held `expected`; it now holds the new text
-struct Changed { std::optional<std::string> current; };   // it did not; it holds `current` (nullopt: nothing), as before the call
+struct Replaced {}; // it held `expected`; it now holds the new text
+struct Changed {
+	std::optional<std::string> current;
+}; // it did not; it holds `current` (nullopt: nothing), as before the call
 using ReplaceOutcome = std::variant<Replaced, Changed>;
 /// One folder EAR reads and writes beneath, held open as a directory for EAR's life. Every path is
 /// resolved by the kernel inside it (openat2 RESOLVE_BENEATH), so an absolute path or a '..' out is
@@ -44,13 +46,15 @@ public:
 	/// The regular file's text, reached with no symlink anywhere on the path (RESOLVE_BENEATH |
 	/// RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS); std::nullopt when nothing is there. A symlink, a
 	/// directory, another kind, or more than maxBytes is a FolderError.
-	std::expected<std::optional<std::string>, FolderError> read(const std::string& relative, std::size_t maxBytes) const;
+	std::expected<std::optional<std::string>, FolderError> read(const std::string& relative,
+	                                                            std::size_t maxBytes) const;
 	/// Puts `text` at `relative` only if it held `expected` (nullopt: nothing there), resolved as
 	/// read() resolves. A file it replaces keeps its mode; one it creates has exactly `createMode`,
 	/// whatever the umask. Error: nothing changed, except as the error says.
 	std::expected<ReplaceOutcome, FolderError> replaceIf(const std::string& relative,
-	    const std::optional<std::string>& expected, std::string_view text, std::size_t maxBytes,
-	    mode_t createMode = 0644) const;
+	                                                     const std::optional<std::string>& expected,
+	                                                     std::string_view text, std::size_t maxBytes,
+	                                                     mode_t createMode = 0644) const;
 	/// Clears every mode bit outside `most`; no write, no sync. Resolved as read() resolves: a
 	/// symlink, a path out, a missing file or anything but a regular file is a FolderError.
 	std::expected<void, FolderError> restrictMode(const std::string& relative, mode_t most) const;
@@ -66,4 +70,4 @@ private:
 /// inode along each resolved path, so a symlinked alias is caught. A path that does not exist is
 /// skipped. The error names both.
 std::expected<void, FolderError> requireApart(std::span<const std::filesystem::path> folders);
-}
+} // namespace ear::folder

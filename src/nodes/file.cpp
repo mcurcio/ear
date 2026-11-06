@@ -112,7 +112,7 @@ private:
 class FileConfig final : public NodeConfig {
 public:
 	FileConfig(std::shared_ptr<const folder::ConfinedFolder> recordings, std::string path)
-	    : recordings_(std::move(recordings)), path_(std::move(path)) {}
+		: recordings_(std::move(recordings)), path_(std::move(path)) {}
 
 	const Ports& ports() const override { return ports_; }
 
@@ -122,7 +122,7 @@ public:
 		auto opened = recordings_->create(path_);
 		if (!opened) {
 			return std::unexpected(
-			    FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + opened.error().detail});
+				FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + opened.error().detail});
 		}
 		Descriptor fd(*opened);
 		SF_INFO info{};
@@ -131,8 +131,8 @@ public:
 		info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
 		SNDFILE* file = sf_open_fd(fd.get(), SFM_WRITE, &info, SF_FALSE);
 		if (file == nullptr) {
-			return std::unexpected(FailureReason{FailureReason::Code::startFailed,
-			                                     "cannot open " + path_ + ": " + sf_strerror(nullptr)});
+			return std::unexpected(
+				FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + sf_strerror(nullptr)});
 		}
 		auto insides = std::make_unique<FileInsides>(file, std::move(fd));
 		insides->connect(grant.handoff(channelCount, ringSeconds * format.rate, insides->consumer()));
@@ -184,7 +184,7 @@ public:
 		}
 		if (!staysInside(path->get_ref<const std::string&>())) {
 			return std::unexpected(
-			    InvalidSettings{node, "path: must be relative to the recordings folder, without \"..\""});
+				InvalidSettings{node, "path: must be relative to the recordings folder, without \"..\""});
 		}
 		return std::make_unique<const FileConfig>(recordings_, path->get<std::string>());
 	}
@@ -193,10 +193,10 @@ private:
 	std::shared_ptr<const folder::ConfinedFolder> recordings_;
 };
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const folder::ConfinedFolder> recordings) {
 	return std::make_unique<const FileType>(std::move(recordings));
 }
 
-}  // namespace ear::nodes
+} // namespace ear::nodes

@@ -149,7 +149,7 @@ TEST_CASE("A full feed's write wakes on a read and takes what fits", "[feed]") {
 	CHECK(feed.read(out, 256) == 256);
 	writer.join();
 	CHECK(accepted == 256);
-	CHECK(std::chrono::steady_clock::now() - before < patience / 2);   // the wake ended it, not its patience
+	CHECK(std::chrono::steady_clock::now() - before < patience / 2); // the wake ended it, not its patience
 }
 
 TEST_CASE("After clear the next read returns nothing, and what is written after it plays", "[feed]") {

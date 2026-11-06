@@ -25,17 +25,21 @@ namespace ear::control {
 ///   graph-file written <version>
 /// and the last write's failure, as ear exits (no change carries it):
 ///   graph-file write-failed <detail>
-class StatusLog final : public NodeStatusListener, public NodeNoteListener, public RouteStatusListener, public GraphFileListener {
+class StatusLog final : public NodeStatusListener,
+						public NodeNoteListener,
+						public RouteStatusListener,
+						public GraphFileListener {
 public:
-  explicit StatusLog(std::ostream& out);
-  void nodeChanged(const NodeStatus& status) override;
-  void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
-  void nodeSays(const NodeName& node, const std::string& text) override;
-  void routeChanged(const RouteStatus& status) override;
-  void graphFileChanged(const GraphFileChanged& change) override;
-  void graphFileWritten(const std::string& version) override;
-  void graphFileWriteFailed(const std::string& detail);
+	explicit StatusLog(std::ostream& out);
+	void nodeChanged(const NodeStatus& status) override;
+	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
+	void nodeSays(const NodeName& node, const std::string& text) override;
+	void routeChanged(const RouteStatus& status) override;
+	void graphFileChanged(const GraphFileChanged& change) override;
+	void graphFileWritten(const std::string& version) override;
+	void graphFileWriteFailed(const std::string& detail);
+
 private:
-  std::ostream& out_;
+	std::ostream& out_;
 };
-}
+} // namespace ear::control

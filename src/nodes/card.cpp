@@ -23,9 +23,8 @@ constexpr std::string_view cardKey = "card";
 constexpr std::string_view playbackKey = "playback";
 constexpr std::string_view captureKey = "capture";
 /// How each key is written in the graph file: the id is text, the channel counts whole numbers.
-constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{cardKey, SettingKind::text},
-                                                                 {playbackKey, SettingKind::wholeNumber},
-                                                                 {captureKey, SettingKind::wholeNumber}}};
+constexpr std::array<SettingDeclaration, 3> settingDeclarations{
+	{{cardKey, SettingKind::text}, {playbackKey, SettingKind::wholeNumber}, {captureKey, SettingKind::wholeNumber}}};
 constexpr std::uint32_t maxChannels = 64;
 
 /// Copies play.i to to_card_i and from_card_j to capture.j. With the framework's order
@@ -33,8 +32,7 @@ constexpr std::uint32_t maxChannels = 64;
 /// outputs are capture then to_card.
 class PassThrough final : public AudioCode {
 public:
-	PassThrough(std::uint32_t playback, std::uint32_t capture) noexcept
-	    : playback_(playback), capture_(capture) {}
+	PassThrough(std::uint32_t playback, std::uint32_t capture) noexcept : playback_(playback), capture_(capture) {}
 
 	void prepare(const AudioFormat&) override {}
 
@@ -67,10 +65,8 @@ private:
 class CardConfig final : public NodeConfig {
 public:
 	CardConfig(CardId card, std::uint32_t playback, std::uint32_t capture)
-	    : card_(std::move(card)),
-	      playback_(playback),
-	      capture_(capture),
-	      ports_{{{Direction::input, "play", numbered(playback)}, {Direction::output, "capture", numbered(capture)}},
+		: card_(std::move(card)), playback_(playback), capture_(capture),
+		  ports_{{{Direction::input, "play", numbered(playback)}, {Direction::output, "capture", numbered(capture)}},
 	             numbered(capture, "from_card_"),
 	             numbered(playback, "to_card_")} {}
 
@@ -78,7 +74,8 @@ public:
 
 	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
 		if (playback_ > 0) {
-			grant.soundCard({.card = card_, .direction = CardDirection::playback, .blockPorts = ports_.insideOutputs()});
+			grant.soundCard(
+				{.card = card_, .direction = CardDirection::playback, .blockPorts = ports_.insideOutputs()});
 		}
 		if (capture_ > 0) {
 			grant.soundCard({.card = card_, .direction = CardDirection::capture, .blockPorts = ports_.insideInputs()});
@@ -113,17 +110,17 @@ public:
 		if (card == settings.end()) {
 			return std::unexpected(InvalidSettings{node, "card: missing"});
 		}
-		std::optional<CardId> id = card->is_string() ? CardId::parse(card->get_ref<const std::string&>())
-		                                              : std::nullopt;
+		std::optional<CardId> id =
+			card->is_string() ? CardId::parse(card->get_ref<const std::string&>()) : std::nullopt;
 		if (!id) {
-			return std::unexpected(InvalidSettings{
-			    node, "card: must be an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)"});
+			return std::unexpected(InvalidSettings{node, "card: must be an ALSA card id, 1-15 characters of "
+			                                             "[A-Za-z0-9_-] (as in /proc/asound/cards)"});
 		}
 		const auto playback = channels(settings, playbackKey);
 		const auto capture = channels(settings, captureKey);
 		if (!playback || !capture) {
-			return std::unexpected(InvalidSettings{
-			    node, std::string(playback ? captureKey : playbackKey) + ": must be a whole number of channels, 0-64"});
+			return std::unexpected(InvalidSettings{node, std::string(playback ? captureKey : playbackKey) +
+			                                                 ": must be a whole number of channels, 0-64"});
 		}
 		if (*playback == 0 && *capture == 0) {
 			return std::unexpected(InvalidSettings{node, "playback or capture: at least one must be above 0"});
@@ -149,8 +146,8 @@ private:
 	}
 };
 
-}  // namespace
+} // namespace
 
 std::unique_ptr<const NodeType> makeCardNodeType() { return std::make_unique<const CardType>(); }
 
-}  // namespace ear::nodes
+} // namespace ear::nodes

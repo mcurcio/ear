@@ -30,7 +30,7 @@ constexpr std::size_t maxBytes = 1024;
 class TempDir {
 public:
 	explicit TempDir(const std::string& name)
-	    : path_(std::filesystem::temp_directory_path() / ("ear_folder_" + name + "_" + std::to_string(getpid()))) {
+		: path_(std::filesystem::temp_directory_path() / ("ear_folder_" + name + "_" + std::to_string(getpid()))) {
 		std::filesystem::remove_all(path_);
 		std::filesystem::create_directories(path_);
 	}
@@ -59,7 +59,9 @@ std::string contents(const std::filesystem::path& path) {
 	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
-void write(const std::filesystem::path& path, const std::string& text) { std::ofstream(path, std::ios::binary) << text; }
+void write(const std::filesystem::path& path, const std::string& text) {
+	std::ofstream(path, std::ios::binary) << text;
+}
 
 /// What read() found, which must not be an error.
 std::optional<std::string> readText(const ConfinedFolder& folder, const std::string& relative) {
@@ -83,7 +85,7 @@ std::vector<std::string> names(const std::filesystem::path& directory) {
 	return found;
 }
 
-}  // namespace
+} // namespace
 
 // --- open() and create(), the recordings folder's contract, unchanged ---
 
@@ -135,7 +137,8 @@ TEST_CASE("create() makes or truncates a file beneath, following an inner symlin
 	CHECK(contents(dir.path() / "folder" / "old.wav") == "x");
 	CHECK(contents(dir.path() / "folder" / "takes" / "take.wav") == "x");
 
-	for (const std::string& relative : std::vector<std::string>{"out.wav", "../outside.wav", (dir.path() / "outside.wav").string()}) {
+	for (const std::string& relative :
+	     std::vector<std::string>{"out.wav", "../outside.wav", (dir.path() / "outside.wav").string()}) {
 		INFO(relative);
 		const auto fd = folder.create(relative);
 		REQUIRE_FALSE(fd.has_value());
@@ -172,7 +175,8 @@ TEST_CASE("read() refuses a symlink, a directory, a file too large and any path 
 
 	CHECK(readText(folder, "exact.conf") == std::optional<std::string>(std::string(maxBytes, 'x')));
 	for (const std::string& relative :
-	     std::vector<std::string>{"link.conf", "sub", "big.conf", "../outside.conf", (dir.path() / "outside.conf").string(), "alias/x.conf"}) {
+	     std::vector<std::string>{"link.conf", "sub", "big.conf", "../outside.conf",
+	                              (dir.path() / "outside.conf").string(), "alias/x.conf"}) {
 		INFO(relative);
 		const auto read = folder.read(relative, maxBytes);
 		REQUIRE_FALSE(read.has_value());
@@ -195,8 +199,7 @@ TEST_CASE("read() refuses a FIFO without waiting for a writer", "[folder]") {
 
 // --- replaceIf() ---
 
-TEST_CASE("replaceIf() puts the text in place when the file holds what was expected, keeping its mode",
-          "[folder]") {
+TEST_CASE("replaceIf() puts the text in place when the file holds what was expected, keeping its mode", "[folder]") {
 	TempDir dir{"replace"};
 	const auto folder = openFolder(dir.path() / "folder");
 	const auto file = dir.path() / "folder" / "ear.conf";
@@ -297,7 +300,8 @@ TEST_CASE("replaceIf() refuses a path that leads out or through a symlinked dire
 	write(dir.path() / "outside.conf", "outside");
 	std::filesystem::create_directory_symlink(dir.path(), dir.path() / "folder" / "up");
 
-	for (const std::string& relative : std::vector<std::string>{"../outside.conf", (dir.path() / "outside.conf").string(), "up/outside.conf"}) {
+	for (const std::string& relative :
+	     std::vector<std::string>{"../outside.conf", (dir.path() / "outside.conf").string(), "up/outside.conf"}) {
 		INFO(relative);
 		const auto outcome = folder.replaceIf(relative, std::string("outside"), "new", maxBytes);
 		CHECK_FALSE(outcome.has_value());
@@ -325,7 +329,9 @@ TEST_CASE("replaceIf() in a folder it cannot write is an error and the file is u
 	CHECK(names(dir.path() / "folder") == std::vector<std::string>{"ear.conf"});
 }
 
-TEST_CASE("replaceIf() creates a file with the mode asked for under any umask, and keeps an existing file's", "[folder]") {
+TEST_CASE("replaceIf() creates a file with the mode asked for under any umask, and keeps an "
+          "existing file's",
+          "[folder]") {
 	TempDir dir{"createmode"};
 	const auto folder = openFolder(dir.path() / "folder");
 	const auto file = dir.path() / "folder" / "secret.key";
@@ -434,7 +440,7 @@ TEST_CASE("requireApart() refuses one folder twice, nesting either way and a sym
 	std::filesystem::create_directory_symlink(a, alias);
 
 	const std::vector<std::vector<std::filesystem::path>> overlapping = {
-	    {a, a}, {a, inner}, {inner, a}, {a, alias}, {alias / "inner", a}, {dir.path() / "web", a, alias}};
+		{a, a}, {a, inner}, {inner, a}, {a, alias}, {alias / "inner", a}, {dir.path() / "web", a, alias}};
 	std::filesystem::create_directory(dir.path() / "web");
 	for (const auto& folders : overlapping) {
 		INFO(folders.front().string() << " ... " << folders.back().string());
@@ -464,7 +470,9 @@ TEST_CASE("requireApart() passes folders apart and skips a path that does not ex
 	CHECK(ear::folder::requireApart(prefixed).has_value());
 }
 
-TEST_CASE("fileNames() lists the regular files directly in the folder, no symlink or directory among them", "[folder]") {
+TEST_CASE("fileNames() lists the regular files directly in the folder, no symlink or directory "
+          "among them",
+          "[folder]") {
 	TempDir dir{"names"};
 	const auto path = dir.path() / "f";
 	auto folder = ConfinedFolder::open(path);

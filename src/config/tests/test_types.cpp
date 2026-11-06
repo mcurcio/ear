@@ -23,8 +23,8 @@ private:
 class WhiteType final : public NodeType {
 public:
 	std::string_view name() const override { return "white"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
-	                                                                        const NodeSettings& settings) const override {
+	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
+	parse(const NodeName& node, const NodeSettings& settings) const override {
 		if (!settings.empty()) return std::unexpected(InvalidSettings{node, "white takes no settings"});
 		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "noise", {"mono"}}}});
 	}
@@ -34,8 +34,8 @@ public:
 class FileType final : public NodeType {
 public:
 	std::string_view name() const override { return "file"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
-	                                                                        const NodeSettings& settings) const override {
+	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
+	parse(const NodeName& node, const NodeSettings& settings) const override {
 		if (!settings.contains("path") || !settings["path"].is_string())
 			return std::unexpected(InvalidSettings{node, "file needs a path"});
 		return std::make_unique<FixedConfig>(Ports{{{Direction::input, "record", {"left", "right"}}}});
@@ -49,18 +49,19 @@ private:
 class CardType final : public NodeType {
 public:
 	std::string_view name() const override { return "card"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
-	                                                                        const NodeSettings& settings) const override {
-		const auto channels = [&](const char* key) { return numbered(static_cast<std::uint32_t>(settings.value(key, 0))); };
-		return std::make_unique<FixedConfig>(
-		    Ports{{{Direction::input, "play", channels("playback")}, {Direction::output, "capture", channels("capture")}}});
+	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
+	parse(const NodeName&, const NodeSettings& settings) const override {
+		const auto channels = [&](const char* key) {
+			return numbered(static_cast<std::uint32_t>(settings.value(key, 0)));
+		};
+		return std::make_unique<FixedConfig>(Ports{
+			{{Direction::input, "play", channels("playback")}, {Direction::output, "capture", channels("capture")}}});
 	}
 	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
 
 private:
-	static constexpr std::array<SettingDeclaration, 3> kinds{{{"card", SettingKind::text},
-	                                                          {"playback", SettingKind::wholeNumber},
-	                                                          {"capture", SettingKind::wholeNumber}}};
+	static constexpr std::array<SettingDeclaration, 3> kinds{
+		{{"card", SettingKind::text}, {"playback", SettingKind::wholeNumber}, {"capture", SettingKind::wholeNumber}}};
 };
 
 } // namespace

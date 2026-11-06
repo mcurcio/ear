@@ -19,19 +19,19 @@ namespace ear::sendspin {
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, std::uint32_t rate) noexcept;
 class SendspinWorker {
 public:
-  /// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's
-  /// key file lives in `folder`.
-  SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
-                 AudioFormat format, Feed& feed, InsidesEvents& events);
-  void stop(std::move_only_function<void()> stopped);   // main thread; the insides' close()
-  ~SendspinWorker();                                    // after `stopped`; joins a finished thread
-  const EventFd& bell() const noexcept;                 // what the code rings
-  Mailbox<PlayProgress>& progress() noexcept;
-  HandoffConsumer& toServer() noexcept;                 // the handoff's far end: write_audio; closed before stop()
-  Mailbox<CaptureAnchor>& capture() noexcept;           // when what the handoff holds was captured
-  std::int64_t clientTimeOf(std::int64_t serverUs) const;   // the tests' window on the time filter
+	/// Starts the threads; `feed` and `events` outlive `stopped`. Throws std::system_error when it cannot. The node's
+	/// key file lives in `folder`.
+	SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings,
+	               AudioFormat format, Feed& feed, InsidesEvents& events);
+	void stop(std::move_only_function<void()> stopped); // main thread; the insides' close()
+	~SendspinWorker();                                  // after `stopped`; joins a finished thread
+	const EventFd& bell() const noexcept;               // what the code rings
+	Mailbox<PlayProgress>& progress() noexcept;
+	HandoffConsumer& toServer() noexcept;                   // the handoff's far end: write_audio; closed before stop()
+	Mailbox<CaptureAnchor>& capture() noexcept;             // when what the handoff holds was captured
+	std::int64_t clientTimeOf(std::int64_t serverUs) const; // the tests' window on the time filter
 private:
-  class Impl;
-  std::unique_ptr<Impl> impl_;
+	class Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::sendspin

@@ -10,12 +10,14 @@ namespace ear::server {
 /// inherits the blocked stop signals).
 class ControlThread final : public Executor {
 public:
-  ControlThread();                       // starts the thread
-  ~ControlThread();                      // stop()
-  void post(std::move_only_function<void()> work) override;   // any thread; post order kept
-  /// Any thread but this one; idempotent. Joins; queued and later work is destroyed unrun.
-  void stop();
+	ControlThread();                                          // starts the thread
+	~ControlThread();                                         // stop()
+	void post(std::move_only_function<void()> work) override; // any thread; post order kept
+	/// Any thread but this one; idempotent. Joins; queued and later work is destroyed unrun.
+	void stop();
+
 private:
-  struct Impl; std::unique_ptr<Impl> impl_;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::server

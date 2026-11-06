@@ -31,16 +31,16 @@ struct Hub;
 /// session has gone finds it expired and is dropped.
 struct SessionState {
 	Hub* hub;
-	Outbox* out;   // null once the session is destroyed
-	bool graph = false;       // graph.subscribe answered
-	bool graphFile = false;   // graphFile.subscribe answered
+	Outbox* out;            // null once the session is destroyed
+	bool graph = false;     // graph.subscribe answered
+	bool graphFile = false; // graphFile.subscribe answered
 	bool levels = false;
 };
 
 struct Hub {
 	GraphGateway& graph;
 	LevelReader& levels;
-	std::vector<std::shared_ptr<SessionState>> sessions;   // attach order
+	std::vector<std::shared_ptr<SessionState>> sessions; // attach order
 
 	/// A copy: a send may close a connection and so detach its session.
 	std::vector<std::shared_ptr<SessionState>> attached() const { return sessions; }
@@ -56,9 +56,9 @@ Message share(std::string text) { return std::make_shared<const std::string>(std
 /// One entry of a received message, in order: what its response will be.
 struct Slot {
 	enum class Kind { fixed, command, subscribe, fileSubscribe, levels } kind;
-	std::optional<RpcId> id;   // none: a notification, no response
-	std::string text;          // Kind::fixed: the encoded error
-	std::size_t command = 0;   // Kind::command and the subscribes: index into the results
+	std::optional<RpcId> id; // none: a notification, no response
+	std::string text;        // Kind::fixed: the encoded error
+	std::size_t command = 0; // Kind::command and the subscribes: index into the results
 };
 
 std::optional<std::string> respond(const Slot& slot, const std::vector<CommandResult>& results) {
@@ -71,8 +71,8 @@ std::optional<std::string> respond(const Slot& slot, const std::vector<CommandRe
 }
 
 /// The responses to one message, queued in request order, then its subscriptions, then `done`.
-void answer(SessionState& state, bool batch, const std::vector<Slot>& slots,
-            const std::vector<CommandResult>& results, std::move_only_function<void()>& done) {
+void answer(SessionState& state, bool batch, const std::vector<Slot>& slots, const std::vector<CommandResult>& results,
+            std::move_only_function<void()>& done) {
 	std::vector<std::string> responses;
 	for (const Slot& slot : slots)
 		if (auto response = respond(slot, results)) responses.push_back(std::move(*response));
@@ -111,7 +111,7 @@ ControlSession::~ControlSession() {
 
 void ControlSession::received(std::string text, std::move_only_function<void()> done) {
 	const std::shared_ptr<SessionState>& state = impl_->state;
-	if (state->hub == nullptr) return;   // the hub has gone: the port is stopping
+	if (state->hub == nullptr) return; // the hub has gone: the port is stopping
 	RpcMessage message = parseMessage(text);
 
 	std::vector<Slot> slots;
@@ -125,7 +125,7 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		auto refuse = [&](const RpcError& error) {
 			if (request.id) slots.push_back({Slot::Kind::fixed, request.id, encodeError(*request.id, error)});
 		};
-		if (request.method == "levels.subscribe") {   // answered here, without the main loop
+		if (request.method == "levels.subscribe") { // answered here, without the main loop
 			if (!request.params.is_null())
 				if (auto checked = requireObject(request.params, JsonPointer{}, {}); !checked) {
 					refuse({invalidParams, checked.error().detail, nullptr});
@@ -161,10 +161,10 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 	state->hub->graph.run(std::move(commands),
 	                      [weak = std::weak_ptr<SessionState>(state), batch = message.batch, slots = std::move(slots),
 	                       done = std::move(done)](std::vector<CommandResult> results) mutable {
-		                      const auto alive = weak.lock();
-		                      if (!alive || alive->out == nullptr) return;   // the session closed meanwhile
-		                      answer(*alive, batch, slots, results, done);
-	                      });
+							  const auto alive = weak.lock();
+							  if (!alive || alive->out == nullptr) return; // the session closed meanwhile
+							  answer(*alive, batch, slots, results, done);
+						  });
 }
 
 struct ControlHub::Impl {

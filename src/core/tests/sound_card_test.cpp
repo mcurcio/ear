@@ -18,8 +18,8 @@ TEST_CASE("A card id is 1-15 characters of letters, digits, '_' and '-'", "[card
 }
 
 TEST_CASE("A card id refuses anything else, so no ALSA device string can be named", "[card_id]") {
-	for (const std::string text : {"", "abcdefghijklmnop", "hw:0", "file:'|touch x'", "a,b", "a b", "a=b", "a.b",
-	                               "a|b", "a/b", "Pro24\n"}) {
+	for (const std::string text :
+	     {"", "abcdefghijklmnop", "hw:0", "file:'|touch x'", "a,b", "a b", "a=b", "a.b", "a|b", "a/b", "Pro24\n"}) {
 		INFO(text);
 		CHECK_FALSE(CardId::parse(text).has_value());
 	}

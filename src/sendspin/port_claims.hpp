@@ -11,13 +11,14 @@ namespace ear::sendspin {
 /// Main thread only; held by the type; a claim is released when the node's insides go.
 class PortClaims {
 public:
-  /// Error: why not (the detail after `cannot listen on port <p>: `).
-  std::expected<void, std::string> claim(std::uint16_t port, const NodeName& node);
-  void release(std::uint16_t port);
+	/// Error: why not (the detail after `cannot listen on port <p>: `).
+	std::expected<void, std::string> claim(std::uint16_t port, const NodeName& node);
+	void release(std::uint16_t port);
+
 private:
-  std::map<std::uint16_t, NodeName> held_;
+	std::map<std::uint16_t, NodeName> held_;
 };
 /// Whether the library's listener could bind `port`: all addresses with SO_REUSEADDR, as it does, so a live listener
 /// refuses and a TIME_WAIT from the node's last run does not. Error: the kernel's reason.
 std::expected<void, std::string> probeListenPort(std::uint16_t port);
-}
+} // namespace ear::sendspin

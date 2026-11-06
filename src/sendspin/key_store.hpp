@@ -20,19 +20,22 @@ namespace ear::sendspin {
 std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder);
 class NodeKeyStore final : public ::sendspin::SendspinPersistenceProvider {
 public:
-  /// Worker, before client.start(). Reads and narrows to 0600, or creates it empty. Error: `lost` with this detail, and
-  /// the file's text left as it was.
-  static std::expected<std::unique_ptr<NodeKeyStore>, std::string> open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events);
-  std::optional<std::vector<std::uint8_t>> load_blob(const std::string& key) override;
-  /// Failure: `key-write-failed`. The blob stays in memory, so a later write that works carries it too (the library's
-  /// contract: this run's state stays authoritative).
-  bool save_blob(const std::string& key, const std::uint8_t* data, std::size_t size) override;
+	/// Worker, before client.start(). Reads and narrows to 0600, or creates it empty. Error: `lost` with this detail, and
+	/// the file's text left as it was.
+	static std::expected<std::unique_ptr<NodeKeyStore>, std::string>
+	open(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, InsidesEvents& events);
+	std::optional<std::vector<std::uint8_t>> load_blob(const std::string& key) override;
+	/// Failure: `key-write-failed`. The blob stays in memory, so a later write that works carries it too (the library's
+	/// contract: this run's state stays authoritative).
+	bool save_blob(const std::string& key, const std::uint8_t* data, std::size_t size) override;
+
 private:
-  NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file, InsidesEvents& events, nlohmann::json record, std::string text) noexcept;
-  std::shared_ptr<const folder::ConfinedFolder> folder_;
-  std::string file_;
-  InsidesEvents& events_;
-  nlohmann::json record_;
-  std::string text_;   // what the file held when last read or written
+	NodeKeyStore(std::shared_ptr<const folder::ConfinedFolder> folder, std::string file, InsidesEvents& events,
+	             nlohmann::json record, std::string text) noexcept;
+	std::shared_ptr<const folder::ConfinedFolder> folder_;
+	std::string file_;
+	InsidesEvents& events_;
+	nlohmann::json record_;
+	std::string text_; // what the file held when last read or written
 };
-}
+} // namespace ear::sendspin

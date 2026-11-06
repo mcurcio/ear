@@ -5,7 +5,8 @@
 
 namespace ear::nodes {
 
-std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<const folder::ConfinedFolder> recordings) {
+std::vector<std::unique_ptr<const NodeType>>
+builtinNodeTypes(std::shared_ptr<const folder::ConfinedFolder> recordings) {
 	std::vector<std::unique_ptr<const NodeType>> types;
 	types.push_back(makeWhiteNodeType());
 	types.push_back(makeFileNodeType(std::move(recordings)));
@@ -14,4 +15,4 @@ std::vector<std::unique_ptr<const NodeType>> builtinNodeTypes(std::shared_ptr<co
 	return types;
 }
 
-}  // namespace ear::nodes
+} // namespace ear::nodes

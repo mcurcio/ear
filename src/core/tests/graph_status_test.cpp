@@ -17,8 +17,8 @@ namespace {
 
 struct SilentCode final : AudioCode {
 	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>,
-	             std::uint32_t, const GraphCycle&) noexcept override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
+	             const GraphCycle&) noexcept override {}
 	void release() noexcept override {}
 };
 
@@ -64,7 +64,8 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 	std::vector<std::unique_ptr<const NodeType>> all;
 	all.push_back(std::make_unique<Type>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
 	all.push_back(std::make_unique<Type>("recorder", Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
-	all.push_back(std::make_unique<Type>("card", Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
+	all.push_back(std::make_unique<Type>(
+		"card", Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
 	return all;
 }
 
@@ -73,7 +74,7 @@ struct Block final : PortBlock {
 };
 
 struct Blocks final : PortBlockFactory {
-	std::map<NodeName, PortBlockEvents*> events;   // the latest block of each name
+	std::map<NodeName, PortBlockEvents*> events; // the latest block of each name
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports&, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		events[node] = &e;
@@ -213,11 +214,11 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", {}}, {"noise", "source", {}}}, {noiseToFl});
 	f.blocks.events.at("rec")->ready();
-	REQUIRE(f.nodes.status().at(1).name == "rec");   // a commit adds in name order
+	REQUIRE(f.nodes.status().at(1).name == "rec"); // a commit adds in name order
 	REQUIRE(f.nodes.status().at(1).state == NodeState::running);
 
 	apply(f.graph, {{"noise", "source", {}}}, {});
-	REQUIRE(f.nodes.status().size() == 2);   // rec waits for its handoff to close
+	REQUIRE(f.nodes.status().size() == 2); // rec waits for its handoff to close
 	CHECK(f.nodes.status().at(1).state == NodeState::stopping);
 
 	GraphView view = f.status.read();
@@ -226,7 +227,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.routes.empty());
 
 	apply(f.graph, {{"noise", "source", {}}, {"rec", "recorder", {}}}, {});
-	REQUIRE(f.nodes.status().size() == 3);   // the old rec, still stopping, comes first
+	REQUIRE(f.nodes.status().size() == 3); // the old rec, still stopping, comes first
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);
 	CHECK(view.nodes[1].spec.name == "rec");
@@ -234,7 +235,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 
 	f.blocks.events.at("rec")->ready();
 	view = f.status.read();
-	CHECK(view.nodes[1].state == NodeState::starting);   // its insides wait for the old rec
+	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
 	REQUIRE(f.nodes.status().size() == 2);

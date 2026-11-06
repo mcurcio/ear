@@ -94,13 +94,13 @@ void DesiredGraph::subscribe(DesiredNodeListener& listener) { impl_->nodeSubscri
 void DesiredGraph::subscribe(DesiredRouteListener& listener) { impl_->routeSubscribers.push_back(&listener); }
 
 struct Plan::Impl {
-	const void* graph;                 // the graph it was made on (its Impl)
-	std::uint64_t generation;          // that graph's generation then
-	std::vector<Route> routesRemoved;  // Route order
-	std::vector<NodeName> nodesRemoved;   // name order; replaced nodes included
-	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesUpdated;   // name order
-	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesAdded;     // name order; replaced included
-	std::vector<Route> routesAdded;    // Route order
+	const void* graph;                  // the graph it was made on (its Impl)
+	std::uint64_t generation;           // that graph's generation then
+	std::vector<Route> routesRemoved;   // Route order
+	std::vector<NodeName> nodesRemoved; // name order; replaced nodes included
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesUpdated; // name order
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesAdded;   // name order; replaced included
+	std::vector<Route> routesAdded;                                                   // Route order
 };
 
 Plan::Plan(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -175,7 +175,8 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		}
 	}
 	for (const auto& [name, next] : wanted)
-		if (!impl_->nodes.contains(name) || replaced.contains(name)) changes->nodesAdded.emplace_back(next.spec, next.config);
+		if (!impl_->nodes.contains(name) || replaced.contains(name))
+			changes->nodesAdded.emplace_back(next.spec, next.config);
 
 	// Routes, in Route order: a held route goes when it is not wanted or names a replaced node; a
 	// wanted route comes when it is not held or names a replaced node.

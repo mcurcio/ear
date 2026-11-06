@@ -13,9 +13,9 @@ std::int64_t nowNs(clockid_t clock) noexcept {
 
 } // namespace
 
-SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate, RtWriter& toServer,
-                           Mailbox<CaptureAnchor>& capture) noexcept
-    : feed_(feed), progress_(progress), bell_(bell), rate_(rate), toServer_(toServer), capture_(capture) {}
+SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate,
+                           RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept
+	: feed_(feed), progress_(progress), bell_(bell), rate_(rate), toServer_(toServer), capture_(capture) {}
 
 void SendspinCode::prepare(const AudioFormat&) { started_ = false; }
 

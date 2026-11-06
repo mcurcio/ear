@@ -47,9 +47,7 @@ namespace po = boost::program_options;
 namespace {
 
 /// engine.conf and the built editor (web/) sit beside the binary; nothing else is looked up.
-std::filesystem::path binaryDirectory() {
-	return std::filesystem::read_symlink("/proc/self/exe").parent_path();
-}
+std::filesystem::path binaryDirectory() { return std::filesystem::read_symlink("/proc/self/exe").parent_path(); }
 
 /// A whole number above 0 that fits the engine's 32 bits, or nothing.
 std::optional<std::uint32_t> positive(std::int64_t value) {
@@ -61,23 +59,21 @@ std::optional<std::uint32_t> positive(std::int64_t value) {
 
 int main(int argc, char** argv) {
 	po::options_description options("Options");
-	options.add_options()
-		("help,h", "print these options and exit")
-		("config-dir", po::value<std::string>()->default_value("config"),
-		 "the graph file folder (ear.conf; made if missing, not its parents)")
-		("graph-frequency", po::value<std::int64_t>()->default_value(48000),
-		 "the engine's rate when ear.conf cannot be read or does not give one")
-		("block-size", po::value<std::int64_t>()->default_value(256),
-		 "the engine's block size when ear.conf cannot be read or does not give one")
-		("control-address", po::value<std::string>()->default_value("0.0.0.0"),
-		 "address the control port listens on")
-		("control-port", po::value<std::uint16_t>()->default_value(7777),
-		 "control port (0: any free port)")
-		("web-root", po::value<std::string>(), "the graph editor's files (default: <directory of ear>/web)")
-		("allowed-host", po::value<std::vector<std::string>>()->composing(),
-		 "a DNS name requests may name in Host (repeatable); IP addresses and localhost always may")
-		("recordings-dir", po::value<std::string>()->default_value("recordings"),
-		 "the folder file nodes write into (made if missing, not its parents); their paths are relative to it");
+	options.add_options()("help,h", "print these options and exit")(
+		"config-dir", po::value<std::string>()->default_value("config"),
+		"the graph file folder (ear.conf; made if missing, not its parents)")(
+		"graph-frequency", po::value<std::int64_t>()->default_value(48000),
+		"the engine's rate when ear.conf cannot be read or does not give one")(
+		"block-size", po::value<std::int64_t>()->default_value(256),
+		"the engine's block size when ear.conf cannot be read or does not give one")(
+		"control-address", po::value<std::string>()->default_value("0.0.0.0"), "address the control port listens on")(
+		"control-port", po::value<std::uint16_t>()->default_value(7777), "control port (0: any free port)")(
+		"web-root", po::value<std::string>(), "the graph editor's files (default: <directory of ear>/web)")(
+		"allowed-host", po::value<std::vector<std::string>>()->composing(),
+		"a DNS name requests may name in Host (repeatable); IP addresses and localhost always may")(
+		"recordings-dir", po::value<std::string>()->default_value("recordings"),
+		"the folder file nodes write into (made if missing, not its parents); their paths are "
+		"relative to it");
 
 	po::variables_map arguments;
 	try {
@@ -94,11 +90,11 @@ int main(int argc, char** argv) {
 	}
 
 	const ear::server::ControlPortSettings portSettings{
-	    .address = arguments["control-address"].as<std::string>(),
-	    .port = arguments["control-port"].as<std::uint16_t>(),
-	    .webRoot = arguments.count("web-root") ? std::filesystem::path(arguments["web-root"].as<std::string>())
+		.address = arguments["control-address"].as<std::string>(),
+		.port = arguments["control-port"].as<std::uint16_t>(),
+		.webRoot = arguments.count("web-root") ? std::filesystem::path(arguments["web-root"].as<std::string>())
 	                                           : binaryDirectory() / "web",
-	    .allowedHosts = arguments.count("allowed-host") ? arguments["allowed-host"].as<std::vector<std::string>>()
+		.allowedHosts = arguments.count("allowed-host") ? arguments["allowed-host"].as<std::vector<std::string>>()
 	                                                    : std::vector<std::string>{},
 	};
 
@@ -132,7 +128,8 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
 	// format lines set the engine when both read; otherwise the flags do (the file's own values then
 	// show as pending restart).
-	auto nodeTypes = ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)));
+	auto nodeTypes =
+		ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)));
 	nodeTypes.push_back(ear::sendspin::makeSendspinNodeType(config));
 	const ear::NodeCatalogue catalogue(std::move(nodeTypes));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
@@ -169,7 +166,8 @@ int main(int argc, char** argv) {
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers, mainLoop);
-	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler);
+	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
+	                              reconciler);
 	ear::control::StatusLog log(std::cout);
 
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, mainLoop);

@@ -24,11 +24,12 @@ namespace ear::pipewire {
 /// channelPorts: "playback_AUX<i>" / "capture_AUX<i>".
 class AlsaSoundCards final : public SoundCardFactory {
 public:
-  explicit AlsaSoundCards(Engine& engine);   // engine outlives it
-  std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-      const SoundCardRequest& request, const AudioFormat& format,
-      OutsideNodeEvents& events) override;
+	explicit AlsaSoundCards(Engine& engine); // engine outlives it
+	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
+	                                  const SoundCardRequest& request, const AudioFormat& format,
+	                                  OutsideNodeEvents& events) override;
+
 private:
-  Engine& engine_;
+	Engine& engine_;
 };
-}
+} // namespace ear::pipewire

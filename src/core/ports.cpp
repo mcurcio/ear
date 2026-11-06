@@ -21,8 +21,8 @@ bool validPart(std::string_view part) {
 
 PortName portName(std::string_view bank, std::string_view member) {
 	if (!validPart(bank) || !validPart(member))
-		throw std::logic_error("a port bank's name and members are letters, digits, - and _: bank \"" + std::string(bank) +
-		                       "\", member \"" + std::string(member) + "\"");
+		throw std::logic_error("a port bank's name and members are letters, digits, - and _: bank \"" +
+		                       std::string(bank) + "\", member \"" + std::string(member) + "\"");
 	return std::string(bank) + '.' + std::string(member);
 }
 
@@ -33,8 +33,9 @@ std::vector<std::string> numbered(std::uint32_t count, std::string_view prefix) 
 	return names;
 }
 
-Ports::Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs, std::vector<PortName> insideOutputs)
-    : insideInputs_(std::move(insideInputs)), insideOutputs_(std::move(insideOutputs)) {
+Ports::Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs,
+             std::vector<PortName> insideOutputs)
+	: insideInputs_(std::move(insideInputs)), insideOutputs_(std::move(insideOutputs)) {
 	for (const PortBank& bank : banks) {
 		auto& list = bank.direction == Direction::input ? inputs_ : outputs_;
 		for (const std::string& member : bank.members) list.push_back(portName(bank.name, member));

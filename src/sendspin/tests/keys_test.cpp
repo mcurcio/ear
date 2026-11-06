@@ -41,7 +41,8 @@ struct Rig {
 	}
 	~Rig() {
 		std::error_code ignored;
-		std::filesystem::permissions(root / "config", std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ignored);
+		std::filesystem::permissions(root / "config", std::filesystem::perms::owner_all,
+		                             std::filesystem::perm_options::add, ignored);
 		std::filesystem::remove_all(root, ignored);
 	}
 	std::unique_ptr<NodeKeyStore> open() {
@@ -60,7 +61,9 @@ struct Rig {
 		return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 	}
 	void write(const std::string& text) const { std::ofstream(file, std::ios::binary) << text; }
-	std::filesystem::perms mode() const { return std::filesystem::symlink_status(file).permissions() & std::filesystem::perms::mask; }
+	std::filesystem::perms mode() const {
+		return std::filesystem::symlink_status(file).permissions() & std::filesystem::perms::mask;
+	}
 	std::filesystem::path root;
 	std::filesystem::path file;
 	std::shared_ptr<const ear::folder::ConfinedFolder> folder;
@@ -73,7 +76,8 @@ std::vector<std::uint8_t> bytes(std::initializer_list<int> values) {
 	return out;
 }
 
-const std::string oldRecord = R"({"createdAt": "2001-02-03T04:05:06Z", "createdBy": "someone", "changedAt": "2001-02-03T04:05:06Z",
+const std::string oldRecord =
+	R"({"createdAt": "2001-02-03T04:05:06Z", "createdBy": "someone", "changedAt": "2001-02-03T04:05:06Z",
  "changedBy": "someone", "blobs": {}})";
 
 } // namespace
@@ -101,7 +105,7 @@ TEST_CASE("Blobs round-trip exact, through memory and through the file", "[sends
 		const auto store = rig.open();
 		REQUIRE(store->save_blob("keypair", keypair.data(), keypair.size()));
 		REQUIRE(store->save_blob("rec_0", everyByte.data(), 7));
-		REQUIRE(store->save_blob("rec_0", everyByte.data(), everyByte.size()));   // overwritten in place
+		REQUIRE(store->save_blob("rec_0", everyByte.data(), everyByte.size())); // overwritten in place
 		CHECK(store->load_blob("rec_0") == everyByte);
 	}
 	CHECK(rig.mode() == std::filesystem::perms(0600));
@@ -135,19 +139,23 @@ TEST_CASE("A file already wider than 0600 is 0600 after open, its text unchanged
 	CHECK(rig.text() == oldRecord);
 }
 
-TEST_CASE("A file that is no key file fails open with the reason, its text unchanged and its mode narrowed", "[sendspin][keys]") {
+TEST_CASE("A file that is no key file fails open with the reason, its text unchanged and its mode "
+          "narrowed",
+          "[sendspin][keys]") {
 	Rig rig;
 	const std::vector<std::pair<std::string, std::string>> cases{
-	    {"{ not json", "sendspin-ma.key: malformed: not JSON"},
-	    {"", "sendspin-ma.key: malformed: not JSON"},
-	    {"[]", "sendspin-ma.key: malformed: not a JSON object"},
-	    {R"({"createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {}})", "sendspin-ma.key: malformed: no createdAt"},
-	    {R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c"})", "sendspin-ma.key: malformed: no blobs"},
-	    {R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"rec_0": 1}})",
+		{"{ not json", "sendspin-ma.key: malformed: not JSON"},
+		{"", "sendspin-ma.key: malformed: not JSON"},
+		{"[]", "sendspin-ma.key: malformed: not a JSON object"},
+		{R"({"createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {}})",
+	     "sendspin-ma.key: malformed: no createdAt"},
+		{R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c"})",
+	     "sendspin-ma.key: malformed: no blobs"},
+		{R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"rec_0": 1}})",
 	     "sendspin-ma.key: malformed: blob rec_0 is not text"},
-	    {R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"rec_0": "@"}})",
+		{R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"rec_0": "@"}})",
 	     "sendspin-ma.key: malformed: blob rec_0 is not base64url"},
-	    {R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"keypair": "AAAA"}})",
+		{R"({"createdAt": "a", "createdBy": "a", "changedAt": "b", "changedBy": "c", "blobs": {"keypair": "AAAA"}})",
 	     "sendspin-ma.key: malformed: blob keypair has the wrong size"},
 	};
 	for (const auto& [text, detail] : cases) {
@@ -156,11 +164,12 @@ TEST_CASE("A file that is no key file fails open with the reason, its text uncha
 		std::filesystem::permissions(rig.file, std::filesystem::perms(0644));
 		CHECK(rig.refusal() == detail);
 		CHECK(rig.text() == text);
-		CHECK(rig.mode() == std::filesystem::perms(0600));   // a refused file may still hold a private key
+		CHECK(rig.mode() == std::filesystem::perms(0600)); // a refused file may still hold a private key
 	}
 }
 
-TEST_CASE("A directory, a symlink out and a file over 64 KiB each fail open with the folder's detail", "[sendspin][keys]") {
+TEST_CASE("A directory, a symlink out and a file over 64 KiB each fail open with the folder's detail",
+          "[sendspin][keys]") {
 	Rig rig;
 	SECTION("a directory") {
 		std::filesystem::create_directory(rig.file);
@@ -184,7 +193,9 @@ TEST_CASE("A directory, a symlink out and a file over 64 KiB each fail open with
 	}
 }
 
-TEST_CASE("A read-only folder fails open with the folder's detail, and later fails a write without losing the blob", "[sendspin][keys]") {
+TEST_CASE("A read-only folder fails open with the folder's detail, and later fails a write without "
+          "losing the blob",
+          "[sendspin][keys]") {
 	if (::geteuid() == 0) {
 		WARN("root writes a read-only folder; this case needs an ordinary user");
 		return;
@@ -254,7 +265,9 @@ TEST_CASE("A blob that would take the file over 64 KiB fails the write, and the 
 	CHECK(rig.text() == before);
 }
 
-TEST_CASE("Making the node type narrows every key file and its staging file, whatever its node or its text, and nothing else", "[sendspin][keys]") {
+TEST_CASE("Making the node type narrows every key file and its staging file, whatever its node or "
+          "its text, and nothing else",
+          "[sendspin][keys]") {
 	Rig rig;
 	const auto config = rig.root / "config";
 	const auto write = [&](const char* name, int mode) {
@@ -269,7 +282,9 @@ TEST_CASE("Making the node type narrows every key file and its staging file, wha
 
 	CHECK(ear::sendspin::makeSendspinNodeType(rig.folder) != nullptr);
 
-	const auto modeOf = [&](const char* name) { return std::filesystem::symlink_status(config / name).permissions() & std::filesystem::perms::mask; };
+	const auto modeOf = [&](const char* name) {
+		return std::filesystem::symlink_status(config / name).permissions() & std::filesystem::perms::mask;
+	};
 	CHECK(modeOf("sendspin-removed.key") == std::filesystem::perms(0600));
 	CHECK(modeOf(".sendspin-removed.key.ear-staging") == std::filesystem::perms(0600));
 	CHECK(modeOf("sendspin-malformed.key") == std::filesystem::perms(0600));

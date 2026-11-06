@@ -46,7 +46,8 @@ TEST_CASE("requireMember and requireName name the member's pointer", "[graph-jso
 }
 
 TEST_CASE("A node decodes with its settings, which default to {}", "[graph-json]") {
-	const auto plain = ear::control::decodeNodeSpec(json::parse(R"({"name": "noise", "type": "white"})"), JsonPointer{});
+	const auto plain =
+		ear::control::decodeNodeSpec(json::parse(R"({"name": "noise", "type": "white"})"), JsonPointer{});
 	REQUIRE(plain.has_value());
 	CHECK(*plain == ear::NodeSpec{"noise", "white", json::object()});
 	const auto set = ear::control::decodeNodeSpec(
@@ -67,7 +68,8 @@ TEST_CASE("Every missing, extra and mistyped node key is named by its pointer", 
 
 TEST_CASE("A route decodes from and to", "[graph-json]") {
 	const auto route = ear::control::decodeRoute(
-		json::parse(R"({"from": {"node": "a", "port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}})"), JsonPointer{});
+		json::parse(R"({"from": {"node": "a", "port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}})"),
+		JsonPointer{});
 	REQUIRE(route.has_value());
 	CHECK(*route == ear::Route{{"a", "noise.mono"}, {"b", "record.left"}});
 }
@@ -75,15 +77,22 @@ TEST_CASE("A route decodes from and to", "[graph-json]") {
 TEST_CASE("Every missing, extra and mistyped route key is named by its pointer", "[graph-json]") {
 	CHECK(routeError(R"({"to": {"node": "b", "port": "record.left"}})") == "/from: missing");
 	CHECK(routeError(R"({"from": {"node": "a", "port": "noise.mono"}})") == "/to: missing");
-	CHECK(routeError(R"({"from": {"node": "a"}, "to": {"node": "b", "port": "record.left"}})") == "/from/port: missing");
-	CHECK(routeError(R"({"from": {"port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}})") == "/from/node: missing");
+	CHECK(routeError(R"({"from": {"node": "a"}, "to": {"node": "b", "port": "record.left"}})") ==
+	      "/from/port: missing");
+	CHECK(routeError(R"({"from": {"port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}})") ==
+	      "/from/node: missing");
 	CHECK(routeError(R"({"from": {"node": "a", "port": "noise.mono"}, "to": {"node": "b", "port": 2}})") ==
 	      "/to/port: must be a non-empty string");
-	CHECK(routeError(R"({"from": "a:noise.mono", "to": {"node": "b", "port": "record.left"}})") == "/from: must be an object");
-	CHECK(routeError(R"({"from": {"node": "a", "port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}, "gain": 1})") ==
-	      "/gain: unknown key");
-	CHECK(routeError(R"({"from": {"node": "a", "port": "noise.mono", "ch": 0}, "to": {"node": "b", "port": "record.left"}})") ==
-	      "/from/ch: unknown key");
+	CHECK(routeError(R"({"from": "a:noise.mono", "to": {"node": "b", "port": "record.left"}})") ==
+	      "/from: must be an object");
+	CHECK(
+		routeError(
+			R"({"from": {"node": "a", "port": "noise.mono"}, "to": {"node": "b", "port": "record.left"}, "gain": 1})") ==
+		"/gain: unknown key");
+	CHECK(
+		routeError(
+			R"({"from": {"node": "a", "port": "noise.mono", "ch": 0}, "to": {"node": "b", "port": "record.left"}})") ==
+		"/from/ch: unknown key");
 }
 
 TEST_CASE("Ports and routes encode as the wire format names them", "[graph-json]") {

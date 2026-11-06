@@ -36,7 +36,7 @@ private:
 
 /// Valid settings: every key, then `change` applied (a null value removes the key).
 NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
-	NodeSettings settings = {{"address", "239.69.0.1"}, {"port", 5004}, {"format", "L24"},
+	NodeSettings settings = {{"address", "239.69.0.1"}, {"port", 5004},  {"format", "L24"},
 	                         {"channels", 2},           {"rate", 48000}, {"latencyMs", 100}};
 	for (const auto& [key, value] : change.items()) {
 		if (value.is_null()) {
@@ -62,7 +62,7 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 	return grant.requests[0];
 }
 
-}  // namespace
+} // namespace
 
 TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and from_rtp_i inside", "[rtp]") {
 	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
@@ -91,9 +91,7 @@ TEST_CASE("Rtp start asks for exactly one receiver with its settings and its ins
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
 		CHECK(defaulted.rate == 44100);
 	}
-	SECTION("an absent latencyMs is 100") {
-		CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100);
-	}
+	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
 }
 
 TEST_CASE("Rtp maps L24 to l24 and L16 to l16", "[rtp]") {
@@ -104,7 +102,7 @@ TEST_CASE("Rtp maps L24 to l24 and L16 to l16", "[rtp]") {
 TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its detail", "[rtp]") {
 	const std::string notObject = R"(settings: must be an object with "address", "port", "format" and "channels")";
 	const std::string badAddress =
-	    R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)";
+		R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)";
 	const std::string badPort = "port: must be a whole number, 1-65535";
 	const std::string badFormat = R"(format: must be "L16" or "L24")";
 	const std::string badChannels = "channels: must be a whole number, 1-64";
@@ -112,33 +110,33 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 	const std::string badLatency = "latencyMs: must be a whole number of milliseconds, 1-1000";
 
 	const std::vector<std::pair<NodeSettings, std::string>> cases{
-	    {NodeSettings{}, notObject},
-	    {NodeSettings(3), notObject},
-	    {NodeSettings::array({1}), notObject},
-	    {settingsWith({{"device", "x"}}), "unknown key device"},
-	    {settingsWith({{"address", nullptr}}), "address: missing"},
-	    {settingsWith({{"address", "192.168.1.10"}}), badAddress},
-	    {settingsWith({{"address", "fpp.local"}}), badAddress},
-	    {settingsWith({{"address", 239}}), badAddress},
-	    {settingsWith({{"port", nullptr}}), "port: missing"},
-	    {settingsWith({{"port", 0}}), badPort},
-	    {settingsWith({{"port", 65536}}), badPort},
-	    {settingsWith({{"port", "5004"}}), badPort},
-	    {settingsWith({{"port", 5004.5}}), badPort},
-	    {settingsWith({{"format", nullptr}}), "format: missing"},
-	    {settingsWith({{"format", "l24"}}), badFormat},
-	    {settingsWith({{"format", "S24BE"}}), badFormat},
-	    {settingsWith({{"format", 24}}), badFormat},
-	    {settingsWith({{"channels", nullptr}}), "channels: missing"},
-	    {settingsWith({{"channels", 0}}), badChannels},
-	    {settingsWith({{"channels", 65}}), badChannels},
-	    {settingsWith({{"channels", "2"}}), badChannels},
-	    {settingsWith({{"rate", 7999}}), badRate},
-	    {settingsWith({{"rate", 192001}}), badRate},
-	    {settingsWith({{"rate", 48000.5}}), badRate},
-	    {settingsWith({{"latencyMs", 0}}), badLatency},
-	    {settingsWith({{"latencyMs", 1001}}), badLatency},
-	    {settingsWith({{"latencyMs", true}}), badLatency},
+		{NodeSettings{}, notObject},
+		{NodeSettings(3), notObject},
+		{NodeSettings::array({1}), notObject},
+		{settingsWith({{"device", "x"}}), "unknown key device"},
+		{settingsWith({{"address", nullptr}}), "address: missing"},
+		{settingsWith({{"address", "192.168.1.10"}}), badAddress},
+		{settingsWith({{"address", "fpp.local"}}), badAddress},
+		{settingsWith({{"address", 239}}), badAddress},
+		{settingsWith({{"port", nullptr}}), "port: missing"},
+		{settingsWith({{"port", 0}}), badPort},
+		{settingsWith({{"port", 65536}}), badPort},
+		{settingsWith({{"port", "5004"}}), badPort},
+		{settingsWith({{"port", 5004.5}}), badPort},
+		{settingsWith({{"format", nullptr}}), "format: missing"},
+		{settingsWith({{"format", "l24"}}), badFormat},
+		{settingsWith({{"format", "S24BE"}}), badFormat},
+		{settingsWith({{"format", 24}}), badFormat},
+		{settingsWith({{"channels", nullptr}}), "channels: missing"},
+		{settingsWith({{"channels", 0}}), badChannels},
+		{settingsWith({{"channels", 65}}), badChannels},
+		{settingsWith({{"channels", "2"}}), badChannels},
+		{settingsWith({{"rate", 7999}}), badRate},
+		{settingsWith({{"rate", 192001}}), badRate},
+		{settingsWith({{"rate", 48000.5}}), badRate},
+		{settingsWith({{"latencyMs", 0}}), badLatency},
+		{settingsWith({{"latencyMs", 1001}}), badLatency},
+		{settingsWith({{"latencyMs", true}}), badLatency},
 	};
 	const auto type = ear::nodes::makeRtpNodeType();
 	for (const auto& [settings, detail] : cases) {
@@ -150,8 +148,9 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 	}
 
 	// The ends of every range are accepted.
-	for (const auto& edge : {settingsWith({{"port", 1}, {"channels", 1}, {"rate", 8000}, {"latencyMs", 1}}),
-	                         settingsWith({{"port", 65535}, {"channels", 64}, {"rate", 192000}, {"latencyMs", 1000}})}) {
+	for (const auto& edge :
+	     {settingsWith({{"port", 1}, {"channels", 1}, {"rate", 8000}, {"latencyMs", 1}}),
+	      settingsWith({{"port", 65535}, {"channels", 64}, {"rate", 192000}, {"latencyMs", 1000}})}) {
 		INFO(edge.dump());
 		CHECK(type->parse("fpp", edge).has_value());
 	}

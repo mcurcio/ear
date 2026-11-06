@@ -14,12 +14,13 @@ namespace ear::pipewire {
 /// First STREAMING -> ready(); ERROR -> lost().
 class FilterPortBlocks final : public PortBlockFactory, public LevelReader {
 public:
-  FilterPortBlocks(Engine& engine, LevelWake& wake);   // both outlive it
-  ~FilterPortBlocks();
-  std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports,
-      const AudioFormat& format, PortBlockEvents& events) override;
-  std::vector<NodeLevels> latestLevels() override;     // any thread
+	FilterPortBlocks(Engine& engine, LevelWake& wake); // both outlive it
+	~FilterPortBlocks();
+	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat& format,
+	                                PortBlockEvents& events) override;
+	std::vector<NodeLevels> latestLevels() override; // any thread
 private:
-  struct Impl; std::unique_ptr<Impl> impl_;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::pipewire

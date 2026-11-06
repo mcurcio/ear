@@ -131,7 +131,8 @@ TEST_CASE("A changed value sets its definition, so every node using it changes",
 	}
 }
 
-TEST_CASE("An added key goes in the node's own block, and a key made by a shared line is refused", "[graph_file_edit]") {
+TEST_CASE("An added key goes in the node's own block, and a key made by a shared line is refused",
+          "[graph_file_edit]") {
 	const Fixture f;
 	const auto model = f.load(recordExample);
 
@@ -236,13 +237,14 @@ TEST_CASE("Unknown items and values that cannot be written are refused", "[graph
 	CHECK(commandDetail(model.updateNode("rec", {{"path", 3}})) == "invalid-settings rec: path: expected text");
 	CHECK(commandDetail(model.updateNode("rec", {{"path", "a.wav"}, {"gains", json::array({1, 2})}})) ==
 	      "invalid-settings rec: gains: cannot be written");
-	CHECK(commandDetail(model.addNode({"n3", "pink", {{"hue", 0.5}}})) == "invalid-settings n3: hue: cannot be written");
+	CHECK(commandDetail(model.addNode({"n3", "pink", {{"hue", 0.5}}})) ==
+	      "invalid-settings n3: hue: cannot be written");
 
 	SECTION("an undeclared string key is written and read back") {
 		const auto edited = candidate(model.updateNode("rec", {{"path", "take1.wav"}, {"label", "front"}}));
 		CHECK(nodeIn(edited, "rec").settings == json{{"path", "take1.wav"}, {"label", "front"}});
 		const auto pink = candidate(model.addNode({"n3", "pink", {{"hue", "red"}, {"depth", 3}}}));
-		CHECK(nodeIn(pink, "n3").settings == json{{"depth", "3"}, {"hue", "red"}});   // read back as text: undeclared
+		CHECK(nodeIn(pink, "n3").settings == json{{"depth", "3"}, {"hue", "red"}}); // read back as text: undeclared
 	}
 }
 
@@ -255,17 +257,23 @@ TEST_CASE("A text with a control character knobly cannot write is refused as the
 	// Each of these once reached knobly's written layer, which threw on the keeper's thread and ended ear.
 	CHECK(commandDetail(model.updateNode("rec", {{"path", nul}})) ==
 	      "invalid-settings rec: path: holds a control character ear.conf cannot hold");
-	CHECK(commandDetail(model.addNode({"rec2", "file", {{"path", "a\x01" "b"}}})) ==
+	CHECK(commandDetail(model.addNode({"rec2",
+	                                   "file",
+	                                   {{"path", "a\x01"
+	                                             "b"}}})) ==
 	      "invalid-settings rec2: path: holds a control character ear.conf cannot hold");
 	CHECK(commandDetail(model.addNode({"n3", "pink", {{"label", "a\x7f"}}})) ==
-	      "invalid-settings n3: label: holds a control character ear.conf cannot hold");   // undeclared: text too
+	      "invalid-settings n3: label: holds a control character "
+	      "ear.conf cannot hold"); // undeclared: text too
 	CHECK(commandCode(model.addNode({"a\x02", "white", json::object()})) == "invalid-name");
 	CHECK(commandCode(model.addNode({"n4", "wh\x1fite", json::object()})) == "unknown-node-type");
-	CHECK(commandDetail(model.addRoute({{"noise", "MO" + nul}, {"rec", "record.left"}})) == "unknown-port noise:MO" + nul);
+	CHECK(commandDetail(model.addRoute({{"noise", "MO" + nul}, {"rec", "record.left"}})) ==
+	      "unknown-port noise:MO" + nul);
 	CHECK(commandCode(model.addRoute({{"noise", "noise.mono"}, {"gh\x03st", "record.left"}})) == "unknown-node");
 	CHECK(commandCode(model.addRoute({{"noise", "noise.mono"}, {"ghost", "F\x03L"}})) == "unknown-node");
 
-	SECTION("newline, tab, carriage return and U+2028 are written with knobly's escapes and read back") {
+	SECTION("newline, tab, carriage return and U+2028 are written with knobly's escapes and read "
+	        "back") {
 		const std::string path = "a\nb\tc\rd\u2028e";
 		const auto edited = candidate(model.updateNode("rec", {{"path", path}}));
 		CHECK(nodeIn(edited, "rec").settings == json{{"path", path}});

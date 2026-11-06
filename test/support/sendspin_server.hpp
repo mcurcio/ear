@@ -60,7 +60,7 @@ public:
 	}
 
 	~SendspinTestServer() {
-		if (toServer_ >= 0) ::close(toServer_);   // end of input: it closes its server and exits
+		if (toServer_ >= 0) ::close(toServer_); // end of input: it closes its server and exits
 		if (pid_ > 0) {
 			// Closed input ends it; a stuck one is not worth a test's result.
 			waitForEvent("\x01", std::chrono::seconds(5));
@@ -124,7 +124,8 @@ private:
 
 	bool readMore(std::chrono::steady_clock::time_point until) {
 		if (ended_) return false;
-		const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+		const auto left =
+			std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
 		if (left.count() <= 0) return false;
 		pollfd ready{fromServer_, POLLIN, 0};
 		const int polled = ::poll(&ready, 1, static_cast<int>(left.count()));

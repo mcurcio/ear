@@ -38,10 +38,10 @@ constexpr double amplitude = 0.5;
 /// channel for channel into file node "rec" (rec.wav in the recordings folder).
 void writeGraph(const TempDirectory& directory, std::uint16_t port) {
 	writeGraphFile(directory, graphFileText("node rtp fpp { address \"0.0.0.0\"; port " + std::to_string(port) +
-	                                        "; format \"L24\"; channels 2; }\n"
-	                                        "node file rec { path \"rec.wav\"; }\n"
-	                                        "route fpp:stream.1 rec:record.left;\n"
-	                                        "route fpp:stream.2 rec:record.right;\n",
+	                                            "; format \"L24\"; channels 2; }\n"
+	                                            "node file rec { path \"rec.wav\"; }\n"
+	                                            "route fpp:stream.1 rec:record.left;\n"
+	                                            "route fpp:stream.2 rec:record.right;\n",
 	                                        graphFrequency, blockSize));
 }
 
@@ -57,9 +57,9 @@ bool waitForLines(ChildProcess& ear, const std::vector<std::string>& lines) {
 }
 
 const std::vector<std::string> runningAndLinked{
-    "node fpp running",
-    "route fpp:stream.1 -> rec:record.left linked",
-    "route fpp:stream.2 -> rec:record.right linked",
+	"node fpp running",
+	"route fpp:stream.1 -> rec:record.left linked",
+	"route fpp:stream.2 -> rec:record.right linked",
 };
 
 /// Channel `channel` of a stereo WAV, frames [from, from + frames).
@@ -97,8 +97,7 @@ void checkTone(const std::vector<float>& samples, double wanted, double other) {
 
 } // namespace
 
-TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, channel for channel",
-          "[system][rtp]") {
+TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, channel for channel", "[system][rtp]") {
 	TempDirectory directory;
 	const std::uint16_t port = freeUdpPort();
 	writeGraph(directory, port);
@@ -107,8 +106,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 
-	RtpSender sender(port, RtpPcm::l24, graphFrequency,
-	                            RtpTone{{750.0, 1500.0}, amplitude});
+	RtpSender sender(port, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
 	sender.send(graphFrequency * 3 / 2);
 	REQUIRE(sender.waitSent(deadline));
 	ear.signal(SIGTERM);
@@ -131,7 +129,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	}
 	REQUIRE(first < frames);
 	INFO("received span: frames " << first << " to " << last);
-	REQUIRE(last - first + 1 >= graphFrequency * 6 / 5);   // at least 1.2 s
+	REQUIRE(last - first + 1 >= graphFrequency * 6 / 5); // at least 1.2 s
 	// One second inside the span, after the receiver's first 0.2 s.
 	const std::size_t from = first + graphFrequency / 5;
 	checkTone(channelOf(wav, 0, from, graphFrequency), 750.0, 1500.0);
@@ -159,8 +157,8 @@ TEST_CASE("With no sender the rtp node runs and its meters show silence", "[syst
 		}
 		INFO(levels.dump());
 		const json& channel1 = levels["params"]["nodes"]["fpp"]["stream.1"];
-		CHECK(channel1[0].get<double>() == 0.0);   // peak
-		CHECK(channel1[1].get<double>() == 0.0);   // RMS
+		CHECK(channel1[0].get<double>() == 0.0); // peak
+		CHECK(channel1[1].get<double>() == 0.0); // RMS
 	}
 	ear.signal(SIGTERM);
 	const auto exitStatus = ear.waitForExit(deadline);

@@ -53,7 +53,7 @@ TEST_CASE("False for under 5 s tells nothing, and paired changing tells connecte
 	ConnectionWatch watch(true);
 	told(watch, 0ms, false);
 	told(watch, 1s, true, false);
-	CHECK(nothing(told(watch, 2s, false, true)));    // a re-handshake: the new session's paired reads first
+	CHECK(nothing(told(watch, 2s, false, true))); // a re-handshake: the new session's paired reads first
 	CHECK(nothing(told(watch, 6999ms, false, true)));
 	const auto again = told(watch, 7s, true, true);
 	CHECK(again.connected);
@@ -75,7 +75,8 @@ TEST_CASE("A false reading restarts its 5 s after each true", "[sendspin][watch]
 	CHECK(told(watch, 108s, false).disconnected);
 }
 
-TEST_CASE("5 s of false tells disconnected and dials, then no second dial before 31 s, one at 31 s", "[sendspin][watch]") {
+TEST_CASE("5 s of false tells disconnected and dials, then no second dial before 31 s, one at 31 s",
+          "[sendspin][watch]") {
 	ConnectionWatch watch(true);
 	told(watch, 0s, false);
 	told(watch, 100s, true);
