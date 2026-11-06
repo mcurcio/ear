@@ -52,15 +52,29 @@ struct NodeHost::Impl {
 		bool stopping() const noexcept { return stopping_; }
 		NodeStatus status() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
 
-		/// The port block first, once for the node's life; then the insides, which drive it.
-		void add(std::shared_ptr<const NodeConfig> config) {
+		/// The port block first, once for the node's life; then the insides, which drive it: now, or
+		/// once an older node of this name has gone, as a restart waits, so old and new insides
+		/// never share what the name owns (a listening port, a key file).
+		void add(std::shared_ptr<const NodeConfig> config, bool olderGoing) {
 			block_ = host_.blocks.make(name_, config->ports(), host_.format, *this);
-			startInsides(std::move(config));
+			if (olderGoing)
+				waiting_ = std::move(config);
+			else
+				startInsides(std::move(config));
+		}
+
+		/// The older node of this name is gone.
+		void olderGone() {
+			if (waiting_) startInsides(std::exchange(waiting_, nullptr));
 		}
 
 		/// New insides from `config` behind the same port block, once the old ones are gone. An
 		/// update arriving while the old ones are still going replaces the config to start.
 		void update(std::shared_ptr<const NodeConfig> config) {
+			if (waiting_) {
+				waiting_ = lifecycle_.blockLost() ? nullptr : std::move(config);
+				return;
+			}
 			if (lifecycle_.restartRequested()) host_.changed(*this);
 			next_ = lifecycle_.blockLost() ? nullptr : std::move(config);   // a lost block is final
 			if (!tearingDown_) tearDownInsides();
@@ -70,6 +84,7 @@ struct NodeHost::Impl {
 		void stop() {
 			stopping_ = true;
 			next_.reset();
+			waiting_.reset();
 			if (lifecycle_.stopRequested()) host_.changed(*this);
 			block_.reset();
 			if (!tearingDown_) tearDownInsides();
@@ -301,6 +316,7 @@ struct NodeHost::Impl {
 		NodeName name_;
 		NodeLifecycle lifecycle_;
 		std::shared_ptr<const NodeConfig> next_;   // the config a restart starts once teardown ends
+		std::shared_ptr<const NodeConfig> waiting_;   // the config to start once an older node of this name has gone
 		std::shared_ptr<const NodeConfig> config_;
 		std::shared_ptr<Channel> channel_;         // from each start until its insides closed
 		std::unique_ptr<NodeInsides> insides_;
@@ -354,7 +370,14 @@ struct NodeHost::Impl {
 
 	void gone(const Node& node, std::uint64_t droppedFrames) {
 		for (auto* listener : listeners) listener->nodeGone(node.name(), droppedFrames);
+		olderGone(node.name());
 		allGoneIfDone();
+	}
+
+	/// The oldest node left of this name may start now, if it is one that waited.
+	void olderGone(const NodeName& name) {
+		const auto next = std::ranges::find_if(nodes, [&](const auto& known) { return known->name() == name && !known->lifecycle().gone(); });
+		if (next != nodes.end()) (*next)->olderGone();
 	}
 
 	void allGoneIfDone() {
@@ -378,9 +401,10 @@ void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);
 	std::erase_if(impl_->nodes, [](const auto& known) { return known->lifecycle().gone(); });
+	const bool olderGoing = std::ranges::any_of(impl_->nodes, [&](const auto& known) { return known->name() == node.name; });
 	auto& added = *impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name));
 	impl_->changed(added);
-	added.add(std::move(config));
+	added.add(std::move(config), olderGoing);
 }
 
 void NodeHost::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {

@@ -619,7 +619,8 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 		// An update names the newer one.
 		f.update("rec", std::make_shared<TestConfig>(f.log));
 		f.handoffs.finishOne(5);
-		CHECK(f.log.back() == "node rec gone dropped=5");
+		CHECK(std::ranges::find(f.log, "node rec gone dropped=5") != f.log.end());
+		CHECK(f.log.back() == "drive code");   // the newer one waited for it
 		REQUIRE(f.host.status().size() == 1);
 		CHECK(f.host.status()[0].state == NodeState::starting);
 	}
@@ -895,6 +896,80 @@ TEST_CASE("A restart waits for the old insides to close before it starts the new
 	f.mainLoop.runPosted();
 	CHECK(f.log == Log{"insides destroyed", "start 44100 next", "prepare 44100/256", "drive code", "node net running"});
 	f.stopAll();
+}
+
+TEST_CASE("A name added back while its old insides are closing starts only once they are gone", "[node_host]") {
+	Fixture f;
+	auto old = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", old);
+	f.blocks.events.at(0)->ready();
+	f.host.nodeRemoved("net");
+	f.log.clear();
+
+	auto next = std::make_shared<TestConfig>(f.log, "next");
+	f.add("net", next);
+	// Its block comes at once; its insides wait.
+	CHECK(f.log == Log{"node net starting", "make net 2 inputs"});
+	f.log.clear();
+
+	SECTION("then they start, after the old node is gone") {
+		std::thread([&] { old->insides->closed(); }).join();
+		f.mainLoop.runPosted();
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 next", "prepare 44100/256", "drive code"});
+	}
+	SECTION("an update while it waits replaces what will start, and nothing starts yet") {
+		auto newer = std::make_shared<TestConfig>(f.log, "newer");
+		f.update("net", newer);
+		CHECK(f.log.empty());
+		std::thread([&] { old->insides->closed(); }).join();
+		f.mainLoop.runPosted();
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newer", "prepare 44100/256", "drive code"});
+	}
+	SECTION("removed again while it waits, it never starts") {
+		f.host.nodeRemoved("net");
+		CHECK(f.log == Log{"node net stopping", "block destroyed", "node net gone dropped=0"});
+		f.log.clear();
+		std::thread([&] { old->insides->closed(); }).join();
+		f.mainLoop.runPosted();
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0"});
+	}
+	SECTION("removed and added back while it waits, only the newest starts") {
+		f.host.nodeRemoved("net");
+		f.log.clear();
+		auto newest = std::make_shared<TestConfig>(f.log, "newest");
+		f.add("net", newest);
+		f.log.clear();
+		std::thread([&] { old->insides->closed(); }).join();
+		f.mainLoop.runPosted();
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newest", "prepare 44100/256", "drive code"});
+	}
+	f.stopAll();
+}
+
+TEST_CASE("A name added back after its old node has gone starts at once", "[node_host]") {
+	Fixture f;
+	f.add("net", std::make_shared<TestConfig>(f.log));
+	f.host.nodeRemoved("net");
+	f.log.clear();
+	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
+	CHECK(f.log == Log{"node net starting", "make net 2 inputs", "start 44100 next", "prepare 44100/256", "drive code"});
+	f.stopAll();
+}
+
+TEST_CASE("Stopping while a name waits for its old insides stops both, in order", "[node_host]") {
+	Fixture f;
+	auto old = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", old);
+	f.blocks.events.at(0)->ready();
+	f.host.nodeRemoved("net");
+	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
+	f.log.clear();
+	f.stopAll();
+	CHECK(f.allGone == 0);
+	std::thread([&] { old->insides->closed(); }).join();
+	f.mainLoop.runPosted();
+	CHECK(f.allGone == 1);
+	CHECK(std::ranges::count(f.log, std::string("start 44100 next")) == 0);
 }
 
 TEST_CASE("What the insides say reaches the note listeners on the main loop, in order, and nothing after closed",
