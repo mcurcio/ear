@@ -153,7 +153,7 @@ TEST_CASE("Card passes play.i to to_card_i and from_card_j to capture.j sample f
 		CHECK(out[capture + i] == std::vector<float>(in[i].begin(), in[i].begin() + frames));
 	}
 	for (std::uint32_t j = 0; j < capture; ++j) {
-		INFO("from_card_" << j + 1 << " -> capture_" << j + 1);
+		INFO("from_card_" << j + 1 << " -> capture." << j + 1);
 		CHECK(out[j] == std::vector<float>(in[playback + j].begin(), in[playback + j].begin() + frames));
 	}
 }

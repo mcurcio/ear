@@ -195,7 +195,7 @@ TEST_CASE("Rtp passes from_rtp_i to stream.i sample for sample", "[rtp]") {
 		code.release();
 
 		for (std::uint32_t c = 0; c < channels; ++c) {
-			INFO("from_rtp_" << c + 1 << " -> channel_" << c + 1);
+			INFO("from_rtp_" << c + 1 << " -> stream." << c + 1);
 			CHECK(out[c] == std::vector<float>(in[c].begin(), in[c].begin() + frames));
 		}
 	}

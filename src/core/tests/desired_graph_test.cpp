@@ -46,7 +46,7 @@ private:
 	Ports ports_;
 };
 
-/// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..playback_n,
+/// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
 /// so a new channel count changes its ports.
 class CardType final : public NodeType {
 public:
