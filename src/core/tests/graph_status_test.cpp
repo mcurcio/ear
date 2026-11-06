@@ -234,5 +234,10 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 
 	f.blocks.events.at("rec")->ready();
 	view = f.status.read();
+	CHECK(view.nodes[1].state == NodeState::starting);   // its insides wait for the old rec
+
+	f.handoffs.closeAll();
+	REQUIRE(f.nodes.status().size() == 2);
+	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::running);
 }
