@@ -554,7 +554,7 @@ Errata, from building S3 (2026-11-06):
 16. **`cmake/SendspinDeps.cmake` also stops configure when the tree lacks the patch.** Section 13 stops only on a failed apply, but `FETCHCONTENT_SOURCE_DIR_SENDSPIN` skips the apply, and "no listening node exists without the refusal". The check reads the patch's own comment in `ws_server.cpp`.
 17. **`.github/workflows/test.yml` is not in S3's files, so the deps cache does not list `.cache/deps/mdns-src`** (section 13 says it lists each tree). CI fetches that archive, about 30 KB, on each run. One line for whoever next edits that file. S1-13's "the five" licences are now six, with `mdns-LICENSE`.
 18. **After a `node.update` the goodbye is `shutdown`, and aiosendspin's server, having dialled by hand (`connect_to_client`), did not redial within 30 s** [V], though the spec has a server auto-reconnect on that reason. So S3-5's last sentence is tested by a server dialling again. A browsing server is back by itself: `service-removed`, then a new announcement, then its dial; a test holds that.
-19. **Four test names from S1 and S2 held a `;`, which `AGENTS.md` forbids** (CMake splits a name at it). Renamed; nothing else about them changed.
+19. **Five test names from S1 and S2 held a `;`, which `AGENTS.md` forbids** (CMake splits a name at it). Renamed; nothing else about them changed.
 
 Errata, from the docs step (2026-11-06):
 

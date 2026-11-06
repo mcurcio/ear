@@ -942,7 +942,7 @@ TEST_CASE("A note still queued when its node has gone reaches nothing", "[node_h
 	f.stopAll();
 }
 
-TEST_CASE("Insides lost from their own thread fail a running node with start-failed; block and routes stay",
+TEST_CASE("Insides lost from their own thread fail a running node with start-failed, and its block and routes stay",
           "[node_host]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);
