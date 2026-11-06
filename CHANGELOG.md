@@ -1,3 +1,33 @@
+## [2.0.0](https://github.com/mcurcio/ear/compare/v1.0.0...v2.0.0) (2026-11-06)
+
+### ⚠ BREAKING CHANGES
+
+* **nodes:** every route in ear.conf changes. white: MONO is noise.mono.
+file: FL, FR are record.left, record.right. card: playback_N is play.N and
+capture_N is capture.N. rtp: channel_N is stream.N. sendspin: from_server_FL,
+from_server_FR are from.left, from.right and to_server_FL, to_server_FR are
+to.left, to.right. An old name is refused as unknown-port.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+
+### Features
+
+* **nodes:** a port is <bank>.<member>, declared in named banks ([dca7be3](https://github.com/mcurcio/ear/commit/dca7be31b3bd385f0dd85d468b4fa898d2dcad11))
+* **sendspin:** listen and advertise over mDNS, per node ([611ac9e](https://github.com/mcurcio/ear/commit/611ac9e15501c568a3cce49320e1b7d84877d85a))
+* **sendspin:** play Music Assistant's audio through a sendspin node ([bb27b57](https://github.com/mcurcio/ear/commit/bb27b577960ec5fb8f58619649bca79839dd2aef))
+* **sendspin:** send routed audio to Music Assistant, paired by a code ([1083128](https://github.com/mcurcio/ear/commit/1083128e71866b027405e5f3691dd609afd1fd48))
+
+### Bug Fixes
+
+* **core:** a name added back waits until its old node has gone ([a2cd221](https://github.com/mcurcio/ear/commit/a2cd221a177ebfe37d0a02a66885d4fd15f6eb0a))
+* **sendspin:** answer mDNS as RFC 6762 says, and reflect nothing ([25fd286](https://github.com/mcurcio/ear/commit/25fd286984b482d4b51ee83874844bacf9993693))
+* **sendspin:** configure asks for the whole carried patch, and a flood's cost is stated ([f84a3e4](https://github.com/mcurcio/ear/commit/f84a3e41bfbcd95196d906b1726b1c71290f4397))
+* **sendspin:** hold one format, report what still plays, and date audio at the device ([7ec1f88](https://github.com/mcurcio/ear/commit/7ec1f884965d88f2b596082e39bca71ce4b6bb37))
+* **sendspin:** keep every key file at 0600, not only a live node's ([2b2511e](https://github.com/mcurcio/ear/commit/2b2511ee3e2916a7657070cd652bacd246cb71d3))
+* **sendspin:** limit what a peer that proved nothing can cost the transport ([eaf717c](https://github.com/mcurcio/ear/commit/eaf717c29926a57de9976614b1e81f1446765089))
+* **sendspin:** sockets that prove nothing give way, so holding them keeps no server out ([016bd10](https://github.com/mcurcio/ear/commit/016bd100f8e6b3a81b0552e7e500d5876b2cb014))
+* **test:** take the last `;` out of a test name ([18edd06](https://github.com/mcurcio/ear/commit/18edd06e85b7050099a174ef12fcf471c35ce8a5))
+
 ## [1.0.0](https://github.com/mcurcio/ear/compare/v0.0.0...v1.0.0) (2026-11-01)
 
 ### ⚠ BREAKING CHANGES
