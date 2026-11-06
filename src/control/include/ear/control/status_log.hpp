@@ -1,6 +1,7 @@
 // Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
 // erratum in that page's Errata section and a re-cut, never a local edit. The graph-file lines are
-// docs/design/knobly-config.md's (slice S3); their erratum to m1-white-to-file.md lands in S7.
+// docs/design/knobly-config.md's (slice S3); their erratum to m1-white-to-file.md lands in S7. The
+// says line is docs/design/sendspin.md's (section 9).
 #pragma once
 #include <ostream>
 #include "ear/control/requests.hpp"
@@ -11,6 +12,7 @@ namespace ear::control {
 ///   node <n> starting|running|stopping
 ///   node <n> failed <failureCode>: <detail>
 ///   node <n> stopped dropped=<frames>
+///   node <n> says <text>
 ///   route <a>:<p> -> <b>:<q> pending|linked|refused[: <detail>]
 /// and per graph file change, the first line always, then each that applies, in this order:
 ///   graph-file <edit|disk|write> <version> running=<version|none>
@@ -23,11 +25,12 @@ namespace ear::control {
 ///   graph-file written <version>
 /// and the last write's failure, as ear exits (no change carries it):
 ///   graph-file write-failed <detail>
-class StatusLog final : public NodeStatusListener, public RouteStatusListener, public GraphFileListener {
+class StatusLog final : public NodeStatusListener, public NodeNoteListener, public RouteStatusListener, public GraphFileListener {
 public:
   explicit StatusLog(std::ostream& out);
   void nodeChanged(const NodeStatus& status) override;
   void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
+  void nodeSays(const NodeName& node, const std::string& text) override;
   void routeChanged(const RouteStatus& status) override;
   void graphFileChanged(const GraphFileChanged& change) override;
   void graphFileWritten(const std::string& version) override;

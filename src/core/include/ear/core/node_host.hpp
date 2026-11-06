@@ -1,6 +1,7 @@
 // Frozen interface (docs/design/batch2.md section 4; the outside node and RtpReceiverFactory by
-// docs/design/rtp.md section 7.1, batch2.md section 11's erratum). Change it only through an
-// erratum and a re-cut, never a local edit.
+// docs/design/rtp.md section 7.1, batch2.md section 11's erratum; NodeNoteListener and the
+// executor by docs/design/sendspin.md section 14, S1). Change it only through an erratum and a
+// re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -8,6 +9,7 @@
 #include <optional>
 #include <vector>
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/executor.hpp"
 #include "ear/core/node_lifecycle.hpp"
 namespace ear {
 struct NodeStatus { NodeName name; NodeState state; std::optional<FailureReason> reason; };
@@ -18,6 +20,13 @@ public:
   virtual void nodeGone(const NodeName& node, std::uint64_t droppedFrames) = 0;
 protected:
   ~NodeStatusListener() = default;
+};
+/// What a node's insides say: a sentence, never a state (InsidesEvents::say).
+class NodeNoteListener {
+public:
+  virtual void nodeSays(const NodeName& node, const std::string& text) = 0;   // main thread
+protected:
+  ~NodeNoteListener() = default;
 };
 /// Engine side of a port block. Destroying it removes its ports and their links; after the
 /// destructor returns, no process() of any code is running or will run.
@@ -109,10 +118,13 @@ protected:
 };
 class NodeHost final : public DesiredNodeListener {
 public:
+  /// All outlive it. `mainLoop` runs on the thread that calls everything below; a node's insides
+  /// reach it through there (their events, and `closed`).
   NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-           SoundCardFactory& cards, RtpReceiverFactory& receivers);   // all outlive it
+           SoundCardFactory& cards, RtpReceiverFactory& receivers, Executor& mainLoop);
   ~NodeHost();   // precondition: stopAll completed (or no node was ever added)
   void subscribe(NodeStatusListener& listener);
+  void subscribeNotes(NodeNoteListener& listener);
   /// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the
   /// outside nodes the type asked for are made once the block is ready, in request order, named
   /// "<node>.playback" / "<node>.capture" (cards) and "<node>.rtp" (the receiver); insides ready
@@ -120,7 +132,7 @@ public:
   /// block stays.
   void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
   /// Restart: drive(nullptr), release(), outside nodes destroyed, handoffs closed, insides
-  /// destroyed and then their config let go, then started from `config` as in nodeAdded. The
+  /// closed, destroyed and then their config let go, then started from `config` as in nodeAdded. The
   /// port block and routes stay. An update arriving during a restart replaces the config to
   /// start. If the block was lost: the old insides are torn down, nothing starts, the node stays
   /// failed.

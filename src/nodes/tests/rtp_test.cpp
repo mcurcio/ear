@@ -26,6 +26,7 @@ public:
 	}
 	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("rtp asked for a sound card"); }
 	void rtpReceiver(const ear::RtpReceiverRequest& request) override { requests.push_back(request); }
+	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for insides events"); }
 
 	std::vector<ear::RtpReceiverRequest> requests;
 
@@ -190,7 +191,7 @@ TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
 		for (const auto& channel : in) inSpans.emplace_back(channel.data(), frames);
 		std::vector<std::span<float>> outSpans;
 		for (auto& channel : out) outSpans.emplace_back(channel);
-		code.process(inSpans, outSpans, frames);
+		code.process(inSpans, outSpans, frames, ear::GraphCycle{0, 0});
 		code.release();
 
 		for (std::uint32_t c = 0; c < channels; ++c) {

@@ -4,6 +4,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -17,7 +18,7 @@ namespace {
 struct SilentCode final : AudioCode {
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>,
-	             std::uint32_t) noexcept override {}
+	             std::uint32_t, const GraphCycle&) noexcept override {}
 	void release() noexcept override {}
 };
 
@@ -121,6 +122,11 @@ struct NoReceivers final : RtpReceiverFactory {
 	}
 };
 
+/// Only insides with threads post, and these have none.
+struct NoExecutor final : Executor {
+	void post(std::move_only_function<void()>) override { throw std::logic_error("nothing here posts"); }
+};
+
 struct Links final : LinkMaker {
 	std::vector<LinkId> made;
 	void createLink(LinkId link, EnginePortId, EnginePortId) override { made.push_back(link); }
@@ -135,7 +141,8 @@ struct Fixture {
 	NoCards cards;
 	NoReceivers receivers;
 	Links links;
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers};
+	NoExecutor mainLoop;
+	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers, mainLoop};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
 	Fixture() {

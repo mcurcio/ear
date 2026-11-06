@@ -55,17 +55,23 @@ jobs:
           cache-from: type=gha,scope=dev
           cache-to: type=gha,scope=dev,mode=max
 
-      # The fetched Boost tree (kept_fetchcontent, cmake/KeptFetchContent.cmake). Its marker
-      # records its pin, so a tree restored from an older key is fetched again by configure.
-      # The extracted tree is cached rather than its archive (.cache/deps/boost-tmp, unused once
-      # the marker matches): about the same compressed size, and it skips the 30-40 s xz
-      # extraction.
+      # The fetched trees (kept_fetchcontent, cmake/KeptFetchContent.cmake): Boost and the
+      # sendspin node's (cmake/SendspinDeps.cmake). Each marker records its pin, so a tree
+      # restored from an older key is fetched again by configure. Boost's extracted tree is
+      # cached rather than its archive (.cache/deps/boost-tmp, unused once the marker matches):
+      # about the same compressed size, and it skips the 30-40 s xz extraction.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: .cache/deps/boost-src
+          path: |
+            .cache/deps/boost-src
+            .cache/deps/arduinojson-src
+            .cache/deps/ixwebsocket-src
+            .cache/deps/micro_flac-src
+            .cache/deps/noise_c-src
+            .cache/deps/sendspin-src
           key: >-
             deps-${{ runner.os }}-${{ runner.arch }}-${{
-            hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake') }}
+            hashFiles('CMakeLists.txt', 'cmake/KeptFetchContent.cmake', 'cmake/SendspinDeps.cmake') }}
           restore-keys: deps-${{ runner.os }}-${{ runner.arch }}-
 
       # Compiler output: ccache (the image's compiler launcher), in .cache/ccache, where

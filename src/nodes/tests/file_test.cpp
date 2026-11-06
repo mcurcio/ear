@@ -64,6 +64,7 @@ public:
 	void rtpReceiver(const ear::RtpReceiverRequest&) override {
 		throw std::logic_error("file asked for an RTP receiver");
 	}
+	ear::InsidesEvents& events() override { throw std::logic_error("file asked for insides events"); }
 
 	struct Request {
 		std::uint32_t channels;
@@ -210,7 +211,7 @@ TEST_CASE("File records FL and FR as a 32-bit float stereo WAV at the format's r
 			fr[i] = -n / 2048.0F - 0.25F;
 		}
 		const std::array<std::span<const float>, 2> inputs{fl, fr};
-		code.process(inputs, {}, format.maxBlock);
+		code.process(inputs, {}, format.maxBlock, ear::GraphCycle{0, 0});
 		left.insert(left.end(), fl.begin(), fl.end());
 		right.insert(right.end(), fr.begin(), fr.end());
 	}

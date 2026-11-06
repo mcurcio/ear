@@ -22,6 +22,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/command_error.hpp
 	include/ear/core/desired_graph.hpp
 	include/ear/core/executor.hpp
+	include/ear/core/frame_ring.hpp
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
@@ -38,6 +39,7 @@ target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 if(BUILD_TESTS)
 	add_executable(ear_core_tests
 		tests/desired_graph_test.cpp
+		tests/frame_ring_test.cpp
 		tests/graph_spec_test.cpp
 		tests/graph_status_test.cpp
 		tests/levels_test.cpp

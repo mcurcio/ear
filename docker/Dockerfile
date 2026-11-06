@@ -53,12 +53,15 @@ FROM debian:trixie@sha256:2dc419c6d7fe3dad0a2f9fd469c34cc90b0f9ba642d8fde837fe3d
 # - libpipewire-0.3-modules, libspa-0.2-modules: the modules and SPA plugins EAR's in-process
 #   engine loads at run time (protocol, client-node, link-factory, the dummy driver).
 # - libsndfile1-dev: the file node writes WAV files with libsndfile.
+# - git: FetchContent clones the sendspin node's dependencies (micro-flac's submodule needs a clone).
+# - python3, python3-venv: the real Sendspin server the sendspin node's tests run against (below).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		ca-certificates \
 		ccache \
 		cmake \
 		g++ \
+		git \
 		libpipewire-0.3-dev \
 		libpipewire-0.3-modules \
 		libsndfile1-dev \
@@ -66,8 +69,17 @@ RUN apt-get update \
 		libspa-0.2-modules \
 		make \
 		pkg-config \
+		python3 \
+		python3-venv \
 		xz-utils \
 	&& rm -rf /var/lib/apt/lists/*
+
+# The real Sendspin server (docs/design/sendspin.md section 13), every package pinned by hash for both architectures.
+# The run image gets none of it.
+COPY test/sendspin/requirements.txt /opt/sendspin-server/requirements.txt
+RUN python3 -m venv /opt/sendspin-server \
+	&& /opt/sendspin-server/bin/pip install --quiet --no-cache-dir --no-compile --require-hashes \
+		--only-binary :all: --requirement /opt/sendspin-server/requirements.txt
 
 # Node.js and npm for web/ (the graph editor's toolchain: web/package.json; web/.nvmrc names the
 # same major version).
@@ -104,7 +116,8 @@ FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1de
 #   its modules and SPA plugins (the dummy driver, and the ALSA plugin a sound card node uses).
 # - libasound2t64: alsa-lib, which the ALSA plugin opens sound cards through.
 # - libsndfile1: the file node.
-# Boost is linked statically (program_options is the only compiled Boost library).
+# Boost and the sendspin node's protocol library are linked statically (program_options is the only compiled Boost
+# library).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		libasound2t64 \
@@ -116,6 +129,8 @@ RUN apt-get update \
 
 # engine.conf sits beside the binary, where main.cpp looks for it.
 COPY --from=build /src/out/ear /src/out/engine.conf /opt/ear/
+# The licences of what the sendspin node compiles in (cmake/SendspinDeps.cmake).
+COPY --from=build /src/out/licenses /opt/ear/licenses
 COPY --from=build /src/web/dist /opt/ear/web
 
 # Realtime priority for an ordinary user: a capability a pod adds does not reach a non-root

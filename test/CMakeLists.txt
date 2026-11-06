@@ -33,3 +33,11 @@ target_link_libraries(ear_ws_client INTERFACE Boost::beast)
 # the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/design/rtp.md).
 add_library(ear_rtp_tone INTERFACE)
 target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
+# ear_sendspin_server: the real Sendspin server for the sendspin node's clock and system tests (test/support/
+# sendspin_server.py, run by sendspin_server.hpp, header-only, in the venv CMakeLists.txt checks for).
+add_library(ear_sendspin_server INTERFACE)
+target_include_directories(ear_sendspin_server INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_compile_definitions(ear_sendspin_server INTERFACE
+	EAR_SENDSPIN_SERVER_PYTHON="${EAR_SENDSPIN_SERVER_PYTHON}"
+	EAR_SENDSPIN_SERVER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/support/sendspin_server.py")

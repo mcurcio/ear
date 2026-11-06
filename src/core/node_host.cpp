@@ -3,13 +3,14 @@
 // is added and goes only when it is removed; the insides (the type's code, its handoffs, its
 // outside nodes: sound cards and RTP receivers) start, restart and fail behind it. Insides are
 // torn down in one order: the block stops running their code, release(), outside nodes,
-// handoffs, insides, config. Every kind of outside node shares one list, one naming function and
+// handoffs, the insides' close, insides, config. Every kind of outside node shares one list, one naming function and
 // one ready and loss path (docs/design/rtp.md section 6, rule 1). It reaches the engine only
 // through the factory interfaces node_host.hpp declares.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <variant>
 
@@ -87,6 +88,10 @@ struct NodeHost::Impl {
 
 		// NodeGrant
 		AudioFormat format() const override { return host_.format; }
+		InsidesEvents& events() override {
+			if (!granting_) throw std::logic_error("node " + name_ + ": events were asked for outside start()");
+			return *channel_;
+		}
 		RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames, HandoffConsumer& consumer) override {
 			if (!granting_) throw std::logic_error("node " + name_ + ": a handoff was asked for outside start()");
 			handoffs_.push_back(host_.handoffs.make(name_, channels, capacityFrames, consumer));
@@ -121,8 +126,59 @@ struct NodeHost::Impl {
 			std::size_t index_;
 		};
 
+		/// One start's insides as their own threads reach the node: everything they tell crosses
+		/// to the main loop, in order, and finds the node only until `closed`. Whatever is still
+		/// queued then holds this object, not the node, so it may outlive the node.
+		class Channel final : public InsidesEvents, public std::enable_shared_from_this<Channel> {
+		public:
+			Channel(Node& node, Executor& mainLoop) : node_(&node), mainLoop_(mainLoop) {}
+			void say(std::string text) override {
+				mainLoop_.post([self = shared_from_this(), text = std::move(text)] {
+					if (self->node_ != nullptr) self->node_->host_.noted(self->node_->name_, text);
+				});
+			}
+			void lost(std::string detail) override {
+				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
+					if (self->node_ != nullptr && !self->closing_) self->node_->insidesLost(std::move(detail));
+				});
+			}
+			/// Main thread. The insides are going: a loss no longer fails the node.
+			void closing() noexcept { closing_ = true; }
+			/// Main thread. Nothing more reaches the node.
+			void detach() noexcept { node_ = nullptr; }
+			/// The `closed` the insides get: from any thread, later or inside close().
+			std::move_only_function<void()> closedCall() {
+				return [self = shared_from_this(), main = std::this_thread::get_id()] {
+					// Only the main thread reads insideClose_. Insides that hold no threads finish
+					// inside close(), so a stop or restart of a plain node takes no loop turn.
+					if (std::this_thread::get_id() == main && self->insideClose_) {
+						self->closedInside_ = true;
+						return;
+					}
+					self->mainLoop_.post([self] {
+						if (self->node_ != nullptr) self->node_->insidesClosed();
+					});
+				};
+			}
+			/// Main thread: close() on `insides`. True if it called `closed` before it returned.
+			bool close(NodeInsides& insides) {
+				insideClose_ = true;
+				insides.close(closedCall());
+				insideClose_ = false;
+				return closedInside_;
+			}
+
+		private:
+			Node* node_;   // main thread only
+			Executor& mainLoop_;
+			bool closing_ = false;        // main thread only
+			bool insideClose_ = false;    // main thread only
+			bool closedInside_ = false;   // main thread only
+		};
+
 		void startInsides(std::shared_ptr<const NodeConfig> config) {
 			config_ = std::move(config);
+			channel_ = std::make_shared<Channel>(*this, host_.mainLoop);
 			granting_ = true;
 			auto insides = config_->start(*this);
 			granting_ = false;
@@ -132,6 +188,8 @@ struct NodeHost::Impl {
 				// start. No outside node was made. The port block stays.
 				handoffs_.clear();
 				outsideRequests_.clear();
+				channel_->detach();
+				channel_.reset();
 				if (lifecycle_.insidesFailed(std::move(insides.error()))) host_.changed(*this);
 				return;
 			}
@@ -184,10 +242,17 @@ struct NodeHost::Impl {
 			if (lifecycle_.insidesFailed({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
 		}
 
+		/// The insides' own threads say they are dead: as an outside node's loss, it fails the node
+		/// and its block and routes stay.
+		void insidesLost(std::string detail) {
+			if (lifecycle_.insidesFailed({FailureReason::Code::startFailed, std::move(detail)})) host_.changed(*this);
+		}
+
 		/// The block stops running the code; release(); outside nodes; handoffs closed. The rest
 		/// goes in finishTeardown once every handoff has closed.
 		void tearDownInsides() {
 			tearingDown_ = true;
+			if (channel_) channel_->closing();
 			if (block_) block_->drive(nullptr);
 			if (prepared_) insides_->audioCode().release();
 			prepared_ = false;
@@ -206,12 +271,22 @@ struct NodeHost::Impl {
 		}
 
 		/// Runs once every handoff reported closed, and never inside a close() call, so no
-		/// handoff is destroyed while that loop is still calling it. The config goes after the
-		/// insides it started.
+		/// handoff is destroyed while that loop is still calling it. Then the insides close; the
+		/// rest goes in insidesClosed once they say they have.
 		void finishTeardown() {
-			if (!tearingDown_ || closing_ || closed_ != handoffs_.size()) return;
+			if (!tearingDown_ || closing_ || closed_ != handoffs_.size() || insidesClosing_) return;
 			handoffs_.clear();
+			insidesClosing_ = true;
+			if (!insides_ || channel_->close(*insides_)) insidesClosed();
+		}
+
+		/// The insides' threads are gone. The config goes after the insides it started.
+		void insidesClosed() {
+			if (!insidesClosing_) return;
+			insidesClosing_ = false;
+			if (channel_) channel_->detach();
 			insides_.reset();
+			channel_.reset();
 			config_.reset();
 			tearingDown_ = false;
 			if (stopping_) {
@@ -227,6 +302,7 @@ struct NodeHost::Impl {
 		NodeLifecycle lifecycle_;
 		std::shared_ptr<const NodeConfig> next_;   // the config a restart starts once teardown ends
 		std::shared_ptr<const NodeConfig> config_;
+		std::shared_ptr<Channel> channel_;         // from each start until its insides closed
 		std::unique_ptr<NodeInsides> insides_;
 		std::vector<std::unique_ptr<Handoff>> handoffs_;
 		std::vector<OutsideRequest> outsideRequests_;
@@ -238,6 +314,7 @@ struct NodeHost::Impl {
 		bool tearingDown_ = false;
 		bool stopping_ = false;
 		bool closing_ = false;
+		bool insidesClosing_ = false;
 		std::size_t closed_ = 0;
 		std::uint64_t dropped_ = 0;
 	};
@@ -247,7 +324,9 @@ struct NodeHost::Impl {
 	HandoffFactory& handoffs;
 	SoundCardFactory& cards;
 	RtpReceiverFactory& receivers;
+	Executor& mainLoop;
 	std::vector<NodeStatusListener*> listeners;
+	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<std::unique_ptr<Node>> nodes;   // in arrival order; gone ones are pruned on add
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
@@ -269,6 +348,10 @@ struct NodeHost::Impl {
 		for (auto* listener : listeners) listener->nodeChanged(status);
 	}
 
+	void noted(const NodeName& node, const std::string& text) {
+		for (auto* listener : noteListeners) listener->nodeSays(node, text);
+	}
+
 	void gone(const Node& node, std::uint64_t droppedFrames) {
 		for (auto* listener : listeners) listener->nodeGone(node.name(), droppedFrames);
 		allGoneIfDone();
@@ -283,12 +366,14 @@ struct NodeHost::Impl {
 };
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs,
-                   SoundCardFactory& cards, RtpReceiverFactory& receivers)
-	: impl_(new Impl{format, blocks, handoffs, cards, receivers, {}, {}, false, nullptr}) {}
+                   SoundCardFactory& cards, RtpReceiverFactory& receivers, Executor& mainLoop)
+	: impl_(new Impl{format, blocks, handoffs, cards, receivers, mainLoop, {}, {}, {}, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
 
 void NodeHost::subscribe(NodeStatusListener& listener) { impl_->listeners.push_back(&listener); }
+
+void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners.push_back(&listener); }
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);

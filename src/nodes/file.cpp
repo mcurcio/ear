@@ -85,7 +85,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		// Frames the ring refuses are dropped and counted by the framework.
 		writer_->write(inputs, frames);
 	}

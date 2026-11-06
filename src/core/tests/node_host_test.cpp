@@ -6,10 +6,15 @@
 // 3-8: RTP receivers on the same outside-node path). Every step a fake engine would take later
 // (ready, lost, a handoff closing, a card or receiver ready or lost) is an event the test sends.
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <functional>
+#include <mutex>
 #include <stdexcept>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "catch2/catch.hpp"
@@ -28,7 +33,7 @@ struct TestAudioCode final : AudioCode {
 		log.push_back("prepare " + std::to_string(format.rate) + "/" + std::to_string(format.maxBlock));
 	}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>,
-	             std::uint32_t) noexcept override {}
+	             std::uint32_t, const ear::GraphCycle&) noexcept override {}
 	void release() noexcept override { log.push_back("release"); }
 };
 
@@ -208,6 +213,44 @@ struct TestListener final : NodeStatusListener {
 	}
 };
 
+/// The main loop as a test turns it: work waits here, from any thread, until the test runs it.
+struct QueueExecutor final : Executor {
+	void post(std::move_only_function<void()> work) override {
+		const std::scoped_lock lock(mutex);
+		queue.push_back(std::move(work));
+		changed.notify_all();
+	}
+	/// Runs everything posted so far, in order, on this thread.
+	void runPosted() {
+		std::deque<std::move_only_function<void()>> batch;
+		{
+			const std::scoped_lock lock(mutex);
+			batch.swap(queue);
+		}
+		for (auto& work : batch) work();
+	}
+	std::size_t waiting() {
+		const std::scoped_lock lock(mutex);
+		return queue.size();
+	}
+	/// Waits for `count` items; the deadline only fails a test.
+	bool waitFor(std::size_t count) {
+		std::unique_lock lock(mutex);
+		return changed.wait_for(lock, std::chrono::seconds(5), [&] { return queue.size() >= count; });
+	}
+	std::mutex mutex;
+	std::condition_variable changed;
+	std::deque<std::move_only_function<void()>> queue;
+};
+
+struct TestNotes final : NodeNoteListener {
+	Log& log;
+	explicit TestNotes(Log& l) : log(l) {}
+	void nodeSays(const NodeName& node, const std::string& text) override {
+		log.push_back("note " + node + " " + text);
+	}
+};
+
 struct Fixture {
 	Log log;
 	TestBlocks blocks{log};
@@ -217,9 +260,14 @@ struct Fixture {
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};   // only for close(), the proof stopAll takes
-	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards, receivers};
+	QueueExecutor mainLoop;
+	TestNotes notes{log};
+	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards, receivers, mainLoop};
 	int allGone = 0;   // how often stopAll's callback has run
-	Fixture() { host.subscribe(listener); }
+	Fixture() {
+		host.subscribe(listener);
+		host.subscribeNotes(notes);
+	}
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
 		host.nodeAdded(NodeSpec{name, "test", {}}, std::move(config));
 	}
@@ -757,4 +805,180 @@ TEST_CASE("Restart and removal destroy the receiver before the handoffs close an
 	f.stopAll();
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
+}
+
+namespace {
+
+/// Insides with their own thread, as a network node's: close() only records `closed`, which the
+/// test calls later, as that thread would; events are kept past start().
+struct ThreadedInsides final : NodeInsides {
+	Log& log;
+	TestAudioCode code;
+	TestConsumer consumer;
+	std::move_only_function<void()> closed;
+	explicit ThreadedInsides(Log& l) : log(l), code(l) {}
+	~ThreadedInsides() override { log.push_back("insides destroyed"); }
+	AudioCode& audioCode() override { return code; }
+	void close(std::move_only_function<void()> call) override {
+		log.push_back("insides close");
+		closed = std::move(call);
+	}
+};
+
+struct ThreadedConfig final : NodeConfig {
+	Log& log;
+	Ports ports_{{"IN"}, {}};
+	int handoffs = 0;
+	mutable ThreadedInsides* insides = nullptr;
+	mutable InsidesEvents* events = nullptr;
+	explicit ThreadedConfig(Log& l) : log(l) {}
+	const Ports& ports() const override { return ports_; }
+	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
+		auto made = std::make_unique<ThreadedInsides>(log);
+		for (int i = 0; i < handoffs; ++i) grant.handoff(2, 1024, made->consumer);
+		insides = made.get();
+		events = &grant.events();
+		return made;
+	}
+};
+
+} // namespace
+
+TEST_CASE("The insides' events are granted inside start only", "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	f.add("rec", config);
+	CHECK_THROWS_AS(config->grant->events(), std::logic_error);
+	f.stopAll();
+}
+
+TEST_CASE("Insides close after every handoff has closed, and go only after they say closed", "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	config->handoffs = 1;
+	f.add("net", config);
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	f.stopAll();
+	CHECK(f.log == Log{"node net stopping", "block destroyed", "release", "handoff close"});
+	f.log.clear();
+
+	f.handoffs.finishOne(7);
+	CHECK(f.log == Log{"handoff destroyed", "insides close"});
+	f.log.clear();
+	f.mainLoop.runPosted();
+	CHECK(f.log.empty());   // nothing goes until they say so
+
+	// From the insides' own thread: it crosses to the main loop, so nothing happens there yet.
+	std::thread([&] { config->insides->closed(); }).join();
+	CHECK(f.log.empty());
+	CHECK(f.allGone == 0);
+	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"insides destroyed", "node net gone dropped=7", "all gone"});
+}
+
+TEST_CASE("A restart waits for the old insides to close before it starts the new ones", "[node_host]") {
+	Fixture f;
+	auto old = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", old);
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	auto next = std::make_shared<TestConfig>(f.log, "next");
+	f.update("net", next);
+	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "insides close"});
+	f.log.clear();
+
+	std::thread([&] { old->insides->closed(); }).join();
+	CHECK(f.log.empty());
+	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"insides destroyed", "start 44100 next", "prepare 44100/256", "drive code", "node net running"});
+	f.stopAll();
+}
+
+TEST_CASE("What the insides say reaches the note listeners on the main loop, in order, and nothing after closed",
+          "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", config);
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	constexpr int notes = 200;
+	std::thread talker([&] {
+		for (int i = 0; i < notes; ++i) config->events->say(std::to_string(i));
+	});
+	talker.join();
+	CHECK(f.log.empty());   // never inline
+	f.mainLoop.runPosted();
+	REQUIRE(f.log.size() == notes);
+	for (int i = 0; i < notes; ++i) CHECK(f.log[static_cast<std::size_t>(i)] == "note net " + std::to_string(i));
+	f.log.clear();
+
+	f.stopAll();
+	f.log.clear();
+	// Still heard while closing; a note posted after `closed` was never told.
+	InsidesEvents* events = config->events;
+	events->say("closing");
+	config->insides->closed();
+	events->say("too late");
+	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"note net closing", "insides destroyed", "node net gone dropped=0", "all gone"});
+}
+
+TEST_CASE("A note still queued when its node has gone reaches nothing", "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", config);
+	f.host.nodeRemoved("net");
+	config->insides->closed();
+	f.mainLoop.runPosted();
+	// The node is pruned at the next add; what its insides left behind holds no pointer to it.
+	f.add("other", std::make_shared<TestConfig>(f.log));
+	f.log.clear();
+	f.mainLoop.runPosted();
+	CHECK(f.log.empty());
+	f.stopAll();
+}
+
+TEST_CASE("Insides lost from their own thread fail a running node with start-failed; block and routes stay",
+          "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", config);
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	std::thread([&] { config->events->lost("the client died"); }).join();
+	CHECK(f.log.empty());
+	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"node net failed start-failed: the client died"});
+	REQUIRE(f.host.status().size() == 1);
+	CHECK(f.host.status()[0].state == NodeState::failed);
+
+	f.log.clear();
+	f.stopAll();
+	CHECK(f.log == Log{"node net stopping", "block destroyed", "release", "insides close"});
+	config->insides->closed();
+	f.mainLoop.runPosted();
+}
+
+TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", config);
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	// Told before the restart, heard after it began: the node must not fail behind the restart.
+	config->events->lost("late");
+	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
+	f.log.clear();
+	f.mainLoop.runPosted();
+	CHECK(f.log.empty());
+	config->insides->closed();
+	f.mainLoop.runPosted();
+	CHECK(std::ranges::find(f.log, std::string("node net running")) != f.log.end());
+	f.stopAll();
 }

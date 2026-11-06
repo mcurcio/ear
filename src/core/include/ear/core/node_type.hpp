@@ -1,9 +1,11 @@
 // Frozen interface (docs/design/batch2.md section 4; NodeGrant::rtpReceiver added by
-// docs/design/rtp.md section 7.1, batch2.md section 11's erratum). Change it only through an
-// erratum and a re-cut, never a local edit.
+// docs/design/rtp.md section 7.1, batch2.md section 11's erratum; GraphCycle, InsidesEvents,
+// NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1). Change it
+// only through an erratum and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -28,6 +30,12 @@ struct FailureReason { enum class Code { engineRefused, startFailed }; Code code
 std::string_view failureCode(FailureReason::Code code) noexcept;  // "engine-refused" | "start-failed"
 struct AudioFormat { std::uint32_t rate; std::uint32_t maxBlock; };   // fixed at boot in M1
 
+/// This cycle of the graph, on the driver's clock.
+struct GraphCycle {
+  std::int64_t startNs;     // its start, CLOCK_MONOTONIC
+  std::uint64_t position;   // the driver's frames at its start
+};
+
 class AudioCode {
 public:
   virtual ~AudioCode() = default;
@@ -39,7 +47,7 @@ public:
   /// sample must be written.
   virtual void process(std::span<const std::span<const float>> inputs,
                        std::span<const std::span<float>> outputs,
-                       std::uint32_t frames) noexcept = 0;
+                       std::uint32_t frames, const GraphCycle& cycle) noexcept = 0;
   /// Main thread, after the last process() returned.
   virtual void release() noexcept = 0;
 };
@@ -64,6 +72,15 @@ public:
   /// Same thread, exactly once, after the last consume().
   virtual void finish() = 0;
 };
+/// What a node's insides tell, from their own threads; never blocks. Told on the main loop in
+/// order, nothing after close()'s `closed`.
+class InsidesEvents {
+public:
+  virtual void say(std::string text) = 0;      // a note: `node <n> says <text>`; never a state
+  virtual void lost(std::string detail) = 0;   // `failed start-failed: <detail>`; ignored once close() began
+protected:
+  ~InsidesEvents() = default;
+};
 /// The type's own objects for one node. Destroyed by the framework last.
 class NodeInsides {
 public:
@@ -71,6 +88,9 @@ public:
   /// Drives this node's one port block (the framework makes it; the type cannot make two
   /// or none). Same object every call; lives as long as the insides.
   virtual AudioCode& audioCode() = 0;
+  /// Main thread, once, after every handoff closed. Insides with threads stop them and call
+  /// `closed`, last, from any thread; the framework destroys them only after that.
+  virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 /// Powers granted to one starting node. Everything made here belongs to the node's insides and
 /// is torn down by the framework in order: outside nodes (sound cards, RTP receivers), handoffs,
@@ -91,6 +111,9 @@ public:
   /// framework receives the stream once the port block is ready and joins its channels to
   /// request.blockPorts; readiness, loss and teardown as soundCard's.
   virtual void rtpReceiver(const RtpReceiverRequest& request) = 0;
+  /// Main thread, inside start() only (else std::logic_error). Lives until `closed`; may be kept
+  /// by the insides' threads.
+  virtual InsidesEvents& events() = 0;
 protected:
   ~NodeGrant() = default;
 };

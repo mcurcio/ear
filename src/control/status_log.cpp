@@ -28,6 +28,11 @@ void StatusLog::nodeGone(const NodeName& node, std::uint64_t droppedFrames) {
 	out_.flush();
 }
 
+void StatusLog::nodeSays(const NodeName& node, const std::string& text) {
+	out_ << std::format("node {} says {}\n", node, text);
+	out_.flush();
+}
+
 void StatusLog::routeChanged(const RouteStatus& status) {
 	const Route& route = status.route;
 	out_ << std::format("route {}:{} -> {}:{} {}", route.from.node, route.from.port, route.to.node,

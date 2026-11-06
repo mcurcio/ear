@@ -52,7 +52,7 @@ public:
       : waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
     const std::size_t at = count_.load(std::memory_order_relaxed);
     const std::size_t take = std::min<std::size_t>(frames, kCapacity - at);

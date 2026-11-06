@@ -201,7 +201,7 @@ private:
     auto* self = static_cast<FilterPortBlock*>(data);
     const auto frames = static_cast<std::uint32_t>(position->clock.duration);
     if (frames <= self->maxBlock_) {
-      self->processCycle(frames);
+      self->processCycle(frames, GraphCycle{static_cast<std::int64_t>(position->clock.nsec), position->clock.position});
     } else {
       for (void* port : self->outputPorts_) {
         if (port == nullptr) continue;
@@ -217,7 +217,7 @@ private:
     if (boundary != start / self->windowFrames_) self->publish(boundary * self->windowFrames_);
   }
 
-  void processCycle(std::uint32_t frames) noexcept {
+  void processCycle(std::uint32_t frames, const GraphCycle& cycle) noexcept {
     for (std::size_t i = 0; i < inputPorts_.size(); ++i) {
       const auto* in = inputPorts_[i] == nullptr
                            ? nullptr
@@ -232,7 +232,7 @@ private:
       outputs_[i] = std::span<float>(out != nullptr ? out : scratch_[i].data(), frames);
     }
     if (AudioCode* code = code_.load(std::memory_order_acquire)) {
-      code->process(inputs_, outputs_, frames);
+      code->process(inputs_, outputs_, frames, cycle);
     } else {
       for (const std::span<float> out : outputs_) std::ranges::fill(out, 0.0f);
     }

@@ -109,7 +109,7 @@ public:
       : waiter_(waiter), samples_(capacity) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     std::size_t at = recorded_.load(std::memory_order_relaxed);
     for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
     recorded_.store(at, std::memory_order_release);
@@ -140,7 +140,7 @@ public:
   explicit Ramp(Waiter& waiter) : waiter_(waiter) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
     calls_.fetch_add(1, std::memory_order_release);
     waiter_.wake();
@@ -441,7 +441,7 @@ public:
   explicit SchedulingProbe(Waiter& waiter) : waiter_(waiter) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t) noexcept override {
+               std::uint32_t, const ear::GraphCycle&) noexcept override {
     for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0f);
     if (!seen_.load(std::memory_order_acquire)) {
       policy_ = sched_getscheduler(0) & ~SCHED_RESET_ON_FORK;

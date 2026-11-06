@@ -528,7 +528,16 @@ Commit: `feat(sendspin): listen and advertise over mDNS, per node`
 
 ## 16. Errata and the review
 
-None yet. Reviewed 2026-11-05; its findings were taken, but for these:
+Errata, from building S1 (2026-11-06):
+
+1. **The test card cannot give 1 ms, so S1-9's fallback is taken.** It has no clock of its own (the null PCM), and PipeWire's rate loop runs the graph about 2.1% fast (49030 Hz measured; a cycle's length falls from 5.29 ms to 5.15 ms over 8 s), past the library's ±0.5%. Over 8 s of ramp, three runs: p50 -4.2 to -4.3 ms, p99 -1.2 ms, worst -8.2 to -8.6 ms, within 1 ms 2 of about 950 cycles, the library hard-syncing as the error passes 5 ms. The test asserts the hard sync's bound (under 20 ms) and the recovery. On the dummy driver the same run gives p50 -1 to -18 µs, worst -78 µs, 100% within 1 ms, no corrections. So the real card's 1 ms bound is NOT RUN and is a check for `ear-on-talos` (S3 owns that file).
+2. A card sets the position its own way, as section 7 expected [V]: joining it, the position goes from 2.3e10 to 0 and counts from there; losing it, forward by 2.3e10. Both are outside the feed's capacity, so neither is a skip. After a loss the library hard-syncs (about 90 ms off) or corrects a residue under 5 ms a frame per chunk, so "steps by +1 again" means three whole blocks in a row, a chunk being about five.
+3. **`FrameRing` gains `channels`, `capacityFrames`, `writePosition` and `skipTo`; `Feed` gains `capacityFrames`.** `clear()` must discard what was written so far and no more (a position, not "everything at the next read"), and the code's skip is bounded by the feed's capacity. Additions beside section 14's lists; no signature in them changed.
+4. **`closed` called inside `close()` finishes in the same main-loop turn; only one from another thread or later crosses through the executor.** Section 12 says it crosses; a plain node has no thread to cross from, and this keeps its teardown as it was, with every existing `NodeHost` test unchanged.
+5. **The test server gains an event, `upgrade`, for each WebSocket upgrade that arrives.** Section 14's events cannot prove S1-12: `connected` fires only after a handshake, so a second dial that lost its race would not show.
+6. **`play` waits for the client's player role to be released (`awaits_role_state`).** A stream started right after `trust` joins the ramp late, at frame 16608 of 72000, each run, which fails S1-10's 1.2 s. The server plays 68607 of the 72000 frames then: its encoder holds back the tail.
+
+Reviewed 2026-11-05; its findings were taken, but for these:
 
 | Claim | Answer | Evidence |
 |---|---|---|

@@ -34,6 +34,7 @@ public:
 	void rtpReceiver(const ear::RtpReceiverRequest&) override {
 		throw std::logic_error("white asked for an RTP receiver");
 	}
+	ear::InsidesEvents& events() override { throw std::logic_error("white asked for insides events"); }
 
 private:
 	ear::AudioFormat format_;
@@ -81,7 +82,7 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	for (std::uint32_t done = 0; done < format.rate; done += format.maxBlock) {
 		std::ranges::fill(block, 2.0F);
 		const std::span<float> output{block};
-		code.process({}, std::span<const std::span<float>>{&output, 1}, format.maxBlock);
+		code.process({}, std::span<const std::span<float>>{&output, 1}, format.maxBlock, ear::GraphCycle{0, 0});
 		samples.insert(samples.end(), block.begin(), block.end());
 	}
 	code.release();

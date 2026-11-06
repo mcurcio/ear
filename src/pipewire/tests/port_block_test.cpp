@@ -156,7 +156,7 @@ public:
   Constant(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t) noexcept override {
+               std::uint32_t, const ear::GraphCycle&) noexcept override {
     countAllocations = countHere.load(std::memory_order_acquire);
     for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
     calls_.fetch_add(1, std::memory_order_release);
@@ -177,7 +177,7 @@ class Ramp final : public AudioCode {
 public:
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
   }
   void release() noexcept override {}
@@ -191,7 +191,7 @@ class PassThrough final : public AudioCode {
 public:
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs,
-               std::span<const std::span<float>> outputs, std::uint32_t) noexcept override {
+               std::span<const std::span<float>> outputs, std::uint32_t, const ear::GraphCycle&) noexcept override {
     std::ranges::copy(inputs[0], outputs[0].begin());
   }
   void release() noexcept override {}
@@ -203,7 +203,7 @@ public:
   explicit Recorder(Waiter& waiter) : waiter_(waiter), samples_(8 * kRate) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     std::size_t at = recorded_.load(std::memory_order_relaxed);
     for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
     recorded_.store(at, std::memory_order_release);
@@ -698,4 +698,70 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
     REQUIRE(group != props->end());
     CHECK(group->second == "ear.graph");
   }
+}
+
+namespace {
+
+/// Records each cycle as process() was told it, and what time it was then, up to a fixed count.
+class CycleLog final : public AudioCode {
+public:
+  explicit CycleLog(Waiter& waiter) : waiter_(waiter), seen_(kCapacity) {}
+  void prepare(const AudioFormat&) override {}
+  void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+               std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+    for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+    const std::size_t at = count_.load(std::memory_order_relaxed);
+    if (at < kCapacity) {
+      timespec now{};
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      seen_[at] = {cycle, frames, static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec};
+      count_.store(at + 1, std::memory_order_release);
+    }
+    waiter_.wake();
+  }
+  void release() noexcept override {}
+  struct Seen {
+    ear::GraphCycle cycle;
+    std::uint32_t frames;
+    std::int64_t nowNs;
+  };
+  std::size_t count() const { return count_.load(std::memory_order_acquire); }
+  const Seen& at(std::size_t index) const { return seen_[index]; }
+  static constexpr std::size_t kCapacity = 64;
+
+private:
+  Waiter& waiter_;
+  std::vector<Seen> seen_;
+  std::atomic<std::size_t> count_{0};
+};
+
+}  // namespace
+
+TEST_CASE("Each cycle's position advances by its frames and its start is no later than now", "[port_blocks]") {
+  auto engine = makeEngine();
+  Waiter waiter(*engine);
+  Bell bell(waiter);
+  FilterPortBlocks blocks(*engine, bell);
+  CycleLog log(waiter);
+  BlockEvents events(waiter);
+  auto block = blocks.make("timed", Ports{{}, {"OUT"}}, kFormat, events);
+  block->drive(&log);
+  REQUIRE(waiter.until([&] { return log.count() == CycleLog::kCapacity; }));
+  block->drive(nullptr);
+
+  std::size_t advancedByFrames = 0;
+  for (std::size_t i = 1; i < CycleLog::kCapacity; ++i) {
+    const auto& before = log.at(i - 1);
+    const auto& now = log.at(i);
+    // A loaded host's skipped cycle is a jump of whole blocks, the very thing the position tells.
+    if (now.cycle.position == before.cycle.position + before.frames) ++advancedByFrames;
+    CHECK((now.cycle.position - before.cycle.position) % kBlock == 0);
+    CHECK(now.cycle.startNs > before.cycle.startNs);
+  }
+  for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
+    CHECK(log.at(i).frames == kBlock);
+    CHECK(log.at(i).cycle.startNs <= log.at(i).nowNs);
+    CHECK(log.at(i).nowNs - log.at(i).cycle.startNs < 1000000000);   // the same clock: within a second, not an epoch away
+  }
+  CHECK(advancedByFrames >= (CycleLog::kCapacity - 1) / 2);
 }

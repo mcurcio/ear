@@ -55,7 +55,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (std::size_t i = 0; i < outputs.size(); ++i) {
 			std::ranges::copy(inputs[i].first(frames), outputs[i].begin());
 		}

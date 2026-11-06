@@ -60,7 +60,7 @@ public:
       : waiter_(waiter), rampOn_(rampOn) {}
   void prepare(const AudioFormat&) override {}
   void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-               std::uint32_t frames) noexcept override {
+               std::uint32_t frames, const ear::GraphCycle&) noexcept override {
     for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
     if (rampOn_ && *rampOn_ < outputs.size()) {
       for (std::uint32_t i = 0; i < frames; ++i) {

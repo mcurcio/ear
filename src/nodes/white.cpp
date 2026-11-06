@@ -20,7 +20,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames) noexcept override {
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (const std::span<float> output : outputs) {
 			for (float& sample : output.first(frames)) {
 				sample = next();
