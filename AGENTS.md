@@ -288,8 +288,8 @@ route noise:MONO desk:playback_1;
   an `Origin` header is closed before any Sendspin message, and a frame or message over 1 MiB before
   it costs anything. A name added back waits for its old node to go. mDNS answers only queries from
   this link, once a datagram, by multicast once a second. Sockets that have proved nothing give way to
-  a newcomer, whichever address it comes from (`docs/design/sendspin.md` section 11, item 6), so holding them keeps no server out,
-  and a peer that finishes the published handshake and activates nothing is what can still hold the node from an unpaired server (item 2). Notes pass 32 at once and
+  a newcomer, whichever address it comes from (`docs/design/sendspin.md` section 11, item 6), so holding them keeps no server out;
+  a sustained flood still does for as long as it lasts, and a peer that finishes the published handshake and activates nothing is what can still hold the node from an unpaired server (item 2). Notes pass 32 at once and
   then one a second. Its notes:
 
   ```
@@ -466,7 +466,8 @@ out of test names: CMake splits a name at it.
 | `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on an `ear.conf`: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); a recordings folder it cannot make exits 1; the graph file (the record's example booted, an editor edit announced, applied, answered and written back, a hand edit winning, a hand typo blocking edits until Save fixes it, `ear.conf` as a symlink out and an `@include` out refused, boots with a typo, a refused route or no file running nothing, the fallback flags, overlapping folders exiting 1); an `rtp` node's tone recorded channel for channel, and its silence with no sender; a `sendspin` node against the real server: pairing by a code, a ramp frame for frame in the WAV, no audio for a server that trusts without pairing, noise to the server, identity across restarts, 20 wrong rounds and their release, a corrupt key file, no server at all, peers that never answer at a restart or stop, a slow upgrade, listening, mDNS discovery and removal, a server lost and back, a held or shared port, silent sockets held or flooding from its address and others beside a server pairing, waiting on a code and playing, a slow upgrade, a paired server not yet activated, a peer resetting sockets as they close, an upgrade with `Origin`, one dialling and one listening node together, no socket on a dialling node; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |
 | web (vitest, `make web-test`) | The editor's reducer against every `test/protocol` fixture, the graph file's state and the text pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket, connection rules, levels and layout. No browser; rendering is checked by eye |
 
-`test/CMakeLists.txt` also runs `ear --help` (the binary loads its shared libraries), and
+`test/CMakeLists.txt` also runs `ear --help` (the binary loads its shared libraries),
+`ear_carried_patch_check` runs what configure asks of a tree that must carry a patch, and
 `ear_engine_conf_beside_ear` checks the copy beside the binary matches the source. Tests are
 event-gated: they wait for the event they need, and a deadline only fails a test, never decides
 when something happens. Verify audio here, never on real hardware. The engine, ramp, RTP and

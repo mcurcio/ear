@@ -92,8 +92,10 @@ operate it, and what bites.
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
 - **A listening node on an untrusted network:** sockets that prove nothing give way to newcomers, so holding them keeps no server
-  out (`docs/design/sendspin.md` section 11, item 6). What a peer can still do: flood from several addresses, which a server wins in
-  a few seconds, and knock a server behind its own address off while it is still in its handshake, which only costs a reconnect. A
+  out (`docs/design/sendspin.md` section 11, item 6). What a peer can still do: flood, which keeps servers out for as long as it lasts past
+  some rate (measured on loopback: about 16k connects/s from 4 addresses, about 9.6k from the server's own; slower floods cost a server a
+  few seconds), and only stopping it lets them in; and, at any rate, knock a server behind its own address off while it is still in its
+  handshake, which costs it a reconnect. A
   peer that finishes the published Sentinel handshake and activates nothing does hold the node from an unpaired server, and a paired one
   that has never played (the spec's rule, item 2). Port 8928 and mDNS's 5353 are on every interface, with no address setting. Dial there
   or filter both if that matters. A dialling node has no listener.
@@ -129,8 +131,8 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
   in the nursery, its own address's first, and lengthens the listen queue, whose 5 dropped a server's SYN under a burst.
 - **Worker's `server_max_connections` is 32,** the room those two need to turn over in; it was the library's 4.
 - **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the patch (`git diff` in `.cache/deps/sendspin-src`), read
-  the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without it stops
-  it too. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
+  the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without all of it (asked with
+  `git apply --reverse --check`, `cmake/CarriedPatch.cmake`) stops it too, so a probe left in a patched line stops the next configure. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
   `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers. The IXWebSocket limits are not
   reported either, the owner's decision (2026-11-06: "Don't report for now").
 
@@ -168,7 +170,11 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
   the role, by a 5 ms poll: `aiosendspin` has no event for it. The encoder also holds back the stream's tail, so 68607 of 72000
   frames arrive.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
-  instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused".
+  instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused". A test's listening port comes from below the kernel's
+  outgoing range (`freeTcpPort`), or a neighbour's flood can hold it as a socket's near end.
+- **Docker's Mac file share can lose a folder removed and made again under one name:** `unable to get current working directory`, or
+  no permission to read a build directory's cache. Use a new name each time.
+- **A probe that breaks closing the dup (`settleUpgrade`) hangs the `Origin` test** rather than failing it, as its read has no deadline.
 - **A comma in a Catch filter means OR, and a filter that matches nothing exits 0.** A probe that filters on a name holding a
   comma can stay green having run nothing. CTest takes these names as they are. Keep `;` out of test names.
 - The ramp: left is the low 16 bits of the frame index and right the high 16, so FR's meter is silent for its first 1.4 s.

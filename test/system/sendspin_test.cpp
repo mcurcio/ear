@@ -17,9 +17,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -195,21 +197,27 @@ private:
 	std::vector<int> fillers_;
 };
 
-/// A free TCP port on 127.0.0.1 with nothing behind it.
+/// A free TCP port on 127.0.0.1 with nothing behind it, from below the kernel's range for outgoing sockets: a flood in a test
+/// running beside this one churns through that range, and a port it holds as its own end fails a node's listen.
 std::uint16_t freeTcpPort() {
-	const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	REQUIRE(fd >= 0);
-	sockaddr_in address{};
-	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	REQUIRE(::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
-	socklen_t length = sizeof address;
-	REQUIRE(::getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length) == 0);
-	::close(fd);
-	return ntohs(address.sin_port);
+	static std::mt19937 pick{std::random_device{}()};
+	std::uniform_int_distribution<int> belowEphemeral(20000, 32767);
+	for (int attempt = 0; attempt < 100; ++attempt) {
+		const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		REQUIRE(fd >= 0);
+		const auto port = static_cast<std::uint16_t>(belowEphemeral(pick));
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		address.sin_port = htons(port);
+		const bool free = ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0;
+		::close(fd);
+		if (free) return port;
+	}
+	FAIL("no free port below the kernel's outgoing range");
+	return 0;
 }
 
-/// Whether a connect to `port` on 127.0.0.1 is refused: nothing listens there.
 bool connectRefused(std::uint16_t port) {
 	const int fd = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	REQUIRE(fd >= 0);
@@ -1518,6 +1526,9 @@ private:
 SilentPeers::Shape holder(const std::string& source, std::chrono::milliseconds every = 1s) { return {{source}, 2, true, every, true}; }
 /// Upgraded sockets from these sources, as fast as a test should ask of a shared host.
 SilentPeers::Shape flood(std::vector<std::string> sources) { return {std::move(sources), 2, true, 20ms, false}; }
+/// How many threads past the sockets' bound a test allows, for those ending as the next begins: peaks of up to 88 were seen
+/// over 13 idle, against 102 and up with no bound.
+constexpr std::size_t socketThreadsEnding = 16;
 /// A running listening node for a test's peers.
 struct ListeningEar {
 	std::uint16_t port = freeTcpPort();
@@ -1598,7 +1609,7 @@ TEST_CASE("Bare sockets from many addresses filling every socket and renewed kee
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
 }
 
-TEST_CASE("A flood of silent upgrades from another address cannot outrun a server", "[system][sendspin]") {
+TEST_CASE("A server gets in beside a flood of silent upgrades from one other address", "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 8, true, 1ms, false});
 	REQUIRE(peers.waitForRounds(10));
@@ -1607,7 +1618,7 @@ TEST_CASE("A flood of silent upgrades from another address cannot outrun a serve
 	CHECK(server.count("disconnected ") == 0);
 }
 
-TEST_CASE("A peer still proving itself is displaced by no flood from another address", "[system][sendspin]") {
+TEST_CASE("A peer still proving itself is not displaced by a flood from one other address", "[system][sendspin]") {
 	ListeningEar node;
 	const int fd = connectFrom("127.0.0.3", node.port);
 	REQUIRE(fd >= 0);
@@ -1702,6 +1713,22 @@ TEST_CASE("Two peers that do speak and never activate keep a third server out of
 	CHECK(*ended == "activate-ended close");
 }
 
+TEST_CASE("A paired server playing keeps its socket while bare sockets fill its own address's share", "[system][sendspin]") {
+	ListeningEar node;
+	SendspinTestServer server({"--dial", node.url()});
+	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	pairOnce(node.ear, server);
+	// More than the 8 an address may hold, so the oldest of its still upgrading gives way each time, and the server, older
+	// than all of them, goes first unless having upgraded takes it out of the running.
+	SilentPeers peers(node.port, {{"127.0.0.1"}, 10, false, 20ms, false});
+	REQUIRE(peers.waitForRounds(10));
+	server.send("play 1.5");
+	REQUIRE_SEEN(node.ear, node.ear.waitForLine("node ma says stream-ended", playDeadline));
+	INFO("the server printed:\n" << server.events());
+	CHECK(server.count("disconnected ") == 0);
+	CHECK_FALSE(node.ear.hasLine("node ma says disconnected"));
+}
+
 TEST_CASE("One address holding all it may of upgraded sockets leaves other addresses their upgrades", "[system][sendspin]") {
 	ListeningEar node;
 	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
@@ -1715,6 +1742,38 @@ TEST_CASE("One address holding all it may of upgraded sockets leaves other addre
 		INFO("upgrade " << i);
 		REQUIRE(answered);
 	}
+}
+
+TEST_CASE("One address past its share gives way alone and a slow upgrade from another is answered", "[system][sendspin]") {
+	ListeningEar node;
+	SilentPeers peers(node.port, {{"127.0.0.2"}, 70, true, 400ms, false});
+	REQUIRE(peers.waitForRounds(1));
+	for (int i = 0; i < 5; ++i) {
+		const bool answered = answersSlowUpgrade(peers, "127.0.0.3", node.port, 1);
+		INFO("upgrade " << i);
+		CHECK(answered);
+	}
+}
+
+TEST_CASE("A flood from every address holds the transport to twice its budget of threads", "[system][sendspin]") {
+	ListeningEar node;
+	const auto threads = [&node] {
+		const std::filesystem::directory_iterator tasks(std::filesystem::path("/proc") / std::to_string(node.ear.pid()) / "task");
+		return static_cast<std::size_t>(std::distance(begin(tasks), end(tasks)));
+	};
+	const std::size_t idle = threads();
+	std::vector<std::unique_ptr<SilentPeers>> peers;
+	for (int i = 2; i < 18; ++i) {
+		peers.push_back(std::make_unique<SilentPeers>(node.port, SilentPeers::Shape{{"127.0.0." + std::to_string(i)}, 8, true, 0ms, false}));
+	}
+	std::size_t peak = 0;
+	for (int sample = 0; sample < 3000; ++sample) {
+		peak = std::max(peak, threads());
+		std::this_thread::sleep_for(1ms);
+	}
+	INFO("idle " << idle << " threads, peak " << peak);
+	// 64 sockets with a thread each. Each one's thread ends just after it is forgotten, so a few more can be seen at once.
+	CHECK(peak <= idle + 64 + socketThreadsEnding);
 }
 
 TEST_CASE("A slow honest upgrade is answered through a flood of bare sockets from another address", "[system][sendspin]") {

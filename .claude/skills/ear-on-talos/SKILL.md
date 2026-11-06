@@ -288,7 +288,7 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   no such line does not mean anybody heard it.
 - **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own, on
   every one of its interfaces, since a listening node has no address setting: filter 8928 and 5353 to the
-  network Music Assistant is on. A peer on 8928 can still hold the node from an unpaired server by finishing the published handshake, though no longer with silent sockets (`sendspin` skill), so
+  network Music Assistant is on. A peer on 8928 can still hold the node from an unpaired server by finishing the published handshake, though no longer with silent sockets, and a flood can keep servers out while it lasts (`sendspin` skill), so
   on a network you do not trust, dial instead of listening.
   The node advertises on one interface, the one the kernel routes 224.0.0.251 through, and the
   address of that interface, read once when the sendspin node starts, so on a machine with several

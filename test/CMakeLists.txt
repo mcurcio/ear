@@ -23,6 +23,10 @@ add_test(NAME ear_help_lists_config COMMAND ear --help)
 set_tests_properties(ear_help_lists_config PROPERTIES
 	PASS_REGULAR_EXPRESSION "--config-dir.*--graph-frequency.*--block-size")
 
+# What configure asks of a tree that must carry a patch (cmake/SendspinDeps.cmake).
+add_test(NAME ear_carried_patch_check COMMAND "${CMAKE_COMMAND}"
+	"-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/carried_patch_test" -P "${CMAKE_CURRENT_SOURCE_DIR}/carried_patch_test.cmake")
+
 # ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
 # Boost.Beast), for the control port's tests (src/server/tests) and the system tests.
 add_library(ear_ws_client INTERFACE)
