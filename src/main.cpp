@@ -29,7 +29,11 @@
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 #include "ear/folder/confined_folder.hpp"
-#include "ear/nodes/builtin.hpp"
+#include "ear/nodes/card.hpp"
+#include "ear/nodes/file.hpp"
+#include "ear/nodes/rtp.hpp"
+#include "ear/nodes/sendspin.hpp"
+#include "ear/nodes/white.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
@@ -38,7 +42,6 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
-#include "ear/sendspin/sendspin_type.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -128,9 +131,13 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
 	// format lines set the engine when both read; otherwise the flags do (the file's own values then
 	// show as pending restart).
-	auto nodeTypes =
-		ear::nodes::builtinNodeTypes(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)));
-	nodeTypes.push_back(ear::sendspin::makeSendspinNodeType(config));
+	std::vector<std::unique_ptr<const ear::NodeType>> nodeTypes;
+	nodeTypes.push_back(ear::nodes::makeWhiteNodeType());
+	nodeTypes.push_back(
+		ear::nodes::makeFileNodeType(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings))));
+	nodeTypes.push_back(ear::nodes::makeCardNodeType());
+	nodeTypes.push_back(ear::nodes::makeRtpNodeType());
+	nodeTypes.push_back(ear::nodes::makeSendspinNodeType(config));
 	const ear::NodeCatalogue catalogue(std::move(nodeTypes));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});

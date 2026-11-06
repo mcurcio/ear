@@ -1,6 +1,6 @@
 // The tests' way to run the sendspin test server (sendspin_server.py), the real SendspinServer in the image's venv:
 // spawn it, send it a command per line, wait for an event it prints. Every wait is for an event; its deadline only fails
-// the test. Standard error stays the test's. Header-only, used by ear_sendspin's clock tests and the system tests.
+// the test. Standard error stays the test's. Header-only, used by ear_node_sendspin's clock tests and the system tests.
 #pragma once
 
 #include <cerrno>

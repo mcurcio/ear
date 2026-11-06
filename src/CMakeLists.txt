@@ -1,22 +1,21 @@
 # EAR's packages, one directory each with its own CMakeLists.txt (docs/design/batch2.md
-# section 1): ear_core, ear_nodes, ear_pipewire, ear_control, ear_config (the knobly graph file and
-# its keeper, docs/design/knobly-config.md), ear_sendspin (the sendspin node type, docs/design/sendspin.md)
-# and ear_server, each a library the ear binary links (its composition root, main.cpp); ear_folder, the
-# confined folder the recordings and the graph file live beneath, depends on none of them. Added in dependency order:
-# ear_core and ear_folder first, the packages that use them after.
+# section 1): ear_core, ear_pipewire, ear_control, ear_config (the knobly graph file and its keeper,
+# docs/design/knobly-config.md) and ear_server, each a library the ear binary links (its composition root,
+# main.cpp); nodes/ holds the node types, each its own library, ear_node_<type>, which the binary also
+# links; ear_folder, the confined folder the recordings and the graph file live beneath, depends on none
+# of them. Added in dependency order: ear_core and ear_folder first, the packages that use them after.
 add_subdirectory(core)
 add_subdirectory(folder)
 add_subdirectory(nodes)
 add_subdirectory(pipewire)
 add_subdirectory(control)
 add_subdirectory(config)
-add_subdirectory(sendspin)
 add_subdirectory(server)
 
 add_executable(ear main.cpp)
-# The packages; program_options parses the command line.
-target_link_libraries(ear PRIVATE ear_config ear_control ear_folder ear_nodes ear_pipewire ear_sendspin ear_server
-	Boost::program_options)
+# The packages and the node types; program_options parses the command line.
+target_link_libraries(ear PRIVATE ear_config ear_control ear_folder ear_node_card ear_node_file ear_node_rtp
+	ear_node_sendspin ear_node_white ear_pipewire ear_server Boost::program_options)
 
 # The binary is also copied to out/ear, the path the docs and CI run.
 add_custom_command(TARGET ear POST_BUILD

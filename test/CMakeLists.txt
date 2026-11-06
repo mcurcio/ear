@@ -45,3 +45,6 @@ target_include_directories(ear_sendspin_server INTERFACE "${CMAKE_CURRENT_SOURCE
 target_compile_definitions(ear_sendspin_server INTERFACE
 	EAR_SENDSPIN_SERVER_PYTHON="${EAR_SENDSPIN_SERVER_PYTHON}"
 	EAR_SENDSPIN_SERVER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/support/sendspin_server.py")
+
+# ear_node_types_tests: what holds for every node type together (each type's own tests are in src/nodes/<type>).
+add_subdirectory(nodes)
