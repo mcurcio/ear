@@ -689,6 +689,10 @@ engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 
 ### 4.4 ear_nodes
 
+(Since 2026-11-06 each type is its own library, `ear_node_<type>`, and `builtin.hpp` is gone; section 11's erratum of that
+date says where each now lives. A type declares its settings in one table, `ear/core/settings_table.hpp`; `NodeType`'s
+contract is unchanged.)
+
 ```cpp
 // ===== nodes/recordings.hpp (new, erratum 2026-10-30: the recordings folder) =====
 /// The one folder "file" nodes write into (--recordings-dir), held open as a directory for
@@ -1524,6 +1528,24 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **Node types, 2026-11-06: `nodes/builtin.hpp` is retired and `ear_nodes` and `ear_sendspin` are split into one library
+  per type under `src/nodes/`.** The owner, 2026-11-06: "what about reorganizing so that we have a simple `nodes/` directory
+  with all the node types nested under it?"; asked about each type being its own library: "that sounds fine"; asked which
+  steps to run: "All four steps". (The names are the refactor's design choices, revisable, not his requirements.) The five
+  types `white`, `file`, `card`, `rtp` and `sendspin` are now `src/nodes/<type>/`, each its own library `ear_node_<type>`
+  with its own test program `ear_node_<type>_tests`; `src/nodes/CMakeLists.txt` only adds the five folders. `builtin.hpp`
+  and `builtin.cpp` and `builtinNodeTypes` are gone: `main.cpp` lists the five `make<Type>NodeType` functions itself, into
+  one `NodeCatalogue`, and links the five libraries. Each function moved into a header of its own,
+  `include/ear/nodes/<type>.hpp`, with its comments and signature unchanged (the frozen interface of section 4.4, split, not
+  changed); `RecordingsFolder`'s replacement by `ConfinedFolder` (`docs/design/knobly-config.md`) stands. libsndfile is
+  seen only by `ear_node_file`, sendspin-cpp and its dependencies only by `ear_node_sendspin`, and no node type links
+  another. `ear/core/node_type.hpp` is unchanged. Beside it, `ear/core/settings_table.hpp` is where a type declares each
+  setting once (`SettingRule`: key, kind, required or not, range, unit, default; `SettingsTable`), so that the table checks
+  the settings object (unknown keys, missing keys, kinds and ranges, in one fixed order, with refusal texts and their order
+  as before), and its `kinds()` is what `settingKinds()` returns. The type keeps what a text value means and any rule across
+  settings. Pages that say "`ear_nodes`", "`ear_sendspin`", `src/sendspin/` or `builtinNodeTypes` as a description of the
+  code then (this page's sections 1 and 4.4, `m1-white-to-file.md`, `rtp.md` section 7 and `sendspin.md` sections 3 and 14)
+  are the record of that time; where the code is now, `AGENTS.md`'s Architecture says.
 - **Port banks, 2026-11-06: `ear/core/node_type.hpp` changes.** The owner's new port names (`docs/design/sendspin.md`
   section 1) make a bank part of how a type declares its ports: `PortBank` (direction, name, members) and `Ports` built only
   from banks, its lists behind accessors, so no type spells a public port's name; `portName`, the one place that name is

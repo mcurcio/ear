@@ -230,7 +230,7 @@ beside it, and on the dummy driver, which holds nothing, this is the block's por
 
 ## 9. Status lines
 
-One new frame in `status_log.cpp`, `node <name> says <text>`; a type's texts are its own (`src/sendspin/notes.hpp`), as a `failed` detail is.
+One new frame in `status_log.cpp`, `node <name> says <text>`; a type's texts are its own (`src/nodes/sendspin/notes.hpp`), as a `failed` detail is.
 
 ```
 node <n> says id <client id>  S2: first, once
