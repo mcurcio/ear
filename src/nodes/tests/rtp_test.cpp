@@ -64,7 +64,7 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 
 }  // namespace
 
-TEST_CASE("Rtp accepts a full settings object, and its ports are channel_i out and from_rtp_i inside", "[rtp]") {
+TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and from_rtp_i inside", "[rtp]") {
 	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
@@ -166,7 +166,7 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 	CHECK(type->parse("fpp", settingsWith({{"rate", 1}, {"latencyMs", 0}})).error().detail == badRate);
 }
 
-TEST_CASE("Rtp passes from_rtp_i to channel_i sample for sample", "[rtp]") {
+TEST_CASE("Rtp passes from_rtp_i to stream.i sample for sample", "[rtp]") {
 	for (const std::uint32_t channels : {1U, 3U}) {
 		INFO(channels << " channels");
 		constexpr std::uint32_t frames = 200;

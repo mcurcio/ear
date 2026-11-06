@@ -113,7 +113,7 @@ TEST_CASE("Card start asks one sound card per direction, its block ports in orde
 	CHECK(captureGrant.requests[0].direction == ear::CardDirection::capture);
 }
 
-TEST_CASE("Card passes playback_i to to_card_i and from_card_j to capture_j sample for sample", "[card]") {
+TEST_CASE("Card passes play.i to to_card_i and from_card_j to capture.j sample for sample", "[card]") {
 	constexpr std::uint32_t playback = 3;
 	constexpr std::uint32_t capture = 2;
 	constexpr std::uint32_t frames = 200;
