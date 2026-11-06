@@ -128,7 +128,7 @@ TEST_CASE("A position ahead by a block skips that block and counts it played", "
 	CHECK(rig.left[0] == static_cast<float>(2 * block + 1));   // that block's frames are gone
 }
 
-TEST_CASE("A position ahead by the feed's capacity still skips; by more, or behind, skips none", "[sendspin][code]") {
+TEST_CASE("A position ahead by the feed's capacity still skips, and by more, or behind, skips none", "[sendspin][code]") {
 	SECTION("just within") {
 		Rig rig;
 		rig.write(capacity);

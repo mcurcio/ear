@@ -152,6 +152,6 @@ RUN apt-get update \
 
 USER 10001:10001
 VOLUME ["/var/lib/ear/config", "/var/lib/ear/recordings"]
-EXPOSE 7777
+EXPOSE 7777 8928
 ENTRYPOINT ["/opt/ear/ear"]
 CMD ["--config-dir", "/var/lib/ear/config", "--recordings-dir", "/var/lib/ear/recordings"]

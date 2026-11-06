@@ -24,6 +24,7 @@ inline std::string printable(std::string_view text) {
 }
 inline std::string id(std::string_view clientId) { return std::format("id {}", clientId); }
 inline std::string dialling(std::string_view url) { return std::format("dialling {}", url); }
+inline std::string listening(std::uint16_t port, std::string_view instance) { return std::format("listening {} as {}", port, instance); }
 inline std::string connected(std::string_view serverName, bool paired) {
   return std::format("connected {} {}", printable(serverName), paired ? "paired" : "unpaired");
 }
@@ -45,4 +46,5 @@ inline std::string sending(std::uint32_t rate, std::uint32_t channels, std::uint
 }
 inline std::string sendingStopped() { return "sending-stopped"; }
 inline std::string keyWriteFailed(std::string_view detail) { return std::format("key-write-failed {}", detail); }
+inline std::string advertiseFailed(std::string_view detail) { return std::format("advertise-failed {}", detail); }
 }

@@ -22,11 +22,11 @@ private:
 };
 inline constexpr std::uint16_t defaultListenPort = 8928;
 struct SendspinSettings {
-  std::optional<ServerUrl> server;   // with it, ear dials; without it, ear listens (a later slice)
+  std::optional<ServerUrl> server;   // with it, ear dials; without it, ear listens on `port`
   std::uint16_t port;
   std::string name;
 };
-/// The first failure is told, in this order: object, unknown keys (in the object's order), server, name. `node`: the
+/// The first failure is told, in this order: object, unknown keys (in the object's order), server, port, name. `node`: the
 /// node's name, the default of "name".
 std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node, const NodeSettings& settings);
 }

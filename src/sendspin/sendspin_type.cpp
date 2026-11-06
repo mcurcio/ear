@@ -9,12 +9,14 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
 #include "feed.hpp"
+#include "port_claims.hpp"
 #include "sendspin_code.hpp"
 #include "settings.hpp"
 #include "worker.hpp"
@@ -23,7 +25,9 @@ namespace ear::sendspin {
 namespace {
 
 constexpr std::string_view typeName = "sendspin";
-constexpr std::array<SettingDeclaration, 2> settingDeclarations{{{"server", SettingKind::text}, {"name", SettingKind::text}}};
+constexpr std::array<SettingDeclaration, 3> settingDeclarations{{{"server", SettingKind::text},
+                                                                 {"port", SettingKind::wholeNumber},
+                                                                 {"name", SettingKind::text}}};
 constexpr std::uint32_t channelCount = 2;
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
@@ -31,11 +35,25 @@ std::uint32_t feedFramesFor(const AudioFormat& format) {
 	return std::bit_ceil(std::max(format.rate * 40 / 1000, 2 * format.maxBlock));
 }
 
+/// A listening node's claim on its port, for as long as its insides live, so past the library's own socket.
+class HeldPort {
+public:
+	HeldPort(std::shared_ptr<PortClaims> claims, std::uint16_t port) : claims_(std::move(claims)), port_(port) {}
+	HeldPort(HeldPort&& other) noexcept : claims_(std::move(other.claims_)), port_(other.port_) {}
+	~HeldPort() {
+		if (claims_) claims_->release(port_);
+	}
+
+private:
+	std::shared_ptr<PortClaims> claims_;
+	std::uint16_t port_;
+};
+
 class SendspinInsides final : public NodeInsides {
 public:
 	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, SendspinSettings settings,
-	                NodeGrant& grant)
-	    : feed_(channelCount, feedFramesFor(grant.format())),
+	                NodeGrant& grant, std::optional<HeldPort> port)
+	    : port_(std::move(port)), feed_(channelCount, feedFramesFor(grant.format())),
 	      worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events(), feed_.capacityFrames()),
 	      code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
 	            grant.handoff(channelCount, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
@@ -43,6 +61,7 @@ public:
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
 
 private:
+	std::optional<HeldPort> port_;
 	Feed feed_;
 	SendspinWorker worker_;
 	SendspinCode code_;
@@ -50,14 +69,24 @@ private:
 
 class SendspinConfig final : public NodeConfig {
 public:
-	SendspinConfig(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node, SendspinSettings settings)
-	    : folder_(std::move(folder)), node_(std::move(node)), settings_(std::move(settings)) {}
+	SendspinConfig(std::shared_ptr<const folder::ConfinedFolder> folder, std::shared_ptr<PortClaims> claims, NodeName node, SendspinSettings settings)
+	    : folder_(std::move(folder)), claims_(std::move(claims)), node_(std::move(node)), settings_(std::move(settings)) {}
 
 	const Ports& ports() const override { return ports_; }
 
 	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
+		std::optional<HeldPort> port;
+		if (!settings_.server) {
+			const auto refused = [&](const std::string& reason) {
+				return std::unexpected(FailureReason{FailureReason::Code::startFailed,
+				                                     "cannot listen on port " + std::to_string(settings_.port) + ": " + reason});
+			};
+			if (auto claimed = claims_->claim(settings_.port, node_); !claimed) return refused(claimed.error());
+			port.emplace(claims_, settings_.port);
+			if (auto probed = probeListenPort(settings_.port); !probed) return refused(probed.error());
+		}
 		try {
-			return std::make_unique<SendspinInsides>(folder_, node_, settings_, grant);
+			return std::make_unique<SendspinInsides>(folder_, node_, settings_, grant, std::move(port));
 		} catch (const std::system_error& error) {
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
@@ -65,6 +94,7 @@ public:
 
 private:
 	std::shared_ptr<const folder::ConfinedFolder> folder_;
+	std::shared_ptr<PortClaims> claims_;
 	NodeName node_;
 	SendspinSettings settings_;
 	Ports ports_{.inputs = {"to_server_FL", "to_server_FR"}, .outputs = {"from_server_FL", "from_server_FR"}};
@@ -82,11 +112,12 @@ public:
 	parse(const NodeName& node, const NodeSettings& settings) const override {
 		auto parsed = parseSettings(node, settings);
 		if (!parsed) return std::unexpected(InvalidSettings{node, std::move(parsed.error())});
-		return std::make_unique<const SendspinConfig>(folder_, node, std::move(*parsed));
+		return std::make_unique<const SendspinConfig>(folder_, claims_, node, std::move(*parsed));
 	}
 
 private:
 	std::shared_ptr<const folder::ConfinedFolder> folder_;   // the graph file folder: each node's key file
+	std::shared_ptr<PortClaims> claims_ = std::make_shared<PortClaims>();
 };
 
 } // namespace

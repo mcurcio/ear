@@ -75,7 +75,7 @@ TEST_CASE("A false reading restarts its 5 s after each true", "[sendspin][watch]
 	CHECK(told(watch, 108s, false).disconnected);
 }
 
-TEST_CASE("5 s of false tells disconnected and dials; then no second dial before 31 s, one at 31 s", "[sendspin][watch]") {
+TEST_CASE("5 s of false tells disconnected and dials, then no second dial before 31 s, one at 31 s", "[sendspin][watch]") {
 	ConnectionWatch watch(true);
 	told(watch, 0s, false);
 	told(watch, 100s, true);

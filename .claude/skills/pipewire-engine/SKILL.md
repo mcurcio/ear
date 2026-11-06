@@ -130,8 +130,9 @@ how its node is made and heard from (its own proxy) and what fails it:
    the card unplugged, a link that fails or goes) first destroys the links and the adapter, then
    waits for a `pw_core_sync` round trip, and only then tells `lost(detail)`. So a lost card
    never holds the graph: the blocks go back to the dummy and keep processing. The node becomes
-   `failed engine-refused: <detail>`; its block and routes stay. No retry: `node.update`
-   restarts it.
+   `failed engine-refused: <detail>`; its block and routes stay. No retry: a `node.update`
+   with changed settings restarts it, and one with the same settings changes nothing
+   (`graph_file_model.cpp`, `desired_graph.cpp`), so with none to change, restart ear.
 
 CI has no sound card. `src/pipewire/tests/alsa/alsa.conf`, set as `ALSA_CONFIG_PATH` in the
 test process, defines `hw` so `hw:CARD=Test` is alsa-lib's `file` PCM over its `null` PCM

@@ -111,7 +111,7 @@ TEST_CASE("Blobs round-trip exact, through memory and through the file", "[sends
 	CHECK_FALSE(again->load_blob("rec_1").has_value());
 }
 
-TEST_CASE("createdAt and createdBy are set once; changedAt and changedBy move with a write", "[sendspin][keys]") {
+TEST_CASE("createdAt and createdBy are set once, and changedAt and changedBy move with a write", "[sendspin][keys]") {
 	Rig rig;
 	rig.write(oldRecord);
 	const auto store = rig.open();

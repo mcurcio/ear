@@ -2,15 +2,18 @@
 """The sendspin node's test server (docs/design/sendspin.md section 14): a real SendspinServer, a command per stdin line,
 an event per stdout line, so a test moves when an event arrives.
 
-Arguments: --listen 0 [--slow-upgrade <seconds>] (a later slice adds --dial and --state).
-Commands: trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
+Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>]. It always listens
+(a dialling node needs that, and the tests' spawn always asks); --dial also dials a listening node, retrying until it answers.
+--state keeps its identity and its pairings in <dir> across restarts. --discover browses mDNS with aiosendspin's own discovery,
+which dials what it finds, among only the instances starting with <prefix>, since tests running side by side share a network.
+Commands: dial <url>, use <client id> (later commands act on that client; each `connected` moves them to the new one), trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
 end (stream/end now), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
 typed: one per round), source-start, source-stop, quit.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
 play-start <us>, play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
 pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
 source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk>,
-disconnected <reason>.
+disconnected <reason>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
 """
@@ -21,12 +24,13 @@ import argparse
 import asyncio
 import logging
 import sys
+from pathlib import Path
 
 from aiohttp import web
 from aiosendspin.models.types import PairingCodeFormat, PairMethod
 from aiosendspin.noise.keys import Identity
 from aiosendspin.noise.pairing import PairingAbortError, PairingAttempt
-from aiosendspin.noise.trust_store import InMemoryServerPairingStore
+from aiosendspin.noise.trust_store import FileServerPairingStore, InMemoryServerPairingStore, ServerPairingStore
 from aiosendspin.server.audio import AudioFormat
 from aiosendspin.server.push_stream import StreamStoppedError
 from aiosendspin.server.roles.source.events import SourceStreamStartedEvent
@@ -35,6 +39,8 @@ from aiosendspin.server.server import (
     ClientDisconnectedEvent,
     SendspinServer,
 )
+from zeroconf import ServiceStateChange
+from zeroconf.asyncio import AsyncServiceInfo
 
 RATE = 48000
 CHUNK_FRAMES = 1200  # 25 ms
@@ -56,21 +62,65 @@ def ramp(start: int, frames: int) -> bytes:
     return bytes(pcm)
 
 
+class DiscoveringServer(SendspinServer):
+    """aiosendspin's discovery, deaf to every instance but the test's own, and saying what it saw."""
+
+    discover_prefix = ""
+
+    def _on_mdns_service_state_change(self, zeroconf, service_type, name, state_change) -> None:  # noqa: ANN001
+        if not name.startswith(self.discover_prefix):
+            return
+        instance = name.removesuffix("." + service_type)
+        if state_change is ServiceStateChange.Removed:
+            emit(f"service-removed {instance}")
+        elif state_change is ServiceStateChange.Added:
+            self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._say_discovered(zeroconf, service_type, name, instance)))
+        super()._on_mdns_service_state_change(zeroconf, service_type, name, state_change)
+
+    async def _say_discovered(self, zeroconf, service_type, name, instance) -> None:  # noqa: ANN001
+        info = AsyncServiceInfo(service_type, name)
+        if not info.load_from_cache(zeroconf):
+            await info.async_request(zeroconf, 3000)
+        txt = {key.decode(): (value or b"").decode() for key, value in (info.properties or {}).items()}
+        emit(f"discovered {instance} port={info.port} path={txt.get('path')} name={txt.get('name')}")
+
+
+async def open_state(directory: str | None) -> tuple[Identity, ServerPairingStore]:
+    """The server's identity and pairings: a test's own, or what an earlier run left in `directory`."""
+    if directory is None:
+        return Identity.generate(), InMemoryServerPairingStore()
+    folder = Path(directory)
+    key_file = folder / "identity"
+    if key_file.exists():
+        identity = Identity.from_private_bytes(key_file.read_bytes())
+    else:
+        identity = Identity.generate()
+        key_file.write_bytes(identity.private_bytes)
+    return identity, await FileServerPairingStore.open(folder / "pairings.json")
+
+
 class TestServer:
-    def __init__(self, loop: asyncio.AbstractEventLoop, slow_upgrade: float) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        slow_upgrade: float,
+        identity: Identity,
+        pairing_store: ServerPairingStore,
+    ) -> None:
         self._slow_upgrade = slow_upgrade
         self._client_id: str | None = None
-        self._play: asyncio.Task[None] | None = None
+        self._plays: list[asyncio.Task[None]] = []
+        self._runner: web.AppRunner | None = None
         self._pairing: asyncio.Task[None] | None = None
         self._codes: asyncio.Queue[str] = asyncio.Queue()
         self._heard: asyncio.Task[None] | None = None
         self._subscribed: set[str] = set()
         # Music Assistant's default: a client off the spec is refused.
-        self._server = SendspinServer(
+        self._server = DiscoveringServer(
             loop,
-            Identity.generate(),
+            identity,
             SERVER_NAME,
-            pairing_store=InMemoryServerPairingStore(),
+            pairing_store=pairing_store,
             allow_noncompliant_clients=False,
         )
         self._server.add_event_listener(self._on_event)
@@ -140,11 +190,18 @@ class TestServer:
         port = self._runner.addresses[0][1]
         emit(f"ready ws://127.0.0.1:{port}{SendspinServer.API_PATH}")
 
-    def _group(self):
-        client = self._server.get_client(self._client_id) if self._client_id else None
-        if client is None:
-            raise RuntimeError("no client")
-        return client.group
+    async def discover(self, prefix: str) -> None:
+        """start_server, the way Music Assistant finds players: browses mDNS and dials what it finds. Advertises nothing."""
+        self._server.discover_prefix = prefix
+        await self._server.start_server(port=0, advertise_addresses=[], discover_clients=True)
+        port = self._server._app_runner.addresses[0][1]  # noqa: SLF001
+        emit(f"ready ws://127.0.0.1:{port}{SendspinServer.API_PATH}")
+
+    def dial(self, url: str) -> None:
+        self._server.connect_to_client(url, retry_initial_connection=True)
+
+    def use(self, client_id: str) -> None:
+        self._client_id = client_id
 
     async def trust(self) -> None:
         await self._server.trust_unpaired(self._client_id)
@@ -185,19 +242,19 @@ class TestServer:
         client = self._server.get_client(self._client_id)
         return client.roles_by_family("source")[0]
 
-    async def _player_active(self) -> None:
+    async def _player_active(self, client_id: str):
         """Until the client's player role takes audio: `trust` activates it, and the client answers in its own time.
 
         The library has no event for this; a stream started before it would join the ramp late, part way in.
         """
-        client = self._server.get_client(self._client_id)
+        client = self._server.get_client(client_id)
         while client is None or client.awaits_role_state("player") or not client.roles_by_family("player"):
             await asyncio.sleep(0.005)
-            client = self._server.get_client(self._client_id)
+            client = self._server.get_client(client_id)
+        return client
 
-    async def _play_ramp(self, seconds: float) -> None:
-        await self._player_active()
-        group = self._group()
+    async def _play_ramp(self, client_id: str, seconds: float) -> None:
+        group = (await self._player_active(client_id)).group
         stream = group.start_stream()
         audio_format = AudioFormat(RATE, 16, 2)
         total = int(seconds * RATE)
@@ -219,8 +276,9 @@ class TestServer:
         group.stop_stream()
 
     def play(self, seconds: float) -> None:
-        self._play = asyncio.ensure_future(self._play_ramp(seconds))
-        self._play.add_done_callback(self._done)
+        play = asyncio.ensure_future(self._play_ramp(self._client_id, seconds))
+        play.add_done_callback(self._done)
+        self._plays.append(play)
 
     @staticmethod
     def _done(task: asyncio.Task[None]) -> None:
@@ -228,34 +286,50 @@ class TestServer:
             logging.error("a task failed", exc_info=task.exception())
 
     def end(self) -> None:
-        if self._play is not None:
-            self._play.cancel()
-            self._play = None
-        self._group().stop_stream()
+        for play in self._plays:
+            play.cancel()
+        self._plays = []
+        client = self._server.get_client(self._client_id)
+        if client is not None:
+            client.group.stop_stream()
 
     async def close(self) -> None:
-        for task in (self._play, self._pairing, self._heard):
+        for task in (*self._plays, self._pairing, self._heard):
             if task is not None:
                 task.cancel()
         await self._server.close()
-        await self._runner.cleanup()
+        if self._runner is not None:
+            await self._runner.cleanup()
 
 
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--listen", type=int, required=True)
     parser.add_argument("--slow-upgrade", type=float, default=0.0)
+    parser.add_argument("--dial")
+    parser.add_argument("--state")
+    parser.add_argument("--discover")
     arguments = parser.parse_args()
 
     loop = asyncio.get_running_loop()
-    server = TestServer(loop, arguments.slow_upgrade)
-    await server.listen()
+    identity, pairing_store = await open_state(arguments.state)
+    server = TestServer(loop, arguments.slow_upgrade, identity, pairing_store)
+    if arguments.discover is not None:
+        await server.discover(arguments.discover)
+    else:
+        await server.listen()
+    if arguments.dial is not None:
+        server.dial(arguments.dial)
 
     reader = asyncio.StreamReader()
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     while line := await reader.readline():
         command, *rest = line.decode().split()
-        if command == "trust":
+        if command == "dial":
+            server.dial(rest[0])
+        elif command == "use":
+            server.use(rest[0])
+        elif command == "trust":
             await server.trust()
         elif command == "roles":
             server.say_roles()

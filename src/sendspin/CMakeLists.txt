@@ -3,9 +3,11 @@
 # is knobly's. It reaches the engine only through ear_core's interfaces. The library never touches a realtime thread
 # or PipeWire's main loop: its own worker and notifier threads call it, and the audio crosses through the feed.
 add_library(ear_sendspin STATIC
+	advertiser.cpp
 	connection_watch.cpp
 	feed.cpp
 	key_store.cpp
+	port_claims.cpp
 	sendspin_code.cpp
 	sendspin_type.cpp
 	settings.cpp
@@ -15,14 +17,17 @@ target_sources(ear_sendspin PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/sendspin/sendspin_type.hpp)
 set_target_properties(ear_sendspin PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_sendspin PUBLIC ear_core ear_folder PRIVATE sendspin)
+target_include_directories(ear_sendspin SYSTEM PRIVATE "${mdns_SOURCE_DIR}")   # one header, advertiser.cpp's alone
 
 if(BUILD_TESTS)
 	add_executable(ear_sendspin_tests
+		tests/advertiser_test.cpp
 		tests/clock_test.cpp
 		tests/code_test.cpp
 		tests/feed_test.cpp
 		tests/keys_test.cpp
 		tests/pcm_test.cpp
+		tests/port_claims_test.cpp
 		tests/settings_test.cpp
 		tests/watch_test.cpp)
 	# Its private headers by path; the engine and the test card for the clock's tests, which share the engine tests'

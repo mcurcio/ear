@@ -8,6 +8,7 @@ namespace ear::sendspin {
 namespace {
 
 constexpr std::string_view serverKey = "server";
+constexpr std::string_view portKey = "port";
 constexpr std::string_view nameKey = "name";
 constexpr std::size_t maxHostBytes = 253;
 constexpr std::size_t maxNameBytes = 64;
@@ -90,13 +91,21 @@ std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node,
 		return std::unexpected(R"(settings: must be an object with optional "server", "port" and "name")");
 	}
 	for (const auto& [key, value] : settings.items()) {
-		if (key != serverKey && key != nameKey) return std::unexpected("unknown key " + key);
+		if (key != serverKey && key != portKey && key != nameKey) return std::unexpected("unknown key " + key);
 	}
 
-	const auto server = settings.find(serverKey);
-	if (server == settings.end()) return std::unexpected("server: missing");
-	std::optional<ServerUrl> url = server->is_string() ? ServerUrl::parse(server->get_ref<const std::string&>()) : std::nullopt;
-	if (!url) return std::unexpected("server: must be ws://<host>[:<port>]/<path>");
+	std::optional<ServerUrl> url;
+	if (const auto server = settings.find(serverKey); server != settings.end()) {
+		url = server->is_string() ? ServerUrl::parse(server->get_ref<const std::string&>()) : std::nullopt;
+		if (!url) return std::unexpected("server: must be ws://<host>[:<port>]/<path>");
+	}
+
+	std::uint16_t port = defaultListenPort;
+	if (const auto given = settings.find(portKey); given != settings.end()) {
+		if (url) return std::unexpected(R"(port: only without "server")");
+		if (!given->is_number_integer() || *given < 1 || *given > 65535) return std::unexpected("port: must be a whole number, 1-65535");
+		port = given->get<std::uint16_t>();
+	}
 
 	std::string name = node;
 	if (const auto given = settings.find(nameKey); given != settings.end()) {
@@ -105,7 +114,7 @@ std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node,
 		}
 		name = given->get<std::string>();
 	}
-	return SendspinSettings{.server = std::move(url), .port = defaultListenPort, .name = std::move(name)};
+	return SendspinSettings{.server = std::move(url), .port = port, .name = std::move(name)};
 }
 
 } // namespace ear::sendspin

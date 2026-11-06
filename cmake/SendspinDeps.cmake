@@ -1,5 +1,6 @@
-# What the sendspin node fetches (docs/design/sendspin.md section 13): the protocol library, sendspin-cpp, and the
-# four dependencies it would fetch itself at moving tags, each kept here at a full commit. kept_fetchcontent declares
+# What the sendspin node fetches (docs/design/sendspin.md section 13): the protocol library, sendspin-cpp, with one
+# carried patch; the four dependencies it would fetch itself at moving tags, each kept here at a full commit; and the
+# one header ear's mDNS uses. kept_fetchcontent declares
 # each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a name
 # changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps across
 # "make clean", as Boost's is; only what ear_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps their
@@ -11,7 +12,7 @@
 set(USE_TLS OFF CACHE BOOL "" FORCE)
 set(USE_ZLIB OFF CACHE BOOL "" FORCE)
 
-# Roles: the player now, the source in a later slice. Opus is off because libsndfile pulls in libopus.so and
+# Roles: the player and the source only. Opus is off because libsndfile pulls in libopus.so and
 # micro-opus's static C symbols would interpose on it (section 5(a2)).
 set(SENDSPIN_ENABLE_CONTROLLER OFF CACHE BOOL "" FORCE)
 set(SENDSPIN_ENABLE_METADATA OFF CACHE BOOL "" FORCE)
@@ -44,12 +45,41 @@ sendspin_dep(micro_flac https://github.com/esphome-libs/micro-flac.git
 sendspin_dep(noise_c https://github.com/esphome-libs/noise-c.git
 	a1e08809a1b8f65cd91765ba7d68a6d00648ad61    # v0.1.13, MIT
 	SOURCE_SUBDIR no-such-directory)
-sendspin_dep(sendspin https://github.com/Sendspin/sendspin-cpp.git
-	7be2278a252dd8c71da55732e93fe28871a9021d)   # master: accept_inbound_connections came after v0.9.5, Apache-2.0
+
+# The carried patch refuses an upgrade carrying Origin (section 11). Its SHA-256 is in the pin, so changing it fetches the
+# tree again, and a failed apply stops configure. Rebase it at each bump of this commit.
+set(sendspin_repository https://github.com/Sendspin/sendspin-cpp.git)
+set(sendspin_commit 7be2278a252dd8c71da55732e93fe28871a9021d)   # master: accept_inbound_connections came after v0.9.5, Apache-2.0
+set(sendspin_patch "${CMAKE_CURRENT_LIST_DIR}/sendspin-origin.patch")
+file(SHA256 "${sendspin_patch}" sendspin_patch_sha256)
+kept_fetchcontent(sendspin "${sendspin_repository}\n${sendspin_commit}\n${sendspin_patch_sha256}"
+	GIT_REPOSITORY ${sendspin_repository}
+	GIT_TAG ${sendspin_commit}
+	PATCH_COMMAND git apply "${sendspin_patch}"
+	EXCLUDE_FROM_ALL
+	SYSTEM
+)
+# So no listening node exists without the refusal, whichever tree an explicit FETCHCONTENT_SOURCE_DIR_SENDSPIN names.
+file(STRINGS "${sendspin_SOURCE_DIR}/src/host/ws_server.cpp" sendspin_refusal REGEX "ear: sendspin-origin.patch")
+if(NOT sendspin_refusal)
+	message(FATAL_ERROR "sendspin: ${sendspin_SOURCE_DIR} lacks cmake/sendspin-origin.patch")
+endif()
+
+# ear's mDNS: one header, so nothing of the project is added (its example would be built). Public domain.
+set(mdns_url https://github.com/mjansson/mdns/archive/refs/tags/1.4.3.tar.gz)
+set(mdns_sha256 be1fd8e35599cb7de179decbd0633c121d11a2dcb9cc193ff5c590bd0d480483)
+kept_fetchcontent(mdns "${mdns_url}\n${mdns_sha256}"
+	URL ${mdns_url}
+	URL_HASH SHA256=${mdns_sha256}
+	DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+	EXCLUDE_FROM_ALL
+	SYSTEM
+	SOURCE_SUBDIR no-such-directory
+)
 
 # Each licence, beside the binary for the run image (docker/Dockerfile) and any other copy: <name>-LICENSE.
 foreach(entry IN ITEMS "arduinojson LICENSE.txt" "ixwebsocket LICENSE.txt" "micro_flac LICENSE"
-		"noise_c LICENSE" "sendspin LICENSE")
+		"noise_c LICENSE" "sendspin LICENSE" "mdns LICENSE")
 	separate_arguments(entry)
 	list(GET entry 0 name)
 	list(GET entry 1 file)

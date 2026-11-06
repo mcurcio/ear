@@ -1,6 +1,6 @@
 // The library's client behind two threads (docs/design/sendspin.md sections 6, 7 and 10). The worker is what the
-// library calls its main loop: start, loop, stop and destruction, every listener callback but on_audio_write, and the
-// connection watch. It waits in poll() on its stop signal, 10 ms at most: the library has no wake hook for its inbox
+// library calls its main loop: start, loop, stop and destruction, every listener callback but on_audio_write, the
+// connection watch, and a listening node's mDNS. It waits in poll() on its stop signal, 10 ms at most: the library has no wake hook for its inbox
 // and no event for a lost connection or a failed dial (section 5), so this timer stays inside this adapter.
 #include "worker.hpp"
 
@@ -23,6 +23,7 @@
 #include <sys/eventfd.h>
 #include <unistd.h>
 
+#include "advertiser.hpp"
 #include "connection_watch.hpp"
 #include "key_store.hpp"
 #include "notes.hpp"
@@ -171,7 +172,7 @@ public:
 		return client_ != nullptr ? client_->get_client_time(serverUs) : 0;
 	}
 
-	// SendspinNetworkProvider. A dialling node has nothing to wait for: the library looks the host up when it dials.
+	// SendspinNetworkProvider. Nothing to wait for: the library looks a host up when it dials, and a listener binds now.
 	bool is_network_ready() override { return true; }
 
 	// PlayerRoleListener. The library's sync thread; up to 20 ms. A partial write is whole frames.
@@ -237,7 +238,8 @@ private:
 				if (client->start()) {
 					events_.say(notes::id(client->client_id()));
 					notifier_ = std::thread([this] { notify(); });
-					loop(*client);
+					const std::unique_ptr<Advertiser> advertiser = settings_.server ? nullptr : startListening(client->client_id());
+					loop(*client, advertiser.get());
 				} else {
 					events_.lost("the Sendspin client did not start");
 				}
@@ -256,7 +258,9 @@ private:
 		::sendspin::SendspinClientConfig config;
 		config.name = settings_.name;
 		config.product_name = "ear";
-		config.accept_inbound_connections = false;   // it dials: nothing else may reach it
+		// Per node: a dialling node must not be reachable by anything else (section 2).
+		config.accept_inbound_connections = !settings_.server.has_value();
+		config.server_port = settings_.port;
 		// His Permission answer: a code on a status line, typed into Music Assistant.
 		config.pairing_code_out_channels = {::sendspin::SendspinPairingCodeChannel::DISPLAY};
 		config.pairing_code_formats = {::sendspin::SendspinPairingCodeFormat::DIGITS};
@@ -295,8 +299,21 @@ private:
 		return client;
 	}
 
-	/// Until stop: the library's callbacks, then the watch's reading of what it says.
-	void loop(::sendspin::SendspinClient& client) {
+	/// The library is listening by now. Its advertiser, or nothing with `advertise-failed`: the node still listens, and an
+	/// operator can give the server its URL (section 10).
+	std::unique_ptr<Advertiser> startListening(std::string_view clientId) {
+		std::string instance = advertisedInstance(node_, clientId);
+		events_.say(notes::listening(settings_.port, instance));
+		auto advertiser = Advertiser::open(std::move(instance), settings_.name, settings_.port);
+		if (!advertiser) {
+			events_.say(notes::advertiseFailed(advertiser.error()));
+			return nullptr;
+		}
+		return std::move(*advertiser);
+	}
+
+	/// Until stop: the library's callbacks, then the watch's reading of what it says, then any question on the network.
+	void loop(::sendspin::SendspinClient& client, Advertiser* advertiser) {
 		ConnectionWatch watch(settings_.server.has_value());
 		bool saidDialling = false;
 		pollfd stopping{stop_, POLLIN, 0};
@@ -315,6 +332,7 @@ private:
 				if (!std::exchange(saidDialling, true)) events_.say(notes::dialling(settings_.server->text()));
 				client.connect_to(settings_.server->text());
 			}
+			if (advertiser != nullptr) advertiser->answer();
 		}
 	}
 
