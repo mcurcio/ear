@@ -51,8 +51,8 @@ scripts/dev.sh bash               # a shell in the image
   and configure copies `src/pipewire/engine.conf` beside it to `out/engine.conf`.
 - The `sendspin` node's fetched dependencies are in `cmake/SendspinDeps.cmake`, each at a full
   commit or by SHA-256: the protocol library sendspin-cpp (with one carried patch,
-  `cmake/sendspin-origin.patch`; a failed apply, or a tree without it, stops configure), ArduinoJson, IXWebSocket,
-  micro-flac and noise-c, which it needs, and mjansson/mdns (one header). Each is kept in
+  `cmake/sendspin-origin.patch`; a failed apply, or a tree without it, stops configure), ArduinoJson, IXWebSocket
+  (likewise, `cmake/ixwebsocket-limits.patch`), micro-flac and noise-c, which it needs, and mjansson/mdns (one header). Each is kept in
   `.cache/deps/` as Boost's is, and `ear_sendspin` is the only package that sees them. Configure
   copies their licences to `out/licenses/`. Configure with `BUILD_TESTS=ON` stops naming
   `EAR_SENDSPIN_SERVER_PYTHON` when the image's `/opt/sendspin-server/bin/python` (the real
@@ -274,24 +274,28 @@ route noise:MONO desk:playback_1;
   user, query or fragment. `port` (1 to 65535, default 8928) only without `server`. `name` (1 to 64
   bytes of UTF-8, no control characters; default the node's name) is what Music Assistant shows.
   Outputs `from_server_FL`, `from_server_FR`; inputs `to_server_FL`, `to_server_FR`. The server
-  sends FLAC 24, FLAC 16 or PCM 16 stereo, resampled by it to the graph frequency; the node sends
+  sends FLAC 24 stereo, resampled by it to the graph frequency; the node sends
   PCM 24 stereo when the server asks. It follows the graph's clock and never drives it. It is
   `running` with no server, its outputs silent (the graph keeps running whatever the server does):
   the connection is told in `says` lines, not node states. Pairing code required: until the operator
   types the code it prints into Music Assistant it gets no roles and no audio. Each node's identity
   and pairings are `sendspin-<node>.key` in the graph file folder, mode 0600 (a wider one is narrowed
-  at each start; renaming a node makes a new identity; removing one leaves the file). A key file it
+  at boot and at each start, whatever its node; renaming a node makes a new identity; removing one leaves the file). A key file it
   cannot trust fails the node, and it mints no new identity over it. A listening port another program
   or another `sendspin` node holds is `failed start-failed: cannot listen on port <p>: <reason>`. A
   node whose insides failed starts again when a setting changes (`name` can be changed and changed
   back), or when ear restarts; an update with the same settings changes nothing. An upgrade carrying
-  an `Origin` header is closed before any Sendspin message. Its notes:
+  an `Origin` header is closed before any Sendspin message, and a frame or message over 1 MiB before
+  it costs anything. A name added back waits for its old node to go. mDNS answers only queries from
+  this link, once a datagram, by multicast once a second. Two silent sockets can still lock servers
+  out of a listening node (`docs/design/sendspin.md` section 11, item 6). Notes pass 32 at once and
+  then one a second. Its notes:
 
   ```
   node <n> says id <client id>
   node <n> says dialling <url>
   node <n> says listening <port> as ear-<first 50 bytes of node>-<first 8 of client id>
-  node <n> says connected <server name> paired|unpaired
+  node <n> says connected "<server name>" paired|unpaired
   node <n> says disconnected
   node <n> says pairing-code <123-456>
   node <n> says pairing-code-cleared
@@ -304,6 +308,7 @@ route noise:MONO desk:playback_1;
   node <n> says sending-stopped
   node <n> says key-write-failed <detail>
   node <n> says advertise-failed <detail>
+  node <n> says notes-dropped <n>
   ```
 
 `ear.json` and its parser are gone; there is no compatibility with it.
@@ -454,7 +459,7 @@ out of test names: CMake splits a name at it.
 | `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start); `card`'s settings, ports and pass-through; `rtp`'s settings (each refusal's exact detail), ports, the request it makes and pass-through; every built-in type's setting kinds |
 | `ear_control_tests` | The JSON-RPC envelope (the spec's examples), commands, events, the graph file's types and encoders, status lines, gateway and sessions, all against `test/protocol` (`graph-file.json` included) |
 | `ear_config_tests` | The graph file model (the record's example, each of ear's codes at its place, `@include`, missing and unreadable files, knobly's nesting limit), places in UTF-16 columns, edits at the source (a value changed where it is defined, `shared-definition`, removal with its routes, quoting); the keeper's sequencer stepped by hand on one thread over a real folder (boot offers, accepted and refused edits, both hand-edit collisions, a typo, `graphFile.set`, its own write's watch event, batches, shared writes, write failures, pending restart, stop); the keeper's thread and the whole keeper with inotify |
-| `ear_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe, the mDNS instance's name; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
+| `ear_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
 | `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock and each cycle's `GraphCycle`, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card; RTP receivers fed by a test sender on 127.0.0.1: following the dummy driver, channels by sine fit, L16 at 44100 resampled, a sender restarting with a new SSRC, a lost receiver, a receiver made again at once for the same names |
 | `ear_server_tests` | Port 7777 on real sockets with a fake main loop and gateway: files, Host and Origin, round trips, the 1008 bound, a client that resets, stop with 1001, levels |
 | `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on an `ear.conf`: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); a recordings folder it cannot make exits 1; the graph file (the record's example booted, an editor edit announced, applied, answered and written back, a hand edit winning, a hand typo blocking edits until Save fixes it, `ear.conf` as a symlink out and an `@include` out refused, boots with a typo, a refused route or no file running nothing, the fallback flags, overlapping folders exiting 1); an `rtp` node's tone recorded channel for channel, and its silence with no sender; a `sendspin` node against the real server: pairing by a code, a ramp frame for frame in the WAV, no audio for a server that trusts without pairing, noise to the server, identity across restarts, 20 wrong rounds and their release, a corrupt key file, no server at all, peers that never answer at a restart or stop, a slow upgrade, listening, mDNS discovery and removal, a server lost and back, a held or shared port, an upgrade with `Origin`, one dialling and one listening node together, no socket on a dialling node; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |

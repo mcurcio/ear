@@ -35,8 +35,9 @@ Gate answers, 2026-11-05 (his current choices; later evidence may reopen them):
 - Three framework additions: the **graph cycle**, a parameter of `AudioCode::process`; **insides events** (a note, or
   lost); `NodeInsides::close` (insides with threads close off the main loop). The **feed** (the handoff's reverse) is
   private to the package, on a ring shared with the handoff.
-- The player role asks for FLAC 24, FLAC 16 and PCM 16, stereo, at the graph frequency only; the server
-  resamples (R5, spec "player@v1"). The source role sends PCM 24 stereo at the graph frequency, 20 ms chunks.
+- The player role asks for FLAC 24 stereo alone, at the graph frequency only; the server resamples (R5, spec "player@v1"), and
+  must be able to send FLAC 24 at 44100 or 48000 Hz. One depth, so a server cannot change it under the sync thread (erratum 23). The
+  source role sends PCM 24 stereo at the graph frequency, 20 ms chunks.
 - Roles: player and source only. Opus off (section 5(a2)). Volume and mute commands off (deferred). Output delay
   stays adjustable in Music Assistant; the library keeps it in the key file.
 - mDNS: `mjansson/mdns` 1.4.3, one header, on the worker thread; no daemon. CI runs the real `aiosendspin` server (section 13).
@@ -78,7 +79,7 @@ Design it twice:
 | | A: the library behind the block (current choice) | B: ear speaks the protocol itself (Beast, noise-c, FLAC decoder) |
 |---|---|---|
 | Interop | The official client, proven against the server in sections 5(c)-(d) | Every pairing round, re-handshake, Sentinel fallback and time filter written and kept up by us |
-| Cost | Five fetched dependencies; a master-branch pin; one carried patch (`Origin`); no event for a lost connection or failed dial, so a 10 ms timer and a watch over `is_connected()` on the worker | About 5 000 lines of security-critical code and a moving spec; no timer |
+| Cost | Five fetched dependencies; a master-branch pin; two carried patches (`Origin`; the transport's limits); no event for a lost connection or failed dial, so a 10 ms timer and a watch over `is_connected()` on the worker | About 5 000 lines of security-critical code and a moving spec; no timer |
 
 A third outside node (a `pw_stream`) costs a second PipeWire node and links carrying what a function call can, and its
 `ready` would mean nothing: the node must be `running` with no server (R3). The block with audio code is `file`'s shape;
@@ -171,20 +172,23 @@ interpolated frame per chunk beyond 100 µs, or hard-syncs beyond 5 ms.
 On each cycle the block's code computes, without a system call that can block:
 
 ```
-finish = cycle.startNs (position->clock.nsec, CLOCK_MONOTONIC) + (raw_now - mono_now) + got * 1e9 / rate
+finish = cycle.startNs (position->clock.nsec, CLOCK_MONOTONIC) + (raw_now - mono_now) + (got + cycle.delayFrames) * 1e9 / rate
 ```
 
 Both `now`s are vDSO reads, taken together, so a late wake cancels out. `(frames, finish)` goes through a seqlock
-mailbox and the bell to the notifier.
+mailbox and the bell to the notifier. `delayFrames` (`position->clock.delay`) is what the driver still holds when the cycle
+starts: on a card, the frames in its buffer, the wake's threshold of one block among them (`alsa-pcm.c`: `*delay =
+buffer_frames - avail`, woken at `threshold + headroom`), so what this cycle writes is heard after them. So no block is added
+beside it, and on the dummy driver, which holds nothing, this is the block's port.
 
 - **A skipped cycle** (`position` advanced by more than last cycle's frames, by at most the feed's capacity) discards that
   many frames and counts them played (section 5(f2)). A larger or backward jump is a change of driver: not skipped, the
   library re-aligns. A card sets these fields its own way (`alsa-pcm.c`), so S1-9 runs with one driving and one lost.
 - **Feed capacity:** the next power of two at or above `max(rate * 40 ms, 2 * maxBlock)`. On `on_stream_end` the worker
   calls `Feed::clear()` (spec: "MUST stop output and clear its buffers"): gone at the next cycle, not counted played, since the
-  library zeroed its count. `stream/clear` has no callback; the feed plays out, as the spec allows a backend, under the 150 ms lead reported.
-- **What this bound covers:** the block's port (section 11): ear plays late against other Sendspin devices by about one
-  block plus the card's buffer.
+  library zeroed its count. `stream/clear` has no callback; the feed plays out, as the spec allows a backend, under the lead reported: `required_lead_time_ms` is at least the feed and a block (`requiredLeadMs`), and the library reports its own 150 ms if that is larger.
+- **What this bound covers:** the driving card's buffer, as far as that card reports it (section 11). A second card, a resampler
+  and anything past the port are not in it.
 - Capture time for the source role: the code publishes `(framesWritten, rawNs)` each cycle; the consumer
   dates its first frame from that, so a late handoff wake does not move the stamp.
 
@@ -200,12 +204,16 @@ mailbox and the bell to the notifier.
 
 - Through `ConfinedFolder`, staged and swapped as `ear.conf` is, at most 64 KiB. Each `save_blob` writes the whole file on the
   worker. The keeper's watch ignores other names [V `namesFile`]. Holds private key and PSKs: never logged or sent to the editor.
-- `NodeKeyStore::open` runs first on the worker. Mode 0600 is its invariant on every open: a wider mode is narrowed, not
-  refused, because the `fsGroup` that `ear-on-talos` prescribes widens files to 0660 on every mount. Missing: writes an empty
-  one, because the library only warns when it cannot save a new key, and would run a fresh identity each boot. Unreadable, a
-  symlink, malformed, or a write refused: `lost`, the file left alone. No new identity is minted over trusted state.
+- Mode 0600 is an invariant of every key file in the folder, not only a live node's: a wider mode is narrowed, not refused,
+  because the `fsGroup` that `ear-on-talos` prescribes widens files to 0660 on every mount. Boot (`narrowKeyFiles`, when the type is
+  made) narrows each `sendspin-*.key` and each staging file a crash left, whatever its node and its text; `NodeKeyStore::open`, first
+  on the worker, narrows before it judges the text; each save narrows before it stages, since the stage takes the mode it replaces.
+  What boot cannot narrow goes to standard error, and the node's own open says so if it is that node's.
+- `open` on a missing file writes an empty one, because the library only warns when it cannot save a new key, and would run a
+  fresh identity each boot. Unreadable, a symlink, malformed, or a write refused: `lost`, the file's text left alone. No new identity
+  is minted over trusted state.
 - The round limit lives in memory (`pairing_rounds_since_verified_kc_`) [V], so the client's end releases a hold: section 10's
-  action is the spec's "deliberate operator action".
+  action is taken as the spec's "deliberate operator action", which is a departure when ear restarted for another reason (section 11).
 
 ## 9. Status lines
 
@@ -215,7 +223,7 @@ One new frame in `status_log.cpp`, `node <name> says <text>`; a type's texts are
 node <n> says id <client id>  S2: first, once
 node <n> says dialling <url>  S1: once, until connected
 node <n> says listening <port> as <instance>  S3
-node <n> says connected <server name> paired|unpaired  S1 (server name: control bytes become ?, at most 64)
+node <n> says connected "<server name>" paired|unpaired  S1 (server name: quoted; control characters (C0, DEL, C1, U+2028 and U+2029), bytes that are no UTF-8 and quotes become ?; at most 64 bytes)
 node <n> says disconnected  S1
 node <n> says pairing-code <123-456>  S2: shown until cleared
 node <n> says pairing-code-cleared  S2
@@ -228,6 +236,7 @@ node <n> says sending <rate> 2 24  S2
 node <n> says sending-stopped  S2
 node <n> says key-write-failed <detail>  S2
 node <n> says advertise-failed <detail>  S3
+node <n> says notes-dropped <n>  section 11: how many the rate held back, said before the next that passes
 ```
 
 ## 10. Failure behaviour
@@ -244,16 +253,16 @@ node <n> says advertise-failed <detail>  S3
 | Key write fails later | Pairing holds this run only (library's contract) | `key-write-failed <detail>` | Fix the folder, pair again |
 | Stopping or restarting | Goodbye and close on the worker; a dial in flight cancelled within a 10 ms poll; up to 3 s for a half-open inbound socket | `stopped` when done | The next start and exit wait. The guide's outer bound, 30 s, is Kubernetes' default grace, past which the last `ear.conf` write is lost |
 
-A format not listed breaks the spec ("MUST be one the client listed"): `says stream` names it, the sink stays full, nothing plays, and the library closes the connection when its ring pins.
+A format not listed breaks the spec ("MUST be one the client listed"): `says stream` names it, the sink stays full, nothing plays, and the library closes the connection when its ring pins. Nothing listed can change the depth: a server asking for another one is refused by its own check of what the client listed, and the stream goes on as it was.
 
 ## 11. What it gives up and defers
 
-Costs: five fetched dependencies at a master pin; one carried patch, rebased at each bump; a 10 ms timer and the watch's
+Costs: five fetched dependencies at a master pin; two carried patches, rebased at each bump; a 10 ms timer and the watch's
 5 s and 31 s (against "Coordinate by events, never timers": no event exists, so they stay inside the adapter and never act on a
 live attempt), so a server back after the first redial is heard up to 31 s later; one more thread per node; `git` and a 235 MB
 Python server in the dev image; a pod on an overlay network cannot advertise; the server decides when the source streams;
 the library's parsers face unauthenticated network peers inside the audio process, unfuzzed, so a crash silences every node
-(separate programs are deferred system-wide).
+(separate programs are deferred system-wide). A listening node has no address setting: 8928 and the mDNS socket are on every interface, which is more than `--control-address` lets 7777 be, so on an untrusted network filter them or dial (`ear-on-talos`).
 
 Where it departs from the spec, or the spec leaves a hole:
 
@@ -263,21 +272,38 @@ Where it departs from the spec, or the spec leaves a hole:
    One branch in the Open event closes the socket before any Sendspin message; the peer sees 101, then the close (no earlier hook).
 2. **Peers that are not web pages can still do all that:** the spec's rank rule and its round count ("not partitioned by
    `server_id` or source address"). Any network peer can hold pairing back until the operator acts.
-3. **Sync is measured at the block's port, not "at the audio output".** The spec has the client compensate for its own
-   buffers; ear leaves them to the operator's output delay in Music Assistant until PipeWire's port latency is read (deferred).
+3. **Sync is compensated at the driving card's buffer, and measured nowhere past the block's port.** The spec has the client
+   compensate for its own buffers: `delayFrames` does, for the card that drives the graph. Left out, and so on the operator's
+   output delay until PipeWire's port latency is read (deferred): a second card, a resampler's delay, a card that does not report
+   its buffer, and the DAC. The tests measure at the port, on the dummy driver; `delayFrames` on a real card has never run, as the
+   test card's null PCM reports 0. The check is on the hardware (`ear-on-talos`, section 5, item 6).
 4. **The key file outlives its node.** `node.remove` leaves it; adding the name back inherits its pairings. To wipe an
    identity, delete the file and restart the node. A mount that widens the mode leaves it wider until ear boots.
+5. **The spec's hold after 20 rounds does not survive a restart.** The spec says the client MUST hold attempts back until a deliberate
+   operator action; the count is the library's, in memory, so any restart resets it, including a crash a peer caused. That gives
+   another 20 guesses at a 6-digit code, 2e-5 a restart. Holding it across restarts needs the library to persist it.
+6. **Two silent sockets lock every server out of a listening node. OPEN, the owner's call.** The library holds inbound connections
+   in a two-slot nursery until they prove an identity, for 30 s each, and rejects a newcomer with `another_server` while it is full
+   (`connection_manager.cpp`). Renewing two bare sockets every 28 s keeps the node unreachable for as long as they do (probed:
+   7 rejections, no connection in 70 s). A dialling node has no listener and is not exposed. Today's answer is this cost, and dialling
+   on an untrusted network (`sendspin`, `ear-on-talos`); the alternatives are a carried or upstream change: a far shorter stall deadline
+   before `client/init` is answered, a limit per address, or evicting the oldest silent occupant.
+7. **A peer's connects still cost something.** The transport's lines are held to one per 10 s (under 1 MB of log a day), a node's
+   notes to 32 at once and then one a second (`NoteGate`, about 5 MB a day under a sustained attack), and a pairing code can be held
+   back with them, its `notes-dropped` saying so. A connection holds at most about 1 MiB until the library reaps it at 30 s; the pod's
+   memory limit is the outer bound (`ear-on-talos`).
 
-For upstream, not filed yet: the `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers.
+For upstream, not filed yet: the `Origin` refusal; IXWebSocket's unbounded frames and fragments (`cmake/ixwebsocket-limits.patch`; it reaches the peer before any authentication, so it should go to its maintainers privately first); connection-lost and dial-failed events, which would delete the watch's timers; `on_audio_write` carrying the chunk's format, so more than one depth could be listed; a persisted round count; mjansson/mdns's `mdns_socket_listen` reading a question's type and class past the buffer, and a short datagram's header from the last one.
 
-A peer can drive pairing notes as fast as it runs attempts (unbounded
-on the main loop's queue and in the log). Anyone who reaches port 7777 can still edit the graph: pairing guards Music Assistant's side.
+Anyone who reaches port 7777 can still edit the graph: pairing guards Music Assistant's side.
+
+Branches no test drives, on purpose (a seam for each would cost more than it proves): a stream format not listed, and `on_audio_write` waiting on it; a `stream/start` the library calls incomplete; `client->start()` false; an exception on the worker; `advertise-failed` (a socket that will not open); a pairing abort other than a mismatch; `narrowKeyFiles` printing what it could not narrow; `fileNames` when the folder cannot be read. The last two only print or return a detail; the others go through paths other tests hold (`lost`, a note).
 
 Deferred: volume and mute; line sense (`signal`), so no autostart; PipeWire's port latency in the clock; the editor showing notes
 and the code; a restart verb on the control port; IPv6; `wss://`; several servers at once; choosing the advertised interface
 (today: the one the kernel routes 224.0.0.251 through); RFC 6762 probing; more than stereo. Not planned: Opus; the other roles.
 
-NOT RUN: real Music Assistant (the `sendspin` skill names the check, pairing in its interface and then playing; the PR says NOT RUN until someone has); real hardware; amd64 (CI will); realtime scheduling; a pod with a CPU limit (unprioritised library threads refill a 43 ms feed); a one-shot mDNS querier (erratum 14).
+NOT RUN: real Music Assistant (the `sendspin` skill names the check, pairing in its interface and then playing; the PR says NOT RUN until someone has); real hardware, and so `delayFrames` from a card that reports one; amd64 (CI will); realtime scheduling; a pod with a CPU limit (unprioritised library threads refill a 43 ms feed); a real `fsGroup` mount (the tests widen with chmod); an off-link query from a real other subnet (`onLink` is tested alone).
 
 ## 12. Reconcile with existing code
 
@@ -299,7 +325,7 @@ Frozen headers change through this page, as their first comment asks.
 | Dependency | Commit | Licence | Note |
 |---|---|---|---|
 | ArduinoJson v7.4.1 | `32520135092970120a5ac165cf45f48e658c421d` | MIT | |
-| IXWebSocket v12.0.1 | `64fae7676bd8fe31f7cb4bcde7a6841892dad65e` | BSD-3 | |
+| IXWebSocket v12.0.1 | `64fae7676bd8fe31f7cb4bcde7a6841892dad65e` | BSD-3 | `PATCH_COMMAND git apply cmake/ixwebsocket-limits.patch`, as sendspin-cpp's below (erratum 27) |
 | micro-flac v0.3.0 | `f9c27d4d0166021db977d7fc37d205b21d81e9f2` | Apache-2.0 | `GIT_SUBMODULES lib/micro-ogg-demuxer`, hence `git` |
 | noise-c v0.1.13 | `a1e08809a1b8f65cd91765ba7d68a6d00648ad61` | MIT | `SOURCE_SUBDIR no-such-directory`: the library builds it |
 | sendspin-cpp | `7be2278a252dd8c71da55732e93fe28871a9021d` | Apache-2.0 | `SENDSPIN_ENABLE_{CONTROLLER,METADATA,ARTWORK,VISUALIZER,COLOR,OPUS}=OFF`. S3: `PATCH_COMMAND git apply cmake/sendspin-origin.patch`; the pin names the patch's SHA-256; a failed apply stops configure |
@@ -553,13 +579,25 @@ Errata, from building S3 (2026-11-06):
 15. **Additions beside section 14's lists:** `advertisedInstance` (pure) in `advertiser.hpp`; `probeListenPort` in `port_claims.hpp`; `PortClaims::claim`'s error text, `held by node <n>`. A record's question about a TXT is answered with the SRV and the TXT together. A failure to send the first announcement is `advertise-failed`, like a socket that will not open. The address is read once, at the node's start, so a host whose address changes advertises the old one until the node restarts.
 16. **`cmake/SendspinDeps.cmake` also stops configure when the tree lacks the patch.** Section 13 stops only on a failed apply, but `FETCHCONTENT_SOURCE_DIR_SENDSPIN` skips the apply, and "no listening node exists without the refusal". The check reads the patch's own comment in `ws_server.cpp`.
 17. **`.github/workflows/test.yml` is not in S3's files, so the deps cache does not list `.cache/deps/mdns-src`** (section 13 says it lists each tree). CI fetches that archive, about 30 KB, on each run. One line for whoever next edits that file. S1-13's "the five" licences are now six, with `mdns-LICENSE`.
-18. **After a `node.update` the goodbye is `shutdown`, and aiosendspin's server, having dialled by hand (`connect_to_client`), did not redial within 30 s** [V], though the spec has a server auto-reconnect on that reason. So S3-5's last sentence is tested by a server dialling again. A browsing server is back by itself: `service-removed`, then a new announcement, then its dial; a test holds that.
+18. **After a `node.update` the goodbye is `shutdown`, and aiosendspin's server, having dialled by hand (`connect_to_client`), did not redial within 30 s** [V], though the spec has a server auto-reconnect on that reason. So S3-5's last sentence is tested by a server dialling again. A browsing server is back by itself: `service-removed`, then a new announcement, then its dial; a test holds that it comes back, though not that the announcement did it, since its own browsing finds the node too (erratum 28 has the test for the announcement).
 19. **Five test names from S1 and S2 held a `;`, which `AGENTS.md` forbids** (CMake splits a name at it). Renamed; nothing else about them changed.
 
 Errata, from the docs step (2026-11-06):
 
 20. **Teardown's order differs from section 6: the worker stops and joins the notifier first, then calls `client.stop()` and destroys the client (`worker.cpp`, `finish`).** So nothing calls `notify_audio_played` while the client goes. Section 6 has the notifier joined after.
 21. **Erratum 17's line is added: `test.yml`'s deps cache now lists `.cache/deps/mdns-src`,** so section 13 holds. Not run until CI's first restore.
+
+Errata, from the final review's fixes (2026-11-06):
+
+22. **`GraphCycle` gains `delayFrames` (`position->clock.delay`, 0 if negative), beside section 14's two fields, and the finish time adds it (section 7).** The first review declined `clock.delay`, because the test card cannot measure it, and that stands: its null PCM reports 0. But the spec has the client compensate for its own buffers, so the term goes in, proved by a unit test, with a measurement past the block left to `ear-on-talos`. The review asked for a block on top; `alsa-pcm.c` wakes at a level of one block and counts it in the delay, and the graph's output is written in the same cycle, so a block more would double count. Read in PipeWire 1.4.2's source, not measured.
+23. **The player lists FLAC 24 alone, against section 2's first choice of three (none was his).** `on_stream_start` runs on the worker when `stream/start` is drained, while the sync thread still writes chunks of the old format, and `on_audio_write` carries no format, so a change of depth mid-stream read one depth as another: full-scale noise, then silence. With one depth listed the server refuses the change (a test holds it with `set_preferred_format`). So S1-10's format line is the only format, and FLAC 16 and PCM 16 need no real-server run. `required_lead_time_ms` is set too (section 7).
+24. **`ConfinedFolder` gains `fileNames()`; `NodeKeyStore::open` narrows before it judges, which reverses erratum 10's "a refused file keeps its mode too" and S2-8's reading of "unchanged": the text is unchanged, the mode narrowed.** A file refused for its text may still hold a private key. `makeSendspinNodeType` narrows at boot (section 8). The new mode reaches a save by narrowing first, not by a new parameter on `replaceIf`: the stage already takes the mode of what it replaces.
+25. **`NodeHost` starts a name added back only once the older node of that name has gone, as a restart does.** Teardown being asynchronous, the new insides otherwise met the old ones: a listening node failed with `held by node <itself>` and stayed failed, and old and new clients could share a key file. The new node's block comes at once, and it says `starting` while it waits. An update while it waits replaces what will start.
+26. **A server's name is quoted on `says connected`, and control characters include C1, U+2028 and U+2029, by one judge (`peer_text.hpp`) that `name` also answers to.** Notes pass through `NoteGate`, 32 at once and then one a second, with `notes-dropped <n>` before the next that passes. A loss is never held back.
+27. **A second carried patch, `cmake/ixwebsocket-limits.patch`.** A frame header claiming 2^40 bytes made IXWebSocket buffer whatever followed, before any Noise message, until the kernel killed ear. It refuses (1009) a frame or a fragmented message over 1 MiB, sendspin-cpp's own limit, or more than 1024 fragments, before they accumulate, and lets one transport log line through every 10 s. `sendspin_patched_dep` is the one way a dependency carries a patch; both stop configure on a tree without theirs.
+28. **The advertiser answers only queries from this link (`onLink`; QR, opcode and rcode zero; a whole header), each answer once per datagram, by multicast once a second, and by unicast at most 16 a second.** It looks at a datagram with `MSG_PEEK`, as `mdns_socket_listen` takes them all alike, and tells that function 8 bytes less than the buffer. Tests now hold the one-shot querier erratum 14 left out, and the announcement, with a listener started before ear. A question within the second of its last multicast goes unanswered, as the querier's own retries expect.
+29. **Private shapes moved, no frozen header but those above:** `EventFd` (`event_fd.hpp`) replaces raw descriptors, so `SendspinCode` takes `const EventFd&`; `SendspinWorker` loses `feedFrames`, since its `Feed&` knows; `nodeChannels` in `settings.hpp` is the one channel count; `ToServer` left `worker.cpp` for `to_server.hpp` behind a `SourceSink`, so a test can hold its stamps; `Feed::writerWaiting` is the tests' window on the wake. `sendspin_type.hpp`'s comment now says section 4's grammar.
+30. **The test server gains `--name <text>`, the commands `prefer-16` and `lead`, their events, and a last field on `source-ended`: the first chunk's arrival on its clock minus its stamp.** The `[sendspin][clock]` tests now need a tenth of the cycles after the first 3 s judged, not just one.
 
 Reviewed 2026-11-05; its findings were taken, but for these:
 
@@ -568,6 +606,6 @@ Reviewed 2026-11-05; its findings were taken, but for these:
 | The INFO log leaks the Pairing PSK (this page's own) | False; withdrawn, nothing to file | `record_store.cpp:175,205` print `psk_id`, sent in Noise message 1 |
 | A bind failure after the probe should be `failed` | No fact reaches ear, and it heals: the library retries every 5 s | `connection_manager.cpp:49,1210-1216` |
 | A dial in flight holds stop for 30 s, routinely | Cancelled within a 10 ms poll; S1-11 proves it | `IXWebSocketTransport.cpp:1199`, `IXSocketConnect.cpp:60`; spike 1 ms. Source read; black hole NOT RUN |
-| A restart verb on the control port; `clock.delay` in the cycle | Declined: a setting change or restarting ear is a real action; the test card cannot measure the delay | Sections 10, 11 |
+| A restart verb on the control port | Declined: a setting change or restarting ear is a real action | Sections 10, 11 |
 
 Run in the dev image: a probe with `SO_REUSEADDR` fails on a live listener and passes on `TIME_WAIT`, without it `TIME_WAIT` fails; a connect to a full backlog is in progress after 2 s.

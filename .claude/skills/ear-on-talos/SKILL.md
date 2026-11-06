@@ -222,7 +222,10 @@ machine:
    the graph about 2.1% fast, so the protocol's 1 ms bound is proven only on the dummy driver
    (`docs/design/sendspin.md` section 16, erratum 1). On the hardware: the card driving, Music
    Assistant playing, how far the node's `from_server_*` output sits from what the library's time
-   filter predicts, and no repeated corrections in ear's log. NOT RUN.
+   filter predicts, and no repeated corrections in ear's log. The node now puts what the card says it
+   holds (`position->clock.delay`) in the finish time, which no test card has reported, so also
+   measure past the block: a test tone on another Sendspin device and on the MOTU, recorded together,
+   within the protocol's bound once `output_delay` is 0. NOT RUN.
 
 ## 6. FPP's audio over RTP
 
@@ -283,13 +286,18 @@ Music Assistant's audio (`sendspin` skill). All **[check]**: not run in a pod ye
   section 6: the policy of section 4 must allow it), or give Music Assistant the URL by hand,
   `ws://<address>:<port>/sendspin`. `says advertise-failed <detail>` means no mDNS socket opened;
   no such line does not mean anybody heard it.
-- **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own.
+- **With `hostNetwork`:** 7777, 8928 and mDNS's 5353 (UDP, shared, `SO_REUSEPORT`) are the node's own, on
+  every one of its interfaces, since a listening node has no address setting: filter 8928 and 5353 to the
+  network Music Assistant is on. Two silent sockets on 8928 can keep every server out (`sendspin` skill), so
+  on a network you do not trust, dial instead of listening.
   The node advertises on one interface, the one the kernel routes 224.0.0.251 through, and the
   address of that interface, read once when the sendspin node starts, so on a machine with several
   networks check that route, and restart the sendspin node if the address changes. Music Assistant
   has to be on that same network segment to hear it: on an overlay itself it hears nothing, and
   needs the URL by hand. A rolling update's new pod would find these ports held by the old one, so
   use the `Recreate` strategy.
+- **Give the pod a memory limit.** One connection holds at most about 1 MiB before it proves anything, but the
+  library's parsers run in the process with every audio node; a limit keeps whatever else goes wrong in this pod.
 - **Pair once.** The node prints `says pairing-code <123-456>` when Music Assistant starts an attempt;
   the code reaches only standard output (`kubectl logs -n audio deploy/ear | grep says`), not the
   editor. Type it there. The pairing lives in the key file, so the graph file volume must persist

@@ -13,8 +13,8 @@ operate it, and what bites.
 - **With `server` it dials; without, it listens and advertises `_sendspin._tcp`.** Never both: the spec forbids a client
   dialling while it advertises, and a dialling node opens no listening socket.
 - **Pairing is required, for good.** Unpaired access is off, so a server that approves the node without pairing gets no
-  roles: `says connected <server> unpaired`, and no audio. Start pairing in Music Assistant, read `says pairing-code
-  <123-456>`, type it there. `says paired`, then `says connected <server> paired`, with no `disconnected` between. A wrong
+  roles: `says connected "<server>" unpaired`, and no audio. Start pairing in Music Assistant, read `says pairing-code
+  <123-456>`, type it there. `says paired`, then `says connected "<server>" paired`, with no `disconnected` between. A wrong
   code keeps the same code showing.
 - **20 wrong rounds hold pairing back** (`says pairing-failed pairing-code-mismatch`, `says pairing-held`), for this
   client's life: the count is in memory. Change a setting (`name`, and back) or restart ear to release it. Any network peer
@@ -23,7 +23,7 @@ operate it, and what bites.
   needs ear's log open.
 - **What Music Assistant does** (read in its `providers/sendspin/{provider,player}.py`, never run): `start_pin_pairing` for a
   client that `is_connected`, whichever side dialled, and a dynamic code when digits are offered. So a node must be connected
-  before Music Assistant can offer pairing: `says connected <server> unpaired` comes first.
+  before Music Assistant can offer pairing: `says connected "<server>" unpaired` comes first.
 - **The same settings change nothing.** `node.update` with what the node already has is no restart, for a failed node too.
   To retry, change a setting or restart ear.
 - **A server that dialled by hand may not come back after a restart of the node.** After a `node.update` the goodbye is
@@ -36,8 +36,8 @@ operate it, and what bites.
   `changedBy`) and the library's blobs in base64url: the private key, the pairing secrets, the output delay. At most 64 KiB, and
   written whole on each change, through `ConfinedFolder`, swapped in as `ear.conf` is. The keeper's watch ignores it. Never log
   it or send it to the editor.
-- A wider mode is narrowed, not refused, at each start, because the `fsGroup` that `ear-on-talos` prescribes widens it on every
-  mount.
+- A wider mode is narrowed, not refused, at each boot for every key file in the folder and its staging file, and at each start
+  and save, because the `fsGroup` that `ear-on-talos` prescribes widens it on every mount.
 - Renaming a node makes a new identity, and adding a removed name back inherits the old one (`node.remove` leaves the file). To
   wipe one, delete the file and restart the node: a file something else changed or removed fails the write
   (`key-write-failed`), so ear never puts it back.
@@ -63,6 +63,9 @@ operate it, and what bites.
   D-Bus. One socket per node, all sharing port 5353 with `SO_REUSEPORT`.
 - **Answers go by multicast**, whatever the question's unicast bit: the kernel hands a unicast datagram to one socket of a
   shared port, so it could reach a neighbour's. Only a querier on another port than 5353 gets a unicast answer.
+- **Limits, so it reflects nothing:** queries only (a response is ignored), from this link only, each answer once per datagram,
+  by multicast once a second and by unicast at most 16 a second. A querier that asks again within the second is answered next
+  time it asks.
 - The instance is `ear-<first 50 bytes of node>-<first 8 of client id>`, a DNS label's 63 at most, stable and unique with no
   probing. Music Assistant shows `name`, from the hello.
 - One interface, the one the kernel routes 224.0.0.251 through, and its address is read once at the node's start. A pod on an
@@ -83,8 +86,14 @@ operate it, and what bites.
   feed's capacity, so neither is a skip. **CI's test card cannot prove 1 ms:** it has no clock of its own and runs the graph about
   2.1% fast, past the library's ±0.5%, so its test holds the hard sync's bound (5 ms, asserted under 20) and the recovery.
   Only the dummy driver has shown 1 ms; the real card is a check in `ear-on-talos`.
-- **The output's sync stops at the block's port.** The card's buffer and about one block more are left to the output delay in
-  Music Assistant, which the library keeps in the key file.
+- **The output's sync reaches the driving card's buffer**, as far as the card reports it (`position->clock.delay`, in the finish
+  time). A second card, a resampler and anything past the port are left to the output delay in Music Assistant, which the library
+  keeps in the key file. It has never run on a card that reports one: the test card's null PCM says 0.
+- **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
+  worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
+- **A listening node on an untrusted network:** two silent sockets fill the library's two-slot nursery and lock every server out,
+  renewed every 28 s for as long as anyone likes (`docs/design/sendspin.md` section 11, item 6, the owner's call). Port 8928 and
+  mDNS's 5353 are on every interface, with no address setting. Dial there, or filter both. A dialling node has no listener.
 - `loop()` needs a timer, because the inbox has no wake hook, and nothing tells of a lost connection or a failed dial. So a 10 ms
   poll and the connection watch stay inside the worker; they never act on a live attempt.
 - **Opus is off.** libsndfile pulls in `libopus.so`, and micro-opus's static C symbols would interpose on it.
@@ -95,7 +104,7 @@ operate it, and what bites.
 
 Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the real `aiosendspin`, on the dummy driver.
 
-- PCM 16, FLAC 16 and FLAC 24 at the graph frequency arrive exact, and the server resamples other rates. The source role only
+- PCM 16, FLAC 16 and FLAC 24 at the graph frequency arrived exact (ear now lists FLAC 24 alone), and the server resamples other rates. The source role only
   activates once paired, and the server decides when it streams.
 - Two clients in one process run side by side, which is what lets each node be its own.
 - The library has no retry after a lost dial (hence the watch) and only logs a port it cannot take (hence the check in `start`).
@@ -106,6 +115,9 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
 ## The pin and the patch
 
 - sendspin-cpp is pinned at a master commit, not a tag: `accept_inbound_connections` came after v0.9.5.
+- `cmake/ixwebsocket-limits.patch` is carried: IXWebSocket buffers whatever a frame header claims, before any Sendspin message. It
+  refuses a frame or a fragmented message over 1 MiB (the library's own limit, reachable only after reassembly) and over 1024
+  fragments, and lets one transport log line through every 10 s. Rebase it the same way, in `.cache/deps/ixwebsocket-src`.
 - `cmake/sendspin-origin.patch` is carried: the spec says a client MUST reject an upgrade carrying `Origin`, and the library's
   host server accepts it. Without it a web page speaking Noise could declare `pairing`, knock an idle server off and burn the
   20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook.
@@ -156,4 +168,4 @@ Every test here runs against `aiosendspin`, not Music Assistant, and pairing was
 done by anyone:** a Music Assistant on the same network, with its Sendspin provider. A listening node appears by itself; start
 pairing in its interface, type the code ear prints, then play to the player and hear the audio out of a routed card. Then a
 dialling node the same way. Until someone has, a PR says NOT RUN. Also never run: real hardware's 1 ms bound
-(`ear-on-talos`), amd64 before CI, realtime scheduling, a pod with a CPU limit, a one-shot mDNS querier.
+(`ear-on-talos`), amd64 before CI, realtime scheduling, a pod with a CPU limit.

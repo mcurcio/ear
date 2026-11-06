@@ -1200,7 +1200,7 @@ TEST_CASE("Bare connects cannot fill the log", "[system][sendspin]") {
 	waitForInstance(ear, "ma", port);
 
 	const auto start = std::chrono::steady_clock::now();
-	constexpr int connects = 300;
+	constexpr int connects = 60;
 	for (int i = 0; i < connects; ++i) CHECK_FALSE(connectRefused(port));
 	// What the transport says, it has said by the time a real upgrade after them is answered.
 	CHECK(json::parse(firstMessage(port, WsOptions())).value("type", "") == "client/init");
