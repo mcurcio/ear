@@ -326,8 +326,10 @@ constexpr std::size_t mdnsHeaderBytes = 12;
 
 /// A query with `questions` questions about `_sendspin._tcp.local`: the first in full, the rest pointing at it, so one datagram
 /// of at most 2048 bytes holds over 300 of them. `flags` is the header's: 0x8000 says it is a response.
-std::string mdnsQuery(std::size_t questions, std::uint16_t flags = 0) {
+std::string mdnsQuery(std::size_t questions, std::uint16_t flags = 0, std::uint16_t id = 0) {
 	std::string packet(mdnsHeaderBytes, '\0');
+	packet[0] = static_cast<char>(id >> 8U);
+	packet[1] = static_cast<char>(id & 0xFFU);
 	packet[2] = static_cast<char>(flags >> 8U);
 	packet[3] = static_cast<char>(flags & 0xFFU);
 	packet[4] = static_cast<char>(questions >> 8U);
@@ -387,6 +389,24 @@ public:
 			if (got < static_cast<ssize_t>(mdnsHeaderBytes)) continue;
 			const std::string packet(buffer.data(), static_cast<std::size_t>(got));
 			if ((static_cast<unsigned char>(packet[2]) & 0x80U) != 0 && packet.find(text) != std::string::npos) return packet;
+		}
+	}
+
+	/// How many answers `packet` drew from a socket that answers in turn: a query marked by its id goes after it, and answers
+	/// are counted until the marked one comes back, however long that takes.
+	std::optional<std::size_t> answersTo(std::string_view address, const std::string& packet, std::string_view text, std::chrono::milliseconds patience) {
+		constexpr std::uint16_t marker = 0x7E57;
+		sendTo(address, packet);
+		sendTo(address, mdnsQuery(1, 0, marker));
+		const auto until = std::chrono::steady_clock::now() + patience;
+		std::size_t found = 0;
+		for (;;) {
+			const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+			const auto answer = nextResponse(text, left);
+			if (!answer) return std::nullopt;
+			const auto id = static_cast<std::uint16_t>((static_cast<unsigned char>((*answer)[0]) << 8U) | static_cast<unsigned char>((*answer)[1]));
+			if (id == marker) return found;
+			++found;
 		}
 	}
 
@@ -1323,24 +1343,31 @@ TEST_CASE("One datagram of many questions gets one answer, and a response or a r
 	const std::uint16_t port = freeTcpPort();
 	TempDirectory directory;
 	writeGraphFile(directory, listenToRec(port));
+	std::optional<MdnsSocket> browser(std::in_place, true);
 	auto ear = runEar(directory);
 	const std::string instance = waitForInstance(ear, "ma", port);
+	// Its socket is open once it has announced. Then this one goes: a unicast query must reach the node's, the only one left.
+	REQUIRE_SEEN(ear, browser->nextResponse(instance, deadline));
+	browser.reset();
 
-	// A one-shot querier: from any port but 5353 the answer is unicast, so nobody else's reaches this socket except what asked.
-	MdnsSocket querier(false);
-	constexpr auto window = 300ms;
-	const std::string service = "_sendspin";
-	const auto asked = [&](const std::string& packet) {
-		querier.sendTo("127.0.0.1", packet);
-		return querier.countResponses(service, window);
+	// A one-shot querier: from any port but 5353 the answer is unicast, so only what this socket asked for reaches it. Tests side
+	// by side share port 5353, and the kernel hands a unicast datagram to one socket of it, chosen by the source's port, which
+	// may be a browser's that answers nothing: so a marker never answered means another source port, not a wrong answer.
+	const auto answers = [&](const std::string& packet) -> std::optional<std::size_t> {
+		const auto until = std::chrono::steady_clock::now() + deadline;
+		while (std::chrono::steady_clock::now() < until) {
+			MdnsSocket querier(false);
+			if (const auto found = querier.answersTo("127.0.0.1", packet, "_sendspin", 500ms)) return found;
+		}
+		return std::nullopt;
 	};
 	const std::string many = mdnsQuery(330);
 	REQUIRE(many.size() <= 2040);
-	CHECK(asked(mdnsQuery(1)) == 1);
-	CHECK(asked(many) == 1);
-	CHECK(asked(mdnsQuery(330, 0x8000)) == 0);       // QR=1
-	CHECK(asked(many.substr(0, 6)) == 0);            // shorter than a header
-	CHECK(asked(mdnsQuery(1)) == 1);                 // and it still answers
+	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));
+	CHECK(answers(many) == std::optional<std::size_t>(1));
+	CHECK(answers(mdnsQuery(330, 0x8000)) == std::optional<std::size_t>(0));   // QR=1
+	CHECK(answers(many.substr(0, 6)) == std::optional<std::size_t>(0));        // shorter than a header
+	CHECK(answers(mdnsQuery(1)) == std::optional<std::size_t>(1));             // and it still answers
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
 }
