@@ -1,17 +1,22 @@
 // The "white" node type: one output, "noise.mono", carrying uniform white noise in [-1, 1). It takes
 // no settings (docs/design/m1-white-to-file.md section 2, ear/nodes/white.hpp).
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <random>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 
+#include "ear/core/settings_table.hpp"
 #include "ear/nodes/white.hpp"
 
 namespace ear::nodes {
 namespace {
 
 constexpr std::string_view typeName = "white";
+constexpr SettingsTable table{typeName, std::array<SettingRule, 0>{}};
 
 class WhiteNoise final : public AudioCode {
 public:
@@ -66,18 +71,12 @@ class WhiteType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
 
-	/// No settings, so nothing to declare.
-	std::span<const SettingDeclaration> settingKinds() const override { return {}; }
+	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
-		if (!settings.is_null() && !settings.is_object()) {
-			return std::unexpected(InvalidSettings{node, "settings: must be an object"});
-		}
-		if (!settings.empty()) {
-			return std::unexpected(
-				InvalidSettings{node, "unknown key " + settings.begin().key() + " (white takes no settings)"});
-		}
+		auto checked = table.check(settings);
+		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
 		return std::make_unique<const WhiteConfig>();
 	}
 };

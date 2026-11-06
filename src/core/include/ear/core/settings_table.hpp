@@ -79,7 +79,31 @@ public:
 	/// A row that makes no sense does not compile: a key empty or given twice; text without mustBe
 	/// and means, or with a range, unit or byDefault; a number with mustBe or means, low above high,
 	/// or a byDefault outside its range or on a required row.
-	consteval SettingsTable(std::string_view type, const std::array<SettingRule, N>& rows);
+	consteval SettingsTable(std::string_view type, const std::array<SettingRule, N>& rows)
+		: type_(type), rows_(rows), kinds_{} {
+		for (std::size_t at = 0; at < N; ++at) {
+			const SettingRule& row = rows[at];
+			// A throw in a consteval constructor is what stops the compile; the text is what the compiler shows.
+			if (row.key.empty()) throw "a setting's key is empty";
+			for (std::size_t earlier = 0; earlier < at; ++earlier) {
+				if (rows[earlier].key == row.key) throw "a setting's key is given twice";
+			}
+			if (row.kind == SettingKind::text) {
+				if (row.mustBe.empty() || row.means == nullptr) throw "a text setting needs mustBe and means";
+				if (row.low != 0 || row.high != 0 || !row.unit.empty() || row.byDefault) {
+					throw "a text setting has no range, unit or byDefault";
+				}
+			} else {
+				if (!row.mustBe.empty() || row.means != nullptr) throw "a whole number has no mustBe or means";
+				if (row.low > row.high) throw "a whole number's low is above its high";
+				if (row.byDefault && row.required) throw "a required setting has no byDefault";
+				if (row.byDefault && (*row.byDefault < row.low || *row.byDefault > row.high)) {
+					throw "a whole number's byDefault is outside its range";
+				}
+			}
+			kinds_[at] = SettingDeclaration{row.key, row.kind};
+		}
+	}
 	std::expected<CheckedSettings, std::string> check(const NodeSettings& settings) const {
 		return checkSettings(type_, rows_, settings);
 	}

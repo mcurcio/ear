@@ -4,7 +4,6 @@
 #include "ear/nodes/sendspin.hpp"
 
 #include <algorithm>
-#include <array>
 #include <bit>
 #include <cstdint>
 #include <exception>
@@ -25,10 +24,6 @@
 
 namespace ear::sendspin {
 namespace {
-
-constexpr std::string_view typeName = "sendspin";
-constexpr std::array<SettingDeclaration, 3> settingDeclarations{
-	{{"server", SettingKind::text}, {"port", SettingKind::wholeNumber}, {"name", SettingKind::text}}};
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
 std::uint32_t feedFramesFor(const AudioFormat& format) {
@@ -109,7 +104,7 @@ public:
 
 	std::string_view name() const override { return typeName; }
 
-	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
+	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations(); }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {

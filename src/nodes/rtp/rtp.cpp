@@ -1,8 +1,8 @@
 // The "rtp" node type: one RTP stream received behind a port block (docs/design/rtp.md sections 3
 // and 7.3, ear/nodes/rtp.hpp). The framework joins the receiver's channels to the inside inputs
 // "from_rtp_1"..; they pass straight through to the outputs "stream.1"... Every setting is
-// checked here, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format a
-// closed enum, every number ranged.
+// checked by the table, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the
+// format a closed enum, every number ranged.
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ear/core/settings_table.hpp"
 #include "ear/nodes/rtp.hpp"
 
 namespace ear::nodes {
@@ -25,17 +26,40 @@ constexpr std::string_view formatKey = "format";
 constexpr std::string_view channelsKey = "channels";
 constexpr std::string_view rateKey = "rate";
 constexpr std::string_view latencyKey = "latencyMs";
-/// How each key is written in the graph file: the address and format are text, the numbers whole
-/// numbers.
-constexpr std::array<SettingDeclaration, 6> settingDeclarations{{{addressKey, SettingKind::text},
-                                                                 {portKey, SettingKind::wholeNumber},
-                                                                 {formatKey, SettingKind::text},
-                                                                 {channelsKey, SettingKind::wholeNumber},
-                                                                 {rateKey, SettingKind::wholeNumber},
-                                                                 {latencyKey, SettingKind::wholeNumber}}};
 /// The receive buffer when the settings name none: about 100 ms (R2). The one home of this
 /// default; the framework always passes the value on.
 constexpr std::uint32_t defaultLatencyMs = 100;
+
+/// The one home of the formats' names.
+std::optional<RtpEncoding> encodingOf(std::string_view format) {
+	if (format == "L16") return RtpEncoding::l16;
+	if (format == "L24") return RtpEncoding::l24;
+	return std::nullopt;
+}
+
+using enum SettingKind;
+constexpr SettingsTable table{
+	typeName,
+	std::array{
+		SettingRule{.key = addressKey,
+                    .kind = text,
+                    .required = true,
+                    .mustBe = R"("0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)",
+                    .means = [](std::string_view value) { return RtpAddress::parse(value).has_value(); }},
+		SettingRule{.key = portKey, .kind = wholeNumber, .required = true, .low = 1, .high = 65535},
+		SettingRule{.key = formatKey,
+                    .kind = text,
+                    .required = true,
+                    .mustBe = R"("L16" or "L24")",
+                    .means = [](std::string_view value) { return encodingOf(value).has_value(); }},
+		SettingRule{.key = channelsKey, .kind = wholeNumber, .required = true, .low = 1, .high = 64},
+		SettingRule{.key = rateKey, .kind = wholeNumber, .low = 8000, .high = 192000, .unit = "Hz"},
+		SettingRule{.key = latencyKey,
+                    .kind = wholeNumber,
+                    .low = 1,
+                    .high = 1000,
+                    .unit = "milliseconds",
+                    .byDefault = defaultLatencyMs}}};
 
 /// Copies from_rtp_i to stream.i. The node has no public inputs, so its inputs are the inside
 /// inputs alone; its outputs are stream.1..N.
@@ -93,102 +117,23 @@ private:
 	Ports ports_;
 };
 
-/// The key's whole number when it lies in [low, high]; nullopt otherwise (absent included).
-std::optional<std::uint32_t> wholeNumber(const NodeSettings& settings, std::string_view key, std::int64_t low,
-                                         std::int64_t high) {
-	const auto value = settings.find(key);
-	if (value == settings.end() || !value->is_number_integer()) {
-		return std::nullopt;
-	}
-	const auto number = value->get<std::int64_t>();
-	if (number < low || number > high) {
-		return std::nullopt;
-	}
-	return static_cast<std::uint32_t>(number);
-}
-
 class RtpType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
 
-	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
+	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
-		const auto invalid = [&](std::string detail) {
-			return std::unexpected(InvalidSettings{node, std::move(detail)});
-		};
-		if (!settings.is_object()) {
-			return invalid(R"(settings: must be an object with "address", "port", "format" and "channels")");
-		}
-		for (const auto& [key, value] : settings.items()) {
-			if (key != addressKey && key != portKey && key != formatKey && key != channelsKey && key != rateKey &&
-			    key != latencyKey) {
-				return invalid("unknown key " + key);
-			}
-		}
-
-		const auto address = settings.find(addressKey);
-		if (address == settings.end()) {
-			return invalid("address: missing");
-		}
-		std::optional<RtpAddress> rtpAddress =
-			address->is_string() ? RtpAddress::parse(address->get_ref<const std::string&>()) : std::nullopt;
-		if (!rtpAddress) {
-			return invalid(
-				R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)");
-		}
-
-		if (!settings.contains(portKey)) {
-			return invalid("port: missing");
-		}
-		const auto port = wholeNumber(settings, portKey, 1, 65535);
-		if (!port) {
-			return invalid("port: must be a whole number, 1-65535");
-		}
-
-		const auto format = settings.find(formatKey);
-		if (format == settings.end()) {
-			return invalid("format: missing");
-		}
-		std::optional<RtpEncoding> encoding;
-		if (*format == "L16") encoding = RtpEncoding::l16;
-		if (*format == "L24") encoding = RtpEncoding::l24;
-		if (!encoding) {
-			return invalid(R"(format: must be "L16" or "L24")");
-		}
-
-		if (!settings.contains(channelsKey)) {
-			return invalid("channels: missing");
-		}
-		const auto channels = wholeNumber(settings, channelsKey, 1, 64);
-		if (!channels) {
-			return invalid("channels: must be a whole number, 1-64");
-		}
-
-		std::optional<std::uint32_t> rate;
-		if (settings.contains(rateKey)) {
-			rate = wholeNumber(settings, rateKey, 8000, 192000);
-			if (!rate) {
-				return invalid("rate: must be a whole number of Hz, 8000-192000");
-			}
-		}
-
-		std::uint32_t latencyMs = defaultLatencyMs;
-		if (settings.contains(latencyKey)) {
-			const auto latency = wholeNumber(settings, latencyKey, 1, 1000);
-			if (!latency) {
-				return invalid("latencyMs: must be a whole number of milliseconds, 1-1000");
-			}
-			latencyMs = *latency;
-		}
-
-		return std::make_unique<const RtpConfig>(RtpSettings{.address = std::move(*rtpAddress),
-		                                                     .port = static_cast<std::uint16_t>(*port),
-		                                                     .encoding = *encoding,
-		                                                     .channels = *channels,
-		                                                     .rate = rate,
-		                                                     .latencyMs = latencyMs});
+		auto checked = table.check(settings);
+		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
+		return std::make_unique<const RtpConfig>(
+			RtpSettings{.address = *RtpAddress::parse(*checked->text(addressKey)),
+		                .port = static_cast<std::uint16_t>(*checked->wholeNumber(portKey)),
+		                .encoding = *encodingOf(*checked->text(formatKey)),
+		                .channels = *checked->wholeNumber(channelsKey),
+		                .rate = checked->wholeNumber(rateKey),
+		                .latencyMs = *checked->wholeNumber(latencyKey)});
 	}
 };
 

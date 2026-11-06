@@ -7,12 +7,12 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "ear/core/settings_table.hpp"
 #include "ear/nodes/card.hpp"
 
 namespace ear::nodes {
@@ -22,10 +22,24 @@ constexpr std::string_view typeName = "card";
 constexpr std::string_view cardKey = "card";
 constexpr std::string_view playbackKey = "playback";
 constexpr std::string_view captureKey = "capture";
-/// How each key is written in the graph file: the id is text, the channel counts whole numbers.
-constexpr std::array<SettingDeclaration, 3> settingDeclarations{
-	{{cardKey, SettingKind::text}, {playbackKey, SettingKind::wholeNumber}, {captureKey, SettingKind::wholeNumber}}};
 constexpr std::uint32_t maxChannels = 64;
+using enum SettingKind;
+constexpr SettingsTable table{
+	typeName,
+	std::array{
+		SettingRule{.key = cardKey,
+                    .kind = text,
+                    .required = true,
+                    .mustBe = "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
+                    .means = [](std::string_view value) { return CardId::parse(value).has_value(); }},
+		SettingRule{
+			.key = playbackKey, .kind = wholeNumber, .low = 0, .high = maxChannels, .unit = "channels", .byDefault = 0},
+		SettingRule{.key = captureKey,
+                    .kind = wholeNumber,
+                    .low = 0,
+                    .high = maxChannels,
+                    .unit = "channels",
+                    .byDefault = 0}}};
 
 /// Copies play.i to to_card_i and from_card_j to capture.j. With the framework's order
 /// (inputs then insideInputs, outputs then insideOutputs): inputs are play then from_card,
@@ -94,55 +108,18 @@ class CardType final : public NodeType {
 public:
 	std::string_view name() const override { return typeName; }
 
-	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
+	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
-		if (!settings.is_object()) {
-			return std::unexpected(InvalidSettings{node, "settings: must be an object with \"card\""});
-		}
-		for (const auto& [key, value] : settings.items()) {
-			if (key != cardKey && key != playbackKey && key != captureKey) {
-				return std::unexpected(InvalidSettings{node, "unknown key " + key});
-			}
-		}
-		const auto card = settings.find(cardKey);
-		if (card == settings.end()) {
-			return std::unexpected(InvalidSettings{node, "card: missing"});
-		}
-		std::optional<CardId> id =
-			card->is_string() ? CardId::parse(card->get_ref<const std::string&>()) : std::nullopt;
-		if (!id) {
-			return std::unexpected(InvalidSettings{node, "card: must be an ALSA card id, 1-15 characters of "
-			                                             "[A-Za-z0-9_-] (as in /proc/asound/cards)"});
-		}
-		const auto playback = channels(settings, playbackKey);
-		const auto capture = channels(settings, captureKey);
-		if (!playback || !capture) {
-			return std::unexpected(InvalidSettings{node, std::string(playback ? captureKey : playbackKey) +
-			                                                 ": must be a whole number of channels, 0-64"});
-		}
-		if (*playback == 0 && *capture == 0) {
+		auto checked = table.check(settings);
+		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
+		const std::uint32_t playback = *checked->wholeNumber(playbackKey);
+		const std::uint32_t capture = *checked->wholeNumber(captureKey);
+		if (playback == 0 && capture == 0) {
 			return std::unexpected(InvalidSettings{node, "playback or capture: at least one must be above 0"});
 		}
-		return std::make_unique<const CardConfig>(std::move(*id), *playback, *capture);
-	}
-
-private:
-	/// The key's channel count, 0 when absent; nullopt when not an integer in 0-64.
-	static std::optional<std::uint32_t> channels(const NodeSettings& settings, std::string_view key) {
-		const auto value = settings.find(key);
-		if (value == settings.end()) {
-			return 0U;
-		}
-		if (!value->is_number_integer()) {
-			return std::nullopt;
-		}
-		const auto count = value->get<std::int64_t>();
-		if (count < 0 || count > maxChannels) {
-			return std::nullopt;
-		}
-		return static_cast<std::uint32_t>(count);
+		return std::make_unique<const CardConfig>(*CardId::parse(*checked->text(cardKey)), playback, capture);
 	}
 };
 

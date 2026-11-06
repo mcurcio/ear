@@ -16,6 +16,7 @@
 
 #include <unistd.h>
 
+#include "ear/core/settings_table.hpp"
 #include "ear/nodes/file.hpp"
 
 namespace ear::nodes {
@@ -23,8 +24,13 @@ namespace {
 
 constexpr std::string_view typeName = "file";
 constexpr std::string_view pathKey = "path";
-/// How the one key is written in the graph file.
-constexpr std::array<SettingDeclaration, 1> settingDeclarations{{{pathKey, SettingKind::text}}};
+using enum SettingKind;
+constexpr SettingsTable table{typeName,
+                              std::array{SettingRule{.key = pathKey,
+                                                     .kind = text,
+                                                     .required = true,
+                                                     .mustBe = "a non-empty string",
+                                                     .means = [](std::string_view value) { return !value.empty(); }}}};
 constexpr std::uint32_t channelCount = 2;
 constexpr std::uint32_t ringSeconds = 2;
 
@@ -163,30 +169,18 @@ public:
 
 	std::string_view name() const override { return typeName; }
 
-	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations; }
+	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
 
 	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
 	parse(const NodeName& node, const NodeSettings& settings) const override {
-		if (!settings.is_object()) {
-			return std::unexpected(InvalidSettings{node, "settings: must be an object with \"path\""});
-		}
-		for (const auto& [key, value] : settings.items()) {
-			if (key != pathKey) {
-				return std::unexpected(InvalidSettings{node, "unknown key " + key});
-			}
-		}
-		const auto path = settings.find(pathKey);
-		if (path == settings.end()) {
-			return std::unexpected(InvalidSettings{node, "path: missing"});
-		}
-		if (!path->is_string() || path->get_ref<const std::string&>().empty()) {
-			return std::unexpected(InvalidSettings{node, "path: must be a non-empty string"});
-		}
-		if (!staysInside(path->get_ref<const std::string&>())) {
+		auto checked = table.check(settings);
+		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
+		std::string path(*checked->text(pathKey));
+		if (!staysInside(path)) {
 			return std::unexpected(
 				InvalidSettings{node, "path: must be relative to the recordings folder, without \"..\""});
 		}
-		return std::make_unique<const FileConfig>(recordings_, path->get<std::string>());
+		return std::make_unique<const FileConfig>(recordings_, std::move(path));
 	}
 
 private:

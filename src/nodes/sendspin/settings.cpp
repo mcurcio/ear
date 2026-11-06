@@ -1,9 +1,12 @@
 #include "settings.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstddef>
+#include <utility>
 
+#include "ear/core/settings_table.hpp"
 #include "peer_text.hpp"
 
 namespace ear::sendspin {
@@ -37,6 +40,27 @@ bool validName(std::string_view name) noexcept {
 	return true;
 }
 
+using enum SettingKind;
+constexpr SettingsTable table{
+	typeName,
+	std::array{SettingRule{.key = serverKey,
+                           .kind = text,
+                           .mustBe = "ws://<host>[:<port>]/<path>",
+                           .means = [](std::string_view value) { return ServerUrl::parse(value).has_value(); }},
+               SettingRule{.key = portKey,
+                           .kind = wholeNumber,
+                           .low = 1,
+                           .high = 65535,
+                           .byDefault = defaultListenPort,
+                           .across = [](const NodeSettings& settings) -> std::optional<std::string_view> {
+							   if (settings.contains(serverKey)) return R"(port: only without "server")";
+							   return std::nullopt;
+						   }},
+               SettingRule{.key = nameKey,
+                           .kind = text,
+                           .mustBe = "1 to 64 bytes of UTF-8 with no control characters",
+                           .means = validName}}};
+
 } // namespace
 
 std::optional<ServerUrl> ServerUrl::parse(std::string_view text) {
@@ -61,35 +85,15 @@ std::optional<ServerUrl> ServerUrl::parse(std::string_view text) {
 }
 
 std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node, const NodeSettings& settings) {
-	if (!settings.is_object()) {
-		return std::unexpected(R"(settings: must be an object with optional "server", "port" and "name")");
-	}
-	for (const auto& [key, value] : settings.items()) {
-		if (key != serverKey && key != portKey && key != nameKey) return std::unexpected("unknown key " + key);
-	}
-
+	auto checked = table.check(settings);
+	if (!checked) return std::unexpected(std::move(checked.error()));
 	std::optional<ServerUrl> url;
-	if (const auto server = settings.find(serverKey); server != settings.end()) {
-		url = server->is_string() ? ServerUrl::parse(server->get_ref<const std::string&>()) : std::nullopt;
-		if (!url) return std::unexpected("server: must be ws://<host>[:<port>]/<path>");
-	}
-
-	std::uint16_t port = defaultListenPort;
-	if (const auto given = settings.find(portKey); given != settings.end()) {
-		if (url) return std::unexpected(R"(port: only without "server")");
-		if (!given->is_number_integer() || *given < 1 || *given > 65535)
-			return std::unexpected("port: must be a whole number, 1-65535");
-		port = given->get<std::uint16_t>();
-	}
-
-	std::string name = node;
-	if (const auto given = settings.find(nameKey); given != settings.end()) {
-		if (!given->is_string() || !validName(given->get_ref<const std::string&>())) {
-			return std::unexpected("name: must be 1 to 64 bytes of UTF-8 with no control characters");
-		}
-		name = given->get<std::string>();
-	}
-	return SendspinSettings{.server = std::move(url), .port = port, .name = std::move(name)};
+	if (const auto server = checked->text(serverKey)) url = ServerUrl::parse(*server);
+	return SendspinSettings{.server = std::move(url),
+	                        .port = static_cast<std::uint16_t>(*checked->wholeNumber(portKey)),
+	                        .name = std::string(checked->text(nameKey).value_or(node))};
 }
+
+std::span<const SettingDeclaration> settingDeclarations() noexcept { return table.kinds(); }
 
 } // namespace ear::sendspin
