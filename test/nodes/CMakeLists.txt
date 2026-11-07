@@ -28,3 +28,20 @@ add_test(NAME ear_node_types_none_refused COMMAND "${CMAKE_COMMAND}" -S "${CMAKE
 	-B "${CMAKE_CURRENT_BINARY_DIR}/ear_node_types_none_refused"
 	"-DEAR_ALL_NODE_TYPES_DIR=${PROJECT_SOURCE_DIR}/src/all_node_types")
 set_tests_properties(ear_node_types_none_refused PROPERTIES PASS_REGULAR_EXPRESSION "No node types found")
+
+# No node type's own code writes standard output or error (docs/design/node-framework.md section 8.8): the guard over
+# src/nodes/, and the guard itself refusing each spelling it knows (standard_output_guard/<spelling>.snippet) and
+# letting through what only looks like one (allowed.snippet).
+set(ear_guard "${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard.cmake")
+add_test(NAME ear_nodes_never_write_standard_output
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src/nodes" -P "${ear_guard}")
+foreach(spelling cout cerr clog stdout stderr stdout_fileno printf puts perror write1 write2 dprintf)
+	add_test(NAME ear_standard_output_guard_refuses_${spelling}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard"
+			"-DGLOB=${spelling}.snippet" -P "${ear_guard}")
+	set_tests_properties(ear_standard_output_guard_refuses_${spelling} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: writes standard output or error")
+endforeach()
+add_test(NAME ear_standard_output_guard_allows_lookalikes
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard"
+		"-DGLOB=allowed.snippet" -P "${ear_guard}")
