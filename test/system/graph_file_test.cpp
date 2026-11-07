@@ -63,7 +63,7 @@ void checkNowhere(const std::string& text, const Rpc& rpc, const ChildProcess& p
                   const std::vector<json>& replies) {
 	CHECK(json(rpc.notifications).dump().find(text) == std::string::npos);
 	CHECK(json(replies).dump().find(text) == std::string::npos);
-	CHECK(process.output().find(text) == std::string::npos);
+	CHECK(process.raw().find(text) == std::string::npos);
 }
 
 /// Ready once the keeper's first offer is told (its status line), whatever it says.
@@ -102,9 +102,21 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	CHECK(ear.stop(rpc) == 0);
 	CHECK(process.hasLine("node rec stopped dropped=0"));
 	checkNoiseOnOneChannel(directory.recordings() / "take1.wav", 0, 44100);
+
+	// A card that cannot open makes alsa-lib and PipeWire say so: through ear's handler and pw_log, both are records
+	// (node-framework.md section 8.8), and nothing ear printed is anything but a record.
+	CHECK(process.plainLines().empty());
+	const auto logged = [&](const std::string& source) {
+		for (const json& record : process.records())
+			if (record["kind"] == "log" && record["source"] == source && record.value("unattributed", false))
+				return true;
+		return false;
+	};
+	CHECK(logged("alsa-lib"));
+	CHECK(logged("pipewire"));
 }
 
-TEST_CASE("T2: an editor edit is announced, applied, answered and written back, and a hand edit wins",
+TEST_CASE("T2:an editor edit is announced, applied, answered and written back, and a hand edit wins",
           "[system][graph-file]") {
 	TempDirectory directory;
 	writeGraphFile(directory, recordExample());

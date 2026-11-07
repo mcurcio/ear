@@ -1,0 +1,269 @@
+{
+  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed. Text from peers and libraries is escaped, never interpreted.",
+  "records": [
+    {
+      "case": "the engine's audio thread is realtime",
+      "record": {
+        "v": 1,
+        "seq": 1,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "engine",
+        "realtime": true,
+        "scheduling": "SCHED_FIFO 88",
+        "msg": "engine: realtime SCHED_FIFO 88"
+      }
+    },
+    {
+      "case": "the engine's audio thread is not realtime",
+      "record": {
+        "v": 1,
+        "seq": 2,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "engine",
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "msg": "engine: not realtime (SCHED_OTHER)"
+      }
+    },
+    {
+      "case": "the control port listens",
+      "record": {
+        "v": 1,
+        "seq": 3,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "control",
+        "address": "127.0.0.1",
+        "port": 7777,
+        "msg": "control listening on 127.0.0.1:7777"
+      }
+    },
+    {
+      "case": "a node starts",
+      "record": {
+        "v": 1,
+        "seq": 4,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "starting",
+        "msg": "node desk starting"
+      }
+    },
+    {
+      "case": "a node fails",
+      "record": {
+        "v": 1,
+        "seq": 5,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "failed",
+        "failure": {
+          "code": "engine-refused",
+          "detail": "card lost"
+        },
+        "msg": "node desk failed engine-refused: card lost"
+      }
+    },
+    {
+      "case": "a node is gone",
+      "record": {
+        "v": 1,
+        "seq": 6,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopped",
+        "droppedFrames": 0,
+        "msg": "node rec stopped dropped=0"
+      }
+    },
+    {
+      "case": "a node's note",
+      "record": {
+        "v": 1,
+        "seq": 7,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "note",
+        "node": "kitchen",
+        "text": "connected \"Music Assistant\" unpaired",
+        "msg": "node kitchen says connected \"Music Assistant\" unpaired"
+      }
+    },
+    {
+      "case": "a route is linked",
+      "record": {
+        "v": 1,
+        "seq": 8,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "route",
+        "from": "noise:noise.mono",
+        "to": "rec:record.left",
+        "status": "linked",
+        "msg": "route noise:noise.mono -> rec:record.left linked"
+      }
+    },
+    {
+      "case": "a route is refused",
+      "record": {
+        "v": 1,
+        "seq": 9,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "route",
+        "from": "noise:noise.mono",
+        "to": "desk:play.1",
+        "status": "refused",
+        "detail": "link failed",
+        "msg": "route noise:noise.mono -> desk:play.1 refused: link failed"
+      }
+    },
+    {
+      "case": "a graph file change with nothing wrong",
+      "record": {
+        "v": 1,
+        "seq": 10,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file",
+        "cause": "edit",
+        "version": "v2",
+        "running": "v2",
+        "diagnostics": [],
+        "droppedEdits": 0,
+        "pendingRestart": [],
+        "msg": "graph-file edit v2 running=v2"
+      }
+    },
+    {
+      "case": "a graph file change with everything: every diagnostic is in the record, only errors in msg",
+      "record": {
+        "v": 1,
+        "seq": 11,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file",
+        "cause": "disk",
+        "version": "v9",
+        "running": null,
+        "diagnostics": [
+          {
+            "severity": "error",
+            "line": 9,
+            "column": 34,
+            "code": "E2001",
+            "message": "unexpected token: \"}\""
+          },
+          {
+            "severity": "warning",
+            "line": 10,
+            "column": 1,
+            "code": "W3005",
+            "message": "nothing matched"
+          }
+        ],
+        "refused": {
+          "code": "unknown-port",
+          "line": 14,
+          "column": 1
+        },
+        "droppedEdits": 2,
+        "pendingRestart": [
+          "graphFrequency",
+          "blockSize"
+        ],
+        "writeFailed": "ear.conf: No space left on device",
+        "msg": "graph-file disk v9 running=none\ngraph-file error 9:34 E2001: unexpected token: \"}\"\ngraph-file refused unknown-port at 14:1\ngraph-file dropped 2 edits\ngraph-file pending-restart graphFrequency blockSize\ngraph-file write-failed ear.conf: No space left on device"
+      }
+    },
+    {
+      "case": "a graph file write",
+      "record": {
+        "v": 1,
+        "seq": 12,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file-written",
+        "version": "v7",
+        "msg": "graph-file written v7"
+      }
+    },
+    {
+      "case": "the last write's failure, as ear exits",
+      "record": {
+        "v": 1,
+        "seq": 13,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file-write-failed",
+        "detail": "ear.conf: No space left on device",
+        "msg": "graph-file write-failed ear.conf: No space left on device"
+      }
+    },
+    {
+      "case": "a line some library wrote to standard error, captured",
+      "record": {
+        "v": 1,
+        "seq": 14,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "warn",
+        "source": "stderr",
+        "text": "W sendspin.client: \u001b[1mtime\u001b[0m skew",
+        "msg": "stderr warn: W sendspin.client: \u001b[1mtime\u001b[0m skew"
+      }
+    },
+    {
+      "case": "PipeWire's log, through ear's own pw_log",
+      "record": {
+        "v": 1,
+        "seq": 15,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "error",
+        "source": "pipewire",
+        "topic": "spa.alsa",
+        "text": "'hw:Pro24': playback open failed: No such file or directory",
+        "msg": "pipewire spa.alsa error: 'hw:Pro24': playback open failed: No such file or directory"
+      }
+    },
+    {
+      "case": "a node's own log, cut at its bound",
+      "record": {
+        "v": 1,
+        "seq": 16,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "node": "kitchen",
+        "run": 2,
+        "level": "info",
+        "source": "sendspin",
+        "text": "key file narrowed",
+        "cut": true,
+        "msg": "node kitchen sendspin info: key file narrowed"
+      }
+    },
+    {
+      "case": "why ear exits",
+      "record": {
+        "v": 1,
+        "seq": 17,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "exit",
+        "status": 1,
+        "reason": "control port: cannot bind 0.0.0.0:7777: Address in use",
+        "msg": "ear: control port: cannot bind 0.0.0.0:7777: Address in use"
+      }
+    },
+    {
+      "case": "the record after a drop counts it",
+      "record": {
+        "v": 1,
+        "seq": 19,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "running",
+        "dropped": 1,
+        "msg": "node desk running (1 records dropped before this)"
+      }
+    }
+  ]
+}

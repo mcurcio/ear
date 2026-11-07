@@ -5,9 +5,13 @@ namespace ear::folder {
 class ConfinedFolder;
 }
 namespace ear {
+class LogSink;
 /// The folders a node type may need, held open from boot. A type reads only those it names; main.cpp always gives both.
 struct NodeFolders {
 	std::shared_ptr<const folder::ConfinedFolder> recordings{}; // the folder "file" nodes write into
 	std::shared_ptr<const folder::ConfinedFolder> config{}; // the graph file folder: each "sendspin" node's key file
+	/// Where a type's factory reports what it finds at boot (docs/design/node-framework.md section 8.8, until the
+	/// store service's diagnostics replace it, 7.1). Null: nowhere. Not owned: main's outlives every type.
+	LogSink* log = nullptr;
 };
 } // namespace ear

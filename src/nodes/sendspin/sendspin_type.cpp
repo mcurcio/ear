@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <iostream>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -16,6 +15,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ear/core/log.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "feed.hpp"
 #include "key_store.hpp"
@@ -121,8 +121,9 @@ namespace ear::nodes {
 std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
 	if (!folders.config) throw std::logic_error("sendspin needs the graph file folder");
 	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
-	for (const std::string& failure : sendspin::narrowKeyFiles(*folders.config))
-		std::cerr << "sendspin: " << failure << '\n';
+	for (std::string& failure : sendspin::narrowKeyFiles(*folders.config))
+		if (folders.log != nullptr)
+			folders.log->log({.level = LogLevel::warn, .source = "sendspin", .text = std::move(failure)});
 	return std::make_unique<const sendspin::SendspinType>(folders.config);
 }
 

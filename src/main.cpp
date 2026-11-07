@@ -3,7 +3,9 @@
 // web root), reads ear.conf, starts the engine at the file's rate and block size (else the flags')
 // and prints how its audio thread is scheduled, wires the packages together, starts the graph file
 // keeper (its first offer runs the file, or nothing runs and the editor shows why), opens the
-// control port and runs until SIGINT or SIGTERM. Stopping closes the graph to edits, stops the
+// control port and runs until SIGINT or SIGTERM. Once the flags are read, before any thread starts, it
+// captures descriptors 1 and 2 (docs/design/node-framework.md section 8.8): from then on everything on
+// standard output is one JSON record a line, from the one encoder (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the
 // keeper taking edits, stops every node, then closes the control port, stops the control thread
 // and ends the main loop; the keeper's last write runs as its thread is joined.
 
@@ -30,7 +32,10 @@
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 #include "ear/folder/confined_folder.hpp"
+#include "ear/output/descriptor_capture.hpp"
+#include "ear/output/output_writer.hpp"
 #include "ear/pipewire/engine.hpp"
+#include "ear/pipewire/engine_log.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
@@ -53,6 +58,29 @@ std::optional<std::uint32_t> positive(std::int64_t value) {
 	if (value <= 0 || value > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
 	return static_cast<std::uint32_t>(value);
 }
+
+/// The encoder's lines, to the output thread's queue.
+class WriterLines final : public ear::control::OutputLines {
+public:
+	explicit WriterLines(ear::output::OutputWriter& writer) : writer_(writer) {}
+	bool offer(std::string line) override { return writer_.offer(std::move(line)); }
+
+private:
+	ear::output::OutputWriter& writer_;
+};
+
+/// Stops the capture before the encoder it feeds is destroyed: what the pipes and the engine's log still hold is
+/// recorded, and a write after it goes to the real descriptors.
+class CaptureStopper {
+public:
+	explicit CaptureStopper(ear::output::DescriptorCapture& capture) : capture_(capture) {}
+	~CaptureStopper() { capture_.stop(); }
+	CaptureStopper(const CaptureStopper&) = delete;
+	CaptureStopper& operator=(const CaptureStopper&) = delete;
+
+private:
+	ear::output::DescriptorCapture& capture_;
+};
 
 } // namespace
 
@@ -104,23 +132,46 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	// Standard output's one way out, before any thread: descriptors 1 and 2 become pipes the capture thread reads into
+	// unattributed log records, the output thread writes every record to the real standard output, and PipeWire logs
+	// through ear's own pw_log, drained on the capture thread. Declaration order is what stopping needs: the capture
+	// stops (recording what it still holds) before the encoder goes, and the writer writes everything after.
+	auto installed = ear::output::DescriptorCapture::install();
+	if (!installed) {
+		std::cerr << "ear: cannot capture standard output: " << installed.error() << '\n';
+		return 1;
+	}
+	const std::unique_ptr<ear::output::DescriptorCapture> capture = std::move(*installed);
+	ear::output::OutputWriter writer(capture->realOutput());
+	WriterLines lines(writer);
+	ear::control::StatusLog log(lines);
+	ear::pipewire::EngineLog& engineLog = ear::pipewire::EngineLog::install();
+	capture->watch(engineLog.bell(), [&] { engineLog.drain(log); });
+	capture->start([&](ear::output::DescriptorCapture::Line line) {
+		log.log({.level = line.source == "stderr" ? ear::LogLevel::warn : ear::LogLevel::info,
+		         .source = std::string(line.source),
+		         .text = std::move(line.text),
+		         .cut = line.cut});
+	});
+	const CaptureStopper stopCapture(*capture);
+
 	const std::filesystem::path configDir = arguments["config-dir"].as<std::string>();
 	const std::filesystem::path recordingsDir = arguments["recordings-dir"].as<std::string>();
 	auto opened = ear::folder::ConfinedFolder::open(configDir);
 	if (!opened) {
 		// Each folder names itself "folder <path>"; the role is main's to say.
-		std::cerr << "ear: graph file " << opened.error().detail << '\n';
+		log.exiting(1, "graph file " + opened.error().detail);
 		return 1;
 	}
 	const auto config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*opened));
 	auto recordings = ear::folder::ConfinedFolder::open(recordingsDir);
 	if (!recordings) {
-		std::cerr << "ear: recordings " << recordings.error().detail << '\n';
+		log.exiting(1, "recordings " + recordings.error().detail);
 		return 1;
 	}
 	const std::array<std::filesystem::path, 3> folders{configDir, recordingsDir, portSettings.webRoot};
 	if (const auto apart = ear::folder::requireApart(folders); !apart) {
-		std::cerr << "ear: " << apart.error().detail << '\n';
+		log.exiting(1, apart.error().detail);
 		return 1;
 	}
 
@@ -128,7 +179,9 @@ int main(int argc, char** argv) {
 	// format lines set the engine when both read; otherwise the flags do (the file's own values then
 	// show as pending restart).
 	const ear::NodeCatalogue catalogue(ear::nodes::allNodeTypes(
-		{.recordings = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)), .config = config}));
+		{.recordings = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)),
+	     .config = config,
+	     .log = &log}));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 
@@ -136,17 +189,13 @@ int main(int argc, char** argv) {
 	// adapters, control thread, main-loop executor, engine.
 	auto created = ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock});
 	if (!created) {
-		std::cerr << "ear: " << created.error().detail << '\n';
+		log.exiting(1, created.error().detail);
 		return 1;
 	}
 	const std::unique_ptr<ear::pipewire::Engine> engine = std::move(*created);
 
 	const ear::pipewire::Scheduling scheduling = engine->dataThreadScheduling();
-	if (scheduling.realtime) {
-		std::cout << "engine: realtime " << scheduling.detail << std::endl;
-	} else {
-		std::cout << "engine: not realtime (" << scheduling.detail << ")" << std::endl;
-	}
+	log.engineScheduling(scheduling.realtime, scheduling.detail);
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
 	// After Engine::create, so its thread inherits the blocked stop signals.
@@ -165,7 +214,6 @@ int main(int argc, char** argv) {
 	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
 	                              reconciler);
-	ear::control::StatusLog log(std::cout);
 
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, mainLoop);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
@@ -190,17 +238,17 @@ int main(int argc, char** argv) {
 	// Before the control port, so every request finds the keeper's thread; after Engine::create, so
 	// the thread inherits the blocked stop signals. Its first offer waits for the main loop to run.
 	if (const auto started = keeper.start(); !started) {
-		std::cerr << "ear: graph file " << started.error() << '\n';
+		log.exiting(1, "graph file " + started.error());
 		return 1;
 	}
 
 	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell);
 	if (!started) {
-		std::cerr << "ear: " << started.error().detail << '\n';
+		log.exiting(1, started.error().detail);
 		return 1;
 	}
 	const std::unique_ptr<ear::server::ControlPort> port = std::move(*started);
-	std::cout << "control listening on " << portSettings.address << ':' << port->port() << std::endl;
+	log.controlListening(portSettings.address, port->port());
 
 	// Stopping refuses edits at once (clients get "stopping"), lets the keeper answer what it holds,
 	// lets every node finish (its file is closed on the main loop, so the loop runs until then), and
