@@ -230,6 +230,10 @@ beside it, and on the dummy driver, which holds nothing, this is the block's por
 
 ## 9. Status lines
 
+Erratum (2026-11-07): each line below is now the `msg` of a `note` record (`node`, `text`), and the library's own log
+lines are unattributed `stderr` records, since sendspin-cpp has no log hook (`docs/design/node-framework.md` section
+8.8 and its erratum).
+
 One new frame in `status_log.cpp`, `node <name> says <text>`; a type's texts are its own (`src/nodes/sendspin/notes.hpp`), as a `failed` detail is.
 
 ```

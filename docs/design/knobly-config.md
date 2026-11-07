@@ -105,6 +105,10 @@ Packages: `ear_folder` ← {the node types that open a folder (since 2026-11-06 
 
 ## Boot and stop
 
+Erratum (2026-11-07): the `graph-file ...` lines this page names are now one `graph-file` record per change, its `msg`
+those lines joined by newlines, and a failed last write is a `graph-file-write-failed` record
+(`docs/design/node-framework.md` section 8.8 and its erratum; `test/protocol/output-records.json`).
+
 | Boot (waits once, for the first load) | Stop (SIGTERM; waits on the disk only after the recordings are safe) |
 |---|---|
 | 1. Open the graph file folder and the recordings folder. If they overlap each other or the web root, exit 1 | 1. `close()`: every later plan answers `stopping` |

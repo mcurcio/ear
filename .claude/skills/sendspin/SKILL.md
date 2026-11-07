@@ -115,6 +115,11 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
 - The library has no retry after a lost dial (hence the watch) and only logs a port it cannot take (hence the check in `start`).
 - `stop()` takes under 10 ms and the destructor 1 ms, even while dialling a dead address. Ear fixes the library's log level at
   WARN, for noise.
+- The library has no log hook: on a host build `SS_LOG*` is a bare `fprintf(stderr, ...)` with one process-wide level
+  (`src/platform/logging.h`). Its lines (and IXWebSocket's) reach standard output as unattributed `log` records from
+  `stderr` at `warn`, paced with every other line from `stderr`, never as the node's own. Naming the node needs a
+  carried patch that routes `SS_LOG*` through a settable callback carrying the client (`docs/design/node-framework.md`
+  section 8.8's erratum); none is carried yet.
 - A correction is one frame per chunk at most, -0.084% over 150 ms against the spec's ±0.5%.
 
 ## The pin and the patch
