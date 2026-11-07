@@ -180,7 +180,7 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	CHECK(ear.hasLine("node rec stopped dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
-	INFO("ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps " << ramp.badSteps);
+	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);

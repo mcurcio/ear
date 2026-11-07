@@ -133,8 +133,7 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
-	INFO("frames of the last run " << ramp.lastRunFrames << ", last index " << ramp.lastIndex << ", not ramp "
-	                               << ramp.badFrames);
+	INFO(ramp);
 	CHECK(ramp.lastRunFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 }
@@ -163,7 +162,7 @@ TEST_CASE("A server cannot change the depth of a running stream: asked for 16 bi
 	CHECK(countLines(ear, "node ma says stream ") == 1);
 	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
-	INFO("ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps " << ramp.badSteps);
+	INFO(ramp);
 	CHECK(ramp.rampFrames >= graphFrequency * 5 / 2);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
