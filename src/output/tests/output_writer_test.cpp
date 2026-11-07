@@ -2,6 +2,7 @@
 // of waiting behind a reader that does not read, everything queued written at stop, and a closed reader survived.
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
@@ -105,4 +106,53 @@ TEST_CASE("A closed reader is survived: the write fails, the process goes on", "
 	CHECK(writer.offer("nobody reads this"));
 	writer.stop(); // without the writer's blocked signals, SIGPIPE would end the test program here
 	CHECK(true);
+}
+
+TEST_CASE("The queue is bounded in bytes too, and a line larger than the bound still goes alone", "[output_writer]") {
+	Pipe pipe;
+	const std::size_t filled = pipe.fill();
+	OutputWriter writer(pipe.write, 100, 64);
+	const std::string large(1000, 'L');
+	CHECK(writer.offer(large)); // nothing waits: accepted whatever its size
+	std::vector<std::string> accepted;
+	for (int i = 0; i < 10; ++i) {
+		std::string line(29, static_cast<char>('a' + i)); // 30 bytes with its newline
+		if (!writer.offer(line)) break;
+		accepted.push_back(std::move(line));
+	}
+	// The large line is in the blocked write (then two fit in 64 bytes) or still queued (then none does).
+	CHECK(accepted.size() <= 2);
+
+	std::string got;
+	std::thread reader([&] { got = pipe.readAll(); });
+	writer.stop();
+	::close(pipe.write);
+	pipe.write = -1;
+	reader.join();
+	std::string expected = large + "\n";
+	for (const std::string& line : accepted) expected += line + "\n";
+	CHECK(got.substr(filled) == expected);
+}
+
+TEST_CASE("The crash path's spill gives up in bounded time on a writer stuck in its write", "[output_writer]") {
+	Pipe pipe;
+	const std::size_t filled = pipe.fill();
+	OutputWriter writer(pipe.write);
+	REQUIRE(writer.offer("taken into the blocked write"));
+	std::this_thread::sleep_for(std::chrono::milliseconds(50)); // lets the writer take it; either way spill is bounded
+	REQUIRE(writer.offer("still queued"));
+	const auto before = std::chrono::steady_clock::now();
+	writer.spill();
+	CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(2));
+
+	std::string got;
+	std::thread reader([&] { got = pipe.readAll(); });
+	writer.stop();
+	::close(pipe.write);
+	pipe.write = -1;
+	reader.join();
+	// Stuck in its write, the writer keeps the queue's line; had it not taken the first yet, spill took both and gave up
+	// on the full pipe, and only what the writer had is there.
+	const std::string all = "taken into the blocked write\nstill queued\n";
+	CHECK(got.substr(filled) == all.substr(0, got.size() - filled));
 }

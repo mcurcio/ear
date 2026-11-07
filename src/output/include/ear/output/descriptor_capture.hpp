@@ -4,6 +4,13 @@
 // each of descriptors 1 and 2. One thread reads both pipes, a line at a time, and hands each line on (main makes it an
 // unattributed log record). The same thread waits on other descriptors it is given (a log ring's bell) and calls
 // their handlers, so a ring filled where nothing may block is drained here.
+//
+// A process that dies abnormally would lose its last words in the pipes (abort's, std::terminate's "terminate called
+// after throwing ...", assert's, a sanitizer's): while a capture is installed, a handler for std::terminate and for
+// SIGABRT, SIGSEGV, SIGBUS, SIGFPE and SIGILL writes what the pipes still hold, as raw bytes, to the real descriptors,
+// puts them back on 1 and 2, and lets the crash go on as it would have (the handler and dispositions found at install).
+// std::terminate also runs onCrash's hook first (the output thread's queue). A child process must get its own standard
+// error, never inherit descriptor 2 (node-framework.md section 7.5): an inherited pipe end would outlive the capture.
 #pragma once
 #include <cstddef>
 #include <expected>
@@ -36,12 +43,17 @@ public:
 	/// Before start: also waits on `descriptor` (not owned) and calls `onReady` on the capture thread whenever it is
 	/// readable, and once more as the capture stops. `onReady` must make it unreadable again (read its eventfd).
 	void watch(int descriptor, std::function<void()> onReady);
+	/// Before start: what std::terminate runs first on the crash path (write out the records still queued). It must not
+	/// wait without bound, since the dying thread may hold any lock.
+	void onCrash(std::function<void()> hook);
+	/// The crash path's call of the onCrash hook; never throws. Not for other callers.
+	void beforeCrash() noexcept;
 	/// Starts the capture thread (every signal blocked); each captured line goes to `onLine` on it, in order per
 	/// descriptor.
 	void start(std::function<void(Line)> onLine);
 	/// Puts the real descriptors back on 1 and 2, so a write after this goes where it went before ear started; reads
-	/// what the pipes still hold (a last partial line included) and calls every watched handler once; ends the thread.
-	/// Idempotent.
+	/// what the pipes still hold (a last partial line included) and calls every watched handler once; ends the thread,
+	/// even while a duplicate of descriptor 1 or 2 keeps a pipe's write end open; disarms the crash path. Idempotent.
 	void stop();
 
 private:
@@ -52,6 +64,9 @@ private:
 	int realError_ = -1;
 	int outputPipe_ = -1; // read ends
 	int errorPipe_ = -1;
+	int wake_ = -1; // stop()'s bell: an eventfd
+	bool armed_ = false;
+	std::function<void()> onCrash_;
 	struct Watched {
 		int descriptor;
 		std::function<void()> onReady;

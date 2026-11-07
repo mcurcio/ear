@@ -143,6 +143,8 @@ int main(int argc, char** argv) {
 	}
 	const std::unique_ptr<ear::output::DescriptorCapture> capture = std::move(*installed);
 	ear::output::OutputWriter writer(capture->realOutput());
+	// A crash's last words: std::terminate writes out what is still queued, then the pipes, then its own message.
+	capture->onCrash([&] { writer.spill(); });
 	WriterLines lines(writer);
 	ear::control::StatusLog log(lines);
 	ear::pipewire::EngineLog& engineLog = ear::pipewire::EngineLog::install();
