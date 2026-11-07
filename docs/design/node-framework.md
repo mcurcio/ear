@@ -4,8 +4,9 @@ Status: proposal, revision 4, 2026-11-07. Revision 1 went to three independent r
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
 answers them with two more answers from the owner (sections 14 and 16). Built: slice 1 (section 13, "Slice 1 as
 built", says where it differs) and slice 4's framework side (8.8's erratum: the node-facing primitives, log and event
-calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5). The slice 7 spike
-has run, and its verified answers are in section 10 and 15. Nothing else is built.
+calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5). Slice 2 is built
+(section 13, "Slice 2 as built"). The slice 7 spike has run, and its verified answers are in section 10 and 15. Nothing
+else is built.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
@@ -875,6 +876,53 @@ from the sections above, and why:
   still post to the main loop or signal an engine source that `main` would otherwise destroy under it.
 - **6, I9:** one run names each outside node once (`<node>.<suffix>`; a second is a `std::logic_error` at `acquire`),
   which replaces the old "one RTP receiver per start" rule. Handoffs make no engine object.
+
+### Slice 2 as built
+
+Slice 2 is built (`type_spec.hpp` in `ear_core`; `ear/testing/node_harness.hpp` and `type_harness.hpp` in the test-only
+library `ear_type_harness`); `white`, `file`, `card` and `rtp` are written against it, and `sendspin` keeps its shape
+until slice 3. Where it differs from sections 7.1, 7.2, 7.3, 7.6 and 9.2, and why:
+
+- **7.1: a bank handle is a variable template**, `bank::output<"stream">`, not `bank::output("stream")`. `Io<spec>`
+  refuses another type's bank at compile time only if every bank is its own type, and a function argument cannot
+  become part of a type; the name is a template argument instead. Two types' banks of one name and direction are then
+  one handle, which is sound: `Io<spec>` resolves a handle by its name among the spec's banks. `bankPair(from, to)` gives
+  a pass-through pair checked for direction at compile time. Requests still name their bank as text
+  (`std::string(toCard.name)`).
+- **7.1: `ports(checked)` returns `Members<spec>`**, written `{stream(members(n)), fromRtp(members(n))}`: each bank's
+  handle takes its member list. Every bank of the spec once, and no other, is checked at compile time; a member named
+  twice in a bank is a `std::logic_error` when the ports are made (at parse). The layout check at `prepare` (`Io<spec>::resolve`,
+  a `std::logic_error`) guards a code run against ports that are not its spec's, which only a type bug or a hand-made
+  config can give.
+- **7.1, 7.2: `TypeSpec` has a hidden third parameter**, `Unique`, defaulted to a lambda's type, new at each spec and
+  local to its file. GCC 14 gives a template instantiated with a reference to an object in an unnamed namespace external
+  (weak) linkage, named by the object's qualified name, so every type's `Io<(anonymous namespace)::spec>::resolve`,
+  `Members<…>::ports` and the like were one symbol across files, and the linker kept one type's for all: the all-type
+  tests crashed. A spec whose type is local to its file makes those instantiations local. For the same reason the type
+  `makeNodeType` makes derives from `NodeType` itself (a friend, as `NodeTypeOf` is), handing it the spec's table at run
+  time, not from `NodeTypeOf<spec.settings>`; it keeps the static check that the table is named for its folder.
+- **7.2: the code.** A code is any struct with `void process(Io<spec>, const GraphCycle&) noexcept`, and optionally
+  `prepare(const AudioFormat&)` and `release()`; its spec is read from `process`'s signature, and `RunCode` and
+  `StartResult` take it directly (`return WhiteCode{};`), erasing it once into an `AudioCode`. `AudioCode::prepare` is
+  not told the ports, so the config `makeNodeType` made binds the erased code to the node's ports after `start`
+  returns, and `prepare` resolves the layout from them; a spec code run by any other config refuses at `prepare`.
+- **7.2: `StartResult` is a class**, a failure or the run's code and optional recipe (`failed()`, `failure()`, `code()`,
+  `recipe()`), built from a code, a `RunCode` or `std::unexpected(FailureReason{...})`. Slice 1's `Started` is gone.
+- **7.3: the recording kind.** `RecordingRequest{path}` joins the closed list; `acquire` returns
+  `std::expected<int, std::string>`, the descriptor or why it cannot be opened (the type fails its start with "cannot
+  open <path>: <why>"). The framework owns the descriptor (`RecordingFile`) and closes it at step 5 with the run, after
+  the handoffs that write it; a leaked run keeps it. The adapter (`RecordingAdapter`, `node_host.hpp`) is implemented
+  in `main.cpp`, as glue like `WriterLines`, because `ear_folder` and `ear_core` must not see each other; a registry
+  made without one refuses every recording ("no recordings folder").
+- **7.3: folders.** `NodeFolders` keeps `config` and `log` for `sendspin` alone, until slice 3 (stores, and 8.8's
+  store diagnostics) replaces it; `recordings` went. Every other type's function takes no argument, and the generated
+  list calls each as it is declared.
+- **7.6: the harness.** `NodeHarness` runs any `NodeType` (the all-type tests get theirs from the generated list) and
+  `TypeHarness<spec, Behaviour>` adds buffers by bank handle; both step `process` over buffers the harness owns, with
+  every output first filled with NaN so an unwritten sample shows. Handoffs hand each write straight to their
+  consumer; recordings come from a `RecordingAdapter` the test gives. It captures notes and `lost`; actions, parameter
+  gestures, status, events, log records and diagnostics wait for the slices that make them. `sendspin` is not run
+  through it yet (`runsInHarness` in `test/nodes/all_types.hpp`): its start still builds its worker.
 
 ## 14. Gate answers
 
