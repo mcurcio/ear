@@ -2,8 +2,10 @@
 
 Status: proposal, revision 4, 2026-11-07. Revision 1 went to three independent reviews and revision 2 answered them;
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
-answers them with two more answers from the owner (sections 14 and 16). Slice 1 is built (section 13, "Slice 1 as
-built", says where it differs); nothing else is.
+answers them with two more answers from the owner (sections 14 and 16). Built: slice 1 (section 13, "Slice 1 as
+built", says where it differs) and slice 4's framework side (8.8's erratum: the node-facing primitives, log and event
+calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5). The slice 7 spike
+has run, and its verified answers are in section 10 and 15. Nothing else is built.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
@@ -686,13 +688,22 @@ The owner's answers (Q3, R8; Q8): **the graph always runs on ear's internal cloc
 and every card follows it.**
 
 - **The internal clock** is the dummy driver (`support.node.driver`, `engine.conf`). It is always the graph's driver,
-  whatever links or fails: cards start as followers (`node.driver = false`, if the adapter honours it), or the dummy joins
-  the blocks' group; starting as a follower is preferred to switching from driver to follower at link time [U: which
-  PipeWire honours; the spike].
+  whatever links or fails, because it joins the blocks' group (`node.group = ear.graph`) and keeps the highest
+  `priority.driver` of every driver (200000 against a card's 1): PipeWire walks drivers in priority order, and the dummy
+  collects its group and everything linked to it first [V: the slice 7 spike]. A card still runs alone as its own driver
+  until its PCM runs, as today, and becomes a follower when it is linked (one repeated sample at the switch on the test
+  card). Marking cards `node.driver = false` does not work (the ALSA node re-publishes `node.driver = true`), and putting
+  a card in the group makes it a follower from creation but then it never starts before it is linked, which ear's
+  lifecycle (link once RUNNING) cannot do [V: spike].
 - **It tracks the raw clock.** `CLOCK_MONOTONIC` is slewed by NTP, and chrony's default `maxslewrate` allows up to 83,333
   ppm, which every card's follower loop, every rtp-source loop and sendspin would have to chase. A timer cannot be armed
-  on `CLOCK_MONOTONIC_RAW` (timerfd refuses it), so the dummy's timer runs on `CLOCK_MONOTONIC` with its rate steered to
-  the raw clock [U: PipeWire 1.4.2's `clock.id` on `support.node.driver`, and which domain `clock.nsec` is then in]. The
+  on `CLOCK_MONOTONIC_RAW` (timerfd refuses it, `EINVAL`), so the dummy runs with `clock.id = monotonic-raw` in its
+  tracking mode: its timer stays on `CLOCK_MONOTONIC` and a delay-locked loop steers it so `clock.position` follows raw
+  time; `rate_diff` is that loop's correction [V: spike, PipeWire 1.4.2]. `clock.nsec` and `next_nsec` stay in
+  `CLOCK_MONOTONIC`, so the framework still makes `startRawNs` itself by sampling both clocks (9.3), and takes `rateDiff`
+  from `clock.rate_diff`. When the graph and the raw clock disagree by more than `resync.ms` (10 ms by default, e.g. after
+  a data-thread stall), the position jumps to raw time: the framework flags that cycle as a `discontinuity`. The loop
+  clamps its error at 1 ms a cycle, so whether it follows a host slewing at chrony's worst case is untested [U]. The
   framework hands every type both domains (9.3). Sendspin's time filter is already on the raw clock: it converts the
   cycle's start each cycle (`sendspin_code.cpp:33-35`) and the notifier reports `finishRawNs` (`worker.cpp:318`); that
   conversion moves into the framework, so it is never applied twice. **Fallback**, if the spike finds the driver cannot
@@ -711,11 +722,21 @@ and every card follows it.**
     round trips and echo cancellation across them are out.
   - USB cards report their pointer at URB granularity; with a 256-frame quantum the follower's "delay too big" resync can
     fire and click [U]. The spike exposes `api.alsa.headroom` and the period size, and counts resyncs on the MOTU.
-  - The dummy's delay is 0 [U], so latency propagation (9.4) lands with this change, in one slice.
-- **Verification needs hardware.** CI's test card is a null PCM with no oscillator of its own, so CI proves the wiring
-  (the dummy drives with a card linked, the card follows, its loss leaves the clock alone) and sendspin's dating through a
-  following card's declared latency, but not drift tracking or resyncs; those are checked on the MOTU (`ear-on-talos`
-  skill), with a test of sendspin's played time behind a following card.
+  - The dummy's delay is always 0, with or without a following card: a following ALSA node writes its delay into its own
+    clock, never into the driver's position [V: spike; `node-driver.c`, `alsa-pcm.c`]. CI's null-PCM card reports 0 even
+    when it drives, so CI has never seen a nonzero delay. Latency propagation (9.4) lands with this change, in one slice.
+- **Verification needs hardware.** CI's test card is a null PCM with no oscillator of its own. As a follower its rate
+  match never settles (it always reports a delay of 0, so the correction climbs: the mean step fell 6.6% in 20 s, with
+  breaks) [V: spike]. So `AlsaSoundCards` gains a test seam, extra adapter properties, and CI's card sets `clock.name` to
+  the dummy's clock name, which turns matching off (bit-exact, no breaks); a real card always keeps matching on. Three
+  `sound_card_test.cpp` cases that assert the card drives, or count breaks, change with slice 7. CI proves the wiring (the
+  dummy drives with a card linked, the card follows, its loss leaves the clock alone) and sendspin's dating through a
+  following card's declared latency; drift tracking and resyncs are checked on the MOTU (`ear-on-talos` skill), with a
+  test of sendspin's played time behind a following card.
+- **Denormals.** PipeWire 1.4.2's `cpu.zero.denormals` lands on the wrong thread in ear's engine (the data loop's setup
+  runs inline on the main thread before the data thread enters), and then leaks to every thread created later [V:
+  spike]. The engine instead sets FTZ and DAZ with one blocking invoke on the data loop at start, checked by a test that
+  reads the MXCSR from `process`.
 - **Later, an anchor.** R8's second half, an internal clock that tracks one card (that card bit-perfect) and keeps its
   last rate when the card is lost, needs ear's own driver node; it can be added as a graph setting (`clock anchor desk;`)
   without changing this model.
@@ -873,16 +894,18 @@ The owner's answers, 2026-11-07, in chat (current choices; later evidence may re
 
 ## 15. Open items
 
-- [U] PipeWire 1.4.2's `support.node.driver`: whether `clock.id` steers its timer to `CLOCK_MONOTONIC_RAW`, which domain
-  `clock.nsec` is then in, and its `delay` (0 is assumed); whether cards start as followers with `node.driver = false` or
-  the dummy must join the group (section 10).
+- Settled by the slice 7 spike (section 10, [V]): the dummy stays the driver by joining `ear.graph`, not by cards marked
+  `node.driver = false`; `clock.id = monotonic-raw` works as a steered `CLOCK_MONOTONIC` timer, with `clock.nsec` in
+  `CLOCK_MONOTONIC`; the dummy's delay is always 0; the follower's rate match is private to the adapter (logs only); and
+  `cpu.zero.denormals` must be replaced by a data-loop invoke.
+- [U] Following a host clock slewed at chrony's worst case (83,333 ppm) through the dummy's 1 ms-a-cycle clamp.
 - [U] On the MOTU: drift tracking, follower resyncs at a 256-frame quantum, `api.alsa.headroom` and period size, CPU for
   24 resampled channels, playback and capture's relative jitter.
-- [U] What `/proc/asound/.../status` shows for a wedged USB card (the follower watchdog, 9.5); whether a USB unplug
+- [U] What `/proc/asound/.../status` shows for a wedged USB card (the follower watchdog, 9.5). `/proc/asound` is absent in
+  this container and in CI, and the test card lives inside alsa-lib with no `/proc` entry, so the watchdog's PCM-status
+  source is injectable and CI fakes it [V: spike]. Whether a USB unplug
   reaches the adapter's ERROR state without udev in the container; whether `snd_pcm_open` can block, and on which thread.
 - [U] `pw_filter`'s default latency merge, and `PW_FILTER_FLAG_CUSTOM_LATENCY`'s behaviour in 1.4.2.
-- [U] Denormals: whether PipeWire's `cpu.zero.denormals` context property sets FTZ/DAZ on the data thread; set it in
-  `engine.conf` and check the MXCSR in a test, rather than adding it around `process`.
 - [U] `cleanup.sec`'s smallest safe value for `rtp`'s `receiving`.
 - sendspin-cpp has no log hook (8.8's erratum): a carried patch that routes `SS_LOG*` through a settable callback
   carrying the client is owed; until then its lines are unattributed `stderr` records at `warn`.
