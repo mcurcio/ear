@@ -18,8 +18,8 @@ GraphView GraphStatus::read() const {
 
 	// A wanted node is NodeHost's last entry of its name: an earlier one is a removed node of the
 	// same name still stopping.
-	std::map<NodeName, NodeStatus> latest;
-	for (auto& status : nodes_.status()) latest.insert_or_assign(status.name, std::move(status));
+	std::map<NodeName, NodeHealth> latest;
+	for (auto& health : nodes_.health()) latest.insert_or_assign(health.name, std::move(health));
 	for (auto& wanted : desired_.nodes()) {
 		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(), NodeState::starting, std::nullopt};
 		if (const auto it = latest.find(node.spec.name); it != latest.end()) {

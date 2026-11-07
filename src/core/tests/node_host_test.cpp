@@ -200,10 +200,10 @@ struct TestReceivers final : RtpReceiverFactory {
 	}
 };
 
-struct TestListener final : NodeStatusListener {
+struct TestListener final : NodeHealthListener {
 	Log& log;
 	explicit TestListener(Log& l) : log(l) {}
-	void nodeChanged(const NodeStatus& status) override {
+	void nodeChanged(const NodeHealth& status) override {
 		std::string line = "node " + status.name + " " + std::string(stateName(status.state));
 		if (status.reason) line += " " + std::string(failureCode(status.reason->code)) + ": " + status.reason->detail;
 		log.push_back(line);
@@ -293,8 +293,8 @@ TEST_CASE("A node gets its port block, then starts, prepares its audio code and 
 
 	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
 	                   "prepare 44100/256", "drive code"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::starting);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::starting);
 
 	f.stopAll();
 	f.handoffs.finishOne(0);
@@ -309,8 +309,8 @@ TEST_CASE("A node becomes running when its port block is ready", "[node_host]") 
 	f.blocks.events.at(0)->ready(); // at most once; a repeat changes nothing
 
 	CHECK(f.log == Log{"node rec running"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::running);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::running);
 	f.stopAll();
 }
 
@@ -325,10 +325,10 @@ TEST_CASE("A node whose start fails is failed with start-failed and keeps its po
 	// The handoff it asked for goes at once (nothing ever wrote to it); no prepare, no drive.
 	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
 	                   "insides destroyed", "handoff destroyed", "node rec failed start-failed: cannot open /nope"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::failed);
-	REQUIRE(f.host.status()[0].reason.has_value());
-	CHECK(f.host.status()[0].reason->code == FailureReason::Code::startFailed);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::failed);
+	REQUIRE(f.host.health()[0].reason.has_value());
+	CHECK(f.host.health()[0].reason->code == FailureReason::Code::startFailed);
 
 	// The block becoming ready leaves the node failed.
 	f.log.clear();
@@ -371,14 +371,14 @@ TEST_CASE("stopAll takes a node down in order: block, release, handoffs, insides
 	f.handoffs.finishOne(3);
 	CHECK(f.log.empty());
 	CHECK(f.allGone == 0);
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::stopping);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::stopping);
 
 	f.handoffs.finishOne(4);
 	CHECK(f.log ==
 	      Log{"handoff destroyed", "handoff destroyed", "insides destroyed", "node rec gone dropped=7", "all gone"});
 	CHECK(f.allGone == 1);
-	CHECK(f.host.status().empty());
+	CHECK(f.host.health().empty());
 }
 
 TEST_CASE("allGone runs once, after the last node is gone", "[node_host]") {
@@ -393,8 +393,8 @@ TEST_CASE("allGone runs once, after the last node is gone", "[node_host]") {
 
 	// noise has no handoff, so it is gone at once; rec waits for its handoff.
 	CHECK(f.allGone == 0);
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].name == "rec");
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].name == "rec");
 
 	f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
@@ -446,7 +446,7 @@ TEST_CASE("An update restarts the insides behind the same port block, letting th
 		f.log.clear();
 		f.handoffs.finishOne(2);
 		CHECK(f.log == Log{"handoff destroyed", "insides destroyed", "config A destroyed", "node rec gone dropped=2"});
-		CHECK(f.host.status().empty());
+		CHECK(f.host.health().empty());
 		f.log.clear();
 		f.stopAll();
 		CHECK(f.log == Log{"all gone"});
@@ -491,7 +491,7 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it ru
 	CHECK(f.log ==
 	      Log{"card motu.playback of motu Pro24 PB1,PB2 at 44100", "card motu.capture of motu Pro24 CAP1 at 44100"});
 	REQUIRE(f.cards.events.size() == 2);
-	CHECK(f.host.status().at(0).state == NodeState::starting);
+	CHECK(f.host.health().at(0).state == NodeState::starting);
 	f.log.clear();
 
 	f.cards.events[1]->ready();
@@ -547,7 +547,7 @@ TEST_CASE("A node whose start fails makes none of the cards it asked for", "[nod
 	f.add("motu", config);
 	f.blocks.events.at(0)->ready();
 	CHECK(f.cards.events.empty());
-	CHECK(f.host.status().at(0).state == NodeState::failed);
+	CHECK(f.host.health().at(0).state == NodeState::failed);
 	f.stopAll();
 }
 
@@ -561,7 +561,7 @@ TEST_CASE("A lost port block is final: the node stays failed through updates and
 	f.blocks.events.at(0)->ready();
 	f.cards.events.at(0)->ready();
 	f.cards.events.at(1)->ready();
-	REQUIRE(f.host.status().at(0).state == NodeState::running);
+	REQUIRE(f.host.health().at(0).state == NodeState::running);
 	f.log.clear();
 
 	f.blocks.events.at(0)->lost("driver gone");
@@ -578,17 +578,17 @@ TEST_CASE("A lost port block is final: the node stays failed through updates and
 	CHECK(f.log == Log{"drive nothing", "release", "card motu.playback destroyed", "card motu.capture destroyed",
 	                   "handoff close", "config B destroyed", "handoff destroyed", "insides destroyed",
 	                   "config A destroyed"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::failed);
-	REQUIRE(f.host.status()[0].reason.has_value());
-	CHECK(f.host.status()[0].reason->detail == "driver gone");
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::failed);
+	REQUIRE(f.host.health()[0].reason.has_value());
+	CHECK(f.host.health()[0].reason->detail == "driver gone");
 	CHECK(f.cards.events.size() == 2);
 	f.log.clear();
 
 	// Removal still ends with nodeGone.
 	f.host.nodeRemoved("motu");
 	CHECK(f.log == Log{"node motu stopping", "block destroyed", "node motu gone dropped=0"});
-	CHECK(f.host.status().empty());
+	CHECK(f.host.health().empty());
 	f.stopAll();
 }
 
@@ -605,15 +605,15 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 	f.host.nodeRemoved("noise");
 	CHECK(f.log ==
 	      Log{"node noise stopping", "block destroyed", "release", "insides destroyed", "node noise gone dropped=0"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].name == "rec");
-	CHECK(f.host.status()[0].state == NodeState::running);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].name == "rec");
+	CHECK(f.host.health()[0].state == NodeState::running);
 	f.log.clear();
 
 	SECTION("a removed node still stopping comes before a newer node of the same name") {
 		f.host.nodeRemoved("rec");
 		f.add("rec", std::make_shared<TestConfig>(f.log));
-		const auto status = f.host.status();
+		const auto status = f.host.health();
 		REQUIRE(status.size() == 2);
 		CHECK(status[0].state == NodeState::stopping);
 		CHECK(status[1].state == NodeState::starting);
@@ -622,8 +622,8 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 		f.handoffs.finishOne(5);
 		CHECK(std::ranges::find(f.log, "node rec gone dropped=5") != f.log.end());
 		CHECK(f.log.back() == "drive code"); // the newer one waited for it
-		REQUIRE(f.host.status().size() == 1);
-		CHECK(f.host.status()[0].state == NodeState::starting);
+		REQUIRE(f.host.health().size() == 1);
+		CHECK(f.host.health()[0].state == NodeState::starting);
 	}
 	SECTION("stopAll after a removal still waits for it") {
 		f.host.nodeRemoved("rec");
@@ -665,7 +665,7 @@ TEST_CASE("A node's RTP receiver is made once its port block is ready, named <no
 	CHECK(made.rate == fppStream.rate);
 	CHECK(made.latencyMs == fppStream.latencyMs);
 	CHECK(made.blockPorts == fppStream.blockPorts);
-	CHECK(f.host.status().at(0).state == NodeState::starting);
+	CHECK(f.host.health().at(0).state == NodeState::starting);
 	f.log.clear();
 
 	f.receivers.events[0]->ready();
@@ -712,7 +712,7 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	}
 	f.blocks.events.at(0)->ready();
 	f.receivers.events.at(0)->ready();
-	REQUIRE(f.host.status().at(0).state == NodeState::running);
+	REQUIRE(f.host.health().at(0).state == NodeState::running);
 	f.log.clear();
 
 	f.receivers.events[0]->lost("the engine removed the RTP receiver");
@@ -761,7 +761,7 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 		f.receivers.events[0]->lost("the engine removed the RTP receiver's module");
 		CHECK(f.log == Log{"node mix failed engine-refused: the engine removed the RTP receiver's module"});
 	}
-	CHECK(f.host.status().at(0).state == NodeState::failed);
+	CHECK(f.host.health().at(0).state == NodeState::failed);
 	f.stopAll();
 }
 
@@ -1038,8 +1038,8 @@ TEST_CASE("Insides lost from their own thread fail a running node with start-fai
 	CHECK(f.log.empty());
 	f.mainLoop.runPosted();
 	CHECK(f.log == Log{"node net failed start-failed: the client died"});
-	REQUIRE(f.host.status().size() == 1);
-	CHECK(f.host.status()[0].state == NodeState::failed);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::failed);
 
 	f.log.clear();
 	f.stopAll();

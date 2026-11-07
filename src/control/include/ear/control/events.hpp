@@ -25,7 +25,7 @@ struct NodeRemoved {
 	NodeName node;
 };
 struct NodeChanged {
-	NodeStatus status;
+	NodeHealth health;
 };
 struct NodeStopped {
 	NodeName node;

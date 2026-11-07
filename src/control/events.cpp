@@ -73,8 +73,8 @@ std::string encodeEvent(const GraphEvent& event) {
 			} else if constexpr (std::is_same_v<E, NodeRemoved>) {
 				return encodeNotification("node.removed", {{"name", e.node}});
 			} else if constexpr (std::is_same_v<E, NodeChanged>) {
-				json params = {{"name", e.status.name}};
-				addState(params, e.status.state, e.status.reason);
+				json params = {{"name", e.health.name}};
+				addState(params, e.health.state, e.health.reason);
 				return encodeNotification("node.state", params);
 			} else if constexpr (std::is_same_v<E, NodeStopped>) {
 				return encodeNotification("node.stopped", {{"name", e.node}, {"droppedFrames", e.droppedFrames}});

@@ -221,12 +221,12 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {noiseToFl});
 	f.blocks.events.at("rec")->ready();
-	REQUIRE(f.nodes.status().at(1).name == "rec"); // a commit adds in name order
-	REQUIRE(f.nodes.status().at(1).state == NodeState::running);
+	REQUIRE(f.nodes.health().at(1).name == "rec"); // a commit adds in name order
+	REQUIRE(f.nodes.health().at(1).state == NodeState::running);
 
 	apply(f.graph, {{"noise", "source", noSettings}}, {});
-	REQUIRE(f.nodes.status().size() == 2); // rec waits for its handoff to close
-	CHECK(f.nodes.status().at(1).state == NodeState::stopping);
+	REQUIRE(f.nodes.health().size() == 2); // rec waits for its handoff to close
+	CHECK(f.nodes.health().at(1).state == NodeState::stopping);
 
 	GraphView view = f.status.read();
 	REQUIRE(view.nodes.size() == 1);
@@ -234,7 +234,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.routes.empty());
 
 	apply(f.graph, {{"noise", "source", noSettings}, {"rec", "recorder", noSettings}}, {});
-	REQUIRE(f.nodes.status().size() == 3); // the old rec, still stopping, comes first
+	REQUIRE(f.nodes.health().size() == 3); // the old rec, still stopping, comes first
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);
 	CHECK(view.nodes[1].spec.name == "rec");
@@ -245,7 +245,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
-	REQUIRE(f.nodes.status().size() == 2);
+	REQUIRE(f.nodes.health().size() == 2);
 	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::running);
 }

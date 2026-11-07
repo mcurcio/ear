@@ -51,7 +51,7 @@ struct NodeHost::Impl {
 		const NodeName& name() const noexcept { return name_; }
 		const NodeLifecycle& lifecycle() const noexcept { return lifecycle_; }
 		bool stopping() const noexcept { return stopping_; }
-		NodeStatus status() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
+		NodeHealth health() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
 
 		/// The port block first, once for the node's life; then the insides, which drive it: now, or
 		/// once an older node of this name has gone, as a restart waits, so old and new insides
@@ -339,7 +339,7 @@ struct NodeHost::Impl {
 	SoundCardFactory& cards;
 	RtpReceiverFactory& receivers;
 	Executor& mainLoop;
-	std::vector<NodeStatusListener*> listeners;
+	std::vector<NodeHealthListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; gone ones are pruned on add
 	bool stopRequested = false;
@@ -358,8 +358,8 @@ struct NodeHost::Impl {
 	}
 
 	void changed(const Node& node) {
-		const NodeStatus status = node.status();
-		for (auto* listener : listeners) listener->nodeChanged(status);
+		const NodeHealth health = node.health();
+		for (auto* listener : listeners) listener->nodeChanged(health);
 	}
 
 	void noted(const NodeName& node, const std::string& text) {
@@ -393,7 +393,7 @@ NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory&
 
 NodeHost::~NodeHost() = default;
 
-void NodeHost::subscribe(NodeStatusListener& listener) { impl_->listeners.push_back(&listener); }
+void NodeHost::subscribe(NodeHealthListener& listener) { impl_->listeners.push_back(&listener); }
 
 void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners.push_back(&listener); }
 
@@ -426,10 +426,10 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	impl_->allGoneIfDone();
 }
 
-std::vector<NodeStatus> NodeHost::status() const {
-	std::vector<NodeStatus> result;
+std::vector<NodeHealth> NodeHost::health() const {
+	std::vector<NodeHealth> result;
 	for (const auto& node : impl_->nodes)
-		if (!node->lifecycle().gone()) result.push_back(node->status());
+		if (!node->lifecycle().gone()) result.push_back(node->health());
 	return result;
 }
 

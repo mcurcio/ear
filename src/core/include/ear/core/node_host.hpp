@@ -12,19 +12,19 @@
 #include "ear/core/executor.hpp"
 #include "ear/core/node_lifecycle.hpp"
 namespace ear {
-struct NodeStatus {
+struct NodeHealth {
 	NodeName name;
 	NodeState state;
 	std::optional<FailureReason> reason;
 };
-class NodeStatusListener {
+class NodeHealthListener {
 public:
-	virtual void nodeChanged(const NodeStatus& status) = 0;
+	virtual void nodeChanged(const NodeHealth& health) = 0;
 	/// Everything the node made is gone. droppedFrames: frames its handoffs refused (ring full).
 	virtual void nodeGone(const NodeName& node, std::uint64_t droppedFrames) = 0;
 
 protected:
-	~NodeStatusListener() = default;
+	~NodeHealthListener() = default;
 };
 /// What a node's insides say: a sentence, never a state (InsidesEvents::say).
 class NodeNoteListener {
@@ -134,7 +134,7 @@ public:
 	NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs, SoundCardFactory& cards,
 	         RtpReceiverFactory& receivers, Executor& mainLoop);
 	~NodeHost(); // precondition: stopAll completed (or no node was ever added)
-	void subscribe(NodeStatusListener& listener);
+	void subscribe(NodeHealthListener& listener);
 	void subscribeNotes(NodeNoteListener& listener);
 	/// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the
 	/// outside nodes the type asked for are made once the block is ready, in request order, named
@@ -156,7 +156,7 @@ public:
 	void stopAll(GraphClosed closed, std::move_only_function<void()> allGone);
 	/// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
 	/// of the same name).
-	std::vector<NodeStatus> status() const;
+	std::vector<NodeHealth> health() const;
 
 private:
 	struct Impl;

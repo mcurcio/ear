@@ -14,11 +14,11 @@ std::string writeFailedText(const std::string& detail) { return std::format("wri
 
 } // namespace
 
-void StatusLog::nodeChanged(const NodeStatus& status) {
-	if (status.state == NodeState::failed && status.reason)
-		out_ << std::format("node {} failed {}: {}\n", status.name, failureCode(status.reason->code),
-		                    status.reason->detail);
-	else out_ << std::format("node {} {}\n", status.name, stateName(status.state));
+void StatusLog::nodeChanged(const NodeHealth& health) {
+	if (health.state == NodeState::failed && health.reason)
+		out_ << std::format("node {} failed {}: {}\n", health.name, failureCode(health.reason->code),
+		                    health.reason->detail);
+	else out_ << std::format("node {} {}\n", health.name, stateName(health.state));
 	out_.flush();
 }
 
