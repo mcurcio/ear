@@ -50,7 +50,7 @@ class Config final : public ear::NodeConfig {
 public:
 	explicit Config(ear::Ports ports) : ports_(std::move(ports)) {}
 	const ear::Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+	ear::StartResult start(ear::StartContext&) const override {
 		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "test config"});
 	}
 
@@ -189,8 +189,10 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	f.gateway.graphFileWritten("b.3"); // a status line only: nothing on the wire
 	f.gateway.nodeAdded(
 		{"n", "white", json::object()},
-		std::make_shared<Config>(ear::Ports{
-			{{ear::Direction::input, "in", {"a"}}, {ear::Direction::output, "out", {"a"}}}, {"I2"}, {"O2"}}));
+		std::make_shared<Config>(ear::Ports{{{ear::Direction::input, "in", {"a"}},
+	                                         {ear::Direction::output, "out", {"a"}},
+	                                         {ear::Direction::input, "i2", {"1"}, ear::PortBank::Reach::inside},
+	                                         {ear::Direction::output, "o2", {"1"}, ear::PortBank::Reach::inside}}}));
 	f.gateway.nodeUpdated({"n", "white", {{"k", 1}}}, std::make_shared<Config>(ear::Ports{}));
 	f.gateway.nodeChanged({"n", ear::NodeState::running, std::nullopt});
 	f.gateway.routeAdded({{"n", "out.a"}, {"m", "in.a"}});

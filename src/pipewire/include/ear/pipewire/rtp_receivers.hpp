@@ -24,11 +24,11 @@ namespace ear::pipewire {
 /// will not load fails it (told later, never inside make()). A socket that cannot be bound
 /// gives no event on PipeWire 1.4.2: the node never runs, so it is never linked or ready, and
 /// the EAR node stays starting (docs/design/rtp.md section 4, finding g).
-class RtpReceivers final : public RtpReceiverFactory {
+class RtpReceivers final : public RtpReceiverAdapter {
 public:
 	explicit RtpReceivers(Engine& engine); // engine outlives it
-	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                  const RtpReceiverRequest& request, OutsideNodeEvents& events) override;
+	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const RtpReceiverRequest& request,
+	                                  OutsideNodeEvents& events) override;
 
 private:
 	Engine& engine_;

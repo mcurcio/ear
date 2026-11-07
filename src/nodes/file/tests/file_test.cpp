@@ -1,5 +1,5 @@
-// The "file" node type through its NodeType contract, with a synchronous fake grant standing
-// in for the framework's handoff (docs/design/m1-white-to-file.md section 3, slice S5 criteria
+// The "file" node type through its NodeType contract, with a fake start context whose synchronous handoff stands
+// in for the framework's (docs/design/m1-white-to-file.md section 3, slice S5 criteria
 // 2 and 3). The WAV files are read back with libsndfile. Paths are relative to a recordings folder
 // and never lead out of it (docs/design/batch2.md section 4.4).
 #include <sndfile.h>
@@ -13,6 +13,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "catch2/catch.hpp"
@@ -50,21 +51,13 @@ private:
 	ear::HandoffConsumer& consumer_;
 };
 
-class FakeGrant final : public ear::NodeGrant {
+/// A start context whose handoffs are synchronous writers; any other resource fails the test.
+class FakeContext final : public ear::StartContext {
 public:
-	explicit FakeGrant(ear::AudioFormat format) : format_(format) {}
+	FakeContext(ear::AudioFormat format, const ear::Ports& ports) : format_(format), ports_(ports) {}
 	ear::AudioFormat format() const override { return format_; }
-	ear::RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames,
-	                       ear::HandoffConsumer& consumer) override {
-		requests.push_back({channels, capacityFrames});
-		writers.push_back(std::make_unique<SynchronousWriter>(channels, consumer));
-		return *writers.back();
-	}
-	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("file asked for a sound card"); }
-	void rtpReceiver(const ear::RtpReceiverRequest&) override {
-		throw std::logic_error("file asked for an RTP receiver");
-	}
-	ear::InsidesEvents& events() override { throw std::logic_error("file asked for insides events"); }
+	const ear::NodeName& node() const override { return name_; }
+	ear::InsidesEvents& events() override { throw std::logic_error("file asked for events"); }
 
 	struct Request {
 		std::uint32_t channels;
@@ -73,8 +66,27 @@ public:
 	std::vector<Request> requests;
 	std::vector<std::unique_ptr<SynchronousWriter>> writers;
 
+protected:
+	Acquired acquireResource(const ear::ResourceRequest& request) override {
+		const auto* handoff = std::get_if<ear::HandoffRequest>(&request);
+		if (handoff == nullptr) throw std::logic_error("file acquired something other than a handoff");
+		const auto channels = static_cast<std::uint32_t>(ports_.bank(handoff->bank).ports.size());
+		requests.push_back({channels, handoff->capacityFrames});
+		writers.push_back(std::make_unique<SynchronousWriter>(channels, *handoff->consumer));
+		return writers.back().get();
+	}
+
 private:
 	ear::AudioFormat format_;
+	const ear::Ports& ports_;
+	ear::NodeName name_ = "rec";
+};
+
+/// What the recipe is handed once every resource is ready.
+class FakeReady final : public ear::Ready {
+public:
+	ear::AudioFormat format() const override { return {.rate = 48000, .maxBlock = 256}; }
+	ear::InsidesEvents& events() override { throw std::logic_error("file asked for events"); }
 };
 
 std::shared_ptr<const ear::folder::ConfinedFolder> recordingsIn(const std::filesystem::path& path) {
@@ -154,7 +166,7 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 	for (const std::string path : {"rec.wav", "up/outside.wav", "up/new.wav"}) {
 		INFO(path);
 		const auto config = parseFile(folder, path);
-		FakeGrant grant{{.rate = 48000, .maxBlock = 256}};
+		FakeContext grant{{.rate = 48000, .maxBlock = 256}, config->ports()};
 
 		const auto insides = config->start(grant);
 
@@ -178,15 +190,19 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	constexpr ear::AudioFormat format{.rate = 32000, .maxBlock = 256};
 	constexpr std::uint32_t blocks = 3;
 	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
-	FakeGrant grant{format};
+	FakeContext grant{format, config->ports()};
 
-	auto insides = (*config).start(grant);
-	REQUIRE(insides.has_value());
+	auto started = (*config).start(grant);
+	REQUIRE(started.has_value());
 	REQUIRE(grant.requests.size() == 1);
 	CHECK(grant.requests[0].channels == 2);
 	CHECK(grant.requests[0].capacityFrames == 2 * format.rate); // 2 s ring
+	REQUIRE(started->recipe);
+	FakeReady ready;
+	auto run = started->recipe(ready); // the run object: the open file
+	REQUIRE(run.has_value());
 
-	ear::AudioCode& code = (*insides)->audioCode();
+	ear::AudioCode& code = *started->code.own();
 	code.prepare(format);
 	std::vector<float> left;
 	std::vector<float> right;
@@ -205,7 +221,7 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	}
 	code.release();
 	grant.writers[0]->consumer().finish();
-	insides->reset();
+	run->reset();
 
 	SF_INFO info{};
 	SNDFILE* file = sf_open(wav.c_str(), SFM_READ, &info);
@@ -228,7 +244,7 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 TEST_CASE("File fails to start on a path it cannot open, and asks for no handoff", "[file]") {
 	TempFolder dir{"unopenable"};
 	const auto config = parseFile(recordingsIn(dir.path()), "missing-dir/rec.wav");
-	FakeGrant grant{{.rate = 48000, .maxBlock = 256}};
+	FakeContext grant{{.rate = 48000, .maxBlock = 256}, config->ports()};
 
 	const auto insides = config->start(grant);
 

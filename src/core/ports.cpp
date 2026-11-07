@@ -1,4 +1,4 @@
-// How a node type's ports are declared: banks and the one place a public port's whole name is made
+// How a node type's ports are declared: banks, routable and inside, and the one place a port's whole name is made
 // (node_type.hpp).
 #include <algorithm>
 #include <stdexcept>
@@ -26,26 +26,46 @@ PortName portName(std::string_view bank, std::string_view member) {
 	return std::string(bank) + '.' + std::string(member);
 }
 
-std::vector<std::string> numbered(std::uint32_t count, std::string_view prefix) {
+std::vector<std::string> numbered(std::uint32_t count) {
 	std::vector<std::string> names;
 	names.reserve(count);
-	for (std::uint32_t i = 1; i <= count; ++i) names.push_back(std::string(prefix) + std::to_string(i));
+	for (std::uint32_t i = 1; i <= count; ++i) names.push_back(std::to_string(i));
 	return names;
 }
 
-Ports::Ports(const std::vector<PortBank>& banks, std::vector<PortName> insideInputs,
-             std::vector<PortName> insideOutputs)
-	: insideInputs_(std::move(insideInputs)), insideOutputs_(std::move(insideOutputs)) {
-	for (const PortBank& bank : banks) {
-		auto& list = bank.direction == Direction::input ? inputs_ : outputs_;
-		for (const std::string& member : bank.members) list.push_back(portName(bank.name, member));
+Ports::Ports(const std::vector<PortBank>& banks) {
+	for (const PortBank& declared : banks) {
+		if (std::ranges::any_of(banks_, [&](const Bank& known) { return known.name == declared.name; }))
+			throw std::logic_error("a node's port banks have unique names: \"" + std::string(declared.name) +
+			                       "\" is declared twice");
+		const bool inside = declared.reach == PortBank::Reach::inside;
+		auto& list = declared.direction == Direction::input ? (inside ? insideInputs_ : inputs_)
+		                                                    : (inside ? insideOutputs_ : outputs_);
+		Bank bank{std::string(declared.name), declared.direction, declared.reach, {}, list.size()};
+		for (const std::string& member : declared.members) {
+			bank.ports.push_back(portName(declared.name, member));
+			list.push_back(bank.ports.back());
+		}
+		banks_.push_back(std::move(bank));
 	}
+	// An inside bank's ports follow every routable port of its direction in the spans process() gets.
+	for (Bank& bank : banks_)
+		if (bank.reach == PortBank::Reach::inside)
+			bank.first += bank.direction == Direction::input ? inputs_.size() : outputs_.size();
+}
+
+const Ports::Bank& Ports::bank(std::string_view name) const {
+	const auto found = std::ranges::find_if(banks_, [&](const Bank& bank) { return bank.name == name; });
+	if (found == banks_.end()) throw std::logic_error("no port bank \"" + std::string(name) + "\"");
+	return *found;
 }
 
 Ports Ports::publicOnly() const {
 	Ports only;
 	only.inputs_ = inputs_;
 	only.outputs_ = outputs_;
+	for (const Bank& bank : banks_)
+		if (bank.reach == PortBank::Reach::routable) only.banks_.push_back(bank);
 	return only;
 }
 

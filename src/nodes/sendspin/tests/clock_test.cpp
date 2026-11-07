@@ -296,12 +296,12 @@ private:
 struct TestCard {
 	explicit TestCard(Rig& rig)
 		: cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
-		block = rig.blocks.make("card", Ports{{}, {}, {"to_card_1", "to_card_2"}}, kFormat, blockEvents);
+		block = rig.blocks.make("card", Ports{{{Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
+		                        kFormat, blockEvents);
 		block->drive(&silence);
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
-		card = cards.make("card.playback", "card",
-		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, {"to_card_1", "to_card_2"}},
-		                  kFormat, events);
+		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
+		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
 		REQUIRE(rig.waiter.until([&] { return events.isReady || events.lostDetail.has_value(); }));
 		REQUIRE(events.lostDetail.value_or("") == "");
 	}

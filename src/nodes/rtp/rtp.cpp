@@ -1,13 +1,11 @@
-// The "rtp" node type: one RTP stream received behind a port block (docs/design/rtp.md sections 3
-// and 7.3, ear/nodes/rtp.hpp). The framework joins the receiver's channels to the inside inputs
-// "from_rtp_1"..; they pass straight through to the outputs "stream.1"... Every setting is
-// checked by the table, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the
-// format a closed enum, every number ranged.
-#include <algorithm>
+// The "rtp" node type: one RTP stream received behind a port block (docs/design/rtp.md sections 3 and 7.3,
+// ear/nodes/rtp.hpp; docs/design/node-framework.md section 11). The framework joins the receiver's channels to the
+// inside bank "from_rtp" and passes them straight through to the outputs "stream.1"..: the type writes no audio code.
+// Every setting is checked by the table, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format
+// a closed enum, every number ranged.
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -39,30 +37,6 @@ constexpr auto rateRow = setting::optional("rate", setting::number(8000, 192000,
 constexpr auto latencyRow = setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs);
 constexpr SettingsTable<addressRow, portRow, formatRow, channelsRow, rateRow, latencyRow> table{"rtp"};
 
-/// Copies from_rtp_i to stream.i. The node has no public inputs, so its inputs are the inside
-/// inputs alone; its outputs are stream.1..N.
-class PassThrough final : public AudioCode {
-public:
-	void prepare(const AudioFormat&) override {}
-
-	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames, const GraphCycle&) noexcept override {
-		for (std::size_t i = 0; i < outputs.size(); ++i) {
-			std::ranges::copy(inputs[i].first(frames), outputs[i].begin());
-		}
-	}
-
-	void release() noexcept override {}
-};
-
-class RtpInsides final : public NodeInsides {
-public:
-	AudioCode& audioCode() override { return code_; }
-
-private:
-	PassThrough code_;
-};
-
 struct RtpSettings {
 	RtpAddress address;
 	std::uint16_t port;
@@ -75,19 +49,20 @@ struct RtpSettings {
 class RtpConfig final : public NodeConfig {
 public:
 	explicit RtpConfig(RtpSettings settings)
-		: settings_(std::move(settings)), ports_{{{Direction::output, "stream", numbered(settings_.channels)}},
-	                                             numbered(settings_.channels, "from_rtp_")} {}
+		: settings_(std::move(settings)),
+		  ports_{{{Direction::output, "stream", numbered(settings_.channels)},
+	              {Direction::input, "from_rtp", numbered(settings_.channels), PortBank::Reach::inside}}} {}
 
 	const Ports& ports() const override { return ports_; }
 
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
-		grant.rtpReceiver({.address = settings_.address,
-		                   .port = settings_.port,
-		                   .encoding = settings_.encoding,
-		                   .rate = settings_.rate.value_or(grant.format().rate),
-		                   .latencyMs = settings_.latencyMs,
-		                   .blockPorts = ports_.insideInputs()});
-		return std::make_unique<RtpInsides>();
+	StartResult start(StartContext& context) const override {
+		context.acquire(RtpReceiverRequest{.address = settings_.address,
+		                                   .port = settings_.port,
+		                                   .encoding = settings_.encoding,
+		                                   .rate = settings_.rate.value_or(context.format().rate),
+		                                   .latencyMs = settings_.latencyMs,
+		                                   .bank = "from_rtp"});
+		return Started{passThrough({{"from_rtp", "stream"}})};
 	}
 
 private:

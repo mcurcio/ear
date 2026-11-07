@@ -103,17 +103,15 @@ private:
 	RtWriter* writer_ = nullptr;
 };
 
-class FileInsides final : public NodeInsides {
+/// The run: the open file, the handoff's consumer. It outlives the handoff (the framework closes the handoff first).
+class FileRun final : public RunObject {
 public:
-	FileInsides(SNDFILE* file, Descriptor fd) noexcept : wav_(file, std::move(fd)) {}
+	FileRun(SNDFILE* file, Descriptor fd) noexcept : wav_(file, std::move(fd)) {}
 
-	AudioCode& audioCode() override { return recorder_; }
 	HandoffConsumer& consumer() noexcept { return wav_; }
-	void connect(RtWriter& writer) noexcept { recorder_.connect(writer); }
 
 private:
 	WavWriter wav_;
-	Recorder recorder_;
 };
 
 class FileConfig final : public NodeConfig {
@@ -123,8 +121,10 @@ public:
 
 	const Ports& ports() const override { return ports_; }
 
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
-		const AudioFormat format = grant.format();
+	// It still opens the file here, in start; slice 2 of docs/design/node-framework.md makes the recordings file a
+	// resource.
+	StartResult start(StartContext& context) const override {
+		const AudioFormat format = context.format();
 		// The folder creates or truncates the file; libsndfile only writes to the descriptor.
 		auto opened = recordings_->create(path_);
 		if (!opened) {
@@ -141,9 +141,14 @@ public:
 			return std::unexpected(
 				FailureReason{FailureReason::Code::startFailed, "cannot open " + path_ + ": " + sf_strerror(nullptr)});
 		}
-		auto insides = std::make_unique<FileInsides>(file, std::move(fd));
-		insides->connect(grant.handoff(channelCount, ringSeconds * format.rate, insides->consumer()));
-		return insides;
+		auto run = std::make_unique<FileRun>(file, std::move(fd));
+		auto recorder = std::make_unique<Recorder>();
+		recorder->connect(context.acquire(HandoffRequest{"record", ringSeconds * format.rate, &run->consumer()}));
+		return Started{
+			std::move(recorder),
+			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+				return std::move(run);
+			}};
 	}
 
 private:

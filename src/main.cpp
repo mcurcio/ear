@@ -15,6 +15,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -53,6 +54,16 @@ std::optional<std::uint32_t> positive(std::int64_t value) {
 	if (value <= 0 || value > std::numeric_limits<std::uint32_t>::max()) return std::nullopt;
 	return static_cast<std::uint32_t>(value);
 }
+
+/// The framework's own observations about a node (today only a run leaked past its close deadline) go to standard
+/// error until they have a record of their own on standard output and the wire (docs/design/node-framework.md
+/// slices 4 and 5); the status lines do not change.
+class DiagnosticsToStandardError final : public ear::NodeDiagnosticListener {
+public:
+	void nodeDiagnostic(const ear::NodeName& node, std::string_view code, const std::string& detail) override {
+		std::cerr << "ear: node " << node << ' ' << code << ": " << detail << std::endl;
+	}
+};
 
 } // namespace
 
@@ -162,7 +173,9 @@ int main(int argc, char** argv) {
 
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
-	ear::NodeHost nodes(format, blocks, handoffs, cards, receivers, mainLoop);
+	ear::ResourceRegistry resources(cards, receivers, handoffs);
+	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
+	DiagnosticsToStandardError diagnostics;
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
 	                              reconciler);
 	ear::control::StatusLog log(std::cout);
@@ -179,6 +192,7 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
+	nodes.subscribeDiagnostics(diagnostics);
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);

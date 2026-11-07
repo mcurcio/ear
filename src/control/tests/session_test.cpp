@@ -53,7 +53,7 @@ class Config final : public ear::NodeConfig {
 public:
 	explicit Config(ear::Ports ports) : ports_(std::move(ports)) {}
 	const ear::Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+	ear::StartResult start(ear::StartContext&) const override {
 		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "test config"});
 	}
 

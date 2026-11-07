@@ -133,3 +133,35 @@ TEST_CASE("Work still queued when the executor is destroyed is destroyed unrun",
 	REQUIRE(runUntilQuit(*engine));
 	CHECK_FALSE(ran);
 }
+
+TEST_CASE("A timer runs once on the main loop after its delay, never once destroyed, and may be destroyed inside "
+          "its own call",
+          "[executor][timers]") {
+	auto engine = makeEngine();
+	MainLoopExecutor executor(*engine);
+	Timers& timers = executor;
+	const std::thread::id loopThread = std::this_thread::get_id();
+	int cancelledRan = 0;
+	int ownRan = 0;
+	bool onLoop = false;
+	std::unique_ptr<Timer> own;
+	const auto armed = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::duration waited{};
+
+	auto cancelled = timers.after(std::chrono::milliseconds(20), [&] { ++cancelledRan; });
+	cancelled.reset();
+	own = timers.after(std::chrono::milliseconds(50), [&] {
+		++ownRan;
+		onLoop = std::this_thread::get_id() == loopThread;
+		waited = std::chrono::steady_clock::now() - armed;
+		own.reset(); // the timer goes inside its own call
+		executor.post([&] { engine->quit(); });
+	});
+	auto zero = timers.after(std::chrono::milliseconds(0), [] {}); // a zero delay still fires, later
+	REQUIRE(runUntilQuit(*engine));
+	CHECK(ownRan == 1);
+	CHECK(onLoop);
+	CHECK(waited >= std::chrono::milliseconds(50));
+	CHECK(cancelledRan == 0);
+	CHECK(own == nullptr);
+}

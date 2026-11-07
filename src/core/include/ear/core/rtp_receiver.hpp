@@ -1,4 +1,5 @@
-// Frozen interface (docs/design/rtp.md section 7.1). Change it only through an erratum in that
+// Frozen interface (docs/design/rtp.md section 7.1; the request names an inside bank by docs/design/node-framework.md
+// section 7.3, slice 1). Change it only through an erratum in that
 // page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
@@ -34,10 +35,10 @@ struct RtpReceiverRequest {
 	RtpAddress address;
 	std::uint16_t port; // UDP port, 1-65535 (never 0)
 	RtpEncoding encoding;
-	std::uint32_t rate;               // the sender's rate, 8000-192000 Hz; resampled to the
-									  // graph frequency when it differs
-	std::uint32_t latencyMs;          // target receive buffer, 1-1000
-	std::vector<PortName> blockPorts; // channel i <-> blockPorts[i]: insideInputs of this node;
-									  // size() is the stream's channel count, 1-64
+	std::uint32_t rate;      // the sender's rate, 8000-192000 Hz; resampled to the
+							 // graph frequency when it differs
+	std::uint32_t latencyMs; // target receive buffer, 1-1000
+	std::string bank;        // the inside input bank it joins, channel i <-> the bank's port i; the bank's size is the
+							 // stream's channel count, 1-64
 };
 } // namespace ear

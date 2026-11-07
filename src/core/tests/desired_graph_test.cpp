@@ -22,7 +22,7 @@ class TestConfig final : public NodeConfig {
 public:
 	explicit TestConfig(Ports ports) : ports_(std::move(ports)) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant&) const override {
+	StartResult start(StartContext&) const override {
 		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
 	}
 
@@ -33,7 +33,6 @@ private:
 constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
 constexpr SettingsTable<levelRow> sourceTable{"source"};
 constexpr SettingsTable<levelRow> sinkTable{"sink"};
-constexpr SettingsTable<levelRow> brokenTable{"broken"};
 
 /// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid: its table declares no such key.
 template <const auto& Table> class TestType final : public NodeTypeOf<Table> {
@@ -68,8 +67,6 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	types.push_back(std::make_unique<CardType>());
 	types.push_back(std::make_unique<TestType<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
 	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}));
-	types.push_back(std::make_unique<TestType<brokenTable>>(
-		Ports{{{Direction::input, "x", {"a"}}, {Direction::output, "x", {"a"}}}}));
 	return types;
 }
 
@@ -161,12 +158,6 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 		CHECK(f.recorder.nodes.size() == 1);
 		CHECK(f.graph.nodes().at(0).spec == noiseSpec);
 	}
-}
-
-TEST_CASE("plan throws a logic error for a type that declares a port name twice", "[desired_graph]") {
-	Fixture f;
-	CHECK_THROWS_AS(f.graph.plan(std::vector<NodeSpec>{{"odd", "broken", json::object()}}, {}), std::logic_error);
-	CHECK(f.recorder.nodes.empty());
 }
 
 TEST_CASE("A wanted route is checked at both ends: node, port and direction", "[desired_graph]") {

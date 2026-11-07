@@ -20,16 +20,6 @@ bool declares(const std::vector<PortName>& ports, const PortName& port) {
 	return std::find(ports.begin(), ports.end(), port) != ports.end();
 }
 
-/// The node type's ports invariant (node_type.hpp): a breach is a type bug, not a user error.
-void requireUniquePortNames(const NodeSpec& node, const Ports& ports) {
-	std::set<PortName> seen;
-	for (const auto* list : {&ports.inputs(), &ports.outputs(), &ports.insideInputs(), &ports.insideOutputs()})
-		for (const auto& port : *list)
-			if (!seen.insert(port).second)
-				throw std::logic_error("node type " + node.type + " declares port " + port + " twice on node " +
-				                       node.name);
-}
-
 /// The node name rule (its one home): 1-64 characters of [A-Za-z0-9_-]. '.' is never allowed,
 /// so a node's sound cards ("<node>.playback", "<node>.capture") cannot collide with a node.
 bool validName(const NodeName& name) {
@@ -76,7 +66,6 @@ struct DesiredGraph::Impl {
 		if (type == nullptr) return std::unexpected(UnknownNodeType{node.type});
 		auto config = type->parse(node.name, node.settings);
 		if (!config) return std::unexpected(std::move(config.error()));
-		requireUniquePortNames(node, (*config)->ports());
 		return std::shared_ptr<const NodeConfig>(std::move(*config));
 	}
 };

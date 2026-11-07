@@ -1,33 +1,41 @@
-// The "card" node type through its NodeType contract, with a fake grant that records the sound
-// cards asked for (docs/design/batch2.md section 4.4, slice E2 criterion 6). The engine side of a
-// card (AlsaSoundCards) is tested in src/pipewire/tests/sound_card_test.cpp.
+// The "card" node type through its NodeType contract, with a fake start context that records the sound cards it
+// acquires (docs/design/batch2.md section 4.4, slice E2 criterion 6; docs/design/node-framework.md slice 1: named inside
+// banks and the framework's pass-through). The engine side of a card (AlsaSoundCards) is tested in
+// src/pipewire/tests/sound_card_test.cpp.
 #include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/nodes/card.hpp"
 
 namespace {
 
 using Names = std::vector<ear::PortName>;
 
-/// Records every sound card asked for; a handoff request fails the test.
-class RecordingGrant final : public ear::NodeGrant {
+/// Records every sound card acquired; any other resource fails the test.
+class RecordingContext final : public ear::StartContext {
 public:
 	ear::AudioFormat format() const override { return {.rate = 48000, .maxBlock = 256}; }
-	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
-		throw std::logic_error("card requested a handoff");
-	}
-	void soundCard(const ear::SoundCardRequest& request) override { requests.push_back(request); }
-	void rtpReceiver(const ear::RtpReceiverRequest&) override {
-		throw std::logic_error("card asked for an RTP receiver");
-	}
-	ear::InsidesEvents& events() override { throw std::logic_error("card asked for insides events"); }
+	const ear::NodeName& node() const override { return name_; }
+	ear::InsidesEvents& events() override { throw std::logic_error("card asked for events"); }
 
 	std::vector<ear::SoundCardRequest> requests;
+
+protected:
+	Acquired acquireResource(const ear::ResourceRequest& request) override {
+		const auto* card = std::get_if<ear::SoundCardRequest>(&request);
+		if (card == nullptr) throw std::logic_error("card acquired something other than a sound card");
+		requests.push_back(*card);
+		return std::monostate{};
+	}
+
+private:
+	ear::NodeName name_ = "motu";
 };
 
 std::unique_ptr<const ear::NodeConfig> parseOk(const ear::NodeSettings& settings) {
@@ -43,9 +51,11 @@ TEST_CASE("Card accepts a card id with playback and capture channel counts", "[c
 	const auto config = parseOk({{"card", "Pro24"}, {"playback", 3}, {"capture", 2}});
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs() == Names{"play.1", "play.2", "play.3"});
-	CHECK(ports.insideOutputs() == Names{"to_card_1", "to_card_2", "to_card_3"});
+	CHECK(ports.insideOutputs() == Names{"to_card.1", "to_card.2", "to_card.3"});
 	CHECK(ports.outputs() == Names{"capture.1", "capture.2"});
-	CHECK(ports.insideInputs() == Names{"from_card_1", "from_card_2"});
+	CHECK(ports.insideInputs() == Names{"from_card.1", "from_card.2"});
+	CHECK(ports.bank("to_card").reach == ear::PortBank::Reach::inside);
+	CHECK(ports.bank("from_card").reach == ear::PortBank::Reach::inside);
 
 	// Each direction defaults to 0 channels.
 	const auto playbackOnly = parseOk({{"card", "Test"}, {"playback", 1}});
@@ -89,44 +99,48 @@ TEST_CASE("Card rejects settings outside section 4.4's rules", "[card]") {
 	}
 }
 
-TEST_CASE("Card start asks one sound card per direction, its block ports in order", "[card]") {
+TEST_CASE("Card start acquires one sound card per direction, each joined to its inside bank", "[card]") {
 	const auto config = parseOk({{"card", "Pro24"}, {"playback", 2}, {"capture", 3}});
-	RecordingGrant grant;
-	REQUIRE(config->start(grant).has_value());
-	REQUIRE(grant.requests.size() == 2);
+	RecordingContext context;
+	REQUIRE(config->start(context).has_value());
+	REQUIRE(context.requests.size() == 2);
 	const ear::CardId pro24 = *ear::CardId::parse("Pro24");
-	CHECK(grant.requests[0].card == pro24);
-	CHECK(grant.requests[0].direction == ear::CardDirection::playback);
-	CHECK(grant.requests[0].blockPorts == Names{"to_card_1", "to_card_2"});
-	CHECK(grant.requests[1].card == pro24);
-	CHECK(grant.requests[1].direction == ear::CardDirection::capture);
-	CHECK(grant.requests[1].blockPorts == Names{"from_card_1", "from_card_2", "from_card_3"});
+	CHECK(context.requests[0].card == pro24);
+	CHECK(context.requests[0].direction == ear::CardDirection::playback);
+	CHECK(context.requests[0].bank == "to_card");
+	CHECK(context.requests[1].card == pro24);
+	CHECK(context.requests[1].direction == ear::CardDirection::capture);
+	CHECK(context.requests[1].bank == "from_card");
 
-	RecordingGrant playbackGrant;
-	REQUIRE(parseOk({{"card", "Test"}, {"playback", 1}})->start(playbackGrant).has_value());
-	REQUIRE(playbackGrant.requests.size() == 1);
-	CHECK(playbackGrant.requests[0].direction == ear::CardDirection::playback);
+	RecordingContext playbackContext;
+	REQUIRE(parseOk({{"card", "Test"}, {"playback", 1}})->start(playbackContext).has_value());
+	REQUIRE(playbackContext.requests.size() == 1);
+	CHECK(playbackContext.requests[0].direction == ear::CardDirection::playback);
 
-	RecordingGrant captureGrant;
-	REQUIRE(parseOk({{"card", "Test"}, {"capture", 1}})->start(captureGrant).has_value());
-	REQUIRE(captureGrant.requests.size() == 1);
-	CHECK(captureGrant.requests[0].direction == ear::CardDirection::capture);
+	RecordingContext captureContext;
+	REQUIRE(parseOk({{"card", "Test"}, {"capture", 1}})->start(captureContext).has_value());
+	REQUIRE(captureContext.requests.size() == 1);
+	CHECK(captureContext.requests[0].direction == ear::CardDirection::capture);
 }
 
-TEST_CASE("Card passes play.i to to_card_i and from_card_j to capture.j sample for sample", "[card]") {
+TEST_CASE("Card writes no audio code: the framework's pass-through carries play.i to to_card.i and from_card.j to "
+          "capture.j sample for sample",
+          "[card]") {
 	constexpr std::uint32_t playback = 3;
 	constexpr std::uint32_t capture = 2;
 	constexpr std::uint32_t frames = 200;
 	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 256};
 	const auto config = parseOk({{"card", "Pro24"}, {"playback", playback}, {"capture", capture}});
-	RecordingGrant grant;
-	auto insides = config->start(grant);
-	REQUIRE(insides.has_value());
-	ear::AudioCode& code = (*insides)->audioCode();
-	code.prepare(format);
+	RecordingContext context;
+	auto started = config->start(context);
+	REQUIRE(started.has_value());
+	CHECK(started->code.own() == nullptr);
+	CHECK_FALSE(started->recipe);
+	const auto code = ear::makePassThrough(config->ports(), started->code.pairs());
+	code->prepare(format);
 
-	// Inputs: play.1..3 then from_card_1..2; each channel carries its own distinct ramp.
-	// Outputs: capture.1..2 then to_card_1..3, primed with a value no input carries.
+	// Inputs: play.1..3 then from_card.1..2; each channel carries its own distinct ramp.
+	// Outputs: capture.1..2 then to_card.1..3, primed with a value no input carries.
 	auto ramp = [](std::uint32_t channel, std::uint32_t frame) {
 		return static_cast<float>(channel + 1) + static_cast<float>(frame) / 1000.0F;
 	};
@@ -145,15 +159,15 @@ TEST_CASE("Card passes play.i to to_card_i and from_card_j to capture.j sample f
 	for (auto& channel : out) {
 		outSpans.emplace_back(channel);
 	}
-	code.process(inSpans, outSpans, frames, ear::GraphCycle{0, 0});
-	code.release();
+	code->process(inSpans, outSpans, frames, ear::GraphCycle{0, 0});
+	code->release();
 
 	for (std::uint32_t i = 0; i < playback; ++i) {
-		INFO("play." << i + 1 << " -> to_card_" << i + 1);
+		INFO("play." << i + 1 << " -> to_card." << i + 1);
 		CHECK(out[capture + i] == std::vector<float>(in[i].begin(), in[i].begin() + frames));
 	}
 	for (std::uint32_t j = 0; j < capture; ++j) {
-		INFO("from_card_" << j + 1 << " -> capture." << j + 1);
+		INFO("from_card." << j + 1 << " -> capture." << j + 1);
 		CHECK(out[j] == std::vector<float>(in[playback + j].begin(), in[playback + j].begin() + frames));
 	}
 }

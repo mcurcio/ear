@@ -39,7 +39,7 @@ using ear::test::RtpTone;
 
 constexpr double kAmplitude = 0.5;
 
-/// Records the block's inside inputs (from_rtp_1, from_rtp_2) into buffers made before it runs,
+/// Records the block's inside inputs (from_rtp.1, from_rtp.2) into buffers made before it runs,
 /// up to kCapacity frames, and notes the first frame that is not silent and every onset: a frame
 /// that is not silent after at least kSilentRun silent frames (every channel exactly zero). Writes
 /// zeros to every output.
@@ -147,13 +147,15 @@ private:
 	Registry& registry_;
 };
 
-/// One port block "fpp" (outputs stream.1, stream.2; inside inputs from_rtp_1, from_rtp_2)
+/// One port block "fpp" (outputs stream.1, stream.2; the inside input bank from_rtp)
 /// driven by a Recorder, running on the dummy driver, and the receivers' factory.
 struct Graph {
 	Graph()
 		: engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell), receivers(*engine),
 		  recorder(waiter, 2), blockEvents(waiter) {
-		block = blocks.make("fpp", Ports{{{Direction::output, "stream", {"1", "2"}}}, {"from_rtp_1", "from_rtp_2"}},
+		block = blocks.make("fpp",
+		                    Ports{{{Direction::output, "stream", {"1", "2"}},
+		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
 		                    kFormat, blockEvents);
 		block->drive(&recorder);
 		REQUIRE(
@@ -166,9 +168,8 @@ struct Graph {
 	                                          ReceiverEvents& events) {
 		events.insideMake = true;
 		auto receiver = receivers.make(
-			"fpp.rtp", "fpp",
-			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, {"from_rtp_1", "from_rtp_2"}},
-			events);
+			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat},
+			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, "from_rtp"}, events);
 		events.insideMake = false;
 		return receiver;
 	}
@@ -203,7 +204,7 @@ struct Graph {
 /// 750 Hz, still fails every tenth).
 void checkTone(const Recorder& recorder, std::size_t channel, std::size_t from, std::size_t frames, double wanted,
                double other) {
-	INFO("from_rtp_" << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
+	INFO("from_rtp." << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
 	const auto samples = recorder.frames(channel, from, frames);
 	constexpr std::size_t tenth = kRate / 10;
 	std::string profile;
@@ -277,7 +278,7 @@ TEST_CASE("A receiver is ready once, every channel's link active, and it and the
 	CHECK(events.readyCount == 1);
 }
 
-TEST_CASE("L24 at the graph rate: channel 1 reaches from_rtp_1 and channel 2 from_rtp_2", "[rtp][channels]") {
+TEST_CASE("L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2", "[rtp][channels]") {
 	checkTwoTones(RtpPcm::l24, RtpEncoding::l24, kRate);
 }
 

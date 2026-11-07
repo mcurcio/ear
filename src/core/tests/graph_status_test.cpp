@@ -28,10 +28,8 @@ struct NullConsumer final : HandoffConsumer {
 	void finish() override {}
 };
 
-struct Insides final : NodeInsides {
-	SilentCode code;
+struct Run final : RunObject {
 	NullConsumer consumer;
-	AudioCode& audioCode() override { return code; }
 };
 
 /// Nodes of "recorder" ask for one handoff, so a removed one stays stopping until it closes.
@@ -40,10 +38,14 @@ struct Config final : NodeConfig {
 	bool handoff;
 	Config(Ports p, bool h) : ports_(std::move(p)), handoff(h) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
-		auto insides = std::make_unique<Insides>();
-		if (handoff) grant.handoff(1, 64, insides->consumer);
-		return insides;
+	StartResult start(StartContext& context) const override {
+		auto run = std::make_unique<Run>();
+		if (handoff) context.acquire(HandoffRequest{"record", 64, &run->consumer});
+		return Started{
+			std::make_unique<SilentCode>(),
+			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+				return std::move(run);
+			}};
 	}
 };
 
@@ -70,8 +72,11 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 	all.push_back(std::make_unique<Type<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
 	all.push_back(
 		std::make_unique<Type<recorderTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
-	all.push_back(std::make_unique<Type<cardTable>>(
-		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
+	all.push_back(
+		std::make_unique<Type<cardTable>>(Ports{{{Direction::input, "play", {"1"}},
+	                                             {Direction::output, "capture", {"1"}},
+	                                             {Direction::input, "from_card", {"1"}, PortBank::Reach::inside},
+	                                             {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}}));
 	return all;
 }
 
@@ -102,7 +107,7 @@ struct PendingHandoff final : Handoff {
 	void close(std::move_only_function<void(std::uint64_t)> closed) override { pending.push_back(std::move(closed)); }
 };
 
-struct Handoffs final : HandoffFactory {
+struct Handoffs final : HandoffAdapter {
 	std::vector<std::move_only_function<void(std::uint64_t)>> pending;
 	std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t, std::uint32_t, HandoffConsumer&) override {
 		return std::make_unique<PendingHandoff>(pending);
@@ -113,25 +118,31 @@ struct Handoffs final : HandoffFactory {
 	}
 };
 
-struct NoCards final : SoundCardFactory {
-	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const SoundCardRequest&, const AudioFormat&,
-	                                  OutsideNodeEvents&) override {
+struct NoCards final : SoundCardAdapter {
+	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const SoundCardRequest&, OutsideNodeEvents&) override {
 		FAIL("a sound card was made");
 		return nullptr;
 	}
 };
 
-struct NoReceivers final : RtpReceiverFactory {
-	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const RtpReceiverRequest&,
-	                                  OutsideNodeEvents&) override {
+struct NoReceivers final : RtpReceiverAdapter {
+	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const RtpReceiverRequest&, OutsideNodeEvents&) override {
 		FAIL("an RTP receiver was made");
 		return nullptr;
 	}
 };
 
-/// Only insides with threads post, and these have none.
+/// Only runs with threads post, and these have none.
 struct NoExecutor final : Executor {
 	void post(std::move_only_function<void()>) override { throw std::logic_error("nothing here posts"); }
+};
+
+/// Close deadlines that never come due: every run here closes in time.
+struct NoTimers final : Timers {
+	struct Never final : Timer {};
+	std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		return std::make_unique<Never>();
+	}
 };
 
 struct Links final : LinkMaker {
@@ -149,7 +160,9 @@ struct Fixture {
 	NoReceivers receivers;
 	Links links;
 	NoExecutor mainLoop;
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers, mainLoop};
+	NoTimers timers;
+	ResourceRegistry resources{cards, receivers, handoffs};
+	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
 	Fixture() {

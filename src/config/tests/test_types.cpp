@@ -15,7 +15,7 @@ class FixedConfig final : public NodeConfig {
 public:
 	explicit FixedConfig(Ports ports) : ports_(std::move(ports)) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant&) const override {
+	StartResult start(StartContext&) const override {
 		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
 	}
 

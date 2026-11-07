@@ -1,17 +1,23 @@
-// Frozen interface (docs/design/batch2.md section 4; the outside node and RtpReceiverFactory by
-// docs/design/rtp.md section 7.1, batch2.md section 11's erratum; NodeNoteListener and the
-// executor by docs/design/sendspin.md section 14, S1). Change it only through an erratum and a
-// re-cut, never a local edit.
+// Frozen interface (docs/design/batch2.md section 4; the outside node by docs/design/rtp.md section 7.1, batch2.md
+// section 11's erratum; NodeNoteListener and the executor by docs/design/sendspin.md section 14, S1; the resource
+// registry with one adapter per kind, NodeHealth, the two-phase start, teardown by dependency, run generations, the close
+// deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1). Change it only
+// through a design page and a re-cut, never a local edit.
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/timers.hpp"
 namespace ear {
+/// A node's health: its state and why it failed, the framework's judgement alone (docs/design/node-framework.md
+/// section 4).
 struct NodeHealth {
 	NodeName name;
 	NodeState state;
@@ -26,12 +32,20 @@ public:
 protected:
 	~NodeHealthListener() = default;
 };
-/// What a node's insides say: a sentence, never a state (InsidesEvents::say).
+/// What a node's run says: a sentence, never a state (InsidesEvents::say).
 class NodeNoteListener {
 public:
 	virtual void nodeSays(const NodeName& node, const std::string& text) = 0; // main thread
 protected:
 	~NodeNoteListener() = default;
+};
+/// What the framework itself observes about a node (docs/design/node-framework.md section 8.1), by code: today only
+/// "ear.close-overdue", a run that did not close within the close deadline and was leaked (I5a).
+class NodeDiagnosticListener {
+public:
+	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) = 0; // main
+protected:
+	~NodeDiagnosticListener() = default;
 };
 /// Engine side of a port block. Destroying it removes its ports and their links; after the
 /// destructor returns, no process() of any code is running or will run.
@@ -68,22 +82,22 @@ class Handoff {
 public:
 	virtual ~Handoff() = default; // main thread; only after `closed` ran, or before any write
 	virtual RtWriter& writer() noexcept = 0;
-	/// Main thread, once, after the writing port block is gone: drains the rest to the consumer,
-	/// calls consumer.finish() on the handoff thread, then `closed` on the main thread.
+	/// Main thread, once, after the writing port block can no longer run the code that writes: drains the rest to the
+	/// consumer, calls consumer.finish() on the handoff thread, then `closed` on the main thread.
 	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
 };
-class HandoffFactory {
+/// The handoff kind's adapter.
+class HandoffAdapter {
 public:
 	/// Main thread; starts the handoff's own ordinary thread.
 	virtual std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels, std::uint32_t capacityFrames,
 	                                      HandoffConsumer& consumer) = 0;
 
 protected:
-	~HandoffFactory() = default;
+	~HandoffAdapter() = default;
 };
-/// An outside node: a PipeWire node a node's insides asked for (a sound card or an RTP
-/// receiver), plus the links joining its channels to the node's inside ports. Destroying it
-/// (main thread) removes both, in any state, and tells nothing.
+/// An outside node: a PipeWire node a run asked for (a sound card or an RTP receiver), plus the links joining its
+/// channels to the node's inside ports. Destroying it (main thread) removes both, in any state, and tells nothing.
 class OutsideNode {
 public:
 	virtual ~OutsideNode() = default;
@@ -102,53 +116,71 @@ public:
 protected:
 	~OutsideNodeEvents() = default;
 };
-class SoundCardFactory {
+/// Where an outside node goes, worked out by the framework from the request's bank: the one engine name it is made
+/// with ("<node>.<suffix>", I9), the block it joins, and the block's ports it joins, channel i to blockPorts[i].
+struct OutsideTarget {
+	NodeName engineNode;
+	NodeName blockNode;
+	std::vector<PortName> blockPorts;
+	AudioFormat format;
+};
+/// One outside kind's adapter.
+///  - SoundCardRequest: one engine node for request.card with blockPorts.size() channels at format.rate. It joins the
+///    graph's clock only through its links to the block, made once its PCM runs.
+///  - RtpReceiverRequest: one engine node receiving the stream the request names, with blockPorts.size() channels. It
+///    follows the graph's clock and never drives it; its channels are linked once it runs (its socket is bound).
+///    Packets that stop or never come change nothing: it stays ready and its channels are silent.
+template <typename Request> class OutsideAdapter {
 public:
-	/// Main thread; only once port block `blockNode` is ready (its ports exist). One engine node
-	/// named `engineNode` for request.card with request.blockPorts.size() channels at format.rate.
-	/// It joins the graph's clock only through its links to `blockNode`, made once its PCM runs.
-	virtual std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                          const SoundCardRequest& request, const AudioFormat& format,
+	/// Main thread; only once port block `target.blockNode` is ready (its ports exist).
+	virtual std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
 	                                          OutsideNodeEvents& events) = 0;
 
 protected:
-	~SoundCardFactory() = default;
+	~OutsideAdapter() = default;
 };
-class RtpReceiverFactory {
+using SoundCardAdapter = OutsideAdapter<SoundCardRequest>;
+using RtpReceiverAdapter = OutsideAdapter<RtpReceiverRequest>;
+/// The resource registry (docs/design/node-framework.md section 7.3): one adapter per kind of ResourceRequest, so a new
+/// kind is one adapter here and nothing more in NodeHost's constructor.
+class ResourceRegistry {
 public:
-	/// Main thread; only once port block `blockNode` is ready (its ports exist). One engine node
-	/// named `engineNode` receiving the stream `request` names, with request.blockPorts.size()
-	/// channels. It follows the graph's clock and never drives it; its channels are linked to
-	/// `blockNode` once it runs (its socket is bound). Packets that stop or never come change
-	/// nothing: it stays ready and its channels are silent.
-	virtual std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                          const RtpReceiverRequest& request, OutsideNodeEvents& events) = 0;
+	/// All outlive the registry.
+	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs) noexcept
+		: cards_(cards), receivers_(receivers), handoffs_(handoffs) {}
+	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
+	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
+	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
 
-protected:
-	~RtpReceiverFactory() = default;
+private:
+	SoundCardAdapter& cards_;
+	RtpReceiverAdapter& receivers_;
+	HandoffAdapter& handoffs_;
 };
+/// How long a run's teardown may wait on other threads (I5 steps 3 and 4) before the framework stops waiting (I5a).
+inline constexpr std::chrono::milliseconds defaultCloseDeadline{10'000};
 class NodeHost final : public DesiredNodeListener {
 public:
-	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a node's insides
-	/// reach it through there (their events, and `closed`).
-	NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs, SoundCardFactory& cards,
-	         RtpReceiverFactory& receivers, Executor& mainLoop);
+	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
+	/// events, its handoffs' and run object's `closed`). `timers` run there too.
+	NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
+	         Timers& timers, std::chrono::milliseconds closeDeadline = defaultCloseDeadline);
 	~NodeHost(); // precondition: stopAll completed (or no node was ever added)
 	void subscribe(NodeHealthListener& listener);
 	void subscribeNotes(NodeNoteListener& listener);
-	/// starting; port block made; config.start(grant); code.prepare; block.drive(&code); the
-	/// outside nodes the type asked for are made once the block is ready, in request order, named
-	/// "<node>.playback" / "<node>.capture" (cards) and "<node>.rtp" (the receiver); insides ready
-	/// when every outside node is ready (at once with none). A failure fails the node; its port
-	/// block stays.
+	void subscribeDiagnostics(NodeDiagnosticListener& listener);
+	/// starting; port block made; then a run starts (docs/design/node-framework.md section 7.2): config.start(context)
+	/// acquires only; code.prepare; block.drive(&code) at once; the outside nodes the run asked for are made once the
+	/// block is ready, in request order, named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the
+	/// receiver); once every resource is ready the recipe builds the run object; the run is ready when the recipe
+	/// returned (at once with no outside node). A failure fails the node; its port block stays.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// Restart: drive(nullptr), release(), outside nodes destroyed, handoffs closed, insides
-	/// closed, destroyed and then their config let go, then started from `config` as in nodeAdded. The
-	/// port block and routes stay. An update arriving during a restart replaces the config to
-	/// start. If the block was lost: the old insides are torn down, nothing starts, the node stays
-	/// failed.
+	/// Restart (I5, I7): the barrier drive(nullptr), release(); outside nodes destroyed; handoffs closed; the run object
+	/// closed; then, on the main loop, the run object destroyed, the code, the recipe and the config let go; then a new
+	/// run from `config` as in nodeAdded. The port block and routes stay. An update arriving during a restart replaces
+	/// the config to start. If the block was lost: the old run is torn down, nothing starts, the node stays failed.
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// stopping; port block destroyed; then as the restart's teardown; nodeGone. Others untouched.
+	/// stopping; port block destroyed (the barrier); then as the restart's teardown; nodeGone. Others untouched.
 	void nodeRemoved(const NodeName& node) override;
 	/// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
 	/// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn
