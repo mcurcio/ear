@@ -1733,3 +1733,23 @@ TEST_CASE("A recording the folder refuses fails the start, and a registry with n
 	CHECK(plain.host.health()[0].reason->detail == "cannot open: no recordings folder");
 	plain.stopAll();
 }
+
+TEST_CASE("A host destroyed with a recording node still running frees its run object and recipe before the recording",
+          "[node_host][recording]") {
+	for (const bool built : {true, false}) {
+		INFO((built ? "run object built" : "recipe still holding the run"));
+		RecordingFixture f;
+		auto host = std::make_unique<NodeHost>(AudioFormat{44100, 256}, f.blocks, f.resources, f.mainLoop, f.timers,
+		                                       closeDeadline);
+		host->nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
+		if (built) f.blocks.events.at(0)->ready();
+		f.log.clear();
+		host.reset(); // no stopAll: the run goes by its own destruction, as when a test throws or a boot fails
+		const Log& log = f.log;
+		const auto runGone = indexOf(log, "run destroyed");
+		const auto closed = indexOf(log, "recording closed");
+		REQUIRE(runGone < static_cast<std::ptrdiff_t>(log.size()));
+		REQUIRE(closed < static_cast<std::ptrdiff_t>(log.size()));
+		CHECK(runGone < closed);
+	}
+}

@@ -1,6 +1,7 @@
 // The type SPI (docs/design/node-framework.md sections 7.1, 7.2, 7.6 and 9.2, slice 2): a spec, a behaviour, makeNodeType,
 // Io by bank and the harness that runs a type without PipeWire. What must not compile is
 // compile_fail/type_spec_bad.cpp's.
+#include <concepts>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -14,7 +15,8 @@
 #include "ear/core/type_spec.hpp"
 #include "ear/testing/type_harness.hpp"
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace type_spec_test {
 
 using namespace ear;
 
@@ -76,7 +78,25 @@ struct Probe {
 
 using Harness = testing::TypeHarness<spec, Probe>;
 
-} // namespace
+// Another type's spec. Its bank "out" has this spec's name, direction and reach, so it is the same handle: Io takes it
+// and resolves it by name against the node's own ports (sound, and accepted). A bank this spec lacks does not compile
+// (compile_fail/type_spec_bad.cpp, io-bank-the-spec-lacks).
+constexpr auto otherOut = bank::output<"out">;
+constexpr TypeSpec otherSpec{.settings = SettingsTable<>{"other"}, .banks = Banks<otherOut>{}};
+static_assert(std::same_as<decltype(otherOut), decltype(out)>);
+static_assert(requires(Io<spec> io) { io[otherOut]; });
+
+/// A code written against the other spec.
+struct OtherCode {
+	void process(Io<otherSpec>, const GraphCycle&) noexcept {}
+};
+/// A behaviour of this spec whose start returns the other spec's code.
+struct Mixed : Probe {
+	static StartResult start(StartContext&, const Checked&) { return OtherCode{}; }
+};
+
+} // namespace type_spec_test
+using namespace type_spec_test;
 
 TEST_CASE("A spec's banks become the node's ports, in the spec's order", "[type-spec]") {
 	Harness harness;
@@ -173,4 +193,10 @@ TEST_CASE("Members are numbered or named, each once", "[type-spec]") {
 	CHECK(members("left", "right").names == std::vector<std::string>{"left", "right"});
 	const Members<spec> twice{in(members("a", "a")), out(members(1)), toDevice(members(1)), fromDevice(members(1))};
 	CHECK_THROWS_AS(twice.ports(), std::logic_error);
+}
+
+TEST_CASE("A start that returns a code written against another type's spec is a logic error", "[type-spec]") {
+	testing::TypeHarness<spec, Mixed> harness;
+	REQUIRE(harness->parse({{"channels", 1}}));
+	CHECK_THROWS_WITH(harness->start(), "a type's start returned a code written against another type's spec");
 }

@@ -10,6 +10,7 @@
 #include <variant>
 
 #include "ear/core/pass_through.hpp"
+#include "ear/core/run_requests.hpp"
 
 namespace ear::testing {
 
@@ -229,29 +230,18 @@ InsidesEvents& NodeHarness::events() {
 StartContext::Acquired NodeHarness::acquireResource(const ResourceRequest& request) {
 	if (!inStart_) throw std::logic_error("node " + node_ + ": a resource was asked for outside start()");
 	requests_.push_back(request);
-	const auto outside = [&](std::string_view suffix) {
-		NodeName name = node_ + "." + std::string(suffix);
+	// NodeHost's own checks and names (run_requests.hpp), so the harness accepts what NodeHost accepts.
+	const Ports::Bank* bank = requestedBank(ports(), node_, request);
+	if (const auto suffix = outsideSuffix(request)) {
+		NodeName name = node_ + "." + std::string(*suffix);
 		if (std::ranges::any_of(outside_, [&](const Outside& known) { return known.name == name; }))
 			throw std::logic_error("node " + node_ + ": a second resource named " + name + " in one run");
 		outside_.push_back({std::move(name)});
-		return Acquired{std::monostate{}};
-	};
-	if (const auto* card = std::get_if<SoundCardRequest>(&request)) {
-		const bool playback = card->direction == CardDirection::playback;
-		bankOf(card->bank, playback ? Direction::output : Direction::input, true);
-		return outside(playback ? "playback" : "capture");
-	}
-	if (const auto* receiver = std::get_if<RtpReceiverRequest>(&request)) {
-		bankOf(receiver->bank, Direction::input, true);
-		return outside("rtp");
+		return std::monostate{};
 	}
 	if (const auto* handoff = std::get_if<HandoffRequest>(&request)) {
-		const Ports::Bank& bank = ports().bank(handoff->bank);
-		if (bank.direction != Direction::input || handoff->consumer == nullptr)
-			throw std::logic_error("node " + node_ + ": a handoff takes an input bank and a consumer, not \"" +
-			                       handoff->bank + "\"");
 		RtWriter* writer =
-			handoffs_.emplace_back(std::make_unique<Handoff>(*handoff->consumer, bank.ports.size())).get();
+			handoffs_.emplace_back(std::make_unique<Handoff>(*handoff->consumer, bank->ports.size())).get();
 		return writer;
 	}
 	const auto& recording = std::get<RecordingRequest>(request);
@@ -259,14 +249,6 @@ StartContext::Acquired NodeHarness::acquireResource(const ResourceRequest& reque
 	auto opened = recordings_->open(node_, recording.path);
 	if (!opened) return std::unexpected(std::move(opened.error()));
 	return (*recordingFiles_.emplace_back(std::move(*opened))).descriptor();
-}
-
-const Ports::Bank& NodeHarness::bankOf(const std::string& name, Direction direction, bool inside) const {
-	const Ports::Bank& bank = ports().bank(name);
-	if ((bank.reach == PortBank::Reach::inside) != inside || bank.direction != direction)
-		throw std::logic_error("node " + node_ + ": an outside node joins an inside " +
-		                       (direction == Direction::input ? "input" : "output") + " bank, not \"" + name + "\"");
-	return bank;
 }
 
 void NodeHarness::buildIfAllReady() {

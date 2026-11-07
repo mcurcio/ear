@@ -154,6 +154,19 @@ template <const auto&... Rows>
 class SettingsTable;
 template <const auto& Table> class NodeTypeOf;
 
+namespace linkage {
+template <const auto& Object> consteval std::string_view spelling() { return __PRETTY_FUNCTION__; }
+/// Whether `Object` is declared outside any unnamed namespace (docs/design/node-framework.md, "Slice 2 as built"). GCC 14
+/// gives a template specialised on a reference to an object external linkage even when the object is in an unnamed
+/// namespace, so two files' `(anonymous namespace)::pathRow` name one SettingsTable, one Io or one NodeTypeOf, and the
+/// linker keeps one file's instantiation for both, silently. Every object a table, a type or a spec is keyed on is
+/// therefore declared in a named namespace (a type's own: ear::nodes::<type>); this refuses one that is not. It reads
+/// the compiler's own spelling of the argument, GCC's "{anonymous}" or Clang's "(anonymous namespace)".
+template <const auto& Object> inline constexpr bool named =
+	spelling<Object>().find("{anonymous}") == std::string_view::npos &&
+	spelling<Object>().find("(anonymous namespace)") == std::string_view::npos;
+} // namespace linkage
+
 /// What the walk made: one slot per row. No public constructor and no public read: only the walk makes one, and only
 /// Checked reads it. It owns its values, so it borrows neither the settings nor the table.
 class CheckedSettings {
@@ -211,6 +224,11 @@ private:
 template <const auto&... Rows>
 	requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
 class SettingsTable final : public AnySettingsTable {
+	static_assert(
+		(linkage::named<Rows> && ...),
+		"a table's rows are declared in a named namespace, never an unnamed one: GCC 14 would give two files' "
+		"same-named rows one table");
+
 public:
 	consteval explicit SettingsTable(std::string_view name) : AnySettingsTable(name, rows_, kinds_) {}
 	/// Settings this table passed. A row not listed in this table cannot be read: get's constraint fails at compile time.
@@ -250,6 +268,9 @@ private:
 
 /// What a node type derives from. The base class names the table once; there is nowhere to name a second.
 template <const auto& Table> class NodeTypeOf : public NodeType {
+	static_assert(linkage::named<Table>,
+	              "a type's table is declared in a named namespace, never an unnamed one: GCC 14 "
+	              "would give two files' same-named tables one type");
 #ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
 	static_assert(Table.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
 #endif

@@ -16,6 +16,7 @@ add_library(ear_core STATIC
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
+	run_requests.cpp
 	settings_table.cpp
 	sound_card.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
@@ -39,6 +40,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
+	include/ear/core/run_requests.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sound_card.hpp
 	include/ear/core/timers.hpp
@@ -127,11 +129,11 @@ if(BUILD_TESTS)
 	function(ear_type_spec_compile_fail case regex)
 		ear_compile_fail(ear_type_spec_compile_fail_${case} "${bad_spec}" ${case} "${regex}")
 	endfunction()
-	ear_type_spec_compile_fail(io-bank-of-another-type "Io takes only its spec's banks")
+	ear_type_spec_compile_fail(io-bank-the-spec-lacks "Io takes only its spec's banks")
 	ear_type_spec_compile_fail(io-write-into-input "assignment of read-only location")
 	ear_type_spec_compile_fail(io-misspelt-bank "'outt' was not declared in this scope")
 	ear_type_spec_compile_fail(io-not-a-bank "no match for 'operator\\[\\]'")
-	ear_type_spec_compile_fail(ports-bank-of-another-type "ports\\(\\) names only its spec's banks")
+	ear_type_spec_compile_fail(ports-bank-the-spec-lacks "ports\\(\\) names only its spec's banks")
 	ear_type_spec_compile_fail(ports-bank-left-out "ports\\(\\) gives every bank of its spec, each once")
 	ear_type_spec_compile_fail(ports-bank-twice "ports\\(\\) gives every bank of its spec, each once")
 	ear_type_spec_compile_fail(pass-through-backwards "a pass-through copies an input bank to an output bank")
@@ -140,7 +142,12 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(process-may-throw "a code's process is void process")
 	ear_type_spec_compile_fail(behaviour-without-ports "a behaviour has static Members<spec> ports")
 	ear_type_spec_compile_fail(check-wrong-result "a behaviour's check is static std::expected")
+	ear_type_spec_compile_fail(check-takes-mutable-settings "a behaviour's check is static std::expected")
+	ear_type_spec_compile_fail(prepare-wrong-signature "a code's prepare is void prepare")
+	ear_type_spec_compile_fail(release-may-throw "a code's release is void release\\(\\) noexcept")
+	ear_type_spec_compile_fail(spec-in-unnamed-namespace "a spec is declared in a named namespace")
+	ear_type_spec_compile_fail(row-in-unnamed-namespace "a table's rows are declared in a named namespace")
 	ear_type_spec_compile_fail(spec-not-named-for-folder "a type's table is named for its folder")
-	ear_type_spec_compile_fail(harness-bank-of-another-type "the harness takes only its spec's banks")
+	ear_type_spec_compile_fail(harness-bank-the-spec-lacks "the harness takes only its spec's banks")
 	ear_type_spec_compile_fail(harness-output-as-input "input\\(\\) takes an input bank")
 endif()

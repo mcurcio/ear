@@ -1,4 +1,4 @@
-// The "rtp" node type through the harness, which records the receivers it acquires (docs/design/rtp.md section 3, R1n
+// The "rtp" node type through its type harness, by the banks its spec declares (rtp_spec.hpp), which records the receivers it acquires (docs/design/rtp.md section 3, R1n
 // criteria 1-5; docs/design/node-framework.md section 7.6). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
 #include <cstdint>
@@ -11,9 +11,13 @@
 
 #include "catch2/catch.hpp"
 #include "ear/nodes/rtp.hpp"
-#include "ear/testing/node_harness.hpp"
+#include "ear/testing/type_harness.hpp"
+#include "rtp_spec.hpp"
 
 namespace {
+
+namespace rtp = ear::nodes::rtp;
+using Harness = ear::testing::TypeHarness<rtp::spec, rtp::Rtp>;
 
 using Names = std::vector<ear::PortName>;
 using ear::NodeSettings;
@@ -38,9 +42,8 @@ NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
 }
 
 /// A harness on a node named "fpp" at `graphRate`, whose settings parsed.
-std::unique_ptr<ear::testing::NodeHarness> parseOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	auto harness =
-		std::make_unique<ear::testing::NodeHarness>(rtpType(), ear::AudioFormat{graphRate, 256}, nullptr, "fpp");
+Harness parseOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
+	Harness harness(ear::AudioFormat{graphRate, 256}, nullptr, "fpp");
 	const auto parsed = harness->parse(settings);
 	INFO(settings.dump());
 	if (!parsed) FAIL("refused: " << parsed.error());
@@ -48,7 +51,7 @@ std::unique_ptr<ear::testing::NodeHarness> parseOk(const NodeSettings& settings,
 }
 
 ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	const auto harness = parseOk(settings, graphRate);
+	auto harness = parseOk(settings, graphRate);
 	REQUIRE(harness->start());
 	REQUIRE(harness->requests().size() == 1);
 	REQUIRE(harness->outsideName(0) == "fpp.rtp");
@@ -59,15 +62,15 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 
 TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and the inside bank from_rtp", "[rtp]") {
 	CHECK(rtpType().name() == "rtp");
-	const auto config = parseOk(settingsWith({{"channels", 3}}));
+	auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs().empty());
 	CHECK(ports.outputs() == Names{"stream.1", "stream.2", "stream.3"});
 	CHECK(ports.insideInputs() == Names{"from_rtp.1", "from_rtp.2", "from_rtp.3"});
 	CHECK(ports.insideOutputs().empty());
-	CHECK(ports.bank("from_rtp").reach == ear::PortBank::Reach::inside);
+	CHECK(ports.bank(rtp::fromRtp.name).reach == ear::PortBank::Reach::inside);
 
-	const auto wide = parseOk(settingsWith({{"channels", 64}, {"address", "0.0.0.0"}}));
+	auto wide = parseOk(settingsWith({{"channels", 64}, {"address", "0.0.0.0"}}));
 	CHECK(wide->ports().outputs().size() == 64);
 	CHECK(wide->ports().insideInputs().back() == "from_rtp.64");
 }
@@ -79,7 +82,7 @@ TEST_CASE("Rtp start acquires exactly one receiver with its settings, joined to 
 	CHECK(request.encoding == ear::RtpEncoding::l24);
 	CHECK(request.rate == 96000);
 	CHECK(request.latencyMs == 250);
-	CHECK(request.bank == "from_rtp");
+	CHECK(request.bank == rtp::fromRtp.name);
 
 	SECTION("an absent rate is the graph frequency, taken at start") {
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
@@ -164,7 +167,7 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 	for (const std::uint32_t channels : {1U, 3U}) {
 		INFO(channels << " channels");
 		constexpr std::uint32_t frames = 200;
-		const auto harness = parseOk(settingsWith({{"channels", channels}}));
+		auto harness = parseOk(settingsWith({{"channels", channels}}));
 		REQUIRE(harness->start());
 		CHECK(harness->state() == ear::testing::NodeHarness::State::starting);
 		harness->ready(0);
@@ -175,7 +178,7 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 			return static_cast<float>(c + 1) + static_cast<float>(f) / 1000.0F;
 		};
 		for (std::uint32_t c = 0; c < channels; ++c) {
-			const std::span<float> buffer = harness->input("from_rtp." + std::to_string(c + 1));
+			const std::span<float> buffer = harness.input(rtp::fromRtp, c);
 			for (std::uint32_t f = 0; f < buffer.size(); ++f) buffer[f] = ramp(c, f);
 		}
 		harness->process(ear::GraphCycle{0, 0}, frames);
@@ -183,7 +186,7 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 
 		for (std::uint32_t c = 0; c < channels; ++c) {
 			INFO("from_rtp." << c + 1 << " -> stream." << c + 1);
-			const std::span<const float> out = harness->output("stream." + std::to_string(c + 1));
+			const std::span<const float> out = harness.output(rtp::stream, c);
 			for (std::uint32_t f = 0; f < frames; ++f) CHECK(out[f] == ramp(c, f));
 		}
 	}

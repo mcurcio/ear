@@ -1,4 +1,4 @@
-// The "file" node type through the harness, whose synchronous handoff stands in for the framework's and whose
+// The "file" node type through its type harness, by the bank its spec declares (file_spec.hpp), whose synchronous handoff stands in for the framework's and whose
 // recordings are made beneath a real recordings folder, as main.cpp's adapter makes them (docs/design/m1-white-to-file.md
 // section 3, slice S5 criteria 2 and 3; docs/design/node-framework.md sections 7.3 and 7.6). The WAV files are read back
 // with libsndfile. Paths are relative to a recordings folder and never lead out of it (docs/design/batch2.md section
@@ -19,10 +19,14 @@
 #include "confined_recordings.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/file.hpp"
-#include "ear/testing/node_harness.hpp"
+#include "ear/testing/type_harness.hpp"
+#include "file_spec.hpp"
 #include "temp_folder.hpp"
 
 namespace {
+
+namespace file = ear::nodes::file;
+using Harness = ear::testing::TypeHarness<file::spec, file::File>;
 
 using ear::test::TempFolder;
 using State = ear::testing::NodeHarness::State;
@@ -44,9 +48,9 @@ struct Recordings {
 };
 
 /// A harness on a node named "rec" recording to `path`, its settings parsed.
-std::unique_ptr<ear::testing::NodeHarness> parsed(Recordings& recordings, const std::string& path,
-                                                  ear::AudioFormat format = {.rate = 48000, .maxBlock = 256}) {
-	auto harness = std::make_unique<ear::testing::NodeHarness>(fileType(), format, recordings.adapter.get(), "rec");
+Harness parsed(Recordings& recordings, const std::string& path,
+               ear::AudioFormat format = {.rate = 48000, .maxBlock = 256}) {
+	Harness harness(format, recordings.adapter.get(), "rec");
 	REQUIRE(harness->parse({{"path", path}}));
 	return harness;
 }
@@ -70,7 +74,7 @@ TEST_CASE("File declares inputs record.left and record.right and no outputs", "[
 	TempFolder dir{"ports"};
 	Recordings recordings(dir.path());
 	CHECK(fileType().name() == "file");
-	const auto harness = parsed(recordings, "rec.wav");
+	auto harness = parsed(recordings, "rec.wav");
 	CHECK(harness->ports().inputs() == std::vector<ear::PortName>{"record.left", "record.right"});
 	CHECK(harness->ports().outputs().empty());
 }
@@ -81,8 +85,8 @@ TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 	      ear::NodeSettings{{"path", 7}}, ear::NodeSettings{{"path", "a.wav"}, {"gain", 1}},
 	      ear::NodeSettings("a.wav")}) {
 		INFO(settings.dump());
-		ear::testing::NodeHarness harness(fileType());
-		const auto parse = harness.parse(settings);
+		Harness harness;
+		const auto parse = harness->parse(settings);
 		REQUIRE_FALSE(parse);
 		CHECK_FALSE(parse.error().empty());
 	}
@@ -115,14 +119,14 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 
 	for (const std::string path : {"rec.wav", "up/outside.wav", "up/new.wav"}) {
 		INFO(path);
-		const auto harness = parsed(recordings, path);
+		auto harness = parsed(recordings, path);
 
 		const auto started = harness->start();
 
 		REQUIRE_FALSE(started);
 		CHECK(started.error().code == ear::FailureReason::Code::startFailed);
 		CHECK(started.error().detail == "cannot open " + path + ": it leads outside the folder");
-		CHECK(handoffsOf(*harness).empty());
+		CHECK(handoffsOf(harness.node()).empty());
 		CHECK(harness->state() == State::failed);
 	}
 	CHECK(contents(outside) == "keep");
@@ -140,14 +144,14 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	constexpr ear::AudioFormat format{.rate = 32000, .maxBlock = 256};
 	constexpr std::uint32_t blocks = 3;
 	Recordings recordings(dir.path());
-	const auto harness = parsed(recordings, "rec.wav", format);
+	auto harness = parsed(recordings, "rec.wav", format);
 
 	REQUIRE(harness->start());
 	REQUIRE(harness->requests().size() == 2);
 	CHECK(std::get<ear::RecordingRequest>(harness->requests()[0]).path == "rec.wav");
-	const auto handoffs = handoffsOf(*harness);
+	const auto handoffs = handoffsOf(harness.node());
 	REQUIRE(handoffs.size() == 1);
-	CHECK(handoffs[0].bank == "record");
+	CHECK(handoffs[0].bank == file::record.name);
 	CHECK(handoffs[0].capacityFrames == 2 * format.rate); // 2 s ring
 	CHECK(harness->state() == State::running);
 	CHECK(harness->runObject() != nullptr); // the open file
@@ -155,8 +159,8 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	std::vector<float> left;
 	std::vector<float> right;
 	for (std::uint32_t block = 0; block < blocks; ++block) {
-		const std::span<float> fl = harness->input("record.left");
-		const std::span<float> fr = harness->input("record.right");
+		const std::span<float> fl = harness.input(file::record, 0);
+		const std::span<float> fr = harness.input(file::record, 1);
 		for (std::uint32_t i = 0; i < format.maxBlock; ++i) {
 			const auto n = static_cast<float>(block * format.maxBlock + i);
 			fl[i] = n / 1024.0F;
@@ -190,20 +194,20 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 TEST_CASE("File fails to start on a path it cannot open, and asks for no handoff", "[file]") {
 	TempFolder dir{"unopenable"};
 	Recordings recordings(dir.path());
-	const auto harness = parsed(recordings, "missing-dir/rec.wav");
+	auto harness = parsed(recordings, "missing-dir/rec.wav");
 
 	const auto started = harness->start();
 
 	REQUIRE_FALSE(started);
 	CHECK(started.error().code == ear::FailureReason::Code::startFailed);
 	CHECK(started.error().detail.find("cannot open missing-dir/rec.wav: ") == 0);
-	CHECK(handoffsOf(*harness).empty());
+	CHECK(handoffsOf(harness.node()).empty());
 }
 
 TEST_CASE("File fails to start when the host has no recordings folder", "[file]") {
-	ear::testing::NodeHarness harness(fileType());
-	REQUIRE(harness.parse({{"path", "rec.wav"}}));
-	const auto started = harness.start();
+	Harness harness;
+	REQUIRE(harness->parse({{"path", "rec.wav"}}));
+	const auto started = harness->start();
 	REQUIRE_FALSE(started);
 	CHECK(started.error().detail == "cannot open rec.wav: no recordings folder");
 }

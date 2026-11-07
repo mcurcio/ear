@@ -18,6 +18,7 @@
 #include <variant>
 
 #include "ear/core/pass_through.hpp"
+#include "ear/core/run_requests.hpp"
 
 namespace ear {
 namespace {
@@ -28,19 +29,6 @@ using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
 template <typename... Kinds> struct Overloaded : Kinds... {
 	using Kinds::operator()...;
 };
-
-/// The suffix of a run's outside node: the one home of "playback", "capture" (sound cards) and "rtp" (the RTP
-/// receiver), so its engine node is "<node>.<suffix>" (I9). A node name never holds '.', so they cannot collide with a
-/// node.
-std::string_view outsideSuffix(const OutsideRequest& request) {
-	return std::visit(Overloaded{
-						  [](const SoundCardRequest& card) {
-							  return card.direction == CardDirection::playback ? "playback" : "capture";
-						  },
-						  [](const RtpReceiverRequest&) { return "rtp"; },
-					  },
-	                  request);
-}
 
 /// The recordings adapter of a registry given none.
 class NoRecordings final : public RecordingAdapter {
@@ -132,13 +120,11 @@ struct NodeHost::Impl {
 			if (!starting_) throw std::logic_error("node " + name_ + ": a resource was asked for outside start()");
 			return std::visit(Overloaded{
 								  [&](const SoundCardRequest& card) -> Acquired {
-									  const bool playback = card.direction == CardDirection::playback;
-									  askOutside(
-										  card, insideBank(card.bank, playback ? Direction::output : Direction::input));
+									  askOutside(card, *requestedBank(ports_, name_, request), request);
 									  return std::monostate{};
 								  },
 								  [&](const RtpReceiverRequest& receiver) -> Acquired {
-									  askOutside(receiver, insideBank(receiver.bank, Direction::input));
+									  askOutside(receiver, *requestedBank(ports_, name_, request), request);
 									  return std::monostate{};
 								  },
 								  [&](const RecordingRequest& recording) -> Acquired {
@@ -147,12 +133,7 @@ struct NodeHost::Impl {
 									  return (*run_->recordings.emplace_back(std::move(*opened))).descriptor();
 								  },
 								  [&](const HandoffRequest& handoff) -> Acquired {
-									  const Ports::Bank& bank = ports_.bank(handoff.bank);
-									  if (bank.direction != Direction::input || handoff.consumer == nullptr)
-										  throw std::logic_error("node " + name_ +
-					                                             ": a handoff takes an input bank "
-					                                             "and a consumer, not \"" +
-					                                             handoff.bank + "\"");
+									  const Ports::Bank& bank = *requestedBank(ports_, name_, request);
 									  auto& made = run_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
 										  name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
 										  *handoff.consumer));
@@ -242,10 +223,12 @@ struct NodeHost::Impl {
 			std::uint64_t generation = 0;
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
+			// Outlives the handoffs that write it and the run object and recipe that may hold it open (file's WavWriter
+			// closes its SNDFILE on the descriptor when freed).
+			std::vector<std::unique_ptr<RecordingFile>> recordings;
 			RunRecipe recipe;
 			std::unique_ptr<RunObject> object;
-			std::unique_ptr<AudioCode> code;                        // reads the run object, so goes first
-			std::vector<std::unique_ptr<RecordingFile>> recordings; // outlives the handoffs that write them
+			std::unique_ptr<AudioCode> code; // reads the run object, so goes first
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
@@ -266,18 +249,9 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 		};
 
-		const Ports::Bank& insideBank(const std::string& name, Direction direction) const {
-			const Ports::Bank& bank = ports_.bank(name);
-			if (bank.reach != PortBank::Reach::inside || bank.direction != direction)
-				throw std::logic_error("node " + name_ + ": an outside node joins an inside " +
-				                       (direction == Direction::input ? "input" : "output") + " bank, not \"" + name +
-				                       "\"");
-			return bank;
-		}
-
 		/// Records an outside node to make once the block is ready, under its one name (I9).
-		void askOutside(OutsideRequest request, const Ports::Bank& bank) {
-			const NodeName engineNode = name_ + "." + std::string(outsideSuffix(request));
+		void askOutside(OutsideRequest request, const Ports::Bank& bank, const ResourceRequest& asked) {
+			const NodeName engineNode = name_ + "." + std::string(*outsideSuffix(asked));
 			if (std::ranges::any_of(run_->outsideRequests,
 			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }))
 				throw std::logic_error("node " + name_ + ": a second resource named " + engineNode + " in one run");

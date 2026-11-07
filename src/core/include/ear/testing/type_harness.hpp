@@ -1,6 +1,6 @@
 // A type's own tests run it through this (docs/design/node-framework.md section 7.6): the NodeHarness of the type
 // makeNodeType<Spec, Behaviour>() makes, plus its buffers by the spec's bank handles, so a test names banks as the type
-// does and a bank of another type does not compile.
+// does and a bank the spec lacks does not compile.
 #pragma once
 #include <cstddef>
 #include <memory>

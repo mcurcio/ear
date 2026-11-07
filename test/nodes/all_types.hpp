@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,18 +65,12 @@ inline ConfinedRecordings& recordings() {
 	return adapter;
 }
 
-/// Whether the all-type harness test runs `type` (docs/design/node-framework.md section 7.6): every type written against
-/// a TypeSpec does. sendspin waits for slice 3 (its start still builds its worker, the key file and its threads, which
-/// the harness does not fake). Throws, naming the type, when it is not here: Catch reports the test's failure.
-inline bool runsInHarness(std::string_view type) {
-	static const std::map<std::string, bool, std::less<>> runs{
-		{"white", true}, {"file", true}, {"card", true}, {"rtp", true}, {"sendspin", false}};
-	const auto found = runs.find(type);
-	if (found == runs.end()) {
-		throw std::runtime_error("no harness entry for " + std::string(type) +
-		                         ": add it to runsInHarness in test/nodes/all_types.hpp");
-	}
-	return found->second;
+/// The types the all-type harness test does not run yet (docs/design/node-framework.md section 7.6): every other type
+/// runs, so a new type adds nothing here. sendspin waits for slice 3 (its start still builds its worker, the key file and
+/// its threads, which the harness does not fake). The harness test fails on a name here that is no type.
+inline const std::set<std::string, std::less<>>& notYetInHarness() {
+	static const std::set<std::string, std::less<>> types{"sendspin"};
+	return types;
 }
 
 /// Settings `type` accepts, the one home of what the all-type tests need of a type: together they give every key it

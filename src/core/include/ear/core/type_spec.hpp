@@ -1,21 +1,29 @@
 // What a node type writes (docs/design/node-framework.md sections 7.1, 7.2 and 9.2, slice 2): one constexpr TypeSpec
 // (its settings table and its banks, each a compile-time constant with its name and direction) and one plain behaviour
-// class, made a NodeType by makeNodeType<spec, Behaviour>() from the type's one named function:
+// class, made a NodeType by makeNodeType<spec, Behaviour>() from the type's one named function. The spec and the
+// behaviour live in the type's private header, src/nodes/<type>/<type>_spec.hpp, in its own named namespace, so its
+// tests run it through ear::testing::TypeHarness<spec, Behaviour> by the same bank handles:
 //
-//   constexpr auto noise = bank::output<"noise">;
-//   constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
+//   namespace ear::nodes::white {
+//   inline constexpr auto noise = bank::output<"noise">;
+//   inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
 //   struct WhiteCode { void process(Io<spec> io, const GraphCycle&) noexcept { for (auto ch : io[noise]) ...; } };
 //   struct White {
 //   	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
 //   	static StartResult start(StartContext&, const CheckedOf<spec>&) { return WhiteCode{}; }
 //   };
-//   std::unique_ptr<const NodeType> makeWhiteNodeType() { return makeNodeType<spec, White>(); }
+//   }
+//   std::unique_ptr<const NodeType> makeWhiteNodeType() { return makeNodeType<white::spec, white::White>(); }
 //
 // The behaviour may add `static std::expected<void, std::string> check(const CheckedOf<spec>&)`, a rule across
 // settings, which parse runs after the table's walk (a refusal is invalid-settings). Its code reads and writes only
 // through Io<spec>, which takes only the spec's bank handles: an output bank gives std::span<float> members, an input
-// bank std::span<const float> members, so a bank of another type, a misspelt bank or a write into an input does not
-// compile. Pure: nothing but the standard library and ear_core.
+// bank std::span<const float> members, so a bank the spec lacks, a misspelt bank or a write into an input does not
+// compile. A bank handle is its name, direction and reach, nothing more: another type's bank with the same three is the
+// same handle, and Io resolves it by name against this node's ports, so it is sound. A code written against another
+// type's spec compiles but is refused at start (std::logic_error). A check, prepare or release is found by its name and
+// must then have exactly that signature. Every spec, row and bank list is declared in a named namespace (see TypeSpec).
+// Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -136,12 +144,13 @@ template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = tr
 /// stores, latency: docs/design/node-framework.md sections 7.1 and 8) join as members with empty defaults, so a spec
 /// that gives none stays these two.
 ///
-/// `Unique` is never given: its default, a lambda's type, is new at every spec, and local to its file. It is what keeps
-/// two types apart. Every template a type instantiates with its spec (Io<spec>, Members<spec>, its config and code) is
-/// named by the spec's qualified name, and GCC 14 gives such an instantiation external linkage even when the spec is
-/// in an unnamed namespace, so two files' `(anonymous namespace)::spec` would be one symbol and the linker would keep
-/// one type's code for both. A spec whose type is local to its file makes them local too.
-template <class Settings, class BankList, class Unique = decltype([] {})>
+/// A spec and its rows are declared in a named namespace, the type's own (ear::nodes::<type>, in its private header
+/// src/nodes/<type>/<type>_spec.hpp, which the type's tests include too): every template a type instantiates with its
+/// spec or rows (Io<spec>, Members<spec>, its config, its table) is named by their qualified names, and GCC 14 gives such
+/// an instantiation external linkage even in an unnamed namespace, so two files' `(anonymous namespace)::spec` would be
+/// one symbol and the linker would keep one type's code for both. Io, Members, makeNodeType and SettingsTable refuse
+/// one in an unnamed namespace (linkage::named, settings_table.hpp).
+template <class Settings, class BankList>
 	requires(std::derived_from<Settings, AnySettingsTable> && isBanks<BankList>)
 struct TypeSpec {
 	Settings settings;
@@ -156,6 +165,7 @@ template <const auto& Spec> using BanksOf = std::remove_cvref_t<decltype(Spec.ba
 /// Every bank of a spec with its members: what a behaviour's ports() returns, {stream(members(n)), from(members(n))}.
 /// Each bank of the spec once, in any order; a bank of another spec, or one left out, does not compile.
 template <const auto& Spec> class Members {
+	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
 
 public:
@@ -192,6 +202,7 @@ private:
 /// of exactly frames() samples, an output's to write (every sample), an input's to read (an unlinked input reads zeros).
 /// Only the spec's own banks are taken. The layout is resolved once, before the first cycle, so io[bank] is an index.
 template <const auto& Spec> class Io {
+	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
 
 public:
@@ -260,23 +271,42 @@ template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, cons
 class BankBoundCode : public AudioCode {
 public:
 	virtual void bindPorts(const Ports& ports) noexcept = 0;
+	/// The spec the code was written against, to check it is its type's.
+	virtual const void* spec() const noexcept = 0;
 };
 template <const auto& Spec, class Code> class ErasedSpecCode final : public BankBoundCode {
+	// Found by name, then held to its exact signature, so a misspelt signature is refused rather than never called.
+	static constexpr bool hasPrepare = requires { &Code::prepare; };
+	static constexpr bool hasRelease = requires { &Code::release; };
+	static consteval bool preparesExactly() {
+		if constexpr (hasPrepare)
+			return std::same_as<decltype(&Code::prepare), void (Code::*)(const AudioFormat&)> ||
+			       std::same_as<decltype(&Code::prepare), void (Code::*)(const AudioFormat&) noexcept>;
+		else return true;
+	}
+	static consteval bool releasesExactly() {
+		if constexpr (hasRelease) return std::same_as<decltype(&Code::release), void (Code::*)() noexcept>;
+		else return true;
+	}
+	static_assert(preparesExactly(), "a code's prepare is void prepare(const AudioFormat&)");
+	static_assert(releasesExactly(), "a code's release is void release() noexcept");
+
 public:
 	explicit ErasedSpecCode(Code code) : code_(std::move(code)) {}
 	void bindPorts(const Ports& ports) noexcept override { ports_ = &ports; }
+	const void* spec() const noexcept override { return &Spec; }
 	void prepare(const AudioFormat& format) override {
 		if (ports_ == nullptr)
 			throw std::logic_error("a code written against a spec runs only in a type made by makeNodeType");
 		layout_ = Io<Spec>::resolve(*ports_);
-		if constexpr (requires { code_.prepare(format); }) code_.prepare(format);
+		if constexpr (hasPrepare) code_.prepare(format);
 	}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
 		code_.process(Io<Spec>(layout_, inputs, outputs, frames), cycle);
 	}
 	void release() noexcept override {
-		if constexpr (requires { code_.release(); }) code_.release();
+		if constexpr (hasRelease) code_.release();
 	}
 
 private:
@@ -293,7 +323,12 @@ public:
 	StartResult start(StartContext& context) const override {
 		StartResult result = Behaviour::start(context, settings_);
 		if (!result.failed())
-			if (auto* bound = dynamic_cast<BankBoundCode*>(result.code().own().get())) bound->bindPorts(ports_);
+			if (auto* bound = dynamic_cast<BankBoundCode*>(result.code().own().get())) {
+				// A code written against another type's spec would read this node's ports by that spec's banks.
+				if (bound->spec() != &Spec)
+					throw std::logic_error("a type's start returned a code written against another type's spec");
+				bound->bindPorts(ports_);
+			}
 		return result;
 	}
 
@@ -307,6 +342,7 @@ private:
 /// specialization) external linkage whatever its object's, so two types' `spec.settings`, each in its own file's
 /// unnamed namespace, became one symbol and the linker kept one type's table for both.
 template <const auto& Spec, class Behaviour> class SpecNodeType final : public NodeType {
+	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 #ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
 	static_assert(Spec.settings.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
 #endif
@@ -327,9 +363,11 @@ private:
 	/// The table's walk passed: the behaviour's check, a rule across settings, then the config.
 	MadeConfig makeConfig(const NodeName&, CheckedSettings walked) const override {
 		const Checked settings(std::move(walked));
-		if constexpr (requires { Behaviour::check(settings); }) {
+		// Found by name, then held to its exact signature, so a check taking its settings by another type is refused
+		// rather than never run.
+		if constexpr (requires { &Behaviour::check; }) {
 			static_assert(
-				std::same_as<decltype(Behaviour::check(settings)), std::expected<void, std::string>>,
+				std::same_as<decltype(&Behaviour::check), std::expected<void, std::string> (*)(const Checked&)>,
 				"a behaviour's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
 			if (auto checked = Behaviour::check(settings); !checked) return std::unexpected(std::move(checked.error()));
 		}

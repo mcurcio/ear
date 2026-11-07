@@ -94,7 +94,6 @@ private:
 	InsidesEvents& events() override;
 	Acquired acquireResource(const ResourceRequest& request) override;
 
-	const Ports::Bank& bankOf(const std::string& name, Direction direction, bool inside) const;
 	void buildIfAllReady();
 	void fail(FailureReason reason);
 	void applyFacts();

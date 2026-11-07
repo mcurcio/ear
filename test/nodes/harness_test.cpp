@@ -1,7 +1,8 @@
 // Every node type through the harness (docs/design/node-framework.md section 7.6), as pluginval and clap-validator run
 // every plugin: each type's valid settings parse, start acquires only through its context, every outside resource made
 // ready runs the node, every output sample of every cycle is written whatever the inputs hold, and the run closes. The
-// types come from the generated list; this file names none (all_types.hpp says which run here).
+// types come from the generated list; this file names none (all_types.hpp says which do not run here yet).
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -15,9 +16,14 @@
 TEST_CASE("Every type runs through the harness: starts, runs, writes every output sample and closes", "[harness]") {
 	using State = ear::testing::NodeHarness::State;
 	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 128};
-	for (const auto& type : ear::test::allTypes()) {
+	const auto types = ear::test::allTypes();
+	for (const auto& name : ear::test::notYetInHarness()) {
+		INFO(name << " is in notYetInHarness (test/nodes/all_types.hpp)");
+		CHECK(std::ranges::any_of(types, [&](const auto& type) { return type->name() == name; }));
+	}
+	for (const auto& type : types) {
 		INFO(type->name());
-		if (!ear::test::runsInHarness(type->name())) continue;
+		if (ear::test::notYetInHarness().contains(type->name())) continue;
 		for (const ear::NodeSettings& settings : ear::test::validSettings(type->name())) {
 			INFO(settings.dump());
 			ear::testing::NodeHarness harness(*type, format, &ear::test::recordings(), "probe");
