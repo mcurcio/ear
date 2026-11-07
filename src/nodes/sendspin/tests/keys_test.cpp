@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "catch2/catch.hpp"
+#include "ear/core/log.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/sendspin.hpp"
 #include "key_store.hpp"
@@ -274,8 +275,16 @@ TEST_CASE("Making the node type narrows every key file and its staging file, wha
 	write("ear.conf", 0664);
 	std::filesystem::create_symlink(config / "ear.conf", config / "sendspin-link.key");
 
-	CHECK(ear::nodes::makeSendspinNodeType({.config = rig.folder}) != nullptr);
+	struct BootLog final : ear::LogSink {
+		std::vector<ear::LogEntry> entries;
+		void log(const ear::LogEntry& entry) override { entries.push_back(entry); }
+	} boot;
+	CHECK(ear::nodes::makeSendspinNodeType({.config = rig.folder, .log = &boot}) != nullptr);
 	CHECK_THROWS_WITH(ear::nodes::makeSendspinNodeType({}), "sendspin needs the graph file folder");
+	CHECK_THROWS_WITH(ear::nodes::makeSendspinNodeType({.config = rig.folder}), "sendspin needs the boot log");
+	// Every key file here can be narrowed (a symlink is not one: the folder lists regular files only), so nothing is
+	// reported; a failure would be a warn record from "sendspin" (main.cpp's sink), never dropped for want of a sink.
+	CHECK(boot.entries.empty());
 
 	const auto modeOf = [&](const char* name) {
 		return std::filesystem::symlink_status(config / name).permissions() & std::filesystem::perms::mask;

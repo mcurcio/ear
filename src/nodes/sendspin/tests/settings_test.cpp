@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "catch2/catch.hpp"
+#include "ear/core/log.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/sendspin.hpp"
 #include "settings.hpp"
@@ -109,8 +110,11 @@ TEST_CASE("The type declares its ports and its settings' kinds, and refuses thro
 	const ear::test::TempFolder dir;
 	auto folder = ear::folder::ConfinedFolder::open(dir.path());
 	REQUIRE(folder.has_value());
+	struct Unread final : ear::LogSink { // an empty folder: nothing to report
+		void log(const ear::LogEntry&) override {}
+	} boot;
 	const auto type = ear::nodes::makeSendspinNodeType(
-		{.config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder))});
+		{.config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)), .log = &boot});
 	CHECK(type->name() == "sendspin");
 	const auto kinds = type->settingKinds();
 	REQUIRE(kinds.size() == 3);

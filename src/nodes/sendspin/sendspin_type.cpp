@@ -121,9 +121,9 @@ namespace ear::nodes {
 std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
 	if (!folders.config) throw std::logic_error("sendspin needs the graph file folder");
 	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
+	if (folders.log == nullptr) throw std::logic_error("sendspin needs the boot log");
 	for (std::string& failure : sendspin::narrowKeyFiles(*folders.config))
-		if (folders.log != nullptr)
-			folders.log->log({.level = LogLevel::warn, .source = "sendspin", .text = std::move(failure)});
+		folders.log->log({.level = LogLevel::warn, .source = "sendspin", .text = std::move(failure)});
 	return std::make_unique<const sendspin::SendspinType>(folders.config);
 }
 
