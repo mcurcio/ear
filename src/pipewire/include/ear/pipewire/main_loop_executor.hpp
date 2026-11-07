@@ -9,10 +9,11 @@
 namespace ear::pipewire {
 class MainLoopExecutor final : public Executor {
 public:
-  explicit MainLoopExecutor(Engine& engine);   // engine outlives it
-  ~MainLoopExecutor();   // main thread; queued work is destroyed unrun
-  void post(std::move_only_function<void()> work) override;   // any thread
+	explicit MainLoopExecutor(Engine& engine);                // engine outlives it
+	~MainLoopExecutor();                                      // main thread; queued work is destroyed unrun
+	void post(std::move_only_function<void()> work) override; // any thread
 private:
-  struct Impl; std::unique_ptr<Impl> impl_;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::pipewire

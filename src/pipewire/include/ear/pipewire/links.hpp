@@ -9,12 +9,14 @@
 namespace ear::pipewire {
 class Links final : public LinkMaker {
 public:
-  explicit Links(Engine& engine);
-  ~Links();                                   // destroys every link it made
-  void subscribe(LinkListener& listener);
-  void createLink(LinkId link, EnginePortId output, EnginePortId input) override;
-  void destroyLink(LinkId link) override;
+	explicit Links(Engine& engine);
+	~Links(); // destroys every link it made
+	void subscribe(LinkListener& listener);
+	void createLink(LinkId link, EnginePortId output, EnginePortId input) override;
+	void destroyLink(LinkId link) override;
+
 private:
-  struct Impl; std::unique_ptr<Impl> impl_;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::pipewire

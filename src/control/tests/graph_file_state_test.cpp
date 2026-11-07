@@ -69,22 +69,25 @@ TEST_CASE("Places and diagnostics compare by value", "[graph_file_state]") {
 
 TEST_CASE("A graph file's JSON leaves out each absent optional and holds each present one", "[graph_file_state]") {
 	const json bare = encodeGraphFile(file("v1", "", std::nullopt));
-	CHECK(bare == json{{"version", "v1"}, {"text", ""}, {"diagnostics", json::array()}, {"pendingRestart", json::array()}});
+	CHECK(bare ==
+	      json{{"version", "v1"}, {"text", ""}, {"diagnostics", json::array()}, {"pendingRestart", json::array()}});
 
 	GraphFile full = file("v2", "x", "v1");
 	full.diagnostics = {Diagnostic{Severity::warning, "W3005", "nothing matched", TextPlace{2, 3}}};
 	full.refusal = Refusal{ear::Stopping{}, std::nullopt};
 	full.pendingRestart = {FormatKey::graphFrequency, FormatKey::blockSize};
 	full.writeFailed = "no space";
-	CHECK(encodeGraphFile(full) ==
-	      json{{"version", "v2"},
-	           {"text", "x"},
-	           {"diagnostics",
-	            json::array({{{"severity", "warning"}, {"code", "W3005"}, {"message", "nothing matched"}, {"line", 2}, {"column", 3}}})},
-	           {"running", "v1"},
-	           {"refusal", {{"code", "stopping"}, {"message", "stopping"}}},
-	           {"pendingRestart", json::array({"graphFrequency", "blockSize"})},
-	           {"writeFailed", "no space"}});
+	CHECK(encodeGraphFile(full) == json{{"version", "v2"},
+	                                    {"text", "x"},
+	                                    {"diagnostics", json::array({{{"severity", "warning"},
+	                                                                  {"code", "W3005"},
+	                                                                  {"message", "nothing matched"},
+	                                                                  {"line", 2},
+	                                                                  {"column", 3}}})},
+	                                    {"running", "v1"},
+	                                    {"refusal", {{"code", "stopping"}, {"message", "stopping"}}},
+	                                    {"pendingRestart", json::array({"graphFrequency", "blockSize"})},
+	                                    {"writeFailed", "no space"}});
 }
 
 TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph_file_state][protocol]") {
@@ -104,8 +107,9 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 	SECTION("the refusals") {
 		CHECK(resultOf(4, FileRefusal{FileChanged{}}) == m[5]);
 		CHECK(resultOf(5, FileRefusal{InvalidText{{Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"",
-		                                                       TextPlace{9, 34}}}}}) == m[6]);
-		CHECK(resultOf(6, std::expected<void, ear::CommandError>(std::unexpected(ear::UnknownPort{{"rec", "FX"}}))) == m[7]);
+		                                                      TextPlace{9, 34}}}}}) == m[6]);
+		CHECK(resultOf(6, std::expected<void, ear::CommandError>(std::unexpected(ear::UnknownPort{{"rec", "FX"}}))) ==
+		      m[7]);
 		CHECK(resultOf(7, FileRefusal{FileInvalid{}}) == m[9]);
 		CHECK(resultOf(9, FileRefusal{SharedDefinition{{6, 5}}}) == m[16]);
 	}

@@ -23,15 +23,24 @@ enum class At { starting, blockReady, running, failed, lost, stopping, gone };
 NodeLifecycle reach(At at) {
 	NodeLifecycle node;
 	switch (at) {
-	case At::starting: break;
-	case At::blockReady: REQUIRE_FALSE(node.portBlockReady()); break;
+	case At::starting:
+		break;
+	case At::blockReady:
+		REQUIRE_FALSE(node.portBlockReady());
+		break;
 	case At::running:
 		REQUIRE_FALSE(node.portBlockReady());
 		REQUIRE(node.insidesReady());
 		break;
-	case At::failed: REQUIRE(node.insidesFailed(insidesFailure)); break;
-	case At::lost: REQUIRE(node.portBlockLost(blockLoss)); break;
-	case At::stopping: REQUIRE(node.stopRequested()); break;
+	case At::failed:
+		REQUIRE(node.insidesFailed(insidesFailure));
+		break;
+	case At::lost:
+		REQUIRE(node.portBlockLost(blockLoss));
+		break;
+	case At::stopping:
+		REQUIRE(node.stopRequested());
+		break;
 	case At::gone:
 		REQUIRE(node.stopRequested());
 		REQUIRE(node.stopped());
@@ -50,9 +59,12 @@ At where(const NodeLifecycle& node) {
 		copy.insidesReady();
 		return copy.state() == NodeState::running ? At::blockReady : At::starting;
 	}
-	case NodeState::running: return At::running;
-	case NodeState::failed: return node.blockLost() ? At::lost : At::failed;
-	case NodeState::stopping: return At::stopping;
+	case NodeState::running:
+		return At::running;
+	case NodeState::failed:
+		return node.blockLost() ? At::lost : At::failed;
+	case NodeState::stopping:
+		return At::stopping;
 	}
 	FAIL("unknown state");
 	return At::gone;
@@ -83,13 +95,20 @@ const std::vector<Fact> facts{
 
 const char* atName(At at) {
 	switch (at) {
-	case At::starting: return "starting";
-	case At::blockReady: return "starting, block ready";
-	case At::running: return "running";
-	case At::failed: return "failed";
-	case At::lost: return "failed, block lost";
-	case At::stopping: return "stopping";
-	case At::gone: return "gone";
+	case At::starting:
+		return "starting";
+	case At::blockReady:
+		return "starting, block ready";
+	case At::running:
+		return "running";
+	case At::failed:
+		return "failed";
+	case At::lost:
+		return "failed, block lost";
+	case At::stopping:
+		return "stopping";
+	case At::gone:
+		return "gone";
 	}
 	return "?";
 }
@@ -137,8 +156,7 @@ TEST_CASE("Every fact in every state moves the node as the table says", "[lifecy
 	}
 }
 
-TEST_CASE("A node runs once its port block and its insides are both ready, in either order",
-          "[lifecycle]") {
+TEST_CASE("A node runs once its port block and its insides are both ready, in either order", "[lifecycle]") {
 	NodeLifecycle blockFirst;
 	CHECK_FALSE(blockFirst.portBlockReady());
 	CHECK(blockFirst.state() == NodeState::starting);
@@ -160,8 +178,7 @@ TEST_CASE("A restart keeps a ready block: new insides alone make the node runnin
 	CHECK(node.state() == NodeState::running);
 }
 
-TEST_CASE("A lost block's reason replaces an insides reason and stays through every later fact",
-          "[lifecycle]") {
+TEST_CASE("A lost block's reason replaces an insides reason and stays through every later fact", "[lifecycle]") {
 	NodeLifecycle node;
 	REQUIRE(node.insidesFailed(insidesFailure));
 	REQUIRE(node.portBlockLost(blockLoss));

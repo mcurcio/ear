@@ -63,9 +63,12 @@ int renameAt(int dirfd, const std::string& from, const std::string& to, unsigned
 /// errno as a reason, in the folder's words where the resolve flags chose it.
 std::string reason(int error) {
 	switch (error) {
-	case EXDEV: return "it leads outside the folder";   // how RESOLVE_BENEATH refuses
-	case ELOOP: return "a symlink is on its path";        // how RESOLVE_NO_SYMLINKS refuses
-	default: return std::strerror(error);
+	case EXDEV:
+		return "it leads outside the folder"; // how RESOLVE_BENEATH refuses
+	case ELOOP:
+		return "a symlink is on its path"; // how RESOLVE_NO_SYMLINKS refuses
+	default:
+		return std::strerror(error);
 	}
 }
 
@@ -158,7 +161,7 @@ bool contains(const std::vector<Identity>& lineage, const Identity& identity) {
 	return false;
 }
 
-}  // namespace
+} // namespace
 
 std::expected<ConfinedFolder, FolderError> ConfinedFolder::open(const std::filesystem::path& path) {
 	if (::mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
@@ -174,7 +177,7 @@ std::expected<ConfinedFolder, FolderError> ConfinedFolder::open(const std::files
 ConfinedFolder::ConfinedFolder(int fd, std::filesystem::path path) noexcept : fd_(fd), path_(std::move(path)) {}
 
 ConfinedFolder::ConfinedFolder(ConfinedFolder&& other) noexcept
-    : fd_(std::exchange(other.fd_, -1)), path_(std::move(other.path_)) {}
+	: fd_(std::exchange(other.fd_, -1)), path_(std::move(other.path_)) {}
 
 ConfinedFolder& ConfinedFolder::operator=(ConfinedFolder&& other) noexcept {
 	if (this != &other) {
@@ -212,9 +215,9 @@ std::expected<std::optional<std::string>, FolderError> ConfinedFolder::read(cons
 }
 
 std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::string& relative,
-                                                                    const std::optional<std::string>& expected,
-                                                                    std::string_view text, std::size_t maxBytes,
-                                                                    mode_t createMode) const {
+                                                                     const std::optional<std::string>& expected,
+                                                                     std::string_view text, std::size_t maxBytes,
+                                                                     mode_t createMode) const {
 	const std::filesystem::path target(relative);
 	const std::string name = target.filename().string();
 	if (name.empty() || name == "." || name == "..") return std::unexpected(failure(relative, "not a file name"));
@@ -238,7 +241,7 @@ std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::
 	{
 		const mode_t mode = exists ? (status.st_mode & 07777) : createMode;
 		const Descriptor staged(
-		    openBeneath(directory.get(), staging.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, mode, noSymlinks));
+			openBeneath(directory.get(), staging.c_str(), O_CREAT | O_TRUNC | O_WRONLY | O_CLOEXEC, mode, noSymlinks));
 		if (!staged) return std::unexpected(failure(relative, "cannot stage the new text: " + reason(errno)));
 		// The umask narrowed the mode at creation, and a staging file left over kept its own.
 		bool written = ::fchmod(staged.get(), mode) == 0;
@@ -304,7 +307,8 @@ std::expected<ReplaceOutcome, FolderError> ConfinedFolder::replaceIf(const std::
 
 std::expected<void, FolderError> ConfinedFolder::restrictMode(const std::string& relative, mode_t most) const {
 	// O_NONBLOCK: as in readFile, a FIFO must not wait for a writer.
-	const Descriptor fd(openBeneath(fd_, relative.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC, 0, noSymlinks));
+	const Descriptor fd(
+		openBeneath(fd_, relative.c_str(), O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC, 0, noSymlinks));
 	if (!fd) return std::unexpected(failure(relative, reason(errno)));
 	struct stat status{};
 	if (::fstat(fd.get(), &status) != 0) return std::unexpected(failure(relative, std::strerror(errno)));
@@ -328,7 +332,8 @@ std::expected<std::vector<std::string>, FolderError> ConfinedFolder::fileNames()
 	std::vector<std::string> names;
 	while (const dirent* entry = ::readdir(directory)) {
 		struct stat status{};
-		if (::fstatat(reading, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(status.st_mode)) names.emplace_back(entry->d_name);
+		if (::fstatat(reading, entry->d_name, &status, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(status.st_mode))
+			names.emplace_back(entry->d_name);
 	}
 	::closedir(directory);
 	return names;
@@ -355,4 +360,4 @@ std::expected<void, FolderError> requireApart(std::span<const std::filesystem::p
 	return {};
 }
 
-}  // namespace ear::folder
+} // namespace ear::folder

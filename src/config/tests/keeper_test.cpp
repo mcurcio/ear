@@ -51,7 +51,8 @@ public:
 	GraphView read() const override {
 		log_.push("read graph");
 		GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
-		for (auto& node : graph_.nodes()) view.nodes.push_back({node.spec, node.ports, NodeState::starting, std::nullopt});
+		for (auto& node : graph_.nodes())
+			view.nodes.push_back({node.spec, node.ports, NodeState::starting, std::nullopt});
 		return view;
 	}
 
@@ -70,7 +71,7 @@ public:
 	int replaces = 0;
 	DiskText read() override { return text; }
 	std::expected<folder::ReplaceOutcome, std::string> replaceIf(const std::optional<std::string>& expected,
-	                                                            std::string_view next) override {
+	                                                             std::string_view next) override {
 		++replaces;
 		if (failing) return std::unexpected(failure);
 		if (expected != text) return folder::ReplaceOutcome{folder::Changed{text}};
@@ -89,7 +90,7 @@ struct Fixture {
 	/// ear.conf holds `boot` (nothing: missing). `fake`: the disk to use instead of the folder.
 	explicit Fixture(const std::string& name, std::optional<std::string> boot = recordExample, FakeDisk* fake = nullptr,
 	                 AudioFormat engine = {48000, 256})
-	    : dir(name), file(dir.path() / "ear.conf"), folder(openFolder(dir.path())) {
+		: dir(name), file(dir.path() / "ear.conf"), folder(openFolder(dir.path())) {
 		if (boot) std::ofstream(file, std::ios::binary) << *boot;
 		graph.subscribe(static_cast<DesiredNodeListener&>(graphLog));
 		graph.subscribe(static_cast<DesiredRouteListener&>(graphLog));
@@ -155,7 +156,7 @@ struct Fixture {
 		return fileLog.changes.back();
 	}
 
-	TempDir dir;
+	TempFolder dir;
 	std::filesystem::path file;
 	folder::ConfinedFolder folder;
 	FolderGraphFileDisk realDisk{folder};
@@ -180,7 +181,8 @@ bool ok(const CommandResult& result) {
 std::string code(const CommandResult& result) {
 	if (const auto* outcome = std::get_if<std::expected<void, CommandError>>(&result))
 		return outcome->has_value() ? "" : std::string(errorCode(outcome->error()));
-	if (const auto* refusal = std::get_if<control::FileRefusal>(&result)) return std::string(control::fileRefusalCode(*refusal));
+	if (const auto* refusal = std::get_if<control::FileRefusal>(&result))
+		return std::string(control::fileRefusalCode(*refusal));
 	return "";
 }
 
@@ -196,7 +198,7 @@ TEST_CASE("start() offers the boot file: the file change first, then the commit'
 	Fixture f("start");
 	f.keeper->start();
 	f.pump();
-	REQUIRE(f.fileLog.changes.size() == 1);   // the disk check after it finds the base unchanged
+	REQUIRE(f.fileLog.changes.size() == 1); // the disk check after it finds the base unchanged
 	const auto& change = f.fileLog.changes[0];
 	CHECK(change.cause == FileChangeCause::disk);
 	CHECK(change.droppedEdits == 0);
@@ -205,13 +207,13 @@ TEST_CASE("start() offers the boot file: the file change first, then the commit'
 	CHECK(change.file.diagnostics.empty());
 	CHECK_FALSE(change.file.refusal.has_value());
 	CHECK(f.log.lines == Lines{"file disk", "node.added desk", "node.added noise", "node.added porch", "node.added rec",
-	                           "route.added noise:noise.mono desk:play.1", "route.added noise:noise.mono rec:record.left"});
+	                           "route.added noise:noise.mono desk:play.1",
+	                           "route.added noise:noise.mono rec:record.left"});
 }
 
-TEST_CASE("start() reads ear.conf again once watching, so a hand edit made after the boot read is run",
-          "[keeper]") {
-	Fixture f("start_reread");   // the boot read: the record's example
-	handEdit(f.file, handText);  // before the watch is armed: no disk event will ever tell of it
+TEST_CASE("start() reads ear.conf again once watching, so a hand edit made after the boot read is run", "[keeper]") {
+	Fixture f("start_reread");  // the boot read: the record's example
+	handEdit(f.file, handText); // before the watch is armed: no disk event will ever tell of it
 	f.keeper->start();
 	f.pump();
 	REQUIRE(f.fileLog.changes.size() == 2);
@@ -247,7 +249,8 @@ TEST_CASE("A boot file the graph refuses shows the refusal at its place, and not
 	CHECK(f.graph.nodes().empty());
 }
 
-TEST_CASE("An accepted edit is announced, then runs, then is answered, and is written when the keeper is free",
+TEST_CASE("An accepted edit is announced, then runs, then is answered, and is written when the "
+          "keeper is free",
           "[keeper]") {
 	Fixture f("edit");
 	f.start();
@@ -255,8 +258,8 @@ TEST_CASE("An accepted edit is announced, then runs, then is answered, and is wr
 	CHECK(f.log.lines == Lines{"file edit", "node.updated rec", "reply"});
 	const auto& change = f.lastChange();
 	CHECK(change.file.running == change.file.version);
-	CHECK(change.file.text == replaced(recordExample, "take1.wav", "take2.wav"));   // the comment line kept
-	CHECK(contents(f.file) == recordExample);                                       // not written yet
+	CHECK(change.file.text == replaced(recordExample, "take1.wav", "take2.wav")); // the comment line kept
+	CHECK(contents(f.file) == recordExample);                                     // not written yet
 
 	f.free();
 	CHECK(contents(f.file) == change.file.text);
@@ -307,16 +310,18 @@ TEST_CASE("A hand edit at the swap wins: the write finds it, and leaves it in pl
 	f.start();
 	REQUIRE(ok(f.update("rec", take2)));
 	f.log.clear();
-	handEdit(f.file, handText);   // no disk event: the write meets it
+	handEdit(f.file, handText); // no disk event: the write meets it
 	f.free();
 	CHECK(f.log.lines == Lines{"file disk dropped=1", "node.updated rec"});
 	CHECK(f.lastChange().file.text == handText);
 	CHECK(contents(f.file) == handText);
-	CHECK(names(f.dir.path()) == Lines{"ear.conf"});   // no staging file left
+	CHECK(names(f.dir.path()) == Lines{"ear.conf"}); // no staging file left
 	CHECK(f.fileLog.written.empty());
 }
 
-TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the graph keeps the dropped edit", "[keeper]") {
+TEST_CASE("A refused hand edit after a dropped edit shows the refusal, and the graph keeps the "
+          "dropped edit",
+          "[keeper]") {
 	Fixture f("refused_hand");
 	f.start();
 	REQUIRE(ok(f.update("rec", take2)));
@@ -368,12 +373,12 @@ TEST_CASE("graphFile.set: a stale version, a text with errors, the same text and
 	const auto& refusal = std::get<control::FileRefusal>(bad);
 	REQUIRE(std::holds_alternative<control::InvalidText>(refusal));
 	CHECK(std::get<control::InvalidText>(refusal).diagnostics[0].code == unknownDirectiveCode);
-	CHECK(f.graphFile().version == version);   // nothing kept
-	CHECK(f.fileLog.changes.size() == 1);        // the boot offer's only
+	CHECK(f.graphFile().version == version); // nothing kept
+	CHECK(f.fileLog.changes.size() == 1);    // the boot offer's only
 
 	f.log.clear();
 	CHECK(ok(f.set(recordExample, version)));
-	CHECK(f.log.lines == Lines{"reply"});        // nothing announced
+	CHECK(f.log.lines == Lines{"reply"}); // nothing announced
 
 	f.log.clear();
 	CHECK(ok(f.set(handText, version)));
@@ -412,7 +417,7 @@ TEST_CASE("A disk event while an offer awaits its verdict is handled after the v
 	Fixture f("await");
 	f.start();
 	std::optional<std::vector<CommandResult>> got;
-	f.request({control::UpdateNode{"rec", take2}}, got);   // its step waits on the main loop
+	f.request({control::UpdateNode{"rec", take2}}, got); // its step waits on the main loop
 	handEdit(f.file, handText);
 	f.keeper->diskEvent();
 	f.pump();
@@ -448,13 +453,13 @@ TEST_CASE("A failed write is shown, retried only after the next accepted change,
 	CHECK(f.lastChange().file.writeFailed == "disk full");
 	CHECK(disk.replaces == 1);
 
-	f.graphFile();   // a read wakes the keeper, and retries nothing
+	f.graphFile(); // a read wakes the keeper, and retries nothing
 	f.free();
 	CHECK(disk.replaces == 1);
 
 	disk.failing = false;
 	REQUIRE(ok(f.update("rec", take3)));
-	CHECK(f.lastChange().file.writeFailed == "disk full");   // still failed until a write succeeds
+	CHECK(f.lastChange().file.writeFailed == "disk full"); // still failed until a write succeeds
 	f.log.clear();
 	f.free();
 	CHECK(disk.replaces == 2);
@@ -472,11 +477,11 @@ TEST_CASE("A write failure is announced again only when its detail changes", "[k
 	f.free();
 	REQUIRE(f.lastChange().cause == FileChangeCause::write);
 
-	REQUIRE(ok(f.update("rec", take3)));   // the next accepted change retries the write
+	REQUIRE(ok(f.update("rec", take3))); // the next accepted change retries the write
 	f.log.clear();
 	f.free();
 	CHECK(disk.replaces == 2);
-	CHECK(f.log.lines.empty());            // the same failure: nothing new to say
+	CHECK(f.log.lines.empty()); // the same failure: nothing new to say
 
 	disk.failure = "read-only file system";
 	REQUIRE(ok(f.update("rec", take2)));
@@ -487,13 +492,12 @@ TEST_CASE("A write failure is announced again only when its detail changes", "[k
 	CHECK(f.lastChange().file.writeFailed == "read-only file system");
 }
 
-TEST_CASE("The version moves only when the text changes, so a reload of the same text keeps a set valid",
-          "[keeper]") {
+TEST_CASE("The version moves only when the text changes, so a reload of the same text keeps a set valid", "[keeper]") {
 	Fixture f("same_text");
 	f.start();
 	REQUIRE(ok(f.update("rec", take2)));
 	const auto edited = f.graphFile();
-	handEdit(f.file, edited.text);   // a hand save of exactly the working copy, before ear wrote it
+	handEdit(f.file, edited.text); // a hand save of exactly the working copy, before ear wrote it
 	f.diskEvent();
 	const auto reloaded = f.graphFile();
 	CHECK(reloaded.text == edited.text);
@@ -501,7 +505,8 @@ TEST_CASE("The version moves only when the text changes, so a reload of the same
 	CHECK(ok(f.set(replaced(edited.text, "take2.wav", "take3.wav"), edited.version)));
 }
 
-TEST_CASE("An edit that would make ear.conf larger than ear reads is refused as invalid-text, and nothing is kept",
+TEST_CASE("An edit that would make ear.conf larger than ear reads is refused as invalid-text, and "
+          "nothing is kept",
           "[keeper]") {
 	Fixture f("too_large");
 	f.start();
@@ -518,17 +523,19 @@ TEST_CASE("An edit that would make ear.conf larger than ear reads is refused as 
 	CHECK(f.log.lines == Lines{"reply"});
 	CHECK(f.graphFile().version == before.version);
 	f.free();
-	CHECK(contents(f.file) == before.text);   // the last text that fits is the one written
+	CHECK(contents(f.file) == before.text); // the last text that fits is the one written
 }
 
-TEST_CASE("A file at another rate is accepted with a pending restart, and a missing file is created by a set",
+TEST_CASE("A file at another rate is accepted with a pending restart, and a missing file is "
+          "created by a set",
           "[keeper]") {
 	SECTION("pending restart") {
 		Fixture f("pending", recordExample, nullptr, {48000, 256});
 		f.start();
 		const auto other = replaced(recordExample, "graph_frequency 48000;", "graph_frequency 44100;");
 		CHECK(ok(f.set(other, f.graphFile().version)));
-		CHECK(f.lastChange().file.pendingRestart == std::vector<control::FormatKey>{control::FormatKey::graphFrequency});
+		CHECK(f.lastChange().file.pendingRestart ==
+		      std::vector<control::FormatKey>{control::FormatKey::graphFrequency});
 	}
 	SECTION("missing") {
 		Fixture f("missing", std::nullopt);
@@ -546,14 +553,15 @@ TEST_CASE("A file at another rate is accepted with a pending restart, and a miss
 	}
 }
 
-TEST_CASE("stop(): queued edits answer stopping, reads are answered, and the last accepted version is written",
+TEST_CASE("stop(): queued edits answer stopping, reads are answered, and the last accepted version "
+          "is written",
           "[keeper]") {
 	SECTION("the last write") {
 		Fixture f("stop");
 		f.start();
 		std::optional<std::vector<CommandResult>> edit;
 		f.request({control::UpdateNode{"rec", take2}}, edit);
-		f.main.runOne();   // judged and accepted; its completion waits on the keeper's thread
+		f.main.runOne(); // judged and accepted; its completion waits on the keeper's thread
 		// The graph stays open, so the late edit's stopping is the keeper's own answer, not the plan's.
 		std::optional<std::vector<CommandResult>> late;
 		std::optional<std::vector<CommandResult>> read;

@@ -8,13 +8,9 @@
 namespace ear {
 namespace {
 
-std::string portText(const PortRef& port) {
-	return std::format("{}:{}", port.node, port.port);
-}
+std::string portText(const PortRef& port) { return std::format("{}:{}", port.node, port.port); }
 
-std::string routeText(const Route& route) {
-	return std::format("{} -> {}", portText(route.from), portText(route.to));
-}
+std::string routeText(const Route& route) { return std::format("{} -> {}", portText(route.from), portText(route.to)); }
 
 } // namespace
 
@@ -47,10 +43,9 @@ std::string describe(const CommandError& error) {
 			else if constexpr (std::is_same_v<E, InvalidSettings>)
 				return std::format("{} {}: {}", code, e.node, e.detail);
 			else if constexpr (std::is_same_v<E, DuplicateNode> || std::is_same_v<E, UnknownNode> ||
-			                   std::is_same_v<E, InvalidName>)
+		                       std::is_same_v<E, InvalidName>)
 				return std::format("{} {}", code, e.node);
-			else if constexpr (std::is_same_v<E, UnknownPort>)
-				return std::format("{} {}", code, portText(e.port));
+			else if constexpr (std::is_same_v<E, UnknownPort>) return std::format("{} {}", code, portText(e.port));
 			else if constexpr (std::is_same_v<E, WrongDirection> || std::is_same_v<E, UnknownRoute>)
 				return std::format("{} {}", code, routeText(e.route));
 			else {

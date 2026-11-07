@@ -38,7 +38,7 @@ struct Fixture {
 	GraphFileModel load(const std::string& text) const { return GraphFileModel::load(DiskText{text}, catalogue); }
 };
 
-using Placed = std::tuple<std::string, std::uint32_t, std::uint32_t>;   // code, line, column
+using Placed = std::tuple<std::string, std::uint32_t, std::uint32_t>; // code, line, column
 
 std::vector<Placed> placed(const GraphFileRead& read) {
 	std::vector<Placed> all;
@@ -65,12 +65,12 @@ TEST_CASE("The record's example loads with no diagnostic into its wanted graph",
 	CHECK(read.wanted->graphFrequency == 48000);
 	CHECK(read.wanted->blockSize == 256);
 	CHECK(read.wanted->nodes == std::vector<NodeSpec>{
-	                                {"noise", "white", json::object()},
-	                                {"rec", "file", {{"path", "take1.wav"}}},
-	                                {"desk", "card", {{"card", "MOTU"}, {"playback", 2}}},
-	                                {"porch", "card", {{"card", "USB2"}, {"playback", 2}}},
-	                            });
-	CHECK(read.wanted->nodes[2].settings["playback"].is_number_integer());   // its declared kind, not text
+									{"noise", "white", json::object()},
+									{"rec", "file", {{"path", "take1.wav"}}},
+									{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}},
+									{"porch", "card", {{"card", "USB2"}, {"playback", 2}}},
+								});
+	CHECK(read.wanted->nodes[2].settings["playback"].is_number_integer()); // its declared kind, not text
 	CHECK(read.wanted->routes == std::vector<Route>{{{"noise", "noise.mono"}, {"rec", "record.left"}},
 	                                                {{"noise", "noise.mono"}, {"desk", "play.1"}}});
 	REQUIRE(read.placements.nodes.size() == 4);
@@ -80,7 +80,8 @@ TEST_CASE("The record's example loads with no diagnostic into its wanted graph",
 	CHECK(read.placements.routes[1] == control::TextPlace{13, 1});
 }
 
-TEST_CASE("Each of ear's codes is placed where the problem is written, and any error leaves no wanted graph",
+TEST_CASE("Each of ear's codes is placed where the problem is written, and any error leaves no "
+          "wanted graph",
           "[graph_file_model]") {
 	const Fixture f;
 
@@ -94,7 +95,8 @@ TEST_CASE("Each of ear's codes is placed where the problem is written, and any e
 		const auto model = f.load(formatLines + "node white noise;\nroute noise rec:record.left;\n");
 		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}});
 		CHECK_FALSE(model.read().wanted.has_value());
-		const auto empty = f.load(formatLines + "node white noise;\nroute \":noise.mono\" \"rec:\";\n");   // an empty part
+		const auto empty =
+			f.load(formatLines + "node white noise;\nroute \":noise.mono\" \"rec:\";\n"); // an empty part
 		CHECK(placed(empty.read()) == std::vector<Placed>{{"ear/bad-directive", 4, 7}, {"ear/bad-directive", 4, 21}});
 	}
 	SECTION("a node without its name") {
@@ -103,7 +105,8 @@ TEST_CASE("Each of ear's codes is placed where the problem is written, and any e
 		CHECK_FALSE(model.read().wanted.has_value());
 	}
 	SECTION("a setting given twice, and a setting with a block") {
-		const auto model = f.load(formatLines + "node file rec { path \"a\"; path \"b\"; }\nnode file r2 { path { x; } }\n");
+		const auto model =
+			f.load(formatLines + "node file rec { path \"a\"; path \"b\"; }\nnode file r2 { path { x; } }\n");
 		CHECK(placed(model.read()) == std::vector<Placed>{{"ear/bad-directive", 3, 27}, {"ear/bad-directive", 4, 16}});
 	}
 	SECTION("graph_frequency left out") {
@@ -150,7 +153,7 @@ TEST_CASE("A missing or unreadable ear.conf is one error and an empty text", "[g
 		CHECK(model.text().empty());
 		CHECK(model.read().diagnostics ==
 		      std::vector<control::Diagnostic>{
-		          {control::Severity::error, "ear/missing-file", "ear.conf is not there", control::TextPlace{1, 1}}});
+				  {control::Severity::error, "ear/missing-file", "ear.conf is not there", control::TextPlace{1, 1}}});
 		CHECK_FALSE(model.read().format.has_value());
 		CHECK_FALSE(model.read().wanted.has_value());
 	}

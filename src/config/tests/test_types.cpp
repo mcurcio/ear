@@ -1,9 +1,12 @@
-// ear_config's test node types (test_types.hpp). Their parse checks only what the tests need: the
-// model never calls it, the plan does.
+// ear_config's test node types (test_types.hpp). Their tables declare only what the tests need: the
+// model reads only the kinds, the plan parses.
 #include "test_types.hpp"
 
-#include <array>
+#include <optional>
 #include <string>
+#include <string_view>
+
+#include "ear/core/settings_table.hpp"
 
 namespace ear::config::test {
 namespace {
@@ -20,47 +23,35 @@ private:
 	Ports ports_;
 };
 
-class WhiteType final : public NodeType {
-public:
-	std::string_view name() const override { return "white"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
-	                                                                        const NodeSettings& settings) const override {
-		if (!settings.empty()) return std::unexpected(InvalidSettings{node, "white takes no settings"});
+/// Any text at all.
+std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
+
+constexpr SettingsTable<> whiteTable{"white"};
+constexpr auto pathRow = setting::required("path", setting::text<anyText>("text"));
+constexpr SettingsTable<pathRow> fileTable{"file"};
+constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
+constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
+constexpr auto captureRow = setting::defaulted("capture", setting::number(0, 64), 0);
+constexpr SettingsTable<cardRow, playbackRow, captureRow> cardTable{"card"};
+
+class WhiteType final : public NodeTypeOf<whiteTable> {
+	MadeConfig make(const NodeName&, const Checked&) const override {
 		return std::make_unique<FixedConfig>(Ports{{{Direction::output, "noise", {"mono"}}}});
 	}
-	std::span<const SettingDeclaration> settingKinds() const override { return {}; }
 };
 
-class FileType final : public NodeType {
-public:
-	std::string_view name() const override { return "file"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
-	                                                                        const NodeSettings& settings) const override {
-		if (!settings.contains("path") || !settings["path"].is_string())
-			return std::unexpected(InvalidSettings{node, "file needs a path"});
+class FileType final : public NodeTypeOf<fileTable> {
+	MadeConfig make(const NodeName&, const Checked&) const override {
 		return std::make_unique<FixedConfig>(Ports{{{Direction::input, "record", {"left", "right"}}}});
 	}
-	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
-
-private:
-	static constexpr std::array<SettingDeclaration, 1> kinds{{{"path", SettingKind::text}}};
 };
 
-class CardType final : public NodeType {
-public:
-	std::string_view name() const override { return "card"; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
-	                                                                        const NodeSettings& settings) const override {
-		const auto channels = [&](const char* key) { return numbered(static_cast<std::uint32_t>(settings.value(key, 0))); };
+class CardType final : public NodeTypeOf<cardTable> {
+	MadeConfig make(const NodeName&, const Checked& settings) const override {
 		return std::make_unique<FixedConfig>(
-		    Ports{{{Direction::input, "play", channels("playback")}, {Direction::output, "capture", channels("capture")}}});
+			Ports{{{Direction::input, "play", numbered(settings.get<playbackRow>())},
+		           {Direction::output, "capture", numbered(settings.get<captureRow>())}}});
 	}
-	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
-
-private:
-	static constexpr std::array<SettingDeclaration, 3> kinds{{{"card", SettingKind::text},
-	                                                          {"playback", SettingKind::wholeNumber},
-	                                                          {"capture", SettingKind::wholeNumber}}};
 };
 
 } // namespace

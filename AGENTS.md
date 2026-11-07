@@ -40,6 +40,8 @@ scripts/dev.sh make clean         # rm -rf out
 scripts/dev.sh make test CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_BOOST=<path>/.cache/deps/boost-src
 scripts/dev.sh make web           # npm ci, then build the graph editor into web/dist
 scripts/dev.sh make web-test      # npm ci, typecheck, vitest, build
+scripts/dev.sh make format        # clang-format -i over the tracked C++ under src/ and test/ (.clang-format: tabs, 120 columns)
+scripts/dev.sh make format-check  # the same, failing on any file it would change (CI's format job)
 scripts/dev.sh bash               # a shell in the image
 ```
 
@@ -53,7 +55,7 @@ scripts/dev.sh bash               # a shell in the image
   commit or by SHA-256: the protocol library sendspin-cpp (with one carried patch,
   `cmake/sendspin-listener.patch`; a failed apply, or a tree without it, stops configure), ArduinoJson, IXWebSocket
   (likewise, `cmake/ixwebsocket-limits.patch`), micro-flac and noise-c, which it needs, and mjansson/mdns (one header). Each is kept in
-  `.cache/deps/` as Boost's is, and `ear_sendspin` is the only package that sees them. Configure
+  `.cache/deps/` as Boost's is, and `ear_node_sendspin` is the only library that sees them. Configure
   copies their licences to `out/licenses/`. Configure with `BUILD_TESTS=ON` stops naming
   `EAR_SENDSPIN_SERVER_PYTHON` when the image's `/opt/sendspin-server/bin/python` (the real
   Sendspin server the tests run against, `test/sendspin/requirements.txt`) is missing.
@@ -123,7 +125,7 @@ graph-file written <version>
 ```
 
 A `says` line is a note from a node's insides, never a state; a type's texts are its own (the
-`sendspin` node's: `src/sendspin/notes.hpp`, below), and only standard output has them, so the
+`sendspin` node's: `src/nodes/sendspin/notes.hpp`, below), and only standard output has them, so the
 control port and the editor do not. A `graph-file <cause>` line comes with each change to the
 graph file (`disk` for the boot file and for hand edits, `edit` for an edit through the control port, `write` when a write failed or
 recovered), before the node and route lines it causes; the lines under it say what that version
@@ -207,7 +209,20 @@ route noise:noise.mono desk:play.1;
   ear.conf"), so no other file is ever read.
 - Each setting is read and written as the kind its node type declares (`NodeType::settingKinds`):
   text (a bare word or a quoted string) or a whole number. A key the type does not declare is
-  invalid settings.
+  invalid settings. A type declares each key once, in one settings table (`SettingsTable` of typed
+  rows, `setting::required`, `optional` or `defaulted`, in `ear_core`'s `settings_table.hpp`: key,
+  a whole number's range, unit and default, or a text's parse function and what it must be). The
+  table checks the object (unknown keys, missing keys, kinds, ranges, `onlyWithout`, in a fixed
+  order, so the first problem a refusal names is stable). `NodeType`'s `name()`, `settingKinds()` and
+  `parse()` are not virtual: they answer from the table `NodeTypeOf<table>` binds, so the graph file
+  reader cannot disagree with `parse`, and a type that disagrees does not compile. The type's one
+  customisation point is `make`, which gets the checked values (never the raw object), each read by its
+  row's handle: a required or defaulted row gives its value, an optional row an `std::optional`, a text
+  row the type its parse function made (`CardId`, `RtpAddress`, a file path), parsed once; a misspelt
+  row, or an optional one read as a plain value, does not compile (`src/core/tests/compile_fail/`).
+  A rule across settings that is only a key not to be given with another is data on the row
+  (`onlyWithout`); any other rule across settings (card's playback or capture above 0) is in `make`,
+  its one home.
 - Problems are diagnostics, each with a severity, a code (knobly's, such as `E2001`, or ear's
   `ear/...`), a message and a line and column. A file with any error does not apply: the graph
   keeps what it ran, the editor shows why, and `node.*` and `route.*` edits are refused
@@ -328,15 +343,18 @@ route noise:noise.mono desk:play.1;
 
 ## Architecture
 
-Eight libraries, the binary and the editor, each C++ package in `src/<package>/` with its own
-`CMakeLists.txt`, public headers in `include/ear/<package>/` and tests in `tests/`:
+Twelve libraries (seven packages, and the five node types each its own library), the binary and the
+editor, each C++ package in `src/<package>/` with its own `CMakeLists.txt`, public headers in
+`include/ear/<package>/` and tests in `tests/`; a node type lives in `src/nodes/<type>/`, with its
+header in `include/ear/nodes/<type>.hpp` and its tests in `tests/`:
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `NodeConfig`, `Ports` declared by `PortBank`s, `portName`, the one maker of a public port's name, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`, `RtpAddress`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its insides start, restart and fail behind it, with the outside nodes they ask for; `GraphCycle`, what a block's code is told of each cycle; `InsidesEvents`, notes and `lost` from insides with threads; `FrameRing`, the handoff's lock-free ring), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
+| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `SettingsTable` and its typed rows in `settings_table.hpp`, the one table a type declares its settings in, `NodeTypeOf`, the one base a type derives from, `NodeFolders`, the folders a type's factory takes, `NodeConfig`, `Ports` declared by `PortBank`s, `portName`, the one maker of a public port's name, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`, `RtpAddress`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its insides start, restart and fail behind it, with the outside nodes they ask for; `GraphCycle`, what a block's code is told of each cycle; `InsidesEvents`, notes and `lost` from insides with threads; `FrameRing`, the handoff's lock-free ring), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: one folder held open from boot, every path resolved beneath it by the kernel (`openat2`): the recordings folder's files made, and the graph file and key files read and replaced only if unchanged (`renameat2`), a file's mode narrowed; `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink; anything else of EAR's |
-| `ear_nodes` (`src/nodes`) | The built-in types `white`, `file`, `card` and `rtp`, each declaring its settings' kinds | PipeWire and ALSA (`file` uses libsndfile; `card` and `rtp` ask the framework for their outside nodes) |
-| `ear_sendspin` (`src/sendspin`) | The built-in type `sendspin` as a port block with its own audio code and threads, not an outside node: the feed, the worker and notifier threads over the protocol library sendspin-cpp, the connection watch, the key store, `PortClaims`, mDNS (`Advertiser`); the only package that sees that library, privately | The library on a realtime thread or the main loop; PipeWire (it reaches the engine only through core's interfaces); a node state for a connection |
+| `ear_node_white` (`src/nodes/white`), `ear_node_file` (`src/nodes/file`), `ear_node_card` (`src/nodes/card`), `ear_node_rtp` (`src/nodes/rtp`) | One built-in type each (`white`, `file`, `card`, `rtp`), each declaring its settings once in a settings table, which also gives its setting kinds | PipeWire and ALSA (`file` uses libsndfile, seen by `ear_node_file` alone; `card` and `rtp` ask the framework for their outside nodes); another node type |
+| `ear_node_sendspin` (`src/nodes/sendspin`) | The built-in type `sendspin` as a port block with its own audio code and threads, not an outside node: the feed, the worker and notifier threads over the protocol library sendspin-cpp, the connection watch, the key store, `PortClaims`, mDNS (`Advertiser`); the only library that sees that library, privately | The library on a realtime thread or the main loop; PipeWire (it reaches the engine only through core's interfaces); a node state for a connection; another node type |
+| `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes(NodeFolders)`: the one list of node types, generated at configure into `out/src/all_node_types/all_node_types.cpp` from the folders in `src/nodes/` (re-checked on every build; configure prints `Node types: ...`, and no source file calls a `make<Type>NodeType` by name); `main.cpp` and the all-type tests call and link it alone | Naming a type by hand; anything else; node types' own code (it links their libraries privately) |
 | `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement core's interfaces: port blocks (`pw_filter`, with level metering), links (`link-factory`), live ports (the registry), handoffs (`pw_thread_loop`), outside nodes (one lifecycle, `joinOutsideNode`, with two kinds: sound cards as ALSA adapter nodes and RTP receivers as PipeWire's rtp-source module), the main-loop executor, the scheduling report | Policy |
 | `ear_control` (`src/control`) | Status lines, a node's notes among them; the JSON-RPC protocol (envelope, the one decoder of node and route JSON, commands, events, sessions and subscriptions); the graph file's plain types on the wire (`GraphFile`, `Diagnostic`, the file's refusals); the two interfaces at its edge, `GraphRequests` (where every request goes) and `GraphFileListener` (who hears each file change); `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly; holding the graph on the control thread |
 | `ear_config` (`src/config`) | The graph file keeper (`GraphFileKeeper`): `ear.conf`'s model through knobly (read, diagnostics, edits at the source), the keeper's one background thread (the working copy, the disk base, the folder watch, writes) and its main-loop side (plan and commit through the desired graph, the running version, the last refusal, pending restart); the only package that sees knobly, privately | Judging a graph; letting a knobly type leave its thread; timers |
@@ -344,9 +362,9 @@ Eight libraries, the binary and the editor, each C++ package in `src/<package>/`
 | `ear` (`src/main.cpp`) | The composition root: wiring, boot and stop order | Computing anything |
 | `web/` | The graph editor; shares no code with C++, only the wire format and `test/protocol/` | Graph rules (ear is the one source of truth) |
 
-Dependencies point one way: `ear_core` <- {`ear_nodes`, `ear_sendspin`, `ear_pipewire`,
-`ear_control`, `ear_config`}, `ear_folder` <- {`ear_nodes`, `ear_sendspin`, `ear_config`},
-`ear_control` <- {`ear_server`, `ear_config`}, and all of them <- `ear`; `ear_folder` depends on
+Dependencies point one way: `ear_core` <- {the five `ear_node_<type>` libraries, `ear_pipewire`,
+`ear_control`, `ear_config`}, `ear_node_<type>` <- `ear_all_node_types`, `ear_folder` <- {`ear_node_file`, `ear_node_sendspin`, `ear_config`},
+`ear_control` <- {`ear_server`, `ear_config`}, and all of them <- `ear` (which links the node types only through `ear_all_node_types`); no node type links another, and `ear_folder` depends on
 nothing of EAR's. No Boost, knobly or sendspin-cpp type is in a public header.
 An interface lives with the package that consumes it: `node_host.hpp` declares
 `PortBlockFactory` and `HandoffFactory`, `reconciler.hpp` declares `LinkMaker` and the
@@ -355,6 +373,33 @@ live-port and link listeners, and `ear_pipewire` implements them; `requests.hpp`
 and `StatusLog` implement the second. Each package's headers form a CMake header set that is
 compiled on its own (`VERIFY_INTERFACE_HEADER_SETS`); `ear_pipewire`'s headers only
 forward-declare PipeWire's types, so PipeWire's headers stay private to it.
+
+Adding a node type (`src/nodes/` holds node types and nothing else). A new folder registers its type: nothing
+else names it, not `main.cpp`, not `src/nodes/CMakeLists.txt`, not a test's list, and configure looks for folders
+again on every build.
+
+1. A folder `src/nodes/<type>/` (a lower-case letter, then lower-case letters and digits) with `<type>.cpp`, the
+   public header `include/ear/nodes/<type>.hpp` (one function, `make<Type>NodeType(const NodeFolders&)`, the same
+   signature for every type; read only the folder you need, `recordings` or `config`, and throw `std::logic_error` when
+   it is null) and `tests/<type>_test.cpp`. Those two folders are what "nothing else names it" holds for: a type that
+   needs a third edits `NodeFolders` in `ear_core`, `main.cpp` and `test/nodes/all_types.hpp`.
+2. Its `CMakeLists.txt`: `ear_node_type(SOURCES <type>.cpp ... TESTS tests/<type>_test.cpp ...)` makes the library
+   `ear_node_<type>` (a header set with `VERIFY_INTERFACE_HEADER_SETS`, linking `ear_core`) and, under `BUILD_TESTS`,
+   `ear_node_<type>_tests` through `ear_catch_tests`, so a type cannot leave out its tests or header check (a folder
+   without the call, or with a stray file beside it in `src/nodes/`, stops configure). Plain CMake after the call adds
+   what the type else links: `ear_folder` if it opens a folder, any outside library (libsndfile, sendspin-cpp)
+   `PRIVATE`, seen by no other target. No type links another: configure refuses it once the whole project is read
+   (`ear_refuse_node_type_links`), through a helper, an alias or a generator expression too.
+3. The type's settings as one `constexpr SettingsTable` of typed rows, and a class deriving from `NodeTypeOf<table>`
+   whose `make` builds the config from the checked values (and holds any rule across settings). Name, kinds and
+   `parse` come from the table and cannot be overridden; a table not named for its folder does not compile. A refusal's
+   text and order are fixed by the table.
+4. Valid settings for it in `validSettings` (`test/nodes/all_types.hpp`), which together give every key it declares:
+   the all-type tests list no type but need these, and fail naming the type (never skip) without them. Its refusals'
+   texts and order are tested in `test/nodes/settings_refusals_test.cpp`.
+
+Removing a type is deleting its folder and its entry in `validSettings`, its cases in `settings_refusals_test.cpp` (a
+case left there fails naming the type) and its name in `test/nodes/node_types_test.cpp`.
 
 Events, not polling, move everything, with one exception: a `sendspin` node's worker polls its
 library every 10 ms, and watches its connection with 5 s and 31 s timers, because the library has
@@ -467,12 +512,16 @@ out of test names: CMake splits a name at it.
 
 | Executable | What it proves |
 |---|---|
-| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards and RTP receivers, both in either order, a lost block, insides with threads: their notes and `lost` crossing to the main loop, `close`); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses. Pure, milliseconds |
+| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards and RTP receivers, both in either order, a lost block, insides with threads: their notes and `lost` crossing to the main loop, `close`); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses; settings tables and their typed rows. Pure, milliseconds. Beside it, CTest tests that what must not compile is refused for its reason (`src/core/tests/compile_fail/settings_table_bad.cpp`: a bad row, a row or rule made or changed by hand, a misspelt or unlisted row, an unchecked read of an optional row, a type that disagrees with its table or folder). These are the slow part: each runs the compiler, 37 of them about 50 s at one job, and they match the image's GCC's wording, so a compiler bump may need their regexes edited |
 | `ear_folder_tests` | The confined folder on real temporary folders: made if missing (never its parents), `create()` beneath only, `read()` and `replaceIf()` refusing symlinks, directories, FIFOs, large files and paths out, replace-if-unchanged keeping the file's mode, a new file's mode under any umask, `restrictMode()`, a folder it cannot write, an inotify watch through `heldPath()`, `requireApart()` (one folder twice, nesting, a symlinked alias) |
-| `ear_nodes_tests` | `white`'s ports and noise statistics; `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start); `card`'s settings, ports and pass-through; `rtp`'s settings (each refusal's exact detail), ports, the request it makes and pass-through; every built-in type's setting kinds |
+| `ear_node_white_tests` | `white`'s ports and noise statistics |
+| `ear_node_file_tests` | `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start) |
+| `ear_node_card_tests` | `card`'s settings, ports and pass-through |
+| `ear_node_rtp_tests` | `rtp`'s settings (each refusal's exact detail), ports, the request it makes and pass-through |
 | `ear_control_tests` | The JSON-RPC envelope (the spec's examples), commands, events, the graph file's types and encoders, status lines, gateway and sessions, all against `test/protocol` (`graph-file.json` included) |
 | `ear_config_tests` | The graph file model (the record's example, each of ear's codes at its place, `@include`, missing and unreadable files, knobly's nesting limit), places in UTF-16 columns, edits at the source (a value changed where it is defined, `shared-definition`, removal with its routes, quoting); the keeper's sequencer stepped by hand on one thread over a real folder (boot offers, accepted and refused edits, both hand-edit collisions, a typo, `graphFile.set`, its own write's watch event, batches, shared writes, write failures, pending restart, stop); the keeper's thread and the whole keeper with inotify |
-| `ear_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
+| `ear_node_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
+| `ear_node_types_tests` | What holds for every type together (`test/nodes/`, which lists no type: it takes them from `allNodeTypes`, as `main.cpp` does): a folder in `src/nodes` makes one type of its own name, the five names, each type's settings table (every key declared once, a value of each kind parses, setting kinds are what `parse` checks) and every refusal's text and order; also, as CTest tests, that configure refuses one node type linking another, in each spelling (a scratch project, `test/nodes/link_refusal/`), and refuses an empty list of types (`test/nodes/no_types/`) |
 | `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock and each cycle's `GraphCycle`, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card; RTP receivers fed by a test sender on 127.0.0.1: following the dummy driver, channels by sine fit, L16 at 44100 resampled, a sender restarting with a new SSRC, a lost receiver, a receiver made again at once for the same names |
 | `ear_server_tests` | Port 7777 on real sockets with a fake main loop and gateway: files, Host and Origin, round trips, the 1008 bound, a client that resets, stop with 1001, levels |
 | `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on an `ear.conf`: white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`); every type's old port names refused as `unknown-port`; a recordings folder it cannot make exits 1; the graph file (the record's example booted, an editor edit announced, applied, answered and written back, a hand edit winning, a hand typo blocking edits until Save fixes it, `ear.conf` as a symlink out and an `@include` out refused, boots with a typo, a refused route or no file running nothing, the fallback flags, overlapping folders exiting 1); an `rtp` node's tone recorded channel for channel, and its silence with no sender; a `sendspin` node against the real server: pairing by a code, a ramp frame for frame in the WAV, no audio for a server that trusts without pairing, noise to the server, identity across restarts, 20 wrong rounds and their release, a corrupt key file, no server at all, peers that never answer at a restart or stop, a slow upgrade, listening, mDNS discovery and removal, a server lost and back, a held or shared port, silent sockets held or flooding from its address and others beside a server pairing, waiting on a code and playing, a slow upgrade, a paired server not yet activated, a peer resetting sockets as they close, an upgrade with `Origin`, one dialling and one listening node together, no socket on a dialling node; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |
@@ -489,17 +538,18 @@ of milliseconds (graph xruns), and they fail without a bug (`docs/design/rtp.md`
 
 ```bash
 scripts/dev.sh ctest --test-dir out -R "lands on left" --output-on-failure   # by test name regex
-scripts/dev.sh out/src/nodes/ear_nodes_tests "[white]"                     # by Catch tag
+scripts/dev.sh out/src/nodes/white/ear_node_white_tests "[white]"          # by Catch tag
 ```
 
 ## CI
 
-`.github/workflows/test.yml` runs on every pull request and every push to `master`, three
+`.github/workflows/test.yml` runs on every pull request and every push to `master`, four
 `ubuntu-24.04` jobs in parallel: `test` builds the dev image with buildx (layers cached in
 GitHub's cache), restores the fetched trees and ccache, and runs `scripts/dev.sh make test` with
 `EAR_DEV_IMAGE=ear-dev` (on failure it uploads ctest's logs as `ctest-output`); `web` runs `make
-web-test` in the same image; `image` checks `scripts/version-tags.sh`, builds the run image and
-runs `scripts/image-smoke.sh` on it. On a push to `master`, once all three pass, `release` and
+web-test` in the same image; `format` runs `make format-check` in the same image and fails
+on any C++ file `.clang-format` would change; `image` checks `scripts/version-tags.sh`, builds the run image and
+runs `scripts/image-smoke.sh` on it. On a push to `master`, once all four pass, `release` and
 then `publish` run (Run image and releases, below). A newer push cancels a pull request's run,
 never a `master` run. Its comments give the reasons for each step and cache.
 

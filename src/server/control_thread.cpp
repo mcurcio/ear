@@ -31,8 +31,8 @@ struct ControlThread::Impl {
 	boost::asio::io_context io{1};
 	boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work = boost::asio::make_work_guard(io);
 	std::mutex mutex;
-	bool stopped = false;                                 // guarded by mutex
-	std::deque<std::move_only_function<void()>> queue;   // guarded by mutex
+	bool stopped = false;                              // guarded by mutex
+	std::deque<std::move_only_function<void()>> queue; // guarded by mutex
 	std::thread thread;
 
 	/// On the control thread: the oldest posted work (one handler is posted per item).
@@ -40,7 +40,7 @@ struct ControlThread::Impl {
 		std::move_only_function<void()> next;
 		{
 			const std::scoped_lock lock(mutex);
-			if (queue.empty()) return;   // stop() has destroyed it
+			if (queue.empty()) return; // stop() has destroyed it
 			next = std::move(queue.front());
 			queue.pop_front();
 		}
@@ -59,8 +59,8 @@ ControlThread::ControlThread() : impl_(std::make_unique<Impl>()) {
 ControlThread::~ControlThread() { stop(); }
 
 void ControlThread::post(std::move_only_function<void()> work) {
-	const std::scoped_lock lock(impl_->mutex);   // one lock over both queues keeps post order
-	if (impl_->stopped) return;                  // `work` is destroyed unrun as it leaves scope
+	const std::scoped_lock lock(impl_->mutex); // one lock over both queues keeps post order
+	if (impl_->stopped) return;                // `work` is destroyed unrun as it leaves scope
 	impl_->queue.push_back(std::move(work));
 	boost::asio::post(impl_->io, [impl = impl_.get()] { impl->runOne(); });
 }

@@ -10,15 +10,17 @@
 namespace ear::config {
 namespace {
 
-template <class... Fs> struct Overloaded : Fs... { using Fs::operator()...; };
+template <class... Fs> struct Overloaded : Fs... {
+	using Fs::operator()...;
+};
 
 std::optional<control::TextPlace> at(const std::vector<control::TextPlace>& places, std::size_t index) {
 	if (index >= places.size()) return std::nullopt;
 	return places[index];
 }
 
-template <class Match>
-std::optional<control::TextPlace> nthNode(const GraphSpec& wanted, const Placements& placements, std::size_t nth, Match match) {
+template <class Match> std::optional<control::TextPlace> nthNode(const GraphSpec& wanted, const Placements& placements,
+                                                                 std::size_t nth, Match match) {
 	for (std::size_t i = 0; i < wanted.nodes.size(); ++i)
 		if (match(wanted.nodes[i]) && nth-- == 0) return at(placements.nodes, i);
 	return std::nullopt;
@@ -33,36 +35,38 @@ std::optional<control::TextPlace> firstRoute(const GraphSpec& wanted, const Plac
 
 } // namespace
 
-std::optional<control::TextPlace> placeOf(const CommandError& error, const GraphSpec& wanted, const Placements& placements) {
+std::optional<control::TextPlace> placeOf(const CommandError& error, const GraphSpec& wanted,
+                                          const Placements& placements) {
 	auto named = [&](const NodeName& node) {
 		return nthNode(wanted, placements, 0, [&](const NodeSpec& n) { return n.name == node; });
 	};
-	return std::visit(
-	    Overloaded{
-	        [&](const UnknownNodeType& e) {
-		        return nthNode(wanted, placements, 0, [&](const NodeSpec& n) { return n.type == e.type; });
-	        },
-	        [&](const DuplicateNode& e) {
-		        return nthNode(wanted, placements, 1, [&](const NodeSpec& n) { return n.name == e.node; });
-	        },
-	        [&](const UnknownNode& e) {
-		        return firstRoute(wanted, placements, [&](const Route& r) { return r.from.node == e.node || r.to.node == e.node; });
-	        },
-	        [&](const UnknownPort& e) {
-		        return firstRoute(wanted, placements, [&](const Route& r) { return r.from == e.port || r.to == e.port; });
-	        },
-	        [&](const WrongDirection& e) {
-		        return firstRoute(wanted, placements, [&](const Route& r) { return r == e.route; });
-	        },
-	        [&](const UnknownRoute& e) {
-		        return firstRoute(wanted, placements, [&](const Route& r) { return r == e.route; });
-	        },
-	        [](const Stopping&) { return std::optional<control::TextPlace>{}; },
-	        // Every other refusal names one node (InvalidName, InvalidSettings, ...): its line.
-	        [&]<class E>(const E& e) -> std::optional<control::TextPlace>
-	            requires requires(const E& x) { x.node; } { return named(e.node); },
-	    },
-	    error);
+	return std::visit(Overloaded{
+		[&](const UnknownNodeType& e) {
+			return nthNode(wanted, placements, 0, [&](const NodeSpec& n) { return n.type == e.type; });
+		},
+		[&](const DuplicateNode& e) {
+			return nthNode(wanted, placements, 1, [&](const NodeSpec& n) { return n.name == e.node; });
+		},
+		[&](const UnknownNode& e) {
+			return firstRoute(wanted, placements,
+		                      [&](const Route& r) { return r.from.node == e.node || r.to.node == e.node; });
+		},
+		[&](const UnknownPort& e) {
+			return firstRoute(wanted, placements, [&](const Route& r) { return r.from == e.port || r.to == e.port; });
+		},
+		[&](const WrongDirection& e) {
+			return firstRoute(wanted, placements, [&](const Route& r) { return r == e.route; });
+		},
+		[&](const UnknownRoute& e) {
+			return firstRoute(wanted, placements, [&](const Route& r) { return r == e.route; });
+		},
+		[](const Stopping&) { return std::optional<control::TextPlace>{}; },
+		// Every other refusal names one node (InvalidName, InvalidSettings, ...): its line.
+		[&]<class E>(const E& e) -> std::optional<control::TextPlace>
+			requires requires(const E& x) { x.node; }
+		{ return named(e.node); },
+		},
+		error);
 }
 
 MainLoopSide::MainLoopSide(DesiredGraph& graph, const GraphReader& reader) : graph_(graph), reader_(reader) {}
@@ -93,8 +97,9 @@ void MainLoopSide::announce(FileState file, control::FileChangeCause cause, std:
 }
 
 control::GraphFile MainLoopSide::graphFile(FileState file) const {
-	control::GraphFile out{std::move(file.version), std::move(file.text), std::move(file.diagnostics), running_,
-	                       std::nullopt, std::move(file.pendingRestart), std::move(file.writeFailed)};
+	control::GraphFile out{
+		std::move(file.version),        std::move(file.text),       std::move(file.diagnostics), running_, std::nullopt,
+		std::move(file.pendingRestart), std::move(file.writeFailed)};
 	if (refusal_ && refusal_->version == out.version) out.refusal = refusal_->refusal;
 	return out;
 }

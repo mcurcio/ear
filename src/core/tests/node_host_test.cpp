@@ -32,8 +32,8 @@ struct TestAudioCode final : AudioCode {
 	void prepare(const AudioFormat& format) override {
 		log.push_back("prepare " + std::to_string(format.rate) + "/" + std::to_string(format.maxBlock));
 	}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>,
-	             std::uint32_t, const ear::GraphCycle&) noexcept override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {}
 	void release() noexcept override { log.push_back("release"); }
 };
 
@@ -61,7 +61,7 @@ struct TestConfig final : NodeConfig {
 	std::vector<SoundCardRequest> cards;
 	std::vector<RtpReceiverRequest> receivers;
 	bool fail = false;
-	mutable NodeGrant* grant = nullptr;   // the grant start() was given, kept to misuse it later
+	mutable NodeGrant* grant = nullptr; // the grant start() was given, kept to misuse it later
 	explicit TestConfig(Log& l, std::string t = {}) : log(l), tag(std::move(t)) {}
 	~TestConfig() override {
 		if (!tag.empty()) log.push_back("config " + tag + " destroyed");
@@ -259,11 +259,11 @@ struct Fixture {
 	TestReceivers receivers{log};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
-	DesiredGraph graph{catalogue};   // only for close(), the proof stopAll takes
+	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
 	QueueExecutor mainLoop;
 	TestNotes notes{log};
 	NodeHost host{AudioFormat{44100, 256}, blocks, handoffs, cards, receivers, mainLoop};
-	int allGone = 0;   // how often stopAll's callback has run
+	int allGone = 0; // how often stopAll's callback has run
 	Fixture() {
 		host.subscribe(listener);
 		host.subscribeNotes(notes);
@@ -284,8 +284,7 @@ struct Fixture {
 
 } // namespace
 
-TEST_CASE("A node gets its port block, then starts, prepares its audio code and drives the block",
-          "[node_host]") {
+TEST_CASE("A node gets its port block, then starts, prepares its audio code and drives the block", "[node_host]") {
 	Fixture f;
 	auto rec = std::make_shared<TestConfig>(f.log);
 	rec->handoffs = 1;
@@ -307,7 +306,7 @@ TEST_CASE("A node becomes running when its port block is ready", "[node_host]") 
 	f.log.clear();
 
 	f.blocks.events.at(0)->ready();
-	f.blocks.events.at(0)->ready();   // at most once; a repeat changes nothing
+	f.blocks.events.at(0)->ready(); // at most once; a repeat changes nothing
 
 	CHECK(f.log == Log{"node rec running"});
 	REQUIRE(f.host.status().size() == 1);
@@ -376,8 +375,8 @@ TEST_CASE("stopAll takes a node down in order: block, release, handoffs, insides
 	CHECK(f.host.status()[0].state == NodeState::stopping);
 
 	f.handoffs.finishOne(4);
-	CHECK(f.log == Log{"handoff destroyed", "handoff destroyed", "insides destroyed", "node rec gone dropped=7",
-	                   "all gone"});
+	CHECK(f.log ==
+	      Log{"handoff destroyed", "handoff destroyed", "insides destroyed", "node rec gone dropped=7", "all gone"});
 	CHECK(f.allGone == 1);
 	CHECK(f.host.status().empty());
 }
@@ -409,13 +408,12 @@ TEST_CASE("stopAll with no node runs allGone at once", "[node_host]") {
 	CHECK(f.log == Log{"all gone"});
 }
 
-TEST_CASE("An update restarts the insides behind the same port block, letting the old config go last",
-          "[node_host]") {
+TEST_CASE("An update restarts the insides behind the same port block, letting the old config go last", "[node_host]") {
 	Fixture f;
 	{
 		auto a = std::make_shared<TestConfig>(f.log, "A");
 		a->handoffs = 1;
-		f.add("rec", std::move(a));   // the host holds the only reference
+		f.add("rec", std::move(a)); // the host holds the only reference
 	}
 	f.blocks.events.at(0)->ready();
 	f.log.clear();
@@ -436,7 +434,7 @@ TEST_CASE("An update restarts the insides behind the same port block, letting th
 	SECTION("two updates during one restart start only the latest config") {
 		auto c = std::make_shared<TestConfig>(f.log, "C");
 		f.update("rec", std::move(c));
-		CHECK(f.log == Log{"config B destroyed"});   // B never started; nothing else happened
+		CHECK(f.log == Log{"config B destroyed"}); // B never started; nothing else happened
 		f.log.clear();
 		f.handoffs.finishOne(0);
 		CHECK(f.log == Log{"handoff destroyed", "insides destroyed", "config A destroyed", "start 44100 C",
@@ -473,12 +471,13 @@ TEST_CASE("An update of a node whose start failed starts the new config", "[node
 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
 
-	CHECK(f.log == Log{"node rec starting", "drive nothing", "config A destroyed", "start 44100 B",
-	                   "prepare 44100/256", "drive code", "node rec running"});
+	CHECK(f.log == Log{"node rec starting", "drive nothing", "config A destroyed", "start 44100 B", "prepare 44100/256",
+	                   "drive code", "node rec running"});
 	f.stopAll();
 }
 
-TEST_CASE("A node's sound cards are made once its port block is ready, and it runs when every card is ready",
+TEST_CASE("A node's sound cards are made once its port block is ready, and it runs when every card "
+          "is ready",
           "[node_host]") {
 	Fixture f;
 	f.add("motu", withCards(f.log));
@@ -489,7 +488,8 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it ru
 	f.log.clear();
 
 	f.blocks.events.at(0)->ready();
-	CHECK(f.log == Log{"card motu.playback of motu Pro24 PB1,PB2 at 44100", "card motu.capture of motu Pro24 CAP1 at 44100"});
+	CHECK(f.log ==
+	      Log{"card motu.playback of motu Pro24 PB1,PB2 at 44100", "card motu.capture of motu Pro24 CAP1 at 44100"});
 	REQUIRE(f.cards.events.size() == 2);
 	CHECK(f.host.status().at(0).state == NodeState::starting);
 	f.log.clear();
@@ -520,7 +520,9 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it ru
 
 	// Teardown takes the cards before the insides.
 	f.stopAll();
-	const auto at = [&](const std::string& line) { return std::find(f.log.begin(), f.log.end(), line) - f.log.begin(); };
+	const auto at = [&](const std::string& line) {
+		return std::find(f.log.begin(), f.log.end(), line) - f.log.begin();
+	};
 	CHECK(f.log.front() == "node motu stopping");
 	CHECK(at("release") < at("card motu.playback destroyed"));
 	CHECK(at("card motu.capture destroyed") < at("insides destroyed"));
@@ -549,8 +551,7 @@ TEST_CASE("A node whose start fails makes none of the cards it asked for", "[nod
 	f.stopAll();
 }
 
-TEST_CASE("A lost port block is final: the node stays failed through updates and later failures",
-          "[node_host]") {
+TEST_CASE("A lost port block is final: the node stays failed through updates and later failures", "[node_host]") {
 	Fixture f;
 	{
 		auto a = withCards(f.log, "A");
@@ -602,8 +603,8 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 	f.log.clear();
 
 	f.host.nodeRemoved("noise");
-	CHECK(f.log == Log{"node noise stopping", "block destroyed", "release", "insides destroyed",
-	                   "node noise gone dropped=0"});
+	CHECK(f.log ==
+	      Log{"node noise stopping", "block destroyed", "release", "insides destroyed", "node noise gone dropped=0"});
 	REQUIRE(f.host.status().size() == 1);
 	CHECK(f.host.status()[0].name == "rec");
 	CHECK(f.host.status()[0].state == NodeState::running);
@@ -620,7 +621,7 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 		f.update("rec", std::make_shared<TestConfig>(f.log));
 		f.handoffs.finishOne(5);
 		CHECK(std::ranges::find(f.log, "node rec gone dropped=5") != f.log.end());
-		CHECK(f.log.back() == "drive code");   // the newer one waited for it
+		CHECK(f.log.back() == "drive code"); // the newer one waited for it
 		REQUIRE(f.host.status().size() == 1);
 		CHECK(f.host.status()[0].state == NodeState::starting);
 	}
@@ -647,10 +648,11 @@ TEST_CASE("After stopAll no node event can reach the node framework", "[node_hos
 }
 
 TEST_CASE("A node's RTP receiver is made once its port block is ready, named <node>.rtp, with the "
-          "request unchanged", "[node_host][rtp]") {
+          "request unchanged",
+          "[node_host][rtp]") {
 	Fixture f;
 	f.add("fpp", withReceiver(f.log));
-	CHECK(f.receivers.events.empty());   // nothing before the block is ready
+	CHECK(f.receivers.events.empty()); // nothing before the block is ready
 	f.log.clear();
 
 	f.blocks.events.at(0)->ready();
@@ -671,8 +673,7 @@ TEST_CASE("A node's RTP receiver is made once its port block is ready, named <no
 	f.stopAll();
 }
 
-TEST_CASE("A node with a card and a receiver runs only once both are ready, in either order",
-          "[node_host][rtp]") {
+TEST_CASE("A node with a card and a receiver runs only once both are ready, in either order", "[node_host][rtp]") {
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
 	config->cards = {motuOut};
@@ -701,7 +702,8 @@ TEST_CASE("A node with a card and a receiver runs only once both are ready, in e
 }
 
 TEST_CASE("A receiver lost after the node ran fails it, and an update makes a new receiver behind the "
-          "same block", "[node_host][rtp]") {
+          "same block",
+          "[node_host][rtp]") {
 	Fixture f;
 	{
 		auto a = withReceiver(f.log, "A");
@@ -723,8 +725,8 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	f.handoffs.finishOne(0);
 	CHECK(f.log == Log{"handoff destroyed", "insides destroyed", "config A destroyed", "start 44100 B",
 	                   "prepare 44100/256", "drive code", "receiver fpp.rtp of fpp"});
-	REQUIRE(f.receivers.events.size() == 2);   // made once more, not twice
-	CHECK(f.blocks.events.size() == 1);        // the block stayed
+	REQUIRE(f.receivers.events.size() == 2); // made once more, not twice
+	CHECK(f.blocks.events.size() == 1);      // the block stayed
 	f.log.clear();
 	f.receivers.events[1]->ready();
 	CHECK(f.log == Log{"node fpp running"});
@@ -732,7 +734,8 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 }
 
 TEST_CASE("An outside node lost before the node ran fails it with engine-refused and the outside "
-          "node's detail", "[node_host][rtp]") {
+          "node's detail",
+          "[node_host][rtp]") {
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
 	config->cards = {motuOut};
@@ -762,8 +765,7 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 	f.stopAll();
 }
 
-TEST_CASE("A node asks for an RTP receiver only inside start, and at most once per start",
-          "[node_host][rtp]") {
+TEST_CASE("A node asks for an RTP receiver only inside start, and at most once per start", "[node_host][rtp]") {
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
 	f.add("fpp", config);
@@ -777,8 +779,7 @@ TEST_CASE("A node asks for an RTP receiver only inside start, and at most once p
 	CHECK(f.receivers.events.empty());
 }
 
-TEST_CASE("Restart and removal destroy the receiver before the handoffs close and the insides go",
-          "[node_host][rtp]") {
+TEST_CASE("Restart and removal destroy the receiver before the handoffs close and the insides go", "[node_host][rtp]") {
 	Fixture f;
 	auto a = withReceiver(f.log, "A");
 	a->handoffs = 1;
@@ -787,7 +788,9 @@ TEST_CASE("Restart and removal destroy the receiver before the handoffs close an
 	f.receivers.events.at(0)->ready();
 	f.log.clear();
 
-	const auto at = [&](const std::string& line) { return std::find(f.log.begin(), f.log.end(), line) - f.log.begin(); };
+	const auto at = [&](const std::string& line) {
+		return std::find(f.log.begin(), f.log.end(), line) - f.log.begin();
+	};
 	SECTION("restart") {
 		f.update("fpp", withReceiver(f.log, "B"));
 		f.handoffs.finishOne(0);
@@ -869,7 +872,7 @@ TEST_CASE("Insides close after every handoff has closed, and go only after they 
 	CHECK(f.log == Log{"handoff destroyed", "insides close"});
 	f.log.clear();
 	f.mainLoop.runPosted();
-	CHECK(f.log.empty());   // nothing goes until they say so
+	CHECK(f.log.empty()); // nothing goes until they say so
 
 	// From the insides' own thread: it crosses to the main loop, so nothing happens there yet.
 	std::thread([&] { config->insides->closed(); }).join();
@@ -915,7 +918,8 @@ TEST_CASE("A name added back while its old insides are closing starts only once 
 	SECTION("then they start, after the old node is gone") {
 		std::thread([&] { old->insides->closed(); }).join();
 		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 next", "prepare 44100/256", "drive code"});
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 next", "prepare 44100/256",
+		                   "drive code"});
 	}
 	SECTION("an update while it waits replaces what will start, and nothing starts yet") {
 		auto newer = std::make_shared<TestConfig>(f.log, "newer");
@@ -923,7 +927,8 @@ TEST_CASE("A name added back while its old insides are closing starts only once 
 		CHECK(f.log.empty());
 		std::thread([&] { old->insides->closed(); }).join();
 		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newer", "prepare 44100/256", "drive code"});
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newer", "prepare 44100/256",
+		                   "drive code"});
 	}
 	SECTION("removed again while it waits, it never starts") {
 		f.host.nodeRemoved("net");
@@ -941,7 +946,8 @@ TEST_CASE("A name added back while its old insides are closing starts only once 
 		f.log.clear();
 		std::thread([&] { old->insides->closed(); }).join();
 		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newest", "prepare 44100/256", "drive code"});
+		CHECK(f.log == Log{"insides destroyed", "node net gone dropped=0", "start 44100 newest", "prepare 44100/256",
+		                   "drive code"});
 	}
 	f.stopAll();
 }
@@ -952,7 +958,8 @@ TEST_CASE("A name added back after its old node has gone starts at once", "[node
 	f.host.nodeRemoved("net");
 	f.log.clear();
 	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
-	CHECK(f.log == Log{"node net starting", "make net 2 inputs", "start 44100 next", "prepare 44100/256", "drive code"});
+	CHECK(f.log ==
+	      Log{"node net starting", "make net 2 inputs", "start 44100 next", "prepare 44100/256", "drive code"});
 	f.stopAll();
 }
 
@@ -972,7 +979,8 @@ TEST_CASE("Stopping while a name waits for its old insides stops both, in order"
 	CHECK(std::ranges::count(f.log, std::string("start 44100 next")) == 0);
 }
 
-TEST_CASE("What the insides say reaches the note listeners on the main loop, in order, and nothing after closed",
+TEST_CASE("What the insides say reaches the note listeners on the main loop, in order, and nothing "
+          "after closed",
           "[node_host]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);
@@ -985,7 +993,7 @@ TEST_CASE("What the insides say reaches the note listeners on the main loop, in 
 		for (int i = 0; i < notes; ++i) config->events->say(std::to_string(i));
 	});
 	talker.join();
-	CHECK(f.log.empty());   // never inline
+	CHECK(f.log.empty()); // never inline
 	f.mainLoop.runPosted();
 	REQUIRE(f.log.size() == notes);
 	for (int i = 0; i < notes; ++i) CHECK(f.log[static_cast<std::size_t>(i)] == "note net " + std::to_string(i));
@@ -1017,7 +1025,8 @@ TEST_CASE("A note still queued when its node has gone reaches nothing", "[node_h
 	f.stopAll();
 }
 
-TEST_CASE("Insides lost from their own thread fail a running node with start-failed, and its block and routes stay",
+TEST_CASE("Insides lost from their own thread fail a running node with start-failed, and its block "
+          "and routes stay",
           "[node_host]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);

@@ -9,25 +9,32 @@ namespace ear::control {
 
 std::string_view severityName(Severity severity) noexcept {
 	switch (severity) {
-	case Severity::error: return "error";
-	case Severity::warning: return "warning";
+	case Severity::error:
+		return "error";
+	case Severity::warning:
+		return "warning";
 	}
 	return "error";
 }
 
 std::string_view formatKeyName(FormatKey key) noexcept {
 	switch (key) {
-	case FormatKey::graphFrequency: return "graphFrequency";
-	case FormatKey::blockSize: return "blockSize";
+	case FormatKey::graphFrequency:
+		return "graphFrequency";
+	case FormatKey::blockSize:
+		return "blockSize";
 	}
 	return "graphFrequency";
 }
 
 std::string_view causeName(FileChangeCause cause) noexcept {
 	switch (cause) {
-	case FileChangeCause::edit: return "edit";
-	case FileChangeCause::disk: return "disk";
-	case FileChangeCause::write: return "write";
+	case FileChangeCause::edit:
+		return "edit";
+	case FileChangeCause::disk:
+		return "disk";
+	case FileChangeCause::write:
+		return "write";
 	}
 	return "edit";
 }

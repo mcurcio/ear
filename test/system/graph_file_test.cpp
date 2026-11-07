@@ -73,7 +73,8 @@ const Ear::Ready firstOffer{"graph-file disk ", true};
 
 TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep their routes", "[system][graph-file]") {
 	TempDirectory directory;
-	writeGraphFile(directory, recordExample(44100));   // not the flags' default, so the file's rate shows
+	writeGraphFile(directory,
+	               recordExample(44100)); // not the flags' default, so the file's rate shows
 	Ear ear(directory, {linkedLine("noise:noise.mono", "rec:record.left")});
 	auto& process = ear.process();
 	INFO("ear printed:\n" << process.output());
@@ -118,8 +119,9 @@ TEST_CASE("T2: an editor edit is announced, applied, answered and written back, 
 	INFO("notifications: " << json(rpc.notifications).dump());
 	CHECK(reply["result"] == json::object());
 	const std::size_t changed = rpc.indexOf("graphFile.changed", {{"cause", "edit"}}, from);
-	const std::size_t updated = rpc.indexOf("node.updated", {{"name", "rec"}, {"settings", {{"path", "take2.wav"}}}}, from);
-	REQUIRE(changed < rpc.notifications.size());   // both before the reply
+	const std::size_t updated =
+		rpc.indexOf("node.updated", {{"name", "rec"}, {"settings", {{"path", "take2.wav"}}}}, from);
+	REQUIRE(changed < rpc.notifications.size()); // both before the reply
 	REQUIRE(updated < rpc.notifications.size());
 	CHECK(changed < updated);
 	const std::string version = rpc.notifications[changed]["params"]["version"].get<std::string>();
@@ -137,9 +139,13 @@ TEST_CASE("T2: an editor edit is announced, applied, answered and written back, 
 	const json disk = nextFileChange(rpc, from);
 	CHECK(disk["params"]["cause"] == "disk");
 	CHECK(disk["params"]["text"] == hand);
-	CHECK(rpc.indexOf("graphFile.changed", json::object(), from) == rpc.indexOf("graphFile.changed", {{"cause", "disk"}}, from));
-	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.updated", {{"name", "rec"}, {"settings", {{"path", "take3.wav"}}}}); },
-	            from);
+	CHECK(rpc.indexOf("graphFile.changed", json::object(), from) ==
+	      rpc.indexOf("graphFile.changed", {{"cause", "disk"}}, from));
+	rpc.waitFor(
+		[](const json& m) {
+			return Rpc::matches(m, "node.updated", {{"name", "rec"}, {"settings", {{"path", "take3.wav"}}}});
+		},
+		from);
 	CHECK(ear.stop(rpc) == 0);
 	CHECK(readText(directory.graphFile()) == hand);
 }
@@ -169,7 +175,7 @@ TEST_CASE("T3: a hand typo stops edits until a fixing graphFile.set, and the gra
 
 	from = rpc.notifications.size();
 	const json fixed = rpc.call("graphFile.set", {{"text", replaced(recordExample(), "take1.wav", "take2.wav")},
-	                                               {"version", typo["params"]["version"]}});
+	                                              {"version", typo["params"]["version"]}});
 	CHECK(fixed["result"] == json::object());
 	CHECK(rpc.indexOf("node.updated", {{"name", "rec"}, {"settings", {{"path", "take2.wav"}}}}, from) <
 	      rpc.notifications.size());
@@ -194,7 +200,8 @@ TEST_CASE("T4: ear.conf as a symlink out is unreadable, and nothing is written t
 	CHECK(codesOf(file) == std::vector<std::string>{"ear/unreadable-file"});
 
 	const std::size_t from = rpc.notifications.size();
-	replies.push_back(rpc.call("graphFile.set", {{"text", graphFileText("node white n;\n")}, {"version", file["version"]}}));
+	replies.push_back(
+		rpc.call("graphFile.set", {{"text", graphFileText("node white n;\n")}, {"version", file["version"]}}));
 	INFO("replies: " << json(replies).dump() << "\nnotifications: " << json(rpc.notifications).dump());
 	CHECK(replies.back()["result"] == json::object());
 	const json edit = nextFileChange(rpc, from);
@@ -239,20 +246,23 @@ TEST_CASE("T5: a boot with a typo runs nothing, shows the diagnostic and stops c
 
 TEST_CASE("T6: a boot with a route to an undeclared port runs nothing and shows where", "[system][graph-file]") {
 	TempDirectory directory;
-	writeGraphFile(directory, noiseToRec("FX"));   // line 5: route noise:noise.mono rec:FX;
+	writeGraphFile(directory, noiseToRec("FX")); // line 5: route noise:noise.mono rec:FX;
 	Ear ear(directory, {"graph-file refused unknown-port at 5:1"});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
 	CHECK(rpc.call("graph.get")["result"]["nodes"].empty());
 	const json file = rpc.call("graphFile.get")["result"];
 	INFO(file.dump());
-	CHECK(file["refusal"] == json{{"code", "unknown-port"}, {"message", "unknown-port rec:FX"}, {"line", 5}, {"column", 1}});
+	CHECK(file["refusal"] ==
+	      json{{"code", "unknown-port"}, {"message", "unknown-port rec:FX"}, {"line", 5}, {"column", 1}});
 	CHECK_FALSE(file.contains("running"));
 	CHECK(ear.stop(rpc) == 0);
 	CHECK_FALSE(std::filesystem::exists(directory.recordings() / "rec.wav"));
 }
 
-TEST_CASE("A dotted port goes through the whole path: file, graph, engine, levels, status lines and the wire", "[system][graph-file]") {
+TEST_CASE("A dotted port goes through the whole path: file, graph, engine, levels, status lines "
+          "and the wire",
+          "[system][graph-file]") {
 	TempDirectory directory;
 	const std::string text = noiseToRec();
 	writeGraphFile(directory, text);
@@ -278,7 +288,8 @@ TEST_CASE("A dotted port goes through the whole path: file, graph, engine, level
 	CHECK(rpc.call("levels.subscribe").contains("result"));
 	const json levels = rpc.waitFor([](const json& m) {
 		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("rec") &&
-		       m["params"]["nodes"]["rec"].contains("record.right") && m["params"]["nodes"]["rec"]["record.right"][0] > 0;
+		       m["params"]["nodes"]["rec"].contains("record.right") &&
+		       m["params"]["nodes"]["rec"]["record.right"][0] > 0;
 	});
 	INFO(levels.dump());
 	CHECK(levels["params"]["nodes"]["noise"].contains("noise.mono"));
@@ -288,20 +299,22 @@ TEST_CASE("A dotted port goes through the whole path: file, graph, engine, level
 TEST_CASE("An old port name is the ordinary unknown-port refusal, and nothing runs", "[system][graph-file]") {
 	// Each type's old names on a graph that is otherwise right, so only the name can refuse it.
 	const auto [nodes, route, refused] = GENERATE(table<std::string, std::string, std::string>({
-	    {"", "route noise:MONO rec:record.left;", "noise:MONO"},
-	    {"", "route noise:noise.mono rec:FL;", "rec:FL"},
-	    {"", "route noise:noise.mono rec:FR;", "rec:FR"},
-	    {"node card desk { card Test; playback 1; }", "route noise:noise.mono desk:playback_1;", "desk:playback_1"},
-	    {"node card desk { card Test; capture 1; }", "route desk:capture_1 rec:record.left;", "desk:capture_1"},
-	    {"node rtp fpp { address \"0.0.0.0\"; port 5004; format L24; channels 1; }", "route fpp:channel_1 rec:record.left;", "fpp:channel_1"},
-	    {"node sendspin kitchen;", "route kitchen:from_server_FL rec:record.left;", "kitchen:from_server_FL"},
-	    {"node sendspin kitchen;", "route noise:noise.mono kitchen:to_server_FR;", "kitchen:to_server_FR"},
-	    // The agreed name's parts the other way round, and a bank with no member, are no names either.
-	    {"", "route noise:mono.noise rec:record.left;", "noise:mono.noise"},
-	    {"", "route noise:noise rec:record.left;", "noise:noise"},
+		{"", "route noise:MONO rec:record.left;", "noise:MONO"},
+		{"", "route noise:noise.mono rec:FL;", "rec:FL"},
+		{"", "route noise:noise.mono rec:FR;", "rec:FR"},
+		{"node card desk { card Test; playback 1; }", "route noise:noise.mono desk:playback_1;", "desk:playback_1"},
+		{"node card desk { card Test; capture 1; }", "route desk:capture_1 rec:record.left;", "desk:capture_1"},
+		{"node rtp fpp { address \"0.0.0.0\"; port 5004; format L24; channels 1; }",
+	     "route fpp:channel_1 rec:record.left;", "fpp:channel_1"},
+		{"node sendspin kitchen;", "route kitchen:from_server_FL rec:record.left;", "kitchen:from_server_FL"},
+		{"node sendspin kitchen;", "route noise:noise.mono kitchen:to_server_FR;", "kitchen:to_server_FR"},
+		// The agreed name's parts the other way round, and a bank with no member, are no names either.
+		{"", "route noise:mono.noise rec:record.left;", "noise:mono.noise"},
+		{"", "route noise:noise rec:record.left;", "noise:noise"},
 	}));
 	TempDirectory directory;
-	writeGraphFile(directory, graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\n" + nodes + "\n" + route + "\n"));
+	writeGraphFile(directory, graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\n" + nodes + "\n" +
+	                                        route + "\n"));
 	Ear ear(directory, {"graph-file refused unknown-port at 6:1"});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
@@ -353,11 +366,11 @@ TEST_CASE("T7: ear.conf without block_size runs nothing and the engine takes the
 TEST_CASE("T8: a graph file folder that is or is inside the recordings folder exits 1, naming both",
           "[system][graph-file]") {
 	TempDirectory directory;
-	std::filesystem::create_directories(directory.recordings());   // so the inner folder can be made
+	std::filesystem::create_directories(directory.recordings()); // so the inner folder can be made
 	for (const auto& config : {directory.recordings(), directory.recordings() / "config"}) {
 		INFO(config);
-		ChildProcess ear(EAR_BINARY, {"--config-dir", config.string(), "--recordings-dir", directory.recordings().string(),
-		                              "--control-port", "0"});
+		ChildProcess ear(EAR_BINARY, {"--config-dir", config.string(), "--recordings-dir",
+		                              directory.recordings().string(), "--control-port", "0"});
 		const auto exitStatus = ear.waitForExit(deadline);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 1);
@@ -371,10 +384,14 @@ TEST_CASE("T8: a graph file or recordings folder that is or is inside the web ro
           "[system][graph-file]") {
 	TempDirectory directory;
 	const auto web = directory.path() / "web";
-	std::filesystem::create_directories(web);   // a web root that is not there is not compared
-	struct Case { std::filesystem::path config; std::filesystem::path recordings; std::filesystem::path inside; };
-	for (const auto& [config, recordings, inside] : {Case{web / "config", directory.recordings(), web / "config"},
-	                                                  Case{directory.config(), web, web}}) {
+	std::filesystem::create_directories(web); // a web root that is not there is not compared
+	struct Case {
+		std::filesystem::path config;
+		std::filesystem::path recordings;
+		std::filesystem::path inside;
+	};
+	for (const auto& [config, recordings, inside] :
+	     {Case{web / "config", directory.recordings(), web / "config"}, Case{directory.config(), web, web}}) {
 		INFO(inside);
 		ChildProcess ear(EAR_BINARY, {"--config-dir", config.string(), "--recordings-dir", recordings.string(),
 		                              "--web-root", web.string(), "--control-port", "0"});
@@ -388,30 +405,37 @@ TEST_CASE("T8: a graph file or recordings folder that is or is inside the web ro
 
 TEST_CASE("A --graph-frequency or --block-size that is not a whole number above 0 exits 1", "[system][graph-file]") {
 	TempDirectory directory;
-	for (const auto& [flag, value] : {std::pair{"--graph-frequency", "0"}, std::pair{"--block-size", "0"},
-	                                  std::pair{"--graph-frequency", "-48000"}, std::pair{"--block-size", "4294967296"}}) {
+	for (const auto& [flag, value] :
+	     {std::pair{"--graph-frequency", "0"}, std::pair{"--block-size", "0"}, std::pair{"--graph-frequency", "-48000"},
+	      std::pair{"--block-size", "4294967296"}}) {
 		INFO(flag << ' ' << value);
 		ChildProcess ear(EAR_BINARY, earArguments(directory, {flag, value}));
 		const auto exitStatus = ear.waitForExit(deadline);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 1);
-		CHECK(ear.output().find("--graph-frequency and --block-size must be whole numbers above 0") != std::string::npos);
+		CHECK(ear.output().find("--graph-frequency and --block-size must be whole numbers above 0") !=
+		      std::string::npos);
 	}
 }
 
-TEST_CASE("Edits holding a control character ear.conf cannot hold are refused, and ear stays up", "[system][graph-file]") {
+TEST_CASE("Edits holding a control character ear.conf cannot hold are refused, and ear stays up",
+          "[system][graph-file]") {
 	TempDirectory directory;
 	writeGraphFile(directory, noiseToRec());
 	Ear ear(directory, {linkedLine("noise:noise.mono", "rec:record.left")});
 	INFO("ear printed:\n" << ear.process().output());
 	Rpc rpc(ear.port());
-	const std::string nul("x\0y", 3);   // "\u0000" on the wire; each of these once ended ear (exit 134)
+	const std::string nul("x\0y",
+	                      3); // "\u0000" on the wire; each of these once ended ear (exit 134)
 	const auto code = [](const json& reply) { return reply["error"]["data"]["code"]; };
 	CHECK(code(rpc.call("node.update", {{"name", "rec"}, {"settings", {{"path", nul}}}})) == "invalid-settings");
-	CHECK(code(rpc.call("node.add", {{"name", "rec2"}, {"type", "file"}, {"settings", {{"path", "a\x01" "b"}}}})) ==
-	      "invalid-settings");
-	CHECK(code(rpc.call("route.add", {{"from", {{"node", "noise"}, {"port", "MO" + nul}}}, {"to", {{"node", "rec"}, {"port", "record.right"}}}})) ==
-	      "unknown-port");
+	CHECK(code(rpc.call("node.add", {{"name", "rec2"},
+	                                 {"type", "file"},
+	                                 {"settings",
+	                                  {{"path", "a\x01"
+	                                            "b"}}}})) == "invalid-settings");
+	CHECK(code(rpc.call("route.add", {{"from", {{"node", "noise"}, {"port", "MO" + nul}}},
+	                                  {"to", {{"node", "rec"}, {"port", "record.right"}}}})) == "unknown-port");
 	CHECK(rpc.call("graph.get")["result"]["nodes"].size() == 2);
 	CHECK(readText(directory.graphFile()) == noiseToRec());
 	CHECK(ear.stop(rpc) == 0);

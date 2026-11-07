@@ -25,13 +25,13 @@ TEST_CASE("RtpAddress accepts any-address and multicast groups, as given", "[rtp
 	CHECK_FALSE(*RtpAddress::parse("239.69.0.1") == *RtpAddress::parse("239.69.0.2"));
 }
 
-TEST_CASE("RtpAddress refuses unicast addresses, names, IPv6 and anything not a plain dotted quad",
-          "[rtp_address]") {
+TEST_CASE("RtpAddress refuses unicast addresses, names, IPv6 and anything not a plain dotted quad", "[rtp_address]") {
 	const std::vector<std::string> refused{
-	    "",           "127.0.0.1",   "192.168.1.10", "10.0.0.1",    "223.255.255.255", "240.0.0.1",
-	    "255.255.255.255", "fpp.local", "::",       "ff02::1",     "239.1.1",         "239.1.1.1.1",
-	    "239.01.0.1", "239.256.0.1", " 239.1.1.1",   "239.1.1.1 ",  "0x7f.0.0.1",      "239.1.1.1/24",
-	    "239..1.1",   "239.1.1.",    ".239.1.1.1",   "+239.1.1.1",  "239.1.1.1000",    "00.0.0.0",
+		"",           "127.0.0.1",       "192.168.1.10", "10.0.0.1",    "223.255.255.255",
+		"240.0.0.1",  "255.255.255.255", "fpp.local",    "::",          "ff02::1",
+		"239.1.1",    "239.1.1.1.1",     "239.01.0.1",   "239.256.0.1", " 239.1.1.1",
+		"239.1.1.1 ", "0x7f.0.0.1",      "239.1.1.1/24", "239..1.1",    "239.1.1.",
+		".239.1.1.1", "+239.1.1.1",      "239.1.1.1000", "00.0.0.0",
 	};
 	for (const auto& text : refused) {
 		INFO("\"" << text << "\"");

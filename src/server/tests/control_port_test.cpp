@@ -25,6 +25,7 @@
 #include "catch2/catch.hpp"
 #include "ear/control/rpc.hpp"
 #include "ear/server/control_port.hpp"
+#include "temp_folder.hpp"
 #include "ws_client.hpp"
 
 using namespace ear::server;
@@ -96,7 +97,7 @@ public:
 	void run(std::vector<ear::control::Command> commands,
 	         std::move_only_function<void(std::vector<ear::control::CommandResult>)> done) override {
 		mainLoop_.post([this, commands = std::move(commands), done = std::move(done)]() mutable {
-			if (hold) {   // the test holds this request on the main loop
+			if (hold) { // the test holds this request on the main loop
 				hold = false;
 				held.set_value();
 				release.get_future().wait();
@@ -106,7 +107,8 @@ public:
 				if (std::holds_alternative<ear::control::GetGraph>(command)) results.emplace_back(view);
 				else results.emplace_back(std::expected<void, ear::CommandError>{});
 			}
-			control_.post([done = std::move(done), results = std::move(results)]() mutable { done(std::move(results)); });
+			control_.post(
+				[done = std::move(done), results = std::move(results)]() mutable { done(std::move(results)); });
 		});
 	}
 
@@ -122,14 +124,14 @@ public:
 	}
 
 	ear::GraphView view{};
-	bool hold = false;   // set before the request; read on the main loop
+	bool hold = false; // set before the request; read on the main loop
 	std::promise<void> held;
 	std::promise<void> release;
 
 private:
 	FakeMainLoop& mainLoop_;
 	ear::Executor& control_;
-	ear::control::EventSink* sink_ = nullptr;   // main loop only
+	ear::control::EventSink* sink_ = nullptr; // main loop only
 };
 
 class FakeLevels final : public ear::LevelReader {
@@ -142,11 +144,8 @@ public:
 	std::vector<ear::NodeLevels> levels;
 };
 
-std::filesystem::path makeWebRoot() {
-	static int count = 0;
-	const auto top = std::filesystem::temp_directory_path() /
-	                 ("ear-control-port-" + std::to_string(::getpid()) + "-" + std::to_string(++count));
-	std::filesystem::remove_all(top);
+/// The web root and a file outside it, made in `top`.
+std::filesystem::path makeWebRoot(const std::filesystem::path& top) {
 	std::filesystem::create_directories(top / "web" / "sub");
 	std::ofstream(top / "web" / "index.html") << "<html>graph editor</html>";
 	std::ofstream(top / "web" / "app.js") << "export {};";
@@ -166,17 +165,17 @@ struct Fixture {
 	}
 	~Fixture() {
 		try {
-			gateway.release.set_value();   // a request a failed test left held
+			gateway.release.set_value(); // a request a failed test left held
 		} catch (const std::future_error&) {
 		}
 		port.reset();
 		mainLoop.drain();
-		std::filesystem::remove_all(top);
 	}
 	std::uint16_t number() const { return port->port(); }
 	std::string host() const { return "127.0.0.1:" + std::to_string(number()); }
 
-	std::filesystem::path top = makeWebRoot();
+	ear::test::TempFolder topFolder{"control-port"};
+	std::filesystem::path top = makeWebRoot(topFolder.path());
 	ControlThread control;
 	FakeMainLoop mainLoop;
 	FakeGateway gateway{mainLoop, control};
@@ -255,8 +254,7 @@ int connectTcp(std::uint16_t port) {
 
 } // namespace
 
-TEST_CASE("With no descriptor left the port closes the waiting connection and serves the next",
-          "[control-port]") {
+TEST_CASE("With no descriptor left the port closes the waiting connection and serves the next", "[control-port]") {
 	Fixture fixture;
 	bool closedByPort = false;
 	{
@@ -268,7 +266,7 @@ TEST_CASE("With no descriptor left the port closes the waiting connection and se
 		// end of file or a reset. Before the remedy the port retried at once forever and the
 		// connection stayed queued, so this read reached the deadline.
 		pollfd readable{client, POLLIN, 0};
-		if (::poll(&readable, 1, 10'000) == 1) {   // the deadline only fails the test
+		if (::poll(&readable, 1, 10'000) == 1) { // the deadline only fails the test
 			char byte = 0;
 			closedByPort = ::recv(client, &byte, 1, 0) <= 0;
 		}
@@ -306,8 +304,9 @@ TEST_CASE("The control port serves the web root's files and refuses paths out of
 TEST_CASE("The control port serves only IP literals, localhost and the allowed host names", "[control-port]") {
 	Fixture fixture({"ear.lan"});
 	const std::string port = ":" + std::to_string(fixture.number());
-	for (const std::string& host : std::vector<std::string>{"127.0.0.1" + port, "[::1]" + port, "localhost" + port, "LocalHost" + port,
-	                               "ear.lan" + port, "EAR.LAN", "127.0.0.1"}) {
+	for (const std::string& host :
+	     std::vector<std::string>{"127.0.0.1" + port, "[::1]" + port, "localhost" + port, "LocalHost" + port,
+	                              "ear.lan" + port, "EAR.LAN", "127.0.0.1"}) {
 		INFO(host);
 		CHECK(httpRequest(fixture.number(), http::verb::get, "/", host).status == 200);
 		WsClient client(fixture.number(), WsOptions().host(host));
@@ -337,8 +336,8 @@ TEST_CASE("/rpc upgrades without an Origin or with the same host's, never anothe
 		WsClient client(fixture.number(), WsOptions().origin("http://" + fixture.host()));
 		CHECK(call(client, 1, "graph.get").contains("result"));
 	}
-	for (const std::string& origin : std::vector<std::string>{"http://evil.example", "http://evil.example:" + std::to_string(fixture.number()),
-	                                 "null"}) {
+	for (const std::string& origin : std::vector<std::string>{
+			 "http://evil.example", "http://evil.example:" + std::to_string(fixture.number()), "null"}) {
 		INFO(origin);
 		try {
 			WsClient client(fixture.number(), WsOptions().origin(origin));
@@ -405,7 +404,7 @@ TEST_CASE("A client that resets while the port writes to it leaves the port runn
 	{
 		WsClient resetting(fixture.number(), WsOptions().receiveBuffer(smallWindow));
 		subscribe(resetting);
-		for (int i = 0; i < 200; ++i) {   // more than its socket buffers hold: a write is waiting
+		for (int i = 0; i < 200; ++i) { // more than its socket buffers hold: a write is waiting
 			fixture.gateway.emit(ear::control::NodeUpdated{"n", bigSettings});
 			REQUIRE(json::parse(reader.read())["method"] == "node.updated");
 		}
@@ -428,7 +427,7 @@ TEST_CASE("stop() closes every client with 1001 while a request is on the main l
 
 	fixture.gateway.hold = true;
 	waiting.send(json{{"jsonrpc", "2.0"}, {"id", 5}, {"method", "graph.get"}}.dump());
-	fixture.gateway.held.get_future().wait();   // the request is on the main loop
+	fixture.gateway.held.get_future().wait(); // the request is on the main loop
 
 	// stop() returns once every client has answered its close: here on another thread, while
 	// each client reads its close frame and answers it, one after the other.
@@ -443,9 +442,9 @@ TEST_CASE("stop() closes every client with 1001 while a request is on the main l
 		return 0;
 	};
 	CHECK(closeCode(idle) == 1001);
-	CHECK(stopped.wait_for(std::chrono::seconds(0)) == std::future_status::timeout);   // `waiting` has not answered
+	CHECK(stopped.wait_for(std::chrono::seconds(0)) == std::future_status::timeout); // `waiting` has not answered
 	CHECK(closeCode(waiting) == 1001);
-	REQUIRE(stopped.wait_for(std::chrono::seconds(10)) == std::future_status::ready);   // only fails the test
+	REQUIRE(stopped.wait_for(std::chrono::seconds(10)) == std::future_status::ready); // only fails the test
 
 	// The held reply now reaches the control thread and is dropped (its session has gone).
 	fixture.gateway.release.set_value();
@@ -454,13 +453,13 @@ TEST_CASE("stop() closes every client with 1001 while a request is on the main l
 	fixture.control.post([&] { ran.set_value(); });
 	ran.get_future().wait();
 
-	fixture.control.stop();   // joins
+	fixture.control.stop(); // joins
 	auto token = std::make_shared<int>(0);
 	bool ranAfterStop = false;
 	fixture.control.post([token, &ranAfterStop] { ranAfterStop = true; });
-	CHECK(token.use_count() == 1);   // destroyed unrun
+	CHECK(token.use_count() == 1); // destroyed unrun
 	CHECK_FALSE(ranAfterStop);
-	fixture.port->stop();   // idempotent
+	fixture.port->stop(); // idempotent
 }
 
 TEST_CASE("The level bell sends levels subscribers one complete snapshot", "[control-port]") {

@@ -14,6 +14,7 @@ add_library(ear_core STATIC
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
+	settings_table.cpp
 	sound_card.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
 # of everything that links it, and VERIFY_INTERFACE_HEADER_SETS adds a target that compiles
@@ -28,11 +29,13 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/node_catalogue.hpp
+	include/ear/core/node_folders.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
+	include/ear/core/settings_table.hpp
 	include/ear/core/sound_card.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
@@ -49,8 +52,54 @@ if(BUILD_TESTS)
 		tests/ports_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
+		tests/settings_table_test.cpp
 		tests/sound_card_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
+
+	# What must not compile, each with the reason it must not: tests/compile_fail/settings_table_bad.cpp says what each
+	# case is. Most regexes are the wording of the image's GCC, so a compiler bump may need them edited; the control
+	# guards the setup.
+	set(bad_settings "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/settings_table_bad.cpp")
+	ear_compile_check(ear_settings_table_compile_fail_control "${bad_settings}")
+	function(ear_settings_table_compile_fail case regex)
+		ear_compile_fail(ear_settings_table_compile_fail_${case} "${bad_settings}" ${case} "${regex}")
+	endfunction()
+	ear_settings_table_compile_fail(key-empty "a setting's key is empty")
+	ear_settings_table_compile_fail(key-twice "a setting's key is given twice")
+	ear_settings_table_compile_fail(name-empty "a table's name is empty")
+	ear_settings_table_compile_fail(low-above-high "low is above its high")
+	ear_settings_table_compile_fail(number-without-range "too few arguments")
+	ear_settings_table_compile_fail(number-with-mustBe "too many arguments")
+	ear_settings_table_compile_fail(default-outside-range "byDefault is outside its range")
+	ear_settings_table_compile_fail(default-on-text "could not convert")
+	ear_settings_table_compile_fail(default-on-required "no matching function for call to 'required")
+	ear_settings_table_compile_fail(text-without-mustBe "needs what it must be")
+	ear_settings_table_compile_fail(text-without-meaning "text<nullptr>")
+	ear_settings_table_compile_fail(text-with-range "no matching function for call to 'text<")
+	ear_settings_table_compile_fail(text-viewing-value "no matching function for call to 'text<")
+	ear_settings_table_compile_fail(only-without-lower "must name a row above")
+	ear_settings_table_compile_fail(raw-row "constraint failure")
+	ear_settings_table_compile_fail(read-unlisted-row "no matching function for call to .*get<")
+	ear_settings_table_compile_fail(read-number-as-text "conversion from")
+	ear_settings_table_compile_fail(read-optional-unchecked "cannot convert")
+	ear_settings_table_compile_fail(override-parse "parse.*marked 'override'")
+	ear_settings_table_compile_fail(override-setting-kinds "settingKinds.*marked 'override'")
+	ear_settings_table_compile_fail(override-name "name.*marked 'override'")
+	ear_settings_table_compile_fail(make-takes-raw-settings "make.*marked 'override'")
+	ear_settings_table_compile_fail(override-make-config "overriding final function")
+	ear_settings_table_compile_fail(derive-without-table "private within this context")
+	ear_settings_table_compile_fail(derive-by-copy "use of deleted function")
+	ear_settings_table_compile_fail(forged-checked-settings "private within this context")
+	ear_settings_table_compile_fail(forged-row "private within this context")
+	ear_settings_table_compile_fail(forged-empty-rule "no matching function for call to .*Rule")
+	ear_settings_table_compile_fail(forged-number-rule "private within this context")
+	ear_settings_table_compile_fail(forged-text-rule "private within this context")
+	ear_settings_table_compile_fail(default-inside-rule "too many initializers")
+	ear_settings_table_compile_fail(row-field-changed "has no member named 'required'")
+	ear_settings_table_compile_fail(row-read-only "discards qualifiers")
+	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
+	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
+	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
 endif()

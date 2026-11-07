@@ -13,23 +13,37 @@
 #include "ear/core/graph_view.hpp"
 // The control port's methods (docs/design/batch2.md section 6) as typed commands.
 namespace ear::control {
-struct GetGraph {};                                        // graph.get, graph.subscribe
-struct AddNode { NodeSpec node; };
-struct UpdateNode { NodeName node; NodeSettings settings; };
-struct RemoveNode { NodeName node; };
-struct AddRoute { Route route; };
-struct RemoveRoute { Route route; };
-struct GetGraphFile {};                                   // graphFile.get, graphFile.subscribe
-struct SetGraphFile { std::string text; std::string version; };   // graphFile.set
-using Command = std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile, SetGraphFile>;
+struct GetGraph {}; // graph.get, graph.subscribe
+struct AddNode {
+	NodeSpec node;
+};
+struct UpdateNode {
+	NodeName node;
+	NodeSettings settings;
+};
+struct RemoveNode {
+	NodeName node;
+};
+struct AddRoute {
+	Route route;
+};
+struct RemoveRoute {
+	Route route;
+};
+struct GetGraphFile {}; // graphFile.get, graphFile.subscribe
+struct SetGraphFile {
+	std::string text;
+	std::string version;
+}; // graphFile.set
+using Command =
+	std::variant<GetGraph, AddNode, UpdateNode, RemoveNode, AddRoute, RemoveRoute, GetGraphFile, SetGraphFile>;
 using CommandResult = std::variant<GraphView, std::expected<void, CommandError>, GraphFile, FileRefusal>;
 /// Control thread. Named params only, decoded with graph_json. Unknown method: methodNotFound;
 /// a missing, extra or mistyped key: invalidParams whose message is the JsonError
 /// ("/from/port: missing"). graphFile.get and graphFile.subscribe (params absent or {}) are
 /// GetGraphFile; graphFile.set is SetGraphFile (text and version, each a required string). The
 /// graph file keeper runs every command (requests.hpp).
-std::expected<Command, RpcError> decodeCommand(std::string_view method,
-                                               const nlohmann::json& params);
+std::expected<Command, RpcError> decodeCommand(std::string_view method, const nlohmann::json& params);
 /// Control thread. GraphView -> encodeGraph; success -> {}; CommandError ->
 /// RpcError{commandRefused, describe(e), {"code": errorCode(e)}}; GraphFile -> encodeGraphFile;
 /// FileRefusal -> RpcError{commandRefused, describe(r), {"code": fileRefusalCode(r)}, plus
@@ -40,4 +54,4 @@ nlohmann::json encodeGraph(const GraphView& view);
 /// "refusal"?: {"code", "message", "line"?, "column"?}, "pendingRestart", "writeFailed"?}: an absent
 /// optional is left out, never null.
 nlohmann::json encodeGraphFile(const GraphFile& file);
-}
+} // namespace ear::control

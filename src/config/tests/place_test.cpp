@@ -12,9 +12,9 @@ TEST_CASE("placeIn counts ASCII lines and columns from 1", "[place]") {
 }
 
 TEST_CASE("placeIn counts a character before the column once, in UTF-16 code units", "[place]") {
-	CHECK(placeIn("\xC3\xA9=x", 0, 3) == TextPlace{1, 3});           // e acute: 2 bytes, 1 unit
-	CHECK(placeIn("\xF0\x9F\x98\x80z", 0, 4) == TextPlace{1, 3});    // an emoji: 4 bytes, 2 units
-	CHECK(placeIn("a\n\xE2\x82\xAC\xE2\x82\xAC!", 1, 6) == TextPlace{2, 3});   // two euro signs: 3 bytes each
+	CHECK(placeIn("\xC3\xA9=x", 0, 3) == TextPlace{1, 3});                   // e acute: 2 bytes, 1 unit
+	CHECK(placeIn("\xF0\x9F\x98\x80z", 0, 4) == TextPlace{1, 3});            // an emoji: 4 bytes, 2 units
+	CHECK(placeIn("a\n\xE2\x82\xAC\xE2\x82\xAC!", 1, 6) == TextPlace{2, 3}); // two euro signs: 3 bytes each
 }
 
 TEST_CASE("placeIn counts a character a byte column falls inside", "[place]") {
@@ -26,6 +26,6 @@ TEST_CASE("placeIn clamps a line past the end and a column past a line's end", "
 	CHECK(placeIn("a\nbc", 5, 1) == TextPlace{2, 2});
 	CHECK(placeIn("a\nbc", 0, 99) == TextPlace{1, 2});
 	CHECK(placeIn("a\nbc", 1, 99) == TextPlace{2, 3});
-	CHECK(placeIn("a\n", 7, 0) == TextPlace{2, 1});   // a text ending in a line feed has an empty last line
+	CHECK(placeIn("a\n", 7, 0) == TextPlace{2, 1}); // a text ending in a line feed has an empty last line
 	CHECK(placeIn("", 3, 3) == TextPlace{1, 1});
 }

@@ -91,7 +91,7 @@ private:
 class Sink final : public EventSink {
 public:
 	explicit Sink(Loops& loops) : loops_(loops) {}
-	std::vector<std::string> seen;   // the stream: events, file changes and replies, in arrival order
+	std::vector<std::string> seen; // the stream: events, file changes and replies, in arrival order
 	int offControl = 0;
 	void graphChanged(GraphEvent event) override {
 		if (loops_.running != &loops_.control) ++offControl;
@@ -136,10 +136,10 @@ TEST_CASE("run() sends the batch whole to the keeper and answers on the control 
 		if (f.loops.running != &f.loops.control) ++answeredOffControl;
 		results = std::move(r);
 	});
-	REQUIRE(f.requests.submitted.size() == 1);   // one batch, whole
+	REQUIRE(f.requests.submitted.size() == 1); // one batch, whole
 	CHECK(f.requests.submitted[0].size() == 3);
 	CHECK(std::holds_alternative<AddNode>(f.requests.submitted[0][1]));
-	CHECK(f.loops.control.size() == 0);   // nothing inline
+	CHECK(f.loops.control.size() == 0); // nothing inline
 	f.loops.main.runAll();
 	CHECK(answered == 0);
 	f.loops.control.runAll();
@@ -155,11 +155,12 @@ TEST_CASE("run() sends the batch whole to the keeper and answers on the control 
 TEST_CASE("The reply follows the file change and every event its batch caused", "[gateway]") {
 	Fixture f;
 	f.gateway.watch(f.sink);
-	f.loops.main.runAll();   // watch takes effect in a main-loop turn
+	f.loops.main.runAll(); // watch takes effect in a main-loop turn
 	f.requests.results = {std::expected<void, ear::CommandError>{}};
 	f.requests.step = [&](MainLoopGateway& gateway) {
 		gateway.graphFileChanged(GraphFileChanged{file("b.2"), FileChangeCause::edit, 0});
-		gateway.nodeAdded({"a", "white", json::object()}, std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}));
+		gateway.nodeAdded({"a", "white", json::object()},
+		                  std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}));
 		gateway.nodeChanged({"a", ear::NodeState::starting, std::nullopt});
 	};
 	f.run({AddNode{{"a", "white", json::object()}}}, [&](std::vector<CommandResult>) {
@@ -167,7 +168,7 @@ TEST_CASE("The reply follows the file change and every event its batch caused", 
 		f.sink.seen.push_back("reply");
 	});
 	f.loops.main.runAll();
-	CHECK(f.sink.seen.empty());   // everything waits for the control executor
+	CHECK(f.sink.seen.empty()); // everything waits for the control executor
 	f.loops.control.runAll();
 	CHECK(f.sink.offControl == 0);
 	REQUIRE(f.sink.seen.size() == 4);
@@ -181,12 +182,15 @@ TEST_CASE("The reply follows the file change and every event its batch caused", 
 TEST_CASE("Each listener call posts one event, and the sink hears it only on the control executor", "[gateway]") {
 	Fixture f;
 	f.gateway.watch(f.sink);
-	f.loops.main.runAll();   // watch takes effect in a main-loop turn
+	f.loops.main.runAll(); // watch takes effect in a main-loop turn
 
-	f.loops.running = &f.loops.main;   // listener calls come from the main loop
+	f.loops.running = &f.loops.main; // listener calls come from the main loop
 	f.gateway.graphFileChanged(GraphFileChanged{file("b.3"), FileChangeCause::disk, 2});
-	f.gateway.graphFileWritten("b.3");   // a status line only: nothing on the wire
-	f.gateway.nodeAdded({"n", "white", json::object()}, std::make_shared<Config>(ear::Ports{{{ear::Direction::input, "in", {"a"}}, {ear::Direction::output, "out", {"a"}}}, {"I2"}, {"O2"}}));
+	f.gateway.graphFileWritten("b.3"); // a status line only: nothing on the wire
+	f.gateway.nodeAdded(
+		{"n", "white", json::object()},
+		std::make_shared<Config>(ear::Ports{
+			{{ear::Direction::input, "in", {"a"}}, {ear::Direction::output, "out", {"a"}}}, {"I2"}, {"O2"}}));
 	f.gateway.nodeUpdated({"n", "white", {{"k", 1}}}, std::make_shared<Config>(ear::Ports{}));
 	f.gateway.nodeChanged({"n", ear::NodeState::running, std::nullopt});
 	f.gateway.routeAdded({{"n", "out.a"}, {"m", "in.a"}});
@@ -195,8 +199,8 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	f.gateway.nodeRemoved("n");
 	f.gateway.nodeGone("n", 7);
 	f.loops.running = nullptr;
-	CHECK(f.sink.seen.empty());   // never inline
-	CHECK(f.loops.control.size() == 9);   // one post per call, none for the write
+	CHECK(f.sink.seen.empty());         // never inline
+	CHECK(f.loops.control.size() == 9); // one post per call, none for the write
 	f.loops.control.runAll();
 	CHECK(f.sink.offControl == 0);
 	REQUIRE(f.sink.seen.size() == 9);
@@ -215,7 +219,7 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 TEST_CASE("Events and file changes from before watch are not sent", "[gateway]") {
 	Fixture f;
 	f.loops.running = &f.loops.main;
-	f.gateway.nodeRemoved("before");   // watch has not taken effect
+	f.gateway.nodeRemoved("before"); // watch has not taken effect
 	f.gateway.graphFileChanged(GraphFileChanged{file("b.4"), FileChangeCause::disk, 0});
 	f.loops.running = nullptr;
 	CHECK(f.loops.control.size() == 0);

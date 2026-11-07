@@ -13,18 +13,19 @@ namespace ear {
 /// (the `file` plugin's "|command" form).
 class CardId {
 public:
-  static std::optional<CardId> parse(std::string_view text);   // nullopt outside the grammar
-  const std::string& text() const noexcept;
-  friend bool operator==(const CardId&, const CardId&) = default;
+	static std::optional<CardId> parse(std::string_view text); // nullopt outside the grammar
+	const std::string& text() const noexcept;
+	friend bool operator==(const CardId&, const CardId&) = default;
+
 private:
-  explicit CardId(std::string text);
-  std::string text_;
+	explicit CardId(std::string text);
+	std::string text_;
 };
 enum class CardDirection { playback, capture };
 struct SoundCardRequest {
-  CardId card;
-  CardDirection direction;
-  std::vector<PortName> blockPorts;  // channel i <-> blockPorts[i]: insideOutputs (playback)
-                                     // or insideInputs (capture) of this node
+	CardId card;
+	CardDirection direction;
+	std::vector<PortName> blockPorts; // channel i <-> blockPorts[i]: insideOutputs (playback)
+									  // or insideInputs (capture) of this node
 };
-}
+} // namespace ear

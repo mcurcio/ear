@@ -47,8 +47,7 @@ struct Refused : std::runtime_error {
 namespace detail {
 
 /// Runs one asynchronous operation started by `start(handler)` to completion or the deadline.
-template <class Start>
-boost::system::error_code complete(net::io_context& io, tcp::socket& socket, Start&& start) {
+template <class Start> boost::system::error_code complete(net::io_context& io, tcp::socket& socket, Start&& start) {
 	bool done = false;
 	boost::system::error_code result;
 	start([&](boost::system::error_code ec, auto&&...) {
@@ -61,7 +60,7 @@ boost::system::error_code complete(net::io_context& io, tcp::socket& socket, Sta
 		boost::system::error_code ignored;
 		socket.cancel(ignored);
 		io.restart();
-		io.run();   // the cancelled operation's handler, which names locals of this frame
+		io.run(); // the cancelled operation's handler, which names locals of this frame
 		throw TimedOut();
 	}
 	return result;
@@ -93,12 +92,14 @@ inline HttpReply httpRequest(std::uint16_t port, http::verb method, const std::s
 	if (!host.empty()) request.set(http::field::host, host);
 	for (const auto& [name, value] : headers) request.set(name, value);
 	request.prepare_payload();
-	auto ec = detail::complete(io, socket, [&](auto handler) { http::async_write(socket, request, std::move(handler)); });
+	auto ec =
+		detail::complete(io, socket, [&](auto handler) { http::async_write(socket, request, std::move(handler)); });
 	if (ec) throw boost::system::system_error(ec, "write");
 	beast::flat_buffer buffer;
 	http::response_parser<http::string_body> parser;
-	parser.skip(method == http::verb::head);   // a HEAD response has no body
-	ec = detail::complete(io, socket, [&](auto handler) { http::async_read(socket, buffer, parser, std::move(handler)); });
+	parser.skip(method == http::verb::head); // a HEAD response has no body
+	ec = detail::complete(io, socket,
+	                      [&](auto handler) { http::async_read(socket, buffer, parser, std::move(handler)); });
 	if (ec) throw boost::system::system_error(ec, "read");
 	auto& response = parser.get();
 	return {response.result_int(), std::string(response[http::field::content_type]),
@@ -107,12 +108,21 @@ inline HttpReply httpRequest(std::uint16_t port, http::verb method, const std::s
 
 /// How a WsClient connects: WsOptions().host("localhost:7777").origin("http://localhost:7777").
 struct WsOptions {
-	std::string hostHeader;                    // empty: 127.0.0.1:<port>
-	std::optional<std::string> originHeader;   // none: no Origin header
-	std::optional<int> receiveBufferBytes;     // SO_RCVBUF, set before connecting
-	WsOptions& host(std::string value) { hostHeader = std::move(value); return *this; }
-	WsOptions& origin(std::string value) { originHeader = std::move(value); return *this; }
-	WsOptions& receiveBuffer(int bytes) { receiveBufferBytes = bytes; return *this; }
+	std::string hostHeader;                  // empty: 127.0.0.1:<port>
+	std::optional<std::string> originHeader; // none: no Origin header
+	std::optional<int> receiveBufferBytes;   // SO_RCVBUF, set before connecting
+	WsOptions& host(std::string value) {
+		hostHeader = std::move(value);
+		return *this;
+	}
+	WsOptions& origin(std::string value) {
+		originHeader = std::move(value);
+		return *this;
+	}
+	WsOptions& receiveBuffer(int bytes) {
+		receiveBufferBytes = bytes;
+		return *this;
+	}
 };
 
 class WsClient {
@@ -126,14 +136,14 @@ public:
 		}
 		detail::connect(io_, socket, port);
 		if (options.originHeader)
-			ws_.set_option(websocket::stream_base::decorator(
-				[origin = *options.originHeader](websocket::request_type& request) { request.set(http::field::origin, origin); }));
-		const std::string host =
-			options.hostHeader.empty() ? "127.0.0.1:" + std::to_string(port) : options.hostHeader;
+			ws_.set_option(
+				websocket::stream_base::decorator([origin = *options.originHeader](websocket::request_type& request) {
+					request.set(http::field::origin, origin);
+				}));
+		const std::string host = options.hostHeader.empty() ? "127.0.0.1:" + std::to_string(port) : options.hostHeader;
 		websocket::response_type response;
-		const auto ec = detail::complete(io_, socket, [&](auto handler) {
-			ws_.async_handshake(response, host, "/rpc", std::move(handler));
-		});
+		const auto ec = detail::complete(
+			io_, socket, [&](auto handler) { ws_.async_handshake(response, host, "/rpc", std::move(handler)); });
 		if (ec == websocket::error::upgrade_declined) throw Refused(response.result_int());
 		if (ec) throw boost::system::system_error(ec, "handshake");
 	}
@@ -147,8 +157,8 @@ public:
 	/// The next message; throws Closed once the server has closed the connection.
 	std::string read() {
 		beast::flat_buffer buffer;
-		const auto ec = detail::complete(io_, ws_.next_layer(),
-		                                 [&](auto handler) { ws_.async_read(buffer, std::move(handler)); });
+		const auto ec =
+			detail::complete(io_, ws_.next_layer(), [&](auto handler) { ws_.async_read(buffer, std::move(handler)); });
 		if (ec == websocket::error::closed) throw Closed(ws_.reason().code);
 		if (ec) throw boost::system::system_error(ec, "read");
 		return beast::buffers_to_string(buffer.data());

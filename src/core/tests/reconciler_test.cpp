@@ -13,7 +13,11 @@ using namespace ear;
 namespace {
 
 struct FakeLinks final : LinkMaker {
-	struct Made { LinkId link; EnginePortId output; EnginePortId input; };
+	struct Made {
+		LinkId link;
+		EnginePortId output;
+		EnginePortId input;
+	};
 	std::vector<Made> made;
 	std::vector<LinkId> destroyed;
 	void createLink(LinkId link, EnginePortId output, EnginePortId input) override {
@@ -58,17 +62,17 @@ TEST_CASE("A route stays pending until both ends are live, then one link joins t
 	CHECK(f.links.made.empty());
 	CHECK(f.match() == RouteMatch::pending);
 
-	f.reconciler.portAppeared(recFr);   // the other input port of the same node
+	f.reconciler.portAppeared(recFr); // the other input port of the same node
 	CHECK(f.links.made.empty());
 
 	f.reconciler.portAppeared(recFl);
 	REQUIRE(f.links.made.size() == 1);
 	CHECK(f.links.made.front().output == noiseOut.id);
 	CHECK(f.links.made.front().input == recFl.id);
-	CHECK(f.match() == RouteMatch::pending);   // asked for, not yet active
+	CHECK(f.match() == RouteMatch::pending); // asked for, not yet active
 
-	f.reconciler.routeAdded(noiseToFl);   // the same route again
-	f.reconciler.portAppeared(recFr);     // and an unrelated port again
+	f.reconciler.routeAdded(noiseToFl); // the same route again
+	f.reconciler.portAppeared(recFr);   // and an unrelated port again
 	CHECK(f.links.made.size() == 1);
 	CHECK(f.log.changes.size() == 1);
 }
@@ -109,7 +113,7 @@ TEST_CASE("linkActive makes a route linked and linkFailed makes it refused with 
 		CHECK(f.log.changes.back().match == RouteMatch::refused);
 		CHECK(f.log.changes.back().detail == "format mismatch");
 		CHECK(matchName(RouteMatch::refused) == "refused");
-		CHECK(f.links.made.size() == 1);   // no retry while the same ends stand
+		CHECK(f.links.made.size() == 1); // no retry while the same ends stand
 	}
 	SECTION("events for a link it never asked for change nothing") {
 		f.reconciler.linkActive(link + 100);
@@ -143,7 +147,7 @@ TEST_CASE("An end going makes a route pending, and it is linked again when the e
 	CHECK(second.output == noiseOut.id);
 	CHECK(second.input == recFlAgain.id);
 
-	f.reconciler.linkActive(first);   // a stale event for the destroyed link
+	f.reconciler.linkActive(first); // a stale event for the destroyed link
 	CHECK(f.match() == RouteMatch::pending);
 	f.reconciler.linkActive(second.link);
 	CHECK(f.match() == RouteMatch::linked);
@@ -164,7 +168,7 @@ TEST_CASE("An end going makes a route pending, and it is linked again when the e
 		REQUIRE(f.match() == RouteMatch::refused);
 		f.reconciler.portGone(noiseOut.id);
 		CHECK(f.match() == RouteMatch::pending);
-		CHECK(f.links.destroyed.size() == 2);   // the refused attempt left no link to destroy
+		CHECK(f.links.destroyed.size() == 2); // the refused attempt left no link to destroy
 		f.reconciler.portAppeared(noiseOut);
 		CHECK(f.links.made.size() == 4);
 	}
@@ -176,7 +180,7 @@ TEST_CASE("Ports of routes nobody wants are never linked", "[reconciler]") {
 	f.reconciler.portAppeared(noiseOut);
 	f.reconciler.portAppeared(recFr);
 	f.reconciler.portAppeared({{"other", "noise.mono"}, Direction::output, 40});
-	f.reconciler.portAppeared({{"rec", "record.left"}, Direction::output, 41});   // right name, wrong direction
+	f.reconciler.portAppeared({{"rec", "record.left"}, Direction::output, 41}); // right name, wrong direction
 	CHECK(f.links.made.empty());
 	CHECK(f.match() == RouteMatch::pending);
 
@@ -242,7 +246,7 @@ TEST_CASE("A port that reappears with a new id before its old id goes is linked 
 
 	const LivePort recFlNew{recFl.port, Direction::input, 30};
 	f.reconciler.portAppeared(recFlNew);
-	f.reconciler.portGone(recFl.id);   // the old id goes last
+	f.reconciler.portGone(recFl.id); // the old id goes last
 
 	CHECK(f.links.destroyed == std::vector<LinkId>{first});
 	REQUIRE(f.links.made.size() == 2);

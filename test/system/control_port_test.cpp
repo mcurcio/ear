@@ -38,8 +38,9 @@ std::filesystem::path writeWebRoot(const TempDirectory& directory) {
 struct Running {
 	TempDirectory directory;
 	Ear ear;
-	explicit Running(const std::string& more = "", const std::string& readyLine = linkedLine("noise:noise.mono", "rec:record.left"))
-	    : ear(start(directory, more, readyLine)) {}
+	explicit Running(const std::string& more = "",
+	                 const std::string& readyLine = linkedLine("noise:noise.mono", "rec:record.left"))
+		: ear(start(directory, more, readyLine)) {}
 
 private:
 	static Ear start(const TempDirectory& directory, const std::string& more, const std::string& readyLine) {
@@ -124,14 +125,17 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "n2"}, {"state", "running"}}); });
 	const json added = route("n2", "noise.mono", "rec", "record.right");
 	CHECK(rpc.call("route.add", added)["result"] == json::object());
-	rpc.waitFor([&](const json& m) { return Rpc::matches(m, "route.status", {{"from", added["from"]}, {"to", added["to"]}, {"status", "linked"}}); });
+	rpc.waitFor([&](const json& m) {
+		return Rpc::matches(m, "route.status", {{"from", added["from"]}, {"to", added["to"]}, {"status", "linked"}});
+	});
 
 	INFO("notifications: " << json(rpc.notifications).dump());
 	const std::size_t nodeAdded = rpc.indexOf("node.added", {{"name", "n2"}});
 	const std::size_t starting = rpc.indexOf("node.state", {{"name", "n2"}, {"state", "starting"}});
 	const std::size_t running = rpc.indexOf("node.state", {{"name", "n2"}, {"state", "running"}});
 	const std::size_t routeAdded = rpc.indexOf("route.added", added);
-	const std::size_t linked = rpc.indexOf("route.status", {{"from", added["from"]}, {"to", added["to"]}, {"status", "linked"}});
+	const std::size_t linked =
+		rpc.indexOf("route.status", {{"from", added["from"]}, {"to", added["to"]}, {"status", "linked"}});
 	CHECK(nodeAdded < starting);
 	CHECK(starting < running);
 	CHECK(running < routeAdded);
@@ -156,9 +160,8 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 
 	const json reply = rpc.call("levels.subscribe");
 	CHECK(reply["result"]["windowsPerSecond"] == 30);
-	const json levels = rpc.waitFor([](const json& m) {
-		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise");
-	});
+	const json levels = rpc.waitFor(
+		[](const json& m) { return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise"); });
 	INFO(levels.dump());
 	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
 	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));
@@ -191,7 +194,8 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	CHECK(ear.stop(rpc) == 0);
 }
 
-TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is written",
+TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is "
+          "written",
           "[system][control]") {
 	Running started;
 	Ear& ear = started.ear;
@@ -226,8 +230,8 @@ TEST_CASE("Edits sent while ear stops are refused as stopping and ear exits clea
 	// The graph is closed before any node is told to stop, so edits from here on are refused.
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "rec"}, {"state", "stopping"}}); });
 	const std::vector<std::pair<std::string, json>> edits = {
-	    {"node.add", {{"name", "late"}, {"type", "white"}}},
-	    {"node.update", {{"name", "rec"}, {"settings", {{"path", "late.wav"}}}}},
+		{"node.add", {{"name", "late"}, {"type", "white"}}},
+		{"node.update", {{"name", "rec"}, {"settings", {{"path", "late.wav"}}}}},
 	};
 	std::optional<std::uint16_t> closeCode;
 	for (const auto& [method, params] : edits) {
@@ -259,7 +263,9 @@ TEST_CASE("A sound card node runs and its route is linked", "[system][control][c
 	REQUIRE(std::filesystem::exists(alsa));
 	::setenv("ALSA_CONFIG_PATH", alsa.c_str(), 1);
 	::setenv("EAR_ALSA_OUT", directory.path().c_str(), 1);
-	writeGraphFile(directory, noiseToRec("record.left", "node card out { card \"Test\"; playback 2; }\nroute noise:noise.mono out:play.1;\n"));
+	writeGraphFile(directory,
+	               noiseToRec("record.left",
+	                          "node card out { card \"Test\"; playback 2; }\nroute noise:noise.mono out:play.1;\n"));
 	const json toCard = route("noise", "noise.mono", "out", "play.1");
 	Ear ear(directory, {linkedLine("noise:noise.mono", "out:play.1")});
 	INFO("ear printed:\n" << ear.process().output());

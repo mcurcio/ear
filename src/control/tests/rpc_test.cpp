@@ -31,21 +31,22 @@ json onlyError(const RpcMessage& message) {
 } // namespace
 
 TEST_CASE("Named params: a request parses and its result encodes as the spec's example", "[rpc]") {
-	const RpcRequest request = onlyRequest(
-		parseMessage(R"({"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3})"));
+	const RpcRequest request = onlyRequest(parseMessage(
+		R"({"jsonrpc": "2.0", "method": "subtract", "params": {"subtrahend": 23, "minuend": 42}, "id": 3})"));
 	CHECK(request.id == json(3));
 	CHECK(request.method == "subtract");
 	CHECK(request.params == json::parse(R"({"subtrahend": 23, "minuend": 42})"));
 	CHECK(json::parse(encodeResult(*request.id, 19)) == json::parse(R"({"jsonrpc": "2.0", "result": 19, "id": 3})"));
 
-	const RpcRequest swapped = onlyRequest(
-		parseMessage(R"({"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4})"));
+	const RpcRequest swapped = onlyRequest(parseMessage(
+		R"({"jsonrpc": "2.0", "method": "subtract", "params": {"minuend": 42, "subtrahend": 23}, "id": 4})"));
 	CHECK(swapped.id == json(4));
 	CHECK(json::parse(encodeResult(*swapped.id, 19)) == json::parse(R"({"jsonrpc": "2.0", "result": 19, "id": 4})"));
 }
 
 TEST_CASE("A request without id is a notification, and string ids and absent params are kept", "[rpc]") {
-	const RpcRequest update = onlyRequest(parseMessage(R"({"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]})"));
+	const RpcRequest update =
+		onlyRequest(parseMessage(R"({"jsonrpc": "2.0", "method": "update", "params": [1,2,3,4,5]})"));
 	CHECK_FALSE(update.id.has_value());
 	CHECK(update.params == json::array({1, 2, 3, 4, 5}));
 	const RpcRequest foobar = onlyRequest(parseMessage(R"({"jsonrpc": "2.0", "method": "foobar"})"));
@@ -58,12 +59,15 @@ TEST_CASE("A request without id is a notification, and string ids and absent par
 TEST_CASE("Errors encode as the spec's examples", "[rpc]") {
 	CHECK(json::parse(encodeError("1", {methodNotFound, "Method not found", nullptr})) ==
 	      json::parse(R"({"jsonrpc": "2.0", "error": {"code": -32601, "message": "Method not found"}, "id": "1"})"));
-	CHECK(json::parse(encodeError(7, {commandRefused, "stopping", {{"code", "stopping"}}})) ==
-	      json::parse(R"({"jsonrpc": "2.0", "error": {"code": -32000, "message": "stopping", "data": {"code": "stopping"}}, "id": 7})"));
+	CHECK(
+		json::parse(encodeError(7, {commandRefused, "stopping", {{"code", "stopping"}}})) ==
+		json::parse(
+			R"({"jsonrpc": "2.0", "error": {"code": -32000, "message": "stopping", "data": {"code": "stopping"}}, "id": 7})"));
 }
 
 TEST_CASE("Text that is not JSON is one parse error with id null", "[rpc]") {
-	const json parse = json::parse(R"({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": null})");
+	const json parse =
+		json::parse(R"({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error"}, "id": null})");
 	CHECK(onlyError(parseMessage(R"({"jsonrpc": "2.0", "method": "foobar, "params": "bar", "baz])")) == parse);
 	CHECK(onlyError(parseMessage(R"([
   {"jsonrpc": "2.0", "method": "sum", "params": [1,2,4], "id": "1"},
@@ -122,9 +126,7 @@ TEST_CASE("A mixed batch keeps its entries in order", "[rpc]") {
 	CHECK(std::get<RpcRequest>(message.entries[5]).method == "get_data");
 }
 
-TEST_CASE("A batch with no responses sends nothing", "[rpc]") {
-	CHECK(encodeBatch({}).empty());
-}
+TEST_CASE("A batch with no responses sends nothing", "[rpc]") { CHECK(encodeBatch({}).empty()); }
 
 TEST_CASE("A notification encodes with method and params", "[rpc]") {
 	CHECK(json::parse(encodeNotification("node.removed", {{"name", "noise"}})) ==

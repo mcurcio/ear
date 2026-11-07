@@ -689,6 +689,10 @@ engine.conf (E2): context.spa-libs + `api.alsa.* = alsa/libspa-alsa`,
 
 ### 4.4 ear_nodes
 
+(Since 2026-11-06 each type is its own library, `ear_node_<type>`, and `builtin.hpp` is gone; section 11's erratum of that
+date says where each now lives. A type declares its settings in one table, `ear/core/settings_table.hpp`; `NodeType`'s
+contract is unchanged.)
+
 ```cpp
 // ===== nodes/recordings.hpp (new, erratum 2026-10-30: the recordings folder) =====
 /// The one folder "file" nodes write into (--recordings-dir), held open as a directory for
@@ -1524,6 +1528,67 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **Settings rows and folders, 2026-11-06 (latest): what the two errata below claimed, made true.** A further review of PR 24
+  built what they said could not compile. (1) `Number` and `Text` are one type, `setting::Rule<T>`, and only `number` and
+  `text<parse>` make one; a row keeps its `SettingRow` private and gives it to read only; `byDefault` moved from
+  `WholeNumberRule` to the row. So a rule with no range, a reader of another type and a made row changed afterwards do not
+  compile, and the walk's unchecked read cannot fail. (2) `get` returns a required or defaulted row's value by copy, not as
+  `const T&`: `check(...)->get<row>()` reads through `expected`'s `operator->`, an lvalue, so a ref-qualified `get` could
+  not refuse the read that dangled. Settings are read once per parse, on no realtime thread, so the copy costs nothing
+  that matters. (3) `onlyWithout` refuses a required row on either side. (4) `NodeType` is not copyable: a class could derive
+  by copying a real type. (5) A table not named for its folder does not compile (`EAR_NODE_TYPE_NAME`, from
+  `ear_node_type()`). (6) `makeFileNodeType` and `makeSendspinNodeType` throw `std::logic_error` on a null folder, which
+  is construction time rather than "`main.cpp` always passes both". Costs: `SettingsTable::check` stays, for tests only
+  (production goes through `NodeType::parse`), because tests read a row with no node type around it; a parse function's value
+  holding a view inside a struct still compiles and dangles, as C++ cannot see inside one; and what must not compile is 37
+  compiler runs, about 50 s at one job, matching the image's GCC's wording. `settings_table.hpp` alone changed in shape;
+  `node_type.hpp` gained only the deleted copy. Every refusal text and its order are as before.
+- **NodeType, 2026-11-06: `ear/core/node_type.hpp` changes: `name()`, `settingKinds()` and `parse()` answer from one table and
+  cannot be overridden.** An independent review of PR 24 found that `settingKinds()` and `parse()` were two virtuals each
+  type connected to its table by hand, so a type whose `settingKinds()` returned another table's kinds, or whose `parse()`
+  skipped the table's check, compiled. The owner, 2026-11-06 (general guidance, revisable, not requirements): asked how
+  much of the review's three main problems goes in the PR: "Fix all three (Recommended)"; asked about the minor findings:
+  "Settings and CMake ones (Recommended)". The change: `name()`, `settingKinds()` and `parse()` are non-virtual and answer
+  from the table `NodeTypeOf<table>` (`settings_table.hpp`) binds (only `NodeTypeOf` can derive from `NodeType`); the one
+  customisation point is `NodeTypeOf`'s `make`, which gets typed, checked values and never the raw object; `MadeConfig`
+  is new, and `NodeType::makeConfig` is private. A type that disagrees with its table does not compile, and neither does
+  reading an optional row as a plain value. Every signature a caller sees (`name`, `parse`, `settingKinds`) and every
+  refusal text and its order are as before. Setting rows are now typed (`setting::required`, `optional`, `defaulted`,
+  with `number` and `text<parse>`) and a text row's parsed value is kept, so no type parses a text twice; `across` is data
+  (`onlyWithout`), checked at compile time. The earlier erratum below, which says `node_type.hpp` is unchanged and that a
+  table's `kinds()` is what `settingKinds()` returns, is the record of its time.
+- **Node types, 2026-11-06 (later): one factory signature and one generated list of types.** The owner, 2026-11-06 (general
+  guidance, revisable, not requirements): on where the one list of types lives: "Can they be discoverable / plugins?" and,
+  offered build-time discovery, runtime plugins or a hand-written list: "Build-time discovery (Recommended)". The frozen
+  interface of section 4.4, as split by the erratum below, changes in these ways. (1) Every `include/ear/nodes/<type>.hpp`
+  declares `make<Type>NodeType(const NodeFolders&)`; `NodeFolders` (new, `ear/core/node_folders.hpp`) holds the recordings
+  folder (`file` reads it) and the graph file folder (`sendspin` reads it), and the others read neither. `file.hpp` and
+  `sendspin.hpp` no longer include `confined_folder.hpp`, and ear_core still depends on nothing new (it forward-declares
+  `ConfinedFolder`). A node type's folder is never null: `main.cpp` always passes both, and the tests pass real folders.
+  (2) `main.cpp` no longer lists the types: CMake finds each folder in `src/nodes/` (looked for again on every build) and
+  generates `allNodeTypes(const NodeFolders&)` in the library `ear_all_node_types` (`src/all_node_types/`, outside
+  `src/nodes/`, which holds node types and nothing else), which `main.cpp` and the all-type tests call and link alone. The
+  erratum below's "`main.cpp` lists the five `make<Type>NodeType` functions itself ... and links the five libraries" is the
+  record of its time. (3) A type's `CMakeLists.txt` calls `ear_node_type()` (`cmake/NodeType.cmake`), which makes its library,
+  header check and test program, and configure refuses one `ear_node_*` library linking another.
+- **Node types, 2026-11-06: `nodes/builtin.hpp` is retired and `ear_nodes` and `ear_sendspin` are split into one library
+  per type under `src/nodes/`.** The owner, 2026-11-06: "what about reorganizing so that we have a simple `nodes/` directory
+  with all the node types nested under it?"; asked about each type being its own library: "that sounds fine"; asked which
+  steps to run: "All four steps". (The names are the refactor's design choices, revisable, not his requirements.) The five
+  types `white`, `file`, `card`, `rtp` and `sendspin` are now `src/nodes/<type>/`, each its own library `ear_node_<type>`
+  with its own test program `ear_node_<type>_tests`; `src/nodes/CMakeLists.txt` only adds the five folders. `builtin.hpp`
+  and `builtin.cpp` and `builtinNodeTypes` are gone: `main.cpp` lists the five `make<Type>NodeType` functions itself, into
+  one `NodeCatalogue`, and links the five libraries. Each function moved into a header of its own,
+  `include/ear/nodes/<type>.hpp`, with its comments and signature unchanged (the frozen interface of section 4.4, split, not
+  changed); `RecordingsFolder`'s replacement by `ConfinedFolder` (`docs/design/knobly-config.md`) stands. libsndfile is
+  seen only by `ear_node_file`, sendspin-cpp and its dependencies only by `ear_node_sendspin`, and no node type links
+  another. `ear/core/node_type.hpp` is unchanged. Beside it, `ear/core/settings_table.hpp` is where a type declares each
+  setting once (`SettingRule`: key, kind, required or not, range, unit, default; `SettingsTable`), so that the table checks
+  the settings object (unknown keys, missing keys, kinds and ranges, in one fixed order, with refusal texts and their order
+  as before), and its `kinds()` is what `settingKinds()` returns. The type keeps what a text value means and any rule across
+  settings. Pages that say "`ear_nodes`", "`ear_sendspin`", `src/sendspin/` or `builtinNodeTypes` as a description of the
+  code then (this page's sections 1 and 4.4, `m1-white-to-file.md`, `rtp.md` section 7 and `sendspin.md` sections 3 and 14)
+  are the record of that time; where the code is now, `AGENTS.md`'s Architecture says.
 - **Port banks, 2026-11-06: `ear/core/node_type.hpp` changes.** The owner's new port names (`docs/design/sendspin.md`
   section 1) make a bank part of how a type declares its ports: `PortBank` (direction, name, members) and `Ports` built only
   from banks, its lists behind accessors, so no type spells a public port's name; `portName`, the one place that name is

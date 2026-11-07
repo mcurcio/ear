@@ -17,7 +17,8 @@ namespace {
 
 /// A wanted graph whose items sit on lines 1..8, in order: four nodes, then four routes.
 GraphSpec wanted() {
-	return GraphSpec{48000, 256,
+	return GraphSpec{48000,
+	                 256,
 	                 {{"noise", "white", json::object()},
 	                  {"rec", "file", {{"path", "a.wav"}}},
 	                  {"rec", "file", {{"path", "b.wav"}}},
@@ -28,9 +29,7 @@ GraphSpec wanted() {
 	                  {{"rec", "record.left"}, {"noise", "noise.mono"}}}};
 }
 
-Placements placements() {
-	return {{{1, 1}, {2, 1}, {3, 1}, {4, 1}}, {{5, 1}, {6, 1}, {7, 1}, {8, 1}}};
-}
+Placements placements() { return {{{1, 1}, {2, 1}, {3, 1}, {4, 1}}, {{5, 1}, {6, 1}, {7, 1}, {8, 1}}}; }
 
 } // namespace
 
@@ -43,16 +42,16 @@ TEST_CASE("placeOf points each refusal at the line that causes it", "[main_loop_
 		CHECK(place->column == 1);
 		return place->line;
 	};
-	CHECK(line(UnknownNodeType{"bogus"}) == 4u);                              // the first node of that type
-	CHECK(line(InvalidSettings{"rec", "file needs a path"}) == 2u);           // the named node
-	CHECK(line(DuplicateNode{"rec"}) == 3u);                                  // the second of the two
-	CHECK(line(UnknownNode{"ghost"}) == 6u);                                  // the first route naming it
-	CHECK(line(UnknownPort{{"rec", "FX"}}) == 7u);                            // the first route naming it
-	CHECK(line(WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}}) == 8u);    // the route refused
-	CHECK(line(InvalidName{"noise"}) == 1u);                                  // the named node
-	CHECK(line(UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.left"}}}) == 5u);      // the route refused
+	CHECK(line(UnknownNodeType{"bogus"}) == 4u);                                          // the first node of that type
+	CHECK(line(InvalidSettings{"rec", "file needs a path"}) == 2u);                       // the named node
+	CHECK(line(DuplicateNode{"rec"}) == 3u);                                              // the second of the two
+	CHECK(line(UnknownNode{"ghost"}) == 6u);                                              // the first route naming it
+	CHECK(line(UnknownPort{{"rec", "FX"}}) == 7u);                                        // the first route naming it
+	CHECK(line(WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}}) == 8u); // the route refused
+	CHECK(line(InvalidName{"noise"}) == 1u);                                              // the named node
+	CHECK(line(UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.left"}}}) == 5u);   // the route refused
 	CHECK(line(Stopping{}) == std::nullopt);
-	CHECK(line(UnknownNode{"nobody"}) == std::nullopt);                       // nothing names it
+	CHECK(line(UnknownNode{"nobody"}) == std::nullopt); // nothing names it
 	CHECK(line(UnknownNodeType{"other"}) == std::nullopt);
 }
 
@@ -83,7 +82,7 @@ TEST_CASE("A disk offer the graph refuses is recorded for its version only, and 
 	side.subscribe(listener);
 
 	auto spec = wanted();
-	spec.nodes.erase(spec.nodes.begin() + 2, spec.nodes.end());   // noise and rec: only routes refuse
+	spec.nodes.erase(spec.nodes.begin() + 2, spec.nodes.end()); // noise and rec: only routes refuse
 	const auto judged = side.offer(Offer{state("v1"), spec, placements(), control::FileChangeCause::disk, 2});
 	CHECK(judged.verdict == Verdict::refused);
 	REQUIRE_FALSE(judged.result.has_value());

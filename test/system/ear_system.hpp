@@ -27,6 +27,7 @@
 
 #include "catch2/catch.hpp"
 #include "child_process.hpp"
+#include "temp_folder.hpp"
 #include "ws_client.hpp"
 
 namespace ear::test {
@@ -38,24 +39,13 @@ using nlohmann::json;
 inline constexpr auto deadline = 10s;
 inline constexpr std::string_view listeningPrefix = "control listening on 127.0.0.1:";
 
-/// A fresh directory for one test's folders and files, removed afterwards.
-class TempDirectory {
+/// A fresh folder for one test, holding its config folder and recordings folder, removed afterwards.
+class TempDirectory : public TempFolder {
 public:
-	TempDirectory() {
-		std::string pattern = (std::filesystem::temp_directory_path() / "ear-system-XXXXXX").string();
-		if (::mkdtemp(pattern.data()) == nullptr) throw std::runtime_error("mkdtemp failed");
-		path_ = pattern;
-	}
-	~TempDirectory() { std::filesystem::remove_all(path_); }
-	TempDirectory(const TempDirectory&) = delete;
-	TempDirectory& operator=(const TempDirectory&) = delete;
-	const std::filesystem::path& path() const noexcept { return path_; }
-	std::filesystem::path config() const { return path_ / "config"; }          // --config-dir
-	std::filesystem::path recordings() const { return path_ / "recordings"; }  // --recordings-dir
+	TempDirectory() : TempFolder("system") {}
+	std::filesystem::path config() const { return path() / "config"; }         // --config-dir
+	std::filesystem::path recordings() const { return path() / "recordings"; } // --recordings-dir
 	std::filesystem::path graphFile() const { return config() / "ear.conf"; }
-
-private:
-	std::filesystem::path path_;
 };
 
 inline std::string readText(const std::filesystem::path& path) {
@@ -69,7 +59,7 @@ inline std::string readText(const std::filesystem::path& path) {
 /// does: a whole new file swapped in, so the folder watch sees one change.
 inline void writeGraphFile(const TempDirectory& directory, const std::string& text) {
 	std::filesystem::create_directories(directory.config());
-	const auto staging = directory.path() / "ear.conf.saving";   // outside the folder ear watches
+	const auto staging = directory.path() / "ear.conf.saving"; // outside the folder ear watches
 	std::ofstream(staging, std::ios::binary) << text;
 	std::filesystem::rename(staging, directory.graphFile());
 }
@@ -81,29 +71,37 @@ inline std::string graphFileText(const std::string& body, std::uint32_t rate = 4
 
 /// white "noise" routed to file "rec":record.left (rec.wav in the recordings folder), plus `more`.
 inline std::string noiseToRec(const std::string& to = "record.left", const std::string& more = "") {
-	return graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\nroute noise:noise.mono rec:" + to + ";\n" + more);
+	return graphFileText("node white noise;\nnode file rec { path \"rec.wav\"; }\nroute noise:noise.mono rec:" + to +
+	                     ";\n" + more);
 }
 
 /// --config-dir and --recordings-dir in `directory`, the control port on 127.0.0.1 at a free port,
 /// then `extra`.
-inline std::vector<std::string> earArguments(const TempDirectory& directory, const std::vector<std::string>& extra = {}) {
-	std::vector<std::string> arguments{"--config-dir", directory.config().string(), "--recordings-dir",
-	                                   directory.recordings().string(), "--control-address", "127.0.0.1",
-	                                   "--control-port", "0"};
+inline std::vector<std::string> earArguments(const TempDirectory& directory,
+                                             const std::vector<std::string>& extra = {}) {
+	std::vector<std::string> arguments{"--config-dir",      directory.config().string(),
+	                                   "--recordings-dir",  directory.recordings().string(),
+	                                   "--control-address", "127.0.0.1",
+	                                   "--control-port",    "0"};
 	arguments.insert(arguments.end(), extra.begin(), extra.end());
 	return arguments;
 }
 
-inline std::string linkedLine(const std::string& from, const std::string& to) { return "route " + from + " -> " + to + " linked"; }
+inline std::string linkedLine(const std::string& from, const std::string& to) {
+	return "route " + from + " -> " + to + " linked";
+}
 
 /// The real out/ear on `directory`, ready once it printed `readyLine` (or, with readyPrefix, a line
 /// starting with it); its control port is the one its "control listening" line names.
 class Ear {
 public:
-	struct Ready { std::string line; bool prefix = false; };
+	struct Ready {
+		std::string line;
+		bool prefix = false;
+	};
 
 	Ear(const TempDirectory& directory, const Ready& ready, const std::vector<std::string>& extra = {})
-	    : process_(EAR_BINARY, earArguments(directory, extra)) {
+		: process_(EAR_BINARY, earArguments(directory, extra)) {
 		const bool isReady = ready.prefix ? process_.waitForLineStartingWith(ready.line, deadline).has_value()
 		                                  : process_.waitForLine(ready.line, deadline);
 		INFO("ear printed:\n" << process_.output());
@@ -124,8 +122,7 @@ public:
 
 	/// SIGTERM with `client` connected: ear finishes the close handshake with each client before
 	/// it exits, so the client reads until ear closes it (with 1001), then ear's exit status.
-	template <typename Client>
-	std::optional<int> stop(Client& client) {
+	template <typename Client> std::optional<int> stop(Client& client) {
 		process_.signal(SIGTERM);
 		CHECK(client.readUntilClosed() == 1001);
 		return process_.waitForExit(deadline);
@@ -214,13 +211,13 @@ inline bool headerFinished(const std::filesystem::path& path) {
 	const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 	if (bytes.size() < 8) return false;
 	const std::uint32_t riffSize =
-	    bytes[4] | (bytes[5] << 8U) | (bytes[6] << 16U) | (static_cast<std::uint32_t>(bytes[7]) << 24U);
+		bytes[4] | (bytes[5] << 8U) | (bytes[6] << 16U) | (static_cast<std::uint32_t>(bytes[7]) << 24U);
 	return riffSize == bytes.size() - 8;
 }
 
 struct Wav {
 	SF_INFO info{};
-	std::vector<float> samples;   // interleaved
+	std::vector<float> samples; // interleaved
 };
 
 inline Wav readWav(const std::filesystem::path& path) {

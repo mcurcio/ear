@@ -27,18 +27,20 @@ TEST_CASE("Every graph notification encodes as edits.json has it", "[events][pro
 	const json m = fixture("edits")["messages"];
 	const ear::Route n2ToRecFr{{"n2", "noise.mono"}, {"rec", "record.right"}};
 	const ear::Route n2ToTapeFl{{"n2", "noise.mono"}, {"tape", "record.left"}};
-	CHECK(encoded(NodeAdded{{"n2", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}}) == m[1]);
+	CHECK(encoded(NodeAdded{{"n2", "white", json::object()},
+	                        ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}}) == m[1]);
 	CHECK(encoded(NodeChanged{{"n2", NodeState::starting, std::nullopt}}) == m[2]);
 	CHECK(encoded(NodeChanged{{"n2", NodeState::running, std::nullopt}}) == m[4]);
 	CHECK(encoded(RouteAdded{n2ToRecFr}) == m[5]);
 	CHECK(encoded(RouteChanged{{n2ToRecFr, ear::RouteMatch::pending, ""}}) == m[6]);
 	CHECK(encoded(RouteChanged{{n2ToRecFr, ear::RouteMatch::linked, ""}}) == m[8]);
-	CHECK(encoded(NodeAdded{{"tape", "file", {{"path", "nope/t.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}}) == m[9]);
+	CHECK(encoded(NodeAdded{{"tape", "file", {{"path", "nope/t.wav"}}},
+	                        ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}}) == m[9]);
 	CHECK(encoded(NodeChanged{{"tape", NodeState::failed,
 	                           ear::FailureReason{ear::FailureReason::Code::startFailed,
 	                                              "cannot open nope/t.wav: No such file or directory"}}}) == m[11]);
-	CHECK(encoded(RouteChanged{{n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"}}) ==
-	      m[16]);
+	CHECK(encoded(RouteChanged{
+			  {n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"}}) == m[16]);
 	CHECK(encoded(NodeUpdated{"rec", {{"path", "y.wav"}}}) == m[17]);
 	CHECK(encoded(RouteRemoved{n2ToRecFr}) == m[21]);
 	CHECK(encoded(NodeRemoved{"noise"}) == m[24]);
@@ -53,7 +55,9 @@ TEST_CASE("A levels notification holds every node given, linear to 4 decimals", 
 		{"rec", 1600, {{"record.left", {0.99978F, 0.57709F}}, {"record.right", {0.0F, 0.0F}}}},
 	};
 	CHECK(json::parse(encodeLevels(both)) == m[2]);
-	const std::vector<ear::NodeLevels> recOnly{{"rec", 3200, {{"record.left", {0.9991F, 0.5779F}}, {"record.right", {0.0F, 0.0F}}}}};
+	const std::vector<ear::NodeLevels> recOnly{
+		{"rec", 3200, {{"record.left", {0.9991F, 0.5779F}}, {"record.right", {0.0F, 0.0F}}}}};
 	CHECK(json::parse(encodeLevels(recOnly)) == m[3]);
-	CHECK(json::parse(encodeLevels({})) == json::parse(R"({"jsonrpc": "2.0", "method": "levels", "params": {"nodes": {}}})"));
+	CHECK(json::parse(encodeLevels({})) ==
+	      json::parse(R"({"jsonrpc": "2.0", "method": "levels", "params": {"nodes": {}}})"));
 }

@@ -32,7 +32,7 @@ if(BUILD_TESTS)
 		tests/place_test.cpp
 		tests/test_types.cpp)
 	target_include_directories(ear_config_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-	target_link_libraries(ear_config_tests PRIVATE ear_config knobly::knobly ear_catch_main)
+	target_link_libraries(ear_config_tests PRIVATE ear_config knobly::knobly ear_catch_main ear_temp_folder)
 	add_dependencies(ear_config_tests ear_config_verify_interface_header_sets)
 	ear_catch_tests(ear_config_tests)
 endif()

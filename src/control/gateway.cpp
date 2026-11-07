@@ -16,7 +16,7 @@ struct MainLoopGateway::Impl {
 	Executor& mainLoop;
 	Executor& control;
 	GraphRequests& requests;
-	EventSink* sink = nullptr;   // main loop only
+	EventSink* sink = nullptr; // main loop only
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
 	template <class Call> void toSink(Call call) {
@@ -37,8 +37,8 @@ void MainLoopGateway::run(std::vector<Command> commands,
                           std::move_only_function<void(std::vector<CommandResult>)> done) {
 	// The keeper calls the reply on the main loop after every event the batch caused was told, so
 	// posting `done` from there puts it behind them in the control executor's queue.
-	impl_->requests.submit(std::move(commands), [&control = impl_->control, done = std::move(done)](
-	                                                std::vector<CommandResult> results) mutable {
+	impl_->requests.submit(std::move(commands), [&control = impl_->control,
+	                                             done = std::move(done)](std::vector<CommandResult> results) mutable {
 		control.post([done = std::move(done), results = std::move(results)]() mutable { done(std::move(results)); });
 	});
 }

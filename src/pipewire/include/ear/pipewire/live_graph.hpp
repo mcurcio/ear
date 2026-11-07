@@ -9,10 +9,11 @@
 namespace ear::pipewire {
 class LiveGraph {
 public:
-  explicit LiveGraph(Engine& engine);
-  ~LiveGraph();
-  void subscribe(LivePortListener& listener);   // existing ports arrive later, never inside this call
+	explicit LiveGraph(Engine& engine);
+	~LiveGraph();
+	void subscribe(LivePortListener& listener); // existing ports arrive later, never inside this call
 private:
-  struct Impl; std::unique_ptr<Impl> impl_;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
-}
+} // namespace ear::pipewire

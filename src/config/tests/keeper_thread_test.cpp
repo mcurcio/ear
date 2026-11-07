@@ -46,15 +46,18 @@ public:
 	}
 
 private:
-	std::size_t count(const std::string& line) const { return static_cast<std::size_t>(std::ranges::count(lines_, line)); }
+	std::size_t count(const std::string& line) const {
+		return static_cast<std::size_t>(std::ranges::count(lines_, line));
+	}
 	std::mutex mutex_;
 	std::condition_variable changed_;
 	std::vector<std::string> lines_;
 };
 
-std::unique_ptr<KeeperThread> startThread(const TempDir& dir, Seen& seen) {
-	auto thread = KeeperThread::start(dir.path().string(), "ear.conf",
-	                                  KeeperThread::Handlers{[&seen] { seen.add("disk"); }, [&seen] { seen.add("free"); }});
+std::unique_ptr<KeeperThread> startThread(const TempFolder& dir, Seen& seen) {
+	auto thread =
+		KeeperThread::start(dir.path().string(), "ear.conf",
+	                        KeeperThread::Handlers{[&seen] { seen.add("disk"); }, [&seen] { seen.add("free"); }});
 	REQUIRE(thread.has_value());
 	return std::move(*thread);
 }
@@ -72,7 +75,7 @@ void settle(KeeperThread& thread, Seen& seen, int& markers) {
 } // namespace
 
 TEST_CASE("Posted work runs in post order on the keeper's thread, and free follows each wake", "[keeper_thread]") {
-	TempDir dir("thread_order");
+	TempFolder dir("thread_order");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	std::atomic<bool> elsewhere = true;
@@ -95,7 +98,7 @@ TEST_CASE("Posted work runs in post order on the keeper's thread, and free follo
 }
 
 TEST_CASE("A rename of ear.conf into the folder is a disk event, and another file's is not", "[keeper_thread]") {
-	TempDir dir("thread_watch");
+	TempFolder dir("thread_watch");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	int markers = 0;
@@ -110,12 +113,12 @@ TEST_CASE("A rename of ear.conf into the folder is a disk event, and another fil
 	settle(*thread, seen, markers);
 	const auto lines = seen.lines();
 	const auto disk = std::ranges::find(lines, "disk");
-	CHECK(std::find(disk, lines.end(), "free") != lines.end());   // free after the wake's disk event
+	CHECK(std::find(disk, lines.end(), "free") != lines.end()); // free after the wake's disk event
 }
 
 TEST_CASE("stop() runs the work already posted, then joins, and work posted after it is destroyed unrun",
           "[keeper_thread]") {
-	TempDir dir("thread_stop");
+	TempFolder dir("thread_stop");
 	Seen seen;
 	auto thread = startThread(dir, seen);
 	for (int i = 1; i <= 3; ++i) thread->post([&seen, i] { seen.add("work " + std::to_string(i)); });
@@ -126,7 +129,7 @@ TEST_CASE("stop() runs the work already posted, then joins, and work posted afte
 
 	auto sentinel = std::make_shared<int>(0);
 	thread->post([&seen, sentinel] { seen.add("late"); });
-	CHECK(sentinel.use_count() == 1);   // destroyed
-	thread->stop();                      // idempotent
+	CHECK(sentinel.use_count() == 1); // destroyed
+	thread->stop();                   // idempotent
 	CHECK(seen.countOf("late") == 0);
 }
