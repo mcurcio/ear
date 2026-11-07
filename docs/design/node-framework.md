@@ -2,7 +2,8 @@
 
 Status: proposal, revision 4, 2026-11-07. Revision 1 went to three independent reviews and revision 2 answered them;
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
-answers them with two more answers from the owner (sections 14 and 16). Nothing here is built.
+answers them with two more answers from the owner (sections 14 and 16). Slice 1 is built (section 13, "Slice 1 as
+built", says where it differs); nothing else is.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
@@ -766,6 +767,42 @@ Each slice keeps every existing test green and changes no audio path unless it s
    `receiving`, the card's PCM state); `snd_pcm_open`'s blocking checked first.
 9. **Programs.** The paced feed, runtime files, `outside::program` with stderr captured and a line hook; then an
    `airplay` type.
+
+### Slice 1 as built
+
+Slice 1 is built (`node_type.hpp`, `node_host.hpp`, `timers.hpp`, `pass_through.hpp` in `ear_core`). Where it differs
+from the sections above, and why:
+
+- **7.2, 7.3: `start` acquires only for `card`, `rtp` and `white`.** `file` still opens its recording in `start` (slice
+  2), and `sendspin` still builds its worker (the key file, its threads, its claim) in `start` and hands the built object
+  over in its recipe (slice 3). So `StartContext::events()` stays beside `Ready::events()` until slice 3.
+- **7.2: the recipe may fail.** It returns `std::expected<std::unique_ptr<RunObject>, FailureReason>`; a failure fails
+  the node with `start-failed`, and the run's code and resources stay until a restart, as after an outside node's loss.
+  A run with no threads returns no recipe and has no run object.
+- **7.2: the code.** `RunCode` is the type's own `AudioCode` (the virtual interface kept) or `passThrough(pairs)`;
+  outputs no pair names are silent. The erased concept and `Io<spec>` are slice 2. `makePassThrough` is public so a
+  type's own tests check what their pairs carry until `TypeHarness` (7.6).
+- **7.1: banks.** Until `TypeSpec`, banks are declared in `Ports` with `PortBank::Reach::inside`; bank names are unique
+  per node, so `Ports` itself refuses a port declared twice, and `DesiredGraph`'s own check of that went. Inside ports
+  are now named like public ones (`to_card.1`, not `to_card_1`); they are engine names only, never on the wire.
+- **7.3: handoff.** `HandoffRequest{bank, capacityFrames, consumer*}` names an input bank, routable or inside; the
+  handoff has one channel per port of it. Resource kinds are `std::variant<SoundCardRequest, RtpReceiverRequest,
+  HandoffRequest>`, and the `ResourceRegistry` holds one adapter per kind (`OutsideAdapter<Request>` for the outside
+  kinds, `HandoffAdapter`), each outside one handed an `OutsideTarget` (its `<node>.<suffix>` name and the bank's ports).
+- **6, I5 step 1:** core has no feed yet (sendspin's own feed waits at most 20 ms), so step 1 closes none; the tests
+  block a handoff consumer at teardown instead of a feed writer. **Step 5** frees the run object, then the code, the
+  recipe (which holds the run object when it never ran) and the config; there are no mailboxes, slots, stores or claims
+  in core yet. Handoff objects go once all have closed, at the end of step 3, as before.
+- **6, I6:** facts (`lost`) are dropped from step 1 on, not step 4; notes (`says`) of the closing run are still heard
+  until it closed (a goodbye note), and nothing of a run is heard once it closed or was leaked. Status and events
+  (slice 5) follow I6 as written.
+- **6, I5a:** one close deadline covers steps 3 and 4 together (default 10 s), on a new core interface, `Timers`, that
+  the engine's main-loop executor implements. `ear.close-overdue` goes to a `NodeDiagnosticListener`, which `main.cpp`
+  prints to standard error until slices 4 and 5 give diagnostics their record; standard output and the wire do not
+  change. With no claims in core, nothing is marked abandoned: a leaked `sendspin` run keeps its port claim until ear
+  restarts (slice 3 moves claims into core).
+- **6, I9:** one run names each outside node once (`<node>.<suffix>`; a second is a `std::logic_error` at `acquire`),
+  which replaces the old "one RTP receiver per start" rule. Handoffs make no engine object.
 
 ## 14. Gate answers
 

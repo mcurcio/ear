@@ -350,7 +350,7 @@ header in `include/ear/nodes/<type>.hpp` and its tests in `tests/`:
 
 | Target | Owns | Never |
 |---|---|---|
-| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `SettingsTable` and its typed rows in `settings_table.hpp`, the one table a type declares its settings in, `NodeTypeOf`, the one base a type derives from, `NodeFolders`, the folders a type's factory takes, `NodeConfig`, `Ports` declared by `PortBank`s, `portName`, the one maker of a public port's name, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`, `RtpAddress`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its insides start, restart and fail behind it, with the outside nodes they ask for; `GraphCycle`, what a block's code is told of each cycle; `InsidesEvents`, notes and `lost` from insides with threads; `FrameRing`, the handoff's lock-free ring), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
+| `ear_core` (`src/core`) | Desired graph (`DesiredGraph`: wanted nodes and routes, checked against declared ports; the one judge of every change: `plan` the whole wanted graph, then `commit` it, observers told before subscribers; `close()` when stopping; `CommandError`), node catalogue contract (`NodeType` with its settings' kinds, `SettingsTable` and its typed rows in `settings_table.hpp`, the one table a type declares its settings in, `NodeTypeOf`, the one base a type derives from, `NodeFolders`, the folders a type's factory takes, `NodeConfig`, `Ports` declared by `PortBank`s, `portName`, the one maker of a public port's name, `AudioCode`, handoff ends, sound card and RTP receiver requests, `CardId`, `RtpAddress`), node framework (`NodeLifecycle`, the one node state machine; `NodeHost`: a node's port block lives as long as the node, its runs start, restart and fail behind it, one at a time, each acquiring its resources through a `StartContext` from the `ResourceRegistry` (one adapter per kind) and building its run object only once they are ready, torn down by dependency with a close deadline; `NodeHealth`, a node's state and reason; named inside banks and the framework's `passThrough` between banks (`pass_through.hpp`); `Timers`, the main loop's; `GraphCycle`, what a block's code is told of each cycle; `InsidesEvents`, notes and `lost` from a run's threads, landing only on that run; `FrameRing`, the handoff's lock-free ring), reconciler (route links and route status), levels (`LevelMeter`), the graph read (`GraphStatus`), the executor interface | Any PipeWire call, socket, thread or file access; nlohmann/json is its only dependency |
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: one folder held open from boot, every path resolved beneath it by the kernel (`openat2`): the recordings folder's files made, and the graph file and key files read and replaced only if unchanged (`renameat2`), a file's mode narrowed; `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink; anything else of EAR's |
 | `ear_node_white` (`src/nodes/white`), `ear_node_file` (`src/nodes/file`), `ear_node_card` (`src/nodes/card`), `ear_node_rtp` (`src/nodes/rtp`) | One built-in type each (`white`, `file`, `card`, `rtp`), each declaring its settings once in a settings table, which also gives its setting kinds | PipeWire and ALSA (`file` uses libsndfile, seen by `ear_node_file` alone; `card` and `rtp` ask the framework for their outside nodes); another node type |
 | `ear_node_sendspin` (`src/nodes/sendspin`) | The built-in type `sendspin` as a port block with its own audio code and threads, not an outside node: the feed, the worker and notifier threads over the protocol library sendspin-cpp, the connection watch, the key store, `PortClaims`, mDNS (`Advertiser`); the only library that sees that library, privately | The library on a realtime thread or the main loop; PipeWire (it reaches the engine only through core's interfaces); a node state for a connection; another node type |
@@ -367,7 +367,8 @@ Dependencies point one way: `ear_core` <- {the five `ear_node_<type>` libraries,
 `ear_control` <- {`ear_server`, `ear_config`}, and all of them <- `ear` (which links the node types only through `ear_all_node_types`); no node type links another, and `ear_folder` depends on
 nothing of EAR's. No Boost, knobly or sendspin-cpp type is in a public header.
 An interface lives with the package that consumes it: `node_host.hpp` declares
-`PortBlockFactory` and `HandoffFactory`, `reconciler.hpp` declares `LinkMaker` and the
+`PortBlockFactory`, the resource kinds' adapters (`HandoffAdapter`, `SoundCardAdapter`, `RtpReceiverAdapter`) and the
+`ResourceRegistry` that holds one of each, `timers.hpp` declares `Timers`, `reconciler.hpp` declares `LinkMaker` and the
 live-port and link listeners, and `ear_pipewire` implements them; `requests.hpp` declares
 `GraphRequests` and `GraphFileListener`, and `ear_config` implements the first while the gateway
 and `StatusLog` implement the second. Each package's headers form a CMake header set that is
@@ -444,21 +445,29 @@ How audio moves:
    configuration and traps.
 2. A node starts (`NodeHost`) block first: `FilterPortBlocks` makes its port block, once for
    the node's life: one always-processing `pw_filter` named by the node's name, with one 32-bit
-   float mono port per declared port. Then its type's `NodeConfig::start` makes the type's
-   insides, `AudioCode::prepare` runs and the block is driven with that code; new settings
-   restart the insides behind the same block. The node is `running` once the block is ready
-   (its first STREAMING state) and the insides are ready, every outside node they asked for
-   included (`NodeLifecycle`). Every block processes whether routed or not; an unlinked input
-   reads zeros.
+   float mono port per declared port, routable and inside banks alike. Then a run starts in two
+   phases (`docs/design/node-framework.md` section 7.2): its type's `NodeConfig::start` only
+   acquires resources through its `StartContext` (sound cards, RTP receivers, handoffs: a closed
+   list, one adapter each in the `ResourceRegistry`) and returns the run's code (its own
+   `AudioCode`, or the framework's `passThrough` between banks) and optionally the recipe of its
+   run object; `AudioCode::prepare` runs and the block is driven with the code at once; the
+   framework readies every resource, then calls the recipe (`Ready&`), which builds the run
+   object with its threads. New settings restart the run behind the same block, one run at a
+   time. The node is `running` once the block is ready (its first STREAMING state) and the run is
+   ready, every resource it acquired and its recipe included (`NodeLifecycle`). Every block
+   processes whether routed or not; an unlinked input reads zeros.
 3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
    per port and the graph cycle (`GraphCycle`: its start and the driver's position). `white` fills its output with noise.
 4. `LiveGraph` reports each port as the engine's registry announces it (node name, port name,
    direction, port id). When both ends of a wanted route are live, the `Reconciler` asks `Links`
    for a link by port ids; the route is `linked` once the link is active, and `pending` again
    if an end goes, relinked when it comes back.
-5. Outside nodes. A `card` or `rtp` node's port block has inside ports no route can name. Once
-   the block is ready the framework makes the outside nodes its insides asked for, named
-   `<node>.playback`, `<node>.capture` or `<node>.rtp`. Every kind shares one lifecycle
+5. Outside nodes. A `card` or `rtp` node's port block has inside banks no route can name
+   (`to_card`, `from_card`, `from_rtp`), and its code is the framework's pass-through between
+   them and its public banks: the type writes no audio code. Once the block is ready the
+   framework makes the outside nodes its run acquired, each joined to the inside bank its request
+   names and named `<node>.playback`, `<node>.capture` or `<node>.rtp` (one run never names two
+   alike). Every kind shares one lifecycle
    (`NodeHost` in ear_core, `joinOutsideNode` in `src/pipewire/outside_nodes.cpp`): the outside
    node runs alone until its body says it runs, then one link per channel joins it, by its
    global id, to the block's inside ports; it is ready once every link is active, and on any
@@ -484,11 +493,16 @@ How audio moves:
    drops frames and counts them; the count is the `dropped=` of the node's `stopped` line.
 9. Stopping: `DesiredGraph::close()` refuses every later edit, the keeper is told to stop
    (edits still queued get `stopping`, reads are still answered), then `NodeHost::stopAll` takes
-   each node through `stopping` and tears it down in one order: port block destroyed (no
-   `process` after that), `release`, outside nodes destroyed, handoffs drained and finished,
-   insides closed (a `sendspin` node's worker says goodbye, on its own thread, so nothing waits on
-   the main loop) and destroyed; then `stopped`. A restart (`node.update`) runs the same teardown but keeps
-   the block, only silencing it (`drive(nullptr)`) first. After the last node, the control port
+   each node through `stopping` and tears its run down by dependency (`docs/design/node-framework.md`
+   section 6, I4 to I7): port block destroyed (the barrier: no `process` after that), `release`,
+   outside nodes destroyed, handoffs drained and finished on their own threads, the run object
+   closed (a `sendspin` node's worker says goodbye, on its own thread, so nothing waits on the
+   main loop), then on the main loop the run object, its code and its config freed; then
+   `stopped`. Anything a run's threads tell lands only on that run (its generation), never on the
+   next. Draining and closing have a deadline (10 s): a run past it is leaked, never freed
+   (`ear: node <n> ear.close-overdue: ...` on standard error), and the node moves on. A restart
+   (`node.update`) runs the same teardown but keeps the block, only silencing it
+   (`drive(nullptr)`) first. After the last node, the control port
    closes every client (1001), the control thread stops and EAR's main loop quits. Last, the
    main thread joins the keeper's thread, which first writes the last accepted version of
    `ear.conf` if it is not written yet (a hung disk delays exit without limit).
@@ -512,12 +526,12 @@ out of test names: CMake splits a name at it.
 
 | Executable | What it proves |
 |---|---|
-| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake factories (restart, removal, sound cards and RTP receivers, both in either order, a lost block, insides with threads: their notes and `lost` crossing to the main loop, `close`); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses; settings tables and their typed rows. Pure, milliseconds. Beside it, CTest tests that what must not compile is refused for its reason (`src/core/tests/compile_fail/settings_table_bad.cpp`: a bad row, a row or rule made or changed by hand, a misspelt or unlisted row, an unchecked read of an optional row, a type that disagrees with its table or folder). These are the slow part: each runs the compiler, 37 of them about 50 s at one job, and they match the image's GCC's wording, so a compiler bump may need their regexes edited |
+| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake adapters (restart, removal, sound cards and RTP receivers, both in either order, a lost block, the two-phase start and its recipe, one name per engine object of a run, the pass-through, runs with threads: their notes and `lost` crossing to the main loop, `close`; the teardown invariants of `docs/design/node-framework.md` section 6: the barrier first, a handoff consumer blocked at teardown, a run mid-handler, a late write from an old run, a run that never closes leaked past the close deadline); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses; settings tables and their typed rows. Pure, milliseconds. Beside it, CTest tests that what must not compile is refused for its reason (`src/core/tests/compile_fail/settings_table_bad.cpp`: a bad row, a row or rule made or changed by hand, a misspelt or unlisted row, an unchecked read of an optional row, a type that disagrees with its table or folder). These are the slow part: each runs the compiler, 37 of them about 50 s at one job, and they match the image's GCC's wording, so a compiler bump may need their regexes edited |
 | `ear_folder_tests` | The confined folder on real temporary folders: made if missing (never its parents), `create()` beneath only, `read()` and `replaceIf()` refusing symlinks, directories, FIFOs, large files and paths out, replace-if-unchanged keeping the file's mode, a new file's mode under any umask, `restrictMode()`, a folder it cannot write, an inotify watch through `heldPath()`, `requireApart()` (one folder twice, nesting, a symlinked alias) |
 | `ear_node_white_tests` | `white`'s ports and noise statistics |
-| `ear_node_file_tests` | `file` writing exact samples through a fake grant, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start) |
-| `ear_node_card_tests` | `card`'s settings, ports and pass-through |
-| `ear_node_rtp_tests` | `rtp`'s settings (each refusal's exact detail), ports, the request it makes and pass-through |
+| `ear_node_file_tests` | `file` writing exact samples through a fake start context, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start) |
+| `ear_node_card_tests` | `card`'s settings, ports (inside banks included), the requests it makes and what the framework's pass-through between its banks carries |
+| `ear_node_rtp_tests` | `rtp`'s settings (each refusal's exact detail), ports, the request it makes and what the framework's pass-through carries |
 | `ear_control_tests` | The JSON-RPC envelope (the spec's examples), commands, events, the graph file's types and encoders, status lines, gateway and sessions, all against `test/protocol` (`graph-file.json` included) |
 | `ear_config_tests` | The graph file model (the record's example, each of ear's codes at its place, `@include`, missing and unreadable files, knobly's nesting limit), places in UTF-16 columns, edits at the source (a value changed where it is defined, `shared-definition`, removal with its routes, quoting); the keeper's sequencer stepped by hand on one thread over a real folder (boot offers, accepted and refused edits, both hand-edit collisions, a typo, `graphFile.set`, its own write's watch event, batches, shared writes, write failures, pending restart, stop); the keeper's thread and the whole keeper with inotify |
 | `ear_node_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
