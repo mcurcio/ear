@@ -1528,6 +1528,34 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **NodeType, 2026-11-06: `ear/core/node_type.hpp` changes: `name()`, `settingKinds()` and `parse()` answer from one table and
+  cannot be overridden.** An independent review of PR 24 found that `settingKinds()` and `parse()` were two virtuals each
+  type connected to its table by hand, so a type whose `settingKinds()` returned another table's kinds, or whose `parse()`
+  skipped the table's check, compiled. The owner, 2026-11-06 (general guidance, revisable, not requirements): asked how
+  much of the review's three main problems goes in the PR: "Fix all three (Recommended)"; asked about the minor findings:
+  "Settings and CMake ones (Recommended)". The change: `name()`, `settingKinds()` and `parse()` are non-virtual and answer
+  from the table `NodeTypeOf<table>` (`settings_table.hpp`) binds (only `NodeTypeOf` can derive from `NodeType`); the one
+  customisation point is `NodeTypeOf`'s `make`, which gets typed, checked values and never the raw object; `MadeConfig`
+  is new, and `NodeType::makeConfig` is private. A type that disagrees with its table does not compile, and neither does
+  reading an optional row as a plain value. Every signature a caller sees (`name`, `parse`, `settingKinds`) and every
+  refusal text and its order are as before. Setting rows are now typed (`setting::required`, `optional`, `defaulted`,
+  with `number` and `text<parse>`) and a text row's parsed value is kept, so no type parses a text twice; `across` is data
+  (`onlyWithout`), checked at compile time. The earlier erratum below, which says `node_type.hpp` is unchanged and that a
+  table's `kinds()` is what `settingKinds()` returns, is the record of its time.
+- **Node types, 2026-11-06 (later): one factory signature and one generated list of types.** The owner, 2026-11-06 (general
+  guidance, revisable, not requirements): on where the one list of types lives: "Can they be discoverable / plugins?" and,
+  offered build-time discovery, runtime plugins or a hand-written list: "Build-time discovery (Recommended)". The frozen
+  interface of section 4.4, as split by the erratum below, changes in these ways. (1) Every `include/ear/nodes/<type>.hpp`
+  declares `make<Type>NodeType(const NodeFolders&)`; `NodeFolders` (new, `ear/core/node_folders.hpp`) holds the recordings
+  folder (`file` reads it) and the graph file folder (`sendspin` reads it), and the others read neither. `file.hpp` and
+  `sendspin.hpp` no longer include `confined_folder.hpp`, and ear_core still depends on nothing new (it forward-declares
+  `ConfinedFolder`). A node type's folder is never null: `main.cpp` always passes both, and the tests pass real folders.
+  (2) `main.cpp` no longer lists the types: CMake finds each folder in `src/nodes/` (looked for again on every build) and
+  generates `allNodeTypes(const NodeFolders&)` in the library `ear_all_node_types` (`src/all_node_types/`, outside
+  `src/nodes/`, which holds node types and nothing else), which `main.cpp` and the all-type tests call and link alone. The
+  erratum below's "`main.cpp` lists the five `make<Type>NodeType` functions itself ... and links the five libraries" is the
+  record of its time. (3) A type's `CMakeLists.txt` calls `ear_node_type()` (`cmake/NodeType.cmake`), which makes its library,
+  header check and test program, and configure refuses one `ear_node_*` library linking another.
 - **Node types, 2026-11-06: `nodes/builtin.hpp` is retired and `ear_nodes` and `ear_sendspin` are split into one library
   per type under `src/nodes/`.** The owner, 2026-11-06: "what about reorganizing so that we have a simple `nodes/` directory
   with all the node types nested under it?"; asked about each type being its own library: "that sounds fine"; asked which
