@@ -1,5 +1,5 @@
 {
-  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed. Text from peers and libraries is escaped, never interpreted.",
+  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted.",
   "records": [
     {
       "case": "the engine's audio thread is realtime",
@@ -263,6 +263,21 @@
         "state": "running",
         "dropped": 1,
         "msg": "node desk running (1 records dropped before this)"
+      }
+    },
+    {
+      "case": "a source's log after a flood: 32 passed at once (seq 20 to 51), 9 were held back, and a second later this one counts them",
+      "record": {
+        "v": 1,
+        "seq": 52,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "error",
+        "source": "alsa-lib",
+        "text": "pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24",
+        "heldBack": 9,
+        "msg": "alsa-lib error: pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24 (9 more held back before this: over 32 at once)"
       }
     }
   ]

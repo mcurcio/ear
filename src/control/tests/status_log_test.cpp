@@ -41,6 +41,10 @@ std::chrono::system_clock::time_point fixedTime() {
 	return sys_days{year{2026} / 11 / 7} + 17h + 42min + 3s + 512094us + 999ns;
 }
 
+/// The pace clock, moved by hand.
+std::chrono::steady_clock::time_point paceNow{};
+std::chrono::steady_clock::time_point pacedTime() { return paceNow; }
+
 std::string fixtureText() {
 	std::ifstream file(EAR_PROTOCOL_DIR "/output-records.json");
 	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
@@ -159,6 +163,19 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.nodeChanged({"desk", NodeState::stopping, std::nullopt}); // dropped: seq 18 never appears
 			log.nodeChanged({"desk", NodeState::running, std::nullopt});
 		},
+		[](StatusLog& log, Lines& lines) {
+			// A flood from one source: StatusLog::logBurst pass (seq 20 to 51, not the fixture's, so set aside), the
+			// rest are held back, and a second later the next passes and counts them.
+			const std::size_t before = lines.kept.size();
+			for (int i = 0; i < StatusLog::logBurst + 9; ++i)
+				log.log({.level = ear::LogLevel::error, .source = "alsa-lib", .text = "flood"});
+			REQUIRE(lines.kept.size() == before + StatusLog::logBurst);
+			lines.kept.resize(before);
+			paceNow += std::chrono::seconds(1);
+			log.log({.level = ear::LogLevel::error,
+		             .source = "alsa-lib",
+		             .text = "pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24"});
+		},
 	};
 }
 
@@ -171,7 +188,7 @@ TEST_CASE("Every kind of record is the fixture's, field for field and in its ord
 	REQUIRE(records.size() == calls.size());
 	REQUIRE(orders.size() == calls.size());
 	Lines lines;
-	StatusLog log(lines, &fixedTime);
+	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (std::size_t i = 0; i < calls.size(); ++i) {
 		INFO(records[i]["case"].get<std::string>());
 		calls[i](log, lines);
@@ -188,7 +205,7 @@ TEST_CASE("Every kind the fixture shows is made, and each record is one line", "
 	CHECK(kinds == std::set<std::string>{"engine", "control", "node", "note", "route", "graph-file",
 	                                     "graph-file-written", "graph-file-write-failed", "log", "exit"});
 	Lines lines;
-	StatusLog log(lines, &fixedTime);
+	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (const auto& call : fixtureCalls()) call(log, lines);
 	for (const std::string& line : lines.kept) CHECK(line.find('\n') == std::string::npos);
 }
@@ -224,10 +241,46 @@ TEST_CASE("Records from many threads keep one order: seq rises by one a line", "
 	std::vector<std::thread> threads;
 	for (int t = 0; t < 4; ++t)
 		threads.emplace_back([&log, t] {
-			for (int i = 0; i < 250; ++i)
-				log.log({.level = ear::LogLevel::info, .source = "test", .text = std::to_string(t)});
+			for (int i = 0; i < 250; ++i) log.nodeSays("n" + std::to_string(t), std::to_string(i));
 		});
 	for (std::thread& thread : threads) thread.join();
 	REQUIRE(lines.kept.size() == 1000);
 	for (std::size_t i = 0; i < lines.kept.size(); ++i) CHECK(Json::parse(lines.kept[i])["seq"] == i + 1);
+}
+
+TEST_CASE("A source that floods its log is paced: node states, routes and notes still get through", "[status_log]") {
+	/// A queue of 100 lines that nobody reads while the flood lasts.
+	struct Bounded final : OutputLines {
+		std::vector<std::string> kept;
+		bool offer(std::string line) override {
+			if (kept.size() >= 100) return false;
+			kept.push_back(std::move(line));
+			return true;
+		}
+	} lines;
+	StatusLog log(lines, &fixedTime, &pacedTime);
+	for (int i = 0; i < 10000; ++i) {
+		log.log({.level = ear::LogLevel::warn, .source = "stderr", .text = "E sendspin.client: chatter"});
+		log.log({.level = ear::LogLevel::error, .source = "pipewire", .text = "xrun", .topic = "spa.driver"});
+	}
+	log.log({.level = ear::LogLevel::info, .source = "sendspin", .text = "a node's own", .node = "kitchen"});
+	log.nodeSays("kitchen", "pairing-code 123-456");
+	log.nodeChanged({"desk", ear::NodeState::running, std::nullopt});
+	REQUIRE(lines.kept.size() == 2 * StatusLog::logBurst + 3);
+	CHECK(Json::parse(lines.kept[lines.kept.size() - 3])["node"] == "kitchen");
+	const Json note = Json::parse(lines.kept[lines.kept.size() - 2]);
+	CHECK(note["kind"] == "note");
+	CHECK(note["text"] == "pairing-code 123-456");
+	CHECK_FALSE(note.contains("dropped"));
+	CHECK(Json::parse(lines.kept.back())["state"] == "running");
+
+	// A second on, each source passes one more, counting what it held back.
+	paceNow += std::chrono::seconds(1);
+	lines.kept.clear();
+	log.log({.level = ear::LogLevel::warn, .source = "stderr", .text = "still here"});
+	log.log({.level = ear::LogLevel::warn, .source = "stderr", .text = "held"});
+	REQUIRE(lines.kept.size() == 1);
+	const Json counted = Json::parse(lines.kept[0]);
+	CHECK(counted["heldBack"] == 10000 - StatusLog::logBurst);
+	CHECK(counted["msg"] == "stderr warn: still here (9968 more held back before this: over 32 at once)");
 }

@@ -2,6 +2,7 @@
 // fields and its human sentence, have their one home here. The schema is test/protocol/output-records.json.
 #include "ear/control/status_log.hpp"
 
+#include <algorithm>
 #include <format>
 #include <utility>
 
@@ -76,7 +77,8 @@ std::vector<std::string> graphFileLines(const GraphFileChanged& change) {
 
 } // namespace
 
-StatusLog::StatusLog(OutputLines& out, WallClock clock) : out_(out), clock_(std::move(clock)) {}
+StatusLog::StatusLog(OutputLines& out, WallClock clock, PaceClock pace)
+	: out_(out), clock_(std::move(clock)), pace_(std::move(pace)) {}
 
 void StatusLog::emit(std::string_view kind, Fields fields, std::string msg) {
 	const std::scoped_lock lock(mutex_);
@@ -165,6 +167,25 @@ void StatusLog::graphFileWriteFailed(const std::string& detail) {
 }
 
 void StatusLog::log(const LogEntry& entry) {
+	std::uint64_t heldBack = 0;
+	{
+		// Paced under the lock: a refused entry costs no encoding. A node's sources share its pace.
+		const std::scoped_lock lock(mutex_);
+		const std::string key = entry.node ? "node " + *entry.node : entry.source;
+		const auto now = pace_();
+		Pace& pace = paces_.try_emplace(key, Pace{static_cast<double>(logBurst), now}).first->second;
+		if (now > pace.at) {
+			const double refill = std::chrono::duration<double>(now - pace.at).count();
+			pace.tokens = std::min(static_cast<double>(logBurst), pace.tokens + refill);
+		}
+		pace.at = now;
+		if (pace.tokens < 1.0) {
+			++pace.heldBack;
+			return;
+		}
+		pace.tokens -= 1.0;
+		heldBack = std::exchange(pace.heldBack, 0);
+	}
 	Fields fields;
 	if (entry.node) fields.emplace_back("node", json(*entry.node));
 	else fields.emplace_back("unattributed", "true");
@@ -174,10 +195,12 @@ void StatusLog::log(const LogEntry& entry) {
 	if (!entry.topic.empty()) fields.emplace_back("topic", json(entry.topic));
 	fields.emplace_back("text", json(entry.text));
 	if (entry.cut) fields.emplace_back("cut", "true");
+	if (heldBack > 0) fields.emplace_back("heldBack", json(heldBack));
 	std::string msg = entry.node ? std::format("node {} ", *entry.node) : std::string();
 	msg += entry.source;
 	if (!entry.topic.empty()) msg += " " + entry.topic;
 	msg += std::format(" {}: {}", logLevelName(entry.level), entry.text);
+	if (heldBack > 0) msg += std::format(" ({} more held back before this: over {} at once)", heldBack, logBurst);
 	emit("log", std::move(fields), std::move(msg));
 }
 

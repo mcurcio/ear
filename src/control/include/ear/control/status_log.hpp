@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -25,6 +26,8 @@ protected:
 	~OutputLines() = default;
 };
 using WallClock = std::function<std::chrono::system_clock::time_point()>;
+/// What paces log records: steady, so a wall clock set back never holds a source's records for good.
+using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 /// Every line ear writes on standard output, one JSON object each:
 ///   {"v":1,"seq":<n>,"t":"<UTC, microseconds>","kind":"<kind>",<the kind's fields>,"msg":"<a human sentence>"}
 /// msg is today's plain line, so `jq -r .msg` reads as ear always did:
@@ -46,6 +49,10 @@ using WallClock = std::function<std::chrono::system_clock::time_point()>;
 ///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
 ///   exit                ear: <reason>
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
+/// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
+/// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
+/// out of the queue. What was held back is counted: the source's next record that passes carries "heldBack":<n>, and
+/// its msg says so (a flood that stops is counted on that source's next line, not before).
 /// Thread-safe: every call takes one lock while it encodes and offers, never while anything is written.
 class StatusLog final : public NodeStatusListener,
 						public NodeNoteListener,
@@ -53,7 +60,9 @@ class StatusLog final : public NodeStatusListener,
 						public GraphFileListener,
 						public LogSink {
 public:
-	explicit StatusLog(OutputLines& out, WallClock clock = &std::chrono::system_clock::now);
+	static constexpr int logBurst = 32;
+	explicit StatusLog(OutputLines& out, WallClock clock = &std::chrono::system_clock::now,
+	                   PaceClock pace = &std::chrono::steady_clock::now);
 	void nodeChanged(const NodeStatus& status) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
@@ -73,8 +82,17 @@ private:
 	/// The record's envelope around `fields`, offered under the lock.
 	void emit(std::string_view kind, Fields fields, std::string msg);
 
+	/// One node's or source's pace: tokens up to logBurst, one more a second.
+	struct Pace {
+		double tokens;
+		std::chrono::steady_clock::time_point at;
+		std::uint64_t heldBack = 0;
+	};
+
 	OutputLines& out_;
 	WallClock clock_;
+	PaceClock pace_;
+	std::map<std::string, Pace, std::less<>> paces_; // under mutex_
 	std::mutex mutex_;
 	std::uint64_t seq_ = 0;
 	std::uint64_t dropped_ = 0;
