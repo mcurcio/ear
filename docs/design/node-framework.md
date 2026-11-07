@@ -931,6 +931,16 @@ sections above, and why:
   pass-through with the card's latency carried back to sendspin's `from` bank, and the 1 ms bound now holds there as on the
   dummy alone. The lost-card case checks that no driver change happened. Sendspin's own code reads no clock: `startRawNs`
   replaces its conversion, so the conversion is never applied twice.
+- **Section 10: the internal clock takes seconds to reach the raw clock.** The tracking dummy starts at the rate of its
+  `CLOCK_MONOTONIC` timer and its loop (PipeWire's DLL at its least bandwidth, `node-driver.c`) moves `rate_diff` to the
+  raw clock's over about ten seconds, wandering by some tens of ppm before it settles. This host's `CLOCK_MONOTONIC` ran
+  up to 140 ppm off the raw clock, varying between runs (NTP slewing it), so a sendspin stream started within seconds of
+  the engine saw the graph off by that much, and the library corrected by interpolating frames (one in twenty cycles,
+  failing the 1 ms test's bound on bad cycles in two runs of five). In ear the engine runs for hours, so only the first
+  seconds after boot are affected; the sendspin clock tests wait until two seconds of cycles ran within 20 ppm of the
+  rate on the raw clock before they play (at most 20 s, then they play with a warning: on a loaded host the data
+  thread's stalls make the clock resync past `resync.ms`, which restarts its loop). Before slice 7 the graph followed `CLOCK_MONOTONIC` for good, so on such a host
+  the same test would have seen the full offset all along.
 - **Section 10: denormals.** `Engine::create` runs one blocking invoke on the context's data loop right after
   `pw_context_new` (its thread already runs), setting FTZ and DAZ on x86 and FZ on arm64; a test reads the MXCSR from
   `process` and checks the main thread's is untouched. `cpu.zero.denormals` stays unset.

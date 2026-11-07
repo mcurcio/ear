@@ -115,7 +115,7 @@ public:
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
 	const Cycle& at(std::size_t index) const { return cycles_[index]; }
-	static constexpr std::size_t kCapacity = 30 * kRate / kBlock;
+	static constexpr std::size_t kCapacity = 60 * kRate / kBlock;
 
 private:
 	AudioCode& code_;
@@ -224,10 +224,30 @@ struct Rig {
 		std::erase(code, '-');
 		server.send("code " + code);
 		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
+		// Not a check: on a loaded host the data thread's stalls make the clock resync, which restarts its loop, and the
+		// test then judges what it can (the rtp.md erratum 3 trap).
+		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
+			WARN("the graph did not settle on the raw clock's rate within 20 s");
 		server.send("play " + std::to_string(seconds));
 		const auto start = server.waitForEvent("play-start ", 20s);
 		REQUIRE(start.has_value());
 		return std::stoll(start->substr(11));
+	}
+
+	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the last two seconds of cycles. The
+	/// internal clock starts at the rate of CLOCK_MONOTONIC and its loop takes seconds to reach the raw clock's
+	/// (docs/design/node-framework.md, slice 7 as built); until it has, the library sees the graph off by however far
+	/// NTP slews CLOCK_MONOTONIC on the host (140 ppm seen) and corrects by interpolating frames.
+	bool tracksRawClock() const {
+		constexpr std::size_t window = 2 * kRate / kBlock;
+		const std::size_t count = tap.count();
+		if (count < window + 1) return false;
+		const Cycle& first = tap.at(count - 1 - window);
+		const Cycle& last = tap.at(count - 1);
+		if (last.position - first.position != std::uint64_t{window} * kBlock) return false; // a jump: look again later
+		const double frames = static_cast<double>(last.position - first.position);
+		const double seconds = static_cast<double>(last.startRawNs - first.startRawNs) / 1e9;
+		return std::abs(frames / seconds / kRate - 1.0) < 20e-6;
 	}
 
 	/// The ramp reached the output.

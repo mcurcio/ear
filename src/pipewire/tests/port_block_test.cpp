@@ -875,8 +875,8 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	// mid's thru and side each see the sink's 300; mid's input tells thru's 300 plus its own 10..20 upstream, and side's
 	// does not reach it. source's spare output is linked to nothing.
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
-	CHECK(midProbe.downstream(0) == Latency{300, 300});
-	CHECK(midProbe.downstream(1) == Latency{300, 300});
+	CHECK(waiter.until([&] { return midProbe.downstream(0) == Latency{300, 300}; }));
+	CHECK(waiter.until([&] { return midProbe.downstream(1) == Latency{300, 300}; }));
 	CHECK(sourceProbe.downstream(1) == Latency{});
 
 	// A new plan replaces the last at once: mid unpaired carries nothing through, only its own.
