@@ -179,7 +179,7 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	REQUIRE_SEEN(ear, ear.waitForExit(stopBound) == 0);
 	CHECK(ear.hasLine("node rec stopped dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
-	INFO("ramp frames " << ramp.rampFrames << ", not ramp " << ramp.badFrames << ", bad steps " << ramp.badSteps);
+	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);

@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ostream>
 #include <random>
 #include <sstream>
 #include <string>
@@ -175,21 +176,92 @@ inline std::string waitForInstance(ChildProcess& ear, const std::string& node, s
 	return instance;
 }
 
-/// The WAV's first non-zero frame onward: how many frames are exact ramp frames, and how many steps are neither +1 nor a
-/// block's multiple. Left is the low 16 bits of the frame index, right the high 16, each as a signed sample.
 /// One second of the 1.5 s every test plays. On a loaded host the server can join its own ramp late, and it holds back the
 /// tail: 50688 frames were seen, all exact (erratum 38).
 inline constexpr std::uint32_t rampFramesAtLeast = graphFrequency;
 
+/// The frames of one decoded chunk: what FFmpeg's FLAC encoder makes at 48000 Hz (aiosendspin's `_chunk_samples` is the
+/// encoder's `frame_size`), whatever the test server's 1200 frames a `prepare_audio`. The library makes at most one blended
+/// frame per chunk (section 7, erratum 42).
+inline constexpr std::size_t chunkFrames = 4608;
+
+/// The WAV's first non-zero frame onward. Left is the low 16 bits of the frame index and right the high 16, each as a signed
+/// sample, so a frame names its place, and a whole frame must say exactly that.
+/// The one other frame allowed is the library's correction of a clock error past 100 us (erratum 42), a blend: each channel
+/// the average of two consecutive ramp frames, a frame's neighbours saying which two and how it was made.
+///   insert: n-1, blend of n-1 and n, n
+///   drop:   n-1, blend of n and n+1, n+2
+/// Its neighbours are whole frames: the library's corrections are at least a chunk apart, less the two frames at its ends.
+/// At the edge of a run of ramp (the WAV's first or last non-zero frame, or beside silence) one neighbour has to do. A drop
+/// of a stream's first chunk leaves a blend with no frame before it, and an insert always has one, so that blend must be a
+/// drop's. One with no frame after it, the tail cut by stream/end's clear, may be either's. No neighbour at all proves
+/// nothing, and is refused.
+/// A blend's index is worked out on the 32-bit index and each channel averaged as a signed sample, because a word's wrap is
+/// no plain k + 0.5: 0x7FFF to 0x8000 gives left -0.5 (32767 and -32768), and 0xFFFF to 0x10000 gives left -0.5 and right
+/// h + 0.5, the one blend with both channels fractional.
 struct RampCheck {
-	std::size_t rampFrames = 0;
-	std::size_t badFrames = 0;
-	std::size_t badSteps = 0;
+	std::size_t rampFrames = 0; // exact ramp frames
+	std::size_t blends = 0;     // blends accepted by their shape; those over the limit also count in badFrames
+	std::size_t badFrames = 0;  // frames neither of those, and each blend past blendLimit()
+	std::size_t badSteps = 0;   // steps between exact frames that are neither +1, a block's multiple nor a drop's 3
 	std::size_t zeroFramesInside = 0;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
-	std::size_t lastRunFrames = 0; // frames since the last step that was neither +1 nor a block's multiple
+	std::size_t lastRunFrames = 0; // exact frames since the last bad step
 };
+
+/// What a red needs to say about a ramp.
+inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
+	return out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
+	           << ", bad steps " << ramp.badSteps << ", zeros inside " << ramp.zeroFramesInside << ", indices "
+	           << ramp.firstIndex << " to " << ramp.lastIndex << ", frames of the last run " << ramp.lastRunFrames;
+}
+
+/// One blend per chunk the WAV's frames could have come from: each whole chunk, and one cut short at either end. Blends beyond
+/// it are corrections the library's rule cannot make, so they fail as frames off the ramp, in every test that asks for none.
+inline std::size_t blendLimit(std::size_t frames) { return frames / chunkFrames + 2; }
+
+/// The ramp index a frame names, if it names one: both channels whole samples.
+inline std::optional<std::uint32_t> rampIndexOf(float left, float right) {
+	const float lo = left * 32768.0F;
+	const float hi = right * 32768.0F;
+	if (lo != std::trunc(lo) || hi != std::trunc(hi)) return std::nullopt;
+	const auto word = [](float value) {
+		return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU;
+	};
+	return word(lo) | (word(hi) << 16U);
+}
+
+/// Whether a frame is exactly the average of ramp frames `n` and `n + 1`. A sum of two 16-bit samples over 2^16 fits a float.
+inline bool isBlendOf(std::uint32_t n, float left, float right) {
+	const std::uint32_t next = n + 1;
+	const auto sample = [](std::uint32_t word) { return static_cast<int>(static_cast<std::int16_t>(word & 0xFFFFU)); };
+	const auto average = [&](std::uint32_t shift) {
+		return static_cast<float>(sample(n >> shift) + sample(next >> shift)) / 65536.0F;
+	};
+	return left == average(0U) && right == average(16U);
+}
+
+/// Whether the off-ramp frame at `frame` has a blend's value and neighbours (RampCheck's comment says which).
+inline bool isBlend(const Wav& wav, std::size_t frame) {
+	const auto frames = static_cast<std::size_t>(wav.info.frames);
+	const auto left = [&](std::size_t at) { return wav.samples[at * 2]; };
+	const auto right = [&](std::size_t at) { return wav.samples[at * 2 + 1]; };
+	const auto isSilent = [&](std::size_t at) { return left(at) == 0.0F && right(at) == 0.0F; };
+	const bool hasBefore = frame > 0 && !isSilent(frame - 1);
+	const bool hasAfter = frame + 1 < frames && !isSilent(frame + 1);
+	const auto before = hasBefore ? rampIndexOf(left(frame - 1), right(frame - 1)) : std::nullopt;
+	const auto after = hasAfter ? rampIndexOf(left(frame + 1), right(frame + 1)) : std::nullopt;
+	if (hasBefore != before.has_value() || hasAfter != after.has_value()) return false; // beside another off-ramp frame
+	const auto blendOf = [&](std::uint32_t n) { return isBlendOf(n, left(frame), right(frame)); };
+	if (before && after) {
+		const std::uint32_t step = *after - *before;
+		return (step == 1 && blendOf(*before)) || (step == 3 && blendOf(*before + 1));
+	}
+	if (after) return blendOf(*after - 2);
+	if (before) return blendOf(*before) || blendOf(*before + 1);
+	return false;
+}
 
 inline RampCheck checkRamp(const Wav& wav) {
 	RampCheck result;
@@ -204,6 +276,7 @@ inline RampCheck checkRamp(const Wav& wav) {
 	}
 	if (first == frames) return result;
 	std::optional<std::uint32_t> previous;
+	bool afterBlend = false;
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		const float left = wav.samples[frame * 2];
 		const float right = wav.samples[frame * 2 + 1];
@@ -211,30 +284,29 @@ inline RampCheck checkRamp(const Wav& wav) {
 			++result.zeroFramesInside;
 			continue;
 		}
-		const float lo = left * 32768.0F;
-		const float hi = right * 32768.0F;
-		if (lo != std::trunc(lo) || hi != std::trunc(hi)) {
-			++result.badFrames;
+		const std::optional<std::uint32_t> index = rampIndexOf(left, right);
+		if (!index) {
+			afterBlend = isBlend(wav, frame);
+			++(afterBlend ? result.blends : result.badFrames);
 			continue;
 		}
-		const auto word = [](float value) {
-			return static_cast<std::uint32_t>(static_cast<std::int32_t>(value)) & 0xFFFFU;
-		};
-		const std::uint32_t index = word(lo) | (word(hi) << 16U);
 		if (previous) {
-			const std::uint32_t step = index - *previous;
-			if (step != 1 && (step - 1) % blockSize != 0) {
+			const std::uint32_t step = *index - *previous;
+			if (step != 1 && (step - 1) % blockSize != 0 && !(afterBlend && step == 3)) {
 				++result.badSteps;
 				result.lastRunFrames = 0;
 			}
 		} else {
-			result.firstIndex = index;
+			result.firstIndex = *index;
 		}
+		afterBlend = false;
 		previous = index;
-		result.lastIndex = index;
+		result.lastIndex = *index;
 		++result.rampFrames;
 		++result.lastRunFrames;
 	}
+	const std::size_t limit = blendLimit(result.rampFrames + result.blends);
+	if (result.blends > limit) result.badFrames += result.blends - limit;
 	return result;
 }
 

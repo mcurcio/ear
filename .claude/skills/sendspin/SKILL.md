@@ -178,6 +178,7 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **A comma in a Catch filter means OR, and a filter that matches nothing exits 0.** A probe that filters on a name holding a
   comma can stay green having run nothing. CTest takes these names as they are. Keep `;` out of test names.
 - The ramp: left is the low 16 bits of the frame index and right the high 16, so FR's meter is silent for its first 1.4 s.
+- **A clock error past 100 us leaves a fractional frame in the WAV, without a bug.** The library averages two frames, at most once a chunk (4608 frames): `n-1`, the blend of `n-1` and `n`, `n` to add one, and `n-1`, the blend of `n` and `n+1`, `n+2` to drop one, a step of 3. `checkRamp` passes only those, and counts them in `blends`; a red prints them. To force some, add 150 us to the finish `SendspinCode::process` publishes, for instance every other 24000 frames. The averages at the low word's wrap are not `k + 0.5`, because each channel is a signed sample: left -0.5 at both `0x7FFF` and `0xFFFF`, and right `h + 0.5` at `0xFFFF` (`docs/design/sendspin.md` erratum 42).
 - `mdns.h` and the library parse what any peer sends, unfuzzed, inside the audio process: a crash silences every node.
 
 ## NOT RUN: the real Music Assistant
