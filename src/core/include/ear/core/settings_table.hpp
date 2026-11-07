@@ -1,119 +1,239 @@
-// One node type's settings, each key declared once. The table checks the settings object in one
-// fixed order, makes every refusal's text from the row (or carries what cannot be made), and is
-// what the type's NodeType::settingKinds() returns, so the graph file's reader cannot disagree
-// with the type's parse. The type keeps what a text value means and any rule across settings.
+// One node type's settings, each key declared once, as typed rows in one table. The table checks the settings object in
+// one fixed order and makes every refusal's text from the row; NodeType's name(), settingKinds() and parse() all answer
+// from it and cannot be overridden, so the graph file's reader cannot disagree with parse. What a type overrides is
+// NodeTypeOf's make, which gets typed values, never the raw object, and holds any rule about them.
 // Pure: nlohmann/json only.
 #pragma once
+#include <algorithm>
+#include <any>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
+#include <functional>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/node_type.hpp"
 namespace ear {
-/// Whether `text` is one this type can use; the type's own (CardId, RtpAddress, L16 or L24...).
-using TextMeaning = bool (*)(std::string_view text);
-/// A rule across settings that one key answers to: the whole refusal's text, or nothing. It reads
-/// only keys of rows above its own, which have passed by then.
-using AcrossRule = std::optional<std::string_view> (*)(const NodeSettings& settings);
-
-/// One key of one node type. Rows are checked in the order declared, which is also the order of
-/// settingKinds(). A key given with any value, null included, is given.
-struct SettingRule {
+/// One whole-number rule. A good value is a JSON integer (a float, a bool and a string are not) in [low, high]; an integer
+/// above INT64_MAX is above every range. Otherwise "<key>: must be a whole number[ of <unit>], <low>-<high>".
+struct WholeNumberRule {
+	std::uint32_t low;
+	std::uint32_t high;
+	std::string_view unit;
+	std::optional<std::uint32_t> byDefault; // what the row reads when absent
+};
+/// One text rule. A good value is a JSON string `read` accepts; `read` returns the parsed value, empty when refused.
+/// Otherwise "<key>: must be <mustBe>".
+struct TextRule {
+	std::string_view mustBe;
+	std::any (*read)(std::string_view text);
+};
+/// One row as the walk reads it: the sum of the two rules. A key given with any value, null included, is given. Only
+/// setting::required, optional and defaulted make the typed rows that hold one.
+struct SettingRow {
 	std::string_view key;
-	SettingKind kind;
-	bool required = false; // absent: "<key>: missing"; never with byDefault
-	// Whole numbers only. A value is good when it is a JSON integer (a float, a bool and a string
-	// are not) in [low, high]; an integer above INT64_MAX is above every range. Otherwise:
-	// "<key>: must be a whole number[ of <unit>], <low>-<high>".
-	std::uint32_t low = 0;
-	std::uint32_t high = 0;
-	std::string_view unit = {};
-	std::optional<std::uint32_t> byDefault = std::nullopt; // what wholeNumber() gives when absent
-	// Text only, both needed. A value is good when it is a JSON string `means` accepts. Otherwise:
-	// "<key>: must be <mustBe>".
-	std::string_view mustBe = {};
-	TextMeaning means = nullptr;
-	// Either kind: runs when the key is given, before its kind is looked at.
-	AcrossRule across = nullptr;
+	bool required; // absent: "<key>: missing"
+	std::variant<WholeNumberRule, TextRule> rule;
+	std::string_view onlyWithout = {}; // Row::onlyWithout's
 };
 
-/// Settings a table has passed: the only way to read them. Borrows the settings and the table's
-/// rows; lives no longer than either, so only for the length of a parse.
-class CheckedSettings {
+namespace setting {
+struct Number {
+	using Value = std::uint32_t;
+	WholeNumberRule rule;
+};
+template <class T> struct Text {
+	using Value = T;
+	TextRule rule;
+};
+/// A row a type reads: required and defaulted rows read as const T&, an optional row as std::optional<T>.
+template <class T, bool Always> class Row : public SettingRow {
 public:
-	/// The key's text, nothing when absent. Views the checked settings.
-	/// Throws std::logic_error when the table has no such text key: a type bug, not a user error.
-	std::optional<std::string_view> text(std::string_view key) const;
-	/// The key's number, else its byDefault, else nothing. Throws as text() does.
-	std::optional<std::uint32_t> wholeNumber(std::string_view key) const;
+	using Value = T;
+	using Reads = std::conditional_t<Always, const T&, std::optional<T>>;
+	/// Given together with `above`, this key is refused: `<key>: only without "<above's key>"`, before its kind is looked
+	/// at. The table refuses, at compile time, any `above` that is not a row above this one.
+	consteval Row onlyWithout(const SettingRow& above) const {
+		Row limited = *this;
+		limited.SettingRow::onlyWithout = above.key;
+		return limited;
+	}
 
 private:
-	CheckedSettings(std::span<const SettingRule> rows, const NodeSettings& settings) noexcept;
-	friend std::expected<CheckedSettings, std::string>
-	checkSettings(std::string_view type, std::span<const SettingRule> rows, const NodeSettings& settings);
-	std::span<const SettingRule> rows_;
-	const NodeSettings* settings_;
+	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
+	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule> rule)
+		: SettingRow{key, required, rule} {
+		if (key.empty()) throw "a setting's key is empty";
+	}
+	template <class Rule> friend consteval Row<typename Rule::Value, true> required(std::string_view key, Rule rule);
+	template <class Rule> friend consteval Row<typename Rule::Value, false> optional(std::string_view key, Rule rule);
+	friend consteval Row<std::uint32_t, true> defaulted(std::string_view key, Number rule, std::uint32_t byDefault);
+};
+template <class T> inline constexpr bool isRow = false;
+template <class T, bool Always> inline constexpr bool isRow<Row<T, Always>> = true;
+
+template <class Result> inline constexpr bool isOwningOptional = false;
+template <class T> inline constexpr bool isOwningOptional<std::optional<T>> =
+	!std::ranges::view<T> && !std::is_pointer_v<T> && std::copy_constructible<T>;
+/// What a text row can parse with: invocable with the text, returning an optional of a value that owns what it holds.
+template <auto Parse>
+concept TextParser = std::invocable<decltype(Parse), std::string_view> &&
+                     isOwningOptional<std::invoke_result_t<decltype(Parse), std::string_view>>;
+template <auto Parse> std::any readParsed(std::string_view text) {
+	auto parsed = std::invoke(Parse, text);
+	if (!parsed) return {};
+	return std::any(std::move(*parsed));
+}
+
+/// The range is not optional; low above high does not compile.
+consteval Number number(std::uint32_t low, std::uint32_t high, std::string_view unit = {}) {
+	if (low > high) throw "a whole number's low is above its high";
+	return Number{WholeNumberRule{low, high, unit, std::nullopt}};
+}
+/// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
+template <auto Parse>
+	requires TextParser<Parse>
+consteval Text<typename std::invoke_result_t<decltype(Parse), std::string_view>::value_type>
+text(std::string_view mustBe) {
+	if (mustBe.empty()) throw "a text setting needs what it must be";
+	return {TextRule{mustBe, &readParsed<Parse>}};
+}
+template <class Rule> consteval Row<typename Rule::Value, true> required(std::string_view key, Rule rule) {
+	return Row<typename Rule::Value, true>(key, true, rule.rule);
+}
+template <class Rule> consteval Row<typename Rule::Value, false> optional(std::string_view key, Rule rule) {
+	return Row<typename Rule::Value, false>(key, false, rule.rule);
+}
+/// Numbers only; a default outside the range does not compile.
+consteval Row<std::uint32_t, true> defaulted(std::string_view key, Number rule, std::uint32_t byDefault) {
+	if (byDefault < rule.rule.low || byDefault > rule.rule.high)
+		throw "a whole number's byDefault is outside its range";
+	rule.rule.byDefault = byDefault;
+	return Row<std::uint32_t, true>(key, false, rule.rule);
+}
+constexpr SettingDeclaration declarationOf(const SettingRow& row) {
+	return {row.key, std::holds_alternative<TextRule>(row.rule) ? SettingKind::text : SettingKind::wholeNumber};
+}
+} // namespace setting
+
+template <const auto&... Rows>
+	requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
+class SettingsTable;
+template <const auto& Table> class NodeTypeOf;
+
+/// What the walk made: one slot per row. No public constructor and no public read: only the walk makes one, and only
+/// Checked reads it. It owns its values, so it borrows neither the settings nor the table.
+class CheckedSettings {
+private:
+	explicit CheckedSettings(std::vector<std::any> slots) noexcept : slots_(std::move(slots)) {}
+	friend class AnySettingsTable;
+	template <const auto&... Rows>
+		requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
+	friend class SettingsTable;
+	std::vector<std::any> slots_;
 };
 
-/// SettingsTable::check's walk; the first failure is the refusal's text, in this order:
-/// 1. Not an object: "settings: must be an object", with no rows; else that and
-///    ` with "a", "b" and "c"` naming the required keys, or when none is required
-///    ` with optional "a", "b" and "c"` naming every key. With no rows, null is taken as {}.
-/// 2. An undeclared key, the first in the object's own (sorted) order: "unknown key <key>", with no
-///    rows followed by " (<type> takes no settings)".
-/// 3. Each row in order, as SettingRule says: absent (next row, or missing when required), then
-///    `across`, then the kind and the range or meaning.
-std::expected<CheckedSettings, std::string> checkSettings(std::string_view type, std::span<const SettingRule> rows,
-                                                          const NodeSettings& settings);
-
-/// A type's table, a constant it declares once:
-///     constexpr SettingsTable table{"rtp", std::array{SettingRule{...}, SettingRule{...}}};
-/// A table with no rows names its array's size: std::array<SettingRule, 0>{}.
-template <std::size_t N> class SettingsTable {
+/// A table without its rows' types: all the walk needs, so the walk is not a template. Its constructor is consteval, so
+/// run-time rows cannot reach the walk.
+class AnySettingsTable {
 public:
-	/// A row that makes no sense does not compile: a key empty or given twice; text without mustBe
-	/// and means, or with a range, unit or byDefault; a number with mustBe or means, low above high,
-	/// or a byDefault outside its range or on a required row.
-	consteval SettingsTable(std::string_view type, const std::array<SettingRule, N>& rows)
-		: type_(type), rows_(rows), kinds_{} {
-		for (std::size_t at = 0; at < N; ++at) {
-			const SettingRule& row = rows[at];
-			// A throw in a consteval constructor is what stops the compile; the text is what the compiler shows.
-			if (row.key.empty()) throw "a setting's key is empty";
-			for (std::size_t earlier = 0; earlier < at; ++earlier) {
-				if (rows[earlier].key == row.key) throw "a setting's key is given twice";
-			}
-			if (row.kind == SettingKind::text) {
-				if (row.mustBe.empty() || row.means == nullptr) throw "a text setting needs mustBe and means";
-				if (row.low != 0 || row.high != 0 || !row.unit.empty() || row.byDefault) {
-					throw "a text setting has no range, unit or byDefault";
-				}
-			} else {
-				if (!row.mustBe.empty() || row.means != nullptr) throw "a whole number has no mustBe or means";
-				if (row.low > row.high) throw "a whole number's low is above its high";
-				if (row.byDefault && row.required) throw "a required setting has no byDefault";
-				if (row.byDefault && (*row.byDefault < row.low || *row.byDefault > row.high)) {
-					throw "a whole number's byDefault is outside its range";
-				}
-			}
-			kinds_[at] = SettingDeclaration{row.key, row.kind};
-		}
-	}
-	std::expected<CheckedSettings, std::string> check(const NodeSettings& settings) const {
-		return checkSettings(type_, rows_, settings);
-	}
-	std::expected<CheckedSettings, std::string> check(const NodeSettings&&) const = delete; // it would dangle
+	constexpr std::string_view name() const noexcept { return name_; }
 	/// NodeType::settingKinds(): every key, each once, in row order; the same span every call.
 	constexpr std::span<const SettingDeclaration> kinds() const noexcept { return kinds_; }
 
+protected:
+	/// Refuses at compile time: an empty name, a key given twice, an onlyWithout that names no row above its own.
+	consteval AnySettingsTable(std::string_view name, std::span<const SettingRow* const> rows,
+	                           std::span<const SettingDeclaration> kinds)
+		: name_(name), rows_(rows), kinds_(kinds) {
+		if (name.empty()) throw "a table's name is empty";
+		for (std::size_t at = 0; at < rows.size(); ++at) {
+			bool aboveFound = false;
+			for (std::size_t earlier = 0; earlier < at; ++earlier) {
+				if (rows[earlier]->key == rows[at]->key) throw "a setting's key is given twice";
+				if (rows[earlier]->key == rows[at]->onlyWithout) aboveFound = true;
+			}
+			if (!rows[at]->onlyWithout.empty() && !aboveFound) throw "an onlyWithout must name a row above its own";
+		}
+	}
+	/// The first failure is the refusal's text, in this order:
+	/// 1. Not an object: "settings: must be an object", with no rows; else that and ` with "a", "b" and "c"` naming the
+	///    required keys, or when none is required ` with optional "a", "b" and "c"` naming every key. With no rows, null
+	///    is taken as {}.
+	/// 2. An undeclared key, the first in the object's own (sorted) order: "unknown key <key>", with no rows followed by
+	///    " (<name> takes no settings)".
+	/// 3. Each row in order: absent (next row, or missing when required), then onlyWithout, then the kind and the range
+	///    or meaning.
+	std::expected<CheckedSettings, std::string> walk(const NodeSettings& settings) const;
+
 private:
-	std::string_view type_;
-	std::array<SettingRule, N> rows_;
-	std::array<SettingDeclaration, N> kinds_;
+	friend class NodeType;
+	std::string_view name_;
+	std::span<const SettingRow* const> rows_;
+	std::span<const SettingDeclaration> kinds_;
+};
+
+/// A type's table, declared once: constexpr SettingsTable<addressRow, portRow> table{"rtp"}; Rows are checked in this
+/// order, which is also settingKinds()'s. With no rows: SettingsTable<>. Only setting's typed rows can be listed.
+template <const auto&... Rows>
+	requires(setting::isRow<std::remove_cvref_t<decltype(Rows)>> && ...)
+class SettingsTable final : public AnySettingsTable {
+public:
+	consteval explicit SettingsTable(std::string_view name) : AnySettingsTable(name, rows_, kinds_) {}
+	/// Settings this table passed. A row not listed in this table cannot be read: get's constraint fails at compile time.
+	class Checked {
+	public:
+		template <const auto& Row>
+			requires((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...)
+		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Reads get() const {
+			using Read = std::remove_cvref_t<decltype(Row)>;
+			constexpr auto slot = std::ranges::find(rows_, static_cast<const SettingRow*>(&Row)) - rows_.begin();
+			const auto* value = std::any_cast<typename Read::Value>(&settings_.slots_[static_cast<std::size_t>(slot)]);
+			if constexpr (std::is_reference_v<typename Read::Reads>) {
+				return *value; // the walk filled it: a required row was given, a defaulted one has its default
+			} else {
+				return value != nullptr ? typename Read::Reads(*value) : std::nullopt;
+			}
+		}
+
+	private:
+		explicit Checked(CheckedSettings settings) noexcept : settings_(std::move(settings)) {}
+		friend SettingsTable;
+		template <const auto& Table> friend class NodeTypeOf;
+		CheckedSettings settings_;
+	};
+	std::expected<Checked, std::string> check(const NodeSettings& settings) const {
+		auto walked = walk(settings);
+		if (!walked) return std::unexpected(std::move(walked.error()));
+		return Checked(std::move(*walked));
+	}
+
+private:
+	static constexpr std::array<const SettingRow*, sizeof...(Rows)> rows_{&Rows...};
+	static constexpr std::array<SettingDeclaration, sizeof...(Rows)> kinds_{setting::declarationOf(Rows)...};
+};
+
+/// What a node type derives from. The base class names the table once; there is nowhere to name a second.
+template <const auto& Table> class NodeTypeOf : public NodeType {
+protected:
+	using Checked = typename std::remove_cvref_t<decltype(Table)>::Checked;
+	NodeTypeOf() noexcept : NodeType(Table) {}
+
+private:
+	/// What the type makes of checked settings. It never sees the raw object. A rule about values lives here.
+	virtual MadeConfig make(const NodeName& node, const Checked& settings) const = 0;
+	MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const final {
+		return make(node, Checked(std::move(settings)));
+	}
 };
 } // namespace ear

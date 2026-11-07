@@ -1,8 +1,8 @@
 // Frozen interface (docs/design/batch2.md section 4; NodeGrant::rtpReceiver added by
 // docs/design/rtp.md section 7.1, batch2.md section 11's erratum; GraphCycle, InsidesEvents,
 // NodeInsides::close and NodeGrant::events by docs/design/sendspin.md section 14, S1; delayFrames by its erratum 22; PortBank
-// and Ports' banks by batch2.md section 11's erratum of 2026-11-06). Change it only through an erratum and a re-cut, never a
-// local edit.
+// and Ports' banks by batch2.md section 11's erratum of 2026-11-06; NodeType answering from one table by its erratum
+// "NodeType, 2026-11-06"). Change it only through an erratum and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -170,14 +170,28 @@ struct SettingDeclaration {
 	std::string_view key;
 	SettingKind kind;
 };
+class AnySettingsTable; // settings_table.hpp
+class CheckedSettings;  // settings_table.hpp
+/// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
+using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>;
+/// One node type. Its name, its settings' kinds and their checking all answer from the one table NodeTypeOf
+/// (settings_table.hpp) bound it to; none can be overridden, so they cannot disagree.
 class NodeType {
 public:
 	virtual ~NodeType() = default;
-	virtual std::string_view name() const = 0; // the NodeSpec `type`
-	/// Pure; the only place settings are checked; unknown keys are invalid.
-	virtual std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName& node, const NodeSettings& settings) const = 0;
-	/// Every key parse() accepts, each once, with its kind; the same span every call; pure.
-	virtual std::span<const SettingDeclaration> settingKinds() const = 0;
+	std::string_view name() const noexcept; // the NodeSpec `type`: the table's name
+	/// Pure; the only place settings are checked; unknown keys are invalid. The table's walk, then the type's make; a
+	/// refusal from either becomes InvalidSettings{node, text}.
+	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName& node,
+	                                                                        const NodeSettings& settings) const;
+	/// Every key parse() accepts, each once, with its kind, in row order; the same span every call; pure.
+	std::span<const SettingDeclaration> settingKinds() const noexcept;
+
+private:
+	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive
+	explicit NodeType(const AnySettingsTable& table) noexcept;
+	/// The one customisation point. Called only with what the table's walk made.
+	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
+	const AnySettingsTable* table_; // static storage, because NodeTypeOf takes it as a template argument
 };
 } // namespace ear

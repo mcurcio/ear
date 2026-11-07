@@ -5,10 +5,10 @@
 // to the recordings folder and opened beneath it only (ear/folder/confined_folder.hpp).
 #include <sndfile.h>
 
-#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -22,15 +22,14 @@
 namespace ear::nodes {
 namespace {
 
-constexpr std::string_view typeName = "file";
-constexpr std::string_view pathKey = "path";
-using enum SettingKind;
-constexpr SettingsTable table{typeName,
-                              std::array{SettingRule{.key = pathKey,
-                                                     .kind = text,
-                                                     .required = true,
-                                                     .mustBe = "a non-empty string",
-                                                     .means = [](std::string_view value) { return !value.empty(); }}}};
+/// The path as given, nothing when empty.
+std::optional<std::string> nonEmpty(std::string_view value) {
+	if (value.empty()) return std::nullopt;
+	return std::string(value);
+}
+
+constexpr auto pathRow = setting::required("path", setting::text<nonEmpty>("a non-empty string"));
+constexpr SettingsTable<pathRow> table{"file"};
 constexpr std::uint32_t channelCount = 2;
 constexpr std::uint32_t ringSeconds = 2;
 
@@ -163,27 +162,19 @@ bool staysInside(const std::string& path) {
 	return true;
 }
 
-class FileType final : public NodeType {
+class FileType final : public NodeTypeOf<table> {
 public:
 	explicit FileType(std::shared_ptr<const folder::ConfinedFolder> recordings) : recordings_(std::move(recordings)) {}
 
-	std::string_view name() const override { return typeName; }
-
-	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
-
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName& node, const NodeSettings& settings) const override {
-		auto checked = table.check(settings);
-		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
-		std::string path(*checked->text(pathKey));
+private:
+	MadeConfig make(const NodeName&, const Checked& settings) const override {
+		const std::string& path = settings.get<pathRow>();
 		if (!staysInside(path)) {
-			return std::unexpected(
-				InvalidSettings{node, "path: must be relative to the recordings folder, without \"..\""});
+			return std::unexpected(std::string(R"(path: must be relative to the recordings folder, without "..")"));
 		}
-		return std::make_unique<const FileConfig>(recordings_, std::move(path));
+		return std::make_unique<const FileConfig>(recordings_, path);
 	}
 
-private:
 	std::shared_ptr<const folder::ConfinedFolder> recordings_;
 };
 

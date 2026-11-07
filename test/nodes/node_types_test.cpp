@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "all_types.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/nodes/card.hpp"
@@ -17,15 +18,13 @@
 
 namespace {
 
-/// Both folders are nullptr: parse never opens them (src/nodes/sendspin/tests/settings_test.cpp does the same), and
-/// these tests start no node.
 std::vector<std::unique_ptr<const ear::NodeType>> nodeTypes() {
 	std::vector<std::unique_ptr<const ear::NodeType>> types;
 	types.push_back(ear::nodes::makeWhiteNodeType());
-	types.push_back(ear::nodes::makeFileNodeType(nullptr));
+	types.push_back(ear::nodes::makeFileNodeType(ear::test::recordingsFolder()));
 	types.push_back(ear::nodes::makeCardNodeType());
 	types.push_back(ear::nodes::makeRtpNodeType());
-	types.push_back(ear::nodes::makeSendspinNodeType(nullptr));
+	types.push_back(ear::nodes::makeSendspinNodeType(ear::test::configFolder()));
 	return types;
 }
 

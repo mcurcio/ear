@@ -1,18 +1,29 @@
 // A sendspin node's settings: each refusal's exact text, in order, and the URL's grammar (docs/design/sendspin.md
 // section 4).
+#include <expected>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "catch2/catch.hpp"
+#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/sendspin.hpp"
 #include "settings.hpp"
+#include "temp_folder.hpp"
 
 using ear::NodeSettings;
-using ear::sendspin::parseSettings;
 using ear::sendspin::ServerUrl;
 
 namespace {
 
 constexpr auto url = "ws://10.0.0.1:8927/sendspin";
+
+std::expected<ear::sendspin::SendspinSettings, std::string> parseSettings(const ear::NodeName& node,
+                                                                          const NodeSettings& settings) {
+	auto checked = ear::sendspin::settingsTable.check(settings);
+	if (!checked) return std::unexpected(std::move(checked.error()));
+	return ear::sendspin::settingsFrom(node, *checked);
+}
 
 std::string refusal(const NodeSettings& settings) {
 	const auto parsed = parseSettings("ma", settings);
@@ -95,7 +106,11 @@ TEST_CASE("A name is 1 to 64 bytes of UTF-8 with no control characters, and abse
 
 TEST_CASE("The type declares its ports and its settings' kinds, and refuses through InvalidSettings",
           "[sendspin][settings]") {
-	const auto type = ear::nodes::makeSendspinNodeType(nullptr);
+	const ear::test::TempFolder dir;
+	auto folder = ear::folder::ConfinedFolder::open(dir.path());
+	REQUIRE(folder.has_value());
+	const auto type =
+		ear::nodes::makeSendspinNodeType(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
 	CHECK(type->name() == "sendspin");
 	const auto kinds = type->settingKinds();
 	REQUIRE(kinds.size() == 3);

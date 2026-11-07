@@ -1,57 +1,60 @@
-// The settings table's walk with rows of its own: each step alone, its order, and what a checked settings object reads.
-// What each node type's table says is test/nodes/settings_refusals_test.cpp's.
+// The settings table's walk with rows of its own: each step alone, its order, what a checked settings object reads, and
+// how NodeType answers from its table. What each node type's table says is test/nodes/settings_refusals_test.cpp's; what
+// must not compile is compile_fail/settings_table_bad.cpp's.
 #include "ear/core/settings_table.hpp"
 
-#include <array>
+#include <concepts>
+#include <cstdint>
+#include <memory>
 #include <optional>
-#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "catch2/catch.hpp"
 
 namespace {
 
-using ear::CheckedSettings;
+using ear::MadeConfig;
+using ear::NodeName;
 using ear::NodeSettings;
-using ear::SettingRule;
 using ear::SettingsTable;
 using enum ear::SettingKind;
+namespace setting = ear::setting;
 
 int meaningCalls = 0;
-int acrossCalls = 0;
 
-bool isGood(std::string_view value) {
+std::optional<std::string> isGood(std::string_view value) {
 	++meaningCalls;
-	return value == "good";
+	if (value != "good") return std::nullopt;
+	return std::string(value);
 }
 
-std::optional<std::string_view> refuseAcross(const NodeSettings&) {
-	++acrossCalls;
-	return "whole refusal";
-}
+constexpr auto goodText = setting::text<isGood>("good, please");
+constexpr auto aRow = setting::required("a", goodText);
+constexpr auto bRow = setting::required("b", goodText);
+constexpr auto cRow = setting::required("c", goodText);
+constexpr auto dRow = setting::optional("d", goodText);
+constexpr auto aOptional = setting::optional("a", goodText);
+constexpr auto bOptional = setting::optional("b", goodText);
+constexpr auto cOptional = setting::optional("c", goodText);
+constexpr auto plainRow = setting::optional("plain", setting::number(1, 10));
+constexpr auto measuredRow = setting::defaulted("measured", setting::number(2, 20, "Hz"), 5);
+constexpr auto nameRow = setting::optional("name", goodText);
+constexpr auto bNumber = setting::required("b", setting::number(0, 9));
+constexpr auto mRow = setting::optional("m", goodText);
+constexpr auto nRow = setting::optional("n", setting::number(0, 9)).onlyWithout(mRow);
+constexpr auto zRow = setting::optional("z", goodText);
 
-constexpr SettingRule textRow(std::string_view key, bool required = false) {
-	return {.key = key, .kind = text, .required = required, .mustBe = "good, please", .means = isGood};
-}
-
-constexpr SettingsTable none{"nothing", std::array<SettingRule, 0>{}};
-constexpr SettingsTable one{"t", std::array{textRow("a", true)}};
-constexpr SettingsTable two{"t", std::array{textRow("a", true), textRow("b", true)}};
-constexpr SettingsTable three{"t",
-                              std::array{textRow("a", true), textRow("b", true), textRow("c", true), textRow("d")}};
-constexpr SettingsTable optional{"t", std::array{textRow("a"), textRow("b"), textRow("c")}};
-constexpr SettingsTable numbers{
-	"t",
-	std::array{SettingRule{.key = "plain", .kind = wholeNumber, .low = 1, .high = 10},
-               SettingRule{.key = "measured", .kind = wholeNumber, .low = 2, .high = 20, .unit = "Hz", .byDefault = 5},
-               textRow("name")}};
-constexpr SettingsTable required{
-	"t", std::array{textRow("a", true), SettingRule{.key = "b", .kind = wholeNumber, .required = true, .high = 9},
-                    textRow("c", true)}};
-constexpr SettingsTable across{
-	"t", std::array{SettingRule{.key = "n", .kind = wholeNumber, .high = 9, .across = refuseAcross}, textRow("z")}};
+constexpr SettingsTable<> none{"nothing"};
+constexpr SettingsTable<aRow> one{"t"};
+constexpr SettingsTable<aRow, bRow> two{"t"};
+constexpr SettingsTable<aRow, bRow, cRow, dRow> three{"t"};
+constexpr SettingsTable<aOptional, bOptional, cOptional> optional{"t"};
+constexpr SettingsTable<plainRow, measuredRow, nameRow> numbers{"t"};
+constexpr SettingsTable<aRow, bNumber, cRow> required{"t"};
+constexpr SettingsTable<mRow, nRow, zRow> across{"t"};
 
 // The table is a constant, and so is what it declares.
 static_assert(numbers.kinds().size() == 3);
@@ -59,7 +62,7 @@ static_assert(numbers.kinds()[0].key == "plain" && numbers.kinds()[0].kind == wh
 static_assert(numbers.kinds()[2].key == "name" && numbers.kinds()[2].kind == text);
 static_assert(none.kinds().empty());
 
-template <std::size_t N> std::string refusal(const SettingsTable<N>& table, const NodeSettings& settings) {
+template <class Table> std::string refusal(const Table& table, const NodeSettings& settings) {
 	const auto checked = table.check(settings);
 	REQUIRE_FALSE(checked.has_value());
 	return checked.error();
@@ -140,47 +143,52 @@ TEST_CASE("Meaning is asked of a string only, and its refusal carries mustBe", "
 
 TEST_CASE("The across rule runs only when its key is given, before its kind, and its text is whole",
           "[settings-table]") {
-	acrossCalls = 0;
-	const NodeSettings absent = {{"z", "good"}};
+	const NodeSettings absent = {{"m", "good"}, {"z", "good"}};
 	CHECK(across.check(absent).has_value());
-	CHECK(acrossCalls == 0);
-	CHECK(refusal(across, {{"n", "not a number"}, {"z", 5}}) == "whole refusal");
-	CHECK(acrossCalls == 1);
-	CHECK(refusal(across, {{"n", nullptr}}) == "whole refusal");
-	CHECK(acrossCalls == 2);
+	const NodeSettings alone = {{"n", 5}, {"z", "good"}};
+	CHECK(across.check(alone).has_value());
+	CHECK(refusal(across, {{"m", "good"}, {"n", "not a number"}, {"z", 5}}) == R"(n: only without "m")");
+	CHECK(refusal(across, {{"m", "good"}, {"n", nullptr}}) == R"(n: only without "m")");
+	// The row above is checked first, and its absence leaves the row's own kind to be looked at.
+	CHECK(refusal(across, {{"m", 5}, {"n", 1}}) == "m: must be good, please");
+	CHECK(refusal(across, {{"n", "not a number"}}) == "n: must be a whole number, 0-9");
 }
 
 TEST_CASE("Checked settings read a given value, a default, or nothing", "[settings-table]") {
 	const NodeSettings settings = {{"plain", 7}, {"name", "good"}};
 	const auto checked = numbers.check(settings);
 	REQUIRE(checked.has_value());
-	CHECK(checked->wholeNumber("plain") == 7U);
-	CHECK(checked->wholeNumber("measured") == 5U);
-	CHECK(checked->text("name") == "good");
+	CHECK(checked->get<plainRow>() == 7U);
+	CHECK(checked->get<measuredRow>() == 5U);
+	CHECK(checked->get<nameRow>() == "good");
 
 	const NodeSettings empty = NodeSettings::object();
 	const auto bare = numbers.check(empty);
 	REQUIRE(bare.has_value());
-	CHECK_FALSE(bare->wholeNumber("plain").has_value());
-	CHECK(bare->wholeNumber("measured") == 5U);
-	CHECK_FALSE(bare->text("name").has_value());
+	CHECK_FALSE(bare->get<plainRow>().has_value());
+	CHECK(bare->get<measuredRow>() == 5U);
+	CHECK_FALSE(bare->get<nameRow>().has_value());
 
 	const NodeSettings overridden = {{"measured", 20}};
-	CHECK(numbers.check(overridden)->wholeNumber("measured") == 20U);
+	CHECK(numbers.check(overridden)->get<measuredRow>() == 20U);
 }
 
+using NumbersChecked = decltype(numbers)::Checked;
+template <const auto& Row>
+concept readable = requires(const NumbersChecked& checked) { checked.template get<Row>(); };
+
 TEST_CASE("Reading a key the table lacks, or as the other kind, is a type's bug", "[settings-table]") {
+	// A key the table lacks does not compile, and neither does the other kind (compile_fail's read-number-as-text): each
+	// row reads as its own type and no other.
+	static_assert(readable<plainRow> && readable<measuredRow> && readable<nameRow>);
+	static_assert(!readable<aRow> && !readable<zRow>);
 	const NodeSettings settings = {{"plain", 7}, {"name", "good"}};
 	const auto checked = numbers.check(settings);
 	REQUIRE(checked.has_value());
-	CHECK_THROWS_AS(checked->text("nope"), std::logic_error);
-	CHECK_THROWS_AS(checked->wholeNumber("nope"), std::logic_error);
-	CHECK_THROWS_AS(checked->text("plain"), std::logic_error);
-	CHECK_THROWS_AS(checked->wholeNumber("name"), std::logic_error);
-	const NodeSettings null;
-	const auto nothing = none.check(null);
-	REQUIRE(nothing.has_value());
-	CHECK_THROWS_AS(nothing->text("a"), std::logic_error);
+	static_assert(std::same_as<decltype(checked->get<plainRow>()), std::optional<std::uint32_t>>);
+	static_assert(std::same_as<decltype(checked->get<measuredRow>()), const std::uint32_t&>);
+	static_assert(std::same_as<decltype(checked->get<nameRow>()), std::optional<std::string>>);
+	CHECK(checked->get<plainRow>() == 7U);
 }
 
 TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {
@@ -189,4 +197,109 @@ TEST_CASE("kinds() is every key once, in row order", "[settings-table]") {
 	CHECK(keys == std::vector<std::string_view>{"a", "b", "c", "d"});
 	CHECK(three.kinds().data() == three.kinds().data());
 	CHECK(required.kinds()[1].kind == wholeNumber);
+}
+
+TEST_CASE("A text's meaning is asked once and its value read without asking again", "[settings-table]") {
+	const NodeSettings settings = {{"a", "good"}};
+	meaningCalls = 0;
+	const auto checked = one.check(settings);
+	REQUIRE(checked.has_value());
+	CHECK(meaningCalls == 1);
+	CHECK(checked->get<aRow>() == "good");
+	CHECK(checked->get<aRow>() == "good");
+	CHECK(meaningCalls == 1);
+}
+
+namespace {
+
+struct Doubled {
+	int value;
+};
+std::optional<Doubled> doubled(std::string_view text) {
+	if (text != "21") return std::nullopt;
+	return Doubled{42};
+}
+constexpr auto doubledRow = setting::required("x", setting::text<doubled>("21"));
+constexpr auto maybeDoubledRow = setting::optional("y", setting::text<doubled>("21"));
+constexpr SettingsTable<doubledRow, maybeDoubledRow> doubledTable{"t"};
+
+} // namespace
+
+TEST_CASE("A row reads as its type", "[settings-table]") {
+	const NodeSettings settings = {{"x", "21"}};
+	const auto checked = doubledTable.check(settings);
+	REQUIRE(checked.has_value());
+	static_assert(std::same_as<decltype(checked->get<doubledRow>()), const Doubled&>);
+	static_assert(std::same_as<decltype(checked->get<maybeDoubledRow>()), std::optional<Doubled>>);
+	CHECK(checked->get<doubledRow>().value == 42);
+	CHECK_FALSE(checked->get<maybeDoubledRow>().has_value());
+	CHECK(refusal(doubledTable, {{"x", "22"}}) == "x: must be 21");
+}
+
+TEST_CASE("Checked settings own their values, past the table and the settings", "[settings-table]") {
+	const auto checked = SettingsTable<aRow, measuredRow>{"t"}.check(NodeSettings{{"a", "good"}, {"measured", 7}});
+	REQUIRE(checked.has_value());
+	CHECK(checked->get<aRow>() == "good");
+	CHECK(checked->get<measuredRow>() == 7U);
+}
+
+namespace {
+
+class NoPorts final : public ear::NodeConfig {
+public:
+	const ear::Ports& ports() const override { return ports_; }
+	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "not started in these tests"});
+	}
+
+private:
+	ear::Ports ports_;
+};
+
+/// Counts every call of make, and refuses when told to.
+class CountingType final : public ear::NodeTypeOf<numbers> {
+public:
+	mutable int made = 0;
+	mutable NodeName madeFor;
+	bool refuse = false;
+
+private:
+	MadeConfig make(const NodeName& node, const Checked& settings) const override {
+		++made;
+		madeFor = node;
+		if (refuse) return std::unexpected("make says no to " + std::to_string(*settings.get<plainRow>()));
+		return std::make_unique<const NoPorts>();
+	}
+};
+
+} // namespace
+
+TEST_CASE("A type's name, kinds and parse come from its table", "[settings-table]") {
+	const CountingType type;
+	const ear::NodeType& asType = type;
+	CHECK(asType.name() == "t");
+	CHECK(asType.settingKinds().data() == numbers.kinds().data());
+	CHECK(asType.settingKinds().size() == numbers.kinds().size());
+	const auto refused = asType.parse("node", {{"unknown", 1}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(refused.error().node == "node");
+	CHECK(refused.error().detail == "unknown key unknown");
+	CHECK(asType.parse("node", NodeSettings::object()).has_value());
+}
+
+TEST_CASE("A refusal never reaches make, and a refusal from make carries the node", "[settings-table]") {
+	CountingType type;
+	CHECK_FALSE(type.parse("node", {{"plain", 99}}).has_value());
+	CHECK(type.made == 0);
+
+	CHECK(type.parse("node", {{"plain", 3}}).has_value());
+	CHECK(type.made == 1);
+	CHECK(type.madeFor == "node");
+
+	type.refuse = true;
+	const auto refused = type.parse("other", {{"plain", 3}});
+	REQUIRE_FALSE(refused.has_value());
+	CHECK(type.made == 2);
+	CHECK(refused.error().node == "other");
+	CHECK(refused.error().detail == "make says no to 3");
 }

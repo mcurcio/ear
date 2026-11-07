@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 
+#include "all_types.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/nodes/card.hpp"
@@ -21,15 +22,14 @@ using ear::NodeSettings;
 
 constexpr std::string_view accepted = "(accepted)";
 
-/// Both folders are nullptr: parse never opens them, and these tests start no node.
 const std::map<std::string, std::unique_ptr<const ear::NodeType>, std::less<>>& types() {
 	static const auto made = [] {
 		std::map<std::string, std::unique_ptr<const ear::NodeType>, std::less<>> all;
 		all.emplace("white", ear::nodes::makeWhiteNodeType());
-		all.emplace("file", ear::nodes::makeFileNodeType(nullptr));
+		all.emplace("file", ear::nodes::makeFileNodeType(ear::test::recordingsFolder()));
 		all.emplace("card", ear::nodes::makeCardNodeType());
 		all.emplace("rtp", ear::nodes::makeRtpNodeType());
-		all.emplace("sendspin", ear::nodes::makeSendspinNodeType(nullptr));
+		all.emplace("sendspin", ear::nodes::makeSendspinNodeType(ear::test::configFolder()));
 		return all;
 	}();
 	return made;

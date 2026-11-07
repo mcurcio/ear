@@ -4,12 +4,10 @@
 // channels arrive on the inside inputs "from_card_1".. and pass straight through to the outputs
 // "capture.1"... The card is named only by a CardId, so no user text reaches ALSA.
 #include <algorithm>
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 
 #include "ear/core/settings_table.hpp"
@@ -18,28 +16,13 @@
 namespace ear::nodes {
 namespace {
 
-constexpr std::string_view typeName = "card";
-constexpr std::string_view cardKey = "card";
-constexpr std::string_view playbackKey = "playback";
-constexpr std::string_view captureKey = "capture";
 constexpr std::uint32_t maxChannels = 64;
-using enum SettingKind;
-constexpr SettingsTable table{
-	typeName,
-	std::array{
-		SettingRule{.key = cardKey,
-                    .kind = text,
-                    .required = true,
-                    .mustBe = "an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)",
-                    .means = [](std::string_view value) { return CardId::parse(value).has_value(); }},
-		SettingRule{
-			.key = playbackKey, .kind = wholeNumber, .low = 0, .high = maxChannels, .unit = "channels", .byDefault = 0},
-		SettingRule{.key = captureKey,
-                    .kind = wholeNumber,
-                    .low = 0,
-                    .high = maxChannels,
-                    .unit = "channels",
-                    .byDefault = 0}}};
+constexpr auto cardRow = setting::required(
+	"card",
+	setting::text<CardId::parse>("an ALSA card id, 1-15 characters of [A-Za-z0-9_-] (as in /proc/asound/cards)"));
+constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, maxChannels, "channels"), 0);
+constexpr auto captureRow = setting::defaulted("capture", setting::number(0, maxChannels, "channels"), 0);
+constexpr SettingsTable<cardRow, playbackRow, captureRow> table{"card"};
 
 /// Copies play.i to to_card_i and from_card_j to capture.j. With the framework's order
 /// (inputs then insideInputs, outputs then insideOutputs): inputs are play then from_card,
@@ -104,22 +87,14 @@ private:
 	Ports ports_;
 };
 
-class CardType final : public NodeType {
-public:
-	std::string_view name() const override { return typeName; }
-
-	std::span<const SettingDeclaration> settingKinds() const override { return table.kinds(); }
-
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName& node, const NodeSettings& settings) const override {
-		auto checked = table.check(settings);
-		if (!checked) return std::unexpected(InvalidSettings{node, std::move(checked.error())});
-		const std::uint32_t playback = *checked->wholeNumber(playbackKey);
-		const std::uint32_t capture = *checked->wholeNumber(captureKey);
+class CardType final : public NodeTypeOf<table> {
+	MadeConfig make(const NodeName&, const Checked& settings) const override {
+		const std::uint32_t playback = settings.get<playbackRow>();
+		const std::uint32_t capture = settings.get<captureRow>();
 		if (playback == 0 && capture == 0) {
-			return std::unexpected(InvalidSettings{node, "playback or capture: at least one must be above 0"});
+			return std::unexpected(std::string("playback or capture: at least one must be above 0"));
 		}
-		return std::make_unique<const CardConfig>(*CardId::parse(*checked->text(cardKey)), playback, capture);
+		return std::make_unique<const CardConfig>(settings.get<cardRow>(), playback, capture);
 	}
 };
 

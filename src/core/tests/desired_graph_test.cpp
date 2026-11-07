@@ -10,13 +10,14 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/settings_table.hpp"
 
 using namespace ear;
 using json = nlohmann::json;
 
 namespace {
 
-/// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid.
+/// A node whose ports are fixed.
 class TestConfig final : public NodeConfig {
 public:
 	explicit TestConfig(Ports ports) : ports_(std::move(ports)) {}
@@ -29,46 +30,46 @@ private:
 	Ports ports_;
 };
 
-class TestType final : public NodeType {
+constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
+constexpr SettingsTable<levelRow> sourceTable{"source"};
+constexpr SettingsTable<levelRow> sinkTable{"sink"};
+constexpr SettingsTable<levelRow> brokenTable{"broken"};
+
+/// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid: its table declares no such key.
+template <const auto& Table> class TestType final : public NodeTypeOf<Table> {
 public:
-	TestType(std::string name, Ports ports) : name_(std::move(name)), ports_(std::move(ports)) {}
-	std::string_view name() const override { return name_; }
-	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName& node, const NodeSettings& settings) const override {
-		if (settings.contains("bad")) return std::unexpected(InvalidSettings{node, "bad is not a setting"});
+	explicit TestType(Ports ports) : ports_(std::move(ports)) {}
+
+private:
+	MadeConfig make(const NodeName&, const typename NodeTypeOf<Table>::Checked&) const override {
 		return std::make_unique<TestConfig>(ports_);
 	}
 
-private:
-	static constexpr SettingDeclaration kinds[] = {{"level", SettingKind::wholeNumber}};
-	std::string name_;
 	Ports ports_;
 };
 
+/// Any text at all.
+std::optional<std::string> anyText(std::string_view text) { return std::string(text); }
+
+constexpr auto cardRow = setting::optional("card", setting::text<anyText>("text"));
+constexpr auto playbackRow = setting::defaulted("playback", setting::number(0, 64), 0);
+constexpr SettingsTable<cardRow, playbackRow> cardTable{"card"};
+
 /// A sound-card-like type: {"card": <text>, "playback": <n>} declares inputs play.1..play.<n>,
 /// so a new channel count changes its ports.
-class CardType final : public NodeType {
-public:
-	std::string_view name() const override { return "card"; }
-	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName&, const NodeSettings& settings) const override {
-		const auto playback = static_cast<std::uint32_t>(settings.value("playback", 0));
-		return std::make_unique<TestConfig>(Ports{{{Direction::input, "play", numbered(playback)}}});
+class CardType final : public NodeTypeOf<cardTable> {
+	MadeConfig make(const NodeName&, const Checked& settings) const override {
+		return std::make_unique<TestConfig>(Ports{{{Direction::input, "play", numbered(settings.get<playbackRow>())}}});
 	}
-
-private:
-	static constexpr SettingDeclaration kinds[] = {{"card", SettingKind::text}, {"playback", SettingKind::wholeNumber}};
 };
 
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
 	types.push_back(std::make_unique<CardType>());
-	types.push_back(std::make_unique<TestType>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
-	types.push_back(std::make_unique<TestType>("sink", Ports{{{Direction::input, "record", {"left", "right"}}}}));
-	types.push_back(
-		std::make_unique<TestType>("broken", Ports{{{Direction::input, "x", {"a"}}, {Direction::output, "x", {"a"}}}}));
+	types.push_back(std::make_unique<TestType<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
+	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}));
+	types.push_back(std::make_unique<TestType<brokenTable>>(
+		Ports{{{Direction::input, "x", {"a"}}, {Direction::output, "x", {"a"}}}}));
 	return types;
 }
 
@@ -156,7 +157,7 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 		const auto result = f.graph.plan(std::vector<NodeSpec>{{"noise", "source", {{"bad", true}}}}, {});
 		const auto& invalid = planErrorOf<InvalidSettings>(result);
 		CHECK(invalid.node == "noise");
-		CHECK(invalid.detail == "bad is not a setting");
+		CHECK(invalid.detail == "unknown key bad");
 		CHECK(f.recorder.nodes.size() == 1);
 		CHECK(f.graph.nodes().at(0).spec == noiseSpec);
 	}
@@ -164,7 +165,7 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 
 TEST_CASE("plan throws a logic error for a type that declares a port name twice", "[desired_graph]") {
 	Fixture f;
-	CHECK_THROWS_AS(f.graph.plan(std::vector<NodeSpec>{{"odd", "broken", {}}}, {}), std::logic_error);
+	CHECK_THROWS_AS(f.graph.plan(std::vector<NodeSpec>{{"odd", "broken", json::object()}}, {}), std::logic_error);
 	CHECK(f.recorder.nodes.empty());
 }
 
@@ -195,7 +196,7 @@ TEST_CASE("The catalogue finds types by name and refuses two types with one name
 	CHECK(catalogue.find("pink") == nullptr);
 
 	auto types = testTypes();
-	types.push_back(std::make_unique<TestType>("sink", Ports{{{Direction::input, "in", {"a"}}}}));
+	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "in", {"a"}}}}));
 	CHECK_THROWS_AS(NodeCatalogue{std::move(types)}, std::invalid_argument);
 }
 
@@ -253,7 +254,7 @@ TEST_CASE("A node no longer wanted goes after each of its routes, and the name c
 	                   "sub nodeAdded noise", "sub routeAdded noise:noise.mono -> rec:record.left"});
 
 	SECTION("a node with no routes is removed alone") {
-		apply(f.graph, {{"noise", "source", {{"level", 2}}}, hissSpec, recSpec, {"lone", "source", {}}},
+		apply(f.graph, {{"noise", "source", {{"level", 2}}}, hissSpec, recSpec, {"lone", "source", json::object()}},
 		      {noiseToFl, hissToFl});
 		f.log.clear();
 		apply(f.graph, {{"noise", "source", {{"level", 2}}}, hissSpec, recSpec}, {noiseToFl, hissToFl});
@@ -295,7 +296,7 @@ TEST_CASE("A node name is 1-64 characters of letters, digits, '_' and '-'", "[de
 		CHECK(planErrorOf<InvalidName>(f.graph.plan(std::vector<NodeSpec>{{name, "source", {}}}, {})).node == name);
 	}
 	CHECK(f.log.empty());
-	apply(f.graph, {{"noise-1_A", "source", {}}, {std::string(64, 'z'), "source", {}}}, {});
+	apply(f.graph, {{"noise-1_A", "source", json::object()}, {std::string(64, 'z'), "source", json::object()}}, {});
 	CHECK(f.log.size() == 2);
 }
 
@@ -456,8 +457,9 @@ TEST_CASE("plan refuses a wanted graph the catalogue or the ports refuse, and ch
 		CHECK(errorCode(plan.error()) == "duplicate-node");
 	}
 	SECTION("the first error found, nodes before routes") {
-		const auto plan = f.graph.plan(std::vector<NodeSpec>{noiseSpec, {"x.y", "source", {}}, {"z", "nope", {}}},
-		                               std::vector<Route>{{{"gone", "noise.mono"}, {"noise", "noise.mono"}}});
+		const auto plan =
+			f.graph.plan(std::vector<NodeSpec>{noiseSpec, {"x.y", "source", json::object()}, {"z", "nope", {}}},
+		                 std::vector<Route>{{{"gone", "noise.mono"}, {"noise", "noise.mono"}}});
 		CHECK(planErrorOf<InvalidName>(plan).node == "x.y");
 	}
 	SECTION("each node and route error") {

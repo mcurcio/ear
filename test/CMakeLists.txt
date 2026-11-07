@@ -16,6 +16,23 @@ function(ear_catch_tests target)
 	catch_discover_tests(${target} EXTRA_ARGS --warn NoTests)
 endfunction()
 
+# ear_compile_check(<name> <source> [<flag>...]): compiles <source> (syntax only) against ear_core's headers as a test.
+function(ear_compile_check name source)
+	add_test(NAME ${name}
+		COMMAND "${CMAKE_CXX_COMPILER}" ${CMAKE_CXX23_STANDARD_COMPILE_OPTION} -w -fsyntax-only
+			"-I$<JOIN:$<TARGET_PROPERTY:ear_core,INTERFACE_INCLUDE_DIRECTORIES>,;-I>" ${ARGN} "${source}"
+		COMMAND_EXPAND_LISTS)
+endfunction()
+
+# ear_compile_fail(<name> <source> <case> <regex>): <source> with EAR_CASE_<case> defined must be refused for the reason
+# <regex> names. A case that compiles prints nothing and fails, and so does a wrong reason; a broken include is what
+# the plain ear_compile_check of the same source catches. A '-' in <case> is '_' in the macro.
+function(ear_compile_fail name source case regex)
+	string(MAKE_C_IDENTIFIER "${case}" macro)
+	ear_compile_check(${name} "${source}" -DEAR_CASE_${macro})
+	set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+
 # The ear binary starts, loads its shared libraries and prints its options.
 add_test(NAME ear_help COMMAND ear --help)
 add_test(NAME ear_help_lists_config COMMAND ear --help)

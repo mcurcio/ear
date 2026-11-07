@@ -10,6 +10,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/graph_view.hpp"
+#include "ear/core/settings_table.hpp"
 
 using namespace ear;
 
@@ -46,26 +47,31 @@ struct Config final : NodeConfig {
 	}
 };
 
-struct Type final : NodeType {
-	std::string name_;
-	Ports ports;
-	bool handoff;
-	Type(std::string n, Ports p, bool h = false) : name_(std::move(n)), ports(std::move(p)), handoff(h) {}
-	std::string_view name() const override { return name_; }
-	std::span<const SettingDeclaration> settingKinds() const override { return kinds; }
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings> parse(const NodeName&,
-	                                                                        const NodeSettings&) const override {
-		return std::make_unique<Config>(ports, handoff);
+constexpr auto seedRow = setting::optional("seed", setting::number(0, 100));
+constexpr SettingsTable<seedRow> sourceTable{"source"};
+constexpr SettingsTable<seedRow> recorderTable{"recorder"};
+constexpr SettingsTable<seedRow> cardTable{"card"};
+
+template <const auto& Table> class Type final : public NodeTypeOf<Table> {
+public:
+	explicit Type(Ports ports, bool handoff = false) : ports_(std::move(ports)), handoff_(handoff) {}
+
+private:
+	MadeConfig make(const NodeName&, const typename NodeTypeOf<Table>::Checked&) const override {
+		return std::make_unique<Config>(ports_, handoff_);
 	}
-	static constexpr SettingDeclaration kinds[] = {{"seed", SettingKind::wholeNumber}};
+
+	Ports ports_;
+	bool handoff_;
 };
 
 std::vector<std::unique_ptr<const NodeType>> types() {
 	std::vector<std::unique_ptr<const NodeType>> all;
-	all.push_back(std::make_unique<Type>("source", Ports{{{Direction::output, "noise", {"mono"}}}}));
-	all.push_back(std::make_unique<Type>("recorder", Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
-	all.push_back(std::make_unique<Type>(
-		"card", Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
+	all.push_back(std::make_unique<Type<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
+	all.push_back(
+		std::make_unique<Type<recorderTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
+	all.push_back(std::make_unique<Type<cardTable>>(
+		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
 	return all;
 }
 
@@ -156,6 +162,7 @@ struct Fixture {
 	}
 };
 
+const NodeSettings noSettings = NodeSettings::object();
 const Route noiseToFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
 const Route noiseToFr{{"noise", "noise.mono"}, {"rec", "record.right"}};
 
@@ -170,7 +177,7 @@ void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::v
 
 TEST_CASE("The graph read joins the wanted graph with node and route status", "[graph_status]") {
 	Fixture f;
-	apply(f.graph, {{"rec", "recorder", {}}, {"noise", "source", {{"seed", 1}}}, {"motu", "card", {}}},
+	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", {{"seed", 1}}}, {"motu", "card", noSettings}},
 	      {noiseToFl, noiseToFr});
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
@@ -188,7 +195,7 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	CHECK(view.types == std::vector<std::string>{"card", "recorder", "source"});
 
 	REQUIRE(view.nodes.size() == 3);
-	CHECK(view.nodes[0].spec == NodeSpec{"motu", "card", {}});
+	CHECK(view.nodes[0].spec == NodeSpec{"motu", "card", noSettings});
 	CHECK(view.nodes[0].state == NodeState::failed);
 	REQUIRE(view.nodes[0].reason.has_value());
 	CHECK(view.nodes[0].reason->detail == "no driver");
@@ -212,12 +219,12 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 
 TEST_CASE("A removed node still stopping is absent, and a re-added name shows the new node", "[graph_status]") {
 	Fixture f;
-	apply(f.graph, {{"rec", "recorder", {}}, {"noise", "source", {}}}, {noiseToFl});
+	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {noiseToFl});
 	f.blocks.events.at("rec")->ready();
 	REQUIRE(f.nodes.status().at(1).name == "rec"); // a commit adds in name order
 	REQUIRE(f.nodes.status().at(1).state == NodeState::running);
 
-	apply(f.graph, {{"noise", "source", {}}}, {});
+	apply(f.graph, {{"noise", "source", noSettings}}, {});
 	REQUIRE(f.nodes.status().size() == 2); // rec waits for its handoff to close
 	CHECK(f.nodes.status().at(1).state == NodeState::stopping);
 
@@ -226,7 +233,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.nodes[0].spec.name == "noise");
 	CHECK(view.routes.empty());
 
-	apply(f.graph, {{"noise", "source", {}}, {"rec", "recorder", {}}}, {});
+	apply(f.graph, {{"noise", "source", noSettings}, {"rec", "recorder", noSettings}}, {});
 	REQUIRE(f.nodes.status().size() == 3); // the old rec, still stopping, comes first
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);

@@ -1,20 +1,15 @@
 #include "settings.hpp"
 
 #include <algorithm>
-#include <array>
 #include <charconv>
 #include <cstddef>
 #include <utility>
 
-#include "ear/core/settings_table.hpp"
 #include "peer_text.hpp"
 
 namespace ear::sendspin {
 namespace {
 
-constexpr std::string_view serverKey = "server";
-constexpr std::string_view portKey = "port";
-constexpr std::string_view nameKey = "name";
 constexpr std::size_t maxHostBytes = 253;
 constexpr std::size_t maxNameBytes = 64;
 constexpr std::string_view scheme = "ws://";
@@ -29,37 +24,6 @@ bool validPort(std::string_view text) noexcept {
 	const auto [stopped, error] = std::from_chars(text.data(), end, port);
 	return error == std::errc{} && stopped == end && port >= 1 && port <= 65535;
 }
-
-bool validName(std::string_view name) noexcept {
-	if (name.empty() || name.size() > maxNameBytes) return false;
-	for (std::size_t at = 0; at < name.size();) {
-		const auto character = characterAt(name, at);
-		if (!character || isControl(character->code)) return false;
-		at += character->bytes;
-	}
-	return true;
-}
-
-using enum SettingKind;
-constexpr SettingsTable table{
-	typeName,
-	std::array{SettingRule{.key = serverKey,
-                           .kind = text,
-                           .mustBe = "ws://<host>[:<port>]/<path>",
-                           .means = [](std::string_view value) { return ServerUrl::parse(value).has_value(); }},
-               SettingRule{.key = portKey,
-                           .kind = wholeNumber,
-                           .low = 1,
-                           .high = 65535,
-                           .byDefault = defaultListenPort,
-                           .across = [](const NodeSettings& settings) -> std::optional<std::string_view> {
-							   if (settings.contains(serverKey)) return R"(port: only without "server")";
-							   return std::nullopt;
-						   }},
-               SettingRule{.key = nameKey,
-                           .kind = text,
-                           .mustBe = "1 to 64 bytes of UTF-8 with no control characters",
-                           .means = validName}}};
 
 } // namespace
 
@@ -84,16 +48,20 @@ std::optional<ServerUrl> ServerUrl::parse(std::string_view text) {
 	return ServerUrl(std::string(text));
 }
 
-std::expected<SendspinSettings, std::string> parseSettings(const NodeName& node, const NodeSettings& settings) {
-	auto checked = table.check(settings);
-	if (!checked) return std::unexpected(std::move(checked.error()));
-	std::optional<ServerUrl> url;
-	if (const auto server = checked->text(serverKey)) url = ServerUrl::parse(*server);
-	return SendspinSettings{.server = std::move(url),
-	                        .port = static_cast<std::uint16_t>(*checked->wholeNumber(portKey)),
-	                        .name = std::string(checked->text(nameKey).value_or(node))};
+std::optional<std::string> parseName(std::string_view text) {
+	if (text.empty() || text.size() > maxNameBytes) return std::nullopt;
+	for (std::size_t at = 0; at < text.size();) {
+		const auto character = characterAt(text, at);
+		if (!character || isControl(character->code)) return std::nullopt;
+		at += character->bytes;
+	}
+	return std::string(text);
 }
 
-std::span<const SettingDeclaration> settingDeclarations() noexcept { return table.kinds(); }
+SendspinSettings settingsFrom(const NodeName& node, const decltype(settingsTable)::Checked& checked) {
+	return SendspinSettings{.server = checked.get<rows::server>(),
+	                        .port = static_cast<std::uint16_t>(checked.get<rows::port>()),
+	                        .name = checked.get<rows::name>().value_or(node)};
+}
 
 } // namespace ear::sendspin

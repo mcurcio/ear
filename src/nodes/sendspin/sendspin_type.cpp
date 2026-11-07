@@ -98,22 +98,15 @@ private:
 	Ports ports_{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}};
 };
 
-class SendspinType final : public NodeType {
+class SendspinType final : public NodeTypeOf<settingsTable> {
 public:
 	explicit SendspinType(std::shared_ptr<const folder::ConfinedFolder> folder) : folder_(std::move(folder)) {}
 
-	std::string_view name() const override { return typeName; }
-
-	std::span<const SettingDeclaration> settingKinds() const override { return settingDeclarations(); }
-
-	std::expected<std::unique_ptr<const NodeConfig>, InvalidSettings>
-	parse(const NodeName& node, const NodeSettings& settings) const override {
-		auto parsed = parseSettings(node, settings);
-		if (!parsed) return std::unexpected(InvalidSettings{node, std::move(parsed.error())});
-		return std::make_unique<const SendspinConfig>(folder_, claims_, node, std::move(*parsed));
+private:
+	MadeConfig make(const NodeName& node, const Checked& settings) const override {
+		return std::make_unique<const SendspinConfig>(folder_, claims_, node, settingsFrom(node, settings));
 	}
 
-private:
 	std::shared_ptr<const folder::ConfinedFolder> folder_; // the graph file folder: each node's key file
 	std::shared_ptr<PortClaims> claims_ = std::make_shared<PortClaims>();
 };
@@ -125,10 +118,7 @@ namespace ear::nodes {
 
 std::unique_ptr<const NodeType> makeSendspinNodeType(std::shared_ptr<const folder::ConfinedFolder> folder) {
 	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
-	if (folder) {
-		for (const std::string& failure : sendspin::narrowKeyFiles(*folder))
-			std::cerr << "sendspin: " << failure << '\n';
-	}
+	for (const std::string& failure : sendspin::narrowKeyFiles(*folder)) std::cerr << "sendspin: " << failure << '\n';
 	return std::make_unique<const sendspin::SendspinType>(std::move(folder));
 }
 
