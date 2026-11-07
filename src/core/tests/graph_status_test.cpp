@@ -14,7 +14,8 @@
 
 using namespace ear;
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace graph_status_test {
 
 struct SilentCode final : AudioCode {
 	void prepare(const AudioFormat&) override {}
@@ -41,7 +42,7 @@ struct Config final : NodeConfig {
 	StartResult start(StartContext& context) const override {
 		auto run = std::make_unique<Run>();
 		if (handoff) context.acquire(HandoffRequest{"record", 64, &run->consumer});
-		return Started{
+		return StartResult{
 			std::make_unique<SilentCode>(),
 			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
 				return std::move(run);
@@ -186,7 +187,8 @@ void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::v
 	REQUIRE(graph.commit(std::move(*plan)).has_value());
 }
 
-} // namespace
+} // namespace graph_status_test
+using namespace graph_status_test;
 
 TEST_CASE("The graph read joins the wanted graph with node and route status", "[graph_status]") {
 	Fixture f;

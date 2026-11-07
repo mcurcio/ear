@@ -12,6 +12,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -23,6 +24,8 @@
 #include <vector>
 
 #include <boost/program_options.hpp>
+
+#include <unistd.h>
 
 #include "ear/all_node_types/all_node_types.hpp"
 #include "ear/config/graph_file_keeper.hpp"
@@ -69,6 +72,33 @@ public:
 
 private:
 	ear::output::OutputWriter& writer_;
+};
+
+/// The recording kind's adapter (docs/design/node-framework.md section 7.3): files made beneath the recordings folder,
+/// which no node type holds. Glue only, as WriterLines is: ear_folder and ear_core do not see each other.
+class ConfinedRecordings final : public ear::RecordingAdapter {
+public:
+	explicit ConfinedRecordings(ear::folder::ConfinedFolder folder) : folder_(std::move(folder)) {}
+	std::expected<std::unique_ptr<ear::RecordingFile>, std::string> open(const ear::NodeName&,
+	                                                                     const std::string& path) override {
+		auto made = folder_.create(path);
+		if (!made) return std::unexpected(std::move(made.error().detail));
+		return std::make_unique<Recording>(*made);
+	}
+
+private:
+	class Recording final : public ear::RecordingFile {
+	public:
+		explicit Recording(int fd) noexcept : fd_(fd) {}
+		Recording(const Recording&) = delete;
+		Recording& operator=(const Recording&) = delete;
+		~Recording() override { ::close(fd_); }
+		int descriptor() const noexcept override { return fd_; }
+
+	private:
+		int fd_;
+	};
+	ear::folder::ConfinedFolder folder_;
 };
 
 /// Stops the capture before the encoder it feeds is destroyed: what the pipes and the engine's log still hold is
@@ -182,10 +212,7 @@ int main(int argc, char** argv) {
 	// ear.conf is read once here, on the main thread, before the keeper's thread starts. Its two
 	// format lines set the engine when both read; otherwise the flags do (the file's own values then
 	// show as pending restart).
-	const ear::NodeCatalogue catalogue(ear::nodes::allNodeTypes(
-		{.recordings = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*recordings)),
-	     .config = config,
-	     .log = &log}));
+	const ear::NodeCatalogue catalogue(ear::nodes::allNodeTypes({.config = config, .log = &log}));
 	auto first = ear::config::GraphFileKeeper::load(*config, catalogue);
 	const ear::AudioFormat format = first.format().value_or(ear::AudioFormat{*flagRate, *flagBlock});
 
@@ -215,7 +242,8 @@ int main(int argc, char** argv) {
 
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
-	ear::ResourceRegistry resources(cards, receivers, handoffs);
+	ConfinedRecordings recordingFiles(std::move(*recordings));
+	ear::ResourceRegistry resources(cards, receivers, handoffs, recordingFiles);
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
 	                              reconciler);

@@ -15,7 +15,8 @@
 using namespace ear;
 using json = nlohmann::json;
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace desired_graph_test {
 
 /// A node whose ports are fixed.
 class TestConfig final : public NodeConfig {
@@ -133,7 +134,8 @@ template <class Error> const Error& planErrorOf(const std::expected<Plan, Comman
 	return std::get<Error>(result.error());
 }
 
-} // namespace
+} // namespace desired_graph_test
+using namespace desired_graph_test;
 
 TEST_CASE("A wanted node of a known type is added once and told once", "[desired_graph]") {
 	Fixture f;

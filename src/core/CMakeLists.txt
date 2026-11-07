@@ -16,6 +16,7 @@ add_library(ear_core STATIC
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
+	run_requests.cpp
 	settings_table.cpp
 	sound_card.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
@@ -39,13 +40,25 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
+	include/ear/core/run_requests.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sound_card.hpp
-	include/ear/core/timers.hpp)
+	include/ear/core/timers.hpp
+	include/ear/core/type_spec.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTS)
+	# ear_type_harness: running a node type without PipeWire (ear/testing/, docs/design/node-framework.md section 7.6),
+	# for each type's own tests (ear_node_type() links it) and the all-type tests. Test support, so built with the tests
+	# only; like ear_core it starts no thread of its own and touches no file.
+	add_library(ear_type_harness STATIC testing/node_harness.cpp)
+	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+		include/ear/testing/node_harness.hpp
+		include/ear/testing/type_harness.hpp)
+	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
+	target_link_libraries(ear_type_harness PUBLIC ear_core)
+
 	add_executable(ear_core_tests
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
@@ -58,9 +71,10 @@ if(BUILD_TESTS)
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
-		tests/sound_card_test.cpp)
-	target_link_libraries(ear_core_tests PRIVATE ear_core ear_catch_main)
-	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets)
+		tests/sound_card_test.cpp
+		tests/type_spec_test.cpp)
+	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_catch_main)
+	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
 
 	# What must not compile, each with the reason it must not: tests/compile_fail/settings_table_bad.cpp says what each
@@ -107,4 +121,33 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
 	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
+
+	# What must not compile about a type spec, Io and the harness (docs/design/node-framework.md sections 7.1 and 9.2):
+	# tests/compile_fail/type_spec_bad.cpp says what each case is.
+	set(bad_spec "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/type_spec_bad.cpp")
+	ear_compile_check(ear_type_spec_compile_fail_control "${bad_spec}")
+	function(ear_type_spec_compile_fail case regex)
+		ear_compile_fail(ear_type_spec_compile_fail_${case} "${bad_spec}" ${case} "${regex}")
+	endfunction()
+	ear_type_spec_compile_fail(io-bank-the-spec-lacks "Io takes only its spec's banks")
+	ear_type_spec_compile_fail(io-write-into-input "assignment of read-only location")
+	ear_type_spec_compile_fail(io-misspelt-bank "'outt' was not declared in this scope")
+	ear_type_spec_compile_fail(io-not-a-bank "no match for 'operator\\[\\]'")
+	ear_type_spec_compile_fail(ports-bank-the-spec-lacks "ports\\(\\) names only its spec's banks")
+	ear_type_spec_compile_fail(ports-bank-left-out "ports\\(\\) gives every bank of its spec, each once")
+	ear_type_spec_compile_fail(ports-bank-twice "ports\\(\\) gives every bank of its spec, each once")
+	ear_type_spec_compile_fail(pass-through-backwards "a pass-through copies an input bank to an output bank")
+	ear_type_spec_compile_fail(bank-name-invalid "a bank's name is 1 or more of")
+	ear_type_spec_compile_fail(banks-named-twice "a type's banks have unique names")
+	ear_type_spec_compile_fail(process-may-throw "a code's process is void process")
+	ear_type_spec_compile_fail(behaviour-without-ports "a behaviour has static Members<spec> ports")
+	ear_type_spec_compile_fail(check-wrong-result "a behaviour's check is static std::expected")
+	ear_type_spec_compile_fail(check-takes-mutable-settings "a behaviour's check is static std::expected")
+	ear_type_spec_compile_fail(prepare-wrong-signature "a code's prepare is void prepare")
+	ear_type_spec_compile_fail(release-may-throw "a code's release is void release\\(\\) noexcept")
+	ear_type_spec_compile_fail(spec-in-unnamed-namespace "a spec is declared in a named namespace")
+	ear_type_spec_compile_fail(row-in-unnamed-namespace "a table's rows are declared in a named namespace")
+	ear_type_spec_compile_fail(spec-not-named-for-folder "a type's table is named for its folder")
+	ear_type_spec_compile_fail(harness-bank-the-spec-lacks "the harness takes only its spec's banks")
+	ear_type_spec_compile_fail(harness-output-as-input "input\\(\\) takes an input bank")
 endif()

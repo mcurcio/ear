@@ -2,7 +2,8 @@
 // S1; delayFrames by its erratum 22; PortBank and Ports' banks by batch2.md section 11's erratum of 2026-11-06; NodeType
 // answering from one table by its erratum "NodeType, 2026-11-06"; StartContext, the closed list of resource requests,
 // named inside banks, the pass-through, the two-phase start and the run object by docs/design/node-framework.md
-// sections 7.2 and 7.3, slice 1). Change it only through a design page and a re-cut, never a local edit.
+// sections 7.2 and 7.3, slice 1; StartResult, the recording file and codes written against a spec by its slice 2).
+// Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -132,9 +133,15 @@ struct HandoffRequest {
 	std::uint32_t capacityFrames;
 	HandoffConsumer* consumer;
 };
+/// A recording file (docs/design/node-framework.md section 7.3, slice 2): `path`, relative to the recordings folder,
+/// created or truncated beneath it only (no "..", no symlink out, no subfolder made). The run gets its descriptor,
+/// valid until the run is freed (I5 step 5), after its handoffs closed; the framework closes it.
+struct RecordingRequest {
+	std::string path;
+};
 /// Every kind of resource a run can acquire: a closed list, on purpose, since a kind changes what the framework
 /// promises (docs/design/node-framework.md section 7.3). Each kind has one adapter (node_host.hpp).
-using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest>;
+using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest, RecordingRequest>;
 /// What a run tells, from any of its threads; never blocks. Told on the main loop in order, and only to the run that
 /// wrote it: nothing after its close's `closed`, and nothing of an older run lands on a newer one
 /// (docs/design/node-framework.md section 6, I6).
@@ -161,14 +168,18 @@ public:
 	void acquire(const RtpReceiverRequest& request) { acquireResource(request); }
 	/// A handoff (HandoffRequest); its writer for the run's code. Ready at once.
 	RtWriter& acquire(const HandoffRequest& request) { return *std::get<RtWriter*>(acquireResource(request)); }
+	/// A recording file (RecordingRequest): its descriptor, or why it cannot be opened (the type fails its start).
+	std::expected<int, std::string> acquire(const RecordingRequest& request) {
+		return std::get<std::expected<int, std::string>>(acquireResource(request));
+	}
 	/// The run's events, until its close's `closed`; may be kept by the run's threads. (Kept on the start context
 	/// until sendspin builds its run in the recipe, slice 3.)
 	virtual InsidesEvents& events() = 0;
 
 protected:
 	~StartContext() = default;
-	/// What an acquire hands back: nothing, or a handoff's writer.
-	using Acquired = std::variant<std::monostate, RtWriter*>;
+	/// What an acquire hands back: nothing, a handoff's writer, or a recording's descriptor or why it has none.
+	using Acquired = std::variant<std::monostate, RtWriter*, std::expected<int, std::string>>;
 	/// Every engine object one run makes is named "<node>.<suffix>"; a second request with a suffix already taken in
 	/// this run, a bank the node does not have or one of the wrong reach or direction throws std::logic_error (a type
 	/// bug): docs/design/node-framework.md section 6, I9.
@@ -200,13 +211,21 @@ struct BankPair {
 	std::string from;
 	std::string to;
 };
-/// What runs on the realtime thread for one run: a type's own AudioCode, or the framework's pass-through between
-/// banks (outputs no pair names are silent). The pass-through is resolved against the node's ports when the run starts;
-/// a pair naming a bank the node lacks, of the wrong direction or of another size throws std::logic_error there.
+/// A type's code written against its spec (type_spec.hpp: `void process(Io<spec>, const GraphCycle&) noexcept`), not
+/// an AudioCode: erased once, by eraseSpecCode, which type_spec.hpp defines (a type that names its code includes it).
+template <class Code>
+concept SpecCode = requires { &Code::process; } && !std::derived_from<Code, AudioCode> && std::move_constructible<Code>;
+template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code);
+/// What runs on the realtime thread for one run: a type's own code (an AudioCode, or a code written against its spec),
+/// or the framework's pass-through between banks (outputs no pair names are silent). The pass-through is resolved
+/// against the node's ports when the run starts; a pair naming a bank the node lacks, of the wrong direction or of
+/// another size throws std::logic_error there.
 class RunCode {
 public:
 	template <std::derived_from<AudioCode> Code> RunCode(std::unique_ptr<Code> code) noexcept
 		: code_(std::move(code)) {} // NOLINT: implicit on purpose
+	template <SpecCode Code> RunCode(Code code)
+		: code_(eraseSpecCode(std::move(code))) {} // NOLINT: implicit on purpose
 	static RunCode passThrough(std::vector<BankPair> pairs);
 	/// The type's own code; null for a pass-through.
 	std::unique_ptr<AudioCode>& own() noexcept { return code_; }
@@ -221,13 +240,33 @@ private:
 inline RunCode passThrough(std::vector<BankPair> pairs) { return RunCode::passThrough(std::move(pairs)); }
 /// Builds the run object once every resource is ready, or fails the node (startFailed).
 using RunRecipe = std::move_only_function<std::expected<std::unique_ptr<RunObject>, FailureReason>(Ready&)>;
-/// What a start that acquired everything returns: the run's code, which drives the block at once, and optionally the
-/// recipe of its run object, called once every resource is ready; the node is running once it returned.
-struct Started {
-	RunCode code;
-	RunRecipe recipe = nullptr;
+/// What `start` returns (docs/design/node-framework.md section 7.2): a failure (the node fails startFailed with its
+/// detail), or the run's code, which drives the block at once, and optionally the recipe of its run object, called once
+/// every resource is ready; the node is running once it returned.
+class StartResult {
+public:
+	StartResult(RunCode code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
+		: started_(Started{std::move(code), std::move(recipe)}) {}
+	template <std::derived_from<AudioCode> Code>
+	StartResult(std::unique_ptr<Code> code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
+		: StartResult(RunCode(std::move(code)), std::move(recipe)) {}
+	template <SpecCode Code> StartResult(Code code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
+		: StartResult(RunCode(std::move(code)), std::move(recipe)) {}
+	StartResult(std::unexpected<FailureReason> failure) : started_(std::move(failure)) {} // NOLINT: implicit on purpose
+	bool failed() const noexcept { return !started_.has_value(); }
+	/// Only when failed().
+	FailureReason& failure() { return started_.error(); }
+	/// Only when not failed().
+	RunCode& code() { return started_->code; }
+	RunRecipe& recipe() { return started_->recipe; }
+
+private:
+	struct Started {
+		RunCode code;
+		RunRecipe recipe;
+	};
+	std::expected<Started, FailureReason> started_;
 };
-using StartResult = std::expected<Started, FailureReason>;
 /// One node's checked settings; made only by its type's parse().
 class NodeConfig {
 public:
@@ -248,7 +287,10 @@ struct SettingDeclaration {
 	SettingKind kind;
 };
 class AnySettingsTable; // settings_table.hpp
-class CheckedSettings;  // settings_table.hpp
+namespace spec_detail {
+template <const auto& Spec, class Behaviour> class SpecNodeType; // type_spec.hpp
+}
+class CheckedSettings; // settings_table.hpp
 /// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
 using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>;
 /// One node type. Its name, its settings' kinds and their checking all answer from the one table NodeTypeOf
@@ -267,7 +309,8 @@ public:
 	std::span<const SettingDeclaration> settingKinds() const noexcept;
 
 private:
-	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive
+	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
+	template <const auto& Spec, class Behaviour> friend class spec_detail::SpecNodeType;
 	explicit NodeType(const AnySettingsTable& table) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;
