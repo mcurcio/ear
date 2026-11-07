@@ -1565,6 +1565,8 @@ file capability (section 7).
   folder (`file` reads it) and the graph file folder (`sendspin` reads it), and the others read neither. `file.hpp` and
   `sendspin.hpp` no longer include `confined_folder.hpp`, and ear_core still depends on nothing new (it forward-declares
   `ConfinedFolder`). A node type's folder is never null: `main.cpp` always passes both, and the tests pass real folders.
+  (Superseded in part by `docs/design/node-framework.md` section 13, "Slice 2 as built": `NodeFolders` no longer holds
+  the recordings folder, and only `sendspin`'s factory still takes it; every other type's takes no argument.)
   (2) `main.cpp` no longer lists the types: CMake finds each folder in `src/nodes/` (looked for again on every build) and
   generates `allNodeTypes(const NodeFolders&)` in the library `ear_all_node_types` (`src/all_node_types/`, outside
   `src/nodes/`, which holds node types and nothing else), which `main.cpp` and the all-type tests call and link alone. The

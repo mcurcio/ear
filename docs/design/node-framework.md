@@ -894,18 +894,37 @@ until slice 3. Where it differs from sections 7.1, 7.2, 7.3, 7.6 and 9.2, and wh
   twice in a bank is a `std::logic_error` when the ports are made (at parse). The layout check at `prepare` (`Io<spec>::resolve`,
   a `std::logic_error`) guards a code run against ports that are not its spec's, which only a type bug or a hand-made
   config can give.
-- **7.1, 7.2: `TypeSpec` has a hidden third parameter**, `Unique`, defaulted to a lambda's type, new at each spec and
-  local to its file. GCC 14 gives a template instantiated with a reference to an object in an unnamed namespace external
-  (weak) linkage, named by the object's qualified name, so every type's `Io<(anonymous namespace)::spec>::resolve`,
-  `Members<…>::ports` and the like were one symbol across files, and the linker kept one type's for all: the all-type
-  tests crashed. A spec whose type is local to its file makes those instantiations local. For the same reason the type
-  `makeNodeType` makes derives from `NodeType` itself (a friend, as `NodeTypeOf` is), handing it the spec's table at run
-  time, not from `NodeTypeOf<spec.settings>`; it keeps the static check that the table is named for its folder.
+- **7.1, 7.6: a type's spec, rows and behaviour live in its private header, in its own named namespace.** GCC 14 gives
+  a template instantiated with a reference to an object in an unnamed namespace external (weak) linkage, named by the
+  object's qualified name (a function pointer argument is not affected), so every type's
+  `Io<(anonymous namespace)::spec>::resolve`, `Members<…>::ports` and the like were one symbol across files, and the
+  linker kept one type's for all: the all-type tests crashed. The same held for tables: `SettingsTable<(anonymous
+  namespace)::pathRow>` and `NodeTypeOf<(anonymous namespace)::cardTable>` of two files were one symbol (two of
+  `ear_core_tests`' files each had a `cardTable`). A first fix, a hidden `Unique` lambda parameter on `TypeSpec`, covered
+  only spec-keyed templates and kept specs out of the type's own tests. So each type declares its rows, banks, spec and
+  behaviour `inline constexpr` in `src/nodes/<type>/<type>_spec.hpp`, in `ear::nodes::<type>`, included by `<type>.cpp`
+  and by its tests (`ear_node_type()` puts the folder on the tests' include path), which run it through
+  `TypeHarness<spec, Behaviour>` by the same bank handles; what needs a library only the type links is declared there
+  and defined in `<type>.cpp` (file's `start`). Named, every mangled name is the type's own. `SettingsTable`,
+  `NodeTypeOf`, `Io`, `Members` and `makeNodeType` refuse at compile time an object in an unnamed namespace
+  (`linkage::named`, `settings_table.hpp`, which reads the compiler's own spelling of the argument), so the mistake
+  cannot come back silently. The type `makeNodeType` makes still derives from `NodeType` itself (a friend, as
+  `NodeTypeOf` is), handing it the spec's table at run time, not from `NodeTypeOf<spec.settings>`; it keeps the static
+  check that the table is named for its folder.
 - **7.2: the code.** A code is any struct with `void process(Io<spec>, const GraphCycle&) noexcept`, and optionally
-  `prepare(const AudioFormat&)` and `release()`; its spec is read from `process`'s signature, and `RunCode` and
-  `StartResult` take it directly (`return WhiteCode{};`), erasing it once into an `AudioCode`. `AudioCode::prepare` is
-  not told the ports, so the config `makeNodeType` made binds the erased code to the node's ports after `start`
-  returns, and `prepare` resolves the layout from them; a spec code run by any other config refuses at `prepare`.
+  `void prepare(const AudioFormat&)` and `void release() noexcept`; its spec is read from `process`'s signature, and
+  `RunCode` and `StartResult` take it directly (`return WhiteCode{};`), erasing it once into an `AudioCode`.
+  `AudioCode::prepare` is not told the ports, so the config `makeNodeType` made binds the erased code to the node's
+  ports after `start` returns, and `prepare` resolves the layout from them; a spec code run by any other config refuses
+  at `prepare`. 7.1 promises a bank of another type does not compile; for whole codes that holds only at start: a
+  behaviour's `start` returning a code written against another spec compiles (StartResult erases it) and is a
+  `std::logic_error` at start, before the code drives anything. A behaviour's `check` and a code's `prepare` and
+  `release` are found by their names and then held to exactly these signatures at compile time, so a near miss (a
+  `check` taking its settings by non-const reference, a `release` that may throw) is refused rather than never called;
+  a misspelt name is still not found.
+- **7.1: a bank handle is its name, direction and reach.** Another type's bank with all three is the same handle and
+  compiles in `Io` (resolved by name against this node's ports, so sound); only a bank the spec lacks is refused, and
+  the compile-fail cases are named for that (`io-bank-the-spec-lacks`).
 - **7.2: `StartResult` is a class**, a failure or the run's code and optional recipe (`failed()`, `failure()`, `code()`,
   `recipe()`), built from a code, a `RunCode` or `std::unexpected(FailureReason{...})`. Slice 1's `Started` is gone.
 - **7.3: the recording kind.** `RecordingRequest{path}` joins the closed list; `acquire` returns
@@ -918,11 +937,18 @@ until slice 3. Where it differs from sections 7.1, 7.2, 7.3, 7.6 and 9.2, and wh
   store diagnostics) replaces it; `recordings` went. Every other type's function takes no argument, and the generated
   list calls each as it is declared.
 - **7.6: the harness.** `NodeHarness` runs any `NodeType` (the all-type tests get theirs from the generated list) and
-  `TypeHarness<spec, Behaviour>` adds buffers by bank handle; both step `process` over buffers the harness owns, with
+  `TypeHarness<spec, Behaviour>`, which every written type's own tests use, adds buffers by bank handle; both step `process` over buffers the harness owns, with
   every output first filled with NaN so an unwritten sample shows. Handoffs hand each write straight to their
-  consumer; recordings come from a `RecordingAdapter` the test gives. It captures notes and `lost`; actions, parameter
-  gestures, status, events, log records and diagnostics wait for the slices that make them. `sendspin` is not run
-  through it yet (`runsInHarness` in `test/nodes/all_types.hpp`): its start still builds its worker.
+  consumer (never full, so a full ring's drops are NodeHost's tests', not a type's); recordings come from a
+  `RecordingAdapter` the test gives. What an acquire checks and how an outside resource is named (`requestedBank`,
+  `outsideSuffix`, `ear/core/run_requests.hpp`) is one code for NodeHost and the harness, so they cannot disagree. It
+  captures notes and `lost`; actions, parameter gestures, status, events, log records and diagnostics wait for the
+  slices that make them. `sendspin` is not run through it yet (`notYetInHarness` in `test/nodes/all_types.hpp`, which a
+  new type does not touch): its start still builds its worker.
+- **6, I5: a run's recordings are its last member**, after the recipe and the run object, so a run destroyed without
+  its teardown (a host freed before `stopAll` finished) frees file's `WavWriter`, which closes its `SNDFILE` on the
+  descriptor, before the descriptor closes. `ResourceRegistry`'s three-adapter constructor, which refuses every
+  recording, is for hosts that run no `file` node, tests among them; `main.cpp` always gives the folder's adapter.
 
 ## 14. Gate answers
 
