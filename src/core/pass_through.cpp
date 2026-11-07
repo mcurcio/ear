@@ -24,7 +24,8 @@ public:
 
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle&) noexcept override {
-		for (const Copy& copy : copies_) std::ranges::copy(inputs[copy.input].first(frames), outputs[copy.output].begin());
+		for (const Copy& copy : copies_)
+			std::ranges::copy(inputs[copy.input].first(frames), outputs[copy.output].begin());
 		for (const std::size_t output : silent_) std::ranges::fill(outputs[output].first(frames), 0.0F);
 	}
 
