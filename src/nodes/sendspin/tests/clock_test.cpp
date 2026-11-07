@@ -544,8 +544,9 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 	}));
 	judge.restartRun();
 
-	// Losing the card loses only its latency (what the node's frames are dated by), so the library may correct, a frame
-	// per chunk: a chunk is about five blocks, so three in a row hold it.
+	// Losing the card cuts the audio path but leaves its latency (PipeWire never tells the block that the last link went,
+	// so the downstream latency the node's frames are dated by stays, stale). Any correction the library makes comes from
+	// the cut, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
 	CHECK(rig.waiter.until(
 		[&] {
 			judge.read();

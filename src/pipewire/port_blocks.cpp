@@ -93,8 +93,8 @@ public:
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
 		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()),
 		  inputPeers_(inputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
-		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
-		  inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
+		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)), inputHeard_(inputs_.size(), false),
+		  outputHeard_(outputs_.size(), false), inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
 		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -229,20 +229,24 @@ private:
 	}
 
 	/// Main thread: a latency the linked ports report on one of the block's ports. pw_filter tells only the far
-	/// side's (an input's upstream, an output's downstream) and, under custom latency, does nothing else with it.
+	/// side's (an input's upstream, an output's downstream) and, under custom latency, does nothing else with it. A
+	/// port that has heard one has a peer; a null param (none) leaves it with none, so its bank's latency leaves it out.
 	static void onParamChanged(void* data, void* port, std::uint32_t id, const spa_pod* param) {
 		auto* self = static_cast<FilterPortBlock*>(data);
 		if (id != SPA_PARAM_Latency || port == nullptr) return;
-		const auto heard = [&](std::vector<void*>& ports, std::vector<spa_latency_info>& peers, spa_direction farSide) {
+		const auto heard = [&](std::vector<void*>& ports, std::vector<spa_latency_info>& peers,
+		                       std::vector<bool>& reported, spa_direction farSide) {
 			const auto found = std::ranges::find(ports, port);
 			if (found == ports.end()) return false;
+			const auto index = static_cast<std::size_t>(found - ports.begin());
 			spa_latency_info info = noLatency(farSide);
 			if (param != nullptr && (spa_latency_parse(param, &info) < 0 || info.direction != farSide)) return true;
-			peers[static_cast<std::size_t>(found - ports.begin())] = info;
+			peers[index] = info;
+			reported[index] = param != nullptr;
 			return true;
 		};
-		if (heard(self->inputPorts_, self->inputPeers_, SPA_DIRECTION_OUTPUT) ||
-		    heard(self->outputPorts_, self->outputPeers_, SPA_DIRECTION_INPUT)) {
+		if (heard(self->inputPorts_, self->inputPeers_, self->inputHeard_, SPA_DIRECTION_OUTPUT) ||
+		    heard(self->outputPorts_, self->outputPeers_, self->outputHeard_, SPA_DIRECTION_INPUT)) {
 			self->retell();
 		}
 	}
@@ -257,11 +261,14 @@ private:
 		return {found.first, found.ports.size()};
 	}
 
-	/// Every port of `bank`'s peers combined: what lies beyond the bank.
-	static spa_latency_info combined(const std::vector<spa_latency_info>& peers, BankSpan bank, spa_direction side) {
+	/// The peers of `bank`'s ports combined: what lies beyond the bank. A port with no peer is no path, so it is left
+	/// out (as pw_impl_port_recalc_latency combines only a port's links), and a bank with none comes to zero.
+	static spa_latency_info combined(const std::vector<spa_latency_info>& peers, const std::vector<bool>& reported,
+	                                 BankSpan bank, spa_direction side) {
 		spa_latency_info info{};
 		spa_latency_info_combine_start(&info, side);
-		for (std::size_t i = bank.first; i < bank.first + bank.count; ++i) spa_latency_info_combine(&info, &peers[i]);
+		for (std::size_t i = bank.first; i < bank.first + bank.count; ++i)
+			if (reported[i]) spa_latency_info_combine(&info, &peers[i]);
 		spa_latency_info_combine_finish(&info);
 		return info;
 	}
@@ -292,14 +299,15 @@ private:
 			const Latency internal = internalOf(bank.name);
 			spa_latency_info told{};
 			if (bank.direction == Direction::output) {
-				const Latency beyond = frames(combined(outputPeers_, at, SPA_DIRECTION_INPUT));
+				const Latency beyond = frames(combined(outputPeers_, outputHeard_, at, SPA_DIRECTION_INPUT));
 				for (std::size_t i = at.first; i < at.first + at.count; ++i)
 					downstream_[i].store(packed(beyond), std::memory_order_release);
 				// Upstream of an output: what reaches the paired inputs, plus the run's own.
 				spa_latency_info_combine_start(&told, SPA_DIRECTION_OUTPUT);
 				for (const BankPair& pair : plan_.pairs) {
 					if (pair.to != bank.name) continue;
-					const spa_latency_info upstream = combined(inputPeers_, span(pair.from), SPA_DIRECTION_OUTPUT);
+					const spa_latency_info upstream =
+						combined(inputPeers_, inputHeard_, span(pair.from), SPA_DIRECTION_OUTPUT);
 					spa_latency_info_combine(&told, &upstream);
 				}
 			} else {
@@ -307,7 +315,8 @@ private:
 				spa_latency_info_combine_start(&told, SPA_DIRECTION_INPUT);
 				for (const BankPair& pair : plan_.pairs) {
 					if (pair.from != bank.name) continue;
-					const spa_latency_info downstream = combined(outputPeers_, span(pair.to), SPA_DIRECTION_INPUT);
+					const spa_latency_info downstream =
+						combined(outputPeers_, outputHeard_, span(pair.to), SPA_DIRECTION_INPUT);
 					spa_latency_info_combine(&told, &downstream);
 				}
 			}
@@ -333,6 +342,7 @@ private:
 	                   std::size_t /*size*/, void* userData) {
 		auto* self = static_cast<FilterPortBlock*>(userData);
 		self->code_.store(*static_cast<AudioCode* const*>(data), std::memory_order_release);
+		self->fresh_ = true; // the new code's first cycle is a discontinuity to it
 		return 0;
 	}
 
@@ -344,16 +354,24 @@ private:
 		const auto frames = static_cast<std::uint32_t>(clock.duration);
 		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a resync.
 		const bool sameDriver = self->cycles_ > 0 && clock.id == self->lastDriver_;
-		const bool discontinuity = !sameDriver || clock.position != self->nextPosition_;
+		// A new code's first cycle, and the cycle after one too large to run, are discontinuities to the code too.
+		const bool discontinuity =
+			!sameDriver || clock.position != self->nextPosition_ || self->fresh_ || self->skipped_;
 		if (sameDriver && clock.position > self->nextPosition_) ++self->xruns_;
+		self->fresh_ = false;
+		self->skipped_ = frames > self->maxBlock_;
 		++self->cycles_;
 		self->lastDriver_ = clock.id;
 		self->nextPosition_ = clock.position + clock.duration;
 		if (frames <= self->maxBlock_) {
 			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock (docs/design/node-framework.md
-			// section 10); both clocks are read together here, so a late wake cancels out.
+			// section 10); both clocks are read together here, so a late wake cancels out. The raw read sits between two
+			// monotonic ones, and the offset is taken from their midpoint, so a preemption between reads skews it by
+			// half at most (node-driver.c, get_nsec_offset).
+			const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
 			const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
-			const std::int64_t mono = nowNs(CLOCK_MONOTONIC);
+			const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
+			const std::int64_t mono = monoBefore + (monoAfter - monoBefore) / 2;
 			const auto startNs = static_cast<std::int64_t>(clock.nsec);
 			for (std::size_t i = 0; i < self->downstreamNow_.size(); ++i)
 				self->downstreamNow_[i] = unpacked(self->downstream_[i].load(std::memory_order_acquire));
@@ -436,6 +454,8 @@ private:
 	std::uint32_t lastDriver_ = 0;
 	std::uint64_t nextPosition_ = 0;
 	std::uint64_t xruns_ = 0;
+	bool fresh_ = false;   // drive() installed a code since the last cycle (data loop only)
+	bool skipped_ = false; // the last cycle was too large to run
 	// Latency: each output's downstream, published by the main thread for the realtime side (packed), and the copy
 	// a cycle hands its code; then, on the main thread only, what each port's peers report, what each port told them
 	// last, and the run's plan.
@@ -443,6 +463,8 @@ private:
 	std::vector<Latency> downstreamNow_;
 	std::vector<spa_latency_info> inputPeers_;  // upstream of each input
 	std::vector<spa_latency_info> outputPeers_; // downstream of each output
+	std::vector<bool> inputHeard_;              // whether each input has a peer that reported
+	std::vector<bool> outputHeard_;
 	std::vector<spa_latency_info> inputTold_;
 	std::vector<spa_latency_info> outputTold_;
 	LatencyPlan plan_;

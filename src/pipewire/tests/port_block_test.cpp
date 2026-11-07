@@ -797,6 +797,7 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	const std::int64_t cycleNs = std::int64_t{kBlock} * 1000000000 / kRate;
 	CHECK(log.at(0).cycle.discontinuity); // the first cycle the block runs
 	std::size_t jumps = 0;
+	std::size_t forward = 0;
 	for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
 		const auto& seen = log.at(i);
 		INFO("cycle " << i);
@@ -807,11 +808,20 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 		CHECK(seen.cycle.nextNs - seen.cycle.startNs == Approx(cycleNs).epsilon(0.1));
 		CHECK(seen.downstreamSize == 2); // one per output: out.a, out.b
 		if (i > 0 && seen.cycle.discontinuity) ++jumps;
+		if (i > 0 && seen.cycle.position > log.at(i - 1).cycle.position + log.at(i - 1).frames) ++forward;
 		if (i > 0) CHECK(seen.cycle.xruns >= log.at(i - 1).cycle.xruns);
 	}
-	// A loaded host's stall makes the internal clock resync (a jump, counted as an xrun); a quiet one makes none.
-	CHECK(jumps <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
+	// A loaded host's stall makes the internal clock resync (a jump, and an xrun when it is forward); a quiet one
+	// makes none. A backward resync is a discontinuity but no xrun.
+	CHECK(forward <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
 	CHECK(jumps <= 2);
+
+	// A new code's first cycle is a discontinuity to it, though the clock ran on.
+	CycleLog next(waiter);
+	block->drive(&next);
+	REQUIRE(waiter.until([&] { return next.count() >= 4; }));
+	block->drive(nullptr);
+	CHECK(next.at(0).cycle.discontinuity);
 }
 
 namespace {
@@ -851,32 +861,40 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
-	// source:out -> mid:in, mid's pair in -> thru, and its unpaired bank side -> sink:in; mid:thru -> sink:in.
-	// sink declares 300 frames on its input (a following card would report its buffer there).
-	LatencyProbe sourceProbe(waiter, 2), midProbe(waiter, 2), sinkProbe(waiter, 0);
-	BlockEvents sourceEvents(waiter), midEvents(waiter), sinkEvents(waiter);
+	// source:out -> mid:in, mid's pair in -> thru; mid:thru.1 -> sink:in (thru.2 is linked to nothing), and mid's
+	// unpaired bank side -> other:in. sink declares 300 frames on its input (a following card would report its buffer
+	// there), other 900.
+	LatencyProbe sourceProbe(waiter, 2), midProbe(waiter, 3), sinkProbe(waiter, 0), otherProbe(waiter, 0);
+	BlockEvents sourceEvents(waiter), midEvents(waiter), sinkEvents(waiter), otherEvents(waiter);
 	auto source = blocks.make("source", Ports{{{Direction::output, "out", {"1"}}, {Direction::output, "spare", {"1"}}}},
 	                          kFormat, sourceEvents);
 	source->drive(&sourceProbe);
-	auto mid = blocks.make(
-		"mid",
-		Ports{
-			{{Direction::input, "in", {"1"}}, {Direction::output, "thru", {"1"}}, {Direction::output, "side", {"1"}}}},
-		kFormat, midEvents);
+	auto mid = blocks.make("mid",
+	                       Ports{{{Direction::input, "in", {"1"}},
+	                              {Direction::output, "thru", {"1", "2"}},
+	                              {Direction::output, "side", {"1"}}}},
+	                       kFormat, midEvents);
 	mid->carryLatency(LatencyPlan{{{"in", "thru"}}, {{"in", Latency{10, 20}}}});
 	mid->drive(&midProbe);
 	auto sink = blocks.make("sink", Ports{{{Direction::input, "in", {"1", "2"}}}}, kFormat, sinkEvents);
 	sink->carryLatency(LatencyPlan{{}, {{"in", Latency{300, 300}}}});
 	sink->drive(&sinkProbe);
+	auto other = blocks.make("other", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, otherEvents);
+	other->carryLatency(LatencyPlan{{}, {{"in", Latency{900, 900}}}});
+	other->drive(&otherProbe);
+	// side is linked first, so whatever source hears after thru is linked already holds side's 900 if it leaked.
 	REQUIRE(wiring.link(waiter, {"source", "out.1"}, {"mid", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"mid", "side.1"}, {"other", "in.1"}));
+	REQUIRE(waiter.until([&] { return midProbe.downstream(2) == Latency{900, 900}; }));
 	REQUIRE(wiring.link(waiter, {"mid", "thru.1"}, {"sink", "in.1"}));
-	REQUIRE(wiring.link(waiter, {"mid", "side.1"}, {"sink", "in.2"}));
 
-	// mid's thru and side each see the sink's 300; mid's input tells thru's 300 plus its own 10..20 upstream, and side's
-	// does not reach it. source's spare output is linked to nothing.
-	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
+	// mid's thru sees the sink's 300 (its unlinked thru.2 is no path, so the least stays 300), and side the other's
+	// 900; mid's input tells thru's 300 plus its own 10..20 upstream, and side's 900 does not reach it (a leak would
+	// tell 310..920). source's spare output is linked to nothing.
 	CHECK(waiter.until([&] { return midProbe.downstream(0) == Latency{300, 300}; }));
 	CHECK(waiter.until([&] { return midProbe.downstream(1) == Latency{300, 300}; }));
+	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
+	CHECK(midProbe.downstream(2) == Latency{900, 900});
 	CHECK(sourceProbe.downstream(1) == Latency{});
 
 	// A new plan replaces the last at once: mid unpaired carries nothing through, only its own.
@@ -888,6 +906,7 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	source->drive(nullptr);
 	mid->drive(nullptr);
 	sink->drive(nullptr);
+	other->drive(nullptr);
 }
 
 #if defined(__x86_64__) || defined(__i386__)

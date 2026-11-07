@@ -4,7 +4,9 @@
 #include "ear/pipewire/engine.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <csignal>
+#include <ctime>
 #include <string>
 #include <utility>
 
@@ -78,12 +80,22 @@ int readScheduling(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, co
 	return 0;
 }
 
+/// What flushDenormals is asked: the thread that invoked it, and whether the call ran elsewhere (on the data loop).
+struct DenormalsFlush {
+	pthread_t caller;
+	std::atomic<bool> done{false};
+};
+
 /// Runs on the data loop: the calling thread flushes denormal results to zero and reads denormal inputs as zero (FTZ
 /// and DAZ on x86, FZ on arm64), so a decaying signal never slows process() by orders of magnitude. PipeWire 1.4.2's
 /// cpu.zero.denormals sets them on the main thread instead in this engine (the data loop's setup runs inline there),
-/// and every thread made later inherits them, so it stays unset.
+/// and every thread made later inherits them, so it stays unset. A blocking invoke runs inline on the caller until the
+/// data loop's thread has entered its loop (loop.c treats a loop with no thread yet as its own), so the call does
+/// nothing when it runs on its caller, and says whether it ran on the data loop's thread.
 int flushDenormals(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
-                   std::size_t /*size*/, void* /*userData*/) {
+                   std::size_t /*size*/, void* userData) {
+	auto* flush = static_cast<DenormalsFlush*>(userData);
+	if (pthread_equal(pthread_self(), flush->caller) != 0) return 0; // inline: the loop has not entered yet
 #if defined(__x86_64__) || defined(__i386__)
 	_mm_setcsr(_mm_getcsr() | 0x8040U); // FTZ (bit 15) and DAZ (bit 6)
 #elif defined(__aarch64__)
@@ -92,7 +104,24 @@ int flushDenormals(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, co
 	fpcr |= 1ULL << 24U; // FZ
 	asm volatile("msr fpcr, %0" : : "r"(fpcr));
 #endif
+	flush->done.store(true, std::memory_order_release);
 	return 0;
+}
+
+/// Flushes denormals on the data loop's thread, waiting for that thread to enter its loop: pw_context_new starts it
+/// and returns at once (data-loop.c, pw_data_loop_start), so the first invokes can run inline on this thread, which
+/// flushDenormals leaves alone. Nothing else waits on the thread, so it enters within microseconds; 5 s without it
+/// is an engine that does not run.
+bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
+	DenormalsFlush flush{.caller = pthread_self()};
+	for (int attempt = 0; attempt < 5000 && !flush.done.load(std::memory_order_acquire); ++attempt) {
+		if (pw_data_loop_invoke(dataLoop, &flushDenormals, 0, nullptr, 0, true, &flush) < 0) return false;
+		if (!flush.done.load(std::memory_order_acquire)) {
+			const timespec pause{0, 1'000'000};
+			nanosleep(&pause, nullptr);
+		}
+	}
+	return flush.done.load(std::memory_order_acquire);
 }
 
 /// The clock settings EngineSettings decides. pw_context_new reads them from its own
@@ -168,9 +197,10 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
 		return std::unexpected(
 			EngineError{"cannot start the engine with " + settings.configFile.string() + ": " + spa_strerror(-errno)});
 	}
-	// The context's one data loop runs every process(); its thread already runs, so this waits for it.
-	if (pw_data_loop* dataLoop = pw_context_get_data_loop(impl->context)) {
-		pw_data_loop_invoke(dataLoop, &flushDenormals, 0, nullptr, 0, true, nullptr);
+	// The context's one data loop runs every process().
+	pw_data_loop* dataLoop = pw_context_get_data_loop(impl->context);
+	if (dataLoop == nullptr || !flushDenormalsOnDataThread(dataLoop)) {
+		return std::unexpected(EngineError{"cannot flush denormals on the engine's data thread"});
 	}
 	impl->core = pw_context_connect_self(impl->context, nullptr, 0);
 	if (impl->core == nullptr) {
