@@ -206,7 +206,7 @@ TEST_CASE("Every kind the fixture shows is made, and each record is one line", "
 	const Json records = fixture()["records"];
 	for (const Json& entry : records) kinds.insert(entry["record"]["kind"].get<std::string>());
 	CHECK(kinds == std::set<std::string>{"engine", "control", "node", "note", "route", "graph-file",
-	                                     "graph-file-written", "graph-file-write-failed", "log", "exit"});
+	                                     "graph-file-written", "graph-file-write-failed", "log", "exit", "diagnostic"});
 	Lines lines;
 	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (const auto& call : fixtureCalls()) call(log, lines);
