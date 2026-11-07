@@ -1644,3 +1644,92 @@ TEST_CASE("Step 5 frees the code before the run object it reads, and the config 
 	                   "node net gone dropped=0"});
 	f.stopAll();
 }
+
+namespace {
+
+/// Recordings that log their open and close; "missing/..." is refused as a folder would refuse it.
+struct TestRecordings final : RecordingAdapter {
+	Log& log;
+	explicit TestRecordings(Log& l) : log(l) {}
+	struct File final : RecordingFile {
+		Log& log;
+		int fd;
+		File(Log& l, int d) : log(l), fd(d) {}
+		~File() override { log.push_back("recording closed"); }
+		int descriptor() const noexcept override { return fd; }
+	};
+	std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
+	                                                                const std::string& path) override {
+		log.push_back("recording " + node + " " + path);
+		if (path.starts_with("missing/")) return std::unexpected(std::string("no such folder"));
+		return std::make_unique<File>(log, 42);
+	}
+};
+
+/// Acquires the recording at `path`, then a handoff, as "file" does; fails its start when the recording is refused.
+struct RecordingConfig final : NodeConfig {
+	Log& log;
+	std::string path;
+	Ports ports_ = testPorts();
+	RecordingConfig(Log& l, std::string p) : log(l), path(std::move(p)) {}
+	const Ports& ports() const override { return ports_; }
+	StartResult start(StartContext& c) const override {
+		const auto fd = c.acquire(RecordingRequest{path});
+		if (!fd) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open: " + fd.error()});
+		log.push_back("descriptor " + std::to_string(*fd));
+		auto run = std::make_unique<TestRun>(log);
+		c.acquire(HandoffRequest{"record", 1024, &run->consumer});
+		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::move(run))};
+	}
+};
+
+struct RecordingFixture {
+	Log log;
+	TestBlocks blocks{log};
+	TestHandoffs handoffs{log};
+	TestCards cards{log};
+	TestReceivers receivers{log};
+	TestRecordings recordings{log};
+	ResourceRegistry resources{cards, receivers, handoffs, recordings};
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph{catalogue};
+	QueueExecutor mainLoop;
+	FakeTimers timers;
+	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
+};
+
+} // namespace
+
+TEST_CASE("A recording is opened at start and closed with the run, after its handoff (I5 step 5)",
+          "[node_host][recording]") {
+	RecordingFixture f;
+	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
+	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "descriptor 42"));
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+	f.host.stopAll(f.graph.close(), [] {});
+	f.handoffs.finishOne(0);
+	const auto handoffGone = indexOf(f.log, "handoff destroyed");
+	const auto runGone = indexOf(f.log, "run destroyed");
+	const auto closed = indexOf(f.log, "recording closed");
+	REQUIRE(closed < static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(handoffGone < closed);
+	CHECK(runGone < closed);
+}
+
+TEST_CASE("A recording the folder refuses fails the start, and a registry with no folder refuses every one",
+          "[node_host][recording]") {
+	RecordingFixture f;
+	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "missing/take.wav"));
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::failed);
+	CHECK(f.host.health()[0].reason->detail == "cannot open: no such folder");
+	CHECK(indexOf(f.log, "handoff rec 2 channels") == static_cast<std::ptrdiff_t>(f.log.size()));
+	f.host.stopAll(f.graph.close(), [] {});
+
+	Fixture plain; // its registry was given no recordings
+	plain.add("rec", std::make_shared<RecordingConfig>(plain.log, "take.wav"));
+	REQUIRE(plain.host.health().size() == 1);
+	CHECK(plain.host.health()[0].reason->detail == "cannot open: no recordings folder");
+	plain.stopAll();
+}
