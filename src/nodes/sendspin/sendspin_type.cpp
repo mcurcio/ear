@@ -99,7 +99,7 @@ public:
 		const std::uint32_t rate = context.format().rate;
 		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
 		auto code = run->code(rate, toServer);
-		return Started{
+		return StartResult{
 			std::move(code),
 			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
 				return std::move(run);

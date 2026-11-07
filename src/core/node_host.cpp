@@ -42,7 +42,21 @@ std::string_view outsideSuffix(const OutsideRequest& request) {
 	                  request);
 }
 
+/// The recordings adapter of a registry given none.
+class NoRecordings final : public RecordingAdapter {
+public:
+	std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName&, const std::string&) override {
+		return std::unexpected(std::string("no recordings folder"));
+	}
+};
+
+NoRecordings noRecordings; // stateless
+
 } // namespace
+
+ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers,
+                                   HandoffAdapter& handoffs) noexcept
+	: ResourceRegistry(cards, receivers, handoffs, noRecordings) {}
 
 struct NodeHost::Impl {
 	/// One wanted node and everything it made. Members are declared in reverse teardown order, so destroying a node
@@ -126,6 +140,11 @@ struct NodeHost::Impl {
 								  [&](const RtpReceiverRequest& receiver) -> Acquired {
 									  askOutside(receiver, insideBank(receiver.bank, Direction::input));
 									  return std::monostate{};
+								  },
+								  [&](const RecordingRequest& recording) -> Acquired {
+									  auto opened = host_.resources.adapterFor(recording).open(name_, recording.path);
+									  if (!opened) return std::unexpected(std::move(opened.error()));
+									  return (*run_->recordings.emplace_back(std::move(*opened))).descriptor();
 								  },
 								  [&](const HandoffRequest& handoff) -> Acquired {
 									  const Ports::Bank& bank = ports_.bank(handoff.bank);
@@ -225,7 +244,8 @@ struct NodeHost::Impl {
 			std::shared_ptr<Channel> channel;
 			RunRecipe recipe;
 			std::unique_ptr<RunObject> object;
-			std::unique_ptr<AudioCode> code; // reads the run object, so goes first
+			std::unique_ptr<AudioCode> code;                        // reads the run object, so goes first
+			std::vector<std::unique_ptr<RecordingFile>> recordings; // outlives the handoffs that write them
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
@@ -242,6 +262,7 @@ struct NodeHost::Impl {
 			RunRecipe recipe;
 			std::unique_ptr<AudioCode> code;
 			std::unique_ptr<RunObject> object;
+			std::vector<std::unique_ptr<RecordingFile>> recordings;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 		};
 
@@ -282,20 +303,21 @@ struct NodeHost::Impl {
 				}
 			}();
 			starting_ = false;
-			if (!started) {
-				// No write happened (the block was never driven by this run's code), so the handoffs may go now; the
-				// consumers they were given went with the type's failed start. No outside node was made. The port
-				// block stays; the config goes with the run's teardown.
+			if (started.failed()) {
+				// No write happened (the block was never driven by this run's code), so the handoffs and recordings may
+				// go now; the consumers they were given went with the type's failed start. No outside node was made.
+				// The port block stays; the config goes with the run's teardown.
 				run_->handoffs.clear();
+				run_->recordings.clear();
 				run_->outsideRequests.clear();
 				run_->channel->detach();
 				run_->built = true;
-				if (lifecycle_.insidesFailed(std::move(started.error()))) host_.changed(*this);
+				if (lifecycle_.insidesFailed(std::move(started.failure()))) host_.changed(*this);
 				return;
 			}
-			run_->recipe = std::move(started->recipe);
-			run_->code =
-				started->code.own() ? std::move(started->code.own()) : makePassThrough(ports_, started->code.pairs());
+			run_->recipe = std::move(started.recipe());
+			run_->code = started.code().own() ? std::move(started.code().own())
+			                                  : makePassThrough(ports_, started.code().pairs());
 			run_->code->prepare(host_.format);
 			run_->prepared = true;
 			block_->drive(run_->code.get());
@@ -428,6 +450,7 @@ struct NodeHost::Impl {
 				run_->code.reset();
 				run_->object.reset();
 				run_->recipe = nullptr;
+				run_->recordings.clear();
 				run_.reset();
 			}
 			afterRun();
@@ -442,7 +465,8 @@ struct NodeHost::Impl {
 			const bool objectOpen = runClosing_;
 			// Deliberately never deleted: the run's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(run_->config), std::move(run_->channel), std::move(run_->recipe),
-			                             std::move(run_->code), std::move(run_->object), std::move(run_->handoffs)});
+			                             std::move(run_->code), std::move(run_->object), std::move(run_->recordings),
+			                             std::move(run_->handoffs)});
 			++host_.leakedRuns;
 			run_.reset();
 			runClosing_ = false;

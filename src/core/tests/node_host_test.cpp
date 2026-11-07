@@ -93,7 +93,7 @@ struct TestConfig final : NodeConfig {
 		for (const auto& card : cards) c.acquire(card);
 		for (const auto& receiver : receivers) c.acquire(receiver);
 		if (fail) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open /nope"});
-		return Started{std::make_unique<TestAudioCode>(log), handOver(log, std::move(run))};
+		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::move(run))};
 	}
 };
 
@@ -934,7 +934,7 @@ struct PassConfig final : NodeConfig {
 	              {Direction::output, "out", numbered(2), PortBank::Reach::inside}}};
 	std::vector<BankPair> pairs{{"play", "out"}, {"in", "capture"}};
 	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext&) const override { return Started{passThrough(pairs)}; }
+	StartResult start(StartContext&) const override { return StartResult{passThrough(pairs)}; }
 };
 
 } // namespace
@@ -1013,14 +1013,14 @@ struct ThreadedConfig final : NodeConfig {
 		auto made = std::make_unique<ThreadedRun>(log);
 		made->closeAtOnce = closeAtOnce;
 		for (int i = 0; i < handoffs; ++i) context.acquire(HandoffRequest{"in", 1024, &made->consumer});
-		return Started{std::make_unique<TestAudioCode>(log),
-		               [this, made = std::move(made)](
-						   Ready& ready) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
-						   made->events = &ready.events();
-						   events = made->events;
-						   run = made.get();
-						   return std::move(made);
-					   }};
+		return StartResult{std::make_unique<TestAudioCode>(log),
+		                   [this, made = std::move(made)](
+							   Ready& ready) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+							   made->events = &ready.events();
+							   events = made->events;
+							   run = made.get();
+							   return std::move(made);
+						   }};
 	}
 };
 
@@ -1270,15 +1270,15 @@ struct RecipeConfig final : NodeConfig {
 	StartResult start(StartContext& context) const override {
 		log.push_back("start acquires");
 		context.acquire(motuOut);
-		return Started{std::make_unique<TestAudioCode>(log),
-		               [this](Ready& ready) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
-						   log.push_back("recipe at " + std::to_string(ready.format().rate));
-						   ready.events().say("built");
-						   if (fail)
-							   return std::unexpected(
-								   FailureReason{FailureReason::Code::startFailed, "cannot read the key file"});
-						   return std::make_unique<TestRun>(log);
-					   }};
+		return StartResult{std::make_unique<TestAudioCode>(log),
+		                   [this](Ready& ready) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+							   log.push_back("recipe at " + std::to_string(ready.format().rate));
+							   ready.events().say("built");
+							   if (fail)
+								   return std::unexpected(
+									   FailureReason{FailureReason::Code::startFailed, "cannot read the key file"});
+							   return std::make_unique<TestRun>(log);
+						   }};
 	}
 };
 
@@ -1383,7 +1383,7 @@ struct BlockedConfig final : NodeConfig {
 		auto made = std::make_unique<BlockedRun>(log, release);
 		run = made.get();
 		context.acquire(HandoffRequest{"record", 1024, &made->consumer});
-		return Started{std::make_unique<TestAudioCode>(log), handOver(log, std::move(made))};
+		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::move(made))};
 	}
 };
 
@@ -1628,7 +1628,7 @@ struct ReadingConfig final : NodeConfig {
 	~ReadingConfig() override { log.push_back("config destroyed"); }
 	const Ports& ports() const override { return ports_; }
 	StartResult start(StartContext&) const override {
-		return Started{std::make_unique<ReadingCode>(log), handOver(log, std::make_unique<TestRun>(log))};
+		return StartResult{std::make_unique<ReadingCode>(log), handOver(log, std::make_unique<TestRun>(log))};
 	}
 };
 

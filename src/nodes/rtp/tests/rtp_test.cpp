@@ -1,45 +1,27 @@
-// The "rtp" node type through its NodeType contract, with a fake start context that records the receivers
-// it acquires (docs/design/rtp.md section 3, R1n criteria 1-5). The engine side of a receiver
+// The "rtp" node type through the harness, which records the receivers it acquires (docs/design/rtp.md section 3, R1n
+// criteria 1-5; docs/design/node-framework.md section 7.6). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
 #include <cstdint>
+#include <memory>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "catch2/catch.hpp"
-#include "ear/core/pass_through.hpp"
 #include "ear/nodes/rtp.hpp"
+#include "ear/testing/node_harness.hpp"
 
 namespace {
 
 using Names = std::vector<ear::PortName>;
 using ear::NodeSettings;
 
-/// Records every RTP receiver acquired; any other resource fails the test.
-class RecordingContext final : public ear::StartContext {
-public:
-	explicit RecordingContext(std::uint32_t rate = 48000) : rate_(rate) {}
-	ear::AudioFormat format() const override { return {.rate = rate_, .maxBlock = 256}; }
-	const ear::NodeName& node() const override { return name_; }
-	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for events"); }
-
-	std::vector<ear::RtpReceiverRequest> requests;
-
-protected:
-	Acquired acquireResource(const ear::ResourceRequest& request) override {
-		const auto* receiver = std::get_if<ear::RtpReceiverRequest>(&request);
-		if (receiver == nullptr) throw std::logic_error("rtp acquired something other than an RTP receiver");
-		requests.push_back(*receiver);
-		return std::monostate{};
-	}
-
-private:
-	std::uint32_t rate_;
-	ear::NodeName name_ = "fpp";
-};
+const ear::NodeType& rtpType() {
+	static const auto type = ear::nodes::makeRtpNodeType();
+	return *type;
+}
 
 /// Valid settings: every key, then `change` applied (a null value removes the key).
 NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
@@ -55,24 +37,28 @@ NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
 	return settings;
 }
 
-std::unique_ptr<const ear::NodeConfig> parseOk(const NodeSettings& settings) {
-	auto config = ear::nodes::makeRtpNodeType({})->parse("fpp", settings);
+/// A harness on a node named "fpp" at `graphRate`, whose settings parsed.
+std::unique_ptr<ear::testing::NodeHarness> parseOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
+	auto harness =
+		std::make_unique<ear::testing::NodeHarness>(rtpType(), ear::AudioFormat{graphRate, 256}, nullptr, "fpp");
+	const auto parsed = harness->parse(settings);
 	INFO(settings.dump());
-	if (!config) FAIL("refused: " << config.error().detail);
-	return std::move(*config);
+	if (!parsed) FAIL("refused: " << parsed.error());
+	return harness;
 }
 
 ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	RecordingContext context(graphRate);
-	REQUIRE(parseOk(settings)->start(context).has_value());
-	REQUIRE(context.requests.size() == 1);
-	return context.requests[0];
+	const auto harness = parseOk(settings, graphRate);
+	REQUIRE(harness->start());
+	REQUIRE(harness->requests().size() == 1);
+	REQUIRE(harness->outsideName(0) == "fpp.rtp");
+	return std::get<ear::RtpReceiverRequest>(harness->requests()[0]);
 }
 
 } // namespace
 
 TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and the inside bank from_rtp", "[rtp]") {
-	CHECK(ear::nodes::makeRtpNodeType({})->name() == "rtp");
+	CHECK(rtpType().name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs().empty());
@@ -146,7 +132,7 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 		{settingsWith({{"latencyMs", 1001}}), badLatency},
 		{settingsWith({{"latencyMs", true}}), badLatency},
 	};
-	const auto type = ear::nodes::makeRtpNodeType({});
+	const ear::NodeType* type = &rtpType();
 	for (const auto& [settings, detail] : cases) {
 		INFO(settings.dump());
 		const auto config = type->parse("fpp", settings);
@@ -178,35 +164,27 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 	for (const std::uint32_t channels : {1U, 3U}) {
 		INFO(channels << " channels");
 		constexpr std::uint32_t frames = 200;
-		constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 256};
-		const auto config = parseOk(settingsWith({{"channels", channels}}));
-		RecordingContext context;
-		auto started = config->start(context);
-		REQUIRE(started.has_value());
-		CHECK(started->code.own() == nullptr);
-		const auto made = ear::makePassThrough(config->ports(), started->code.pairs());
-		ear::AudioCode& code = *made;
-		code.prepare(format);
+		const auto harness = parseOk(settingsWith({{"channels", channels}}));
+		REQUIRE(harness->start());
+		CHECK(harness->state() == ear::testing::NodeHarness::State::starting);
+		harness->ready(0);
+		CHECK(harness->state() == ear::testing::NodeHarness::State::running);
 
-		// Inputs: from_rtp.1..N, each its own ramp. Outputs: stream.1..N, primed with a value no
-		// input carries.
-		std::vector<std::vector<float>> in(channels, std::vector<float>(format.maxBlock));
+		// Each from_rtp.i its own ramp; stream.i must carry it.
+		const auto ramp = [](std::uint32_t c, std::uint32_t f) {
+			return static_cast<float>(c + 1) + static_cast<float>(f) / 1000.0F;
+		};
 		for (std::uint32_t c = 0; c < channels; ++c) {
-			for (std::uint32_t f = 0; f < format.maxBlock; ++f) {
-				in[c][f] = static_cast<float>(c + 1) + static_cast<float>(f) / 1000.0F;
-			}
+			const std::span<float> buffer = harness->input("from_rtp." + std::to_string(c + 1));
+			for (std::uint32_t f = 0; f < buffer.size(); ++f) buffer[f] = ramp(c, f);
 		}
-		std::vector<std::vector<float>> out(channels, std::vector<float>(frames, -9.0F));
-		std::vector<std::span<const float>> inSpans;
-		for (const auto& channel : in) inSpans.emplace_back(channel.data(), frames);
-		std::vector<std::span<float>> outSpans;
-		for (auto& channel : out) outSpans.emplace_back(channel);
-		code.process(inSpans, outSpans, frames, ear::GraphCycle{0, 0});
-		code.release();
+		harness->process(ear::GraphCycle{0, 0}, frames);
+		CHECK(harness->unwritten() == 0);
 
 		for (std::uint32_t c = 0; c < channels; ++c) {
 			INFO("from_rtp." << c + 1 << " -> stream." << c + 1);
-			CHECK(out[c] == std::vector<float>(in[c].begin(), in[c].begin() + frames));
+			const std::span<const float> out = harness->output("stream." + std::to_string(c + 1));
+			for (std::uint32_t f = 0; f < frames; ++f) CHECK(out[f] == ramp(c, f));
 		}
 	}
 }

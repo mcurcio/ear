@@ -1,83 +1,58 @@
-// The "white" node type through its NodeType contract (docs/design/m1-white-to-file.md section 3,
-// slice S5 criterion 1). What holds for every type together is test/nodes/node_types_test.cpp's.
+// The "white" node type through the harness (docs/design/m1-white-to-file.md section 3, slice S5 criterion 1;
+// docs/design/node-framework.md section 7.6). What holds for every type together is test/nodes/'s.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <span>
-#include <stdexcept>
 #include <vector>
 
 #include "catch2/catch.hpp"
 #include "ear/nodes/white.hpp"
-
-namespace {
-
-/// White acquires nothing: any resource fails the test.
-class NothingContext final : public ear::StartContext {
-public:
-	explicit NothingContext(ear::AudioFormat format) : format_(format) {}
-	ear::AudioFormat format() const override { return format_; }
-	const ear::NodeName& node() const override { return name_; }
-	ear::InsidesEvents& events() override { throw std::logic_error("white asked for events"); }
-
-protected:
-	Acquired acquireResource(const ear::ResourceRequest&) override {
-		throw std::logic_error("white acquired a resource");
-	}
-
-private:
-	ear::AudioFormat format_;
-	ear::NodeName name_ = "noise";
-};
-
-} // namespace
+#include "ear/testing/node_harness.hpp"
 
 TEST_CASE("White declares one output, noise.mono, and no inputs", "[white]") {
-	const auto type = ear::nodes::makeWhiteNodeType({});
+	const auto type = ear::nodes::makeWhiteNodeType();
 	CHECK(type->name() == "white");
 
 	for (const ear::NodeSettings& settings : {ear::NodeSettings{}, ear::NodeSettings::object()}) {
-		const auto config = type->parse("noise", settings);
-		REQUIRE(config.has_value());
-		CHECK((*config)->ports().inputs().empty());
-		CHECK((*config)->ports().outputs() == std::vector<ear::PortName>{"noise.mono"});
+		ear::testing::NodeHarness harness(*type);
+		REQUIRE(harness.parse(settings));
+		CHECK(harness.ports().inputs().empty());
+		CHECK(harness.ports().outputs() == std::vector<ear::PortName>{"noise.mono"});
 	}
 }
 
 TEST_CASE("White rejects any settings key", "[white]") {
-	const auto type = ear::nodes::makeWhiteNodeType({});
+	const auto type = ear::nodes::makeWhiteNodeType();
 	for (const ear::NodeSettings& settings :
 	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "a.wav"}}, ear::NodeSettings(3)}) {
-		const auto config = type->parse("noise", settings);
-		REQUIRE_FALSE(config.has_value());
-		CHECK(config.error().node == "noise");
-		CHECK_FALSE(config.error().detail.empty());
+		ear::testing::NodeHarness harness(*type);
+		const auto parsed = harness.parse(settings);
+		REQUIRE_FALSE(parsed);
+		CHECK_FALSE(parsed.error().empty());
 	}
 }
 
 TEST_CASE("White fills its output with uniform noise from -1 up to but not including 1", "[white]") {
 	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 480};
-	const auto config = ear::nodes::makeWhiteNodeType({})->parse("noise", {});
-	REQUIRE(config.has_value());
-	NothingContext context{format};
-	auto started = (*config)->start(context);
-	REQUIRE(started.has_value());
-	REQUIRE(started->code.own() != nullptr);
-	CHECK_FALSE(started->recipe); // no run object: white has no threads
-	ear::AudioCode& code = *started->code.own();
-	code.prepare(format);
+	const auto type = ear::nodes::makeWhiteNodeType();
+	ear::testing::NodeHarness harness(*type, format);
+	REQUIRE(harness.parse({}));
+	REQUIRE(harness.start());
+	CHECK(harness.requests().empty()); // it acquires nothing
+	CHECK(harness.state() == ear::testing::NodeHarness::State::running);
+	CHECK(harness.runObject() == nullptr); // no run object: white has no threads
 
-	// One second at the format's rate, block by block, each block primed with a value the
-	// noise cannot produce so an unwritten sample shows up.
+	// One second at the format's rate, block by block; the harness primes every output with NaN, so an unwritten
+	// sample shows up.
 	std::vector<float> samples;
-	std::vector<float> block(format.maxBlock);
 	for (std::uint32_t done = 0; done < format.rate; done += format.maxBlock) {
-		std::ranges::fill(block, 2.0F);
-		const std::span<float> output{block};
-		code.process({}, std::span<const std::span<float>>{&output, 1}, format.maxBlock, ear::GraphCycle{0, 0});
+		harness.process(ear::GraphCycle{0, done}, format.maxBlock);
+		REQUIRE(harness.unwritten() == 0);
+		const std::span<const float> block = harness.output("noise.mono");
 		samples.insert(samples.end(), block.begin(), block.end());
 	}
-	code.release();
+	harness.close();
 
 	REQUIRE(samples.size() == 48000);
 	CHECK(std::ranges::all_of(samples, [](float s) { return s >= -1.0F && s < 1.0F; }));

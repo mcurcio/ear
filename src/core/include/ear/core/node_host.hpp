@@ -1,14 +1,17 @@
 // Frozen interface (docs/design/batch2.md section 4; the outside node by docs/design/rtp.md section 7.1, batch2.md
 // section 11's erratum; NodeNoteListener and the executor by docs/design/sendspin.md section 14, S1; the resource
 // registry with one adapter per kind, NodeHealth, the two-phase start, teardown by dependency, run generations, the close
-// deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1). Change it only
+// deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1; the recording
+// kind by its slice 2). Change it only
 // through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 #include "ear/core/desired_graph.hpp"
@@ -141,21 +144,43 @@ protected:
 };
 using SoundCardAdapter = OutsideAdapter<SoundCardRequest>;
 using RtpReceiverAdapter = OutsideAdapter<RtpReceiverRequest>;
+/// One open recording file (RecordingRequest). Destroying it (main thread) closes it.
+class RecordingFile {
+public:
+	virtual ~RecordingFile() = default;
+	virtual int descriptor() const noexcept = 0;
+};
+/// The recording kind's adapter: the recordings folder, held open from boot.
+class RecordingAdapter {
+public:
+	/// Main thread. `path` created or truncated beneath the folder only; the error is why not (it names no path).
+	virtual std::expected<std::unique_ptr<RecordingFile>, std::string> open(const NodeName& node,
+	                                                                        const std::string& path) = 0;
+
+protected:
+	~RecordingAdapter() = default;
+};
 /// The resource registry (docs/design/node-framework.md section 7.3): one adapter per kind of ResourceRequest, so a new
 /// kind is one adapter here and nothing more in NodeHost's constructor.
 class ResourceRegistry {
 public:
 	/// All outlive the registry.
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs) noexcept
-		: cards_(cards), receivers_(receivers), handoffs_(handoffs) {}
+	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
+	                 RecordingAdapter& recordings) noexcept
+		: cards_(cards), receivers_(receivers), handoffs_(handoffs), recordings_(&recordings) {}
+	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
+	/// node (tests).
+	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs) noexcept;
 	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
 	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
 	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
+	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
 
 private:
 	SoundCardAdapter& cards_;
 	RtpReceiverAdapter& receivers_;
 	HandoffAdapter& handoffs_;
+	RecordingAdapter* recordings_;
 };
 /// How long a run's teardown may wait on other threads (I5 steps 3 and 4) before the framework stops waiting (I5a).
 inline constexpr std::chrono::milliseconds defaultCloseDeadline{10'000};

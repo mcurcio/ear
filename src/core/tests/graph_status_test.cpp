@@ -41,7 +41,7 @@ struct Config final : NodeConfig {
 	StartResult start(StartContext& context) const override {
 		auto run = std::make_unique<Run>();
 		if (handoff) context.acquire(HandoffRequest{"record", 64, &run->consumer});
-		return Started{
+		return StartResult{
 			std::make_unique<SilentCode>(),
 			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
 				return std::move(run);

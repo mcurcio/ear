@@ -41,11 +41,22 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sound_card.hpp
-	include/ear/core/timers.hpp)
+	include/ear/core/timers.hpp
+	include/ear/core/type_spec.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTS)
+	# ear_type_harness: running a node type without PipeWire (ear/testing/, docs/design/node-framework.md section 7.6),
+	# for each type's own tests (ear_node_type() links it) and the all-type tests. Test support, so built with the tests
+	# only; like ear_core it starts no thread of its own and touches no file.
+	add_library(ear_type_harness STATIC testing/node_harness.cpp)
+	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+		include/ear/testing/node_harness.hpp
+		include/ear/testing/type_harness.hpp)
+	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
+	target_link_libraries(ear_type_harness PUBLIC ear_core)
+
 	add_executable(ear_core_tests
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
@@ -58,9 +69,10 @@ if(BUILD_TESTS)
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
-		tests/sound_card_test.cpp)
-	target_link_libraries(ear_core_tests PRIVATE ear_core ear_catch_main)
-	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets)
+		tests/sound_card_test.cpp
+		tests/type_spec_test.cpp)
+	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_catch_main)
+	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
 
 	# What must not compile, each with the reason it must not: tests/compile_fail/settings_table_bad.cpp says what each

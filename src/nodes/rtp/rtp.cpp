@@ -1,16 +1,15 @@
 // The "rtp" node type: one RTP stream received behind a port block (docs/design/rtp.md sections 3 and 7.3,
-// ear/nodes/rtp.hpp; docs/design/node-framework.md section 11). The framework joins the receiver's channels to the
-// inside bank "from_rtp" and passes them straight through to the outputs "stream.1"..: the type writes no audio code.
-// Every setting is checked by the table, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format
-// a closed enum, every number ranged.
+// ear/nodes/rtp.hpp; docs/design/node-framework.md sections 7.1 and 11). The framework joins the receiver's channels to
+// the inside bank "from_rtp" and passes them straight through to the outputs "stream.1"..: the type writes no audio
+// code. Every setting is checked by the table, so nothing reaches PipeWire unparsed: the address is an RtpAddress, the
+// format a closed enum, every number ranged.
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 
-#include "ear/core/settings_table.hpp"
+#include "ear/core/type_spec.hpp"
 #include "ear/nodes/rtp.hpp"
 
 namespace ear::nodes {
@@ -35,55 +34,31 @@ constexpr auto formatRow = setting::required("format", setting::text<encodingOf>
 constexpr auto channelsRow = setting::required("channels", setting::number(1, 64));
 constexpr auto rateRow = setting::optional("rate", setting::number(8000, 192000, "Hz"));
 constexpr auto latencyRow = setting::defaulted("latencyMs", setting::number(1, 1000, "milliseconds"), defaultLatencyMs);
-constexpr SettingsTable<addressRow, portRow, formatRow, channelsRow, rateRow, latencyRow> table{"rtp"};
+constexpr auto stream = bank::output<"stream">;
+constexpr auto fromRtp = bank::insideInput<"from_rtp">;
+constexpr TypeSpec spec{.settings =
+                            SettingsTable<addressRow, portRow, formatRow, channelsRow, rateRow, latencyRow>{"rtp"},
+                        .banks = Banks<stream, fromRtp>{}};
+using Checked = CheckedOf<spec>;
 
-struct RtpSettings {
-	RtpAddress address;
-	std::uint16_t port;
-	RtpEncoding encoding;
-	std::uint32_t channels;
-	std::optional<std::uint32_t> rate; // absent: the graph frequency, taken at start
-	std::uint32_t latencyMs;
-};
-
-class RtpConfig final : public NodeConfig {
-public:
-	explicit RtpConfig(RtpSettings settings)
-		: settings_(std::move(settings)),
-		  ports_{{{Direction::output, "stream", numbered(settings_.channels)},
-	              {Direction::input, "from_rtp", numbered(settings_.channels), PortBank::Reach::inside}}} {}
-
-	const Ports& ports() const override { return ports_; }
-
-	StartResult start(StartContext& context) const override {
-		context.acquire(RtpReceiverRequest{.address = settings_.address,
-		                                   .port = settings_.port,
-		                                   .encoding = settings_.encoding,
-		                                   .rate = settings_.rate.value_or(context.format().rate),
-		                                   .latencyMs = settings_.latencyMs,
-		                                   .bank = "from_rtp"});
-		return Started{passThrough({{"from_rtp", "stream"}})};
+struct Rtp {
+	static Members<spec> ports(const Checked& s) {
+		return {stream(members(s.get<channelsRow>())), fromRtp(members(s.get<channelsRow>()))};
 	}
 
-private:
-	RtpSettings settings_;
-	Ports ports_;
-};
-
-class RtpType final : public NodeTypeOf<table> {
-	MadeConfig make(const NodeName&, const Checked& settings) const override {
-		return std::make_unique<const RtpConfig>(
-			RtpSettings{.address = settings.get<addressRow>(),
-		                .port = static_cast<std::uint16_t>(settings.get<portRow>()),
-		                .encoding = settings.get<formatRow>(),
-		                .channels = settings.get<channelsRow>(),
-		                .rate = settings.get<rateRow>(),
-		                .latencyMs = settings.get<latencyRow>()});
+	static StartResult start(StartContext& context, const Checked& s) {
+		context.acquire(RtpReceiverRequest{.address = s.get<addressRow>(),
+		                                   .port = static_cast<std::uint16_t>(s.get<portRow>()),
+		                                   .encoding = s.get<formatRow>(),
+		                                   .rate = s.get<rateRow>().value_or(context.format().rate),
+		                                   .latencyMs = s.get<latencyRow>(),
+		                                   .bank = std::string(fromRtp.name)});
+		return passThrough({bankPair(fromRtp, stream)});
 	}
 };
 
 } // namespace
 
-std::unique_ptr<const NodeType> makeRtpNodeType(const NodeFolders&) { return std::make_unique<const RtpType>(); }
+std::unique_ptr<const NodeType> makeRtpNodeType() { return makeNodeType<spec, Rtp>(); }
 
 } // namespace ear::nodes
