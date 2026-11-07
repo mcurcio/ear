@@ -308,9 +308,10 @@ route noise:noise.mono desk:play.1;
   channels). The card id is the ALSA name in `/proc/asound/cards` (letters, digits, `-`, `_`, at
   most 15), never an index or an ALSA device string; each count is 0 to 64 (default 0), at least
   one above 0. Inputs `play.1`..`play.N`, outputs `capture.1`..`capture.M`. Its rate is
-  the graph frequency. The card drives the graph's clock only while it works; a card that cannot
-  open or is lost makes the node `failed engine-refused: <detail>`, its routes stay, and the rest
-  of the graph keeps running on the dummy driver. `node.update` with changed settings starts it
+  the graph frequency. The card never drives the graph's clock: ear's internal clock always does,
+  and a linked card follows it, resampled to it (`docs/design/node-framework.md` section 10), so
+  no output is bit-perfect. A card that cannot open or is lost makes the node `failed
+  engine-refused: <detail>`, its routes stay, and the rest of the graph keeps its clock. `node.update` with changed settings starts it
   again; an update with the same settings changes nothing (`graph_file_model.cpp`,
   `desired_graph.cpp`), so with none to change, restart ear.
 - `rtp` receives one RTP stream (`docs/design/rtp.md`), for example `node rtp fpp { address
@@ -477,8 +478,11 @@ How audio moves:
 
 1. `Engine` (`src/pipewire/engine.cpp`) runs PipeWire's engine in-process: its main loop, a
    context loaded from `engine.conf`, and EAR's own connection to it. There is no daemon, no
-   socket and no session manager; a dummy driver clocks the graph at the graph frequency with
-   the block size's frames a cycle (both fixed at boot). The `pipewire-engine` skill covers the
+   socket and no session manager; ear's internal clock, the dummy driver, clocks the graph at the
+   graph frequency with the block size's frames a cycle (both fixed at boot). It is always the
+   driver, whatever links or fails (it joins the blocks' group and outranks every card), and it
+   tracks `CLOCK_MONOTONIC_RAW` (`clock.id = monotonic-raw`), so NTP's slewing never reaches the
+   graph. The data thread flushes denormals to zero. The `pipewire-engine` skill covers the
    configuration and traps.
 2. A node starts (`NodeHost`) block first: `FilterPortBlocks` makes its port block, once for
    the node's life: one always-processing `pw_filter` named by the node's name, with one 32-bit
@@ -494,7 +498,14 @@ How audio moves:
    ready, every resource it acquired and its recipe included (`NodeLifecycle`). Every block
    processes whether routed or not; an unlinked input reads zeros.
 3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
-   per port and the graph cycle (`GraphCycle`: its start and the driver's position). `white` fills its output with noise.
+   per port and the graph cycle (`GraphCycle`, made by the framework: its start on both
+   `CLOCK_MONOTONIC` and `CLOCK_MONOTONIC_RAW`, the driver's position, id and rate against the
+   raw clock, the next cycle's start, an xrun count, whether the clock jumped, and the latency
+   downstream of each output), so no type reads a clock. `white` fills its output with noise.
+   Latency is carried per bank pair (`docs/design/node-framework.md` section 9.4): each block
+   tells its linked ports its banks' latency (a pass-through's pair forwards what lies beyond it,
+   plus what a run declared with `StartContext::declareLatency`: `rtp`'s `latencyMs`,
+   `sendspin`'s feed).
 4. `LiveGraph` reports each port as the engine's registry announces it (node name, port name,
    direction, port id). When both ends of a wanted route are live, the `Reconciler` asks `Links`
    for a link by port ids; the route is `linked` once the link is active, and `pending` again
@@ -510,9 +521,10 @@ How audio moves:
    global id, to the block's inside ports; it is ready once every link is active, and on any
    failure its links and node are torn down before it is reported lost, so the node is `failed
    engine-refused: <detail>`, its block and routes stay. Sound cards (`AlsaSoundCards`): one ALSA
-   adapter node per direction, running once its PCM runs; through the blocks' graph group
-   (`node.group = ear.graph`) a linked card drives every block, and a lost one hands the clock
-   back to the dummy driver at once. RTP receivers (`RtpReceivers`): PipeWire's
+   adapter node per direction, running alone as its own driver until its PCM runs; once linked to
+   its block it follows the internal clock with its own rate match, and its playback latency
+   reaches every block routed to it. A lost one moves no clock. CI's test card has no clock, so
+   its tests turn its rate matching off (`clocklessCardProperties`); a real card keeps it on. RTP receivers (`RtpReceivers`): PipeWire's
    `libpipewire-module-rtp-source` loaded into the engine, running once its socket is bound; it
    follows the graph's clock and resamples the sender to it. The `pipewire-engine` skill has the
    details and traps.
@@ -522,7 +534,8 @@ How audio moves:
    subscribers.
 7. A `sendspin` node's audio code reads the library's decoded audio from a feed (a lock-free ring
    of about 43 ms, the handoff's reverse) and tells the library what played, dated from the
-   cycle's start on the graph's clock, never from when the thread woke (`docs/design/sendspin.md`
+   cycle's start on the raw clock (`GraphCycle::startRawNs`) plus the latency downstream of its
+   outputs (a following card's buffer), never from when the thread woke (`docs/design/sendspin.md`
    section 7). Its inputs go through a handoff to the library.
 8. `file` cannot write a file on the realtime thread. Its audio code writes into a handoff
    (`ThreadHandoffs`, `src/pipewire/handoffs.cpp`): a lock-free ring of interleaved floats (two
@@ -545,12 +558,14 @@ How audio moves:
    `ear.conf` if it is not written yet (a hung disk delays exit without limit).
 
 Not built yet: routes naming a whole bank (the owner, on them, 2026-11-06: "Later (Recommended)"), any grouping of banks in the editor, serving PipeWire's socket, the program supervisor and the `airplay` type, a login
-on port 7777, card retry and hotplug, arm64 images; for the graph file: `@include` (more files than `ear.conf`), a separate writer thread (so an
+on port 7777, card retry and hotplug, arm64 images; for the clock (`docs/design/node-framework.md` section 10): an
+internal clock anchored to one card (that card bit-perfect), a follower watchdog for a frozen card, latency a run reports
+while it runs (only declared at start), and the MOTU checked as a follower; for the graph file: `@include` (more files than `ear.conf`), a separate writer thread (so an
 edit never waits behind a write), undo, and changing the graph frequency or block size while
 ear runs. For `rtp` (`docs/design/rtp.md` section 9): a failure for a port that cannot be
 bound, a "receiving" status, multicast tested, a larger datagram size (`net.mtu`) for many
 channels, SAP discovery, IPv6, an RTP sender. For `sendspin` (`docs/design/sendspin.md` section
-11): volume and mute, line sense, PipeWire's port latency in the clock, the editor showing notes
+11): volume and mute, line sense, the editor showing notes
 and the code, a restart verb on the control port, IPv6, `wss://`, several servers at once,
 choosing the advertised interface, RFC 6762 probing, more than stereo.
 
@@ -563,7 +578,7 @@ out of test names: CMake splits a name at it.
 
 | Executable | What it proves |
 |---|---|
-| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake adapters (restart, removal, sound cards and RTP receivers, both in either order, a lost block, the two-phase start and its recipe, one name per engine object of a run, the pass-through, runs with threads: their notes and `lost` crossing to the main loop, `close`; the teardown invariants of `docs/design/node-framework.md` section 6: the barrier first, a handoff consumer blocked at teardown, a run mid-handler, a late write from an old run, a run that never closes leaked past the close deadline); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses; settings tables and their typed rows. Pure, milliseconds. Beside it, CTest tests that what must not compile is refused for its reason (`src/core/tests/compile_fail/settings_table_bad.cpp`: a bad row, a row or rule made or changed by hand, a misspelt or unlisted row, an unchecked read of an optional row, a type that disagrees with its table or folder). These are the slow part: each runs the compiler, 37 of them about 50 s at one job, and they match the image's GCC's wording, so a compiler bump may need their regexes edited |
+| `ear_core_tests` | Port banks and whole port names (a mis-shaped part refused); the desired graph's checks, plan and commit (event order, a port change as a replacement, stale plans) and errors, observer order, closing; the node state machine (every state against every fact); `NodeHost` with fake adapters (restart, removal, sound cards and RTP receivers, both in either order, a lost block, the two-phase start and its recipe, one name per engine object of a run, the pass-through, a run's latency plan reaching its block, runs with threads: their notes and `lost` crossing to the main loop, `close`; the teardown invariants of `docs/design/node-framework.md` section 6: the barrier first, a handoff consumer blocked at teardown, a run mid-handler, a late write from an old run, a run that never closes leaked past the close deadline); `FrameRing`; the reconciler; levels; the graph read; card ids and RTP addresses; settings tables and their typed rows. Pure, milliseconds. Beside it, CTest tests that what must not compile is refused for its reason (`src/core/tests/compile_fail/settings_table_bad.cpp`: a bad row, a row or rule made or changed by hand, a misspelt or unlisted row, an unchecked read of an optional row, a type that disagrees with its table or folder). These are the slow part: each runs the compiler, 37 of them about 50 s at one job, and they match the image's GCC's wording, so a compiler bump may need their regexes edited |
 | `ear_folder_tests` | The confined folder on real temporary folders: made if missing (never its parents), `create()` beneath only, `read()` and `replaceIf()` refusing symlinks, directories, FIFOs, large files and paths out, replace-if-unchanged keeping the file's mode, a new file's mode under any umask, `restrictMode()`, a folder it cannot write, an inotify watch through `heldPath()`, `requireApart()` (one folder twice, nesting, a symlinked alias) |
 | `ear_node_white_tests` | `white`'s ports and noise statistics |
 | `ear_node_file_tests` | `file` writing exact samples through a fake start context, refusing an unopenable path, absolute and `..` paths (invalid settings) and a symlink out of the recordings folder (at start) |
@@ -572,9 +587,9 @@ out of test names: CMake splits a name at it.
 | `ear_output_tests` | The output thread on real pipes (order, a reader that does not read refused at once, everything written at stop, a closed reader survived) and the capture in its own test program (C streams, iostreams and `write` on descriptors 1 and 2 as lines, a line past its bound cut and marked, a last partial line, a watched descriptor drained on the capture thread, the real descriptors put back, stop past a surviving duplicate of descriptor 2), the queue's byte bound, a bounded spill, and in forked children a crash's last words on the real descriptors (`std::terminate`, `abort`, a fault) |
 | `ear_control_tests` | The JSON-RPC envelope (the spec's examples), commands, events, the graph file's types and encoders, standard output's records (every kind, the framework's `diagnostic` among them, field for field and in order against `output-records.json`, drops counted, a flooding source paced while notes and states get through, bad UTF-8 replaced, one order from many threads), gateway and sessions, all against `test/protocol` (`graph-file.json` included) |
 | `ear_config_tests` | The graph file model (the record's example, each of ear's codes at its place, `@include`, missing and unreadable files, knobly's nesting limit), places in UTF-16 columns, edits at the source (a value changed where it is defined, `shared-definition`, removal with its routes, quoting); the keeper's sequencer stepped by hand on one thread over a real folder (boot offers, accepted and refused edits, both hand-edit collisions, a typo, `graphFile.set`, its own write's watch event, batches, shared writes, write failures, pending restart, stop); the keeper's thread and the whole keeper with inotify |
-| `ear_node_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver, and under the test card (which cannot give 1 ms: `docs/design/sendspin.md` erratum 1) its hard sync's bound, a lost card, a stream ended mid-play |
+| `ear_node_sendspin_tests` | The feed on real threads, PCM, the audio code's clock and skips, the connection watch with fake time, settings (each refusal's exact text), key files on a real folder, port claims and the probe (a real `TIME_WAIT` among them), the mDNS instance's name and its on-link check, what a peer's text becomes on a status line, the notes' rate, capture stamps; through a real engine and the real server, the time filter: within 1 ms on the dummy driver and through a following test card, dated by the card's latency, a lost card leaving the clock alone, a stream ended mid-play |
 | `ear_node_types_tests` | What holds for every type together (`test/nodes/`, which lists no type: it takes them from `allNodeTypes`, as `main.cpp` does): a folder in `src/nodes` makes one type of its own name, the five names, each type's settings table (every key declared once, a value of each kind parses, setting kinds are what `parse` checks) and every refusal's text and order; also, as CTest tests, that configure refuses one node type linking another, in each spelling (a scratch project, `test/nodes/link_refusal/`), and refuses an empty list of types (`test/nodes/no_types/`); and that no file under `src/nodes/` names standard output or error or writes to descriptor 1 or 2 (`test/nodes/standard_output_guard.cmake`, itself tested on each spelling it refuses, `std::print` and `std::println` among them, on look-alikes it lets through, and failing when it would check no file) |
-| `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock and each cycle's `GraphCycle`, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs): driving, channels sample for sample, a card that cannot open, a lost card; RTP receivers fed by a test sender on 127.0.0.1: following the dummy driver, channels by sine fit, L16 at 44100 resampled, a sender restarting with a new SSRC, a lost receiver, a receiver made again at once for the same names; ear's own log: PipeWire's messages from the main thread and the data loop, the context giving it to every plugin, a full ring counted, alsa-lib's errors |
+| `ear_pipewire_tests` | The real in-process engine with no daemon, runtime directory or D-Bus: blocks process unrouted, live ports, a ramp carried sample for sample over a link, the clock and each cycle's `GraphCycle` (both clocks, the driver, its rate, the next start, discontinuities), latency carried per bank pair, denormals flushed in `process`, teardown, SIGTERM; the handoff (order, drops, close, no allocation on the writer); the graph group, `drive`, level windows on the clock, the main-loop executor, the scheduling report; sound cards through a test ALSA card (alsa-lib's file and null PCMs, made clockless): following the internal clock, channels sample for sample, its latency carried through the pass-through, a card that cannot open, a lost card leaving the clock alone; RTP receivers fed by a test sender on 127.0.0.1: following the dummy driver, channels by sine fit, L16 at 44100 resampled, a sender restarting with a new SSRC, a lost receiver, a receiver made again at once for the same names; ear's own log: PipeWire's messages from the main thread and the data loop, the context giving it to every plugin, a full ring counted, alsa-lib's errors |
 | `ear_server_tests` | Port 7777 on real sockets with a fake main loop and gateway: files, Host and Origin, round trips, the 1008 bound, a client that resets, stop with 1001, levels |
 | `ear_system_tests` | The owner's end-to-end tests, through the real `out/ear` on an `ear.conf`, reading its records (`child_process.hpp` matches each record's `msg` lines): white noise recorded to the routed channel only (exact zeros on the other, header finished, `dropped=0`), every line a record with `seq` unbroken; every type's old port names refused as `unknown-port`; a recordings folder it cannot make exits 1, its last record an `exit`; the graph file (the record's example booted, an editor edit announced, applied, answered and written back, a hand edit winning, a hand typo blocking edits until Save fixes it, `ear.conf` as a symlink out and an `@include` out refused, boots with a typo, a refused route or no file running nothing, the fallback flags, overlapping folders exiting 1); an `rtp` node's tone recorded channel for channel, and its silence with no sender; a `sendspin` node against the real server: pairing by a code, a ramp frame for frame in the WAV (the library's clock corrections alone excepted, at most one blended frame per chunk: `checkRamp`, itself tested on hand-made frames, `docs/design/sendspin.md` erratum 42), no audio for a server that trusts without pairing, noise to the server, identity across restarts, 20 wrong rounds and their release, a corrupt key file, no server at all, peers that never answer at a restart or stop, a slow upgrade, listening, mDNS discovery and removal, a server lost and back, a held or shared port, silent sockets held or flooding from its address and others beside a server pairing, waiting on a code and playing, a slow upgrade, a paired server not yet activated, a peer resetting sockets as they close, an upgrade with `Origin`, one dialling and one listening node together, no socket on a dialling node; and through the control port: the scheduling and listening lines and the editor's files, a client's edits heard in the WAV in event order, levels, removal and errors, file paths outside the recordings folder refused with nothing written, edits during stop refused as `stopping`, a sound card node linked |
 | web (vitest, `make web-test`) | The editor's reducer against every `test/protocol` fixture, the graph file's state and the text pane's logic (drafts, stale files, Save, refusals), the reconnecting client with a fake socket, connection rules, levels and layout. No browser; rendering is checked by eye |
@@ -675,7 +690,8 @@ editor's npm packages are pinned by `web/package-lock.json`.
 Repo skills in `.claude/skills/`:
 
 - `pipewire-engine`: running the engine in-process: what `engine.conf` sets and why, the
-  modules, the dummy driver, the graph group, outside nodes (sound cards and the clock, RTP
+  modules, the internal clock (the dummy driver, always driving, tracking the raw clock), the graph
+  group, `GraphCycle`, latency per bank pair and its trap, denormals, outside nodes (sound cards following the clock, RTP
   receivers through rtp-source), `drive`, levels, realtime priority, running without a session
   manager, the traps (xruns on a loaded host among them), and how to bump PipeWire.
   The PipeWire source behind each engine fact is cited in `docs/design/m1-white-to-file.md`

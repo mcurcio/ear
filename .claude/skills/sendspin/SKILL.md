@@ -77,18 +77,24 @@ operate it, and what bites.
 - **The library never touches a realtime thread or PipeWire's main loop.** `notify_audio_played` and `write_audio` take
   mutexes on host; `stop()` and the destructor can wait. So: feed (network to audio), handoff (audio to network), mailboxes
   and a bell.
-- **Audio time is the graph's.** The library is told when frames play from the cycle's start (`GraphCycle::startNs`, moved onto
-  the raw clock), never from when the thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
+- **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
+  (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
+  thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
 - **A skipped cycle counts as played**, or it costs 25 ms: the library sees -5.3 ms, drops a chunk and inserts silence. A
   jump larger than the feed, or backward, is a change of driver (a card joining or lost), not a skip.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
-- **A card's clock.** Joining a card, the position goes from 2.3e10 to 0, and losing it forward by 2.3e10; both are outside the
-  feed's capacity, so neither is a skip. **CI's test card cannot prove 1 ms:** it has no clock of its own and runs the graph about
-  2.1% fast, past the library's ±0.5%, so its test holds the hard sync's bound (5 ms, asserted under 20) and the recovery.
-  Only the dummy driver has shown 1 ms; the real card is a check in `ear-on-talos`.
-- **The output's sync reaches the driving card's buffer**, as far as the card reports it (`position->clock.delay`, in the finish
-  time). A second card, a resampler and anything past the port are left to the output delay in Music Assistant, which the library
-  keeps in the key file. It has never run on a card that reports one: the test card's null PCM says 0.
+- **No card moves the clock** (slice 7, `docs/design/node-framework.md` section 10): the internal clock (the dummy driver)
+  always drives and tracks the raw clock, and a linked card follows it. Before, a card joining sent the position from 2.3e10 to
+  0 and losing it forward by 2.3e10; the code still treats a jump past the feed's capacity, or backward, as no skip, and
+  `GraphCycle` now says `discontinuity` and `driverId` for it. 1 ms holds on the dummy alone and through a following test card
+  (clockless, so no drift); the real card is a check in `ear-on-talos`.
+- **The output's sync reaches the following card's buffer**, as far as the card reports it: the latency downstream of the
+  `from` outputs (`GraphCycle::downstream`), which the card block's pass-through carries back from the card's playback node
+  (one quantum plus its headroom; 256 frames on the test card), in the finish time. Only routed paths count: unrouted, or
+  routed to a `file` node, it is 0. A resampler before the card and anything past the card are left to the output delay in
+  Music Assistant, which the library keeps in the key file. The node declares its feed (0 to its size) as the latency of
+  `from`. PipeWire 1.4.2 never tells a block a port's last link went, so after a card is lost the old latency stays until a
+  new card reports (the `pipewire-engine` skill's latency trap).
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
 - **A listening node on an untrusted network:** sockets that prove nothing give way to newcomers, so holding them keeps no server
