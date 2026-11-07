@@ -34,13 +34,14 @@ TEST_CASE("Each error diagnostic is a line, and warnings are not", "[status_log]
 	broken.diagnostics = {
 		Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}},
 		Diagnostic{Severity::warning, "W3005", "nothing matched", TextPlace{10, 1}},
-		Diagnostic{Severity::error, "ear/include-unsupported", "@include is not supported yet: write the whole graph in ear.conf",
-		           TextPlace{14, 1}},
+		Diagnostic{Severity::error, "ear/include-unsupported",
+	               "@include is not supported yet: write the whole graph in ear.conf", TextPlace{14, 1}},
 	};
 	CHECK(printed({broken, FileChangeCause::disk, 0}) ==
 	      "graph-file disk v3 running=v2\n"
 	      "graph-file error 9:34 E2001: unexpected token: \"}\"\n"
-	      "graph-file error 14:1 ear/include-unsupported: @include is not supported yet: write the whole graph in ear.conf\n");
+	      "graph-file error 14:1 ear/include-unsupported: @include is not supported yet: write the "
+	      "whole graph in ear.conf\n");
 }
 
 TEST_CASE("A refusal, dropped edits, a pending restart and a failed write each have their line, in order",
@@ -58,7 +59,8 @@ TEST_CASE("A refusal, dropped edits, a pending restart and a failed write each h
 
 	GraphFile unplaced = file("v4", std::nullopt);
 	unplaced.refusal = Refusal{ear::Stopping{}, std::nullopt};
-	CHECK(printed({unplaced, FileChangeCause::edit, 0}) == "graph-file edit v4 running=none\ngraph-file refused stopping\n");
+	CHECK(printed({unplaced, FileChangeCause::edit, 0}) ==
+	      "graph-file edit v4 running=none\ngraph-file refused stopping\n");
 }
 
 TEST_CASE("A write prints its version", "[status_log]") {

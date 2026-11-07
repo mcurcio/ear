@@ -39,7 +39,7 @@ TEST_CASE("Frames written either way read back either way, across the ring's end
 	const std::vector<float> in = frames(100, 5);
 	CHECK(ring.writeInterleaved(in, 5) == 5);
 	const std::span<const float> run = ring.readSpan();
-	CHECK(run.size() == 2 * 2);   // only as far as the ring's end
+	CHECK(run.size() == 2 * 2); // only as far as the ring's end
 	CHECK(run[0] == 100.0F);
 	CHECK(ring.skip(2) == 2);
 
@@ -75,6 +75,6 @@ TEST_CASE("skipTo discards what came before a position, and never goes back", "[
 	ring.skipTo(position);
 	CHECK(ring.readSpan()[0] == 3.0F);
 	ring.skip(2);
-	ring.skipTo(position);   // read past it already
+	ring.skipTo(position); // read past it already
 	CHECK(ring.readSpan().empty());
 }

@@ -45,8 +45,14 @@ ear::GraphView snapshotView() {
 	                      ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	view.nodes.push_back({{"noise", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"noise", "white", json::object()},
+	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
 	view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}},
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
 	                      NodeState::failed,
@@ -66,7 +72,8 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::holds_alternative<GetGraph>(decodeCommand("graph.get", json::object()).value()));
 	CHECK(std::holds_alternative<GetGraph>(decodeCommand("graph.subscribe", nullptr).value()));
 
-	const auto add = decodeCommand("node.add", json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "x.wav"}})"));
+	const auto add =
+		decodeCommand("node.add", json::parse(R"({"name": "rec", "type": "file", "settings": {"path": "x.wav"}})"));
 	CHECK(std::get<AddNode>(add.value()).node == ear::NodeSpec{"rec", "file", {{"path", "x.wav"}}});
 	const auto addPlain = decodeCommand("node.add", json::parse(R"({"name": "noise", "type": "white"})"));
 	CHECK(std::get<AddNode>(addPlain.value()).node.settings == json::object());
@@ -89,7 +96,7 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<SetGraphFile>(set.value()).text == "node white n;\n");
 	CHECK(std::get<SetGraphFile>(set.value()).version == "a.3");
 	const auto empty = decodeCommand("graphFile.set", json::parse(R"({"text": "", "version": ""})"));
-	CHECK(std::get<SetGraphFile>(empty.value()).text.empty());   // an empty file is a text
+	CHECK(std::get<SetGraphFile>(empty.value()).text.empty()); // an empty file is a text
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {
@@ -101,7 +108,7 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 	CHECK(invalid("node.add", R"({"name": "a", "type": "white", "x": 1})") == "/x: unknown key");
 	CHECK(invalid("node.add", R"({"name": 2, "type": "white"})") == "/name: must be a non-empty string");
 	CHECK(invalid("node.add", R"({"name": "a", "type": ["white"]})") == "/type: must be a non-empty string");
-	CHECK(invalid("node.add", "null") == "/name: missing");   // null: params absent
+	CHECK(invalid("node.add", "null") == "/name: missing"); // null: params absent
 	CHECK(invalid("node.add", R"("noise")") == "the document: must be an object");
 
 	CHECK(invalid("node.update", R"({"settings": {}})") == "/name: missing");
@@ -129,9 +136,14 @@ TEST_CASE("Every missing, extra and mistyped key is invalid params naming its po
 		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono"}})") == "/to: missing");
 		CHECK(invalid(method, noiseToRecFlJson.substr(0, noiseToRecFlJson.size() - 1) + R"(, "gain": 1})") ==
 		      "/gain: unknown key");
-		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono", "x": 0}, "to": {"node": "rec", "port": "record.right"}})") ==
-		      "/from/x: unknown key");
-		CHECK(invalid(method, R"({"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": 1, "port": "record.right"}})") ==
+		CHECK(
+			invalid(
+				method,
+				R"({"from": {"node": "noise", "port": "noise.mono", "x": 0}, "to": {"node": "rec", "port": "record.right"}})") ==
+			"/from/x: unknown key");
+		CHECK(invalid(
+				  method,
+				  R"({"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": 1, "port": "record.right"}})") ==
 		      "/to/node: must be a non-empty string");
 	}
 }
@@ -145,7 +157,7 @@ TEST_CASE("An unknown method is method not found", "[commands]") {
 	const RpcError error = refusal("graph.explode", "{}");
 	CHECK(error.code == methodNotFound);
 	CHECK(error.message == "Method not found");
-	CHECK(refusal("levels.subscribe", "{}").code == methodNotFound);   // the hub's, not a graph command
+	CHECK(refusal("levels.subscribe", "{}").code == methodNotFound); // the hub's, not a graph command
 }
 
 TEST_CASE("encodeGraph gives snapshot.json's graph exactly", "[commands][protocol]") {

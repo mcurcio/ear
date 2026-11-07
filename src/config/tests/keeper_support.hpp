@@ -9,10 +9,9 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
-
 #include "ear/control/requests.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "temp_folder.hpp"
 
 namespace ear::config::test {
 
@@ -39,24 +38,8 @@ inline std::string replaced(std::string text, const std::string& from, const std
 	return text.replace(at, from.size(), to);
 }
 
-class TempDir {
-public:
-	explicit TempDir(const std::string& name)
-	    : path_(std::filesystem::temp_directory_path() / ("ear_config_" + name + "_" + std::to_string(getpid()))) {
-		std::filesystem::remove_all(path_);
-		std::filesystem::create_directories(path_);
-	}
-	~TempDir() {
-		std::error_code ignored;
-		std::filesystem::remove_all(path_, ignored);
-	}
-	TempDir(const TempDir&) = delete;
-	TempDir& operator=(const TempDir&) = delete;
-	const std::filesystem::path& path() const noexcept { return path_; }
-
-private:
-	std::filesystem::path path_;
-};
+/// The tests' temporary folder (test/support/temp_folder.hpp), by the name this namespace's tests use.
+using TempFolder = ::ear::test::TempFolder;
 
 inline std::string contents(const std::filesystem::path& path) {
 	std::ifstream file(path, std::ios::binary);
@@ -73,7 +56,8 @@ inline void handEdit(const std::filesystem::path& path, const std::string& text)
 /// The names in a folder.
 inline std::vector<std::string> names(const std::filesystem::path& folder) {
 	std::vector<std::string> all;
-	for (const auto& entry : std::filesystem::directory_iterator(folder)) all.push_back(entry.path().filename().string());
+	for (const auto& entry : std::filesystem::directory_iterator(folder))
+		all.push_back(entry.path().filename().string());
 	return all;
 }
 
@@ -81,7 +65,7 @@ inline std::vector<std::string> names(const std::filesystem::path& folder) {
 struct Log {
 	std::vector<std::string> lines;
 	std::vector<int> turns;
-	int turn = 0;   // the main loop's current turn, kept by the test's main-loop executor
+	int turn = 0; // the main loop's current turn, kept by the test's main-loop executor
 	void push(std::string line) {
 		lines.push_back(std::move(line));
 		turns.push_back(turn);
@@ -101,14 +85,20 @@ struct Log {
 class GraphLog final : public DesiredNodeListener, public DesiredRouteListener {
 public:
 	explicit GraphLog(Log& log) : log_(log) {}
-	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override { log_.push("node.added " + node.name); }
-	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override { log_.push("node.updated " + node.name); }
+	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log_.push("node.added " + node.name);
+	}
+	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log_.push("node.updated " + node.name);
+	}
 	void nodeRemoved(const NodeName& node) override { log_.push("node.removed " + node); }
 	void routeAdded(const Route& route) override { log_.push("route.added " + text(route)); }
 	void routeRemoved(const Route& route) override { log_.push("route.removed " + text(route)); }
 
 private:
-	static std::string text(const Route& r) { return r.from.node + ":" + r.from.port + " " + r.to.node + ":" + r.to.port; }
+	static std::string text(const Route& r) {
+		return r.from.node + ":" + r.from.port + " " + r.to.node + ":" + r.to.port;
+	}
 	Log& log_;
 };
 

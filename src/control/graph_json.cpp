@@ -41,8 +41,7 @@ std::expected<void, JsonError> requireObject(const json& value, const JsonPointe
 	return {};
 }
 
-std::expected<const json*, JsonError> requireMember(const json& object, const JsonPointer& at,
-                                                    const std::string& key) {
+std::expected<const json*, JsonError> requireMember(const json& object, const JsonPointer& at, const std::string& key) {
 	const auto found = object.find(key);
 	if (found == object.end()) return fail(at / key, "missing");
 	return &*found;
@@ -78,8 +77,6 @@ std::expected<Route, JsonError> decodeRoute(const json& value, const JsonPointer
 
 json encodePortRef(const PortRef& port) { return {{"node", port.node}, {"port", port.port}}; }
 
-json encodeRoute(const Route& route) {
-	return {{"from", encodePortRef(route.from)}, {"to", encodePortRef(route.to)}};
-}
+json encodeRoute(const Route& route) { return {{"from", encodePortRef(route.from)}, {"to", encodePortRef(route.to)}}; }
 
 } // namespace ear::control

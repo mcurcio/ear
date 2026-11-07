@@ -14,8 +14,8 @@ DiskText FolderGraphFileDisk::read() {
 	return std::move(*text);
 }
 
-std::expected<folder::ReplaceOutcome, std::string> FolderGraphFileDisk::replaceIf(const std::optional<std::string>& expected,
-                                                                                 std::string_view text) {
+std::expected<folder::ReplaceOutcome, std::string>
+FolderGraphFileDisk::replaceIf(const std::optional<std::string>& expected, std::string_view text) {
 	auto outcome = folder_.replaceIf(std::string(rootDocument), expected, text, maxDocumentBytes);
 	if (!outcome) return std::unexpected(std::move(outcome.error().detail));
 	return std::move(*outcome);

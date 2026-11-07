@@ -67,15 +67,21 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	                      cardPorts,
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"}});
-	view.nodes.push_back({{"noise", "white", nlohmann::json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"noise", "white", nlohmann::json::object()},
+	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
 	view.nodes.push_back({{"porch", "card", {{"card", "USB2"}, {"playback", playback}}},
 	                      cardPorts,
 	                      NodeState::failed,
 	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"}});
-	view.nodes.push_back({{"rec", "file", {{"path", recPath}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"rec", "file", {{"path", recPath}}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"desk", "play.1"}}, ear::RouteMatch::pending, ""});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
 	return view;
 }
 
-}  // namespace ear::control::testing
+} // namespace ear::control::testing

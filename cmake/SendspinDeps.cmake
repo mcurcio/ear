@@ -4,8 +4,8 @@
 # one header ear's mDNS uses. kept_fetchcontent declares
 # each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a name
 # changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps across
-# "make clean", as Boost's is; only what ear_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps their
-# headers' warnings out of EAR's. ear_sendspin is the only package that sees any of them. Bump one by changing its
+# "make clean", as Boost's is; only what ear_node_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps their
+# headers' warnings out of EAR's. ear_node_sendspin is the only package that sees any of them. Bump one by changing its
 # commit here, and sendspin-cpp's by reading its cmake/host.cmake for new dependencies.
 
 include("${CMAKE_CURRENT_LIST_DIR}/CarriedPatch.cmake")

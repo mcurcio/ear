@@ -12,8 +12,9 @@ set_target_properties(ear_folder PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 
 if(BUILD_TESTS)
 	add_executable(ear_folder_tests
-		tests/confined_folder_test.cpp)
-	target_link_libraries(ear_folder_tests PRIVATE ear_folder ear_catch_main)
+		tests/confined_folder_test.cpp
+		tests/temp_folder_test.cpp)
+	target_link_libraries(ear_folder_tests PRIVATE ear_folder ear_catch_main ear_temp_folder)
 	add_dependencies(ear_folder_tests ear_folder_verify_interface_header_sets)
 	ear_catch_tests(ear_folder_tests)
 endif()

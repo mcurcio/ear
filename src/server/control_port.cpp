@@ -49,18 +49,20 @@ using boost::system::error_code;
 namespace {
 
 bool equalNoCase(std::string_view a, std::string_view b) {
-	return std::ranges::equal(a, b, [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
+	return std::ranges::equal(a, b,
+	                          [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
 }
 
 bool allDigits(std::string_view text) {
-	return !text.empty() && text.size() <= 5 && std::ranges::all_of(text, [](unsigned char c) { return std::isdigit(c); });
+	return !text.empty() && text.size() <= 5 &&
+	       std::ranges::all_of(text, [](unsigned char c) { return std::isdigit(c); });
 }
 
 } // namespace
 
 bool hostAllowed(std::string_view host, const std::vector<std::string>& allowedHosts) {
 	error_code ec;
-	if (host.starts_with('[')) {   // [IPv6]:port
+	if (host.starts_with('[')) { // [IPv6]:port
 		const auto close = host.find(']');
 		if (close == std::string_view::npos) return false;
 		const std::string_view rest = host.substr(close + 1);
@@ -82,7 +84,7 @@ bool hostAllowed(std::string_view host, const std::vector<std::string>& allowedH
 bool originAllowed(std::optional<std::string_view> origin, std::string_view host) {
 	if (!origin) return true;
 	const auto scheme = origin->find("://");
-	if (scheme == std::string_view::npos) return false;   // "null" and the like
+	if (scheme == std::string_view::npos) return false; // "null" and the like
 	std::string_view authority = origin->substr(scheme + 3);
 	authority = authority.substr(0, authority.find('/'));
 	return !host.empty() && equalNoCase(authority, host);
@@ -95,7 +97,7 @@ std::optional<std::filesystem::path> fileUnder(const std::filesystem::path& root
 	for (const auto part : std::views::split(target.substr(1), '/')) {
 		const std::string_view segment(part.begin(), part.end());
 		if (segment == "..") return std::nullopt;
-		if (!segment.empty() && segment != ".") file /= segment;   // never an absolute part
+		if (!segment.empty() && segment != ".") file /= segment; // never an absolute part
 	}
 	if (target.ends_with('/')) file /= "index.html";
 	return file;
@@ -103,13 +105,14 @@ std::optional<std::filesystem::path> fileUnder(const std::filesystem::path& root
 
 std::string_view contentType(const std::filesystem::path& file) {
 	static const std::unordered_map<std::string_view, std::string_view> types{
-		{".html", "text/html"},       {".htm", "text/html"},         {".js", "text/javascript"},
-		{".mjs", "text/javascript"},  {".css", "text/css"},          {".json", "application/json"},
-		{".map", "application/json"}, {".svg", "image/svg+xml"},     {".png", "image/png"},
-		{".ico", "image/x-icon"},     {".woff2", "font/woff2"},      {".wasm", "application/wasm"},
+		{".html", "text/html"},       {".htm", "text/html"},     {".js", "text/javascript"},
+		{".mjs", "text/javascript"},  {".css", "text/css"},      {".json", "application/json"},
+		{".map", "application/json"}, {".svg", "image/svg+xml"}, {".png", "image/png"},
+		{".ico", "image/x-icon"},     {".woff2", "font/woff2"},  {".wasm", "application/wasm"},
 		{".txt", "text/plain"}};
 	const std::string extension = file.extension().string();
-	const auto found = std::ranges::find_if(types, [&](const auto& entry) { return equalNoCase(entry.first, extension); });
+	const auto found =
+		std::ranges::find_if(types, [&](const auto& entry) { return equalNoCase(entry.first, extension); });
 	return found == types.end() ? "application/octet-stream" : found->second;
 }
 
@@ -146,8 +149,8 @@ struct Shared {
 	ControlPortSettings settings;
 	tcp::acceptor acceptor;
 	asio::posix::stream_descriptor bell;
-	std::unique_ptr<control::ControlHub> hub;   // null once stopped
-	std::uint16_t port = 0;                     // the bound port
+	std::unique_ptr<control::ControlHub> hub; // null once stopped
+	std::uint16_t port = 0;                   // the bound port
 	bool stopped = false;
 	/// Open WebSocket connections, held here while open (a connection waiting for its reply has
 	/// no Asio operation holding it).
@@ -160,7 +163,7 @@ struct Shared {
 
 	Shared(ControlPortSettings s, asio::io_context& io) : settings(std::move(s)), acceptor(io), bell(io) {}
 	~Shared() {
-		if (bell.is_open()) bell.release();   // the LevelBell owns its descriptor
+		if (bell.is_open()) bell.release(); // the LevelBell owns its descriptor
 		if (spare >= 0) ::close(spare);
 	}
 	Shared(const Shared&) = delete;
@@ -171,7 +174,8 @@ struct Shared {
 
 class WsSession final : public control::Outbox, public std::enable_shared_from_this<WsSession> {
 public:
-	WsSession(std::shared_ptr<Shared> shared, tcp::socket socket) : shared_(std::move(shared)), ws_(std::move(socket)) {}
+	WsSession(std::shared_ptr<Shared> shared, tcp::socket socket)
+		: shared_(std::move(shared)), ws_(std::move(socket)) {}
 
 	void accept(http::request<http::string_body> request) {
 		shared_->sockets.emplace(this, shared_from_this());
@@ -204,7 +208,7 @@ public:
 
 	void sendLevels(control::Message message) override {
 		if (closing_) return;
-		levels_ = std::move(message);   // a complete snapshot: it replaces one not yet written
+		levels_ = std::move(message); // a complete snapshot: it replaces one not yet written
 		write();
 	}
 
@@ -226,7 +230,7 @@ private:
 
 	void received(error_code ec) {
 		if (closing_) return;
-		if (ec) {   // the peer closed, reset or broke the protocol
+		if (ec) { // the peer closed, reset or broke the protocol
 			closing_ = true;
 			forget();
 			return;
@@ -266,7 +270,8 @@ private:
 		closing_ = true;
 		queue_.clear();
 		levels_.reset();
-		asio::post(ws_.get_executor(), [self = shared_from_this()] { self->closeWith(websocket::close_code::policy_error); });
+		asio::post(ws_.get_executor(),
+		           [self = shared_from_this()] { self->closeWith(websocket::close_code::policy_error); });
 	}
 
 	/// Beast's async_close writes the close frame (after a write in progress), reads until the
@@ -294,8 +299,8 @@ private:
 	beast::flat_buffer buffer_;
 	std::unique_ptr<control::ControlSession> session_;
 	std::deque<control::Message> queue_;
-	control::Message levels_;    // the newest levels snapshot not yet written
-	control::Message writing_;   // the message being written (kept alive for its buffer)
+	control::Message levels_;  // the newest levels snapshot not yet written
+	control::Message writing_; // the message being written (kept alive for its buffer)
 	bool accepted_ = false;
 	bool closing_ = false;
 	bool closeSent_ = false;
@@ -318,7 +323,8 @@ http::message_generator serveFile(const http::request<http::string_body>& reques
 	const auto file = fileUnder(root, request.target());
 	if (!file) return plain(request, http::status::bad_request, "bad request target");
 	std::error_code fileError;
-	if (!std::filesystem::is_regular_file(*file, fileError)) return plain(request, http::status::not_found, "not found");
+	if (!std::filesystem::is_regular_file(*file, fileError))
+		return plain(request, http::status::not_found, "not found");
 	http::file_body::value_type body;
 	error_code ec;
 	body.open(file->c_str(), beast::file_mode::scan, ec);
@@ -333,7 +339,7 @@ http::message_generator serveFile(const http::request<http::string_body>& reques
 		return response;
 	}
 	http::response<http::file_body> response{std::piecewise_construct, std::make_tuple(std::move(body)),
-	                                          std::make_tuple(http::status::ok, request.version())};
+	                                         std::make_tuple(http::status::ok, request.version())};
 	response.set(http::field::content_type, type);
 	response.content_length(size);
 	response.keep_alive(request.keep_alive());
@@ -379,7 +385,8 @@ private:
 				return respond(plain(request, http::status::not_found, "not found"));
 			std::optional<std::string_view> origin;
 			if (const auto found = request.find(http::field::origin); found != request.end()) origin = found->value();
-			if (!originAllowed(origin, host)) return respond(plain(request, http::status::forbidden, "forbidden origin"));
+			if (!originAllowed(origin, host))
+				return respond(plain(request, http::status::forbidden, "forbidden origin"));
 			std::make_shared<WsSession>(shared_, std::move(socket_))->accept(std::move(request));
 			return;
 		}
@@ -388,14 +395,15 @@ private:
 
 	void respond(http::message_generator message) {
 		const bool keepAlive = message.keep_alive();
-		beast::async_write(socket_, std::move(message), [self = shared_from_this(), keepAlive](error_code ec, std::size_t) {
-			if (ec || !keepAlive || self->shared_->stopped) {
-				error_code ignored;
-				self->socket_.shutdown(tcp::socket::shutdown_send, ignored);
-				return;
-			}
-			self->read();
-		});
+		beast::async_write(socket_, std::move(message),
+		                   [self = shared_from_this(), keepAlive](error_code ec, std::size_t) {
+							   if (ec || !keepAlive || self->shared_->stopped) {
+								   error_code ignored;
+								   self->socket_.shutdown(tcp::socket::shutdown_send, ignored);
+								   return;
+							   }
+							   self->read();
+						   });
 	}
 
 	std::shared_ptr<Shared> shared_;
@@ -414,7 +422,7 @@ void acceptNext(const std::shared_ptr<Shared>& shared);
 void refuseOne(const std::shared_ptr<Shared>& shared) {
 	if (shared->spare >= 0) ::close(shared->spare);
 	error_code ignored;
-	shared->acceptor.non_blocking(true, ignored);   // an empty queue answers would_block
+	shared->acceptor.non_blocking(true, ignored); // an empty queue answers would_block
 	tcp::socket refused(shared->acceptor.get_executor());
 	shared->acceptor.accept(refused, ignored);
 	refused.close(ignored);
@@ -467,11 +475,11 @@ Opened open(const ControlPortSettings& settings, control::GraphGateway& graph, L
 	const tcp::endpoint endpoint{address, settings.port};
 	if (shared->acceptor.open(endpoint.protocol(), ec); !ec)
 		if (shared->acceptor.set_option(asio::socket_base::reuse_address(true), ec); !ec)
-			if (shared->acceptor.bind(endpoint, ec); !ec) shared->acceptor.listen(asio::socket_base::max_listen_connections, ec);
+			if (shared->acceptor.bind(endpoint, ec); !ec)
+				shared->acceptor.listen(asio::socket_base::max_listen_connections, ec);
 	if (ec) return std::unexpected(ControlPortError{"cannot listen on " + where + ": " + ec.message()});
 	shared->port = shared->acceptor.local_endpoint().port();
-	if (shared->bell.assign(bell.fd(), ec); ec)
-		return std::unexpected(ControlPortError{"level bell: " + ec.message()});
+	if (shared->bell.assign(bell.fd(), ec); ec) return std::unexpected(ControlPortError{"level bell: " + ec.message()});
 	shared->hub = std::make_unique<control::ControlHub>(graph, levels);
 	acceptNext(shared);
 	awaitBell(shared);
@@ -486,7 +494,7 @@ void close(Shared& shared, const std::shared_ptr<Closing>& closing) {
 	shared.acceptor.close(ignored);
 	shared.bell.cancel(ignored);
 	shared.bell.release();
-	std::vector<std::shared_ptr<WsSession>> sockets;   // a copy: each shutdown leaves the map
+	std::vector<std::shared_ptr<WsSession>> sockets; // a copy: each shutdown leaves the map
 	for (const auto& [key, socket] : shared.sockets) sockets.push_back(socket);
 	for (const auto& socket : sockets) socket->shutdown(websocket::close_code::going_away, closing);
 	std::vector<std::shared_ptr<HttpSession>> requests;
@@ -506,9 +514,9 @@ struct ControlPort::Impl {
 };
 
 std::expected<std::unique_ptr<ControlPort>, ControlPortError> ControlPort::start(const ControlPortSettings& settings,
-                                                                                ControlThread& thread,
-                                                                                control::GraphGateway& graph,
-                                                                                LevelReader& levels, LevelBell& bell) {
+                                                                                 ControlThread& thread,
+                                                                                 control::GraphGateway& graph,
+                                                                                 LevelReader& levels, LevelBell& bell) {
 	// The promise lives only in the work: work the thread destroys unrun breaks it.
 	std::promise<Opened> promise;
 	auto opened = promise.get_future();
@@ -522,14 +530,13 @@ std::expected<std::unique_ptr<ControlPort>, ControlPortError> ControlPort::start
 	Opened result = [&]() -> Opened {
 		try {
 			return opened.get();
-		} catch (const std::future_error&) {   // the work was destroyed unrun
+		} catch (const std::future_error&) { // the work was destroyed unrun
 			return std::unexpected(ControlPortError{"the control thread has stopped"});
 		}
 	}();
 	if (!result) return std::unexpected(result.error());
 	const std::uint16_t port = (*result)->port;
-	return std::unique_ptr<ControlPort>(
-		new ControlPort(std::make_unique<Impl>(thread, std::move(*result), port)));
+	return std::unique_ptr<ControlPort>(new ControlPort(std::make_unique<Impl>(thread, std::move(*result), port)));
 }
 
 ControlPort::ControlPort(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
@@ -540,7 +547,7 @@ std::uint16_t ControlPort::port() const noexcept { return impl_->port; }
 
 void ControlPort::stop() {
 	if (impl_->stopped.exchange(true)) return;
-	std::promise<void> promise;   // as in start(): only the work holds it
+	std::promise<void> promise; // as in start(): only the work holds it
 	auto closed = promise.get_future();
 	impl_->thread.post([shared = impl_->shared, promise = std::move(promise)]() mutable {
 		close(*shared, std::make_shared<Closing>(std::move(promise)));

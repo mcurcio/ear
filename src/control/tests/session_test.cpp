@@ -89,7 +89,10 @@ std::string describe(const Command& command) {
 /// step, on the main loop, telling the gateway what the command causes and returning its result.
 class ScriptedRequests final : public GraphRequests {
 public:
-	struct Step { std::string call; std::function<CommandResult()> handler; };
+	struct Step {
+		std::string call;
+		std::function<CommandResult()> handler;
+	};
 	std::deque<Step> script;
 	std::vector<std::string> calls;
 	ear::GraphView view{};
@@ -134,8 +137,8 @@ public:
 /// Records what the session queues; replacing an unsent levels snapshot is the transport's job.
 class RecordingOutbox final : public Outbox {
 public:
-	std::vector<std::string> all;      // responses, notifications and levels, in order
-	std::vector<std::string> levels;   // what came through sendLevels
+	std::vector<std::string> all;    // responses, notifications and levels, in order
+	std::vector<std::string> levels; // what came through sendLevels
 	int sends = 0;
 	void send(Message message) override {
 		++sends;
@@ -183,7 +186,11 @@ struct World {
 	}
 	/// A message received on the control thread; done must run once its responses are queued.
 	void receive(ControlSession& session, const std::string& text, int* doneCount = nullptr) {
-		onControl([&] { session.received(text, [doneCount] { if (doneCount) ++*doneCount; }); });
+		onControl([&] {
+			session.received(text, [doneCount] {
+				if (doneCount) ++*doneCount;
+			});
+		});
 		pump();
 	}
 	// The listener calls the keeper's main-loop side and the core make on the main loop.
@@ -221,8 +228,14 @@ using Code = ear::FailureReason::Code;
 
 ear::GraphView baseView() {
 	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
-	view.nodes.push_back({{"noise", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, NodeState::running, std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::running, std::nullopt});
+	view.nodes.push_back({{"noise", "white", json::object()},
+	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                      NodeState::running,
+	                      std::nullopt});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
 	return view;
 }
@@ -238,15 +251,22 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	World w;
 	w.graph.view = baseView();
 	w.graph.view.engine = {{48000, 256}, true, "SCHED_FIFO 88"};
-	w.graph.view.nodes.insert(w.graph.view.nodes.begin(),
-	                          ear::NodeView{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
-	                           ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}}, NodeState::failed,
-	                           ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	w.graph.view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}, NodeState::failed,
-	                              ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
-	w.graph.view.routes.insert(w.graph.view.routes.begin(),
-	                           ear::RouteStatus{{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
-	w.graph.view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}}, ear::RouteMatch::refused,
+	w.graph.view.nodes.insert(
+		w.graph.view.nodes.begin(),
+		ear::NodeView{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
+	                  ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
+	                  NodeState::failed,
+	                  ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
+	w.graph.view.nodes.push_back(
+		{{"tape", "file", {{"path", "nope/t.wav"}}},
+	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	     NodeState::failed,
+	     ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
+	w.graph.view.routes.insert(
+		w.graph.view.routes.begin(),
+		ear::RouteStatus{{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
+	w.graph.view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
+	                               ear::RouteMatch::refused,
 	                               "the engine removed the link before it was active"});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -269,59 +289,64 @@ TEST_CASE("edits.json: each change's notification comes before its statuses and 
 	w.receive(session, requests[0]);
 
 	w.graph.script.push_back({R"(addNode n2 white {})", [&] {
-		                          w.nodeAdded({"n2", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
-		                          w.state("n2", NodeState::starting);
-		                          return Result{};
-	                          }});
+								  w.nodeAdded({"n2", "white", json::object()},
+		                                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
+								  w.state("n2", NodeState::starting);
+								  return Result{};
+							  }});
 	w.receive(session, requests[1]);
 	w.onMain([&] { w.state("n2", NodeState::running); });
 
 	w.graph.script.push_back({"addRoute n2:noise.mono->rec:record.right", [&] {
-		                          w.gateway.routeAdded(n2ToRecFr);
-		                          w.route(n2ToRecFr, ear::RouteMatch::pending);
-		                          return Result{};
-	                          }});
+								  w.gateway.routeAdded(n2ToRecFr);
+								  w.route(n2ToRecFr, ear::RouteMatch::pending);
+								  return Result{};
+							  }});
 	w.receive(session, requests[2]);
 	w.onMain([&] { w.route(n2ToRecFr, ear::RouteMatch::linked); });
 
-	w.graph.script.push_back({R"(addNode tape file {"path":"nope/t.wav"})", [&] {
-		                          w.nodeAdded({"tape", "file", {{"path", "nope/t.wav"}}}, ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}});
-		                          w.state("tape", NodeState::starting);
-		                          w.state("tape", NodeState::failed,
-		                                  ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"});
-		                          return Result{};
-	                          }});
+	w.graph.script.push_back(
+		{R"(addNode tape file {"path":"nope/t.wav"})", [&] {
+			 w.nodeAdded({"tape", "file", {{"path", "nope/t.wav"}}},
+		                 ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}});
+			 w.state("tape", NodeState::starting);
+			 w.state("tape", NodeState::failed,
+		             ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"});
+			 return Result{};
+		 }});
 	w.receive(session, requests[3]);
 
 	w.graph.script.push_back({"addRoute n2:noise.mono->tape:record.left", [&] {
-		                          w.gateway.routeAdded(n2ToTapeFl);
-		                          w.route(n2ToTapeFl, ear::RouteMatch::pending);
-		                          return Result{};
-	                          }});
+								  w.gateway.routeAdded(n2ToTapeFl);
+								  w.route(n2ToTapeFl, ear::RouteMatch::pending);
+								  return Result{};
+							  }});
 	w.receive(session, requests[4]);
-	w.onMain([&] { w.route(n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"); });
+	w.onMain(
+		[&] { w.route(n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"); });
 
 	w.graph.script.push_back({R"(updateNode rec {"path":"y.wav"})", [&] {
-		                          w.gateway.nodeUpdated({"rec", "file", {{"path", "y.wav"}}},
-		                                                std::make_shared<Config>(ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}}));
-		                          w.state("rec", NodeState::starting);
-		                          return Result{};
-	                          }});
+								  w.gateway.nodeUpdated({"rec", "file", {{"path", "y.wav"}}},
+		                                                std::make_shared<Config>(ear::Ports{
+															{{ear::Direction::input, "record", {"left", "right"}}}}));
+								  w.state("rec", NodeState::starting);
+								  return Result{};
+							  }});
 	w.receive(session, requests[5]);
 	w.onMain([&] { w.state("rec", NodeState::running); });
 
 	w.graph.script.push_back({"removeRoute n2:noise.mono->rec:record.right", [&] {
-		                          w.gateway.routeRemoved(n2ToRecFr);
-		                          return Result{};
-	                          }});
+								  w.gateway.routeRemoved(n2ToRecFr);
+								  return Result{};
+							  }});
 	w.receive(session, requests[6]);
 
 	w.graph.script.push_back({"removeNode noise", [&] {
-		                          w.gateway.routeRemoved(noiseToRecFl);
-		                          w.gateway.nodeRemoved("noise");
-		                          w.state("noise", NodeState::stopping);
-		                          return Result{};
-	                          }});
+								  w.gateway.routeRemoved(noiseToRecFl);
+								  w.gateway.nodeRemoved("noise");
+								  w.state("noise", NodeState::stopping);
+								  return Result{};
+							  }});
 	w.receive(session, requests[7]);
 	w.onMain([&] {
 		w.gateway.nodeGone("noise", 0);
@@ -345,8 +370,10 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 		{"updateNode ghost {}", ear::UnknownNode{"ghost"}},
 		{"removeNode ghost", ear::UnknownNode{"ghost"}},
 		{"addRoute noise:noise.mono->rec:FX", ear::UnknownPort{{"rec", "FX"}}},
-		{"addRoute rec:record.left->noise:noise.mono", ear::WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}}},
-		{"removeRoute noise:noise.mono->rec:record.right", ear::UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.right"}}}},
+		{"addRoute rec:record.left->noise:noise.mono",
+	     ear::WrongDirection{{{"rec", "record.left"}, {"noise", "noise.mono"}}}},
+		{"removeRoute noise:noise.mono->rec:record.right",
+	     ear::UnknownRoute{{{"noise", "noise.mono"}, {"rec", "record.right"}}}},
 		{"addNode n3 white {}", ear::Stopping{}},
 	};
 	for (const auto& [call, error] : refusals)
@@ -404,31 +431,34 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	};
 	const auto refused = [](CommandResult result) { return [result] { return result; }; };
 
-	w.receive(session, requests[0]);   // graphFile.subscribe
-	w.receive(session, requests[1]);   // graph.subscribe
+	w.receive(session, requests[0]); // graphFile.subscribe
+	w.receive(session, requests[1]); // graph.subscribe
 
-	w.graph.script.push_back({R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::file("v2", t.t2, "v2"), "take2.wav")});
+	w.graph.script.push_back(
+		{R"(updateNode rec {"path":"take2.wav"})", recEdit(fx::file("v2", t.t2, "v2"), "take2.wav")});
 	w.receive(session, requests[2]);
 
 	w.graph.script.push_back({"setGraphFile v1", refused(FileRefusal{FileChanged{}})});
 	w.receive(session, requests[3]);
 	w.graph.script.push_back(
-	    {"setGraphFile v2", refused(FileRefusal{InvalidText{{Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"",
-	                                                                    TextPlace{9, 34}}}}})});
+		{"setGraphFile v2", refused(FileRefusal{InvalidText{{Diagnostic{
+								Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}}}}})});
 	w.receive(session, requests[4]);
-	w.graph.script.push_back({"addRoute noise:noise.mono->rec:FX", refused(Result(std::unexpected(ear::UnknownPort{{"rec", "FX"}})))});
+	w.graph.script.push_back(
+		{"addRoute noise:noise.mono->rec:FX", refused(Result(std::unexpected(ear::UnknownPort{{"rec", "FX"}})))});
 	w.receive(session, requests[5]);
 
 	GraphFile included = fx::file("v3", t.t3, "v2");
 	included.diagnostics = {fx::includeUnsupported};
-	w.onMain([&] { w.fileChanged(included, FileChangeCause::disk); });   // a hand edit with @include
+	w.onMain([&] { w.fileChanged(included, FileChangeCause::disk); }); // a hand edit with @include
 	w.graph.script.push_back({R"(updateNode rec {"path":"take3.wav"})", refused(FileRefusal{FileInvalid{}})});
 	w.receive(session, requests[6]);
-	w.onMain([&] { w.fileChanged(fx::file("v4", t.t2, "v4"), FileChangeCause::disk); });   // the hand fix
+	w.onMain([&] { w.fileChanged(fx::file("v4", t.t2, "v4"), FileChangeCause::disk); }); // the hand fix
 
-	w.graph.script.push_back({R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v5", t.t5, "v5"), "take3.wav")});
+	w.graph.script.push_back(
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v5", t.t5, "v5"), "take3.wav")});
 	w.receive(session, requests[7]);
-	w.onMain([&] {   // a hand save over it before it was written: the hand edit wins
+	w.onMain([&] { // a hand save over it before it was written: the hand edit wins
 		w.fileChanged(fx::file("v6", t.t2, "v6"), FileChangeCause::disk, 1);
 		w.gateway.nodeUpdated({"rec", "file", {{"path", "take2.wav"}}}, config(recPorts));
 	});
@@ -437,26 +467,29 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.receive(session, requests[8]);
 
 	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&]() -> CommandResult {
-		                          w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::edit);
-		                          w.gateway.routeRemoved(toDesk);
-		                          w.gateway.nodeRemoved("desk");
-		                          w.gateway.nodeRemoved("porch");
-		                          w.nodeAdded({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, card4);
-		                          w.nodeAdded({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, card4);
-		                          w.gateway.routeAdded(toDesk);
-		                          return Result{};
-	                          }});
+								  w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::edit);
+								  w.gateway.routeRemoved(toDesk);
+								  w.gateway.nodeRemoved("desk");
+								  w.gateway.nodeRemoved("porch");
+								  w.nodeAdded({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, card4);
+								  w.nodeAdded({"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, card4);
+								  w.gateway.routeAdded(toDesk);
+								  return Result{};
+							  }});
 	w.receive(session, requests[9]);
 	w.onMain([&] {
-		w.state("desk", NodeState::failed, ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"});
-		w.state("porch", NodeState::failed, ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"});
+		w.state("desk", NodeState::failed,
+		        ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"});
+		w.state("porch", NodeState::failed,
+		        ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"});
 	});
 	GraphFile failed = fx::file("v7", t.t7, "v7");
 	failed.writeFailed = "ear.conf: No space left on device";
 	w.onMain([&] { w.fileChanged(failed, FileChangeCause::write); });
 	w.onMain([&] { w.fileChanged(fx::file("v7", t.t7, "v7"), FileChangeCause::write); });
 
-	w.graph.script.push_back({R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v8", t.t8, "v8"), "take3.wav")});
+	w.graph.script.push_back(
+		{R"(updateNode rec {"path":"take3.wav"})", recEdit(fx::file("v8", t.t8, "v8"), "take3.wav")});
 	w.receive(session, requests[10]);
 	GraphFile refusedByJudge = fx::file("v9", t.t9, "v8");
 	refusedByJudge.refusal = Refusal{ear::UnknownPort{{"rec", "FX"}}, TextPlace{14, 1}};
@@ -472,16 +505,17 @@ TEST_CASE("graph-file.json: file changes come before the events they cause, and 
 	w.graph.view = fx::graphView(4, "take4.wav");
 	w.graph.file = last;
 	w.graph.script.push_back({R"(updateNode rec {"path":"take4.wav"})", recEdit(last, "take4.wav")});
-	w.receive(session, requests[12]);   // [node.update, graph.subscribe]
-	w.receive(session, requests[13]);   // [graph.subscribe, graphFile.subscribe]
-	w.receive(session, requests[14]);   // graphFile.get
+	w.receive(session, requests[12]); // [node.update, graph.subscribe]
+	w.receive(session, requests[13]); // [graph.subscribe, graphFile.subscribe]
+	w.receive(session, requests[14]); // graphFile.get
 
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 	CHECK(w.graph.offLoop == 0);
 	// Each batch's snapshots ran after its other commands, in request order; graphFile.get read the file.
 	const std::vector<std::string> tail(w.graph.calls.end() - 5, w.graph.calls.end());
-	CHECK(tail == std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
+	CHECK(tail ==
+	      std::vector<std::string>{R"(updateNode rec {"path":"take4.wav"})", "read", "read", "readFile", "readFile"});
 }
 
 TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file changes only", "[session][graph-file]") {
@@ -499,7 +533,8 @@ TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file chan
 	const auto methods = [](const RecordingOutbox& out) {
 		std::vector<std::string> seen;
 		for (const json& message : parsed(out.all))
-			seen.push_back(message.is_array() || message.contains("result") ? "snapshot" : message["method"].get<std::string>());
+			seen.push_back(message.is_array() || message.contains("result") ? "snapshot"
+			                                                                : message["method"].get<std::string>());
 		return seen;
 	};
 	CHECK(methods(graphOnly) == std::vector<std::string>{"snapshot", "node.removed"});
@@ -508,7 +543,8 @@ TEST_CASE("graph.subscribe gets graph events only, graphFile.subscribe file chan
 	CHECK(w.graph.calls == std::vector<std::string>{"read", "readFile", "readFile", "read"});
 }
 
-TEST_CASE("A session gets no file change from before its graphFile snapshot and every one after", "[session][graph-file]") {
+TEST_CASE("A session gets no file change from before its graphFile snapshot and every one after",
+          "[session][graph-file]") {
 	World w;
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
@@ -552,19 +588,20 @@ TEST_CASE("A batch's subscribe snapshot holds the batch's own changes", "[sessio
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	w.graph.script.push_back({"addNode x white {}", [&] {
-		                          w.nodeAdded({"x", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
-		                          return Result{};
-	                          }});
+								  w.nodeAdded({"x", "white", json::object()},
+		                                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
+								  return Result{};
+							  }});
 	w.receive(session, R"([{"jsonrpc":"2.0","id":1,"method":"graph.subscribe"},
 	                      {"jsonrpc":"2.0","id":2,"method":"node.add","params":{"name":"x","type":"white"}}])");
 	CHECK(w.graph.calls == std::vector<std::string>{"addNode x white {}", "read"});
-	REQUIRE(out.all.size() == 1);   // the batch's responses; node.added x is in the snapshot
+	REQUIRE(out.all.size() == 1); // the batch's responses; node.added x is in the snapshot
 	const json batch = json::parse(out.all[0]);
 	REQUIRE(batch.size() == 2);
 	CHECK(batch[0]["id"] == 1);
 	CHECK(batch[0]["result"].contains("nodes"));
 	CHECK(batch[1] == json::parse(R"({"jsonrpc":"2.0","id":2,"result":{}})"));
-	w.onMain([&] { w.state("x", NodeState::running); });   // later events reach it
+	w.onMain([&] { w.state("x", NodeState::running); }); // later events reach it
 	REQUIRE(out.all.size() == 2);
 	CHECK(json::parse(out.all[1])["method"] == "node.state");
 }
@@ -587,16 +624,17 @@ TEST_CASE("Responses keep request order, notifications get none, and done follow
 		  {"jsonrpc":"2.0","method":"node.add","params":{"name":"b","type":"white"}},
 		  {"jsonrpc":"2.0","method":"levels.subscribe","id":"l"},
 		  {"jsonrpc":"2.0","method":"get_data","id":"9"}
-		])", [&] {
-			++done;
-			queuedAtDone = out.all.size();
-		});
+		])",
+		                 [&] {
+							 ++done;
+							 queuedAtDone = out.all.size();
+						 });
 	});
-	CHECK(done == 0);   // its commands are on the main loop
+	CHECK(done == 0); // its commands are on the main loop
 	w.pump();
 	CHECK(done == 1);
 	CHECK(queuedAtDone == 1);
-	CHECK(w.graph.script.empty());   // the notification node.add ran
+	CHECK(w.graph.script.empty()); // the notification node.add ran
 	REQUIRE(out.all.size() == 1);
 	CHECK(json::parse(out.all[0]) == json::parse(R"([
 	  {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"the document: must be an object"}},
@@ -633,11 +671,11 @@ TEST_CASE("Levels: one complete snapshot per levels-subscribed session per bell"
 	const int sendsBefore = a.sends + b.sends;
 	w.levels.latest = {{"n1", 1600, {{"out.a", {0.5F, 0.25F}}}}, {"n2", 1600, {{"in.a", {0.125F, 0.0625F}}}}};
 	w.onControl([&] { w.hub->levelsPublished(); });
-	CHECK(w.levels.reads == 1);   // read and encoded once for every session
+	CHECK(w.levels.reads == 1); // read and encoded once for every session
 	REQUIRE(a.levels.size() == 1);
 	REQUIRE(b.levels.size() == 1);
 	CHECK(quiet.levels.empty());
-	CHECK(a.sends + b.sends == sendsBefore);   // levels never queue behind responses
+	CHECK(a.sends + b.sends == sendsBefore); // levels never queue behind responses
 	const json nodes = json::parse(a.levels[0])["params"]["nodes"];
 	CHECK(nodes.size() == 2);
 	CHECK(nodes["n1"]["out.a"] == json::array({0.5, 0.25}));
@@ -647,7 +685,7 @@ TEST_CASE("Levels: one complete snapshot per levels-subscribed session per bell"
 	w.levels.latest = {{"n2", 3200, {{"in.a", {0.0F, 0.0F}}}}};
 	w.onControl([&] { w.hub->levelsPublished(); });
 	REQUIRE(a.levels.size() == 2);
-	CHECK(json::parse(a.levels[1])["params"]["nodes"].size() == 1);   // n1 gone: absent
+	CHECK(json::parse(a.levels[1])["params"]["nodes"].size() == 1); // n1 gone: absent
 }
 
 TEST_CASE("A session closed while its command is on the main loop drops the reply", "[session]") {
@@ -661,7 +699,7 @@ TEST_CASE("A session closed while its command is on the main loop drops the repl
 		session.reset();
 	});
 	w.pump();
-	CHECK(w.graph.script.empty());   // the command still ran
+	CHECK(w.graph.script.empty()); // the command still ran
 	CHECK(out.all.empty());
 	CHECK(done == 0);
 }

@@ -36,13 +36,9 @@ void recordNoise(const std::string& to, int noisy) {
 
 } // namespace
 
-TEST_CASE("White noise routed to record.left lands on left only", "[system]") {
-	recordNoise("record.left", 0);
-}
+TEST_CASE("White noise routed to record.left lands on left only", "[system]") { recordNoise("record.left", 0); }
 
-TEST_CASE("White noise routed to record.right lands on right only", "[system]") {
-	recordNoise("record.right", 1);
-}
+TEST_CASE("White noise routed to record.right lands on right only", "[system]") { recordNoise("record.right", 1); }
 
 TEST_CASE("A recordings folder ear cannot make stops ear with exit status 1", "[system]") {
 	TempDirectory directory;

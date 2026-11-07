@@ -1,0 +1,27 @@
+# EAR's C++ style, enforced by CI (make format-check) and applied with make format. Measured
+# from the code as it stood: tabs for indent with spaces for continuation lines, 4 wide, lines
+# up to 120 columns, attached braces, pointers and references hug the type, namespaces not
+# indented, short functions kept on one line. Includes are never reordered. Only git-tracked
+# files under src/ and test/ are formatted (the Makefile's list), so vendor/ and fetched trees
+# are never touched.
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+TabWidth: 4
+UseTab: AlignWithSpaces
+ContinuationIndentWidth: 4
+ColumnLimit: 120
+AccessModifierOffset: -4
+NamespaceIndentation: None
+PointerAlignment: Left
+SortIncludes: Never
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortLambdasOnASingleLine: All
+AllowShortEnumsOnASingleLine: true
+AlwaysBreakTemplateDeclarations: No
+BreakTemplateDeclarations: No
+IndentCaseLabels: false
+ReflowComments: false

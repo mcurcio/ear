@@ -19,33 +19,33 @@ namespace ear::pipewire {
 
 /// Which way an outside node's channels flow.
 enum class ChannelFlow {
-  blockToNode,   // a playback card: block inside output -> the node's input port
-  nodeToBlock,   // a capture card, an RTP receiver: the node's output port -> block inside input
+	blockToNode, // a playback card: block inside output -> the node's input port
+	nodeToBlock, // a capture card, an RTP receiver: the node's output port -> block inside input
 };
 
 /// How one outside node is joined to its port block, channel for channel.
 struct OutsideJoin {
-  std::string kind;                   // "card", "RTP receiver": names it in loss details
-  NodeName blockNode;                 // its port block's node.name
-  ChannelFlow flow;
-  std::vector<PortName> nodePorts;    // channel i's port on the outside node
-  std::vector<PortName> blockPorts;   // channel i's inside port on the block; same size
+	std::string kind;   // "card", "RTP receiver": names it in loss details
+	NodeName blockNode; // its port block's node.name
+	ChannelFlow flow;
+	std::vector<PortName> nodePorts;  // channel i's port on the outside node
+	std::vector<PortName> blockPorts; // channel i's inside port on the block; same size
 };
 
 /// What a kind's body tells the lifecycle, on the main loop.
 class OutsideBodyEvents {
 public:
-  /// The engine node runs (its info state is RUNNING): its channels may be linked. `nodeId` is
-  /// its global id, which its links name (never its node.name: link-factory also matches a
-  /// name against other nodes' nick, description and object path, and a node of the same name
-  /// that is still going would match first). Repeats are ignored.
-  virtual void running(std::uint32_t nodeId) = 0;
-  /// The engine node failed or went (refused, ERROR, removed, its module destroyed). May be told
-  /// inside the body's constructor; the lifecycle reports the loss later, never inside make().
-  virtual void failed(std::string detail) = 0;
+	/// The engine node runs (its info state is RUNNING): its channels may be linked. `nodeId` is
+	/// its global id, which its links name (never its node.name: link-factory also matches a
+	/// name against other nodes' nick, description and object path, and a node of the same name
+	/// that is still going would match first). Repeats are ignored.
+	virtual void running(std::uint32_t nodeId) = 0;
+	/// The engine node failed or went (refused, ERROR, removed, its module destroyed). May be told
+	/// inside the body's constructor; the lifecycle reports the loss later, never inside make().
+	virtual void failed(std::string detail) = 0;
 
 protected:
-  ~OutsideBodyEvents() = default;
+	~OutsideBodyEvents() = default;
 };
 
 /// "[ AUX0 AUX1 ... ]", the audio.position of an outside node of `channels` channels: its
@@ -55,14 +55,13 @@ std::string auxPositions(std::size_t channels);
 /// The one reading of an outside node's info, for every kind's body: a state change to ERROR
 /// tells failed("the <kind> failed: <error>"), one to RUNNING tells running(nodeId) (failed if
 /// the engine gave the node no id); anything else tells nothing.
-void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId,
-                   OutsideBodyEvents& events);
+void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId, OutsideBodyEvents& events);
 
 /// One kind's PipeWire object for one outside node. Destroying it (main thread) removes the
 /// engine node and tells nothing more, in any state.
 class OutsideBody {
 public:
-  virtual ~OutsideBody() = default;
+	virtual ~OutsideBody() = default;
 };
 
 /// Makes a kind's body, which reports to the events it is given (they outlive the body).
@@ -83,4 +82,4 @@ using OutsideBodyMaker = std::move_only_function<std::unique_ptr<OutsideBody>(Ou
 std::unique_ptr<OutsideNode> joinOutsideNode(Engine& engine, OutsideJoin join, OutsideNodeEvents& events,
                                              OutsideBodyMaker makeBody);
 
-}  // namespace ear::pipewire
+} // namespace ear::pipewire

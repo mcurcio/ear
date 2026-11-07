@@ -14,7 +14,9 @@
 namespace ear::config {
 namespace {
 
-template <class... Fs> struct Overloaded : Fs... { using Fs::operator()...; };
+template <class... Fs> struct Overloaded : Fs... {
+	using Fs::operator()...;
+};
 
 using control::CommandResult;
 using Outcome = std::expected<void, CommandError>;
@@ -100,13 +102,13 @@ void Keeper::pump() {
 		Input input = std::move(fifo_.front());
 		fifo_.pop_front();
 		std::visit(Overloaded{
-		               [&](FirstOffer) { present(0); },
-		               [&](DiskCheck) {
-			               diskCheckQueued_ = false;
-			               if (!stopped_) checkDisk(disk_.read());
-		               },
-		               [&](Batch& batch) { advance(std::move(batch)); },
-		           },
+					   [&](FirstOffer) { present(0); },
+					   [&](DiskCheck) {
+						   diskCheckQueued_ = false;
+						   if (!stopped_) checkDisk(disk_.read());
+					   },
+					   [&](Batch& batch) { advance(std::move(batch)); },
+				   },
 		           input);
 	}
 	if (stopped_ && !awaiting_ && fifo_.empty()) finishOnce();
@@ -120,8 +122,7 @@ void Keeper::advance(Batch batch) {
 		if (isRead(command)) {
 			if (std::holds_alternative<control::GetGraphFile>(command))
 				reads.push_back({index, fileState(working_, version())});
-			else
-				reads.push_back({index, std::nullopt});
+			else reads.push_back({index, std::nullopt});
 			continue;
 		}
 		if (auto answer = take(command)) {
@@ -148,13 +149,13 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 	} else {
 		if (working_.read().hasErrors()) return CommandResult{control::FileRefusal{control::FileInvalid{}}};
 		edit = std::visit(Overloaded{
-		                      [&](const control::AddNode& c) { return working_.addNode(c.node); },
-		                      [&](const control::UpdateNode& c) { return working_.updateNode(c.node, c.settings); },
-		                      [&](const control::RemoveNode& c) { return working_.removeNode(c.node); },
-		                      [&](const control::AddRoute& c) { return working_.addRoute(c.route); },
-		                      [&](const control::RemoveRoute& c) { return working_.removeRoute(c.route); },
-		                      [](const auto&) -> EditOutcome { throw std::logic_error("keeper: not an edit"); },
-		                  },
+							  [&](const control::AddNode& c) { return working_.addNode(c.node); },
+							  [&](const control::UpdateNode& c) { return working_.updateNode(c.node, c.settings); },
+							  [&](const control::RemoveNode& c) { return working_.removeNode(c.node); },
+							  [&](const control::AddRoute& c) { return working_.addRoute(c.route); },
+							  [&](const control::RemoveRoute& c) { return working_.removeRoute(c.route); },
+							  [](const auto&) -> EditOutcome { throw std::logic_error("keeper: not an edit"); },
+						  },
 		                  command);
 	}
 	if (!*edit)
@@ -164,17 +165,20 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 	if (!**edit) return done();
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
-	if (model.read().hasErrors()) return CommandResult{control::FileRefusal{control::InvalidText{model.read().diagnostics}}};
+	if (model.read().hasErrors())
+		return CommandResult{control::FileRefusal{control::InvalidText{model.read().diagnostics}}};
 	candidate_ = Candidate{std::move(model), nextVersion()};
 	return std::nullopt;
 }
 
-void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex, bool last) {
+void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex,
+                      bool last) {
 	awaiting_ = true;
 	mainLoop_.post([&side = side_, &self = self_, keeper = this, batch = std::move(batch), reads = std::move(reads),
 	                offer = std::move(offer), offerIndex, last]() mutable {
 		for (Read& read : reads)
-			batch.results[read.index] = read.file ? CommandResult{side.graphFile(std::move(*read.file))} : CommandResult{side.graph()};
+			batch.results[read.index] =
+				read.file ? CommandResult{side.graphFile(std::move(*read.file))} : CommandResult{side.graph()};
 		std::optional<Verdict> verdict;
 		if (offer) {
 			Judged judged = side.offer(std::move(*offer));
@@ -218,16 +222,14 @@ void Keeper::checkDisk(DiskText disk) {
 }
 
 void Keeper::present(std::uint32_t droppedEdits) {
-	if (working_.read().hasErrors())
-		announce(control::FileChangeCause::disk, droppedEdits);
-	else
-		offerDisk(droppedEdits);
+	if (working_.read().hasErrors()) announce(control::FileChangeCause::disk, droppedEdits);
+	else offerDisk(droppedEdits);
 }
 
 void Keeper::offerDisk(std::uint32_t droppedEdits) {
 	const GraphFileRead& read = working_.read();
-	Offer offer{fileState(working_, version()), *read.wanted, read.placements,
-	            control::FileChangeCause::disk, droppedEdits};
+	Offer offer{fileState(working_, version()), *read.wanted, read.placements, control::FileChangeCause::disk,
+	            droppedEdits};
 	awaiting_ = true;
 	mainLoop_.post([&side = side_, &self = self_, keeper = this, offer = std::move(offer)]() mutable {
 		const Verdict verdict = side.offer(std::move(offer)).verdict;
@@ -236,8 +238,9 @@ void Keeper::offerDisk(std::uint32_t droppedEdits) {
 }
 
 void Keeper::announce(control::FileChangeCause cause, std::uint32_t droppedEdits) {
-	mainLoop_.post([&side = side_, file = fileState(working_, version()), cause,
-	                droppedEdits]() mutable { side.announce(std::move(file), cause, droppedEdits); });
+	mainLoop_.post([&side = side_, file = fileState(working_, version()), cause, droppedEdits]() mutable {
+		side.announce(std::move(file), cause, droppedEdits);
+	});
 }
 
 bool Keeper::ahead() const {
@@ -278,7 +281,7 @@ void Keeper::finishOnce() {
 		finalWriteFailure_ = std::move(outcome.error());
 		return;
 	}
-	if (std::holds_alternative<folder::Changed>(*outcome)) return;   // the hand edit wins
+	if (std::holds_alternative<folder::Changed>(*outcome)) return; // the hand edit wins
 	base_ = std::optional<std::string>(working_.text());
 	unwritten_ = 0;
 	mainLoop_.post([&side = side_, written = version()] { side.written(written); });
@@ -301,8 +304,6 @@ void Keeper::setBase(DiskText disk) {
 		writeFailedIsBase_ = false;
 	}
 }
-
-
 
 std::string Keeper::version() const { return std::format("{}.{}", bootId_, n_); }
 

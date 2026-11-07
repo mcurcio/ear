@@ -1,27 +1,22 @@
-# ear_nodes: the built-in node types, white, file, card and rtp (docs/design/batch2.md section 1,
-# docs/design/rtp.md). They reach the engine only through ear_core's interfaces (a card or an
-# RTP receiver is asked for through the node's grant); the file type writes WAV files with
-# libsndfile, beneath the recordings folder (ear_folder's confined folder).
-add_library(ear_nodes STATIC
-	builtin.cpp
-	card.cpp
-	file.cpp
-	rtp.cpp
-	white.cpp)
-# Header set and its standalone compile check: see src/core/CMakeLists.txt.
-target_sources(ear_nodes PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
-	include/ear/nodes/builtin.hpp)
-set_target_properties(ear_nodes PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
-target_link_libraries(ear_nodes PUBLIC ear_core ear_folder PRIVATE PkgConfig::SNDFILE)
+# The node types, each its own library in its own folder (docs/design/batch2.md section 4, docs/design/rtp.md,
+# docs/design/sendspin.md). A folder here is a type, found at configure and looked for again on every build; its
+# CMakeLists.txt calls ear_node_type(), and src/all_node_types lists what was found. No type links another.
+include("${PROJECT_SOURCE_DIR}/cmake/NodeType.cmake")
 
-if(BUILD_TESTS)
-	add_executable(ear_nodes_tests
-		tests/card_test.cpp
-		tests/file_test.cpp
-		tests/rtp_test.cpp
-		tests/white_test.cpp)
-	# libsndfile: the file tests read back the WAV files the node wrote.
-	target_link_libraries(ear_nodes_tests PRIVATE ear_nodes ear_catch_main PkgConfig::SNDFILE)
-	add_dependencies(ear_nodes_tests ear_nodes_verify_interface_header_sets)
-	ear_catch_tests(ear_nodes_tests)
-endif()
+file(GLOB entries CONFIGURE_DEPENDS LIST_DIRECTORIES true RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+	"${CMAKE_CURRENT_SOURCE_DIR}/*")
+foreach(entry IN LISTS entries)
+	# This file, and any dotfile (Finder's .DS_Store through the Mac's mount).
+	if(entry STREQUAL "CMakeLists.txt" OR entry MATCHES "^\\.")
+		continue()
+	endif()
+	if(NOT IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${entry}")
+		message(FATAL_ERROR "src/nodes/ holds node types and nothing else: ${entry}")
+	endif()
+	add_subdirectory(${entry})
+	get_property(types GLOBAL PROPERTY EAR_NODE_TYPES)
+	if(NOT entry IN_LIST types)
+		message(FATAL_ERROR "src/nodes/${entry}: its CMakeLists.txt must call ear_node_type()")
+	endif()
+endforeach()
+ear_refuse_node_type_links(${types})

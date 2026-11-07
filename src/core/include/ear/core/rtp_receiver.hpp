@@ -17,26 +17,27 @@ namespace ear {
 /// matches (docs/design/rtp.md section 4).
 class RtpAddress {
 public:
-  static std::optional<RtpAddress> parse(std::string_view text);   // nullopt outside the grammar
-  const std::string& text() const noexcept;                        // as parsed (already canonical)
-  bool multicast() const noexcept;                                 // false only for "0.0.0.0"
-  friend bool operator==(const RtpAddress&, const RtpAddress&) = default;
+	static std::optional<RtpAddress> parse(std::string_view text); // nullopt outside the grammar
+	const std::string& text() const noexcept;                      // as parsed (already canonical)
+	bool multicast() const noexcept;                               // false only for "0.0.0.0"
+	friend bool operator==(const RtpAddress&, const RtpAddress&) = default;
+
 private:
-  explicit RtpAddress(std::string text);
-  std::string text_;
+	explicit RtpAddress(std::string text);
+	std::string text_;
 };
 /// The RTP payload: big-endian signed PCM, RFC 3551's L16 and RFC 3190's L24.
 enum class RtpEncoding { l16, l24 };
 /// One stream an `rtp` node's insides ask the framework to receive. Every member is checked by
 /// the type's parse; the framework passes none of them on unparsed.
 struct RtpReceiverRequest {
-  RtpAddress address;
-  std::uint16_t port;                 // UDP port, 1-65535 (never 0)
-  RtpEncoding encoding;
-  std::uint32_t rate;                 // the sender's rate, 8000-192000 Hz; resampled to the
-                                      // graph frequency when it differs
-  std::uint32_t latencyMs;            // target receive buffer, 1-1000
-  std::vector<PortName> blockPorts;   // channel i <-> blockPorts[i]: insideInputs of this node;
-                                      // size() is the stream's channel count, 1-64
+	RtpAddress address;
+	std::uint16_t port; // UDP port, 1-65535 (never 0)
+	RtpEncoding encoding;
+	std::uint32_t rate;               // the sender's rate, 8000-192000 Hz; resampled to the
+									  // graph frequency when it differs
+	std::uint32_t latencyMs;          // target receive buffer, 1-1000
+	std::vector<PortName> blockPorts; // channel i <-> blockPorts[i]: insideInputs of this node;
+									  // size() is the stream's channel count, 1-64
 };
-}
+} // namespace ear

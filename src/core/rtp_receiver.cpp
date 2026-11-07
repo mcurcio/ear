@@ -28,7 +28,7 @@ std::optional<std::array<unsigned, 4>> dottedQuad(std::string_view text) {
 		}
 		const char c = text[i];
 		if (c < '0' || c > '9') return std::nullopt;
-		if (digits == 1 && value == 0) return std::nullopt;   // a leading zero
+		if (digits == 1 && value == 0) return std::nullopt; // a leading zero
 		value = value * 10 + static_cast<unsigned>(c - '0');
 		if (++digits > 3 || value > 255) return std::nullopt;
 	}
@@ -44,7 +44,7 @@ std::optional<RtpAddress> RtpAddress::parse(std::string_view text) {
 	const auto parts = dottedQuad(text);
 	if (!parts) return std::nullopt;
 	const bool any = text == anyAddress;
-	const bool multicast = (*parts)[0] >= 224 && (*parts)[0] <= 239;   // 224.0.0.0/4
+	const bool multicast = (*parts)[0] >= 224 && (*parts)[0] <= 239; // 224.0.0.0/4
 	if (!any && !multicast) return std::nullopt;
 	return RtpAddress(std::string(text));
 }

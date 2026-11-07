@@ -12,9 +12,12 @@ namespace ear {
 
 std::string_view matchName(RouteMatch match) noexcept {
 	switch (match) {
-	case RouteMatch::pending: return "pending";
-	case RouteMatch::linked: return "linked";
-	case RouteMatch::refused: return "refused";
+	case RouteMatch::pending:
+		return "pending";
+	case RouteMatch::linked:
+		return "linked";
+	case RouteMatch::refused:
+		return "refused";
 	}
 	return "unknown";
 }
@@ -30,8 +33,8 @@ struct Reconciler::Impl {
 	struct WantedRoute {
 		RouteMatch match = RouteMatch::pending;
 		std::string detail;
-		std::optional<LinkId> link;   // set while a link was asked for and not failed or gone
-		std::optional<Ends> ends;     // the ports of the last attempt, while both are live
+		std::optional<LinkId> link; // set while a link was asked for and not failed or gone
+		std::optional<Ends> ends;   // the ports of the last attempt, while both are live
 	};
 	using PortKey = std::pair<Direction, PortRef>;
 
@@ -98,14 +101,14 @@ void Reconciler::routeRemoved(const Route& route) {
 	const auto it = impl_->routes.find(route);
 	if (it == impl_->routes.end()) return;
 	if (it->second.link) impl_->links.destroyLink(*it->second.link);
-	impl_->routes.erase(it);   // no status: the route is no longer wanted
+	impl_->routes.erase(it); // no status: the route is no longer wanted
 }
 
 void Reconciler::portAppeared(const LivePort& port) {
 	if (impl_->livePorts.contains(port.id)) portGone(port.id);
 	const Impl::PortKey key{port.direction, port.port};
 	impl_->livePorts.emplace(port.id, key);
-	impl_->liveIds.insert_or_assign(key, port.id);   // the latest id of a port name is the one new links use
+	impl_->liveIds.insert_or_assign(key, port.id); // the latest id of a port name is the one new links use
 	for (auto& [route, wanted] : impl_->routes) impl_->linkIfLive(route, wanted);
 }
 
@@ -136,7 +139,7 @@ void Reconciler::linkActive(LinkId link) {
 void Reconciler::linkFailed(LinkId link, std::string detail) {
 	auto* entry = impl_->routeOf(link);
 	if (entry == nullptr) return;
-	entry->second.link.reset();   // keeps ends: no new attempt until an end goes and comes back
+	entry->second.link.reset(); // keeps ends: no new attempt until an end goes and comes back
 	impl_->set(entry->first, entry->second, RouteMatch::refused, std::move(detail));
 }
 

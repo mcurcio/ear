@@ -69,7 +69,7 @@ flowchart LR
 | C4 | main → control | every message to a client | nobody | per step: `graphFile.changed`, then the node and route events it causes, then the reply |
 | C5 | kernel → keeper | a change in the folder that names `ear.conf` | nobody | a disk check, queued behind the steps already waiting and judged by content |
 
-Packages: `ear_folder` ← {`ear_nodes`, `ear_config`}; `ear_control` ← {`ear_server`, `ear_config`}; all of them ← `ear`. `ear_control` declares both interfaces at its edge: the one the gateway sends requests to, and the file-state listener the gateway implements. So `ear_control` never sees knobly.
+Packages: `ear_folder` ← {the node types that open a folder (since 2026-11-06 `ear_node_file` and `ear_node_sendspin`, each its own library; then one `ear_nodes`), `ear_config`}; `ear_control` ← {`ear_server`, `ear_config`}; all of them ← `ear`. `ear_control` declares both interfaces at its edge: the one the gateway sends requests to, and the file-state listener the gateway implements. So `ear_control` never sees knobly.
 
 ## Design rules (design choices)
 
@@ -179,7 +179,7 @@ route noise:noise.mono desk:play.1;
 - Removing `playback` from `desk` is refused (`shared-definition`), because that line sits in the snippet both cards use.
 - `@include "more.conf";` is the error `ear/include-unsupported`: "@include is not supported yet: write the whole graph in ear.conf".
 - `node.*` and `route.*` keep their parameters but edit at the source. `ports-changed` is gone: a port change replaces the node. `node.remove` removes the node's line and every `route` line that names it.
-- Only ear's directives are allowed (`graph_frequency`, `block_size`, `node`, `route`). Each setting is read and written as the kind its node type declares.
+- Only ear's directives are allowed (`graph_frequency`, `block_size`, `node`, `route`). Each setting is read and written as the kind its node type declares. (Since 2026-11-06 a type declares each setting once, in a settings table of typed rows in `ear_core`, `settings_table.hpp`. `NodeType`'s `name()`, `settingKinds()` and `parse()` are not virtual and answer from that table, and the type's `make` gets only the checked values, so the reader and `parse` cannot disagree and a type that disagrees does not compile: batch2.md section 11's erratum "NodeType, 2026-11-06".)
 
 ## Costs and deferrals
 

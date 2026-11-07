@@ -10,18 +10,24 @@ namespace ear {
 
 std::string_view stateName(NodeState state) noexcept {
 	switch (state) {
-	case NodeState::starting: return "starting";
-	case NodeState::running: return "running";
-	case NodeState::failed: return "failed";
-	case NodeState::stopping: return "stopping";
+	case NodeState::starting:
+		return "starting";
+	case NodeState::running:
+		return "running";
+	case NodeState::failed:
+		return "failed";
+	case NodeState::stopping:
+		return "stopping";
 	}
 	return "unknown";
 }
 
 std::string_view failureCode(FailureReason::Code code) noexcept {
 	switch (code) {
-	case FailureReason::Code::engineRefused: return "engine-refused";
-	case FailureReason::Code::startFailed: return "start-failed";
+	case FailureReason::Code::engineRefused:
+		return "engine-refused";
+	case FailureReason::Code::startFailed:
+		return "start-failed";
 	}
 	return "unknown";
 }
@@ -94,7 +100,7 @@ bool NodeLifecycle::restartRequested() noexcept {
 bool NodeLifecycle::stopRequested() noexcept {
 	if (gone_ || state_ == NodeState::stopping) return false;
 	state_ = NodeState::stopping;
-	reason_.reset();   // a reason is set only while failed
+	reason_.reset(); // a reason is set only while failed
 	return true;
 }
 

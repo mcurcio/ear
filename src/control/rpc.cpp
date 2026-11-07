@@ -31,7 +31,7 @@ std::variant<RpcRequest, std::string> parseEntry(const json& entry) {
 	if (version == entry.end() || *version != "2.0") return invalid(replyTo);
 	const auto method = entry.find("method");
 	if (method == entry.end() || !method->is_string()) return invalid(replyTo);
-	json params;   // null: absent
+	json params; // null: absent
 	if (const auto found = entry.find("params"); found != entry.end()) {
 		if (!found->is_object() && !found->is_array()) return invalid(replyTo);
 		params = *found;

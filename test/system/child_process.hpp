@@ -126,7 +126,8 @@ private:
 	/// Reads what the child printed next. False once its output ended or `until` passed.
 	bool readMore(std::chrono::steady_clock::time_point until) {
 		if (ended_) return false;
-		const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
+		const auto left =
+			std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
 		if (left.count() <= 0) return false;
 		pollfd ready{output_fd_, POLLIN, 0};
 		const int polled = ::poll(&ready, 1, static_cast<int>(left.count()));

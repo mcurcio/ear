@@ -20,12 +20,14 @@ namespace {
 constexpr std::uint32_t fileEvents = IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE | IN_DELETE;
 constexpr std::uint32_t folderEvents = IN_DELETE_SELF | IN_MOVE_SELF;
 
-std::string failed(std::string_view what) { return std::format("graph file watch: {}: {}", what, std::strerror(errno)); }
+std::string failed(std::string_view what) {
+	return std::format("graph file watch: {}: {}", what, std::strerror(errno));
+}
 
 } // namespace
 
-std::expected<std::unique_ptr<KeeperThread>, std::string> KeeperThread::start(std::string directory, std::string fileName,
-                                                                               Handlers handlers) {
+std::expected<std::unique_ptr<KeeperThread>, std::string> KeeperThread::start(std::string directory,
+                                                                              std::string fileName, Handlers handlers) {
 	const int watch = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 	if (watch < 0) return std::unexpected(failed("inotify_init1"));
 	if (inotify_add_watch(watch, directory.c_str(), fileEvents | folderEvents | IN_ONLYDIR) < 0) {
@@ -56,7 +58,7 @@ KeeperThread::~KeeperThread() {
 void KeeperThread::post(std::move_only_function<void()> work) {
 	{
 		const std::scoped_lock lock(mutex_);
-		if (stopping_) return;   // destroyed unrun, outside the lock
+		if (stopping_) return; // destroyed unrun, outside the lock
 		queue_.push_back(std::move(work));
 	}
 	const std::uint64_t one = 1;
@@ -82,7 +84,7 @@ void KeeperThread::run() {
 			return;
 		}
 		bool disk = false;
-		for (;;) {   // drain the watch: every event read is judged together
+		for (;;) { // drain the watch: every event read is judged together
 			const auto got = ::read(watch_, buffer.data(), buffer.size());
 			if (got <= 0) break;
 			disk = disk || namesFile(buffer.data(), got);
@@ -98,7 +100,7 @@ void KeeperThread::run() {
 		}
 		for (auto& work : batch) work();
 		batch.clear();
-		if (disk && !last) handlers_.diskEvent();   // after the work posted before it (the keeper's start first)
+		if (disk && !last) handlers_.diskEvent(); // after the work posted before it (the keeper's start first)
 		bool idle = false;
 		{
 			const std::scoped_lock lock(mutex_);
