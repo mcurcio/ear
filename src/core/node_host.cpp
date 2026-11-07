@@ -4,7 +4,7 @@
 // framework drives the block with the run's code at once, readies every resource the run acquired and only then has the
 // recipe build the run object. A run is torn down by dependency, never waiting on another thread on the main loop
 // (I5): the barrier on the block's data loop (I4) and release(); outside nodes; handoffs closed, each on its own
-// thread; the run object closed, on its own threads; then, on the main loop, the run object, the code, the recipe and
+// thread; the run object closed, on its own threads; then, on the main loop, the code, the run object, the recipe and
 // the config go. Steps 3 and 4 have a deadline (I5a): past it the run is leaked, never freed. Everything a run's threads
 // tell crosses to the main loop and lands only on that run (I2, I6). It reaches the engine only through the port block
 // factory and the resource registry's adapters.
@@ -68,7 +68,8 @@ struct NodeHost::Impl {
 
 		/// The older node of this name is gone.
 		void olderGone() {
-			if (waiting_) startRun(std::exchange(waiting_, nullptr));
+			auto config = std::exchange(waiting_, nullptr);
+			if (config && !lifecycle_.blockLost()) startRun(std::move(config)); // a lost block is final (I1)
 		}
 
 		/// A new run from `config` behind the same port block, once the old one is gone. An update arriving while the
@@ -158,12 +159,13 @@ struct NodeHost::Impl {
 		};
 
 		/// One run as its own threads reach the node: everything they tell crosses to the main loop, in order, and
-		/// lands only while the node runs this run's generation; nothing lands once the run is detached (it closed, or
-		/// it was leaked). Whatever is still queued holds this object, not the node, so it may outlive the node (I6).
+		/// lands only while the run is attached. Each run has its own Channel, detached on every path that ends the run
+		/// (it closed, it failed to start, or it was leaked), before the next run can start: that is I6's generation,
+		/// so no write of an old run lands on a new one. Whatever is still queued holds this object, not the node, so
+		/// it may outlive the node.
 		class Channel final : public InsidesEvents, public std::enable_shared_from_this<Channel> {
 		public:
-			Channel(Node& node, std::uint64_t generation, Executor& mainLoop)
-				: node_(&node), generation_(generation), mainLoop_(mainLoop) {}
+			Channel(Node& node, Executor& mainLoop) : node_(&node), mainLoop_(mainLoop) {}
 			void say(std::string text) override {
 				mainLoop_.post([self = shared_from_this(), text = std::move(text)] {
 					if (Node* node = self->node()) node->host_.noted(node->name_, text);
@@ -207,13 +209,9 @@ struct NodeHost::Impl {
 			}
 
 		private:
-			/// Main thread: the node, while it runs this run.
-			Node* node() const noexcept {
-				return node_ != nullptr && node_->run_ != nullptr && node_->run_->generation == generation_ ? node_
-				                                                                                            : nullptr;
-			}
+			/// Main thread: the node, while this run is attached.
+			Node* node() const noexcept { return node_; }
 			Node* node_; // main thread only
-			std::uint64_t generation_;
 			Executor& mainLoop_;
 			bool closing_ = false;      // main thread only
 			bool insideClose_ = false;  // main thread only
@@ -226,8 +224,8 @@ struct NodeHost::Impl {
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
 			RunRecipe recipe;
-			std::unique_ptr<AudioCode> code;
 			std::unique_ptr<RunObject> object;
+			std::unique_ptr<AudioCode> code; // reads the run object, so goes first
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
@@ -273,7 +271,7 @@ struct NodeHost::Impl {
 			run_ = std::make_unique<Run>();
 			run_->generation = ++host_.generations;
 			run_->config = std::move(config);
-			run_->channel = std::make_shared<Channel>(*this, run_->generation, host_.mainLoop);
+			run_->channel = std::make_shared<Channel>(*this, host_.mainLoop);
 			starting_ = true;
 			StartResult started = [&] {
 				try {
@@ -312,6 +310,7 @@ struct NodeHost::Impl {
 			    run_->outsideRequests.empty() || !run_->outside.empty())
 				return;
 			run_->outside.reserve(run_->outsideRequests.size());
+			makingOutside_ = true;
 			for (std::size_t i = 0; i < run_->outsideRequests.size(); ++i) {
 				auto& outside = *run_->outside.emplace_back(std::make_unique<Outside>(*this, i));
 				const auto& [request, target] = run_->outsideRequests[i];
@@ -319,6 +318,8 @@ struct NodeHost::Impl {
 					[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
 					request);
 			}
+			makingOutside_ = false;
+			buildIfAllReady(); // an adapter may have told ready() inside its make()
 		}
 
 		/// Every resource is ready: the recipe builds the run object, and the run is ready once it returned.
@@ -347,7 +348,14 @@ struct NodeHost::Impl {
 		/// The run is ready once every outside node is, and its run object is built.
 		void outsideReady(std::size_t index) {
 			run_->outside.at(index)->isReady = true;
-			if (!run_->built && lifecycle_.state() != NodeState::failed &&
+			buildIfAllReady();
+		}
+
+		/// The recipe runs once every outside node the run asked for is made and ready (7.2). An adapter may tell
+		/// ready() inside make(), before the later outside nodes exist, so nothing is built while they are being made.
+		void buildIfAllReady() {
+			if (!makingOutside_ && !run_->built && lifecycle_.state() != NodeState::failed &&
+			    run_->outside.size() == run_->outsideRequests.size() &&
 			    std::ranges::all_of(run_->outside, [](const auto& outside) { return outside->isReady; }))
 				buildRunObject();
 		}
@@ -410,14 +418,15 @@ struct NodeHost::Impl {
 			finishRun();
 		}
 
-		/// I5 step 5, on the main loop: the run object, then its code, its recipe and last its config. Then the node is
-		/// gone, or the next run starts (I7).
+		/// I5 step 5, on the main loop: the code (released and unreachable since the barrier; it may hold references
+		/// into the run object, never the reverse), then the run object, its recipe and last its config. Then the node
+		/// is gone, or the next run starts (I7).
 		void finishRun() {
 			if (run_) {
 				run_->deadline.reset();
 				run_->channel->detach();
-				run_->object.reset();
 				run_->code.reset();
+				run_->object.reset();
 				run_->recipe = nullptr;
 				run_.reset();
 			}
@@ -434,6 +443,7 @@ struct NodeHost::Impl {
 			// Deliberately never deleted: the run's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(run_->config), std::move(run_->channel), std::move(run_->recipe),
 			                             std::move(run_->code), std::move(run_->object), std::move(run_->handoffs)});
+			++host_.leakedRuns;
 			run_.reset();
 			runClosing_ = false;
 			host_.diagnosed(name_, "ear.close-overdue",
@@ -464,6 +474,7 @@ struct NodeHost::Impl {
 		bool blockReady_ = false;
 		bool starting_ = false;
 		bool building_ = false;
+		bool makingOutside_ = false;
 		bool tearingDown_ = false;
 		bool stopping_ = false;
 		bool closingHandoffs_ = false;
@@ -482,6 +493,7 @@ struct NodeHost::Impl {
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; gone ones are pruned on add
 	std::uint64_t generations = 0;            // every run's generation, across nodes, so none is ever reused
+	std::size_t leakedRuns = 0;               // runs left running past the close deadline (I5a)
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 
@@ -533,7 +545,8 @@ struct NodeHost::Impl {
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
                    Timers& timers, std::chrono::milliseconds closeDeadline)
-	: impl_(new Impl{format, blocks, resources, mainLoop, timers, closeDeadline, {}, {}, {}, {}, 0, false, nullptr}) {}
+	: impl_(
+		  new Impl{format, blocks, resources, mainLoop, timers, closeDeadline, {}, {}, {}, {}, 0, 0, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
 
@@ -573,6 +586,8 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 		if (!node->stopping()) node->stop();
 	impl_->allGoneIfDone();
 }
+
+std::size_t NodeHost::leakedRuns() const noexcept { return impl_->leakedRuns; }
 
 std::vector<NodeHealth> NodeHost::health() const {
 	std::vector<NodeHealth> result;

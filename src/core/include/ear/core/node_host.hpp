@@ -176,7 +176,7 @@ public:
 	/// returned (at once with no outside node). A failure fails the node; its port block stays.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	/// Restart (I5, I7): the barrier drive(nullptr), release(); outside nodes destroyed; handoffs closed; the run object
-	/// closed; then, on the main loop, the run object destroyed, the code, the recipe and the config let go; then a new
+	/// closed; then, on the main loop, the code destroyed, then the run object, the recipe and the config; then a new
 	/// run from `config` as in nodeAdded. The port block and routes stay. An update arriving during a restart replaces
 	/// the config to start. If the block was lost: the old run is torn down, nothing starts, the node stays failed.
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
@@ -189,6 +189,10 @@ public:
 	/// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
+	/// Runs left running past the close deadline (I5a). Their threads may still post to `mainLoop` or touch engine
+	/// objects at any time, so once any was leaked the process must end without destroying those (main.cpp ends with
+	/// std::_Exit).
+	std::size_t leakedRuns() const noexcept;
 
 private:
 	struct Impl;

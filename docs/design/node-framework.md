@@ -790,17 +790,34 @@ from the sections above, and why:
   HandoffRequest>`, and the `ResourceRegistry` holds one adapter per kind (`OutsideAdapter<Request>` for the outside
   kinds, `HandoffAdapter`), each outside one handed an `OutsideTarget` (its `<node>.<suffix>` name and the bank's ports).
 - **6, I5 step 1:** core has no feed yet (sendspin's own feed waits at most 20 ms), so step 1 closes none; the tests
-  block a handoff consumer at teardown instead of a feed writer. **Step 5** frees the run object, then the code, the
-  recipe (which holds the run object when it never ran) and the config; there are no mailboxes, slots, stores or claims
-  in core yet. Handoff objects go once all have closed, at the end of step 3, as before.
+  block a handoff consumer at teardown instead of a feed writer. **Step 5** frees the code first (released and
+  unreachable since the barrier, and it may hold references into the run object, as `sendspin`'s code reads its run's
+  feed, mailbox and bell; nothing in the run object points at the code), then the run object, the recipe and the config;
+  there are no mailboxes, slots, stores or claims in core yet. Handoff objects go once all have closed, at the end of
+  step 3, as before.
+- **7.2, I5: a recipe that never ran is destroyed on the main loop, never closed.** A run torn down before its outside
+  nodes were ready frees its recipe at step 5 without calling it. So, until slice 3, a type whose recipe holds threads
+  built in `start` (today only `sendspin`, whose recipe hands over its worker) must ask for no outside node: its recipe
+  then runs inside `startRun`, and the run object it returns is closed at step 4 as any other. A type that paired
+  pre-built threads with an outside node would join them on the main loop, against I5. Slice 3 removes the pattern
+  (`start` acquires only). The recipe runs only once every outside node asked for is made and ready, even when an
+  adapter tells `ready()` inside its `make()`.
 - **6, I6:** facts (`lost`) are dropped from step 1 on, not step 4; notes (`says`) of the closing run are still heard
-  until it closed (a goodbye note), and nothing of a run is heard once it closed or was leaked. Status and events
-  (slice 5) follow I6 as written.
+  until it closed (a goodbye note), and nothing of a run is heard once it closed or was leaked. The generation is the
+  per-run `Channel` itself: each run gets its own, and every path that ends a run (closed, failed to start, leaked)
+  detaches it before another run can start, so no number is compared. Status and events (slice 5) follow I6 as
+  written.
 - **6, I5a:** one close deadline covers steps 3 and 4 together (default 10 s), on a new core interface, `Timers`, that
   the engine's main-loop executor implements. `ear.close-overdue` goes to a `NodeDiagnosticListener`, which `main.cpp`
   prints to standard error until slices 4 and 5 give diagnostics their record; standard output and the wire do not
-  change. With no claims in core, nothing is marked abandoned: a leaked `sendspin` run keeps its port claim until ear
-  restarts (slice 3 moves claims into core).
+  change. With no claims in core, nothing is marked abandoned, and I8 does not hold past a leak: the next run starts in
+  the same turn while the leaked one still holds what the name owns. A leaked `sendspin` run keeps its port claim
+  until ear restarts, so its next run fails `cannot listen` (slice 3 moves claims into core); a leaked `file` run's
+  handoff thread may still write its descriptor of the recording while the next run truncates and writes the same path.
+  A run leaked during step 3 (a handoff still open) is never told to close: its run object, and any connection it
+  holds (a `sendspin` client to Music Assistant), stays as it is until ear exits. Once any run was leaked, ear ends
+  with `std::_Exit(0)` after the keeper's last write of `ear.conf` (`NodeHost::leakedRuns`), since a leaked thread may
+  still post to the main loop or signal an engine source that `main` would otherwise destroy under it.
 - **6, I9:** one run names each outside node once (`<node>.<suffix>`; a second is a `std::logic_error` at `acquire`),
   which replaces the old "one RTP receiver per start" rule. Handoffs make no engine object.
 

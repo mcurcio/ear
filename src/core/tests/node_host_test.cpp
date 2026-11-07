@@ -193,12 +193,14 @@ std::string joined(const std::vector<PortName>& ports) {
 struct TestCards final : SoundCardAdapter {
 	Log& log;
 	std::vector<OutsideNodeEvents*> events;
+	bool readyInMake = false; // tells ready() inside make(), as a card already running might
 	explicit TestCards(Log& l) : log(l) {}
 	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const SoundCardRequest& request,
 	                                  OutsideNodeEvents& e) override {
 		log.push_back("card " + target.engineNode + " of " + target.blockNode + " " + request.card.text() + " " +
 		              joined(target.blockPorts) + " at " + std::to_string(target.format.rate));
 		events.push_back(&e);
+		if (readyInMake) e.ready();
 		return std::make_unique<TestOutside>(log, "card " + target.engineNode);
 	}
 };
@@ -600,6 +602,18 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and its r
 	CHECK(f.log.front() == "node motu stopping");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card motu.playback destroyed"));
 	CHECK(indexOf(f.log, "card motu.capture destroyed") < indexOf(f.log, "run destroyed"));
+	CHECK(f.log.back() == "all gone");
+}
+
+TEST_CASE("Cards that say ready inside make() build the run only once every card is made (7.2)", "[node_host]") {
+	Fixture f;
+	f.cards.readyInMake = true;
+	f.add("motu", withCards(f.log));
+	f.log.clear();
+	f.blocks.events.at(0)->ready();
+	CHECK(f.log == Log{"card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
+	                   "card motu.capture of motu Pro24 cap.1 at 44100", "run built", "node motu running"});
+	f.stopAll();
 	CHECK(f.log.back() == "all gone");
 }
 
@@ -1109,6 +1123,25 @@ TEST_CASE("A name added back while its old run is closing starts only once it is
 	f.stopAll();
 }
 
+TEST_CASE("A name added back whose block is lost while it waits never starts a run (I1)", "[node_host]") {
+	Fixture f;
+	auto old = std::make_shared<ThreadedConfig>(f.log);
+	f.add("net", old);
+	f.blocks.events.at(0)->ready();
+	f.host.nodeRemoved("net");
+	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
+	f.blocks.events.at(1)->lost("the engine refused the block");
+	f.log.clear();
+
+	std::thread([&] { old->run->closed(); }).join();
+	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "config next destroyed"});
+	CHECK(f.host.health().at(0).state == NodeState::failed);
+	f.log.clear();
+	f.stopAll();
+	CHECK(f.log == Log{"node net stopping", "block destroyed", "node net gone dropped=0", "all gone"});
+}
+
 TEST_CASE("A name added back after its old node has gone starts at once", "[node_host]") {
 	Fixture f;
 	f.add("net", std::make_shared<TestConfig>(f.log));
@@ -1423,9 +1456,11 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	f.timers.advance(closeDeadline - std::chrono::milliseconds(1));
 	CHECK(allGone == 0);
 
+	CHECK(f.host.leakedRuns() == 0);
 	f.timers.advance(std::chrono::milliseconds(1));
 	// Stop proceeds past the bound: the node is gone, the run object was never closed nor destroyed.
 	CHECK(allGone == 1);
+	CHECK(f.host.leakedRuns() == 1); // main.cpp then ends without destroying the main loop under the leaked run
 	CHECK(f.log == Log{"node rec stopping", "block destroyed", "release", "diagnostic rec ear.close-overdue",
 	                   "node rec gone dropped=0"});
 	REQUIRE(f.diagnostics.details.size() == 1);
@@ -1459,6 +1494,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then s
 	CHECK(f.log == Log{"diagnostic net ear.close-overdue", "start 44100 next", "prepare 44100/256", "drive code",
 	                   "run built", "node net running"});
 	CHECK(std::ranges::count(f.log, std::string("run destroyed")) == 0);
+	CHECK(f.host.leakedRuns() == 1);
 	f.log.clear();
 
 	// What the leaked run tells late lands nowhere: not on the new run (I6), and without touching freed memory.
@@ -1570,4 +1606,41 @@ TEST_CASE("Every teardown starts with the barrier: drive(nullptr) for a restart,
 	f.stopAll();
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
+}
+
+namespace {
+
+/// Code that reads from its run object (as sendspin's code reads its run's feed and mailbox), so it must go first.
+struct ReadingCode final : AudioCode {
+	Log& log;
+	explicit ReadingCode(Log& l) : log(l) {}
+	~ReadingCode() override { log.push_back("code destroyed"); }
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {}
+	void release() noexcept override {}
+};
+
+struct ReadingConfig final : NodeConfig {
+	Log& log;
+	Ports ports_{{{Direction::input, "in", {"a"}}}};
+	explicit ReadingConfig(Log& l) : log(l) {}
+	~ReadingConfig() override { log.push_back("config destroyed"); }
+	const Ports& ports() const override { return ports_; }
+	StartResult start(StartContext&) const override {
+		return Started{std::make_unique<ReadingCode>(log), handOver(log, std::make_unique<TestRun>(log))};
+	}
+};
+
+} // namespace
+
+TEST_CASE("Step 5 frees the code before the run object it reads, and the config last (I5)", "[node_host][teardown]") {
+	Fixture f;
+	f.add("net", std::make_shared<ReadingConfig>(f.log));
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+	f.host.nodeRemoved("net");
+	CHECK(f.log == Log{"node net stopping", "block destroyed", "code destroyed", "run destroyed", "config destroyed",
+	                   "node net gone dropped=0"});
+	f.stopAll();
 }

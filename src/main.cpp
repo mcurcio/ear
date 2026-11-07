@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <optional>
@@ -237,5 +238,13 @@ int main(int argc, char** argv) {
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
+	// A run leaked past its close deadline (I5a) may still post to the main loop or signal an engine source from its
+	// own threads; destroying the executor and the engine under it would be a use after free. ear.conf is written by
+	// now, so end here without running destructors.
+	if (nodes.leakedRuns() > 0) {
+		std::cout.flush();
+		std::cerr.flush();
+		std::_Exit(0);
+	}
 	return 0;
 }
