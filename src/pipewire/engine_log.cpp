@@ -209,8 +209,11 @@ void EngineLog::drain(LogSink& sink) {
 	const std::scoped_lock lock(r.drainMutex);
 	std::uint64_t count = 0;
 	[[maybe_unused]] const ssize_t ignored = ::read(r.bell, &count, sizeof count);
-	// Before reading the slots: a producer that publishes after this rings again.
-	r.rung.store(false, std::memory_order_release);
+	// Before reading the slots: a producer that publishes after this rings again. An exchange, not a store: a store
+	// then a load has no StoreLoad order, so this drain could miss a slot just published while its producer still read
+	// true and skipped the bell (a lost wakeup). As read-modify-writes on one atomic, the producer's exchange comes
+	// either after this one (it reads false and rings) or before it (this one reads its release and sees the slot).
+	r.rung.exchange(false, std::memory_order_acq_rel);
 	while (true) {
 		Slot& slot = r.slots[r.readAt & (slotCount - 1)];
 		if (slot.sequence.load(std::memory_order_acquire) != r.readAt + 1) break;
