@@ -889,9 +889,14 @@ sections above, and why:
   driving ALSA node, and a node's activation (where `xrun_count` lives) is private [V: `alsa-pcm.c`, `impl-node.c`]. So
   `GraphCycle::xruns` counts the cycles a block saw start ahead of where its last one ended on the same driver: the graph
   lost time (with the tracking dummy, a resync after a stall past `resync.ms`; a shorter stall is caught up without a
-  jump and is not counted). `discontinuity` marks the block's first cycle, a cycle on a new driver (`clock.id` changed)
-  and any position jump. The driver's identity is `driverId`, its global id (`clock.id`); the clock's name is not carried.
-  `delayFrames` is gone: the dummy's delay is always 0, so it is replaced, not kept beside the latency.
+  jump and is not counted; a backward resync, which `node-driver.c` can also make, is a discontinuity but no xrun).
+  `discontinuity` marks the block's first cycle, a new code's first cycle (each `drive`), a cycle on a new driver
+  (`clock.id` changed), any position jump, and the cycle after one too large for the block (which runs no code). The driver's identity is `driverId`, its global id (`clock.id`); the clock's name is not carried.
+  `delayFrames` is gone: the dummy's delay is always 0, so it is replaced, not kept beside the latency. **A merge hazard:**
+  `GraphCycle`'s third member was `std::uint32_t delayFrames` and is now `std::int64_t startRawNs`, so code written
+  against the old shape with three positional initialisers (`GraphCycle{start, position, delay}`) still compiles and puts
+  a frame count into the raw start. Slice 2's branch is to be searched for `GraphCycle{` at the merge and any such use
+  given designated initialisers; this branch has only two-argument and designated ones.
 - **9.4: the latency a type declares is static, and goes through `StartContext`.** `TypeSpec` is slice 2's, so a type
   declares its own latency per bank with `StartContext::declareLatency(bank, Latency)` in `start` (a default no-op on the
   interface, so a type's own test's fake context ignores it; `NodeHost` refuses a bank the node lacks or one declared
@@ -902,7 +907,9 @@ sections above, and why:
   pass-through's `BankPair`s; a run with its own code has none, so its banks tell only what it declared. An output bank
   tells its peers its internal latency plus the most upstream latency of any input bank paired with it; an input bank its
   internal latency plus the most downstream latency of any output bank paired with it. Each bank's ports are combined
-  (`spa_latency_info_combine`: least of the least, most of the most) and every port of a bank tells the same. A `Latency`
+  (`spa_latency_info_combine`: least of the least, most of the most) and every port of a bank tells the same. Only ports
+  whose peers reported a latency are combined (as `pw_impl_port_recalc_latency` combines only a port's links), so one
+  unrouted port does not pull its bank's least to 0. A `Latency`
   is a range in frames of the graph: a quantum counts the block size, nanoseconds are taken at the graph frequency.
 - **9.4: what `process` sees.** `GraphCycle::downstream` holds one `Latency` per output port (outputs then inside
   outputs, as the spans), each its bank's combined downstream; `downstreamOf(i)` gives none when it is not told (a test's
@@ -941,9 +948,14 @@ sections above, and why:
   rate on the raw clock before they play (at most 20 s, then they play with a warning: on a loaded host the data
   thread's stalls make the clock resync past `resync.ms`, which restarts its loop). Before slice 7 the graph followed `CLOCK_MONOTONIC` for good, so on such a host
   the same test would have seen the full offset all along.
-- **Section 10: denormals.** `Engine::create` runs one blocking invoke on the context's data loop right after
-  `pw_context_new` (its thread already runs), setting FTZ and DAZ on x86 and FZ on arm64; a test reads the MXCSR from
-  `process` and checks the main thread's is untouched. `cpu.zero.denormals` stays unset.
+- **Section 10: denormals.** `Engine::create` sets FTZ and DAZ on x86 and FZ on arm64 with a blocking invoke on the
+  context's data loop right after `pw_context_new`; a test reads the MXCSR from `process` and checks the main thread's is
+  untouched. `cpu.zero.denormals` stays unset. **The invoke races the data thread's start** [V: review, 11 failures in
+  300 runs of the test]: `pw_data_loop_start` (`data-loop.c`) creates the thread and returns without waiting, and
+  `loop_invoke` (`spa/plugins/support/loop.c`) treats a loop whose thread has not yet entered it as its own and runs the
+  function inline, on the caller. That is the same race that puts `cpu.zero.denormals` on the main thread. So the function
+  does nothing when it runs on the thread that invoked it, and `Engine::create` invokes again (1 ms apart, for at most
+  5 s, then fails) until it ran on the data loop's thread; a failed invoke fails `Engine::create` too.
 - **Not built, as planned elsewhere:** the follower watchdog and adapter-sourced card status (slice 8), the anchor
   (section 10, later), and the MOTU checks (drift tracking, follower resyncs at a 256-frame quantum, `api.alsa.headroom`
   and the period size, CPU for 24 resampled channels, playback and capture's relative jitter, the chrony `maxslewrate`

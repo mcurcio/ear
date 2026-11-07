@@ -77,9 +77,13 @@ stay below it: that is what keeps the dummy the driver once a card is linked.
 
 Never `cpu.zero.denormals` in `context.properties`: on 1.4.2 it lands on the main thread in this
 engine (the data loop's setup runs inline there before the data thread enters) and leaks to every
-thread made later. `Engine::create` sets FTZ and DAZ (FZ on arm64) with one blocking invoke on the
+thread made later. `Engine::create` sets FTZ and DAZ (FZ on arm64) with a blocking invoke on the
 data loop instead (`flushDenormals`); "process() runs with denormals flushed to zero" reads the
-MXCSR from `process`.
+MXCSR from `process`. That invoke races the data thread too: `pw_data_loop_start` returns before
+the thread enters its loop, and until it does `loop_invoke` runs the function inline on the caller
+(about 4% of boots). So `flushDenormals` does nothing on the thread that invoked it, and
+`Engine::create` invokes again until it ran on the data thread (1 ms apart, failing after 5 s). Any
+blocking invoke made right after `pw_context_new` meets the same race.
 
 ## The clock
 
@@ -125,9 +129,11 @@ a clock: `startNs` (`clock.nsec`), `position`, `startRawNs` (both clocks sampled
 difference added to `clock.nsec`, so a late wake cancels out), `rateDiff` (`clock.rate_diff`),
 `driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`), `xruns` and
 `discontinuity`. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA
-node), so the block counts cycles that start ahead of where the last one ended on the same driver;
-`discontinuity` marks the block's first cycle, a new driver, or any position jump (the dummy's
-resync). `downstream` is the latency downstream of each output (below). The dummy's
+node), so the block counts cycles that start ahead of where the last one ended on the same driver
+(a backward resync is no xrun); `discontinuity` marks the block's first cycle, a new code's first
+cycle, a new driver, any position jump (the dummy's resync), and the cycle after one too large for
+the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
+`node-driver.c` does. `downstream` is the latency downstream of each output (below). The dummy's
 `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into its own
 clock, never into the driver's position.
 
@@ -156,7 +162,8 @@ meet (a card's playback and capture; sendspin's `to` and `from`). What 1.4.2 doe
 
 The block's rule (`retell`), from the run's `LatencyPlan` (`carryLatency`, given by `NodeHost`
 before the run's code drives the block, cleared at its teardown): each output bank's downstream
-latency is its ports' peers combined, published to the realtime side (`GraphCycle::downstream`, one
+latency is its ports' peers combined (only ports whose peers reported one: an unrouted port is no
+path and does not pull the least to 0), published to the realtime side (`GraphCycle::downstream`, one
 per output port); an output bank tells upstream (capture) latency = what reaches the input banks
 paired with it, plus what the run declared on it; an input bank tells downstream (playback)
 latency = what lies beyond the output banks paired with it, plus what the run declared. The pairs
@@ -216,7 +223,9 @@ sets its `clock.name` to the dummy's: an ALSA follower whose clock name equals t
 matching off (`alsa-pcm.c`, `setup_matching`), so it is bit-exact. `main.cpp` never passes it: a
 real card keeps matching on. CI checks ready, following, the channel mapping sample for sample,
 the card's latency carried through the pass-through, a card that cannot open and a lost card
-leaving the clock alone. Drift tracking, follower resyncs, the ALSA-error path on a running PCM,
+leaving the clock alone. The system test "A sound card node runs and its route is linked" runs the
+test card as `main.cpp` makes it, with matching on, so it is a follower that never settles: it
+proves the wiring (running, linked) and nothing about following. Drift tracking, follower resyncs, the ALSA-error path on a running PCM,
 the rate a real card refuses and a real card's latency are checked only on the hardware (the
 `ear-on-talos` skill).
 
