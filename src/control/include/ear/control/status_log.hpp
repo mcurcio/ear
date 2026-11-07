@@ -1,45 +1,103 @@
-// Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
-// erratum in that page's Errata section and a re-cut, never a local edit. The graph-file lines are
-// docs/design/knobly-config.md's (slice S3); their erratum to m1-white-to-file.md lands in S7. The
-// says line is docs/design/sendspin.md's (section 9).
+// The one encoder of standard output (docs/design/node-framework.md section 8.8, slice 4; it replaces the plain
+// lines of docs/design/m1-white-to-file.md section 2, knobly-config.md and sendspin.md section 9). The records'
+// schema is the fixture test/protocol/output-records.json.
 #pragma once
-#include <ostream>
+#include <chrono>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 #include "ear/control/requests.hpp"
+#include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 namespace ear::control {
-/// M1's event stream (the control port replaces it), and the graph file's. One flushed line per event:
-///   node <n> starting|running|stopping
-///   node <n> failed <failureCode>: <detail>
-///   node <n> stopped dropped=<frames>
-///   node <n> says <text>
-///   route <a>:<p> -> <b>:<q> pending|linked|refused[: <detail>]
-/// and per graph file change, the first line always, then each that applies, in this order:
-///   graph-file <edit|disk|write> <version> running=<version|none>
-///   graph-file error <line>:<column> <code>: <message>      (one per error diagnostic)
-///   graph-file refused <code> [at <line>:<column>]
-///   graph-file dropped <n> edits                              (droppedEdits > 0)
-///   graph-file pending-restart <graphFrequency|blockSize>...  (when not empty)
-///   graph-file write-failed <detail>
-/// and per write:
-///   graph-file written <version>
-/// and the last write's failure, as ear exits (no change carries it):
-///   graph-file write-failed <detail>
+/// Where the encoder's lines go, one record a line, without its newline. Never blocks: false when the line was
+/// dropped (a full queue). Called with the encoder's lock held, from any thread.
+class OutputLines {
+public:
+	virtual bool offer(std::string line) = 0;
+
+protected:
+	~OutputLines() = default;
+};
+using WallClock = std::function<std::chrono::system_clock::time_point()>;
+/// What paces log records: steady, so a wall clock set back never holds a source's records for good.
+using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
+/// Every line ear writes on standard output, one JSON object each:
+///   {"v":1,"seq":<n>,"t":"<UTC, microseconds>","kind":"<kind>",<the kind's fields>,"msg":"<a human sentence>"}
+/// msg is today's plain line, so `jq -r .msg` reads as ear always did:
+///   engine              engine: realtime <detail> | engine: not realtime (<detail>)
+///   control             control listening on <address>:<port>
+///   node                node <n> starting|running|stopping | node <n> failed <code>: <detail>
+///                       | node <n> stopped dropped=<frames>
+///   note                node <n> says <text>
+///   route               route <a>:<p> -> <b>:<q> pending|linked|refused[: <detail>]
+///   graph-file          one record per change, every diagnostic in it; msg is its lines, joined by newlines:
+///                         graph-file <edit|disk|write> <version> running=<version|none>
+///                         graph-file error <line>:<column> <code>: <message>      (one per error)
+///                         graph-file refused <code>[ at <line>:<column>]
+///                         graph-file dropped <n> edits
+///                         graph-file pending-restart <graphFrequency|blockSize>...
+///                         graph-file write-failed <detail>
+///   graph-file-written  graph-file written <version>
+///   graph-file-write-failed  graph-file write-failed <detail>   (the last write's, as ear exits)
+///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
+///   exit                ear: <reason>
+///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node, e.g. ear.close-overdue)
+/// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
+/// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
+/// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
+/// out of the queue. What was held back is counted: the source's next record that passes carries "heldBack":<n>, and
+/// its msg says so (a flood that stops is counted on that source's next line, not before).
+/// Thread-safe: every call takes one lock while it encodes and offers, never while anything is written.
 class StatusLog final : public NodeHealthListener,
 						public NodeNoteListener,
 						public RouteStatusListener,
-						public GraphFileListener {
+						public GraphFileListener,
+						public NodeDiagnosticListener,
+						public LogSink {
 public:
-	explicit StatusLog(std::ostream& out);
+	static constexpr int logBurst = 32;
+	explicit StatusLog(OutputLines& out, WallClock clock = &std::chrono::system_clock::now,
+	                   PaceClock pace = &std::chrono::steady_clock::now);
 	void nodeChanged(const NodeHealth& health) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
+	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) override;
 	void routeChanged(const RouteStatus& status) override;
 	void graphFileChanged(const GraphFileChanged& change) override;
 	void graphFileWritten(const std::string& version) override;
 	void graphFileWriteFailed(const std::string& detail);
+	void log(const LogEntry& entry) override;
+	void engineScheduling(bool realtime, std::string_view detail);
+	void controlListening(std::string_view address, std::uint16_t port);
+	/// Why ear exits with `status` (a folder it cannot open, a port it cannot bind).
+	void exiting(int status, std::string_view reason);
 
 private:
-	std::ostream& out_;
+	/// A record's own fields, in order: each a key and its value as JSON text.
+	using Fields = std::vector<std::pair<std::string, std::string>>;
+	/// The record's envelope around `fields`, offered under the lock.
+	void emit(std::string_view kind, Fields fields, std::string msg);
+
+	/// One node's or source's pace: tokens up to logBurst, one more a second.
+	struct Pace {
+		double tokens;
+		std::chrono::steady_clock::time_point at;
+		std::uint64_t heldBack = 0;
+	};
+
+	OutputLines& out_;
+	WallClock clock_;
+	PaceClock pace_;
+	std::map<std::string, Pace, std::less<>> paces_; // under mutex_
+	std::mutex mutex_;
+	std::uint64_t seq_ = 0;
+	std::uint64_t dropped_ = 0;
 };
 } // namespace ear::control

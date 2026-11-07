@@ -8,6 +8,7 @@ add_library(ear_core STATIC
 	desired_graph.cpp
 	graph_status.cpp
 	levels.cpp
+	log.cpp
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
@@ -29,6 +30,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
+	include/ear/core/log.hpp
 	include/ear/core/node_catalogue.hpp
 	include/ear/core/node_folders.hpp
 	include/ear/core/node_host.hpp

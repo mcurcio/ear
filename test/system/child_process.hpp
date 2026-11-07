@@ -1,6 +1,12 @@
 // The system tests' way to run the real out/ear: spawn it with its standard output and error
 // on one pipe, wait for a line it prints, send it a signal and wait for it to exit. Every wait
 // is for an event (a line, end of output); its deadline only fails the test.
+//
+// ear prints one JSON record a line (docs/design/node-framework.md section 8.8, the schema in
+// test/protocol/output-records.json), and each record's msg is the plain line ear printed before
+// records (a graph-file record's msg holds its lines, joined by newlines). So the lines the helpers
+// below match, and output(), are the msg lines; a line that is no record (ear's flag errors, printed
+// before it captures its descriptors) is itself. raw() is what ear wrote, and records() each record.
 #pragma once
 
 #include <cerrno>
@@ -12,6 +18,8 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include <fcntl.h>
 #include <poll.h>
@@ -109,8 +117,17 @@ public:
 		return WEXITSTATUS(status);
 	}
 
-	/// Everything the child printed so far, standard output and error interleaved.
+	/// Every line the child printed so far, standard output and error interleaved, as msg lines.
 	const std::string& output() const noexcept { return output_; }
+
+	/// What the child wrote, byte for byte.
+	const std::string& raw() const noexcept { return raw_; }
+
+	/// Each record the child printed so far, in order.
+	const std::vector<nlohmann::json>& records() const noexcept { return records_; }
+
+	/// Each whole line of raw() that is not a record.
+	const std::vector<std::string>& plainLines() const noexcept { return plain_; }
 
 	bool hasLine(std::string_view line) const {
 		std::size_t start = 0;
@@ -138,16 +155,40 @@ private:
 		if (got < 0 && errno == EINTR) return true;
 		if (got <= 0) {
 			ended_ = true;
+			if (taken_ < raw_.size()) { // a last line without its newline
+				raw_ += '\n';
+				takeLines();
+			}
 			return false;
 		}
-		output_.append(buffer, static_cast<std::size_t>(got));
+		raw_.append(buffer, static_cast<std::size_t>(got));
+		takeLines();
 		return true;
+	}
+
+	/// Each whole raw line not yet taken: a record gives its msg lines, anything else itself.
+	void takeLines() {
+		for (std::size_t end; (end = raw_.find('\n', taken_)) != std::string::npos; taken_ = end + 1) {
+			const std::string line = raw_.substr(taken_, end - taken_);
+			nlohmann::json record = nlohmann::json::parse(line, nullptr, false);
+			if (record.is_object() && record.contains("msg") && record["msg"].is_string()) {
+				output_ += record["msg"].get<std::string>() + '\n';
+				records_.push_back(std::move(record));
+			} else {
+				output_ += line + '\n';
+				plain_.push_back(line);
+			}
+		}
 	}
 
 	pid_t pid_ = -1;
 	int output_fd_ = -1;
 	bool ended_ = false;
-	std::string output_;
+	std::string raw_;
+	std::size_t taken_ = 0; // raw_ up to here is taken into output_
+	std::string output_;    // the msg lines so far
+	std::vector<nlohmann::json> records_;
+	std::vector<std::string> plain_;
 };
 
 } // namespace ear::test

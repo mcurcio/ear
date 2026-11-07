@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -13,6 +14,7 @@
 #include <vector>
 
 #include "ear/all_node_types/all_node_types.hpp"
+#include "ear/core/log.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "temp_folder.hpp"
 
@@ -36,8 +38,23 @@ inline const std::shared_ptr<const folder::ConfinedFolder>& configFolder() {
 	return folder;
 }
 
+/// What the types' factories report at boot, kept for the test program's life (any thread).
+struct BootLog final : LogSink {
+	std::mutex mutex;
+	std::vector<LogEntry> entries;
+	void log(const LogEntry& entry) override {
+		const std::scoped_lock lock(mutex);
+		entries.push_back(entry);
+	}
+};
+
+inline BootLog& bootLog() {
+	static BootLog log;
+	return log;
+}
+
 inline std::vector<std::unique_ptr<const NodeType>> allTypes() {
-	return nodes::allNodeTypes({.recordings = recordingsFolder(), .config = configFolder()});
+	return nodes::allNodeTypes({.recordings = recordingsFolder(), .config = configFolder(), .log = &bootLog()});
 }
 
 /// Settings `type` accepts, the one home of what the all-type tests need of a type: together they give every key it

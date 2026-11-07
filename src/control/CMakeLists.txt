@@ -1,4 +1,5 @@
-# ear_control: the control surface, pure (docs/design/batch2.md section 1): the status lines; the
+# ear_control: the control surface, pure (docs/design/batch2.md section 1): standard output's one encoder (every
+# record, docs/design/node-framework.md section 8.8; its schema test/protocol/output-records.json); the
 # plain types of ear.conf's state on the wire (places, diagnostics, the file's state and its
 # refusals) and the interfaces at its edge to the graph file
 # keeper (requests.hpp, docs/design/knobly-config.md); the one decoder and encoder of node and

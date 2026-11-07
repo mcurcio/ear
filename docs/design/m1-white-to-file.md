@@ -47,6 +47,10 @@ port global ids; link owned by creating client unless object.linger (1.0.5 modul
 only while no other client can connect: no socket).
 
 ## 2. Frozen interfaces (C++23; fallback C++20 + vendored tl::expected, same signatures)
+
+Erratum (2026-11-07): the plain status lines `StatusLog` writes below are no longer the contract. Every line on standard
+output is a JSON record whose `msg` is the old line (`docs/design/node-framework.md` section 8.8 and its erratum;
+the schema is `test/protocol/output-records.json`).
 Stateful classes use a private Impl pointer.
 
 ```cpp

@@ -574,6 +574,39 @@ writes on standard output is one JSON object, in one schema, from one encoder (`
   tests, the system tests and any tooling, as the wire's fixtures are.
 - The wire gains `log.subscribe` later (filtered by node and level) with no node changing.
 
+**Erratum, slice 4 as built (2026-11-07).** What the code does where it differs from the text above; the fixture
+`test/protocol/output-records.json` is the schema's home:
+
+- **Kinds as built:** `engine`, `control`, `node`, `note`, `route`, `graph-file`, `graph-file-written`,
+  `graph-file-write-failed` (the last write's, as ear exits), `log` and `exit` (why ear exits 1). `status`, `event` and
+  `diagnostic` come with the slices that make them (1 and 3). A failed node's reason is `failure`, not `lastFailure`
+  (there is no recovery yet to make it a past one).
+- **No `run` yet.** Records carry no run generation until slice 1 gives runs one; `LogEntry::run` is the seam.
+- **A `graph-file` record's `msg` spans lines**: the plain lines its change printed, joined by `\n`, so `jq -r .msg`
+  prints several lines for that one record. One record per change, as above; the lines keep `msg` close to what people
+  grepped.
+- **Boot-time messages** (`sendspin`'s key files narrowed at boot) are `log` records from source `sendspin`, reached
+  through an interim `NodeFolders::log` (a `LogSink*`), until the store service's diagnostics (7.1) replace it. A type
+  that reports anything throws `std::logic_error` on a null sink, as for a folder it needs, so nothing is dropped for
+  want of one. Slices 1 and 2 reshape `NodeFolders` (folders as resources) and should fold this in.
+- **Log records are paced per node, or per source when unattributed**, not only per node: a burst of 32, then one a
+  second, and the next record that passes carries `heldBack` (a flood that stops is counted on that source's next
+  line). Captured `stderr`, PipeWire and alsa-lib share the output queue with states, routes and notes; unpaced, one
+  chatty library could push the pairing-code note out.
+- **sendspin-cpp has no log hook** ([U] in section 15 answered): on a host build its `SS_LOG*` macros are a bare
+  `fprintf(stderr, ...)` with one process-wide level (`src/platform/logging.h`; `set_log_level` is the only control), and
+  IXWebSocket writes there too. Until a carried patch routes `SS_LOG*` through a settable callback that carries the
+  client, so ear can name its node, those lines are unattributed `stderr` records at `warn`.
+- **A crash keeps its last words.** With descriptors 1 and 2 on pipes read by a thread of the dying process, abort's,
+  `std::terminate`'s and assert's messages would die in the pipe. While the capture is installed, handlers for
+  `std::terminate` and SIGABRT, SIGSEGV, SIGBUS, SIGFPE and SIGILL write what the pipes hold, as raw bytes, to the real
+  descriptors and put those back on 1 and 2 before the crash goes on; `std::terminate` first writes out the output
+  queue (bounded waits). The capture's stop no longer waits for the pipes' end of file, which a surviving duplicate of
+  descriptor 1 or 2 (a forked child's) would hold off for good: a bell ends it. A program's standard error is never an
+  inherited descriptor 2 (7.5).
+- **The output queue** is bounded in bytes (4 MiB) as well as lines (4096); a record larger than the bound still goes
+  when nothing else waits.
+
 ## 9. The audio contract
 
 ### 9.1 Bus connections: the type writes none
@@ -808,9 +841,10 @@ from the sections above, and why:
   detaches it before another run can start, so no number is compared. Status and events (slice 5) follow I6 as
   written.
 - **6, I5a:** one close deadline covers steps 3 and 4 together (default 10 s), on a new core interface, `Timers`, that
-  the engine's main-loop executor implements. `ear.close-overdue` goes to a `NodeDiagnosticListener`, which `main.cpp`
-  prints to standard error until slices 4 and 5 give diagnostics their record; standard output and the wire do not
-  change. With no claims in core, nothing is marked abandoned, and I8 does not hold past a leak: the next run starts in
+  the engine's main-loop executor implements. `ear.close-overdue` goes to a `NodeDiagnosticListener`, which the output
+  encoder implements: since slice 4 merged, it is a `diagnostic` record on standard output (`output-records.json`);
+  the wire carries diagnostics from slice 5. A process with a leaked run ends with `std::_Exit` after the output thread's
+  queue is written out. With no claims in core, nothing is marked abandoned, and I8 does not hold past a leak: the next run starts in
   the same turn while the leaked one still holds what the name owns. A leaked `sendspin` run keeps its port claim
   until ear restarts, so its next run fails `cannot listen` (slice 3 moves claims into core); a leaked `file` run's
   handoff thread may still write its descriptor of the recording while the next run truncates and writes the same path.
@@ -850,7 +884,8 @@ The owner's answers, 2026-11-07, in chat (current choices; later evidence may re
 - [U] Denormals: whether PipeWire's `cpu.zero.denormals` context property sets FTZ/DAZ on the data thread; set it in
   `engine.conf` and check the MXCSR in a test, rather than adding it around `process`.
 - [U] `cleanup.sec`'s smallest safe value for `rtp`'s `receiving`.
-- [U] Whether sendspin-cpp has a log hook (8.8); if not, the carried patch that adds one.
+- sendspin-cpp has no log hook (8.8's erratum): a carried patch that routes `SS_LOG*` through a settable callback
+  carrying the client is owed; until then its lines are unattributed `stderr` records at `warn`.
 - [U] shairport-sync: its raw PCM output flags, a static latency offset, and its mDNS without D-Bus in the container
   (7.5).
 - Stop costs one blocking barrier per node (`node_host.cpp`'s `stopAll`); batching them is a later improvement.

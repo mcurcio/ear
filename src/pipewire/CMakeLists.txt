@@ -5,6 +5,7 @@
 # sources include them by path.
 add_library(ear_pipewire STATIC
 	engine.cpp
+	engine_log.cpp
 	handoffs.cpp
 	links.cpp
 	live_graph.cpp
@@ -17,6 +18,7 @@ add_library(ear_pipewire STATIC
 # declare PipeWire's types they name, so PipeWire's own headers stay private to this package.
 target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/engine.hpp
+	include/ear/pipewire/engine_log.hpp
 	include/ear/pipewire/handoffs.hpp
 	include/ear/pipewire/links.hpp
 	include/ear/pipewire/live_graph.hpp
@@ -34,6 +36,7 @@ configure_file(engine.conf "${PROJECT_BINARY_DIR}/engine.conf" COPYONLY)
 
 if(BUILD_TESTS)
 	add_executable(ear_pipewire_tests
+		tests/engine_log_test.cpp
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
 		tests/main_loop_executor_test.cpp
