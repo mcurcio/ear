@@ -25,8 +25,12 @@ public:
 	ear::AudioFormat format() const override { return {.rate = rate_, .maxBlock = 256}; }
 	const ear::NodeName& node() const override { return name_; }
 	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for events"); }
+	void declareLatency(const std::string& bank, ear::Latency internal) override {
+		latency.emplace_back(bank, internal);
+	}
 
 	std::vector<ear::RtpReceiverRequest> requests;
+	std::vector<std::pair<std::string, ear::Latency>> latency;
 
 protected:
 	Acquired acquireResource(const ear::ResourceRequest& request) override {
@@ -100,6 +104,15 @@ TEST_CASE("Rtp start acquires exactly one receiver with its settings, joined to 
 		CHECK(defaulted.rate == 44100);
 	}
 	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
+}
+
+TEST_CASE("Rtp declares its receive buffer as the latency of its stream bank, in frames of the graph",
+          "[rtp][latency]") {
+	RecordingContext context(44100);
+	REQUIRE(parseOk(settingsWith({{"latencyMs", 250}, {"rate", 96000}}))->start(context).has_value());
+	REQUIRE(context.latency.size() == 1);
+	CHECK(context.latency[0].first == "stream");
+	CHECK(context.latency[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
 }
 
 TEST_CASE("Rtp maps L24 to l24 and L16 to l16", "[rtp]") {

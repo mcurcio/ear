@@ -21,6 +21,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
@@ -48,7 +49,8 @@ struct Cycle {
 	std::int64_t startRawNs;
 	std::uint64_t position;
 	std::uint32_t frames;
-	std::uint32_t delayFrames; // what the driver still held
+	std::uint32_t delayFrames; // what lies downstream of the outputs (a following card's buffer), as the code was told
+	std::uint32_t driverId;    // as the framework told it
 	std::uint32_t got;         // frames of ramp in it (the rest zeros), if they name their place
 	std::uint32_t firstAt;     // where in the cycle the first of them is, when got > 0
 	std::uint32_t firstIndex;  // the ramp index that one names
@@ -75,18 +77,15 @@ public:
 	void release() noexcept override { code_.release(); }
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		timespec raw{};
-		timespec mono{};
-		clock_gettime(CLOCK_MONOTONIC_RAW, &raw);
-		clock_gettime(CLOCK_MONOTONIC, &mono);
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
 		Cycle& out = cycles_[at];
-		out.startRawNs = cycle.startNs + ((raw.tv_sec - mono.tv_sec) * 1000000000 + (raw.tv_nsec - mono.tv_nsec));
+		out.startRawNs = cycle.startRawNs;
 		out.position = cycle.position;
 		out.frames = frames;
-		out.delayFrames = cycle.delayFrames;
+		out.delayFrames = cycle.downstreamOf(0).maxFrames;
+		out.driverId = cycle.driverId;
 		out.got = 0;
 		out.firstAt = 0;
 		out.firstIndex = 0;
@@ -263,17 +262,6 @@ struct Rig {
 	std::unique_ptr<PortBlock> block;
 };
 
-/// Silent code for the block the test card plays through.
-class Silence final : public AudioCode {
-public:
-	void prepare(const AudioFormat&) override {}
-	void release() noexcept override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const GraphCycle&) noexcept override {
-		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-	}
-};
-
 class CardEvents final : public OutsideNodeEvents {
 public:
 	explicit CardEvents(Waiter& waiter) : waiter_(waiter) {}
@@ -292,33 +280,65 @@ private:
 	Waiter& waiter_;
 };
 
-/// Card "Test" of the test ALSA configuration, behind its own block, driving the graph.
+/// Card "Test" of the test ALSA configuration behind its own block, as a card node runs: the framework's pass-through
+/// from its public "play" bank to the inside bank the card joins, carrying the card's latency back. The node's "from"
+/// outputs are linked to "play", so the card follows the internal clock and plays what the node plays. The test card
+/// has no clock, so it is made clockless (its rate matching off): docs/design/node-framework.md section 10.
 struct TestCard {
 	explicit TestCard(Rig& rig)
-		: cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
-		block = rig.blocks.make("card", Ports{{{Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
-		                        kFormat, blockEvents);
-		block->drive(&silence);
+		: engine(*rig.engine), cards(*rig.engine, clocklessCardProperties()), blockEvents(rig.waiter),
+		  events(rig.waiter), registry(*rig.engine, rig.waiter) {
+		const Ports ports{{{Direction::input, "play", {"1", "2"}},
+		                   {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}};
+		const std::vector<BankPair> pairs{{"play", "to_card"}};
+		passThrough = makePassThrough(ports, pairs);
+		passThrough->prepare(kFormat);
+		block = rig.blocks.make("card", ports, kFormat, blockEvents);
+		block->carryLatency(LatencyPlan{pairs, {}});
+		block->drive(passThrough.get());
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
 		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
 		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
 		REQUIRE(rig.waiter.until([&] { return events.isReady || events.lostDetail.has_value(); }));
 		REQUIRE(events.lostDetail.value_or("") == "");
+		for (const char* side : {"left", "right"})
+			link(std::string("from.") + side, side[0] == 'l' ? "play.1" : "play.2");
+		REQUIRE(rig.waiter.until([&] {
+			const auto node = registry.id("clock");
+			return node && registry.activeLinksOf(*node) == 2;
+		}));
 	}
-	~TestCard() { block->drive(nullptr); }
+	~TestCard() {
+		for (pw_proxy* made : links) pw_proxy_destroy(made);
+		block->drive(nullptr);
+	}
+	/// A route's link, by node and port name, as the reconciler would make by port id.
+	void link(const std::string& from, const std::string& to) {
+		pw_properties* props =
+			pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, "clock", PW_KEY_LINK_OUTPUT_PORT, from.c_str(),
+		                      PW_KEY_LINK_INPUT_NODE, "card", PW_KEY_LINK_INPUT_PORT, to.c_str(), nullptr);
+		links.push_back(static_cast<pw_proxy*>(pw_core_create_object(
+			engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0)));
+		pw_properties_free(props);
+		REQUIRE(links.back() != nullptr);
+	}
+	Engine& engine;
 	AlsaSoundCards cards;
-	Silence silence;
+	std::unique_ptr<AudioCode> passThrough;
 	BlockEvents blockEvents;
 	CardEvents events;
 	Registry registry;
 	std::unique_ptr<PortBlock> block;
 	std::unique_ptr<OutsideNode> card;
+	std::vector<pw_proxy*> links;
 };
 
 struct Errors {
 	std::size_t judged = 0;
 	std::size_t afterFirst3s = 0; // the cycles that could have been judged, skipped ones' 1.5 s among them
 	std::uint32_t mostDelayFrames = 0;
+	std::uint32_t leastDelayFrames = UINT32_MAX;
+	std::size_t driverChanges = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
 	std::size_t skips = 0;
@@ -362,6 +382,7 @@ private:
 				lastSkipNs_ = cycle.startRawNs;
 			}
 		}
+		if (previous_ && cycle.driverId != previous_->driverId) ++errors.driverChanges;
 		if (previous_ && cycle.position == previous_->position + previous_->frames) {
 			errors.contiguousFrames += previous_->frames;
 			errors.contiguousNs += cycle.startRawNs - previous_->startRawNs;
@@ -385,10 +406,11 @@ private:
 		lastCycleRamp_ = cycle.ramp;
 
 		const std::int64_t rampUs = playStartUs_ + static_cast<std::int64_t>(cycle.firstIndex) * 1000000 / kRate;
-		// When the first of them is heard: at the block's port, plus what the driver holds ahead of it (section 7).
+		// When the first of them is heard: at the block's port, plus what lies downstream of it (section 7).
 		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
 		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
+		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
@@ -412,11 +434,11 @@ private:
 
 void report(const Errors& errors) {
 	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
-	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most "
-	               << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 "
-	               << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99) << " us, worst "
-	               << errors.worstUs << " us, skips " << errors.skips << ", bad cycles " << errors.badCycles
-	               << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
+	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, downstream "
+	               << errors.leastDelayFrames << " to " << errors.mostDelayFrames << " frames, within 1 ms "
+	               << errors.within << ", p50 " << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99)
+	               << " us, worst " << errors.worstUs << " us, skips " << errors.skips << ", bad cycles "
+	               << errors.badCycles << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
 	               << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
 }
 
@@ -451,10 +473,14 @@ TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time f
 	checkSync(judge.errors);
 }
 
-// The test card cannot give 1 ms, so this holds what its clock allows (docs/design/sendspin.md section 16, its numbers): it
-// has no clock of its own, and PipeWire's rate loop runs the graph some percent fast, past the library's +-0.5% speed
-// correction, so the library hard-syncs each time the error passes 5 ms. A real card's bound is a check on the hardware.
-TEST_CASE("Driven by the test card, the library holds the audio to its hard sync's bound", "[sendspin][clock][cards]") {
+// The card follows the internal clock (docs/design/node-framework.md section 10), so the graph keeps the dummy's clock
+// and the library's 1 ms holds as on the dummy alone. What changes is when a frame is heard: once the card has played what
+// it holds, which the card reports as its latency and the framework carries back through the card block's pass-through to
+// the node's outputs (section 9.4). The test card is clockless, so it cannot show drift; that is a check on the hardware
+// (the ear-on-talos skill).
+TEST_CASE("Through a following test card, audio is dated by the card's latency and leaves within 1 ms of the time "
+          "filter's prediction",
+          "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
 	const std::int64_t playStart = rig.play(8.0);
@@ -465,12 +491,15 @@ TEST_CASE("Driven by the test card, the library holds the audio to its hard sync
 		return rig.notes.heard("stream-ended");
 	};
 	REQUIRE(rig.waiter.until(finished, 30s));
-	report(judge.errors);
-	REQUIRE(judge.errors.judged > 0);
-	CHECK(std::abs(judge.errors.worstUs) < 20000.0);
+	CHECK(rig.notes.heard("stream flac 48000 2 24"));
+	// ALSA's playback node reports at least a quantum (alsa-pcm-sink.c), and the card's latency is the same all along.
+	CHECK(judge.errors.leastDelayFrames >= kBlock);
+	CHECK(judge.errors.leastDelayFrames == judge.errors.mostDelayFrames);
+	checkSync(judge.errors);
 }
 
-TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[sendspin][clock][cards]") {
+TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the output steps by +1 again",
+          "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
 	const std::int64_t playStart = rig.play(8.0);
@@ -495,7 +524,8 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 	}));
 	judge.restartRun();
 
-	// The library may still be correcting, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
+	// Losing the card loses only its latency (what the node's frames are dated by), so the library may correct, a frame
+	// per chunk: a chunk is about five blocks, so three in a row hold it.
 	CHECK(rig.waiter.until(
 		[&] {
 			judge.read();
@@ -503,6 +533,8 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 		},
 		3s));
 	report(judge.errors);
+	// The internal clock drove all along: neither the card's links nor its loss moved the clock.
+	CHECK(judge.errors.driverChanges == 0);
 }
 
 TEST_CASE("A stream ended mid-play leaves zeros within two blocks", "[sendspin][clock]") {

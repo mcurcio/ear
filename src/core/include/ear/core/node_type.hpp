@@ -2,7 +2,9 @@
 // S1; delayFrames by its erratum 22; PortBank and Ports' banks by batch2.md section 11's erratum of 2026-11-06; NodeType
 // answering from one table by its erratum "NodeType, 2026-11-06"; StartContext, the closed list of resource requests,
 // named inside banks, the pass-through, the two-phase start and the run object by docs/design/node-framework.md
-// sections 7.2 and 7.3, slice 1). Change it only through a design page and a re-cut, never a local edit.
+// sections 7.2 and 7.3, slice 1; GraphCycle's clock facts and downstream latency, which replace delayFrames, Latency and
+// declareLatency by its sections 9.3 and 9.4, slice 7). Change it only through a design page and a re-cut, never a local
+// edit.
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -82,12 +84,37 @@ struct AudioFormat {
 	std::uint32_t maxBlock;
 }; // fixed at boot in M1
 
-/// This cycle of the graph, on the driver's clock.
+/// A latency in frames at the graph frequency: the least and the most it can be over the paths it combines
+/// (docs/design/node-framework.md section 9.4).
+struct Latency {
+	std::uint32_t minFrames = 0;
+	std::uint32_t maxFrames = 0;
+	friend bool operator==(const Latency&, const Latency&) = default;
+};
+
+/// This cycle of the graph, on the driver's clock: ear's internal clock, the dummy driver, which always drives
+/// (docs/design/node-framework.md sections 9.3 and 10). Made once a cycle by the framework, so no type reads a clock.
 struct GraphCycle {
-	std::int64_t startNs;   // its start, CLOCK_MONOTONIC
-	std::uint64_t position; // the driver's frames at its start
-	std::uint32_t delayFrames =
-		0; // how long what this cycle writes waits in the driver before it is heard (0: no device)
+	std::int64_t startNs;        // its start, CLOCK_MONOTONIC
+	std::uint64_t position;      // the driver's frames at its start
+	std::int64_t startRawNs = 0; // the same start on CLOCK_MONOTONIC_RAW, the clock the driver tracks
+	double rateDiff = 1.0;       // the driver's rate against the clock it tracks (its loop's correction)
+	std::uint32_t driverId = 0;  // the driving node's engine id: another driver is another clock
+	std::int64_t nextNs = 0;     // when the next cycle is due to start, CLOCK_MONOTONIC
+	/// Cycles this block saw start ahead of where the last one ended, on the same driver: the graph lost time (a
+	/// stall). PipeWire gives a block no xrun count of its own, so the framework counts these.
+	std::uint64_t xruns = 0;
+	/// The first cycle the block runs, the first after the driver changed, or one whose position jumped (the dummy's
+	/// resync after a stall): the clock did not move on by the last cycle's frames.
+	bool discontinuity = false;
+	/// One per output port (outputs then insideOutputs, as AudioCode::process's spans): the latency downstream of the
+	/// port's bank, what the ports linked to the bank report (a following card: its buffer), combined over them. Empty
+	/// when nothing tells it (a test's own cycle).
+	std::span<const Latency> downstream{};
+	/// The latency downstream of output `output`; none when it is not told.
+	Latency downstreamOf(std::size_t output) const noexcept {
+		return output < downstream.size() ? downstream[output] : Latency{};
+	}
 };
 
 class AudioCode {
@@ -164,6 +191,16 @@ public:
 	/// The run's events, until its close's `closed`; may be kept by the run's threads. (Kept on the start context
 	/// until sendspin builds its run in the recipe, slice 3.)
 	virtual InsidesEvents& events() = 0;
+	/// The run's own latency on `bank`, for the whole run (docs/design/node-framework.md section 9.4): on an output
+	/// bank, how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
+	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the latency
+	/// it carries through the bank, and tells the sum to the ports linked to it. At most once per bank; a bank the node
+	/// lacks, or a second declaration for one, throws std::logic_error (a type bug). Ignored by a context that carries
+	/// no latency (a type's own test's).
+	virtual void declareLatency(const std::string& bank, Latency internal) {
+		static_cast<void>(bank);
+		static_cast<void>(internal);
+	}
 
 protected:
 	~StartContext() = default;
@@ -199,6 +236,7 @@ public:
 struct BankPair {
 	std::string from;
 	std::string to;
+	friend bool operator==(const BankPair&, const BankPair&) = default;
 };
 /// What runs on the realtime thread for one run: a type's own AudioCode, or the framework's pass-through between
 /// banks (outputs no pair names are silent). The pass-through is resolved against the node's ports when the run starts;

@@ -98,6 +98,8 @@ public:
 		}
 		const std::uint32_t rate = context.format().rate;
 		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
+		// The feed holds the server's audio up to its size before it leaves (docs/design/node-framework.md 9.4).
+		context.declareLatency("from", Latency{0, feedFramesFor(context.format())});
 		auto code = run->code(rate, toServer);
 		return Started{
 			std::move(code),

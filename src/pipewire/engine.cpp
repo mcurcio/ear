@@ -1,5 +1,6 @@
 // PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts";
-// docs/design/batch2.md sections 4.3 and 7: CAP_SYS_NICE and the scheduling report).
+// docs/design/batch2.md sections 4.3 and 7: CAP_SYS_NICE and the scheduling report;
+// docs/design/node-framework.md section 10: denormals flushed on the data thread).
 #include "ear/pipewire/engine.hpp"
 
 #include <algorithm>
@@ -12,6 +13,9 @@
 #include <sched.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
 
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
@@ -71,6 +75,23 @@ int readScheduling(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, co
 		*result = {false, "policy " + std::to_string(policy)};
 		break;
 	}
+	return 0;
+}
+
+/// Runs on the data loop: the calling thread flushes denormal results to zero and reads denormal inputs as zero (FTZ
+/// and DAZ on x86, FZ on arm64), so a decaying signal never slows process() by orders of magnitude. PipeWire 1.4.2's
+/// cpu.zero.denormals sets them on the main thread instead in this engine (the data loop's setup runs inline there),
+/// and every thread made later inherits them, so it stays unset.
+int flushDenormals(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
+                   std::size_t /*size*/, void* /*userData*/) {
+#if defined(__x86_64__) || defined(__i386__)
+	_mm_setcsr(_mm_getcsr() | 0x8040U); // FTZ (bit 15) and DAZ (bit 6)
+#elif defined(__aarch64__)
+	std::uint64_t fpcr = 0;
+	asm volatile("mrs %0, fpcr" : "=r"(fpcr));
+	fpcr |= 1ULL << 24U; // FZ
+	asm volatile("msr fpcr, %0" : : "r"(fpcr));
+#endif
 	return 0;
 }
 
@@ -146,6 +167,10 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
 	if (impl->context == nullptr) {
 		return std::unexpected(
 			EngineError{"cannot start the engine with " + settings.configFile.string() + ": " + spa_strerror(-errno)});
+	}
+	// The context's one data loop runs every process(); its thread already runs, so this waits for it.
+	if (pw_data_loop* dataLoop = pw_context_get_data_loop(impl->context)) {
+		pw_data_loop_invoke(dataLoop, &flushDenormals, 0, nullptr, 0, true, nullptr);
 	}
 	impl->core = pw_context_connect_self(impl->context, nullptr, 0);
 	if (impl->core == nullptr) {

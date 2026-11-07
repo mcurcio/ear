@@ -112,6 +112,13 @@ struct NodeHost::Impl {
 				throw std::logic_error("node " + name_ + ": events were asked for outside start() and its recipe");
 			return *run_->channel;
 		}
+		void declareLatency(const std::string& bank, Latency internal) override {
+			if (!starting_) throw std::logic_error("node " + name_ + ": latency was declared outside start()");
+			static_cast<void>(ports_.bank(bank)); // throws for a bank the node lacks
+			if (std::ranges::any_of(run_->latency, [&](const auto& declared) { return declared.first == bank; }))
+				throw std::logic_error("node " + name_ + ": latency declared twice for bank \"" + bank + "\"");
+			run_->latency.emplace_back(bank, internal);
+		}
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
@@ -230,6 +237,7 @@ struct NodeHost::Impl {
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
 			std::unique_ptr<Timer> deadline;
+			std::vector<std::pair<std::string, Latency>> latency; // what start() declared, by bank
 			bool prepared = false;
 			bool built = false; // the recipe ran (or there was none)
 			std::size_t handoffsClosed = 0;
@@ -298,6 +306,7 @@ struct NodeHost::Impl {
 				started->code.own() ? std::move(started->code.own()) : makePassThrough(ports_, started->code.pairs());
 			run_->code->prepare(host_.format);
 			run_->prepared = true;
+			block_->carryLatency(LatencyPlan{started->code.pairs(), run_->latency});
 			block_->drive(run_->code.get());
 			if (run_->outsideRequests.empty()) buildRunObject();
 			else makeOutsideNodes();
@@ -381,7 +390,10 @@ struct NodeHost::Impl {
 			}
 			Run& run = *run_;
 			run.channel->closing();
-			if (block_) block_->drive(nullptr);
+			if (block_) {
+				block_->drive(nullptr);
+				block_->carryLatency({}); // a silent block carries nothing through and adds nothing
+			}
 			if (run.prepared) run.code->release();
 			run.prepared = false;
 			run.outside.clear();

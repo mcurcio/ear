@@ -1,10 +1,14 @@
 // Port blocks as pw_filter nodes (docs/design/batch2.md section 4.3, port_blocks.hpp): every
 // block in EAR's graph group, drive() as a barrier with the block's data loop, and level
-// metering of the public ports in windows aligned on the graph clock.
+// metering of the public ports in windows aligned on the graph clock. Each cycle's GraphCycle is
+// made here, both clock domains sampled once (docs/design/node-framework.md section 9.3), and
+// latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4).
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <ctime>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -14,6 +18,8 @@
 
 #include <pipewire/filter.h>
 #include <pipewire/pipewire.h>
+#include <spa/param/latency-utils.h>
+#include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
 #include "engine_names.hpp"
@@ -54,6 +60,27 @@ std::vector<PortName> publicPorts(const Ports& ports) {
 	return names;
 }
 
+std::int64_t nowNs(clockid_t clock) noexcept {
+	timespec now{};
+	::clock_gettime(clock, &now);
+	return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
+}
+
+/// A latency of no path: zero in every unit.
+spa_latency_info noLatency(spa_direction direction) {
+	spa_latency_info info{};
+	info.direction = direction;
+	return info;
+}
+
+/// A downstream latency as the realtime side reads it: least frames in the high half, most in the low.
+std::uint64_t packed(const Latency& latency) noexcept {
+	return (static_cast<std::uint64_t>(latency.minFrames) << 32U) | latency.maxFrames;
+}
+Latency unpacked(std::uint64_t word) noexcept {
+	return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word & 0xFFFFFFFFU)};
+}
+
 class FilterPortBlock final : public PortBlock {
 public:
 	FilterPortBlock(Engine& engine, std::shared_ptr<Levels> levels, const NodeName& node, const Ports& ports,
@@ -63,7 +90,12 @@ public:
 		  inputs_(ports.inputs().size() + ports.insideInputs().size()),
 		  outputs_(ports.outputs().size() + ports.insideOutputs().size()), publicInputs_(ports.inputs().size()),
 		  publicOutputs_(ports.outputs().size()), meters_(ports.inputs().size() + ports.outputs().size()),
-		  levels_(std::move(levels)), registered_(node, publicPorts(ports)) {
+		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
+		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()),
+		  inputPeers_(inputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
+		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
+		  inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
+		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
 		}
@@ -89,7 +121,13 @@ public:
 		addPorts(PW_DIRECTION_INPUT, ports.insideInputs(), inputPorts_);
 		addPorts(PW_DIRECTION_OUTPUT, ports.outputs(), outputPorts_);
 		addPorts(PW_DIRECTION_OUTPUT, ports.insideOutputs(), outputPorts_);
-		if (const int res = pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0); res < 0) {
+		// Custom latency: pw_filter would otherwise merge every output's downstream latency into every input (and
+		// every input's upstream into every output), mixing paths that never meet (filter.c, default_latency). The
+		// block carries it per bank pair instead (carryLatency).
+		if (const int res = pw_filter_connect(
+				filter_, static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY),
+				nullptr, 0);
+		    res < 0) {
 			fail(std::string("cannot connect the engine node: ") + spa_strerror(res));
 		}
 	}
@@ -127,12 +165,23 @@ public:
 		pw_loop_invoke(dataLoop, &FilterPortBlock::onDrive, 0, &code, sizeof(code), true, this);
 	}
 
+	void carryLatency(const LatencyPlan& plan) override {
+		for (const BankPair& pair : plan.pairs) {
+			static_cast<void>(ports_.bank(pair.from)); // a pair naming no bank is a type bug, as the pass-through's
+			static_cast<void>(ports_.bank(pair.to));
+		}
+		for (const auto& entry : plan.internal) static_cast<void>(ports_.bank(entry.first));
+		plan_ = plan;
+		retell();
+	}
+
 private:
 	static const pw_filter_events& filterEvents() {
 		static const pw_filter_events table = [] {
 			pw_filter_events events{};
 			events.version = PW_VERSION_FILTER_EVENTS;
 			events.state_changed = &FilterPortBlock::onStateChanged;
+			events.param_changed = &FilterPortBlock::onParamChanged;
 			events.process = &FilterPortBlock::onProcess;
 			return events;
 		}();
@@ -179,6 +228,106 @@ private:
 		}
 	}
 
+	/// Main thread: a latency the linked ports report on one of the block's ports. pw_filter tells only the far
+	/// side's (an input's upstream, an output's downstream) and, under custom latency, does nothing else with it.
+	static void onParamChanged(void* data, void* port, std::uint32_t id, const spa_pod* param) {
+		auto* self = static_cast<FilterPortBlock*>(data);
+		if (id != SPA_PARAM_Latency || port == nullptr) return;
+		const auto heard = [&](std::vector<void*>& ports, std::vector<spa_latency_info>& peers, spa_direction farSide) {
+			const auto found = std::ranges::find(ports, port);
+			if (found == ports.end()) return false;
+			spa_latency_info info = noLatency(farSide);
+			if (param != nullptr && (spa_latency_parse(param, &info) < 0 || info.direction != farSide)) return true;
+			peers[static_cast<std::size_t>(found - ports.begin())] = info;
+			return true;
+		};
+		if (heard(self->inputPorts_, self->inputPeers_, SPA_DIRECTION_OUTPUT) ||
+		    heard(self->outputPorts_, self->outputPeers_, SPA_DIRECTION_INPUT)) {
+			self->retell();
+		}
+	}
+
+	/// The ports of one bank in the block's port lists.
+	struct BankSpan {
+		std::size_t first;
+		std::size_t count;
+	};
+	BankSpan span(const std::string& bank) const {
+		const Ports::Bank& found = ports_.bank(bank);
+		return {found.first, found.ports.size()};
+	}
+
+	/// Every port of `bank`'s peers combined: what lies beyond the bank.
+	static spa_latency_info combined(const std::vector<spa_latency_info>& peers, BankSpan bank, spa_direction side) {
+		spa_latency_info info{};
+		spa_latency_info_combine_start(&info, side);
+		for (std::size_t i = bank.first; i < bank.first + bank.count; ++i) spa_latency_info_combine(&info, &peers[i]);
+		spa_latency_info_combine_finish(&info);
+		return info;
+	}
+
+	Latency internalOf(const std::string& bank) const {
+		for (const auto& [name, latency] : plan_.internal)
+			if (name == bank) return latency;
+		return {};
+	}
+
+	/// What a latency comes to in frames of the graph: a quantum is the block size, and ns are at the graph frequency.
+	Latency frames(const spa_latency_info& info) const {
+		const auto count = [&](float quantum, std::int32_t rate, std::int64_t ns) {
+			const double total =
+				static_cast<double>(quantum) * maxBlock_ + rate + static_cast<double>(ns) * rate_ / 1'000'000'000.0;
+			return total <= 0.0 ? 0U : static_cast<std::uint32_t>(std::lround(total));
+		};
+		return {count(info.min_quantum, info.min_rate, info.min_ns),
+		        count(info.max_quantum, info.max_rate, info.max_ns)};
+	}
+
+	/// Main thread: works out every bank's latency afresh from what the peers report and the plan, publishes each
+	/// output's downstream latency to the realtime side, and tells each port's new latency to its peers.
+	void retell() {
+		if (filter_ == nullptr) return;
+		for (const Ports::Bank& bank : ports_.banks()) {
+			const BankSpan at{bank.first, bank.ports.size()};
+			const Latency internal = internalOf(bank.name);
+			spa_latency_info told{};
+			if (bank.direction == Direction::output) {
+				const Latency beyond = frames(combined(outputPeers_, at, SPA_DIRECTION_INPUT));
+				for (std::size_t i = at.first; i < at.first + at.count; ++i)
+					downstream_[i].store(packed(beyond), std::memory_order_release);
+				// Upstream of an output: what reaches the paired inputs, plus the run's own.
+				spa_latency_info_combine_start(&told, SPA_DIRECTION_OUTPUT);
+				for (const BankPair& pair : plan_.pairs) {
+					if (pair.to != bank.name) continue;
+					const spa_latency_info upstream = combined(inputPeers_, span(pair.from), SPA_DIRECTION_OUTPUT);
+					spa_latency_info_combine(&told, &upstream);
+				}
+			} else {
+				// Downstream of an input: what lies beyond the paired outputs, plus the run's own.
+				spa_latency_info_combine_start(&told, SPA_DIRECTION_INPUT);
+				for (const BankPair& pair : plan_.pairs) {
+					if (pair.from != bank.name) continue;
+					const spa_latency_info downstream = combined(outputPeers_, span(pair.to), SPA_DIRECTION_INPUT);
+					spa_latency_info_combine(&told, &downstream);
+				}
+			}
+			spa_latency_info_combine_finish(&told);
+			told.min_rate += static_cast<std::int32_t>(internal.minFrames);
+			told.max_rate += static_cast<std::int32_t>(internal.maxFrames);
+			auto& ports = bank.direction == Direction::output ? outputPorts_ : inputPorts_;
+			auto& last = bank.direction == Direction::output ? outputTold_ : inputTold_;
+			for (std::size_t i = at.first; i < at.first + at.count; ++i) {
+				if (ports[i] == nullptr || spa_latency_info_compare(&last[i], &told) == 0) continue;
+				last[i] = told;
+				std::uint8_t buffer[256];
+				spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+				const spa_pod* params[1] = {
+					static_cast<const spa_pod*>(spa_latency_build(&builder, SPA_PARAM_Latency, &told))};
+				pw_filter_update_params(filter_, ports[i], params, 1);
+			}
+		}
+	}
+
 	/// Data loop: drive()'s barrier.
 	static int onDrive(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* data,
 	                   std::size_t /*size*/, void* userData) {
@@ -191,11 +340,32 @@ private:
 	/// window when this cycle crosses a window boundary of the graph clock.
 	static void onProcess(void* data, spa_io_position* position) {
 		auto* self = static_cast<FilterPortBlock*>(data);
-		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
+		const spa_io_clock& clock = position->clock;
+		const auto frames = static_cast<std::uint32_t>(clock.duration);
+		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a resync.
+		const bool sameDriver = self->cycles_ > 0 && clock.id == self->lastDriver_;
+		const bool discontinuity = !sameDriver || clock.position != self->nextPosition_;
+		if (sameDriver && clock.position > self->nextPosition_) ++self->xruns_;
+		++self->cycles_;
+		self->lastDriver_ = clock.id;
+		self->nextPosition_ = clock.position + clock.duration;
 		if (frames <= self->maxBlock_) {
-			self->processCycle(
-				frames, GraphCycle{static_cast<std::int64_t>(position->clock.nsec), position->clock.position,
-			                       static_cast<std::uint32_t>(std::max<std::int64_t>(position->clock.delay, 0))});
+			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock (docs/design/node-framework.md
+			// section 10); both clocks are read together here, so a late wake cancels out.
+			const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
+			const std::int64_t mono = nowNs(CLOCK_MONOTONIC);
+			const auto startNs = static_cast<std::int64_t>(clock.nsec);
+			for (std::size_t i = 0; i < self->downstreamNow_.size(); ++i)
+				self->downstreamNow_[i] = unpacked(self->downstream_[i].load(std::memory_order_acquire));
+			self->processCycle(frames, GraphCycle{.startNs = startNs,
+			                                      .position = clock.position,
+			                                      .startRawNs = startNs + (raw - mono),
+			                                      .rateDiff = clock.rate_diff,
+			                                      .driverId = clock.id,
+			                                      .nextNs = static_cast<std::int64_t>(clock.next_nsec),
+			                                      .xruns = self->xruns_,
+			                                      .discontinuity = discontinuity,
+			                                      .downstream = self->downstreamNow_});
 		} else {
 			for (void* port : self->outputPorts_) {
 				if (port == nullptr) continue;
@@ -259,6 +429,23 @@ private:
 	std::vector<LevelMeter> meters_; // public inputs, then public outputs (realtime thread)
 	std::shared_ptr<Levels> levels_;
 	RegisteredBlock registered_;
+	Ports ports_;
+	std::uint32_t rate_;
+	// The clock as the realtime side last saw it.
+	std::uint64_t cycles_ = 0;
+	std::uint32_t lastDriver_ = 0;
+	std::uint64_t nextPosition_ = 0;
+	std::uint64_t xruns_ = 0;
+	// Latency: each output's downstream, published by the main thread for the realtime side (packed), and the copy
+	// a cycle hands its code; then, on the main thread only, what each port's peers report, what each port told them
+	// last, and the run's plan.
+	std::vector<std::atomic<std::uint64_t>> downstream_;
+	std::vector<Latency> downstreamNow_;
+	std::vector<spa_latency_info> inputPeers_;  // upstream of each input
+	std::vector<spa_latency_info> outputPeers_; // downstream of each output
+	std::vector<spa_latency_info> inputTold_;
+	std::vector<spa_latency_info> outputTold_;
+	LatencyPlan plan_;
 	pw_filter* filter_ = nullptr;
 	spa_hook listener_{};
 	bool readyTold_ = false;

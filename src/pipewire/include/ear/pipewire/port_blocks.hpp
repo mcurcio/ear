@@ -11,7 +11,9 @@ namespace ear::pipewire {
 /// name (public and inside). Meters the public ports every cycle; in the cycle whose clock
 /// position crosses a window boundary (position / levelWindowFrames changes) it publishes into
 /// the block's mailbox and rings `wake`. frames > maxBlock: outputs silenced, process() skipped.
-/// First STREAMING -> ready(); ERROR -> lost().
+/// First STREAMING -> ready(); ERROR -> lost(). Each cycle's GraphCycle is made here (both clocks
+/// sampled once); the filter carries custom latency, told per bank pair by carryLatency
+/// (docs/design/node-framework.md sections 9.3 and 9.4, slice 7).
 class FilterPortBlocks final : public PortBlockFactory, public LevelReader {
 public:
 	FilterPortBlocks(Engine& engine, LevelWake& wake); // both outlive it

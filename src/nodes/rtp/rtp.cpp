@@ -62,6 +62,9 @@ public:
 		                                   .rate = settings_.rate.value_or(context.format().rate),
 		                                   .latencyMs = settings_.latencyMs,
 		                                   .bank = "from_rtp"});
+		// The receive buffer holds the stream that long before it leaves; PipeWire's receiver reports none of it.
+		const std::uint32_t buffered = settings_.latencyMs * context.format().rate / 1000;
+		context.declareLatency("stream", Latency{buffered, buffered});
 		return Started{passThrough({{"from_rtp", "stream"}})};
 	}
 

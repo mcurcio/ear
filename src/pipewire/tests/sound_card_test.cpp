@@ -1,9 +1,12 @@
 // AlsaSoundCards on the real in-process engine (docs/design/batch2.md sections 4.3 and 5;
-// acceptance criteria E2(1)-(5)). The cards are ALSA PCMs from a test ALSA configuration
-// (tests/alsa/alsa.conf): card "Test" is alsa-lib's file PCM over its null PCM, so what it is
-// sent lands in a file; any other card id cannot open. Every wait is event-gated: the main loop
-// runs until the events a test waits for have arrived; the deadline only fails the test. The
-// engine, the Waiter, the block events and the registry come from engine_harness.hpp.
+// acceptance criteria E2(1)-(5); docs/design/node-framework.md section 10, slice 7: the internal
+// clock always drives and a linked card follows it). The cards are ALSA PCMs from a test ALSA
+// configuration (tests/alsa/alsa.conf): card "Test" is alsa-lib's file PCM over its null PCM, so
+// what it is sent lands in a file; any other card id cannot open. The test card has no clock, so
+// as a follower its rate match would never settle: it is made with clocklessCardProperties(),
+// which turns matching off (bit-exact). Every wait is event-gated: the main loop runs until the
+// events a test waits for have arrived; the deadline only fails the test. The engine, the Waiter,
+// the block events and the registry come from engine_harness.hpp.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -26,6 +29,7 @@
 #include <pipewire/pipewire.h>
 
 #include "catch2/catch.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
@@ -51,25 +55,36 @@ CardId cardId(std::string_view text) {
 	return *card;
 }
 
-/// Counts its cycles. Writes zeros everywhere, except a ramp of exact floats (k * 2^-24, k
-/// from 1) on output `rampOn` when it is set.
+/// Counts its cycles, the driver and discontinuities the framework told it, and the latency
+/// downstream of its first output. Writes zeros everywhere, except a ramp of exact floats
+/// (k * 2^-24, k from 1) on output `rampOn` when it is set.
 class Code final : public AudioCode {
 public:
 	Code(Waiter& waiter, std::optional<std::size_t> rampOn = std::nullopt) : waiter_(waiter), rampOn_(rampOn) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		if (rampOn_ && *rampOn_ < outputs.size()) {
 			for (std::uint32_t i = 0; i < frames; ++i) {
 				outputs[*rampOn_][i] = static_cast<float>(++next_) * kStep;
 			}
 		}
+		if (calls_.load(std::memory_order_relaxed) > 0 && cycle.discontinuity)
+			discontinuities_.fetch_add(1, std::memory_order_relaxed);
+		driver_.store(cycle.driverId, std::memory_order_relaxed);
+		downstream_.store(cycle.downstreamOf(0).maxFrames, std::memory_order_relaxed);
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	/// Cycles after the first that the framework marked discontinuous: the clock jumped or another driver took over.
+	std::uint64_t discontinuities() const { return discontinuities_.load(std::memory_order_acquire); }
+	/// The driver of the latest cycle, by the framework.
+	std::uint32_t driver() const { return driver_.load(std::memory_order_acquire); }
+	/// The latency downstream of output 0 in the latest cycle.
+	std::uint32_t downstream() const { return downstream_.load(std::memory_order_acquire); }
 	static constexpr float kStep = 1.0F / 16777216.0F;
 
 private:
@@ -77,6 +92,9 @@ private:
 	std::optional<std::size_t> rampOn_;
 	std::uint32_t next_ = 0;
 	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<std::uint64_t> discontinuities_{0};
+	std::atomic<std::uint32_t> driver_{0};
+	std::atomic<std::uint32_t> downstream_{0};
 };
 
 /// What a card tells, with what the registry showed at the moment it was told.
@@ -109,12 +127,12 @@ private:
 };
 
 /// Two blocks: "card" (two inputs, the inside output bank "to_card": "to_card.1", "to_card.2") and "other"
-/// (one input), each driven by its own code, both running on the dummy driver.
+/// (one input), each driven by its own code, both running on the dummy driver, and clockless cards.
 struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt)
 		: out(useTestAlsa(alsaOut)), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
-		  blocks(*engine, bell), cards(*engine), cardCode(waiter, rampOn), otherCode(waiter), cardBlockEvents(waiter),
-		  otherBlockEvents(waiter) {
+		  blocks(*engine, bell), cards(*engine, clocklessCardProperties()), cardCode(waiter, rampOn), otherCode(waiter),
+		  cardBlockEvents(waiter), otherBlockEvents(waiter) {
 		cardBlock = blocks.make("card",
 		                        Ports{{{Direction::input, "play", {"1", "2"}},
 		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
@@ -183,7 +201,8 @@ std::vector<float> readFrames(const std::filesystem::path& file, std::size_t cha
 
 } // namespace
 
-TEST_CASE("A playback card becomes ready, every channel's link active, and then drives every port block",
+TEST_CASE("A playback card becomes ready, every channel's link active, and then follows: the internal clock drives "
+          "it and every port block",
           "[cards][clock]") {
 	Graph graph;
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
@@ -202,9 +221,12 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	REQUIRE(events.lostDetail.value_or("") == "");
 	CHECK(events.readyCount == 1);
 	CHECK(activeAtReady == std::optional<std::size_t>(1)); // of 2
-	const std::uint32_t cardNode = *graph.registry.id("card.playback");
-	CHECK(graph.blocksDrivenBy(cardNode));
 	CHECK(graph.bothRun(8));
+	CHECK(graph.blocksDrivenBy(graph.dummy));
+	REQUIRE(graph.registry.reread({"card.playback"}));
+	CHECK(graph.registry.driverId("card.playback") == graph.dummy);
+	CHECK(graph.cardCode.driver() == graph.dummy); // what the framework tells the code: the same driver
+	CHECK(graph.cardCode.discontinuities() == 0);  // the card joining moved no clock
 }
 
 TEST_CASE("A card running alone holds no port block: they stay on the dummy until it is ready", "[cards][clock]") {
@@ -308,16 +330,16 @@ TEST_CASE("A card that cannot open is lost after make returns, its node already 
 	CHECK(graph.bothRun(16));
 }
 
-TEST_CASE("A card that loses a link while it drives is lost with its node gone, and the dummy "
-          "drives every block while the card object still exists",
-          "[cards][lost]") {
+TEST_CASE("A card that loses a link while it follows is lost with its node gone, and leaves the clock alone: every "
+          "block keeps the internal clock with no discontinuity while the card object still exists",
+          "[cards][lost][clock]") {
 	Graph graph;
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
 	const auto card = graph.makeCard(cardId("Test"), events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 	const std::uint32_t cardNode = *graph.registry.id("card.playback");
-	REQUIRE(graph.blocksDrivenBy(cardNode));
+	REQUIRE(graph.blocksDrivenBy(graph.dummy));
 	REQUIRE(graph.bothRun(4));
 
 	const auto links = graph.registry.linksOf(cardNode);
@@ -327,5 +349,114 @@ TEST_CASE("A card that loses a link while it drives is lost with its node gone, 
 	CHECK_FALSE(events.nodePresentAtLost);
 	CHECK(graph.blocksDrivenBy(graph.dummy));
 	CHECK(graph.bothRun(16));
+	CHECK(graph.cardCode.driver() == graph.dummy);
+	CHECK(graph.otherCode.driver() == graph.dummy);
+	// A loaded host's stall makes the internal clock resync, which is a discontinuity of its own (rtp.md erratum 3);
+	// the card's loss makes none.
+	CHECK(graph.cardCode.discontinuities() == 0);
+	CHECK(graph.otherCode.discontinuities() == 0);
 	CHECK(card != nullptr); // nobody destroyed it
+}
+
+namespace {
+
+/// The framework's pass-through between a card block's banks, with the latency downstream of its inside output
+/// recorded each cycle.
+class RecordingPassThrough final : public AudioCode {
+public:
+	RecordingPassThrough(const Ports& ports, const std::vector<BankPair>& pairs, Waiter& waiter)
+		: code_(makePassThrough(ports, pairs)), waiter_(waiter), toCard_(ports.bank("to_card").first) {}
+	void prepare(const AudioFormat& format) override { code_->prepare(format); }
+	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		code_->process(inputs, outputs, frames, cycle);
+		downstream_.store(cycle.downstreamOf(toCard_).maxFrames, std::memory_order_relaxed);
+		least_.store(cycle.downstreamOf(toCard_).minFrames, std::memory_order_relaxed);
+		waiter_.wake();
+	}
+	void release() noexcept override { code_->release(); }
+	std::uint32_t downstream() const { return downstream_.load(std::memory_order_relaxed); }
+	std::uint32_t least() const { return least_.load(std::memory_order_relaxed); }
+
+private:
+	std::unique_ptr<AudioCode> code_;
+	Waiter& waiter_;
+	std::size_t toCard_;
+	std::atomic<std::uint32_t> downstream_{0};
+	std::atomic<std::uint32_t> least_{0};
+};
+
+/// A link by node and port names, as a route's would be by port ids.
+pw_proxy* linkByName(Engine& engine, const char* fromNode, const char* fromPort, const char* toNode,
+                     const char* toPort) {
+	pw_properties* props = pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, fromNode, PW_KEY_LINK_OUTPUT_PORT, fromPort,
+	                                         PW_KEY_LINK_INPUT_NODE, toNode, PW_KEY_LINK_INPUT_PORT, toPort, nullptr);
+	auto* link = static_cast<pw_proxy*>(
+		pw_core_create_object(engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
+	pw_properties_free(props);
+	return link;
+}
+
+} // namespace
+
+TEST_CASE("A following card's latency reaches its block's inside bank, and the pass-through carries it to the block "
+          "upstream of the card block",
+          "[cards][latency]") {
+	Graph graph;
+	const Ports cardPorts{
+		{{Direction::input, "play", {"1", "2"}}, {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}};
+	const std::vector<BankPair> pairs{{"play", "to_card"}};
+	RecordingPassThrough pass(cardPorts, pairs, graph.waiter);
+	pass.prepare(kFormat);
+	graph.cardBlock->carryLatency(LatencyPlan{pairs, {}});
+	graph.cardBlock->drive(&pass);
+	struct Silenced { // before `pass` goes, however the test ends
+		PortBlock& block;
+		~Silenced() { block.drive(nullptr); }
+	} silenced{*graph.cardBlock};
+
+	Code sourceCode(graph.waiter);
+	BlockEvents sourceEvents(graph.waiter);
+	auto source = graph.blocks.make("source", Ports{{{Direction::output, "out", {"1", "2"}}}}, kFormat, sourceEvents);
+	source->drive(&sourceCode);
+	REQUIRE(graph.waiter.until([&] { return sourceEvents.isReady; }));
+	std::vector<pw_proxy*> links{linkByName(*graph.engine, "source", "out.1", "card", "play.1"),
+	                             linkByName(*graph.engine, "source", "out.2", "card", "play.2")};
+
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	const auto card = graph.makeCard(cardId("Test"), events);
+	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	// ALSA's playback node reports a quantum and its headroom (alsa-pcm-sink.c, alsa-pcm.c): at least one block.
+	REQUIRE(graph.waiter.until([&] { return pass.downstream() >= kBlock && sourceCode.downstream() > 0; }));
+	CHECK(pass.least() == pass.downstream());
+	CHECK(graph.waiter.until([&] { return sourceCode.downstream() == pass.downstream(); }));
+	INFO("the card's latency: " << pass.downstream() << " frames");
+	CHECK(pass.downstream() < 8 * kBlock);
+
+	// A trap of PipeWire 1.4.2 (filter.c, handle_latency): when a port's last link goes, the engine clears the port's
+	// latency with a null param, which a filter under custom latency is never told. So the card gone, its block keeps
+	// the latency the card last reported until another peer reports one. Harmless while nothing is linked there (what
+	// the block sends is heard nowhere); a card made again reports afresh. A PipeWire that tells it fails this check:
+	// then the block can forget a lost peer's latency (docs/design/node-framework.md, slice 7 as built).
+	const std::uint32_t reported = pass.downstream();
+	CHECK(graph.waiter.until([&] {
+		const auto node = graph.registry.id("card.playback");
+		return node.has_value() && !graph.registry.linksOf(*node).empty();
+	}));
+	REQUIRE(graph.registry.destroy(graph.registry.linksOf(*graph.registry.id("card.playback")).front()));
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	const std::uint64_t later = sourceCode.calls() + 16;
+	REQUIRE(graph.waiter.until([&] { return sourceCode.calls() >= later; }));
+	CHECK(pass.downstream() == reported);
+	CHECK(sourceCode.downstream() == reported);
+
+	CardEvents again(graph.waiter, graph.registry, "card.playback");
+	const auto second = graph.makeCard(cardId("Test"), again);
+	REQUIRE(graph.waiter.until([&] { return again.readyCount > 0 || again.lostDetail.has_value(); }));
+	REQUIRE(again.lostDetail.value_or("") == "");
+	CHECK(graph.waiter.until([&] { return pass.downstream() == reported && sourceCode.downstream() == reported; }));
+
+	for (pw_proxy* link : links) pw_proxy_destroy(link);
+	source->drive(nullptr);
 }
