@@ -40,9 +40,12 @@ std::string channelPort(CardDirection direction, std::size_t channel) {
 /// own proxy. The lifecycle (joinOutsideNode) links it once it runs and tears it down.
 class AlsaCardBody final : public OutsideBody {
 public:
-	AlsaCardBody(Engine& engine, const NodeName& engineNode, const SoundCardRequest& request, const AudioFormat& format,
+	AlsaCardBody(Engine& engine, const OutsideTarget& target, const SoundCardRequest& request,
 	             OutsideBodyEvents& events)
-		: direction_(request.direction), channels_(request.blockPorts.size()), rate_(format.rate), events_(events) {
+		: direction_(request.direction), channels_(target.blockPorts.size()), rate_(target.format.rate),
+		  events_(events) {
+		const NodeName& engineNode = target.engineNode;
+		const AudioFormat& format = target.format;
 		const auto channels = std::to_string(channels_);
 		const auto rate = std::to_string(format.rate);
 		const auto priority = std::to_string(cardPriority);
@@ -145,22 +148,21 @@ private:
 
 AlsaSoundCards::AlsaSoundCards(Engine& engine) : engine_(engine) {}
 
-std::unique_ptr<OutsideNode> AlsaSoundCards::make(const NodeName& engineNode, const NodeName& blockNode,
-                                                  const SoundCardRequest& request, const AudioFormat& format,
+std::unique_ptr<OutsideNode> AlsaSoundCards::make(const OutsideTarget& target, const SoundCardRequest& request,
                                                   OutsideNodeEvents& events) {
 	std::vector<PortName> cardPorts;
-	for (std::size_t channel = 0; channel < request.blockPorts.size(); ++channel) {
+	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
 		cardPorts.push_back(channelPort(request.direction, channel));
 	}
 	return joinOutsideNode(engine_,
 	                       OutsideJoin{.kind = kind,
-	                                   .blockNode = blockNode,
+	                                   .blockNode = target.blockNode,
 	                                   .flow = request.direction == CardDirection::playback ? ChannelFlow::blockToNode
 	                                                                                        : ChannelFlow::nodeToBlock,
 	                                   .nodePorts = std::move(cardPorts),
-	                                   .blockPorts = request.blockPorts},
+	                                   .blockPorts = target.blockPorts},
 	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<AlsaCardBody>(engine_, engineNode, request, format, body);
+							   return std::make_unique<AlsaCardBody>(engine_, target, request, body);
 						   });
 }
 

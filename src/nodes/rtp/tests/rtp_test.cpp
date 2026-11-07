@@ -1,14 +1,16 @@
-// The "rtp" node type through its NodeType contract, with a fake grant that records the receivers
-// asked for (docs/design/rtp.md section 3, R1n criteria 1-5). The engine side of a receiver
+// The "rtp" node type through its NodeType contract, with a fake start context that records the receivers
+// it acquires (docs/design/rtp.md section 3, R1n criteria 1-5). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
 #include <cstdint>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/nodes/rtp.hpp"
 
 namespace {
@@ -16,22 +18,27 @@ namespace {
 using Names = std::vector<ear::PortName>;
 using ear::NodeSettings;
 
-/// Records every RTP receiver asked for; a handoff or a sound card request fails the test.
-class RecordingGrant final : public ear::NodeGrant {
+/// Records every RTP receiver acquired; any other resource fails the test.
+class RecordingContext final : public ear::StartContext {
 public:
-	explicit RecordingGrant(std::uint32_t rate = 48000) : rate_(rate) {}
+	explicit RecordingContext(std::uint32_t rate = 48000) : rate_(rate) {}
 	ear::AudioFormat format() const override { return {.rate = rate_, .maxBlock = 256}; }
-	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
-		throw std::logic_error("rtp requested a handoff");
-	}
-	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("rtp asked for a sound card"); }
-	void rtpReceiver(const ear::RtpReceiverRequest& request) override { requests.push_back(request); }
-	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for insides events"); }
+	const ear::NodeName& node() const override { return name_; }
+	ear::InsidesEvents& events() override { throw std::logic_error("rtp asked for events"); }
 
 	std::vector<ear::RtpReceiverRequest> requests;
 
+protected:
+	Acquired acquireResource(const ear::ResourceRequest& request) override {
+		const auto* receiver = std::get_if<ear::RtpReceiverRequest>(&request);
+		if (receiver == nullptr) throw std::logic_error("rtp acquired something other than an RTP receiver");
+		requests.push_back(*receiver);
+		return std::monostate{};
+	}
+
 private:
 	std::uint32_t rate_;
+	ear::NodeName name_ = "fpp";
 };
 
 /// Valid settings: every key, then `change` applied (a null value removes the key).
@@ -56,36 +63,37 @@ std::unique_ptr<const ear::NodeConfig> parseOk(const NodeSettings& settings) {
 }
 
 ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
-	RecordingGrant grant(graphRate);
-	REQUIRE(parseOk(settings)->start(grant).has_value());
-	REQUIRE(grant.requests.size() == 1);
-	return grant.requests[0];
+	RecordingContext context(graphRate);
+	REQUIRE(parseOk(settings)->start(context).has_value());
+	REQUIRE(context.requests.size() == 1);
+	return context.requests[0];
 }
 
 } // namespace
 
-TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and from_rtp_i inside", "[rtp]") {
+TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and the inside bank from_rtp", "[rtp]") {
 	CHECK(ear::nodes::makeRtpNodeType({})->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs().empty());
 	CHECK(ports.outputs() == Names{"stream.1", "stream.2", "stream.3"});
-	CHECK(ports.insideInputs() == Names{"from_rtp_1", "from_rtp_2", "from_rtp_3"});
+	CHECK(ports.insideInputs() == Names{"from_rtp.1", "from_rtp.2", "from_rtp.3"});
 	CHECK(ports.insideOutputs().empty());
+	CHECK(ports.bank("from_rtp").reach == ear::PortBank::Reach::inside);
 
 	const auto wide = parseOk(settingsWith({{"channels", 64}, {"address", "0.0.0.0"}}));
 	CHECK(wide->ports().outputs().size() == 64);
-	CHECK(wide->ports().insideInputs().back() == "from_rtp_64");
+	CHECK(wide->ports().insideInputs().back() == "from_rtp.64");
 }
 
-TEST_CASE("Rtp start asks for exactly one receiver with its settings and its inside inputs", "[rtp]") {
+TEST_CASE("Rtp start acquires exactly one receiver with its settings, joined to its inside bank", "[rtp]") {
 	const auto request = startOk(settingsWith({{"port", 6000}, {"rate", 96000}, {"latencyMs", 250}}));
 	CHECK(request.address == *ear::RtpAddress::parse("239.69.0.1"));
 	CHECK(request.port == 6000);
 	CHECK(request.encoding == ear::RtpEncoding::l24);
 	CHECK(request.rate == 96000);
 	CHECK(request.latencyMs == 250);
-	CHECK(request.blockPorts == Names{"from_rtp_1", "from_rtp_2"});
+	CHECK(request.bank == "from_rtp");
 
 	SECTION("an absent rate is the graph frequency, taken at start") {
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
@@ -165,19 +173,22 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 	CHECK(type->parse("fpp", settingsWith({{"rate", 1}, {"latencyMs", 0}})).error().detail == badRate);
 }
 
-TEST_CASE("Rtp passes from_rtp_i to stream.i sample for sample", "[rtp]") {
+TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_rtp.i to stream.i sample for sample",
+          "[rtp]") {
 	for (const std::uint32_t channels : {1U, 3U}) {
 		INFO(channels << " channels");
 		constexpr std::uint32_t frames = 200;
 		constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 256};
 		const auto config = parseOk(settingsWith({{"channels", channels}}));
-		RecordingGrant grant;
-		auto insides = config->start(grant);
-		REQUIRE(insides.has_value());
-		ear::AudioCode& code = (*insides)->audioCode();
+		RecordingContext context;
+		auto started = config->start(context);
+		REQUIRE(started.has_value());
+		CHECK(started->code.own() == nullptr);
+		const auto made = ear::makePassThrough(config->ports(), started->code.pairs());
+		ear::AudioCode& code = *made;
 		code.prepare(format);
 
-		// Inputs: from_rtp_1..N, each its own ramp. Outputs: stream.1..N, primed with a value no
+		// Inputs: from_rtp.1..N, each its own ramp. Outputs: stream.1..N, primed with a value no
 		// input carries.
 		std::vector<std::vector<float>> in(channels, std::vector<float>(format.maxBlock));
 		for (std::uint32_t c = 0; c < channels; ++c) {
@@ -194,7 +205,7 @@ TEST_CASE("Rtp passes from_rtp_i to stream.i sample for sample", "[rtp]") {
 		code.release();
 
 		for (std::uint32_t c = 0; c < channels; ++c) {
-			INFO("from_rtp_" << c + 1 << " -> stream." << c + 1);
+			INFO("from_rtp." << c + 1 << " -> stream." << c + 1);
 			CHECK(out[c] == std::vector<float>(in[c].begin(), in[c].begin() + frames));
 		}
 	}

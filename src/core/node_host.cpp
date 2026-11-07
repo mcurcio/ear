@@ -1,74 +1,79 @@
-// The node framework (docs/design/batch2.md section 4.1, node_host.hpp, rule 1): runs each wanted
-// node's state machine and owns everything the node made. The port block is made when the node
-// is added and goes only when it is removed; the insides (the type's code, its handoffs, its
-// outside nodes: sound cards and RTP receivers) start, restart and fail behind it. Insides are
-// torn down in one order: the block stops running their code, release(), outside nodes,
-// handoffs, the insides' close, insides, config. Every kind of outside node shares one list, one naming function and
-// one ready and loss path (docs/design/rtp.md section 6, rule 1). It reaches the engine only
-// through the factory interfaces node_host.hpp declares.
+// The node framework (docs/design/node-framework.md sections 6, 7.2 and 7.3; node_host.hpp): runs each wanted node's
+// state machine and owns everything the node made. The port block is made when the node is added and goes only when it
+// is removed (I1); runs start, restart and fail behind it, one at a time (I7). A run's start only acquires; the
+// framework drives the block with the run's code at once, readies every resource the run acquired and only then has the
+// recipe build the run object. A run is torn down by dependency, never waiting on another thread on the main loop
+// (I5): the barrier on the block's data loop (I4) and release(); outside nodes; handoffs closed, each on its own
+// thread; the run object closed, on its own threads; then, on the main loop, the code, the run object, the recipe and
+// the config go. Steps 3 and 4 have a deadline (I5a): past it the run is leaked, never freed. Everything a run's threads
+// tell crosses to the main loop and lands only on that run (I2, I6). It reaches the engine only through the port block
+// factory and the resource registry's adapters.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <variant>
 
+#include "ear/core/pass_through.hpp"
+
 namespace ear {
 namespace {
 
-/// One outside node the insides asked for, of any kind.
+/// One outside node a run asked for, of any kind.
 using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
 
 template <typename... Kinds> struct Overloaded : Kinds... {
 	using Kinds::operator()...;
 };
 
-/// The engine node name of a node's outside node: the one home of "<node>.playback",
-/// "<node>.capture" (sound cards) and "<node>.rtp" (the RTP receiver). A node name never holds
-/// '.', so they cannot collide with a node.
-NodeName outsideNodeName(const NodeName& node, const OutsideRequest& request) {
-	const char* suffix = std::visit(Overloaded{
-										[](const SoundCardRequest& card) {
-											return card.direction == CardDirection::playback ? ".playback" : ".capture";
-										},
-										[](const RtpReceiverRequest&) { return ".rtp"; },
-									},
-	                                request);
-	return node + suffix;
+/// The suffix of a run's outside node: the one home of "playback", "capture" (sound cards) and "rtp" (the RTP
+/// receiver), so its engine node is "<node>.<suffix>" (I9). A node name never holds '.', so they cannot collide with a
+/// node.
+std::string_view outsideSuffix(const OutsideRequest& request) {
+	return std::visit(Overloaded{
+						  [](const SoundCardRequest& card) {
+							  return card.direction == CardDirection::playback ? "playback" : "capture";
+						  },
+						  [](const RtpReceiverRequest&) { return "rtp"; },
+					  },
+	                  request);
 }
 
 } // namespace
 
 struct NodeHost::Impl {
-	/// One wanted node and everything it made. Members are declared in reverse teardown order,
-	/// so destroying a node that never stopped still removes its port block first and lets its
-	/// config go last.
-	class Node final : public PortBlockEvents, public NodeGrant {
+	/// One wanted node and everything it made. Members are declared in reverse teardown order, so destroying a node
+	/// that never stopped still removes its port block first.
+	class Node final : public PortBlockEvents, public StartContext, public Ready {
 	public:
 		Node(Impl& host, NodeName name) : host_(host), name_(std::move(name)) {}
 
 		const NodeName& name() const noexcept { return name_; }
 		const NodeLifecycle& lifecycle() const noexcept { return lifecycle_; }
 		bool stopping() const noexcept { return stopping_; }
-		NodeStatus status() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
+		NodeHealth health() const { return {name_, lifecycle_.state(), lifecycle_.reason()}; }
 
-		/// The port block first, once for the node's life; then the insides, which drive it: now, or
-		/// once an older node of this name has gone, as a restart waits, so old and new insides
-		/// never share what the name owns (a listening port, a key file).
+		/// The port block first, once for the node's life; then a run, which drives it: now, or once an older node of
+		/// this name has gone, as a restart waits, so old and new runs never share what the name owns (a listening
+		/// port, a key file).
 		void add(std::shared_ptr<const NodeConfig> config, bool olderGoing) {
-			block_ = host_.blocks.make(name_, config->ports(), host_.format, *this);
+			ports_ = config->ports();
+			block_ = host_.blocks.make(name_, ports_, host_.format, *this);
 			if (olderGoing) waiting_ = std::move(config);
-			else startInsides(std::move(config));
+			else startRun(std::move(config));
 		}
 
 		/// The older node of this name is gone.
 		void olderGone() {
-			if (waiting_) startInsides(std::exchange(waiting_, nullptr));
+			auto config = std::exchange(waiting_, nullptr);
+			if (config && !lifecycle_.blockLost()) startRun(std::move(config)); // a lost block is final (I1)
 		}
 
-		/// New insides from `config` behind the same port block, once the old ones are gone. An
-		/// update arriving while the old ones are still going replaces the config to start.
+		/// A new run from `config` behind the same port block, once the old one is gone. An update arriving while the
+		/// old run is still going replaces the config to start.
 		void update(std::shared_ptr<const NodeConfig> config) {
 			if (waiting_) {
 				waiting_ = lifecycle_.blockLost() ? nullptr : std::move(config);
@@ -76,17 +81,17 @@ struct NodeHost::Impl {
 			}
 			if (lifecycle_.restartRequested()) host_.changed(*this);
 			next_ = lifecycle_.blockLost() ? nullptr : std::move(config); // a lost block is final
-			if (!tearingDown_) tearDownInsides();
+			if (!tearingDown_) tearDown();
 		}
 
-		/// Stopping: port block, then the insides' teardown; then gone.
+		/// Stopping: port block (its destruction is the barrier), then the run's teardown; then gone.
 		void stop() {
 			stopping_ = true;
 			next_.reset();
 			waiting_.reset();
 			if (lifecycle_.stopRequested()) host_.changed(*this);
 			block_.reset();
-			if (!tearingDown_) tearDownInsides();
+			if (!tearingDown_) tearDown();
 		}
 
 		// PortBlockEvents
@@ -99,33 +104,47 @@ struct NodeHost::Impl {
 			if (lifecycle_.portBlockLost({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
 		}
 
-		// NodeGrant
+		// StartContext and Ready
 		AudioFormat format() const override { return host_.format; }
+		const NodeName& node() const override { return name_; }
 		InsidesEvents& events() override {
-			if (!granting_) throw std::logic_error("node " + name_ + ": events were asked for outside start()");
-			return *channel_;
+			if (!starting_ && !building_)
+				throw std::logic_error("node " + name_ + ": events were asked for outside start() and its recipe");
+			return *run_->channel;
 		}
-		RtWriter& handoff(std::uint32_t channels, std::uint32_t capacityFrames, HandoffConsumer& consumer) override {
-			if (!granting_) throw std::logic_error("node " + name_ + ": a handoff was asked for outside start()");
-			handoffs_.push_back(host_.handoffs.make(name_, channels, capacityFrames, consumer));
-			return handoffs_.back()->writer();
-		}
-		void soundCard(const SoundCardRequest& request) override {
-			if (!granting_) throw std::logic_error("node " + name_ + ": a sound card was asked for outside start()");
-			outsideRequests_.emplace_back(request);
-		}
-		void rtpReceiver(const RtpReceiverRequest& request) override {
-			if (!granting_) throw std::logic_error("node " + name_ + ": an RTP receiver was asked for outside start()");
-			if (std::ranges::any_of(outsideRequests_, [](const OutsideRequest& asked) {
-					return std::holds_alternative<RtpReceiverRequest>(asked);
-				}))
-				throw std::logic_error("node " + name_ + ": a second RTP receiver was asked for in one start()");
-			outsideRequests_.emplace_back(request);
+
+	protected:
+		Acquired acquireResource(const ResourceRequest& request) override {
+			if (!starting_) throw std::logic_error("node " + name_ + ": a resource was asked for outside start()");
+			return std::visit(Overloaded{
+								  [&](const SoundCardRequest& card) -> Acquired {
+									  const bool playback = card.direction == CardDirection::playback;
+									  askOutside(
+										  card, insideBank(card.bank, playback ? Direction::output : Direction::input));
+									  return std::monostate{};
+								  },
+								  [&](const RtpReceiverRequest& receiver) -> Acquired {
+									  askOutside(receiver, insideBank(receiver.bank, Direction::input));
+									  return std::monostate{};
+								  },
+								  [&](const HandoffRequest& handoff) -> Acquired {
+									  const Ports::Bank& bank = ports_.bank(handoff.bank);
+									  if (bank.direction != Direction::input || handoff.consumer == nullptr)
+										  throw std::logic_error("node " + name_ +
+					                                             ": a handoff takes an input bank "
+					                                             "and a consumer, not \"" +
+					                                             handoff.bank + "\"");
+									  auto& made = run_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
+										  name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
+										  *handoff.consumer));
+									  return &made->writer();
+								  },
+							  },
+			                  request);
 		}
 
 	private:
-		/// One outside node the insides asked for (a sound card or an RTP receiver), and its
-		/// events.
+		/// One outside node the run asked for (a sound card or an RTP receiver), and its events.
 		class Outside final : public OutsideNodeEvents {
 		public:
 			Outside(Node& node, std::size_t index) : node_(node), index_(index) {}
@@ -139,49 +158,59 @@ struct NodeHost::Impl {
 			std::size_t index_;
 		};
 
-		/// One start's insides as their own threads reach the node: everything they tell crosses
-		/// to the main loop, in order, and finds the node only until `closed`. Whatever is still
-		/// queued then holds this object, not the node, so it may outlive the node.
+		/// One run as its own threads reach the node: everything they tell crosses to the main loop, in order, and
+		/// lands only while the run is attached. Each run has its own Channel, detached on every path that ends the run
+		/// (it closed, it failed to start, or it was leaked), before the next run can start: that is I6's generation,
+		/// so no write of an old run lands on a new one. Whatever is still queued holds this object, not the node, so
+		/// it may outlive the node.
 		class Channel final : public InsidesEvents, public std::enable_shared_from_this<Channel> {
 		public:
 			Channel(Node& node, Executor& mainLoop) : node_(&node), mainLoop_(mainLoop) {}
 			void say(std::string text) override {
 				mainLoop_.post([self = shared_from_this(), text = std::move(text)] {
-					if (self->node_ != nullptr) self->node_->host_.noted(self->node_->name_, text);
+					if (Node* node = self->node()) node->host_.noted(node->name_, text);
 				});
 			}
 			void lost(std::string detail) override {
 				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
-					if (self->node_ != nullptr && !self->closing_) self->node_->insidesLost(std::move(detail));
+					if (Node* node = self->node(); node != nullptr && !self->closing_) node->runLost(std::move(detail));
 				});
 			}
-			/// Main thread. The insides are going: a loss no longer fails the node.
+			/// Main thread. The run is going (I5 began): a fact no longer reaches the node.
 			void closing() noexcept { closing_ = true; }
-			/// Main thread. Nothing more reaches the node.
+			/// Main thread. Nothing more of this run reaches the node.
 			void detach() noexcept { node_ = nullptr; }
-			/// The `closed` the insides get: from any thread, later or inside close().
+			/// The `closed` a handoff of this run gets: on the main thread, later.
+			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
+				return [self = shared_from_this()](std::uint64_t droppedFrames) {
+					if (Node* node = self->node()) node->handoffClosed(droppedFrames);
+				};
+			}
+			/// The `closed` the run object gets: from any thread, later or inside close().
 			std::move_only_function<void()> closedCall() {
 				return [self = shared_from_this(), main = std::this_thread::get_id()] {
-					// Only the main thread reads insideClose_. Insides that hold no threads finish
-					// inside close(), so a stop or restart of a plain node takes no loop turn.
+					// Only the main thread reads insideClose_. A run object that holds no threads finishes inside
+					// close(), so a stop or restart of a plain node takes no loop turn.
 					if (std::this_thread::get_id() == main && self->insideClose_) {
 						self->closedInside_ = true;
 						return;
 					}
 					self->mainLoop_.post([self] {
-						if (self->node_ != nullptr) self->node_->insidesClosed();
+						if (Node* node = self->node()) node->runClosed();
 					});
 				};
 			}
-			/// Main thread: close() on `insides`. True if it called `closed` before it returned.
-			bool close(NodeInsides& insides) {
+			/// Main thread: close() on `object`. True if it called `closed` before it returned.
+			bool close(RunObject& object) {
 				insideClose_ = true;
-				insides.close(closedCall());
+				object.close(closedCall());
 				insideClose_ = false;
 				return closedInside_;
 			}
 
 		private:
+			/// Main thread: the node, while this run is attached.
+			Node* node() const noexcept { return node_; }
 			Node* node_; // main thread only
 			Executor& mainLoop_;
 			bool closing_ = false;      // main thread only
@@ -189,65 +218,146 @@ struct NodeHost::Impl {
 			bool closedInside_ = false; // main thread only
 		};
 
-		void startInsides(std::shared_ptr<const NodeConfig> config) {
-			config_ = std::move(config);
-			channel_ = std::make_shared<Channel>(*this, host_.mainLoop);
-			granting_ = true;
-			auto insides = config_->start(*this);
-			granting_ = false;
-			if (!insides) {
-				// No write happened (the block was never driven by this node's code), so the
-				// handoffs may go now; the consumers they were given went with the type's failed
-				// start. No outside node was made. The port block stays.
-				handoffs_.clear();
-				outsideRequests_.clear();
-				channel_->detach();
-				channel_.reset();
-				if (lifecycle_.insidesFailed(std::move(insides.error()))) host_.changed(*this);
-				return;
-			}
-			insides_ = std::move(*insides);
-			AudioCode& code = insides_->audioCode();
-			code.prepare(host_.format);
-			prepared_ = true;
-			block_->drive(&code);
-			if (outsideRequests_.empty()) {
-				if (lifecycle_.insidesReady()) host_.changed(*this);
-				return;
-			}
-			makeOutsideNodes();
+		/// One start of the node, from start() to the end of its close. Members in reverse teardown order.
+		struct Run {
+			std::uint64_t generation = 0;
+			std::shared_ptr<const NodeConfig> config;
+			std::shared_ptr<Channel> channel;
+			RunRecipe recipe;
+			std::unique_ptr<RunObject> object;
+			std::unique_ptr<AudioCode> code; // reads the run object, so goes first
+			std::vector<std::unique_ptr<Handoff>> handoffs;
+			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
+			std::vector<std::unique_ptr<Outside>> outside;
+			std::unique_ptr<Timer> deadline;
+			bool prepared = false;
+			bool built = false; // the recipe ran (or there was none)
+			std::size_t handoffsClosed = 0;
+		};
+
+		/// Everything of a run that did not close in time and that its threads can still reach: never freed (I5a).
+		struct Leaked {
+			std::shared_ptr<const NodeConfig> config;
+			std::shared_ptr<Channel> channel;
+			RunRecipe recipe;
+			std::unique_ptr<AudioCode> code;
+			std::unique_ptr<RunObject> object;
+			std::vector<std::unique_ptr<Handoff>> handoffs;
+		};
+
+		const Ports::Bank& insideBank(const std::string& name, Direction direction) const {
+			const Ports::Bank& bank = ports_.bank(name);
+			if (bank.reach != PortBank::Reach::inside || bank.direction != direction)
+				throw std::logic_error("node " + name_ + ": an outside node joins an inside " +
+				                       (direction == Direction::input ? "input" : "output") + " bank, not \"" + name +
+				                       "\"");
+			return bank;
 		}
 
-		/// The outside nodes the insides asked for, in request order, once the block is ready
-		/// (its ports exist), the insides run and none is made yet.
+		/// Records an outside node to make once the block is ready, under its one name (I9).
+		void askOutside(OutsideRequest request, const Ports::Bank& bank) {
+			const NodeName engineNode = name_ + "." + std::string(outsideSuffix(request));
+			if (std::ranges::any_of(run_->outsideRequests,
+			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }))
+				throw std::logic_error("node " + name_ + ": a second resource named " + engineNode + " in one run");
+			run_->outsideRequests.emplace_back(std::move(request),
+			                                   OutsideTarget{engineNode, name_, bank.ports, host_.format});
+		}
+
+		/// A new run (I7: only when none is left). start() acquires; the code drives the block at once; the resources
+		/// are readied, and once all are, the recipe builds the run object.
+		void startRun(std::shared_ptr<const NodeConfig> config) {
+			if (run_) throw std::logic_error("node " + name_ + ": a run started while another had not gone");
+			run_ = std::make_unique<Run>();
+			run_->generation = ++host_.generations;
+			run_->config = std::move(config);
+			run_->channel = std::make_shared<Channel>(*this, host_.mainLoop);
+			starting_ = true;
+			StartResult started = [&] {
+				try {
+					return run_->config->start(*this);
+				} catch (...) {
+					starting_ = false;
+					throw;
+				}
+			}();
+			starting_ = false;
+			if (!started) {
+				// No write happened (the block was never driven by this run's code), so the handoffs may go now; the
+				// consumers they were given went with the type's failed start. No outside node was made. The port
+				// block stays; the config goes with the run's teardown.
+				run_->handoffs.clear();
+				run_->outsideRequests.clear();
+				run_->channel->detach();
+				run_->built = true;
+				if (lifecycle_.insidesFailed(std::move(started.error()))) host_.changed(*this);
+				return;
+			}
+			run_->recipe = std::move(started->recipe);
+			run_->code =
+				started->code.own() ? std::move(started->code.own()) : makePassThrough(ports_, started->code.pairs());
+			run_->code->prepare(host_.format);
+			run_->prepared = true;
+			block_->drive(run_->code.get());
+			if (run_->outsideRequests.empty()) buildRunObject();
+			else makeOutsideNodes();
+		}
+
+		/// The outside nodes the run asked for, in request order, once the block is ready (its ports exist), the run
+		/// started and none is made yet.
 		void makeOutsideNodes() {
-			if (!blockReady_ || !insides_ || tearingDown_ || stopping_ || lifecycle_.blockLost() ||
-			    outsideRequests_.empty() || !outside_.empty())
+			if (!blockReady_ || !run_ || !run_->prepared || tearingDown_ || stopping_ || lifecycle_.blockLost() ||
+			    run_->outsideRequests.empty() || !run_->outside.empty())
 				return;
-			outside_.reserve(outsideRequests_.size());
-			for (std::size_t i = 0; i < outsideRequests_.size(); ++i) {
-				auto& outside = *outside_.emplace_back(std::make_unique<Outside>(*this, i));
-				const OutsideRequest& request = outsideRequests_[i];
-				const NodeName engineNode = outsideNodeName(name_, request);
-				outside.node =
-					std::visit(Overloaded{
-								   [&](const SoundCardRequest& card) {
-									   return host_.cards.make(engineNode, name_, card, host_.format, outside);
-								   },
-								   [&](const RtpReceiverRequest& receiver) {
-									   return host_.receivers.make(engineNode, name_, receiver, outside);
-								   },
-							   },
-				               request);
+			run_->outside.reserve(run_->outsideRequests.size());
+			makingOutside_ = true;
+			for (std::size_t i = 0; i < run_->outsideRequests.size(); ++i) {
+				auto& outside = *run_->outside.emplace_back(std::make_unique<Outside>(*this, i));
+				const auto& [request, target] = run_->outsideRequests[i];
+				outside.node = std::visit(
+					[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
+					request);
 			}
+			makingOutside_ = false;
+			buildIfAllReady(); // an adapter may have told ready() inside its make()
 		}
 
-		/// The insides are ready once every outside node is.
+		/// Every resource is ready: the recipe builds the run object, and the run is ready once it returned.
+		void buildRunObject() {
+			run_->built = true;
+			if (run_->recipe) {
+				building_ = true;
+				auto made = [&] {
+					try {
+						return run_->recipe(*this);
+					} catch (...) {
+						building_ = false;
+						throw;
+					}
+				}();
+				building_ = false;
+				if (!made) {
+					if (lifecycle_.insidesFailed(std::move(made.error()))) host_.changed(*this);
+					return;
+				}
+				run_->object = std::move(*made);
+			}
+			if (lifecycle_.insidesReady()) host_.changed(*this);
+		}
+
+		/// The run is ready once every outside node is, and its run object is built.
 		void outsideReady(std::size_t index) {
-			outside_.at(index)->isReady = true;
-			if (std::ranges::all_of(outside_, [](const auto& outside) { return outside->isReady; }) &&
-			    lifecycle_.insidesReady())
-				host_.changed(*this);
+			run_->outside.at(index)->isReady = true;
+			buildIfAllReady();
+		}
+
+		/// The recipe runs once every outside node the run asked for is made and ready (7.2). An adapter may tell
+		/// ready() inside make(), before the later outside nodes exist, so nothing is built while they are being made.
+		void buildIfAllReady() {
+			if (!makingOutside_ && !run_->built && lifecycle_.state() != NodeState::failed &&
+			    run_->outside.size() == run_->outsideRequests.size() &&
+			    std::ranges::all_of(run_->outside, [](const auto& outside) { return outside->isReady; }))
+				buildRunObject();
 		}
 
 		/// Any outside node lost, before or after the node ran, fails it.
@@ -255,93 +365,135 @@ struct NodeHost::Impl {
 			if (lifecycle_.insidesFailed({FailureReason::Code::engineRefused, std::move(detail)})) host_.changed(*this);
 		}
 
-		/// The insides' own threads say they are dead: as an outside node's loss, it fails the node
-		/// and its block and routes stay.
-		void insidesLost(std::string detail) {
+		/// The run's own threads say it is dead: as an outside node's loss, it fails the node and its block and routes
+		/// stay.
+		void runLost(std::string detail) {
 			if (lifecycle_.insidesFailed({FailureReason::Code::startFailed, std::move(detail)})) host_.changed(*this);
 		}
 
-		/// The block stops running the code; release(); outside nodes; handoffs closed. The rest
-		/// goes in finishTeardown once every handoff has closed.
-		void tearDownInsides() {
+		/// I5 steps 1 to 3: the barrier and release(); the outside nodes; the handoffs closed, each on its own thread.
+		/// Steps 3 and 4 have the close deadline (I5a). The rest goes once every handoff has closed.
+		void tearDown() {
 			tearingDown_ = true;
-			if (channel_) channel_->closing();
+			if (!run_) {
+				finishRun();
+				return;
+			}
+			Run& run = *run_;
+			run.channel->closing();
 			if (block_) block_->drive(nullptr);
-			if (prepared_) insides_->audioCode().release();
-			prepared_ = false;
-			outside_.clear();
-			outsideRequests_.clear();
-			closed_ = 0;
-			closing_ = true;
-			for (auto& handoff : handoffs_)
-				handoff->close([this](std::uint64_t droppedFrames) {
-					dropped_ += droppedFrames;
-					++closed_;
-					finishTeardown();
-				});
-			closing_ = false;
-			finishTeardown();
+			if (run.prepared) run.code->release();
+			run.prepared = false;
+			run.outside.clear();
+			run.outsideRequests.clear();
+			run.deadline = host_.timers.after(host_.closeDeadline,
+			                                  [this, generation = run.generation] { closeOverdue(generation); });
+			run.handoffsClosed = 0;
+			closingHandoffs_ = true;
+			for (auto& handoff : run.handoffs) handoff->close(run.channel->handoffClosedCall());
+			closingHandoffs_ = false;
+			closeRunObject();
 		}
 
-		/// Runs once every handoff reported closed, and never inside a close() call, so no
-		/// handoff is destroyed while that loop is still calling it. Then the insides close; the
-		/// rest goes in insidesClosed once they say they have.
-		void finishTeardown() {
-			if (!tearingDown_ || closing_ || closed_ != handoffs_.size() || insidesClosing_) return;
-			handoffs_.clear();
-			insidesClosing_ = true;
-			if (!insides_ || channel_->close(*insides_)) insidesClosed();
+		void handoffClosed(std::uint64_t droppedFrames) {
+			dropped_ += droppedFrames;
+			++run_->handoffsClosed;
+			closeRunObject();
 		}
 
-		/// The insides' threads are gone. The config goes after the insides it started.
-		void insidesClosed() {
-			if (!insidesClosing_) return;
-			insidesClosing_ = false;
-			if (channel_) channel_->detach();
-			insides_.reset();
-			channel_.reset();
-			config_.reset();
+		/// I5 step 4, once every handoff reported closed, and never inside a close() call, so no handoff is destroyed
+		/// while that loop is still calling it. The rest goes in runClosed once the run object says it has closed.
+		void closeRunObject() {
+			if (!tearingDown_ || closingHandoffs_ || runClosing_ || run_->handoffsClosed != run_->handoffs.size())
+				return;
+			run_->handoffs.clear();
+			runClosing_ = true;
+			if (!run_->object || run_->channel->close(*run_->object)) runClosed();
+		}
+
+		/// The run object's threads are gone.
+		void runClosed() {
+			if (!runClosing_) return;
+			runClosing_ = false;
+			finishRun();
+		}
+
+		/// I5 step 5, on the main loop: the code (released and unreachable since the barrier; it may hold references
+		/// into the run object, never the reverse), then the run object, its recipe and last its config. Then the node
+		/// is gone, or the next run starts (I7).
+		void finishRun() {
+			if (run_) {
+				run_->deadline.reset();
+				run_->channel->detach();
+				run_->code.reset();
+				run_->object.reset();
+				run_->recipe = nullptr;
+				run_.reset();
+			}
+			afterRun();
+		}
+
+		/// The close deadline passed with step 3 or 4 unfinished (I5a): the run is detached, so nothing it tells lands;
+		/// what its threads can reach is leaked, never freed; and the node moves on.
+		void closeOverdue(std::uint64_t generation) {
+			if (!run_ || run_->generation != generation || !tearingDown_) return;
+			run_->channel->detach();
+			const std::size_t handoffsOpen = run_->handoffs.size() - run_->handoffsClosed;
+			const bool objectOpen = runClosing_;
+			// Deliberately never deleted: the run's threads may still touch any of it.
+			static_cast<void>(new Leaked{std::move(run_->config), std::move(run_->channel), std::move(run_->recipe),
+			                             std::move(run_->code), std::move(run_->object), std::move(run_->handoffs)});
+			++host_.leakedRuns;
+			run_.reset();
+			runClosing_ = false;
+			host_.diagnosed(name_, "ear.close-overdue",
+			                "the run did not close within " + std::to_string(host_.closeDeadline.count()) +
+			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, run " +
+			                    (objectOpen ? "closing" : "not yet told to close") + ")");
+			afterRun();
+		}
+
+		void afterRun() {
 			tearingDown_ = false;
 			if (stopping_) {
 				lifecycle_.stopped();
 				host_.gone(*this, dropped_);
 				return;
 			}
-			if (next_) startInsides(std::exchange(next_, nullptr));
+			if (next_) startRun(std::exchange(next_, nullptr));
 		}
 
 		Impl& host_;
 		NodeName name_;
 		NodeLifecycle lifecycle_;
+		Ports ports_;
 		std::shared_ptr<const NodeConfig> next_;    // the config a restart starts once teardown ends
 		std::shared_ptr<const NodeConfig> waiting_; // the config to start once an older node of this name has gone
-		std::shared_ptr<const NodeConfig> config_;
-		std::shared_ptr<Channel> channel_; // from each start until its insides closed
-		std::unique_ptr<NodeInsides> insides_;
-		std::vector<std::unique_ptr<Handoff>> handoffs_;
-		std::vector<OutsideRequest> outsideRequests_;
-		std::vector<std::unique_ptr<Outside>> outside_;
+		std::unique_ptr<Run> run_;                  // the current run (I7: at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool blockReady_ = false;
-		bool granting_ = false;
-		bool prepared_ = false;
+		bool starting_ = false;
+		bool building_ = false;
+		bool makingOutside_ = false;
 		bool tearingDown_ = false;
 		bool stopping_ = false;
-		bool closing_ = false;
-		bool insidesClosing_ = false;
-		std::size_t closed_ = 0;
+		bool closingHandoffs_ = false;
+		bool runClosing_ = false;
 		std::uint64_t dropped_ = 0;
 	};
 
 	AudioFormat format;
 	PortBlockFactory& blocks;
-	HandoffFactory& handoffs;
-	SoundCardFactory& cards;
-	RtpReceiverFactory& receivers;
+	ResourceRegistry& resources;
 	Executor& mainLoop;
-	std::vector<NodeStatusListener*> listeners;
+	Timers& timers;
+	std::chrono::milliseconds closeDeadline;
+	std::vector<NodeHealthListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
+	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; gone ones are pruned on add
+	std::uint64_t generations = 0;            // every run's generation, across nodes, so none is ever reused
+	std::size_t leakedRuns = 0;               // runs left running past the close deadline (I5a)
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 
@@ -358,12 +510,16 @@ struct NodeHost::Impl {
 	}
 
 	void changed(const Node& node) {
-		const NodeStatus status = node.status();
-		for (auto* listener : listeners) listener->nodeChanged(status);
+		const NodeHealth health = node.health();
+		for (auto* listener : listeners) listener->nodeChanged(health);
 	}
 
 	void noted(const NodeName& node, const std::string& text) {
 		for (auto* listener : noteListeners) listener->nodeSays(node, text);
+	}
+
+	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail) {
+		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail);
 	}
 
 	void gone(const Node& node, std::uint64_t droppedFrames) {
@@ -387,15 +543,20 @@ struct NodeHost::Impl {
 	}
 };
 
-NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, HandoffFactory& handoffs, SoundCardFactory& cards,
-                   RtpReceiverFactory& receivers, Executor& mainLoop)
-	: impl_(new Impl{format, blocks, handoffs, cards, receivers, mainLoop, {}, {}, {}, false, nullptr}) {}
+NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
+                   Timers& timers, std::chrono::milliseconds closeDeadline)
+	: impl_(
+		  new Impl{format, blocks, resources, mainLoop, timers, closeDeadline, {}, {}, {}, {}, 0, 0, false, nullptr}) {}
 
 NodeHost::~NodeHost() = default;
 
-void NodeHost::subscribe(NodeStatusListener& listener) { impl_->listeners.push_back(&listener); }
+void NodeHost::subscribe(NodeHealthListener& listener) { impl_->listeners.push_back(&listener); }
 
 void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners.push_back(&listener); }
+
+void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
+	impl_->diagnosticListeners.push_back(&listener);
+}
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);
@@ -426,10 +587,12 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	impl_->allGoneIfDone();
 }
 
-std::vector<NodeStatus> NodeHost::status() const {
-	std::vector<NodeStatus> result;
+std::size_t NodeHost::leakedRuns() const noexcept { return impl_->leakedRuns; }
+
+std::vector<NodeHealth> NodeHost::health() const {
+	std::vector<NodeHealth> result;
 	for (const auto& node : impl_->nodes)
-		if (!node->lifecycle().gone()) result.push_back(node->status());
+		if (!node->lifecycle().gone()) result.push_back(node->health());
 	return result;
 }
 

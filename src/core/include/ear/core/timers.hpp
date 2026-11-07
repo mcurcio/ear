@@ -1,0 +1,23 @@
+// Main-loop timers (docs/design/node-framework.md section 6, I5a; slice 1): the node framework's close deadline. The
+// engine's main loop implements them (ear_pipewire's MainLoopExecutor); tests turn a fake clock.
+#pragma once
+#include <chrono>
+#include <functional>
+#include <memory>
+namespace ear {
+/// One armed timer. Destroying it (main thread) cancels it: `due` never runs after that.
+class Timer {
+public:
+	virtual ~Timer() = default;
+};
+class Timers {
+public:
+	/// Main thread. Runs `due` once on the main thread, `delay` from now, unless the returned timer is destroyed
+	/// first. Never runs it inside this call. `due` is moved out of the timer before it runs, so destroying the timer
+	/// inside `due` is allowed.
+	virtual std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) = 0;
+
+protected:
+	~Timers() = default;
+};
+} // namespace ear

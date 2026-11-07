@@ -67,7 +67,7 @@ void MainLoopGateway::routeAdded(const Route& route) { impl_->post(RouteAdded{ro
 
 void MainLoopGateway::routeRemoved(const Route& route) { impl_->post(RouteRemoved{route}); }
 
-void MainLoopGateway::nodeChanged(const NodeStatus& status) { impl_->post(NodeChanged{status}); }
+void MainLoopGateway::nodeChanged(const NodeHealth& health) { impl_->post(NodeChanged{health}); }
 
 void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames) {
 	impl_->post(NodeStopped{node, droppedFrames});

@@ -39,24 +39,51 @@ TEST_CASE("Banks fill each direction in declaration order, members in order", "[
 	CHECK(ports.outputs() == Names{"from.left", "from.right", "stream.1", "stream.2"});
 }
 
-TEST_CASE("Inside ports keep the type's own names, and publicOnly leaves them out", "[ports]") {
-	const Ports ports{{{Direction::input, "play", numbered(1)}, {Direction::output, "capture", numbered(1)}},
-	                  numbered(1, "from_card_"),
-	                  numbered(2, "to_card_")};
-	CHECK(ports.insideInputs() == Names{"from_card_1"});
-	CHECK(ports.insideOutputs() == Names{"to_card_1", "to_card_2"});
+TEST_CASE("Inside banks are named as routable ones are, and publicOnly leaves them out", "[ports]") {
+	const Ports ports{{{Direction::input, "play", numbered(1)},
+	                   {Direction::output, "to_card", numbered(2), PortBank::Reach::inside},
+	                   {Direction::output, "capture", numbered(1)},
+	                   {Direction::input, "from_card", numbered(1), PortBank::Reach::inside}}};
+	CHECK(ports.inputs() == Names{"play.1"});
+	CHECK(ports.outputs() == Names{"capture.1"});
+	CHECK(ports.insideInputs() == Names{"from_card.1"});
+	CHECK(ports.insideOutputs() == Names{"to_card.1", "to_card.2"});
 
 	const Ports only = ports.publicOnly();
 	CHECK(only.inputs() == Names{"play.1"});
 	CHECK(only.outputs() == Names{"capture.1"});
 	CHECK(only.insideInputs().empty());
 	CHECK(only.insideOutputs().empty());
+	CHECK(only.banks().size() == 2);
 	CHECK_FALSE(only == ports);
 	CHECK(only == only.publicOnly());
 }
 
+TEST_CASE("A bank says where its ports sit in what process() gets: routable ports, then inside ones", "[ports]") {
+	const Ports ports{{{Direction::output, "to_card", numbered(2), PortBank::Reach::inside},
+	                   {Direction::input, "play", numbered(2)},
+	                   {Direction::output, "capture", numbered(3)},
+	                   {Direction::input, "from_card", numbered(3), PortBank::Reach::inside},
+	                   {Direction::input, "extra", {"a"}}}};
+	CHECK(ports.bank("play").first == 0);
+	CHECK(ports.bank("extra").first == 2);
+	CHECK(ports.bank("from_card").first == 3); // after play and extra
+	CHECK(ports.bank("capture").first == 0);
+	CHECK(ports.bank("to_card").first == 3); // after capture
+	CHECK(ports.bank("to_card").ports == Names{"to_card.1", "to_card.2"});
+	CHECK(ports.bank("to_card").reach == PortBank::Reach::inside);
+	CHECK(ports.bank("play").direction == Direction::input);
+	CHECK_THROWS_AS(ports.bank("nope"), std::logic_error);
+}
+
+TEST_CASE("Two banks of one name are a type bug", "[ports]") {
+	CHECK_THROWS_AS((Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "play", {"2"}}}}), std::logic_error);
+	CHECK_THROWS_AS(
+		(Ports{{{Direction::input, "play", {"1"}}, {Direction::input, "play", {"2"}, PortBank::Reach::inside}}}),
+		std::logic_error);
+}
+
 TEST_CASE("numbered counts from 1, and none is none", "[ports]") {
 	CHECK(numbered(3) == std::vector<std::string>{"1", "2", "3"});
-	CHECK(numbered(2, "x_") == std::vector<std::string>{"x_1", "x_2"});
 	CHECK(numbered(0).empty());
 }

@@ -635,14 +635,17 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	BlockEvents srcEvents(waiter), cardEvents(waiter), recEvents(waiter);
 	auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
 	src->drive(&ramp);
-	auto card = blocks.make("card", Ports{{{Direction::input, "in", {"a"}}}, {}, {"TO"}}, kFormat, cardEvents);
+	auto card = blocks.make(
+		"card",
+		Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}},
+		kFormat, cardEvents);
 	card->drive(&through);
 	auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
 	rec->drive(&recorder);
 
 	REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"card", "in.a"}));
-	REQUIRE(wiring.link(waiter, {"card", "TO"}, {"rec", "record.left"}));
-	CHECK(wiring.ports.find("card", "TO")->direction == Direction::output);
+	REQUIRE(wiring.link(waiter, {"card", "to_card.1"}, {"rec", "record.left"}));
+	CHECK(wiring.ports.find("card", "to_card.1")->direction == Direction::output);
 
 	constexpr std::size_t kWanted = 32 * kBlock;
 	REQUIRE(waiter.until([&] {

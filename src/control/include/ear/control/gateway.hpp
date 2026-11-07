@@ -41,7 +41,7 @@ class MainLoopGateway final : public GraphGateway,
 							  public GraphFileListener,
 							  public DesiredNodeListener,
 							  public DesiredRouteListener,
-							  public NodeStatusListener,
+							  public NodeHealthListener,
 							  public RouteStatusListener {
 public:
 	MainLoopGateway(Executor& mainLoop, Executor& control,
@@ -57,7 +57,7 @@ public:
 	void nodeRemoved(const NodeName& node) override;
 	void routeAdded(const Route& route) override;
 	void routeRemoved(const Route& route) override;
-	void nodeChanged(const NodeStatus& status) override;
+	void nodeChanged(const NodeHealth& health) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void routeChanged(const RouteStatus& status) override;
 

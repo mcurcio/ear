@@ -22,11 +22,10 @@ namespace ear::pipewire {
 ///   any state --node ERROR, proxy error, node removed, a link failed or gone--> destroy the
 ///     links, destroy the adapter proxy, then events.lost(detail)
 /// channelPorts: "playback_AUX<i>" / "capture_AUX<i>".
-class AlsaSoundCards final : public SoundCardFactory {
+class AlsaSoundCards final : public SoundCardAdapter {
 public:
 	explicit AlsaSoundCards(Engine& engine); // engine outlives it
-	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                  const SoundCardRequest& request, const AudioFormat& format,
+	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const SoundCardRequest& request,
 	                                  OutsideNodeEvents& events) override;
 
 private:

@@ -108,14 +108,16 @@ private:
 	NodeName engineNode_;
 };
 
-/// Two blocks: "card" (two inputs, two inside outputs "to_card_1", "to_card_2") and "other"
+/// Two blocks: "card" (two inputs, the inside output bank "to_card": "to_card.1", "to_card.2") and "other"
 /// (one input), each driven by its own code, both running on the dummy driver.
 struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt)
 		: out(useTestAlsa(alsaOut)), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
 		  blocks(*engine, bell), cards(*engine), cardCode(waiter, rampOn), otherCode(waiter), cardBlockEvents(waiter),
 		  otherBlockEvents(waiter) {
-		cardBlock = blocks.make("card", Ports{{{Direction::input, "play", {"1", "2"}}}, {}, {"to_card_1", "to_card_2"}},
+		cardBlock = blocks.make("card",
+		                        Ports{{{Direction::input, "play", {"1", "2"}},
+		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
 		                        kFormat, cardBlockEvents);
 		cardBlock->drive(&cardCode);
 		otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
@@ -134,9 +136,8 @@ struct Graph {
 
 	std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
 		events.insideMake = true;
-		auto card =
-			cards.make("card.playback", "card",
-		               SoundCardRequest{id, CardDirection::playback, {"to_card_1", "to_card_2"}}, kFormat, events);
+		auto card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
+		                       SoundCardRequest{id, CardDirection::playback, "to_card"}, events);
 		events.insideMake = false;
 		return card;
 	}
@@ -222,9 +223,8 @@ TEST_CASE("A card running alone holds no port block: they stay on the dummy unti
 		cardProps = *graph.registry.props(name);
 		graph.registry.rebind({"card", "other"});
 	};
-	const auto card = graph.cards.make(
-		"card.playback", "nowhere",
-		SoundCardRequest{cardId("Test"), CardDirection::playback, {"to_card_1", "to_card_2"}}, kFormat, events);
+	const auto card = graph.cards.make(OutsideTarget{"card.playback", "nowhere", {"to_card.1", "to_card.2"}, kFormat},
+	                                   SoundCardRequest{cardId("Test"), CardDirection::playback, "to_card"}, events);
 	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
 	graph.registry.onNodeInfo = nullptr;
 	CHECK(events.readyCount == 0);
@@ -235,8 +235,8 @@ TEST_CASE("A card running alone holds no port block: they stay on the dummy unti
 	CHECK_FALSE(cardProps->contains(PW_KEY_NODE_GROUP));
 }
 
-TEST_CASE("What a port block sends to inside output to_card_2 lands on the card's channel 2", "[cards][channels]") {
-	Graph graph(1); // the ramp on the card block's second output: to_card_2
+TEST_CASE("What a port block sends to inside output to_card.2 lands on the card's channel 2", "[cards][channels]") {
+	Graph graph(1); // the ramp on the card block's second output: to_card.2
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
 	const auto card = graph.makeCard(cardId("Test"), events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));

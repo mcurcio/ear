@@ -12,22 +12,22 @@
 
 namespace {
 
-/// White asks for nothing: any handoff request fails the test.
-class NoHandoffGrant final : public ear::NodeGrant {
+/// White acquires nothing: any resource fails the test.
+class NothingContext final : public ear::StartContext {
 public:
-	explicit NoHandoffGrant(ear::AudioFormat format) : format_(format) {}
+	explicit NothingContext(ear::AudioFormat format) : format_(format) {}
 	ear::AudioFormat format() const override { return format_; }
-	ear::RtWriter& handoff(std::uint32_t, std::uint32_t, ear::HandoffConsumer&) override {
-		throw std::logic_error("white requested a handoff");
+	const ear::NodeName& node() const override { return name_; }
+	ear::InsidesEvents& events() override { throw std::logic_error("white asked for events"); }
+
+protected:
+	Acquired acquireResource(const ear::ResourceRequest&) override {
+		throw std::logic_error("white acquired a resource");
 	}
-	void soundCard(const ear::SoundCardRequest&) override { throw std::logic_error("white asked for a sound card"); }
-	void rtpReceiver(const ear::RtpReceiverRequest&) override {
-		throw std::logic_error("white asked for an RTP receiver");
-	}
-	ear::InsidesEvents& events() override { throw std::logic_error("white asked for insides events"); }
 
 private:
 	ear::AudioFormat format_;
+	ear::NodeName name_ = "noise";
 };
 
 } // namespace
@@ -59,10 +59,12 @@ TEST_CASE("White fills its output with uniform noise from -1 up to but not inclu
 	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 480};
 	const auto config = ear::nodes::makeWhiteNodeType({})->parse("noise", {});
 	REQUIRE(config.has_value());
-	NoHandoffGrant grant{format};
-	auto insides = (*config)->start(grant);
-	REQUIRE(insides.has_value());
-	ear::AudioCode& code = (*insides)->audioCode();
+	NothingContext context{format};
+	auto started = (*config)->start(context);
+	REQUIRE(started.has_value());
+	REQUIRE(started->code.own() != nullptr);
+	CHECK_FALSE(started->recipe); // no run object: white has no threads
+	ear::AudioCode& code = *started->code.own();
 	code.prepare(format);
 
 	// One second at the format's rate, block by block, each block primed with a value the

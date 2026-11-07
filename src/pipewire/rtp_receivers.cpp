@@ -33,16 +33,15 @@ std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_st
 /// The module's arguments (docs/design/rtp.md section 5): the one home of this form. Every value
 /// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
 /// user text reaches PipeWire's parsers.
-std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request) {
+std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request, std::size_t channels) {
 	const std::string name = "\"" + engineNode + "\"";
 	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + request.address.text() + "\"" +
 	       " source.port = " + std::to_string(request.port) + " sess.media = \"audio\"" +
 	       " sess.latency.msec = " + std::to_string(request.latencyMs) + " sess.ignore-ssrc = true" +
 	       " audio.format = \"" + (request.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
-	       " audio.rate = " + std::to_string(request.rate) +
-	       " audio.channels = " + std::to_string(request.blockPorts.size()) +
-	       " audio.position = " + auxPositions(request.blockPorts.size()) + " node.name = " + name +
-	       " node.description = " + name + " media.name = " + name +
+	       " audio.rate = " + std::to_string(request.rate) + " audio.channels = " + std::to_string(channels) +
+	       " audio.position = " + auxPositions(channels) + " node.name = " + name + " node.description = " + name +
+	       " media.name = " + name +
 	       " stream.props = { node.always-process = true"
 	       " adapter.auto-port-config = { mode = dsp monitor = false control = false position = "
 	       "preserve } } }";
@@ -222,21 +221,22 @@ private:
 
 RtpReceivers::RtpReceivers(Engine& engine) : engine_(engine) {}
 
-std::unique_ptr<OutsideNode> RtpReceivers::make(const NodeName& engineNode, const NodeName& blockNode,
-                                                const RtpReceiverRequest& request, OutsideNodeEvents& events) {
+std::unique_ptr<OutsideNode> RtpReceivers::make(const OutsideTarget& target, const RtpReceiverRequest& request,
+                                                OutsideNodeEvents& events) {
 	std::vector<PortName> receiverPorts;
-	for (std::size_t channel = 0; channel < request.blockPorts.size(); ++channel) {
+	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
 		receiverPorts.push_back(channelPort(channel));
 	}
 	return joinOutsideNode(engine_,
 	                       OutsideJoin{.kind = kind,
-	                                   .blockNode = blockNode,
+	                                   .blockNode = target.blockNode,
 	                                   .flow = ChannelFlow::nodeToBlock,
 	                                   .nodePorts = std::move(receiverPorts),
-	                                   .blockPorts = request.blockPorts},
+	                                   .blockPorts = target.blockPorts},
 	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<RtpReceiverBody>(engine_, engineNode,
-		                                                                moduleArguments(engineNode, request), body);
+							   return std::make_unique<RtpReceiverBody>(
+								   engine_, target.engineNode,
+								   moduleArguments(target.engineNode, request, target.blockPorts.size()), body);
 						   });
 }
 

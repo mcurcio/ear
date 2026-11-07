@@ -11,6 +11,7 @@ add_library(ear_core STATIC
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
+	pass_through.cpp
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
@@ -33,10 +34,12 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp
+	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/settings_table.hpp
-	include/ear/core/sound_card.hpp)
+	include/ear/core/sound_card.hpp
+	include/ear/core/timers.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 

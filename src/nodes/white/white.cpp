@@ -42,21 +42,11 @@ private:
 	std::mt19937 generator_;
 };
 
-class WhiteInsides final : public NodeInsides {
-public:
-	AudioCode& audioCode() override { return noise_; }
-
-private:
-	WhiteNoise noise_;
-};
-
 class WhiteConfig final : public NodeConfig {
 public:
 	const Ports& ports() const override { return ports_; }
 
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant&) const override {
-		return std::make_unique<WhiteInsides>();
-	}
+	StartResult start(StartContext&) const override { return Started{std::make_unique<WhiteNoise>()}; }
 
 private:
 	Ports ports_{{{Direction::output, "noise", {"mono"}}}};

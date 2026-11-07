@@ -254,7 +254,7 @@ namespace {
 class NoPorts final : public ear::NodeConfig {
 public:
 	const ear::Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+	ear::StartResult start(ear::StartContext&) const override {
 		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "not started in these tests"});
 	}
 

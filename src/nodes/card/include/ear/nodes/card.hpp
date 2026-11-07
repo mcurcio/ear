@@ -8,9 +8,9 @@
 namespace ear::nodes {
 /// "card": a sound card. Its settings ("card", "playback", "capture") are the rows in card.cpp, which hold their ranges
 /// and defaults; at least one channel count above 0. Ports: inputs
-/// "play.1".."play.N", outputs "capture.1".."capture.M"; inside outputs "to_card_1"..,
-/// inside inputs "from_card_1"... Audio passes straight through (play.i -> to_card_i,
-/// from_card_j -> capture.j). Start asks the grant for one card per direction used. The rate is
+/// "play.1".."play.N", outputs "capture.1".."capture.M"; the inside output bank "to_card" ("to_card.1"..),
+/// the inside input bank "from_card". The framework passes audio straight through (play -> to_card,
+/// from_card -> capture). Start acquires one card per direction used, joined to its bank. The rate is
 /// the graph frequency (R5), never a setting.
 std::unique_ptr<const NodeType> makeCardNodeType(const NodeFolders& folders);
 } // namespace ear::nodes
