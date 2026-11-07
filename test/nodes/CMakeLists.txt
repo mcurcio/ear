@@ -2,7 +2,8 @@
 # library; each type's own tests are in its folder, src/nodes/<type>. test/ is added before src/, so the folder list is a
 # generator expression, read when the build is generated.
 add_executable(ear_node_types_tests harness_test.cpp node_types_test.cpp settings_refusals_test.cpp)
-target_link_libraries(ear_node_types_tests PRIVATE ear_all_node_types ear_type_harness ear_folder ear_temp_folder ear_catch_main)
+target_link_libraries(ear_node_types_tests PRIVATE
+	ear_all_node_types ear_type_harness ear_folder ear_temp_folder ear_catch_main)
 target_compile_definitions(ear_node_types_tests PRIVATE
 	"EAR_NODE_TYPE_FOLDERS=\"$<JOIN:$<TARGET_PROPERTY:ear_all_node_types,EAR_NODE_TYPES>,$<COMMA>>\"")
 add_dependencies(ear_node_types_tests ear_all_node_types_verify_interface_header_sets)
