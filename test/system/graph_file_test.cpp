@@ -116,7 +116,7 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	CHECK(logged("pipewire"));
 }
 
-TEST_CASE("T2:an editor edit is announced, applied, answered and written back, and a hand edit wins",
+TEST_CASE("T2: an editor edit is announced, applied, answered and written back, and a hand edit wins",
           "[system][graph-file]") {
 	TempDirectory directory;
 	writeGraphFile(directory, recordExample());

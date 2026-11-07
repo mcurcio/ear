@@ -35,7 +35,7 @@ set_tests_properties(ear_node_types_none_refused PROPERTIES PASS_REGULAR_EXPRESS
 set(ear_guard "${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard.cmake")
 add_test(NAME ear_nodes_never_write_standard_output
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src/nodes" -P "${ear_guard}")
-foreach(spelling cout cerr clog stdout stderr stdout_fileno printf puts perror write1 write2 dprintf)
+foreach(spelling cout cerr clog stdout stderr stdout_fileno printf puts perror print println write1 write2 dprintf)
 	add_test(NAME ear_standard_output_guard_refuses_${spelling}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard"
 			"-DGLOB=${spelling}.snippet" -P "${ear_guard}")
@@ -45,3 +45,8 @@ endforeach()
 add_test(NAME ear_standard_output_guard_allows_lookalikes
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard"
 		"-DGLOB=allowed.snippet" -P "${ear_guard}")
+add_test(NAME ear_standard_output_guard_refuses_checking_nothing
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard"
+		"-DGLOB=no-such-file.snippet" -P "${ear_guard}")
+set_tests_properties(ear_standard_output_guard_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the guard would check nothing")
