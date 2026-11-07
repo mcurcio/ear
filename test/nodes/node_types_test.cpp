@@ -1,5 +1,6 @@
 // Every node type together, however many the folders in src/nodes make: their names, and each type's declared setting
 // kinds (docs/design/knobly-config.md). That main.cpp registers them is the system tests' to prove.
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -11,10 +12,10 @@
 #include "catch2/catch.hpp"
 #include "ear/core/node_catalogue.hpp"
 
-// Today's five, each found; the whole list is the next test's to prove against the folders.
-TEST_CASE("The node types are card, file, rtp, sendspin and white", "[nodes]") {
+// Each found; the whole list is the next test's to prove against the folders, and sendspin is the last test's.
+TEST_CASE("The built-in node types are white, file, card and rtp", "[builtin]") {
 	const ear::NodeCatalogue catalogue(ear::test::allTypes());
-	for (const std::string_view name : {"card", "file", "rtp", "sendspin", "white"}) {
+	for (const std::string_view name : {"white", "file", "card", "rtp"}) {
 		INFO(name);
 		CHECK(catalogue.find(name) != nullptr);
 	}
@@ -30,32 +31,25 @@ TEST_CASE("Every folder in src/nodes makes one type of its own name", "[nodes]")
 	CHECK(joined == EAR_NODE_TYPE_FOLDERS);
 }
 
-TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses", "[nodes]") {
+TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses", "[builtin]") {
 	std::map<std::string, std::vector<std::pair<std::string, ear::SettingKind>>> declared;
 	for (const auto& type : ear::test::allTypes()) {
 		INFO(type->name());
-		// "a" is a valid card id and a valid recordings path; 1 is a valid channel count, port and
-		// latency. The rtp keys whose values those are not get a valid value of the same kind.
-		const std::map<std::string, ear::NodeSettings> valid{
-			{"address", "0.0.0.0"}, {"format", "L16"}, {"rate", 48000}};
-		ear::NodeSettings settings = ear::NodeSettings::object();
+		const auto& valid = ear::test::validSettings(type->name());
+		for (const ear::NodeSettings& settings : valid) {
+			const auto parsed = type->parse("node", settings);
+			INFO(settings.dump() << " is refused: " << (parsed ? "" : parsed.error().detail));
+			CHECK(parsed.has_value());
+		}
 		auto& keys = declared[std::string(type->name())];
 		for (const auto& [key, kind] : type->settingKinds()) {
-			CHECK_FALSE(settings.contains(std::string(key)));
-			const auto special = valid.find(std::string(key));
-			settings[std::string(key)] = special != valid.end()           ? special->second
-			                             : kind == ear::SettingKind::text ? ear::NodeSettings("a")
-			                                                              : ear::NodeSettings(1);
-			CHECK((kind == ear::SettingKind::text) == settings[std::string(key)].is_string());
+			INFO(key);
+			const std::string spelled(key);
+			CHECK(std::ranges::none_of(keys, [&](const auto& seen) { return seen.first == spelled; }));
+			const auto giving = std::ranges::find_if(valid, [&](const auto& one) { return one.contains(spelled); });
+			REQUIRE(giving != valid.end());
+			CHECK((kind == ear::SettingKind::text) == giving->at(spelled).is_string());
 			keys.emplace_back(key, kind);
-		}
-		// sendspin refuses its keys all together ("port" only without "server"), and "a" is no
-		// server URL, so its two ways to be set are parsed below instead.
-		if (type->name() == "sendspin") {
-			CHECK(type->parse("node", {{"port", 1}, {"name", "a"}}).has_value());
-			CHECK(type->parse("node", {{"server", "ws://a/b"}, {"name", "a"}}).has_value());
-		} else {
-			CHECK(type->parse("node", settings).has_value());
 		}
 	}
 	using enum ear::SettingKind;

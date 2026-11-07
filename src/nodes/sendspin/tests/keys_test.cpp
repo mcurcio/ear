@@ -275,6 +275,7 @@ TEST_CASE("Making the node type narrows every key file and its staging file, wha
 	std::filesystem::create_symlink(config / "ear.conf", config / "sendspin-link.key");
 
 	CHECK(ear::nodes::makeSendspinNodeType({.config = rig.folder}) != nullptr);
+	CHECK_THROWS_WITH(ear::nodes::makeSendspinNodeType({}), "sendspin needs the graph file folder");
 
 	const auto modeOf = [&](const char* name) {
 		return std::filesystem::symlink_status(config / name).permissions() & std::filesystem::perms::mask;

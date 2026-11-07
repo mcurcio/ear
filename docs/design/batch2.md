@@ -1528,6 +1528,21 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **Settings rows and folders, 2026-11-06 (latest): what the two errata below claimed, made true.** A further review of PR 24
+  built what they said could not compile. (1) `Number` and `Text` are one type, `setting::Rule<T>`, and only `number` and
+  `text<parse>` make one; a row keeps its `SettingRow` private and gives it to read only; `byDefault` moved from
+  `WholeNumberRule` to the row. So a rule with no range, a reader of another type and a made row changed afterwards do not
+  compile, and the walk's unchecked read cannot fail. (2) `get` returns a required or defaulted row's value by copy, not as
+  `const T&`: `check(...)->get<row>()` reads through `expected`'s `operator->`, an lvalue, so a ref-qualified `get` could
+  not refuse the read that dangled. Settings are read once per parse, on no realtime thread, so the copy costs nothing
+  that matters. (3) `onlyWithout` refuses a required row on either side. (4) `NodeType` is not copyable: a class could derive
+  by copying a real type. (5) A table not named for its folder does not compile (`EAR_NODE_TYPE_NAME`, from
+  `ear_node_type()`). (6) `makeFileNodeType` and `makeSendspinNodeType` throw `std::logic_error` on a null folder, which
+  is construction time rather than "`main.cpp` always passes both". Costs: `SettingsTable::check` stays, for tests only
+  (production goes through `NodeType::parse`), because tests read a row with no node type around it; a parse function's value
+  holding a view inside a struct still compiles and dangles, as C++ cannot see inside one; and what must not compile is 37
+  compiler runs, about 50 s at one job, matching the image's GCC's wording. `settings_table.hpp` alone changed in shape;
+  `node_type.hpp` gained only the deleted copy. Every refusal text and its order are as before.
 - **NodeType, 2026-11-06: `ear/core/node_type.hpp` changes: `name()`, `settingKinds()` and `parse()` answer from one table and
   cannot be overridden.** An independent review of PR 24 found that `settingKinds()` and `parse()` were two virtuals each
   type connected to its table by hand, so a type whose `settingKinds()` returned another table's kinds, or whose `parse()`

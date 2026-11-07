@@ -1,7 +1,14 @@
-# ear_all_node_types: the one list of node types, generated at configure from the folders src/nodes/CMakeLists.txt found
-# (prior art: LLVM's generated target lists). A folder's name gives its header, its factory and its library. main.cpp and
+# ear_all_node_types: the one list of node types, generated at configure into out/src/all_node_types/all_node_types.cpp
+# from the folders src/nodes/CMakeLists.txt found (prior art: LLVM's generated target lists). A folder's name gives its header, its factory and its library. main.cpp and
 # the all-type tests call this and link it alone. It lives outside src/nodes, which holds node types and nothing else.
 get_property(types GLOBAL PROPERTY EAR_NODE_TYPES)
+# It reads what src/nodes filled in, so this directory must come after that one: an empty list would build an ear that
+# knows no types.
+if(NOT types)
+	message(FATAL_ERROR "No node types found: src/all_node_types must be added after src/nodes")
+endif()
+list(JOIN types ", " shown)
+message(STATUS "Node types: ${shown}")
 
 set(EAR_NODE_TYPE_INCLUDES "")
 set(EAR_NODE_TYPE_PUSHES "")

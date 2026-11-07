@@ -11,6 +11,7 @@
 #include <iostream>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -118,6 +119,7 @@ private:
 namespace ear::nodes {
 
 std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
+	if (!folders.config) throw std::logic_error("sendspin needs the graph file folder");
 	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
 	for (const std::string& failure : sendspin::narrowKeyFiles(*folders.config))
 		std::cerr << "sendspin: " << failure << '\n';

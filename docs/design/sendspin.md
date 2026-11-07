@@ -434,7 +434,7 @@ void subscribeNotes(NodeNoteListener& listener);
 power-of-two frames: `writePlanar`, `writeInterleaved`, `readPlanar`, `readSpan`, `skip`; `ThreadHandoff` moves onto it.
 `port_blocks.cpp`: `onProcess` passes `{position->clock.nsec, position->clock.position}`. `StatusLog` also implements `NodeNoteListener`.
 
-`src/sendspin/include/ear/sendspin/sendspin_type.hpp` (new, the package's one public header; now `src/nodes/sendspin/include/ear/nodes/sendspin.hpp`, erratum 40):
+`src/sendspin/include/ear/sendspin/sendspin_type.hpp` (new, the package's one public header; now `src/nodes/sendspin/include/ear/nodes/sendspin.hpp`, erratum 40; the signature below is now `makeSendspinNodeType(const NodeFolders& folders)`, erratum 41):
 
 ```cpp
 /// "sendspin". `folder`: the graph file folder, for each node's key file.
@@ -666,6 +666,7 @@ Errata, from verifying that patch through `out/ear` (2026-11-06):
 Errata, from the node types' move (2026-11-06):
 
 40. **Section 14's frozen header `src/sendspin/include/ear/sendspin/sendspin_type.hpp` is now `src/nodes/sendspin/include/ear/nodes/sendspin.hpp`, and `makeSendspinNodeType` moved from namespace `ear::sendspin` to `ear::nodes`.** The owner, 2026-11-06: "what about reorganizing so that we have a simple `nodes/` directory with all the node types nested under it?"; asked about each node type being its own library: "that sounds fine". (The names are the refactor's design choices, revisable, not his requirements.) The function's signature and comment are unchanged, and so is what the node does. The package `ear_sendspin` is now the library `ear_node_sendspin`, in `src/nodes/sendspin/`, with its tests in `ear_node_sendspin_tests`; it is still the only one that sees sendspin-cpp, and the code behind the header keeps namespace `ear::sendspin`. This page's other mentions of `ear_sendspin` and `src/sendspin/` in sections 2, 3, 14 and 15 are the record of that time. `docs/design/batch2.md` section 11's erratum of that date gives the whole move.
+41. **`makeSendspinNodeType` takes `const NodeFolders& folders` and reads its `config`, the signature every node type's factory now shares; a null `config` throws `std::logic_error`. `settings.hpp`'s "one parse" is now typed rows in one table (`rows::server`, `rows::port`, `rows::name`, `settingsTable`), which `settingsFrom` reads.** `docs/design/batch2.md` section 11's errata of 2026-11-06 say why. The folder it gets, what the node does and each refusal's text are unchanged.
 
 Reviewed 2026-11-05; its findings were taken, but for these:
 

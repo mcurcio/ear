@@ -31,6 +31,8 @@ function(ear_node_type)
 	target_sources(${library} PUBLIC FILE_SET HEADERS BASE_DIRS include FILES "${header}")
 	set_target_properties(${library} PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 	target_link_libraries(${library} PUBLIC ear_core)
+	# NodeTypeOf refuses, at compile time, a table not named for this folder.
+	target_compile_definitions(${library} PRIVATE "EAR_NODE_TYPE_NAME=\"${type}\"")
 
 	if(BUILD_TESTS)
 		add_executable(${library}_tests ${arg_TESTS})
@@ -42,9 +44,17 @@ function(ear_node_type)
 	set_property(GLOBAL APPEND PROPERTY EAR_NODE_TYPES ${type})
 endfunction()
 
-# ear_refuse_node_type_links(<type>...): stops configure if the library of one of these types reaches another's, directly
-# or through a helper library. It reads library targets only, so a test program may link what it needs.
+# ear_refuse_node_type_links(<type>...): stops configure, once the whole project has been read, if the library of one of
+# these types reaches another's: directly, through a helper library, through an alias or from inside a generator
+# expression, whichever spelling, wherever the link was made. It reads library targets only, so a test program may link
+# what it needs. A generator expression is read for the targets it names, whatever its condition would come to.
 function(ear_refuse_node_type_links)
+	# Deferred calls expand their arguments when they run, in that directory, so the list is written into the call now.
+	cmake_language(EVAL CODE
+		"cmake_language(DEFER DIRECTORY [[${CMAKE_SOURCE_DIR}]] CALL ear_refuse_node_type_links_now ${ARGN})")
+endfunction()
+
+function(ear_refuse_node_type_links_now)
 	set(libraries "")
 	foreach(type IN LISTS ARGN)
 		list(APPEND libraries ear_node_${type})
@@ -57,17 +67,29 @@ function(ear_refuse_node_type_links)
 			foreach(property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
 				get_target_property(linked ${current} ${property})
 				foreach(entry IN LISTS linked)
-					string(REGEX REPLACE "^\\$<LINK_ONLY:(.*)>$" "\\1" entry "${entry}")
 					# A link made from another directory carries that directory's id: name::@(id).
 					string(REGEX REPLACE "::@.*$" "" entry "${entry}")
-					if(entry IN_LIST seen OR NOT TARGET "${entry}")   # linked-NOTFOUND, a flag, a generator expression
-						continue()
+					set(named "${entry}")
+					if(entry MATCHES "\\$<")
+						string(REGEX MATCHALL "[A-Za-z0-9_.+-]+(::[A-Za-z0-9_.+-]+)*" named "${entry}")
 					endif()
-					if(entry IN_LIST libraries)
-						message(FATAL_ERROR "${start} links ${entry} (through ${current}): no node type links another")
-					endif()
-					list(APPEND seen ${entry})
-					list(APPEND waiting ${entry})
+					foreach(name IN LISTS named)
+						if(NOT TARGET "${name}")   # linked-NOTFOUND, a flag, a generator expression's own words
+							continue()
+						endif()
+						get_target_property(aliased "${name}" ALIASED_TARGET)
+						if(aliased)
+							set(name "${aliased}")
+						endif()
+						if(name IN_LIST seen)
+							continue()
+						endif()
+						if(name IN_LIST libraries)
+							message(FATAL_ERROR "${start} links ${name} (through ${current}): no node type links another")
+						endif()
+						list(APPEND seen "${name}")
+						list(APPEND waiting "${name}")
+					endforeach()
 				endforeach()
 			endforeach()
 		endwhile()

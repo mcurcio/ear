@@ -186,7 +186,7 @@ TEST_CASE("Reading a key the table lacks, or as the other kind, is a type's bug"
 	const auto checked = numbers.check(settings);
 	REQUIRE(checked.has_value());
 	static_assert(std::same_as<decltype(checked->get<plainRow>()), std::optional<std::uint32_t>>);
-	static_assert(std::same_as<decltype(checked->get<measuredRow>()), const std::uint32_t&>);
+	static_assert(std::same_as<decltype(checked->get<measuredRow>()), std::uint32_t>);
 	static_assert(std::same_as<decltype(checked->get<nameRow>()), std::optional<std::string>>);
 	CHECK(checked->get<plainRow>() == 7U);
 }
@@ -229,11 +229,17 @@ TEST_CASE("A row reads as its type", "[settings-table]") {
 	const NodeSettings settings = {{"x", "21"}};
 	const auto checked = doubledTable.check(settings);
 	REQUIRE(checked.has_value());
-	static_assert(std::same_as<decltype(checked->get<doubledRow>()), const Doubled&>);
+	static_assert(std::same_as<decltype(checked->get<doubledRow>()), Doubled>); // a copy: nothing to dangle
 	static_assert(std::same_as<decltype(checked->get<maybeDoubledRow>()), std::optional<Doubled>>);
 	CHECK(checked->get<doubledRow>().value == 42);
 	CHECK_FALSE(checked->get<maybeDoubledRow>().has_value());
 	CHECK(refusal(doubledTable, {{"x", "22"}}) == "x: must be 21");
+}
+
+TEST_CASE("A read from temporary checked settings outlives them", "[settings-table]") {
+	static_assert(std::same_as<decltype(one.check(NodeSettings{})->get<aRow>()), std::string>);
+	const std::string& kept = one.check(NodeSettings{{"a", "good"}})->get<aRow>();
+	CHECK(kept == "good");
 }
 
 TEST_CASE("Checked settings own their values, past the table and the settings", "[settings-table]") {

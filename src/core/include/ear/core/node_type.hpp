@@ -179,6 +179,8 @@ using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>
 class NodeType {
 public:
 	virtual ~NodeType() = default;
+	NodeType(const NodeType&) = delete; // or a class could derive by copying a real type
+	NodeType& operator=(const NodeType&) = delete;
 	std::string_view name() const noexcept; // the NodeSpec `type`: the table's name
 	/// Pure; the only place settings are checked; unknown keys are invalid. The table's walk, then the type's make; a
 	/// refusal from either becomes InvalidSettings{node, text}.

@@ -30,7 +30,6 @@ struct WholeNumberRule {
 	std::uint32_t low;
 	std::uint32_t high;
 	std::string_view unit;
-	std::optional<std::uint32_t> byDefault; // what the row reads when absent
 };
 /// One text rule. A good value is a JSON string `read` accepts; `read` returns the parsed value, empty when refused.
 /// Otherwise "<key>: must be <mustBe>".
@@ -38,88 +37,112 @@ struct TextRule {
 	std::string_view mustBe;
 	std::any (*read)(std::string_view text);
 };
-/// One row as the walk reads it: the sum of the two rules. A key given with any value, null included, is given. Only
-/// setting::required, optional and defaulted make the typed rows that hold one.
+/// One row as the walk reads it. A key given with any value, null included, is given. Anyone can fill one in, but a table
+/// lists only typed rows, and a typed row gives its SettingRow to read, never to change.
 struct SettingRow {
 	std::string_view key;
 	bool required; // absent: "<key>: missing"
 	std::variant<WholeNumberRule, TextRule> rule;
-	std::string_view onlyWithout = {}; // Row::onlyWithout's
+	std::optional<std::uint32_t> byDefault = {}; // what the row reads when absent
+	std::string_view onlyWithout = {};           // Row::onlyWithout's
 };
 
 namespace setting {
-struct Number {
-	using Value = std::uint32_t;
-	WholeNumberRule rule;
-};
-template <class T> struct Text {
-	using Value = T;
-	TextRule rule;
-};
-/// A row a type reads: required and defaulted rows read as const T&, an optional row as std::optional<T>.
-template <class T, bool Always> class Row : public SettingRow {
+template <class Result> inline constexpr bool isOwningOptional = false;
+template <class T> inline constexpr bool isOwningOptional<std::optional<T>> =
+	!std::ranges::view<T> && !std::is_pointer_v<T> && std::copy_constructible<T>;
+/// What a text row can parse with: invocable with the text, returning an optional of a value it can keep. This refuses a
+/// value that is itself a view or a pointer. C++ cannot see inside a struct, so one holding a view of the text passes and
+/// dangles: a parse function's value must own what it holds, and only review checks that.
+template <auto Parse>
+concept TextParser = std::invocable<decltype(Parse), std::string_view> &&
+                     isOwningOptional<std::invoke_result_t<decltype(Parse), std::string_view>>;
+template <auto Parse> using ParsedBy = typename std::invoke_result_t<decltype(Parse), std::string_view>::value_type;
+
+template <class T> class Rule;
+/// The range is not optional; low above high does not compile.
+consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit = {});
+/// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
+template <auto Parse>
+	requires TextParser<Parse>
+consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
+
+/// A checked rule whose value reads as T. Only number and text make one, so T is always what the rule's reader gives.
+template <class T> class Rule {
 public:
 	using Value = T;
-	using Reads = std::conditional_t<Always, const T&, std::optional<T>>;
+	constexpr const std::variant<WholeNumberRule, TextRule>& held() const noexcept { return rule_; }
+
+private:
+	consteval explicit Rule(std::variant<WholeNumberRule, TextRule> rule) : rule_(rule) {}
+	friend consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit);
+	template <auto Parse>
+		requires TextParser<Parse>
+	friend consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe);
+	std::variant<WholeNumberRule, TextRule> rule_;
+};
+
+/// A row a type reads: required and defaulted rows read as T, an optional row as std::optional<T>. Reads are copies, so
+/// one taken from a temporary cannot dangle. Only required, optional and defaulted make one.
+template <class T, bool Always> class Row {
+public:
+	using Value = T;
+	using Reads = std::conditional_t<Always, T, std::optional<T>>;
+	constexpr const SettingRow& row() const noexcept { return row_; }
 	/// Given together with `above`, this key is refused: `<key>: only without "<above's key>"`, before its kind is looked
-	/// at. The table refuses, at compile time, any `above` that is not a row above this one.
-	consteval Row onlyWithout(const SettingRow& above) const {
+	/// at. The table refuses, at compile time, any `above` that is not a row above this one. A required row on either side
+	/// does not compile: the table would refuse every object, or this row could never be given.
+	template <class Other, bool OtherAlways> consteval Row onlyWithout(const Row<Other, OtherAlways>& above) const {
+		if (row_.required) throw "a required row cannot be onlyWithout another: no object would pass";
+		if (above.row().required) throw "an onlyWithout cannot name a required row: this row could never be given";
 		Row limited = *this;
-		limited.SettingRow::onlyWithout = above.key;
+		limited.row_.onlyWithout = above.row().key;
 		return limited;
 	}
 
 private:
 	// A throw in a consteval function is what stops the compile; the text is what the compiler shows.
-	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule> rule)
-		: SettingRow{key, required, rule} {
+	consteval Row(std::string_view key, bool required, std::variant<WholeNumberRule, TextRule> rule,
+	              std::optional<std::uint32_t> byDefault = std::nullopt)
+		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
 	}
-	template <class Rule> friend consteval Row<typename Rule::Value, true> required(std::string_view key, Rule rule);
-	template <class Rule> friend consteval Row<typename Rule::Value, false> optional(std::string_view key, Rule rule);
-	friend consteval Row<std::uint32_t, true> defaulted(std::string_view key, Number rule, std::uint32_t byDefault);
+	template <class V> friend consteval Row<V, true> required(std::string_view key, Rule<V> rule);
+	template <class V> friend consteval Row<V, false> optional(std::string_view key, Rule<V> rule);
+	friend consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uint32_t> rule,
+	                                                    std::uint32_t byDefault);
+	SettingRow row_;
 };
 template <class T> inline constexpr bool isRow = false;
 template <class T, bool Always> inline constexpr bool isRow<Row<T, Always>> = true;
 
-template <class Result> inline constexpr bool isOwningOptional = false;
-template <class T> inline constexpr bool isOwningOptional<std::optional<T>> =
-	!std::ranges::view<T> && !std::is_pointer_v<T> && std::copy_constructible<T>;
-/// What a text row can parse with: invocable with the text, returning an optional of a value that owns what it holds.
-template <auto Parse>
-concept TextParser = std::invocable<decltype(Parse), std::string_view> &&
-                     isOwningOptional<std::invoke_result_t<decltype(Parse), std::string_view>>;
 template <auto Parse> std::any readParsed(std::string_view text) {
 	auto parsed = std::invoke(Parse, text);
 	if (!parsed) return {};
 	return std::any(std::move(*parsed));
 }
 
-/// The range is not optional; low above high does not compile.
-consteval Number number(std::uint32_t low, std::uint32_t high, std::string_view unit = {}) {
+consteval Rule<std::uint32_t> number(std::uint32_t low, std::uint32_t high, std::string_view unit) {
 	if (low > high) throw "a whole number's low is above its high";
-	return Number{WholeNumberRule{low, high, unit, std::nullopt}};
+	return Rule<std::uint32_t>(WholeNumberRule{low, high, unit});
 }
-/// Parse: std::optional<T>(std::string_view), T not a view. T is what the row reads. An empty mustBe does not compile.
 template <auto Parse>
 	requires TextParser<Parse>
-consteval Text<typename std::invoke_result_t<decltype(Parse), std::string_view>::value_type>
-text(std::string_view mustBe) {
+consteval Rule<ParsedBy<Parse>> text(std::string_view mustBe) {
 	if (mustBe.empty()) throw "a text setting needs what it must be";
-	return {TextRule{mustBe, &readParsed<Parse>}};
+	return Rule<ParsedBy<Parse>>(TextRule{mustBe, &readParsed<Parse>});
 }
-template <class Rule> consteval Row<typename Rule::Value, true> required(std::string_view key, Rule rule) {
-	return Row<typename Rule::Value, true>(key, true, rule.rule);
+template <class V> consteval Row<V, true> required(std::string_view key, Rule<V> rule) {
+	return Row<V, true>(key, true, rule.held());
 }
-template <class Rule> consteval Row<typename Rule::Value, false> optional(std::string_view key, Rule rule) {
-	return Row<typename Rule::Value, false>(key, false, rule.rule);
+template <class V> consteval Row<V, false> optional(std::string_view key, Rule<V> rule) {
+	return Row<V, false>(key, false, rule.held());
 }
 /// Numbers only; a default outside the range does not compile.
-consteval Row<std::uint32_t, true> defaulted(std::string_view key, Number rule, std::uint32_t byDefault) {
-	if (byDefault < rule.rule.low || byDefault > rule.rule.high)
-		throw "a whole number's byDefault is outside its range";
-	rule.rule.byDefault = byDefault;
-	return Row<std::uint32_t, true>(key, false, rule.rule);
+consteval Row<std::uint32_t, true> defaulted(std::string_view key, Rule<std::uint32_t> rule, std::uint32_t byDefault) {
+	const WholeNumberRule range = std::get<WholeNumberRule>(rule.held());
+	if (byDefault < range.low || byDefault > range.high) throw "a whole number's byDefault is outside its range";
+	return Row<std::uint32_t, true>(key, false, rule.held(), byDefault);
 }
 constexpr SettingDeclaration declarationOf(const SettingRow& row) {
 	return {row.key, std::holds_alternative<TextRule>(row.rule) ? SettingKind::text : SettingKind::wholeNumber};
@@ -197,9 +220,9 @@ public:
 			requires((static_cast<const void*>(&Row) == static_cast<const void*>(&Rows)) || ...)
 		[[nodiscard]] typename std::remove_cvref_t<decltype(Row)>::Reads get() const {
 			using Read = std::remove_cvref_t<decltype(Row)>;
-			constexpr auto slot = std::ranges::find(rows_, static_cast<const SettingRow*>(&Row)) - rows_.begin();
+			constexpr auto slot = std::ranges::find(rows_, &Row.row()) - rows_.begin();
 			const auto* value = std::any_cast<typename Read::Value>(&settings_.slots_[static_cast<std::size_t>(slot)]);
-			if constexpr (std::is_reference_v<typename Read::Reads>) {
+			if constexpr (std::same_as<typename Read::Reads, typename Read::Value>) {
 				return *value; // the walk filled it: a required row was given, a defaulted one has its default
 			} else {
 				return value != nullptr ? typename Read::Reads(*value) : std::nullopt;
@@ -212,6 +235,7 @@ public:
 		template <const auto& Table> friend class NodeTypeOf;
 		CheckedSettings settings_;
 	};
+	/// The walk with no node type around it, for tests; production goes through NodeType::parse.
 	std::expected<Checked, std::string> check(const NodeSettings& settings) const {
 		auto walked = walk(settings);
 		if (!walked) return std::unexpected(std::move(walked.error()));
@@ -219,12 +243,16 @@ public:
 	}
 
 private:
-	static constexpr std::array<const SettingRow*, sizeof...(Rows)> rows_{&Rows...};
-	static constexpr std::array<SettingDeclaration, sizeof...(Rows)> kinds_{setting::declarationOf(Rows)...};
+	static constexpr std::array<const SettingRow*, sizeof...(Rows)> rows_{&Rows.row()...};
+	static constexpr std::array<SettingDeclaration, sizeof...(Rows)> kinds_{setting::declarationOf(Rows.row())...};
 };
 
 /// What a node type derives from. The base class names the table once; there is nowhere to name a second.
 template <const auto& Table> class NodeTypeOf : public NodeType {
+#ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
+	static_assert(Table.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
+#endif
+
 protected:
 	using Checked = typename std::remove_cvref_t<decltype(Table)>::Checked;
 	NodeTypeOf() noexcept : NodeType(Table) {}

@@ -1,13 +1,19 @@
 // What must not compile about a settings table and a node type (src/core/CMakeLists.txt registers one CTest test per
 // case, each with the reason it must be refused). With no case defined this is the control, and it must compile: what
 // the cases break is only what they name.
+#include <any>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
+// As ear_node_type() gives a type's library: a table's name must be its folder's.
+#ifdef EAR_CASE_table_not_named_for_folder
+#define EAR_NODE_TYPE_NAME "folder"
+#endif
 #include "ear/core/settings_table.hpp"
 
 namespace {
@@ -98,7 +104,7 @@ constexpr SettingsTable<upper, lower> bad{"t"};
 
 // A row made by hand skips every check its makers do.
 #ifdef EAR_CASE_raw_row
-constexpr SettingRow raw{"k", false, WholeNumberRule{2, 1, {}, std::nullopt}};
+constexpr SettingRow raw{"k", false, WholeNumberRule{2, 1, {}}};
 constexpr SettingsTable<raw> bad{"t"};
 #endif
 
@@ -168,12 +174,66 @@ private:
 };
 #endif
 
+#ifdef EAR_CASE_derive_by_copy
+class Bad final : public NodeType {
+public:
+	explicit Bad(const NodeType& real) : NodeType(real) {}
+
+private:
+	MadeConfig makeConfig(const NodeName&, CheckedSettings) const override;
+};
+#endif
+
 #ifdef EAR_CASE_forged_checked_settings
-const CheckedSettings bad;
+const CheckedSettings bad{std::vector<std::any>{}};
 #endif
 
 #ifdef EAR_CASE_forged_row
-constexpr setting::Row<std::uint32_t, true> bad("k", true, WholeNumberRule{1, 2, {}, std::nullopt});
+constexpr setting::Row<std::uint32_t, true> bad("k", true, WholeNumberRule{1, 2, {}});
+#endif
+
+// A rule made by hand has no range, or one back to front, or a reader that gives another type than the row reads.
+#ifdef EAR_CASE_forged_empty_rule
+constexpr setting::Rule<std::uint32_t> bad{};
+#endif
+
+#ifdef EAR_CASE_forged_number_rule
+constexpr setting::Rule<std::uint32_t> bad{WholeNumberRule{9, 1, {}}};
+#endif
+
+#ifdef EAR_CASE_forged_text_rule
+constexpr setting::Rule<std::string> bad{TextRule{"x", nullptr}};
+#endif
+
+// A default belongs to a row, whose maker checks it against the range.
+#ifdef EAR_CASE_default_inside_rule
+constexpr WholeNumberRule bad{1, 2, {}, 99};
+#endif
+
+// A made row keeps what its maker checked.
+#ifdef EAR_CASE_row_field_changed
+constexpr auto bad = [] {
+	auto row = setting::required("k", setting::number(1, 2));
+	row.required = false;
+	return row;
+}();
+#endif
+
+#ifdef EAR_CASE_row_read_only
+constexpr auto bad = [] {
+	auto row = setting::required("k", setting::number(1, 2));
+	row.row().key = "";
+	return row;
+}();
+#endif
+
+// Tables that refuse every object, or hold a row that can never be given.
+#ifdef EAR_CASE_only_without_on_required
+constexpr auto bad = setting::required("r", setting::number(1, 2)).onlyWithout(textRow);
+#endif
+
+#ifdef EAR_CASE_only_without_a_required
+constexpr auto bad = setting::optional("o", setting::number(1, 2)).onlyWithout(numberRow);
 #endif
 
 } // namespace

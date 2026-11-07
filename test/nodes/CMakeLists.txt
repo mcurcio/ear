@@ -8,13 +8,23 @@ target_compile_definitions(ear_node_types_tests PRIVATE
 add_dependencies(ear_node_types_tests ear_all_node_types_verify_interface_header_sets)
 ear_catch_tests(ear_node_types_tests)
 
-# Configure stops when one node type links another, even through a helper, and goes on when none does: link_refusal is a
+# Configure stops when one node type links another, however it is spelled, and goes on when none does: link_refusal is a
 # project of its own, because the refusal stops the whole configure.
-function(ear_node_type_link_test name link_other)
+function(ear_node_type_link_test name link)
 	add_test(NAME ${name} COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/link_refusal"
-		-B "${CMAKE_CURRENT_BINARY_DIR}/${name}" "-DEAR_CMAKE_DIR=${PROJECT_SOURCE_DIR}/cmake"
-		-DEAR_LINK_OTHER=${link_other})
+		-B "${CMAKE_CURRENT_BINARY_DIR}/${name}" "-DEAR_CMAKE_DIR=${PROJECT_SOURCE_DIR}/cmake" -DEAR_LINK=${link})
 endfunction()
-ear_node_type_link_test(ear_node_type_link_refused ON)
+ear_node_type_link_test(ear_node_type_link_refused helper)
 set_tests_properties(ear_node_type_link_refused PROPERTIES PASS_REGULAR_EXPRESSION "ear_node_a links ear_node_c")
-ear_node_type_link_test(ear_node_type_link_allowed OFF)
+foreach(link direct link-only alias generator-expression nested-generator-expression alias-in-generator-expression
+		helper-in-generator-expression)
+	ear_node_type_link_test(ear_node_type_link_refused_${link} ${link})
+	set_tests_properties(ear_node_type_link_refused_${link} PROPERTIES
+		PASS_REGULAR_EXPRESSION "ear_node_a links ear_node_c")
+endforeach()
+ear_node_type_link_test(ear_node_type_link_allowed none)
+
+add_test(NAME ear_node_types_none_refused COMMAND "${CMAKE_COMMAND}" -S "${CMAKE_CURRENT_SOURCE_DIR}/no_types"
+	-B "${CMAKE_CURRENT_BINARY_DIR}/ear_node_types_none_refused"
+	"-DEAR_ALL_NODE_TYPES_DIR=${PROJECT_SOURCE_DIR}/src/all_node_types")
+set_tests_properties(ear_node_types_none_refused PROPERTIES PASS_REGULAR_EXPRESSION "No node types found")

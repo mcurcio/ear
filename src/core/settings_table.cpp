@@ -72,7 +72,7 @@ std::expected<CheckedSettings, std::string> AnySettingsTable::walk(const NodeSet
 		const auto value = settings.find(row->key);
 		if (value == settings.end()) {
 			if (row->required) return std::unexpected(std::string(row->key) + ": missing");
-			if (number != nullptr && number->byDefault) slot = *number->byDefault;
+			if (row->byDefault) slot = *row->byDefault;
 			continue;
 		}
 		if (!row->onlyWithout.empty() && settings.contains(row->onlyWithout)) {

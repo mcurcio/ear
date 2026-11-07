@@ -106,6 +106,10 @@ TEST_CASE("File declares inputs record.left and record.right and no outputs", "[
 	CHECK(config->ports().outputs().empty());
 }
 
+TEST_CASE("File refuses to be made without its folder", "[file]") {
+	CHECK_THROWS_WITH(ear::nodes::makeFileNodeType({}), "file needs the recordings folder");
+}
+
 TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 	TempFolder dir{"settings"};
 	const auto type = ear::nodes::makeFileNodeType({.recordings = recordingsIn(dir.path())});

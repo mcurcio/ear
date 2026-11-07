@@ -32,7 +32,9 @@ const std::map<std::string, std::unique_ptr<const ear::NodeType>, std::less<>>& 
 
 /// What `type` says of the settings: the refusal's text, or `accepted`.
 std::string answer(std::string_view type, const NodeSettings& settings) {
-	const auto parsed = types().find(type)->second->parse("n", settings);
+	const auto found = types().find(type);
+	if (found == types().end()) FAIL("no node type " << type << ": remove its refusals from this file");
+	const auto parsed = found->second->parse("n", settings);
 	return parsed ? std::string(accepted) : parsed.error().detail;
 }
 
@@ -219,6 +221,11 @@ TEST_CASE("Sendspin's refusals, in order", "[nodes][settings]") {
 	CHECK(says("sendspin", R"({"server":5,"port":0,"name":"","zeta":1})") == "unknown key zeta");
 }
 
+// Removing a type leaves its refusals here: a failure naming it, never a crash that hides the other tests' results.
+TEST_CASE("A refusal asked of a type that is gone fails, naming it", "[nodes][settings][!shouldfail]") {
+	CHECK(answer("gone", NodeSettings::object()) == accepted);
+}
+
 TEST_CASE("Unknown keys are told in the object's sorted order, not as written", "[nodes][settings]") {
 	for (const std::string_view type : {"file", "card", "rtp", "sendspin"}) {
 		CHECK(says(type, R"({"zeta":1,"alpha":2})") == "unknown key alpha");
@@ -228,21 +235,9 @@ TEST_CASE("Unknown keys are told in the object's sorted order, not as written", 
 TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settings]") {
 	// Settings each type accepts, and the same with one key at a time set wrongly for its declared kind: a key parse did
 	// not know would be told as unknown, and a kind it did not check would pass.
-	const std::map<std::string, NodeSettings> valid{{"white", NodeSettings::object()},
-	                                                {"file", {{"path", "a.wav"}}},
-	                                                {"card", {{"card", "Pro24"}, {"playback", 2}, {"capture", 2}}},
-	                                                {"rtp",
-	                                                 {{"address", "0.0.0.0"},
-	                                                  {"port", 5004},
-	                                                  {"format", "L24"},
-	                                                  {"channels", 2},
-	                                                  {"rate", 48000},
-	                                                  {"latencyMs", 100}}},
-	                                                {"sendspin", {{"port", 8928}, {"name", "Kitchen"}}}};
 	for (const auto& [name, type] : types()) {
 		INFO(name);
-		if (!valid.contains(name)) FAIL("no valid settings for " << name << ": add them here");
-		const NodeSettings& good = valid.at(name);
+		const NodeSettings& good = ear::test::validSettings(name).front();
 		CHECK(answer(name, good) == accepted);
 		CHECK(type->settingKinds().data() == type->settingKinds().data());
 		for (const auto& [key, kind] : type->settingKinds()) {

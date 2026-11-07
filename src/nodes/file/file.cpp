@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -182,6 +183,7 @@ private:
 } // namespace
 
 std::unique_ptr<const NodeType> makeFileNodeType(const NodeFolders& folders) {
+	if (!folders.recordings) throw std::logic_error("file needs the recordings folder");
 	return std::make_unique<const FileType>(folders.recordings);
 }
 
