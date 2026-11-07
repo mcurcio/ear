@@ -1,5 +1,5 @@
 // The "white" node type through its NodeType contract (docs/design/m1-white-to-file.md section 3,
-// slice S5 criterion 1). The list of every type is test/nodes/node_types_test.cpp's.
+// slice S5 criterion 1). What holds for every type together is test/nodes/node_types_test.cpp's.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -33,7 +33,7 @@ private:
 } // namespace
 
 TEST_CASE("White declares one output, noise.mono, and no inputs", "[white]") {
-	const auto type = ear::nodes::makeWhiteNodeType();
+	const auto type = ear::nodes::makeWhiteNodeType({});
 	CHECK(type->name() == "white");
 
 	for (const ear::NodeSettings& settings : {ear::NodeSettings{}, ear::NodeSettings::object()}) {
@@ -45,7 +45,7 @@ TEST_CASE("White declares one output, noise.mono, and no inputs", "[white]") {
 }
 
 TEST_CASE("White rejects any settings key", "[white]") {
-	const auto type = ear::nodes::makeWhiteNodeType();
+	const auto type = ear::nodes::makeWhiteNodeType({});
 	for (const ear::NodeSettings& settings :
 	     {ear::NodeSettings{{"gain", 0.5}}, ear::NodeSettings{{"path", "a.wav"}}, ear::NodeSettings(3)}) {
 		const auto config = type->parse("noise", settings);
@@ -57,7 +57,7 @@ TEST_CASE("White rejects any settings key", "[white]") {
 
 TEST_CASE("White fills its output with uniform noise from -1 up to but not including 1", "[white]") {
 	constexpr ear::AudioFormat format{.rate = 48000, .maxBlock = 480};
-	const auto config = ear::nodes::makeWhiteNodeType()->parse("noise", {});
+	const auto config = ear::nodes::makeWhiteNodeType({})->parse("noise", {});
 	REQUIRE(config.has_value());
 	NoHandoffGrant grant{format};
 	auto insides = (*config)->start(grant);

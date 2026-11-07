@@ -1,5 +1,5 @@
-// Every node type together: the five names, and each type's declared setting kinds
-// (docs/design/knobly-config.md). That main.cpp registers all five is the system tests' to prove.
+// Every node type together, however many the folders in src/nodes make: their names, and each type's declared setting
+// kinds (docs/design/knobly-config.md). That main.cpp registers them is the system tests' to prove.
 #include <map>
 #include <memory>
 #include <string>
@@ -10,34 +10,29 @@
 #include "all_types.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/node_catalogue.hpp"
-#include "ear/nodes/card.hpp"
-#include "ear/nodes/file.hpp"
-#include "ear/nodes/rtp.hpp"
-#include "ear/nodes/sendspin.hpp"
-#include "ear/nodes/white.hpp"
 
-namespace {
-
-std::vector<std::unique_ptr<const ear::NodeType>> nodeTypes() {
-	std::vector<std::unique_ptr<const ear::NodeType>> types;
-	types.push_back(ear::nodes::makeWhiteNodeType());
-	types.push_back(ear::nodes::makeFileNodeType(ear::test::recordingsFolder()));
-	types.push_back(ear::nodes::makeCardNodeType());
-	types.push_back(ear::nodes::makeRtpNodeType());
-	types.push_back(ear::nodes::makeSendspinNodeType(ear::test::configFolder()));
-	return types;
+// Today's five, each found; the whole list is the next test's to prove against the folders.
+TEST_CASE("The node types are card, file, rtp, sendspin and white", "[nodes]") {
+	const ear::NodeCatalogue catalogue(ear::test::allTypes());
+	for (const std::string_view name : {"card", "file", "rtp", "sendspin", "white"}) {
+		INFO(name);
+		CHECK(catalogue.find(name) != nullptr);
+	}
 }
 
-} // namespace
-
-TEST_CASE("The node types are card, file, rtp, sendspin and white", "[nodes]") {
-	const ear::NodeCatalogue catalogue(nodeTypes());
-	CHECK(catalogue.names() == std::vector<std::string_view>{"card", "file", "rtp", "sendspin", "white"});
+TEST_CASE("Every folder in src/nodes makes one type of its own name", "[nodes]") {
+	const ear::NodeCatalogue catalogue(ear::test::allTypes());
+	std::string joined;
+	for (const std::string_view name : catalogue.names()) {
+		if (!joined.empty()) joined += ',';
+		joined += name;
+	}
+	CHECK(joined == EAR_NODE_TYPE_FOLDERS);
 }
 
 TEST_CASE("Each built-in type declares every key once, and a value of each declared kind parses", "[nodes]") {
 	std::map<std::string, std::vector<std::pair<std::string, ear::SettingKind>>> declared;
-	for (const auto& type : nodeTypes()) {
+	for (const auto& type : ear::test::allTypes()) {
 		INFO(type->name());
 		// "a" is a valid card id and a valid recordings path; 1 is a valid channel count, port and
 		// latency. The rtp keys whose values those are not get a valid value of the same kind.

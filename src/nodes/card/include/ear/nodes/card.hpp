@@ -3,6 +3,7 @@
 // erratum and a re-cut, never a local edit.
 #pragma once
 #include <memory>
+#include "ear/core/node_folders.hpp"
 #include "ear/core/node_type.hpp"
 namespace ear::nodes {
 /// "card": a sound card. Its settings ("card", "playback", "capture") are the rows in card.cpp, which hold their ranges
@@ -11,5 +12,5 @@ namespace ear::nodes {
 /// inside inputs "from_card_1"... Audio passes straight through (play.i -> to_card_i,
 /// from_card_j -> capture.j). Start asks the grant for one card per direction used. The rate is
 /// the graph frequency (R5), never a setting.
-std::unique_ptr<const NodeType> makeCardNodeType();
+std::unique_ptr<const NodeType> makeCardNodeType(const NodeFolders& folders);
 } // namespace ear::nodes

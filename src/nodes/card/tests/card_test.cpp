@@ -31,7 +31,7 @@ public:
 };
 
 std::unique_ptr<const ear::NodeConfig> parseOk(const ear::NodeSettings& settings) {
-	auto config = ear::nodes::makeCardNodeType()->parse("motu", settings);
+	auto config = ear::nodes::makeCardNodeType({})->parse("motu", settings);
 	REQUIRE(config.has_value());
 	return std::move(*config);
 }
@@ -39,7 +39,7 @@ std::unique_ptr<const ear::NodeConfig> parseOk(const ear::NodeSettings& settings
 } // namespace
 
 TEST_CASE("Card accepts a card id with playback and capture channel counts", "[card]") {
-	CHECK(ear::nodes::makeCardNodeType()->name() == "card");
+	CHECK(ear::nodes::makeCardNodeType({})->name() == "card");
 	const auto config = parseOk({{"card", "Pro24"}, {"playback", 3}, {"capture", 2}});
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs() == Names{"play.1", "play.2", "play.3"});
@@ -59,7 +59,7 @@ TEST_CASE("Card accepts a card id with playback and capture channel counts", "[c
 }
 
 TEST_CASE("Card rejects settings outside section 4.4's rules", "[card]") {
-	const auto type = ear::nodes::makeCardNodeType();
+	const auto type = ear::nodes::makeCardNodeType({});
 	const std::vector<ear::NodeSettings> invalid{
 		// A raw ALSA device name: the file plugin's "|command" form, and hw:0 under an unknown key.
 		{{"card", "file:'|touch x'"}, {"playback", 2}},

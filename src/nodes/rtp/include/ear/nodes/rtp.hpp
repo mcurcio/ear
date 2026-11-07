@@ -3,6 +3,7 @@
 // "NodeType, 2026-11-06"). Change it only through an erratum and a re-cut, never a local edit.
 #pragma once
 #include <memory>
+#include "ear/core/node_folders.hpp"
 #include "ear/core/node_type.hpp"
 namespace ear::nodes {
 /// "rtp": one RTP stream received (docs/design/rtp.md section 3). Its settings are the rows in rtp.cpp, which hold their
@@ -10,5 +11,5 @@ namespace ear::nodes {
 /// inputs "from_rtp_1".."from_rtp_N" (N = channels). Audio passes straight through
 /// (from_rtp_i -> stream.i). Start asks the grant for one receiver with blockPorts = the inside
 /// inputs. No packets: the node stays running and its outputs are silent.
-std::unique_ptr<const NodeType> makeRtpNodeType();
+std::unique_ptr<const NodeType> makeRtpNodeType(const NodeFolders& folders);
 } // namespace ear::nodes

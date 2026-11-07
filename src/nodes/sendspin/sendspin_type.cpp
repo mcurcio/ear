@@ -15,6 +15,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ear/folder/confined_folder.hpp"
 #include "feed.hpp"
 #include "key_store.hpp"
 #include "port_claims.hpp"
@@ -116,10 +117,11 @@ private:
 
 namespace ear::nodes {
 
-std::unique_ptr<const NodeType> makeSendspinNodeType(std::shared_ptr<const folder::ConfinedFolder> folder) {
+std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
 	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
-	for (const std::string& failure : sendspin::narrowKeyFiles(*folder)) std::cerr << "sendspin: " << failure << '\n';
-	return std::make_unique<const sendspin::SendspinType>(std::move(folder));
+	for (const std::string& failure : sendspin::narrowKeyFiles(*folders.config))
+		std::cerr << "sendspin: " << failure << '\n';
+	return std::make_unique<const sendspin::SendspinType>(folders.config);
 }
 
 } // namespace ear::nodes

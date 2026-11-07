@@ -68,6 +68,6 @@ class WhiteType final : public NodeTypeOf<table> {
 
 } // namespace
 
-std::unique_ptr<const NodeType> makeWhiteNodeType() { return std::make_unique<const WhiteType>(); }
+std::unique_ptr<const NodeType> makeWhiteNodeType(const NodeFolders&) { return std::make_unique<const WhiteType>(); }
 
 } // namespace ear::nodes

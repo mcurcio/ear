@@ -109,6 +109,6 @@ class RtpType final : public NodeTypeOf<table> {
 
 } // namespace
 
-std::unique_ptr<const NodeType> makeRtpNodeType() { return std::make_unique<const RtpType>(); }
+std::unique_ptr<const NodeType> makeRtpNodeType(const NodeFolders&) { return std::make_unique<const RtpType>(); }
 
 } // namespace ear::nodes

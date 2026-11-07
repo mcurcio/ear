@@ -5,16 +5,12 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "all_types.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/node_catalogue.hpp"
-#include "ear/nodes/card.hpp"
-#include "ear/nodes/file.hpp"
-#include "ear/nodes/rtp.hpp"
-#include "ear/nodes/sendspin.hpp"
-#include "ear/nodes/white.hpp"
 
 namespace {
 
@@ -25,11 +21,10 @@ constexpr std::string_view accepted = "(accepted)";
 const std::map<std::string, std::unique_ptr<const ear::NodeType>, std::less<>>& types() {
 	static const auto made = [] {
 		std::map<std::string, std::unique_ptr<const ear::NodeType>, std::less<>> all;
-		all.emplace("white", ear::nodes::makeWhiteNodeType());
-		all.emplace("file", ear::nodes::makeFileNodeType(ear::test::recordingsFolder()));
-		all.emplace("card", ear::nodes::makeCardNodeType());
-		all.emplace("rtp", ear::nodes::makeRtpNodeType());
-		all.emplace("sendspin", ear::nodes::makeSendspinNodeType(ear::test::configFolder()));
+		for (auto& type : ear::test::allTypes()) {
+			std::string name(type->name());
+			all.emplace(std::move(name), std::move(type));
+		}
 		return all;
 	}();
 	return made;
@@ -246,6 +241,7 @@ TEST_CASE("Each type's setting kinds are what its parse checks", "[nodes][settin
 	                                                {"sendspin", {{"port", 8928}, {"name", "Kitchen"}}}};
 	for (const auto& [name, type] : types()) {
 		INFO(name);
+		if (!valid.contains(name)) FAIL("no valid settings for " << name << ": add them here");
 		const NodeSettings& good = valid.at(name);
 		CHECK(answer(name, good) == accepted);
 		CHECK(type->settingKinds().data() == type->settingKinds().data());

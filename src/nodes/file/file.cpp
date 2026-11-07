@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "ear/core/settings_table.hpp"
+#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/file.hpp"
 
 namespace ear::nodes {
@@ -180,8 +181,8 @@ private:
 
 } // namespace
 
-std::unique_ptr<const NodeType> makeFileNodeType(std::shared_ptr<const folder::ConfinedFolder> recordings) {
-	return std::make_unique<const FileType>(std::move(recordings));
+std::unique_ptr<const NodeType> makeFileNodeType(const NodeFolders& folders) {
+	return std::make_unique<const FileType>(folders.recordings);
 }
 
 } // namespace ear::nodes

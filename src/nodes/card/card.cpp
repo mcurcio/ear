@@ -100,6 +100,6 @@ class CardType final : public NodeTypeOf<table> {
 
 } // namespace
 
-std::unique_ptr<const NodeType> makeCardNodeType() { return std::make_unique<const CardType>(); }
+std::unique_ptr<const NodeType> makeCardNodeType(const NodeFolders&) { return std::make_unique<const CardType>(); }
 
 } // namespace ear::nodes

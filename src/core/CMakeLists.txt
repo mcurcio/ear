@@ -29,6 +29,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/node_catalogue.hpp
+	include/ear/core/node_folders.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
 	include/ear/core/node_type.hpp

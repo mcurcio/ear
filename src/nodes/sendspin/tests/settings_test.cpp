@@ -109,8 +109,8 @@ TEST_CASE("The type declares its ports and its settings' kinds, and refuses thro
 	const ear::test::TempFolder dir;
 	auto folder = ear::folder::ConfinedFolder::open(dir.path());
 	REQUIRE(folder.has_value());
-	const auto type =
-		ear::nodes::makeSendspinNodeType(std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder)));
+	const auto type = ear::nodes::makeSendspinNodeType(
+		{.config = std::make_shared<const ear::folder::ConfinedFolder>(std::move(*folder))});
 	CHECK(type->name() == "sendspin");
 	const auto kinds = type->settingKinds();
 	REQUIRE(kinds.size() == 3);

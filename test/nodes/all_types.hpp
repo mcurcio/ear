@@ -1,5 +1,6 @@
-// The folders the all-type tests hand the node types: real and empty, beneath one temporary folder that lasts the test
-// program. These tests parse settings and start no node, so nothing is written in them.
+// Every node type, as the all-type tests get them: from the generated list, given real and empty folders beneath one
+// temporary folder that lasts the test program. These tests parse settings and start no node, so nothing is written in
+// them.
 #pragma once
 
 #include <memory>
@@ -7,7 +8,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include "ear/all_node_types/all_node_types.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "temp_folder.hpp"
 
@@ -29,6 +32,10 @@ inline const std::shared_ptr<const folder::ConfinedFolder>& recordingsFolder() {
 inline const std::shared_ptr<const folder::ConfinedFolder>& configFolder() {
 	static const auto folder = openedForAllTypes("config");
 	return folder;
+}
+
+inline std::vector<std::unique_ptr<const NodeType>> allTypes() {
+	return nodes::allNodeTypes({.recordings = recordingsFolder(), .config = configFolder()});
 }
 
 } // namespace ear::test

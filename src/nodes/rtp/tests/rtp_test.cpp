@@ -49,7 +49,7 @@ NodeSettings settingsWith(const NodeSettings& change = NodeSettings::object()) {
 }
 
 std::unique_ptr<const ear::NodeConfig> parseOk(const NodeSettings& settings) {
-	auto config = ear::nodes::makeRtpNodeType()->parse("fpp", settings);
+	auto config = ear::nodes::makeRtpNodeType({})->parse("fpp", settings);
 	INFO(settings.dump());
 	if (!config) FAIL("refused: " << config.error().detail);
 	return std::move(*config);
@@ -65,7 +65,7 @@ ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t grap
 } // namespace
 
 TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out and from_rtp_i inside", "[rtp]") {
-	CHECK(ear::nodes::makeRtpNodeType()->name() == "rtp");
+	CHECK(ear::nodes::makeRtpNodeType({})->name() == "rtp");
 	const auto config = parseOk(settingsWith({{"channels", 3}}));
 	const ear::Ports& ports = config->ports();
 	CHECK(ports.inputs().empty());
@@ -138,7 +138,7 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 		{settingsWith({{"latencyMs", 1001}}), badLatency},
 		{settingsWith({{"latencyMs", true}}), badLatency},
 	};
-	const auto type = ear::nodes::makeRtpNodeType();
+	const auto type = ear::nodes::makeRtpNodeType({});
 	for (const auto& [settings, detail] : cases) {
 		INFO(settings.dump());
 		const auto config = type->parse("fpp", settings);

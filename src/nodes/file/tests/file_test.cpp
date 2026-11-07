@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/file.hpp"
 #include "temp_folder.hpp"
 
@@ -84,7 +85,7 @@ std::shared_ptr<const ear::folder::ConfinedFolder> recordingsIn(const std::files
 
 std::unique_ptr<const ear::NodeConfig> parseFile(const std::shared_ptr<const ear::folder::ConfinedFolder>& folder,
                                                  const std::string& path) {
-	auto config = ear::nodes::makeFileNodeType(folder)->parse("rec", {{"path", path}});
+	auto config = ear::nodes::makeFileNodeType({.recordings = folder})->parse("rec", {{"path", path}});
 	REQUIRE(config.has_value());
 	return std::move(*config);
 }
@@ -98,7 +99,7 @@ std::string contents(const std::filesystem::path& path) {
 
 TEST_CASE("File declares inputs record.left and record.right and no outputs", "[file]") {
 	TempFolder dir{"ports"};
-	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
+	const auto type = ear::nodes::makeFileNodeType({.recordings = recordingsIn(dir.path())});
 	CHECK(type->name() == "file");
 	const auto config = parseFile(recordingsIn(dir.path()), "rec.wav");
 	CHECK(config->ports().inputs() == std::vector<ear::PortName>{"record.left", "record.right"});
@@ -107,7 +108,7 @@ TEST_CASE("File declares inputs record.left and record.right and no outputs", "[
 
 TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 	TempFolder dir{"settings"};
-	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path()));
+	const auto type = ear::nodes::makeFileNodeType({.recordings = recordingsIn(dir.path())});
 	for (const ear::NodeSettings& settings :
 	     {ear::NodeSettings{}, ear::NodeSettings::object(), ear::NodeSettings{{"path", ""}},
 	      ear::NodeSettings{{"path", 7}}, ear::NodeSettings{{"path", "a.wav"}, {"gain", 1}},
@@ -122,7 +123,7 @@ TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 
 TEST_CASE("File refuses an absolute path or a .. component as invalid settings", "[file]") {
 	TempFolder dir{"outside"};
-	const auto type = ear::nodes::makeFileNodeType(recordingsIn(dir.path() / "recordings"));
+	const auto type = ear::nodes::makeFileNodeType({.recordings = recordingsIn(dir.path() / "recordings")});
 	for (const std::string& path :
 	     {std::string("/tmp/rec.wav"), (dir.path() / "rec.wav").string(), std::string("../x.wav"), std::string(".."),
 	      std::string("take/../../x.wav"), std::string("take/..")}) {
