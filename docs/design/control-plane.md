@@ -846,7 +846,7 @@ consteval Smoothing smooth(std::uint32_t ms);
   skip any key whose part before its last `.` names a family. Each refusal carries its key (4.5).
 - Reads: `s.get<row>()` and `s.get<trimRow>(i)` (member `i`, from 0, as the harness's `input(bank, 0)`, while keys count
   from 1, as ports' members) read plain rows. **On a live row `get` does not compile** ("a live row is read through
-  io.param"): a value captured in `start`, the recipe or the run object would go stale at the first retune (7.4).
+  io.param"): a value captured in `start`, `build` or the run object would go stale at the first retune (7.4).
   `s.initial<row>()` reads a live row's value as the run started, for the rare start that needs it; its name says it
   does not follow. The behaviour's `check` sees every row, live ones included, and runs on every tick too (6.6), so a
   rule across settings judges what a gesture plays, not only what it commits.
@@ -866,7 +866,8 @@ enum class Display { panel, box, callout };   // where the editor shows a field;
 namespace writer {
 struct Writer { enum class Kind { rt, loop, resource } kind; LoopName loop = {}; };
 inline constexpr Writer rt{Writer::Kind::rt};               // the run's code, through Io
-template <LoopName L> inline constexpr Writer loop{Writer::Kind::loop, L};   // a loop the run acquired by that name
+/// A loop of the spec, by its handle (node-primitives.md 6.4: `loop::dedicated<"sendspin">`, listed in `.loops`).
+template <class Handle> consteval Writer loop(Handle);
 inline constexpr Writer resource{Writer::Kind::resource};   // a resource's adapter (slice 8)
 }
 namespace status {
@@ -892,11 +893,12 @@ template <auto... Fields> struct StatusTable { /* unique names; each a field */ 
   `report.set<connection>(connection("connected"))`.
 - `rt` fields are flag, number, decimal and choice only (one atomic word each; an unknown choice is a reserved word).
   A text field marked `writer::rt` does not compile.
-- `writer::loop<"worker">` takes slice 3's loop-name grammar (`LoopName`: 1 to 8 of `[a-z0-9-]`, node-primitives.md
-  6.4). A run whose type declares a field written by a loop it never acquired is refused at start (`std::logic_error`,
-  a type bug). `Report::set` of a loop field asserts `Loop::inLoop()` of that loop in debug builds. A library thread
-  (sendspin-cpp's own) that has something to report posts to the loop that owns the field. There is no
-  `writer::thread`: slice 3 gives a type no threads of its own (node-primitives.md section 7).
+- `writer::loop(worker)` takes a loop handle of slice 3 (node-primitives.md 6.4 and its G14, written to its
+  recommendation and pending the owner's answer); the handle carries the loop's name, checked where it is made. A
+  field whose loop the spec does not list in `.loops` does not compile. `Report::set` of a loop field asserts
+  `Loop::inLoop()` of that loop in debug builds. A library thread (sendspin-cpp's own) that has something to report
+  posts to the loop that owns the field. There is no `writer::thread`: slice 3 gives a type no threads of its own
+  (node-primitives.md section 7), and a library's threads write no status directly.
 - Names: as bank names (1 or more of `[A-Za-z0-9_-]`), camelCase by convention, unique in the table; `spec_detail::Name`
   is today's `BankName` (`type_spec.hpp:47-53` [V]) under a general name. The framework's own fields (`ear.`) hold a dot,
   so they never meet a type's.
@@ -931,20 +933,20 @@ template <auto... Codes> struct LogCodes {};
 /// handle outlives every thread that can reach it); every copy is the same run's. Never blocks but on one short mutex;
 /// a write after the run's close began is dropped (I6). A text value is UTF-8 checked, control characters replaced,
 /// and cut at its bound (8.2's rule, the framework's: sendspin's `notes::printable` goes). `lost` and `log` stay the
-/// handle's own (`report.run().lost(...)`, `report.run().warn(...)`).
+/// handle's own (`report.handle().lost(...)`, `report.handle().warn(...)`).
 template <const auto& Spec> class Report {
 public:
 	template <const auto& Field> void set(typename FieldOf<Field>::Value value);   // a writer::loop field
 	template <const auto& Event> void raise(typename ArgsOf<Event>::Values... values);
-	RunHandle& run() const noexcept;
+	RunHandle& handle() const noexcept;   // the name of ready.handle() (node-primitives.md G17)
 private:
-	explicit Report(RunHandle& run);   // made by the framework (ReadyOf<Spec>::report) and the harness only
+	explicit Report(RunHandle& handle);   // made by the framework (ReadyOf<Spec>::report) and the harness only
 };
-/// What a recipe of a typed behaviour may take instead of Ready&: the same Ready, plus the run's typed Report. The
-/// framework hands it only to a recipe made under makeNodeType<Spec, Behaviour>, so a Report of another spec cannot
-/// be made: a mismatch does not compile.
-template <const auto& Spec> class ReadyOf : public Ready {
+/// Slice 3's ReadyOf<Spec> (node-primitives.md 6.1), which `build` takes, gains one member: the run's typed Report.
+/// ReadyOf is spec-typed, so a Report of another spec cannot be made: a mismatch does not compile.
+template <const auto& Spec> class ReadyOf {
 public:
+	// slice 3's members: format, node, handle, store, loop, feed, wake, kept, recording, attach
 	Report<Spec> report();
 };
 }
@@ -955,23 +957,11 @@ public:
 - `RunHandle` (slice 3) replaces `InsidesEvents` (`node_type.hpp:174-180` [V]); `Report` adds the typed writes to it,
   carried in the same per-run channel so a status write, an event and a `lost` keep one writer's order (6.3).
   `RunHandle::say` stays for `sendspin` until step 5.5 removes it.
-- **`TypeSpec`, whole.** This is the one list of its members and their order (designated initialisers must follow it);
-  node-primitives.md 6.8 adds `.stores` (slice 3) and this page adds the four after it. Each defaults to an empty
-  table, so a spec that gives only `.settings` and `.banks` stays as it is today:
-
-```cpp
-template <class Settings, class BankList, class StoreList = Stores<>, class Status = StatusTable<>,
-          class Events = EventTable<>, class Actions = ActionTable<>, class Logs = LogCodes<>>
-struct TypeSpec {
-	Settings settings;
-	BankList banks;
-	StoreList stores{};   // slice 3 (node-primitives.md 6.8)
-	Status status{};      // slice 5, step 5.2
-	Events events{};      // step 5.2
-	Actions actions{};    // step 5.4
-	Logs logCodes{};      // step 5.3
-};
-```
+- **`TypeSpec`, whole.** Its one home is node-primitives.md 6.12, which gives every member and the order
+  (designated initialisers must follow it): slice 2's `.settings` and `.banks`, slice 3's `.stores` and `.loops`, then
+  this page's `.status`, `.events`, `.actions` and `.logCodes`. This page adds `.status` and `.events` in step 5.2,
+  `.logCodes` in 5.3 and `.actions` in 5.4. Each defaults to an empty list, so a spec that gives only `.settings` and
+  `.banks` stays as it is today.
 
   That aggregate deduction with designated initialisers fills the defaulted template parameters on GCC 14 is [U]
   (node-primitives.md U1, the same question); slice 3's S3.5 compiles it first, and step 5.2 adds the later members to
@@ -1039,9 +1029,8 @@ public:
 - `io.triggered<t>()` compares the trigger's counter with the last one this run's code saw.
 - The framework resolves every handle to an index when the code is prepared (as `Io::resolve` does for banks,
   `type_spec.hpp:216-231` [V]), so each call is an array index on the realtime thread.
-- These are the realtime calls' names; node-primitives.md section 14 calls them `rtlog` and `rtevent` and says the ring
-  is acquired at start. This page decides: `io.log`, `io.raise`, `io.set`, and a ring the framework makes per run
-  (6.1), never acquired. Section 15 records the re-cut of that row.
+- These are the realtime calls' names: `io.log`, `io.raise`, `io.set`, over a ring the framework makes per run (6.1),
+  never acquired in `start`. This page is their home; node-primitives.md section 14 cites them.
 
 ### 5.5 Actions
 
@@ -1050,22 +1039,23 @@ namespace ear::action {
 /// Into the run's code, wait-free: no arguments, answered {} once handed over; the code sees io.triggered<t>() true once
 /// in its next block. Several invokes before a block are one.
 template <spec_detail::Name N> consteval Trigger<N> trigger(std::string_view help);
-/// Into the run object, posted to the loop named `L` (one the run acquired by that name, slice 3): arguments checked
-/// by `args`, a SettingsTable named for the action; the handler's std::expected<void, std::string> is the reply.
-template <spec_detail::Name N, const auto& Args, LoopName L>
-consteval Call<N, Args, L> call(std::string_view help);
+/// Into the run object, posted to `Loop`, a loop handle of the spec (node-primitives.md 6.4 and G14: one listed in
+/// `.loops`, else no compile): arguments checked by `args`, a SettingsTable named for the action; the handler's
+/// std::expected<void, std::string> is the reply.
+template <spec_detail::Name N, const auto& Args, const auto& Loop>
+consteval Call<N, Args, Loop> call(std::string_view help);
 }
 template <auto... Actions> struct ActionTable {};
 ```
 
 - `restart` is the framework's, listed first in every type's schema, and a type action of that name does not compile.
-- A trigger needs no run object and no loop: `gain` uses one. A call runs on the loop it names; a run that never
-  acquired a loop of that name is refused at start (`std::logic_error`, a type bug). The handler is a member of the run
-  object:
+- A trigger needs no run object and no loop: `gain` uses one. A call runs on the loop it names, posted there with
+  slice 3's `RunLoop::postFromOutside`; a call naming a loop the spec does not list does not compile. The handler is a
+  member of the run object:
   `std::expected<void, std::string> act(Invoked<forgetPairing>, const CheckedOf<forgetArgs>&)`, found by its argument
   type and held to that signature, as `check` is (`type_spec.hpp:368-373` [V]). A queued call whose run ends first is
-  answered `restarted` (or `stopping`) from its reply object's destructor, run unrun on the loop's thread at slice 3's
-  step 4b (node-primitives.md 6.4).
+  destroyed unrun at teardown step 1, when `closeToOthers` closes the loop to outside work, and its reply object answers
+  `restarted` (or `stopping`) from its destructor (node-primitives.md 6.4, 6.10).
 - An action's arguments are a `SettingsTable`, so a refusal has the settings walk's text, order and key: one checker
   for settings, action arguments and parameters (node-framework.md 7.1).
 
@@ -1159,7 +1149,7 @@ struct Gain {
 	static Members<spec> ports(const Checked& s) {
 		return {in(members(s.get<channelsRow>())), out(members(s.get<channelsRow>()))};
 	}
-	static StartResult start(StartContext&, const Checked&) { return GainCode{}; }
+	static StartResult start(StartOf<spec>&, const Checked&) { return GainCode{}; }   // node-primitives.md 6.1
 };
 
 } // namespace ear::nodes::gain
@@ -1176,21 +1166,23 @@ std::unique_ptr<const ear::NodeType> ear::makeGainNodeType() { return makeNodeTy
 `{"gain", {{{"channels", 2}, {"gainDb", -6.0}, {"trimDb.1", 0.5}, {"trimDb.2", -0.5}}}}`. Nothing else names the type
 (AGENTS.md, "Adding a node type").
 
-A type with a run object writes status and events from its loops through the `Report` its recipe takes from
-`ReadyOf<spec>::report()`. Sendspin's worker after step 5.5:
+A type with a run object writes status and events from its loops through the `Report` its `build` takes from
+`ready.report()`. Sendspin's worker after step 5.5 (`worker` is its spec's `loop::dedicated<"sendspin">`,
+node-primitives.md 4.1):
 
 ```cpp
 inline constexpr std::string_view connections[] = {"dialling", "listening", "connected"};
 inline constexpr auto connection =
-	status::choice<"connection">(writer::loop<"worker">, connections).display(Display::box);   // starts unknown
-inline constexpr auto serverName = status::text<"serverName">(writer::loop<"worker">, 64).display(Display::box);
-inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop<"worker">, 16).display(Display::callout)
+	status::choice<"connection">(writer::loop(worker), connections).display(Display::box);   // starts unknown
+inline constexpr auto serverName = status::text<"serverName">(writer::loop(worker), 64).display(Display::box);
+inline constexpr auto pairingCode = status::text<"pairingCode">(writer::loop(worker), 16).display(Display::callout)
                                         .help("type it into Music Assistant to pair");
 inline constexpr std::string_view pairReasons[] = {"attempt-timeout", "concurrent-attempt", "method-not-supported",
                                                    "pairing-code-mismatch", "user-cancelled", "unknown"};
 inline constexpr auto pairingFailed =
 	event::of<"pairing-failed">(EventSeverity::warn, "pairing failed: {reason}", arg::choice<"reason">(pairReasons));
-// The recipe: [](ReadyOf<spec>& ready) { ... SendspinRun{ready.report(), worker, ...} ... }
+// Sendspin::build(ReadyOf<spec>& ready, const CheckedOf<spec>&): SendspinRun keeps ready.report() beside
+// ready.handle() and its loops (node-primitives.md 4.1).
 // In a worker loop handler:
 report_.set<connection>(connection("connected"));
 report_.set<serverName>(server ? server->name : "");        // made safe by the framework
@@ -1211,7 +1203,7 @@ Each is a case in `src/core/tests/compile_fail/`, named for its reason, matched 
 | `log-taper-nonpositive`, `db-taper-range` | a log taper needs low > 0; a db taper needs low <= -60 and high >= 0 (8.3's law) |
 | `param-not-live`, `param-row-not-in-spec`, `param-indexed-without-member`, `param-member-of-plain-row` | `io.param` reads only the spec's live rows, as declared |
 | `set-field-not-in-spec`, `set-field-not-rt`, `report-set-rt-field`, `rt-text-field` | one writer per field; the realtime thread writes one word |
-| `writer-loop-bad-name` | a loop name is 1 to 8 of `[a-z0-9-]` |
+| `writer-loop-not-in-spec`, `call-loop-not-in-spec` | a field's or a call's loop is a handle the spec lists in `.loops` (a bad loop name is refused where the handle is made, node-primitives.md 6.4) |
 | `choice-value-misspelt`, `initially-not-a-value` | a choice value is checked where it is made |
 | `raise-text-arg-from-process`, `raise-wrong-arg-count`, `raise-event-not-in-spec` | the realtime ring holds numbers only; arguments as declared |
 | `sentence-unknown-place`, `sentence-missing-arg` | every argument has one place in the sentence |
@@ -1231,8 +1223,8 @@ Each is a case in `src/core/tests/compile_fail/`, named for its reason, matched 
 | `h->statusRecord()` | every change, in order: `{field, from, to, run}`, and each reset |
 | `h->events()`, `h->logs()`, `h->diagnostics()` | in order, each with its formatted `msg` (diagnostics with subject and `active`) |
 | `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's manual loops (node-primitives.md section 10) |
-| `h->drain()` | runs the tick now (the harness drains after every `process` and every recipe by default) |
-| `h->advance(ms)` | moves the harness's clock: flapping windows, rate limits and trailing records, the gesture idle deadline |
+| `h->drain()` | runs the tick now (the harness drains after every `process` and every `build` by default) |
+| `h->advance(ms)` | moves the harness's clock, node-primitives.md section 10's one fake clock: flapping windows, rate limits and trailing records, the gesture idle deadline |
 
 The all-type tests gain: every type's schema encodes; every status field's initial value is of its kind or null;
 every `values` entry parses with its row's parse function; every optional row without a `default` has a `defaultFrom`
@@ -1480,9 +1472,10 @@ carries the plan's `applied` for the node.
   refused `not-restartable` (`reason: block-lost`), and the snapshot's `blockLost` lets the editor disable the button
   first. Slice 8's recovery wait is skipped.
 - A trigger: the counter is incremented and the reply posted at once; `not-running` when the node has no run.
-- A call: posted to the run's loop; the reply when the handler returns. A queued call whose run ends first gets
-  `restarted` (or `stopping`); a running one finishes and replies before the run's loop closes (I5 step 4b,
-  node-primitives.md 6.4).
+- A call: posted to the loop it names with `RunLoop::postFromOutside`; the reply when the handler returns. When the run
+  ends, teardown step 1 closes that loop to outside work (`closeToOthers`): a queued call gets `restarted` (or
+  `stopping`), and a running one finishes and replies before the goodbye that step 4a posts behind it
+  (node-primitives.md 6.4, 6.10).
 - **The keeper never waits for a handler.** Its step completes when the action is dispatched. The batch's reply is held
   on the main loop until every action in it answered (or its 10 s deadline passed), then posted to the control thread
   behind every event before it, as today. A slow handler holds that client's later requests with an id (the FIFO of
@@ -1688,11 +1681,11 @@ section 5).
 
 Step 5.5 rewrites sendspin's reporting against 3.2's table in one change:
 
-- `notes.hpp` and `notes::printable` go (slice 3 already moved note pacing into core: node-primitives.md section 13):
+- `notes.hpp` and `notes::printable` go (slice 3 already moved note pacing into core: node-primitives.md section 5):
   the framework makes text safe and paces events.
-- The worker and key store write through the `Report<spec>` the recipe takes from `ReadyOf<spec>::report()` (sendspin
-  is on slice 3's loops and recipe by then, node-primitives.md S3.7), with every field `writer::loop<"worker">`,
-  instead of `RunHandle::say`.
+- The worker and key store write through the `Report<spec>` that `build` takes from `ready.report()` (sendspin is on
+  slice 3's loops and `build` by then, node-primitives.md S3.7), with every field `writer::loop(worker)`, instead of
+  `RunHandle::say`.
 - `RunHandle::say`, core's note pacing and `NodeNoteListener` are removed once nothing calls them; `StatusLog::nodeSays`
   and the `note` kind go.
 - The system tests that match `says` lines (`test/system/`, `child_process.hpp` matching `msg`) match the new `msg`
@@ -1753,7 +1746,8 @@ slice 3's U1 test extended); `Report<spec>` and `ReadyOf`; the per-run queue, th
 `run` on the wire and on `node.state`; `node.statusChanged` with its reset, `node.eventRaised`, the `status` (paced
 per field, with trailing records and the reset record) and `event` records; `status` in snapshots and `node.added`;
 node diagnostics keyed by code and subject, with `active` and `count`; flapping, `ear.events-dropped`,
-`ear.records-dropped`, and slice 3's `ear.loop-slow`, `ear.claim-wait` and `ear.close-overdue` on the wire; the
+`ear.records-dropped`, and slice 3's `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late` and
+`ear.close-overdue` on the wire; the
 framework's counters sampled; the harness's captures; `rpc-call.mjs --follow`. Tests: `ear_core_tests` with a test type
 (order of status before event, a `lost` after the last status, a write of an old run dropped, the reset after the last
 values, the queue's bound, flapping and settling with the harness's clock, two fields flapping, the tick's 33 ms cap,
@@ -1767,7 +1761,7 @@ records refused past 192 while events pass, transitions counted between samples,
 an idle block rings nothing); a test that `process` allocates nothing while writing (the handoff's allocation test's
 method).
 
-**5.4 Actions, restart and `node.set`.** `ActionTable`, triggers, calls on a named loop, `node.invoke` through the
+**5.4 Actions, restart and `node.set`.** `ActionTable`, triggers, calls on a loop of the spec, `node.invoke` through the
 keeper, `restart` and `not-restartable`, `blockLost` in the view, deferred batch replies with their deadline,
 `ControlRefusal`, the `action` record; `node.set` and `applied` (`restart`, `replace`, `unchanged`) on `node.set`,
 `node.update` and `node.updated`; the editor's action buttons; sendspin's `forget-pairing` as the first call. Tests:
@@ -1971,8 +1965,8 @@ slice 3's `RunHandle`, calls and loop fields run on its loops, and sendspin's no
 Slice 5 first, with an interim handle (today's `Channel` with typed writes) and an interim `RunObject::invoke(call)` on
 the main loop that must hand the call to the object's own thread at once, as `RunObject::close` does today
 (`node_type.hpp:242` [V]). **Recommendation: (a).** (b) builds two APIs slice 3 replaces, and splits sendspin's notes on
-threads slice 3 then moves; slice 3 changes no behaviour an operator sees but one order (node-primitives.md section
-15), so it costs the control plane little time.
+threads slice 3 then moves; slice 3 changes little an operator sees (node-primitives.md section 8's five visible
+changes), so it costs the control plane little time.
 
 **G10. Live rows read off the realtime thread.** A sound card's mixer volume or a volume sent to Music Assistant
 (sendspin's "volume and mute", on the roadmap) must be applied off the realtime thread. (a) In this slice live rows
@@ -2007,11 +2001,9 @@ already has `flag`, so adding the row later is additive.
 - [U] How knobly spells a boolean in a setting's place (G11); checked when a `flag` row is first wanted.
 - The reach of a value defined through a chain of variables follows knobly's `definition()` (the chain's end); whether
   an operator expects that is checked with the owner on the first real file that does it.
-- **Re-cut of node-primitives.md section 14** when both pages are cut, to match this page: the realtime calls are
-  `io.log`, `io.raise` and `io.set` (not `rtlog`, `rtevent`), and the ring is made by the framework per run, not
-  acquired at start (5.4); the claim-wait diagnostic's name (`ear.claim-wait` here) is slice 3's to fix, and this page
-  takes whatever its cut names (4.6). Loop names already agree: `call<..., L>` and `writer::loop<L>` take slice 3's
-  `LoopName` grammar.
+- This page is written to node-primitives.md's G14 (loops as spec handles), G15 (`build`) and G17 (`ready.handle()`,
+  and so `Report::handle()`), each at its recommendation and pending the owner's answer. An answer against one changes
+  5.2, 5.3, 5.5, 5.7 and 10.1 here with node-primitives.md.
 - `writer::resource` is named here and built by slice 8.
 - `ready.watch<row>(loop, fn)` for live rows off the realtime thread: reserved (G10).
 - A `flag` setting row: deferred (G11).
@@ -2045,7 +2037,7 @@ owner's call, section 14). Several findings were made by more than one reviewer;
 | RA15 | a gang's slots change one at a time | fixed by stating it: bounded by one block of ramp; seqlock rejected (5.4, 13) |
 | RA16 | ticks skip the type's `check` | fixed: `checkLive` runs the row and `check` per tick (5.1, 5.6, 6.6) |
 | RA17 | restart of a lost block is a silent no-op | fixed: `not-restartable`, `blockLost` (4.5, 7.6) |
-| RA18 | boundary with node-primitives.md: `TypeSpec`, slice 3's diagnostics and counters, realtime names | fixed: whole `TypeSpec` (5.3); `ear.loop-slow`, `ear.claim-wait`, counters (4.6); names decided and re-cut listed (5.4, 15) |
+| RA18 | boundary with node-primitives.md: `TypeSpec`, slice 3's diagnostics and counters, realtime names | fixed: `TypeSpec` cited from node-primitives.md 6.12 (5.3); slice 3's five codes and the counters (4.6); names decided here and cited there (5.4); the boundary reconciled (below) |
 | RA19 | owner's own change echoes; what arms the tick | fixed: no own `begin`/`change` echoes; `Gestures::move` arms the tick (4.3, 6.4, 6.6) |
 | RA20 | begin on a node with no run | fixed: allowed, seeds the next run (4.2, 6.6); in `gestures.json` |
 | RA21 | two wrong [V] citations | fixed: `graph_file_model.hpp:80`, `main_loop_side.hpp:24-30` with its real members (7.2, 7.3) |
@@ -2061,7 +2053,7 @@ owner's call, section 14). Several findings were made by more than one reviewer;
 | AP8 | one in flight vs direct ticks; `done` timing | fixed with RA2; `done` fires when stored (6.6) |
 | AP9 | owner sees its `begin` before the reply | fixed: no own `begin`/`change` echoes (4.3) |
 | AP10 | `invalid-settings` has no machine key (`command_error.hpp:12-15`, `command_error.cpp:44-45` [V]) | fixed: `key`, `detail` in `data`; `invalid-args` too; `data.pointer` on -32602 (4.2, 4.5) |
-| AP11 | `writer::thread` against slice 3's no-threads rule | fixed: removed; `writer::loop<L>` with slice 3's grammar (5.2, 5.7) |
+| AP11 | `writer::thread` against slice 3's no-threads rule | fixed: removed; `writer::loop(worker)` takes a loop handle of the spec (5.2, 5.7) |
 | AP12 | three kind vocabularies; no decimal status | fixed: one wire vocabulary; `status::decimal`, `arg::flag` (4.1, 4.2, 5.2, 5.3) |
 | AP13 | retune and restart indistinguishable | fixed: `applied` on `node.set`, `node.update`, `node.updated` (4.2, 4.3) |
 | AP14 | `node.eventRaised` lacks `severity`; `t` of a realtime event | fixed (4.3, 6.4) |
@@ -2075,7 +2067,7 @@ owner's call, section 14). Several findings were made by more than one reviewer;
 | AP22 | removing `note` vs versioning | fixed: `v` versions shapes, kinds are open; `BREAKING CHANGE:` footer at 5.5 (9) |
 | AP23 | `Report` checks its spec at run time | fixed: `ReadyOf<spec>::report()`, private constructor; compile-fail cases (5.3, 5.8) |
 | AP24 | gesture edges: `seq`, ids, invalid ticks, invalid end | fixed: `seq` from 1, ids opaque and never reused, `tick-refused`, an invalid end leaves the gesture open (3.3, 4.2) |
-| AP25 | realtime call names differ from node-primitives.md | fixed with RA18: this page's names; re-cut listed (5.4, 15) |
+| AP25 | realtime call names differ from node-primitives.md | fixed with RA18: this page's names, cited by node-primitives.md section 14 (5.4) |
 | AP26 | two wrong [V] citations | fixed with RA21; the other 20 checked again and kept |
 | UX1 | held fader aborted | fixed with RA1 (keep-alive is liveness only, 6.6) |
 | UX2 | knob keys and wheel taken by React Flow (`App.tsx:138` [V]) | fixed: `nodrag nowheel nopan nokey`, stopped propagation, a test; class names [U] (8.3, 15) |
@@ -2098,3 +2090,15 @@ owner's call, section 14). Several findings were made by more than one reviewer;
 | UX19 | boundary tables disagree | fixed with RA18; `typeSchemas` now matches (4.2) |
 | UX20 | accessibility gaps | fixed: failed and flapping announced and rate-limited, focus rules, canvas-panel path, `role="alert"` (8.5) |
 | UX21 | frozen-header rule for `protocol.ts` | fixed with AP21 (10.3) |
+
+**Boundary reconciled with node-primitives.md revision 2** (2026-11-08), each fact given one home and cited from the
+other page. Here: `ready.handle()` and `build` replace `Ready::run()` and the recipe (scope, 4.5, 5.1, 5.3, 5.7, 5.9,
+10.1), and `Report::run()` is `Report::handle()`; `ReadyOf` is slice 3's facade, gaining `report()` (5.3); `TypeSpec`'s
+member list moved to node-primitives.md 6.12 and is cited (5.3); `writer::loop(worker)` and `call<N, Args, Loop>` take a
+loop handle of the spec, so a loop the spec lacks does not compile (2.4, 5.2, 5.5, 5.7, 5.8: `writer-loop-bad-name`
+becomes `writer-loop-not-in-spec` and `call-loop-not-in-spec`); a queued call is answered at teardown step 1 through
+`postFromOutside` and `closeToOthers` (5.5, 7.6); `ear.loop-source-left` and `ear.close-late` join 4.6 and step 5.2;
+`Gain::start` takes `StartOf<spec>&` (5.7); the note-pacing and visible-change citations point at node-primitives.md
+sections 5 and 8 (10.1, G6). The re-cut item of section 15 is gone: node-primitives.md section 14 now cites this page's
+realtime calls and per-run ring, and both pages spell the claim wait `ear.claim-wait`. `writer::thread` stays absent:
+node-primitives.md section 14 now says so.

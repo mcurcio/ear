@@ -295,7 +295,9 @@ compile time for an output bank, and the only way a bank reaches a handoff witho
 
 **Decision: the run handle belongs to slice 3.** The framework page's slice 4 erratum (8.8) defers the node-facing log
 calls "on a run handle" to slice 5. This page takes the handle and its `log` into slice 3, and leaves to slice 5 what it
-adds to the handle (status writes, events, the realtime coded ring). Reasons:
+builds over the handle (the typed `Report<spec>` for status writes and events, control-plane.md 5.3) and beside it (the
+realtime ring the framework makes per run, written by `io.set`, `io.raise` and `io.log`, control-plane.md 5.4, 6.1).
+Reasons:
 
 - Slice 3 moves every thread a type has onto framework loops, and each loop handler needs a generation-checked way out;
   the handle is that object, and its lifetime rules (I6) are slice 3's teardown rules.
@@ -586,8 +588,8 @@ protected:
 - **Two intakes.** From step 1 a loop refuses work from outside the run (`closeToOthers`): slice 5's actions use
   `postFromOutside`, so a queued call is answered `restarted` or `stopping` at step 1, and one already running finishes
   and replies before the goodbye that 4a posts behind it. The run's own posts and sources (its goodbye among them) are
-  accepted until 4b. So control-plane.md 7.6's "a running one finishes and replies before the run's loop closes" has one
-  defined moment: step 1.
+  accepted until 4b. So control-plane.md 5.5 and 7.6 answer a queued call, and let a running one reply, at one defined
+  moment: step 1.
 - **Threads and realtime.** A handler runs on the loop's thread, one at a time per loop. A strand runs on a framework
   pool thread (`min(4, hardware threads)` to start); a dedicated loop has its own thread, named `ear-<name> <node>`,
   cut to 15 bytes. A strand has no thread of its own and no thread name; its name appears in diagnostics. Nothing here is
@@ -999,8 +1001,8 @@ struct TypeSpec {
 };
 ```
 
-Slice 3 builds the first four; slice 5 appends the last four in this order. control-plane.md's 5.3 declaration cites
-this one (U9). `Stores`, `Loops` and `Banks` check their names' uniqueness at compile time; a store, a loop and a bank
+Slice 3 builds the first four; slice 5 appends the last four in this order. control-plane.md 5.3 cites this one and
+restates no order. `Stores`, `Loops` and `Banks` check their names' uniqueness at compile time; a store, a loop and a bank
 may share a name, since each lives in its own list. Whether GCC 14 deduces the defaulted parameters for every subset
 spelling is U1.
 
@@ -1245,20 +1247,22 @@ sendspin's tests:
 
 ## 14. The boundary with slice 5
 
-Slice 3 fixes the seams; slice 5 (control-plane.md) adds behaviour on them. Where this revision changes a spelling
-control-plane.md uses, the last column says what that page takes (listed again in section 19, U9).
+Slice 3 fixes the seams; slice 5 (control-plane.md) adds behaviour on them. Each fact has one home: the first column's
+facts are this page's, the second column's are control-plane.md's, and the last column says where control-plane.md
+uses this page's spelling (reconciled with its revision 2, section 20).
 
-| Slice 3 delivers (this page) | Slice 5 builds on it (control-plane.md) | What control-plane.md takes from revision 2 |
+| Slice 3 delivers (this page) | Slice 5 builds on it (control-plane.md) | Where control-plane.md uses it |
 |---|---|---|
-| `RunHandle`: `node`, `generation`, `lost`, `log`, interim `say` with per-run pacing, reached by `ready.handle()` | adds status writes, `event`, the realtime coded ring acquired at start, and removes `say` once sendspin's notes are split | `ready.run()` is `ready.handle()`: `Report<spec> report(ready.handle())`; the recipe is `build` |
-| Loops declared in the spec (`loop::dedicated<"sendspin">`, `.loops = Loops<...>{}`); `RunLoop::postFromOutside` and `closeToOthers` at step 1; queued own work destroyed unrun at 4b | action handlers posted with `postFromOutside` to a loop the `ActionTable` names; a queued action's reply object answers `restarted` or `stopping` from its destructor at step 1; `writer::loop` bound to a loop | `call<N, Args, Loop>` names a loop handle of the spec (or its name, checked against `.loops` at compile time): a call on a loop the spec lacks no longer compiles, instead of failing at start; `writer::loop<"worker">` becomes `writer::loop(worker)` |
-| "A thread a library owns" as the only non-loop writer thread (7); no run object owns a thread | status fields written from a loop or a library thread | `writer::thread` means a library's thread (sendspin-cpp's), never a run object's own |
-| `NodeDiagnosticListener` codes `ear.loop-slow`, `ear.loop-source-left`, `ear.claim-wait`, `ear.close-late`, `ear.close-overdue` (with loops) | puts diagnostics on the wire (`node.diagnostic`) and in snapshots | its 4.6 list gains the four new codes |
-| the feed's shortfall, the handoff's drops and its skipped frames counted | samples them in the status drain and snapshots | — |
+| `RunHandle`: `node`, `generation`, `lost`, `log`, interim `say` with per-run pacing, reached by `ready.handle()` in `build` (G15, G17) | `Report<spec>` over the handle (status writes, events), made by `ready.report()`, which slice 5 adds to `ReadyOf`; removes `say` once sendspin's notes are split | its scope paragraph and 5.3: `ready.handle()`, `Report::handle()`, `build`, never a recipe |
+| `StartOf<spec>`, `ReadyOf<spec>` and `build` (6.1) | the realtime ring, made by the framework per run, never acquired in `start`; the code writes it through `io.set`, `io.raise` and `io.log` (control-plane.md 5.4, 6.1) | 5.7: `gain`'s `start` takes `StartOf<spec>&` |
+| Loops declared in the spec (`loop::dedicated<"sendspin">`, `.loops = Loops<...>{}`); `RunLoop::postFromOutside` and `closeToOthers` at step 1; queued own work destroyed unrun at 4b | action calls posted with `postFromOutside` to the loop the call names; a queued call's reply object answers `restarted` or `stopping` from its destructor at step 1; status fields bound to a loop by `writer::loop` | 5.2, 5.5, 7.6: `action::call<N, Args, Loop>` and `writer::loop(worker)` take a loop handle of the spec (G14), so a loop the spec lacks does not compile |
+| "A thread a library owns" as the only non-loop thread (7); no run object owns a thread | status written by the run's code (`writer::rt`) or a loop of the spec (`writer::loop`); a library thread posts to the loop that owns the field | 5.2: no `writer::thread` |
+| `NodeDiagnosticListener` codes and their texts: `ear.loop-slow`, `ear.loop-source-left` (6.4), `ear.claim-wait` (6.9), `ear.close-late`, `ear.close-overdue` with loops (6.10) | puts diagnostics on the wire (`node.diagnostic`) and in snapshots, each with its subject and fields | 4.6 and step 5.2 list all five |
+| the feed's shortfall, the handoff's drops and its skipped frames counted | samples them as the status counters `ear.feedShortfall` and `ear.handoffDropped` (control-plane.md 4.6) | — |
 | `notes-dropped <n>` as the framework's note | `ear.events-dropped` diagnostic | — |
-| `log` records with `node` and `run` from a run's handle | `log.subscribe` on the wire; `run` on other record kinds | — |
-| `TypeSpec`'s whole member list and order (6.12): settings, banks, stores, loops, then slice 5's | adds `.status`, `.events`, `.actions`, `.logCodes` after `.loops` | its 5.3 declaration cites 6.12 and inserts `StoreList` and `LoopList` before `Status`; one compile test covers every subset (U1) |
-| the harness's fakes, by handle, and its clock rule (10) | captures status, events, actions and diagnostics; `h.invoke<action>(args)` runs on the harness's loops | its `advance(ms)` is the same fake clock as section 10's |
+| `log` records with `node` and `run` from a run's handle | `run` on other record kinds; `log.subscribe` on the wire comes later, not in slices 5 and 6 (control-plane.md 15) | — |
+| `TypeSpec`'s whole member list and order (6.12): settings, banks, stores, loops, then slice 5's | adds `.status`, `.events`, `.actions`, `.logCodes` after `.loops` | 5.3 cites 6.12; one compile test covers every subset (U1) |
+| the harness's fakes, by handle, and its clock rule (10) | captures status, events, actions and diagnostics; `h.invoke<action>(args)` runs on the harness's loops | 5.9: its `advance(ms)` is section 10's fake clock |
 
 Not slice 3's: `restart` and every action, status tables, the wire schema, `typeSchemas`, parameters (slice 6),
 recovery and readiness deadlines for outside nodes (slice 8). A store does not appear on the wire.
@@ -1347,7 +1351,7 @@ Final. Grouped; each has options and a recommendation with its reason. The page 
 | G15 | How is the run object made? | (a) the behaviour's `static build(ReadyOf<spec>&, const CheckedOf<spec>&)`, with spec-typed `StartOf`/`ReadyOf` facades; (b) the recipe lambda returned by `start` (slice 2's) | (a): resources by handle, wrong banks or stores refused at compile time, no dangling capture; slice 2's lambda stays for hand-made `NodeTypeOf` types only |
 | G2 | Is a mailbox a resource kind, or a value the run keeps? | (a) `cx.keep<Mailbox<T>>()`; (b) a `mailbox<T>` kind as the framework page's 7.3 says | (a): it has no adapter, readiness, loss or teardown action |
 | G4 | A handoff whose consumer is part of the run object | (a) `ready.attach` in `build`, frames before it discarded and counted to the consumer as `attached(skipped)`; (b) the handoff holds frames until attached, overflow dropped; (c) the type builds the consumer in `start` | (a): sendspin's capture stamps stay exact, `dropped=` counts only what was wanted and lost |
-| G17 | Naming the handle on `ReadyOf` | (a) `ready.handle()`; (b) `ready.run()` (revision 1, control-plane.md today) | (a): `run()` reads as a verb; control-plane.md follows in one rename |
+| G17 | Naming the handle on `ReadyOf` | (a) `ready.handle()`; (b) `ready.run()` (revision 1) | (a): `run()` reads as a verb; control-plane.md is written to it, `Report::handle()` included |
 
 ### C. Lifetimes, claims and files
 
@@ -1396,9 +1400,8 @@ Final. Grouped; each has options and a recommendation with its reason. The page 
   proves it on `RingFeeds` (a caller looping on a closed feed uses under 1% of a core over 2 s); S3.7 measures the real
   sync thread's CPU time across a teardown held 2 s in step 3 by a slow consumer.
 - **U8.** Upstream interest in the log hook; until then it is carried.
-- **U9.** control-plane.md takes revision 2's spellings (section 14's last column): `ready.handle()`, `build`, loop
-  handles in `call` and `writer::loop`, `writer::thread` as a library thread, `TypeSpec`'s order from 6.12, the four new
-  diagnostic codes. Checked when both pages are cut together; this page does not edit that one.
+- **U9.** Closed: the boundary with control-plane.md was reconciled on 2026-11-08 (section 20). Both pages are written
+  to G14, G15 and G17's recommendations; an owner's answer against one changes both.
 - **U10.** That `keep<T>`'s static checks catch the common mistakes; a `T` that owns a thread inside another type is not
   caught, and the guard of section 7 covers `src/nodes/` instead.
 
@@ -1438,9 +1441,17 @@ checked against the code at `f677a50` before acting on it.
 | DX9 visible changes undercounted; claim key normalisation | fixed | Five visible changes with their lines (8); a recording's key normalised (6.9) |
 | DX10 harness keyed by strings; behaviours undefined | fixed | Handle-typed calls, the clock rule, readiness defaults, `waitClaim`/`releaseClaim`, `readable(fd)`, `replaceLater` timing (10) |
 | DX11 the thread guard would match sendspin's tests | fixed | Verified (`code_test.cpp:272`, `feed_test.cpp:80`). The guard skips `/tests/`, and that exclusion is tested (7) |
-| DX12 "a thread the run object owns" contradicts P2 | fixed | "A thread a library owns" throughout; control-plane.md's `writer::thread` follows (14, U9) |
+| DX12 "a thread the run object owns" contradicts P2 | fixed | "A thread a library owns" throughout; control-plane.md has no `writer::thread`: a library thread posts to the loop that owns the field (14) |
 | DX13 renames and the dropped mDNS claim missing from section 3 | fixed | Rows for the claim, mailbox, loop and feed spellings, and the mDNS sentence (3, 6.9) |
 | DX14 `keep<T>` takes any `T`; order unstated | fixed | Reverse order of `keep`; static checks against run objects, consumers and threads; the destructor rule (6.2); U10 |
 | DX15 `maxBytes` silently 0 | fixed | Refused at compile time, as is a mode beyond 0777 (6.8, 15) |
 | DX16 "No I/O" in `start` is false for recordings | fixed | True now: recordings deferred (6.11, 7) |
 | DX17 `ready.run()` reads as a verb; ports narrowed by hand; pacing scope | fixed | `ready.handle()` (G17); claims take the checked whole number (6.9; a `setting::port` row kind rejected, 17); `say` paced per run (5) |
+
+**Boundary reconciled with control-plane.md revision 2** (2026-11-08), each fact given one home and cited from the
+other page. Here: section 14 cites control-plane.md for the realtime calls (`io.set`, `io.raise`, `io.log`, not
+`rtlog`, `rtevent`) and the ring the framework makes per run (not acquired at start), for `Report<spec>` made by
+`ready.report()`, for no `writer::thread` (a library thread posts to the loop that owns the field), for the status
+counters, and for `log.subscribe` coming after slices 5 and 6; section 5's split of the handle and the ring says the
+same. The claim wait keeps this page's spelling, `ear.claim-wait`, in both. U9 is closed, G17 no longer calls
+control-plane.md's spelling `run()`, and 6.4 and 6.12 cite control-plane.md's sections as they now stand.
