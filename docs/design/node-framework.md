@@ -1,28 +1,29 @@
 # The node framework: the primitives every node type builds on
 
-Status: proposal, revision 5, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them;
+Status: proposal, revision 6, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them;
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
-answers them with two more answers from the owner (sections 14 and 16). Revision 5 takes the owner's words of
-2026-11-08 (R11 to R18): a run is no longer bounded by settings changes, each node has its own state machine with a hook
-per state (section 6, the one home of the node lifecycle), a node decides what it can change in place (6.6), and audio
-crosses to and from non-realtime code only through hidden companion nodes (9.6). It changes built code; section 13 says
-what, the migration and each test group's fate, and re-cuts the slices. Its gate questions are in 14.2. Revision 5 went
-to two independent reviews (realtime audio, and API and developer experience) on 2026-11-08; this text answers them
-(section 16, "Round 3"), and is still called revision 5 because no owner's answer has changed it since. Built: slice 1
-(section 13, "Slice 1 as
-built", says where it differs) and slice 4's framework side (8.8's erratum: the node-facing primitives, log and event
-calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5), slice 2, the type
+answers them with two more answers from the owner (sections 14 and 16). Revision 5 took the owner's words R11 to R18 and
+went to a third round of two reviews. Revision 6 takes the owner's answers to revision 5's state-machine gates
+(2026-11-08, R19 to R24): **there is no "run"**. The graph always runs; a node is added, configured, started, stopped,
+reconfigured and removed inside it, each operation asynchronous and applied in order; a type writes three hooks,
+`configure(old, new)`, `start()` and `stop()` (section 6, the one home of the node lifecycle); only a node fails. What
+revision 5 called the run object is the node's own object, the type's instance (6.4), and a closing thread's late
+message is dropped by an internal counter no type author or operator sees (I6). Revision 6 also changes how questions
+are put to the owner: only what an operator or a type author sees is asked (14.2); every internal choice is decided here
+and listed, with its reason, in 14.3, so the owner can overturn any. It changes built code; section 13 says what, the
+migration and each test group's fate, and re-cuts the slices. Revision 6 is not reviewed yet (section 16). Built: slice 1
+(section 13, "Slice 1 as built", says where it differs) and slice 4's framework side (8.8's erratum), slice 2, the type
 interface and its harness (section 13, "Slice 2 as built"), and slice 7, the internal clock with latency (section 13,
-"Slice 7 as built"; its spike's verified answers are in sections 10 and 15). Nothing else is built. The two module
+"Slice 7 as built"; its spike's verified answers are in sections 10 and 15). Those records keep the built code's own
+words (`RunObject`, the recipe, `StartContext`): they name code that 13.2 retires. Nothing else is built. The two module
 designs beneath this page, `docs/design/node-primitives.md` (slice 3c and the primitives' part of 3d) and
-`docs/design/control-plane.md` (slices 5 and 6, and the wire of 3a, 3b, 3d and 8), are both at revision 3, written to
-this revision and reconciled with it in the same round; 13.3 says where each is the home of a fact this page cites,
-and 14.2's group E lists every point where a module page changed a rule stated here.
+`docs/design/control-plane.md` (slices 5 and 6, and the wire of 3a, 3b, 3d and 8), are both at revision 4, written to
+this revision in the same change; 13.3 says where each is the home of a fact this page cites.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
 
-[V] = verified in the source named, as of `3ab159a`; [U] = unverified, so a slice's test checks it or section 15 keeps it
+[V] = verified in the source named, as of `3adc02b`; [U] = unverified, so a slice's test checks it or section 15 keeps it
 open.
 
 ## 1. The owner's words
@@ -39,20 +40,31 @@ open.
 | R8 | "Do we need to specify a hardware device for the clock? Can we drive it via an internal clock running under the raw monotonic clock, and just use a PLL (if necessary) to track against a hardware device anchor?" | 2026-11-07, chat (gate, Q3) | The graph runs on an internal clock; cards follow it (section 10) |
 | R9 | "Nodes should not have direct access to stdout or stderr. The core framework should expose the necessary primitives for events, diagnostics, and logging. These should be real-time safe for any audio loops that need them, and there can be non real-time bases for the rest of the system." | 2026-11-07, chat (gate, Q1) | Section 8.8: the framework owns every output; nodes get primitives, realtime-safe where audio code needs them |
 | R10 | "Would status changes be useful for debugging things like flapping? Does this status relate to diagnostic events?" | 2026-11-07, chat (gate, Q2) | Status has a coalesced live view and a record of every change; the framework derives flapping (8.2) |
-| R11 | "a Run should not be bounded by config changes. I want config and graph changes to be supported at runtime while audio is running" | 2026-11-08, chat | A run survives a settings change it can take in place; a restart is one outcome of a change, not the only one (6.6) |
-| R12 | "the start+build model seems overly simplistic. I think each node deserves a dedicated state machine, and hooks for each viable state. At a minimum, there should be setup+build+start" | 2026-11-08, chat | One state machine per node, a hook for each state a type can act in: `setup`, `build`, `start`, `reconfigure`, `close` (6.2 to 6.4) |
-| R13 | "mailboxes could be supportable in either mode. But why must mailboxes be built before the run object exists? Is this a side effect of the naive node state machine model I described?" | 2026-11-08, chat | Yes: the two-phase start drove the block with the code before the run object existed. With `start` after `build`, the run object owns its mailboxes (6.5) |
+| R11 | "a Run should not be bounded by config changes. I want config and graph changes to be supported at runtime while audio is running" | 2026-11-08, chat | A node keeps running through a settings change it can take in place; a restart is one outcome of a change, not the only one (6.6). The owner's "Run" here is R20's node |
+| R12 | "the start+build model seems overly simplistic. I think each node deserves a dedicated state machine, and hooks for each viable state. At a minimum, there should be setup+build+start" | 2026-11-08, chat | One state machine per node (6.2). Revision 5 gave it five hooks; R19 and R23 replace them with three (6.4) |
+| R13 | "mailboxes could be supportable in either mode. But why must mailboxes be built before the run object exists? Is this a side effect of the naive node state machine model I described?" | 2026-11-08, chat | Yes: the two-phase start drove the block with the code before the run object existed. The node's instance now exists before its code drives, and owns its mailboxes (6.5) |
 | R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08, chat | A type's audio code reads `Io` inputs and writes `Io` outputs, nothing else; crossing to non-realtime code is the framework's (9.6, I12) |
-| R15 | G3: "(a)": a leaked run holding a store, recording path or port: refused with a detail saying the node starts when that run closes; the late close starts it | 2026-11-08, chat (node-primitives.md gate G3) | I8 and I5a (section 6); its home is node-primitives.md 6.9 |
+| R15 | G3: "(a)": a leaked run (now: a leaked configuration) holding a store, recording path or port: refused with a detail saying the node starts when that one closes; the late close starts it | 2026-11-08, chat (node-primitives.md gate G3) | I8 and I5a (section 6); its home is node-primitives.md 6.9 |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08, chat | Isolation is an invariant (I10): one node's states never stop the graph, the clock or another node; what is global is named, with why (6.8) |
 | R17 | "I want the node to control whether settings can be changed in place, with the framework supporting it. For example, changing a network port on a node is something that a node can handle on its own — even if it must output null audio frames for a few seconds. But if reconfiguring changes the shape of the input/output bus, then that might not be fully transparent" | 2026-11-08, chat | The type declares what it can change in place and its `reconfigure` hook decides; the framework holds outputs silent, readies new resources before releasing old ones, swaps claims and enforces a deadline (6.6); a change of ports is a reshape with its own rules (6.7) |
 | R18 | "crossing to a non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing graph" | 2026-11-08, chat | Companion nodes: hidden engine nodes linked to a node's inside banks, a closed list of kinds, which replace handoffs, feeds and the outside-node special case (9.6) |
+| R19 | On "when does `start` run against `build`": "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 2026-11-08, chat (gate A2) | There is no separate `setup` or `build`: one hook, `configure`, acquires and constructs, on creation and on every change; readiness the engine delivers later is the framework's (6.4) |
+| R20 | On a failed run: "A “run” can’t fail — only a node can fail. We should drop the “run” concept entirely and work with “graph” and “node” concepts. The graph is always running, while nodes can be added to it, configured, wired, start/stop all synchronously within the graph runtime" | 2026-11-08, chat (gate A3) | No run in the API, the states, the wire or this page's words. The graph always runs; operations on a node are applied inside it; a node fails, keeps its wires and releases what it held (6.1, 6.2) |
+| R21 | "I meant “asynchronously”" (of "synchronously within the graph runtime" in R20) | 2026-11-08, chat | Operations are asynchronous and ordered: each is applied on the graph's thread in arrival order, its reply says what was applied, and a node's slow work goes on without holding anything else (6.3) |
+| R22 | Gate A1: (b), a short set of states the editor colours, and a `phase` field with the exact state and its cause | 2026-11-08, chat | `state` and `phase` (6.2; control-plane.md 4.8) |
+| R23 | On the hooks: exactly three, `configure(old, new)`, `start()` and `stop()` | 2026-11-08, chat | 6.4: no `setup`, `build` or `close` hook; removal is a stop and the framework frees the rest |
+| R24 | Gate A4 (where reconfigure lives and how it reaches the type's threads): "too technical for me to properly answer" | 2026-11-08, chat | Decided by the designer (14.3, D-A4): hooks run on the graph's thread and reach a node's own thread only by a typed message. And a change of practice: the owner is asked only what an operator or a type author sees (14.2) |
 
-Earlier answers in the same walkthrough (2026-11-08, node-primitives.md section 18) hold: G1, a new `ear_runtime`
-package for loops, wakes, the I/O executor, the probe and stores (and now the ring companions' threads, 9.6); G14, loops
-declared in the spec as handles; G15, a static `build` reaching resources by handle, not a recipe lambda; G17, the run
-handle reached as `ready.handle()` (here `bx.handle()`, 6.4). G2 (a mailbox as a kept value) and G4 (a handoff whose
-consumer is attached late) are superseded by R13 and R14 (14.1).
+R19 to R23 replace R12's "at a minimum, there should be setup+build+start" with three hooks, and R13's question ("why must
+mailboxes be built before the run object exists?") is answered by them: the node's object exists before its audio code
+drives, so it owns what it shares with it (6.5). R11's "a Run should not be bounded by config changes" keeps its
+meaning in R20's words: a node keeps running through a change it can take in place (6.6).
+
+Earlier answers in the same walkthrough (2026-11-08, node-primitives.md section 18) hold, reworded for R20: G1, a new
+`ear_runtime` package for loops, wakes, the I/O executor, the probe and stores (and the ring companions' threads, 9.6);
+G14, loops declared in the spec as handles; G15, resources reached by handle, not through a recipe lambda (now inside
+`configure`, 6.4); G17, the node's handle reached from the framework's context (now `node.handle()`, 6.10). G2 (a
+mailbox as a kept value) and G4 (a handoff whose consumer is attached late) are superseded by R13 and R14 (14.1).
 
 Design rules 1 to 3 of `pipewire-graph.md` hold unchanged: one owner per piece of state, and each health judgement its
 owner's; a node is self-contained, reaching the engine only through powers the framework grants; the graph always runs.
@@ -88,66 +100,81 @@ The framework's own seams are closed in three places [V]:
   changes (an update with the same settings changes nothing, `desired_graph.cpp`), so restarting one means changing a
   setting and changing it back, or restarting ear. `NodeState` has no `recovering` (`node_lifecycle.hpp:8`).
 
-What slices 1, 2 and 7 built still bounds a run by its settings and mixes realtime crossing into type code (revision 5,
-R11 to R18) [V]:
+What slices 1, 2 and 7 built ties a node's work to its settings (the built code calls it a run) and mixes realtime
+crossing into type code (R11 to R20) [V]:
 
 | What the built code does | Where | What it costs |
 |---|---|---|
-| Every settings change that keeps the ports is a restart: `plan` records it as an update, and `NodeHost` tears the run down and starts a new one | `desired_graph.cpp:159-160`, `node_host.cpp:79-87` | Changing an `rtp` node's port, or a `sendspin` node's name, stops all its audio, closes its connection and re-reads its key file |
+| Every settings change that keeps the ports is a restart: `plan` records it as an update, and `NodeHost` tears the run (the node's work) down and starts a new one | `desired_graph.cpp:159-160`, `node_host.cpp:79-87` | Changing an `rtp` node's port, or a `sendspin` node's name, stops all its audio, closes its connection and re-reads its key file |
 | A change of ports replaces the node: it is removed and added, its block destroyed, every route to it unlinked and linked again | `desired_graph.cpp:159-166`, `170-174` | A card going from 2 to 4 playback channels drops the links of its two surviving channels too |
-| The run's code drives the block as soon as `start` returns, before the run object exists | `node_host.cpp:300-308` | Anything the code and the run object share (sendspin's feed, two mailboxes, a bell) must exist before the run object, so it cannot be the run object's (R13) |
-| Node states are four, and one machine judges block and run together | `node_lifecycle.hpp:8`, `22-33` | No state for a node applying new settings, none for a run built but not yet started |
-| A failed run keeps its code driving and its resources held until an update | `node_host.cpp:368-377` | A failed `sendspin` run keeps its claim on its port; its threads stay |
+| The code drives the block as soon as `start` returns, before the run object exists | `node_host.cpp:296-309` | Anything the code and the run object share (sendspin's feed, two mailboxes, a bell) must exist before the run object, so it cannot be the run object's (R13) |
+| Node states are four, and one machine judges block and run together | `node_lifecycle.hpp:8`, `22-33` | No state for a node applying new settings, none for a stopped node, and no way to stop one |
+| A failed node keeps its code driving and its resources held until an update | `node_host.cpp:369-377` | A failed `sendspin` node keeps its claim on its port; its threads stay |
 | Two types write realtime code only to cross to a non-realtime thread: `file`'s `Recorder` writes a handoff, `sendspin`'s code reads a feed, publishes two mailboxes and rings a bell | `file.cpp:47-50`, `sendspin_code.cpp:19-44` | Realtime code a type author must get right, with no audio of its own in it (R14) |
 
 ## 3. The answer, in one paragraph
 
-A node type is **declarations, hooks, and acquisitions**. The declarations are constexpr tables in one `TypeSpec`:
-settings (each row restart-only by default, or marked `.inPlace()` or `.live(...)`), banks, loops, stores, status
-fields, events, actions and log codes. The hooks follow one **per-node state machine** (section 6): `setup` acquires,
-`build` makes the run object and the run's code once everything is ready, the run object's `start` begins its work once
-the code drives the block, its `reconfigure` takes a settings change while audio runs, and its `close` ends it. The run
-object owns its state, mailboxes included. The acquisitions are framework-owned resources, each readied, watched and
-closed in dependency order, asynchronously; audio that must reach non-realtime code, or come from it, goes through a
-**companion node**, a hidden engine node linked to one of the node's inside banks, so a type's audio code only reads
-inputs and writes outputs (9.6). There is no base class for the author beyond the run object's small interface, and no
-mixins. Six subsystems serve every type: **lifecycle**, **configuration and parameters**, **resources and companions**,
-the **control plane** (with diagnostics and logging: no node touches standard output), **audio and clock** (an internal
-clock every card follows), and **recovery**. For bus connections a type writes nothing, and one node's lifecycle never
-stops another's audio (I10).
+The **graph** always runs: ear's internal clock drives it from boot to stop (section 10), and nothing done to one node
+pauses it or another node. A **node** is added to it, configured, wired, started, stopped, reconfigured and removed,
+each an **operation** applied on the graph's thread, asynchronously and in arrival order: its reply says what was
+applied, and the node's slow work (opening a USB card, waiting for Music Assistant) goes on in the engine or on the
+node's own thread while the node shows a transitional state. A node type is **declarations, three hooks, and
+acquisitions**. The declarations are constexpr tables in one `TypeSpec`: settings (each row restart-only by default, or
+marked `.inPlace()` or `.live(...)`), banks, loops, stores, status fields, events, actions and log codes. The hooks are
+`configure(old, new)`, called when the node is made (`old` empty) and on every change its rows allow in place, which
+acquires, constructs and answers "applied" or "restart"; `start()`, which begins the node's activity; and `stop()`,
+which ends it (section 6). The type's **instance**, one object per node, owns its state, mailboxes included; its threads
+are the node's, reached from a hook only by a typed message. The acquisitions are framework-owned resources, each
+readied, watched and released by the framework; audio that must reach non-realtime code, or come from it, goes through
+a **companion node**, a hidden engine node linked to one of the node's inside banks, so a type's audio code only reads
+inputs and writes outputs (9.6). There is no base class for the author and no mixins. Six subsystems serve every type:
+**lifecycle**, **configuration and parameters**, **resources and companions**, the **control plane** (with diagnostics
+and logging: no node touches standard output), **audio and clock** (an internal clock every card follows), and
+**recovery**. For bus connections a type writes nothing; a wire never depends on a node's state; and only a node fails,
+never the graph (I10).
 
 ## 4. Ubiquitous language
 
+The words "run", "run object", "recipe", "setup" and "build" are not used: revision 6 retired them (R20, R23). Where the
+built code still uses them, 13.2 says what replaces each.
+
 | Term | Meaning | Today's name, if different |
 |---|---|---|
-| **Node type** | A built-in kind of node: its type spec and its behaviour, found by its folder in `src/nodes/` | `NodeType` + `NodeTypeOf` |
+| **Graph** | ear's one running audio graph: the engine, the internal clock, every node and wire. It always runs (R6, R20) | — |
+| **Operation** | A change asked of the graph: add, configure, start, stop, remove a node; add or remove a wire. Applied on the graph's thread one at a time, in arrival order; asynchronous (R21): its reply says what was applied, never waits for a node's slow work (6.3) | an edit |
+| **Node type** | A built-in kind of node: its type spec and its class, found by its folder in `src/nodes/` | `NodeType` + `NodeTypeOf` |
 | **Type spec** | A type's declarations, pure and constexpr (`TypeSpec`; `NodeSpec` stays the graph's name+type+settings, `graph_spec.hpp:25`) | the settings table, plus `NodeConfig::ports()` |
-| **Node** | One named instance of a type in the desired graph; the aggregate root of everything below | — |
+| **Node** | One named instance of a type in the graph; the aggregate root of everything below. Only a node fails (R20) | — |
+| **Instance** | The type's own object for one node: a plain class whose three member functions are the hooks, holding the node's main-loop state and what its code shares (6.4). Made by the framework when the node is configured from empty; replaced only by a restart | `RunObject`, members of `NodeInsides` |
 | **Settings** | A node's *desired* state, kept in `ear.conf`, judged by the desired graph | `NodeSettings` |
+| **Wanted state** | Whether the graph wants the node running or stopped; kept in `ear.conf` (gate F1, 14.2) and changed by `start` and `stop` (6.3) | — (every node runs) |
 | **Parameter** | A setting declared `live`: it also has a realtime value that can move without a restart | — |
-| **In-place row** | A setting declared `.inPlace()`: a change to it goes to the behaviour's `reconfigure` hook instead of a restart (6.6) | — (every change restarts) |
-| **Port block** | The node's one `pw_filter`, made once for the node's life; owner of its public ports and the routes' ends; its ports may change (a reshape, 6.7) | as today |
+| **In-place row** | A setting declared `.inPlace()`: a change to it goes to `configure(old, new)` instead of a restart (6.6) | — (every change restarts) |
+| **Port block** | The node's one `pw_filter`, made once for the node's life; owner of its public ports and the wires' ends; its ports may change (a reshape, 6.7) | as today |
 | **Bank** | A named, directed group of ports, public or inside; its name and direction in the spec, its members from the settings | `PortBank` (public only); inside ports are a flat list today |
-| **Node state** | Where a node is in its lifecycle, nine states: `configured`, `setting-up`, `built`, `running`, `reconfiguring`, `restarting`, `failed`, `stopping`, and `recovering` (slice 8); the one machine of section 6 | `NodeState` (four values) |
-| **Hook** | A function a type writes that the framework calls in one state: `setup`, `build`, `reconfigure` (the behaviour's, static), `start`, `close` (the run object's) | `start`, the recipe, `RunObject::close` |
-| **Run** | One generation of a node's work behind its block, from `setup` to the end of its `close`. It survives in-place reconfigures; it ends at a restart, a failure or a stop | `NodeInsides` |
-| **Run object** | The type's own object for a run (sendspin's client, pairing, time filter), with the threads it owns and the state it shares with its code (mailboxes) | members of `NodeInsides` |
-| **Setup context** | What `setup` sees: the format, the node's name, and the acquire calls (`SetupOf<spec>`); then `BuildOf<spec>`, what `build` is handed once every resource is ready; and `ReconfigureOf<spec, Run>`, what `reconfigure` is handed. 6.10 declares all three whole | `StartContext`, `Ready` |
-| **Resource** | Something a run acquired, owned by the framework, closed with the run (or replaced in a reconfigure) | outside node, handoff |
+| **Wire** | A route, as the editor draws it: from an output port to an input port. Kept whatever either node's state; a wire to a stopped or failed node carries silence | route |
+| **Node state** | Where a node is in its lifecycle: `added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering` (slice 8), and `removed`, the end; the one machine of section 6 | `NodeState` (four values) |
+| **Hook** | One of the type's three member functions the framework calls: `configure(old, new)`, `start()`, `stop()` (6.4) | `start`, the recipe, `RunObject::close` |
+| **Configuration** | What the node's instance, its code and its resources are for one settings value and every in-place change after it, from `configure(empty, settings)` until a restart, a failure or the node's removal tears it down. An internal word of the framework's, never on the wire | a run |
+| **Generation** | An internal counter the framework raises each time it configures a node from empty; a message from an older generation's thread is dropped (I6). Never seen by a type author or an operator | the run's generation |
+| **Configure context** | What `configure` is handed: the format, the node's name, the acquire calls, holds, the code, and typed posts to the node's loops (`ConfigureOf<spec>`); 6.10 declares it whole | `StartContext`, `Ready` |
+| **Node context** | What the instance keeps for its life: the node's name, its handle, posts to its loops (`NodeOf<spec>`, 6.10) | — |
+| **Node handle** | The node's thread-safe way out: log, status, events, `lost(detail)`; usable from any of the node's threads (node-primitives.md 5) | `InsidesEvents`, `Channel` |
+| **Resource** | Something a node's configuration acquired, owned by the framework, released with it (or replaced in place) | outside node, handoff |
 | **Resource kind** | A class of resource with its own adapter (section 7.3) | one method each on `NodeGrant` |
-| **Companion** | A hidden engine node the framework makes for a run, linked to one of its node's inside banks; named `<node>.<suffix>`; never named by a route. Two families: engine companions (a sound card's ALSA adapter, an RTP receiver) and ring companions (a sink or a source with a ring to non-realtime code) (9.6) | outside node; handoff; sendspin's feed |
+| **Companion** | A hidden engine node the framework makes for a node, linked to one of its inside banks; named `<node>.<suffix>`; never named by a wire. Two families: engine companions (a sound card's ALSA adapter, an RTP receiver) and ring companions (a sink or a source with a ring to non-realtime code) (9.6) | outside node; handoff; sendspin's feed |
 | **Sink, source** | The two ring companions: a sink hands frames, stamped with their cycle, to a non-realtime consumer; a source plays frames a non-realtime writer gives | handoff; feed |
 | **Hold** | Outputs of a bank (or all) kept silent by the framework, with a short fade, while a node asks, or before every barrier that silences the block; acknowledged by the data loop once the fade reached zero (6.6) | — |
 | **Plan outcome** | What a committed edit does to one node: `unchanged`, `retune`, `reconfigure`, `restart`, `reshape` (with `inPlace`) or `replace` (6.6, 6.7) | update or replace |
-| **Code** | What runs on the realtime thread for one run: `prepare`, `process`, `release`; made by `build`, swappable in a reconfigure | `AudioCode` |
-| **Loop** | A run's serial executor off the realtime thread: a strand, or a dedicated thread | sendspin's worker |
-| **Status** | A node's *observed* state, field by field, each field with one declared writer; never health. Today's `NodeStatus` (state and reason) is health and is renamed `NodeHealth` (slice 1), so the word means one thing; `RouteStatus` is a route's observed state and keeps its name | `say` texts that are state |
+| **Code** | What runs on the realtime thread for one node: `prepare`, `process`, `release`; given in `configure`, swappable in place | `AudioCode` |
+| **Loop** | A node's serial executor off the realtime thread, a strand or a dedicated thread, with the state its work runs on (the loop's state, owned by the framework, reached only by a post) | sendspin's worker |
+| **Status** | A node's *observed* state, field by field, each field with one declared writer; never health. Today's `NodeStatus` (state and reason) is health and is renamed `NodeHealth` (slice 1), so the word means one thing; `RouteStatus` is a wire's observed state and keeps its name | `say` texts that are state |
 | **Event** | A node's *edges*, by declared code | `say` texts that are edges |
 | **Action** | A command into a node; changes no desired state | — |
 | **Log** | Free text for people, at a level; from node code, the realtime thread (as coded records) or captured library and program output | `std::cerr`, a library's own logging |
 | **Diagnostic** | What the framework itself observes about a node: status changes, flapping, recovery attempts, drops | `dropped=` on the `stopped` line |
-| **Health** | `NodeState`, its reason, the attempt and how long it has run: the framework's judgement alone | `NodeStatus` |
-| **Internal clock** | The graph's one driver: the dummy driver on the host's monotonic clock; every card follows it | today a linked card drives |
+| **Health** | The node state, its `phase`, its reason, the attempt and how long it has run: the framework's judgement alone | `NodeStatus` |
+| **Internal clock** | The graph's one driver: the dummy driver on the host's monotonic clock; every card follows it | as built (slice 7) |
 
 ## 5. Bounded contexts and the context map
 
@@ -155,7 +182,7 @@ stops another's audio (I10).
 flowchart LR
   GD["Graph definition<br/>ear_config + DesiredGraph<br/>settings: check, plan, commit"]
   subgraph Core["Core domain: node framework (ear_core)"]
-    NF["Node aggregate<br/>per-node lifecycle, runs, hooks,<br/>reconfigure, health, recovery"]
+    NF["Node aggregate<br/>per-node lifecycle, three hooks,<br/>changes in place, health, recovery"]
     REG["Resource registry<br/>kinds by value"]
     CLM["Claims and stores<br/>(domain service, ear-wide)"]
     CP["Control plane<br/>one ordered channel per node"]
@@ -193,15 +220,31 @@ flowchart LR
 
 ## 6. The node: its lifecycle, hooks and invariants
 
-This section is the one home of the node lifecycle (R11, R12, R16, R17). Every other section cites it. Its shape is the
-owner's sketch of 2026-11-08 (configured, setting-up, built, running, reconfiguring, stopping, stopped, with failed and
-recovering beside them), made exact: one state machine **per node**, a hook for each state a type can act in, and what
-the framework does in each.
+This section is the one home of the node lifecycle (R11, R16, R17, R19 to R23). Every other section cites it. Its shape
+is the owner's (2026-11-08): the graph always runs; a node is added, configured, started and stopped, reconfigured and
+removed inside it, asynchronously; a node goes added → configured → running ⇄ stopped, beside failed, and ends removed;
+a type writes three hooks. There is no run: what a settings value made (the instance, its code, its resources) is the
+framework's internal **configuration**, and only the framework knows when one ends and the next begins.
 
-### 6.1 The aggregate
+### 6.1 The graph, its operations, and the aggregate
 
-The node is the consistency boundary for everything its runs acquire; only the framework changes it, on the main loop.
-Resources and companions are a closed `std::variant` of kinds (sections 7.3 and 9.6), not a class hierarchy.
+**The graph always runs.** The internal clock drives it from boot to stop (section 10, as built in slice 7); every block
+processes whether wired or not; nothing done to one node pauses the clock, the data loop or another node (I10).
+
+**Operations are asynchronous and ordered** (R20, R21). Every operation on a node (add it, change its settings, start
+it, stop it, remove it, add or remove a wire to it, and the framework's `restart` action) reaches the graph's thread
+(the main loop) whole, through the keeper (AGENTS.md, "How a change moves"), and is applied there one at a time, in
+arrival order. Applying an operation means: the desired graph judges it and commits it, and the framework sets the
+node's next step going (a hook called, a barrier posted, a resource asked for) without waiting for it. The reply is sent
+in the same main-loop turn and says what was applied (the plan's outcome, 6.6); it never waits for the node's slow
+work. That work (an ALSA device opening, a claim waiting for a closing node, a library reconnecting to Music
+Assistant) goes on in the engine, on the I/O executor or on the node's own threads, and the node shows a transitional
+state until it reports ready (6.2). A later operation on the same node is applied when it arrives, against what the
+node has actually applied (6.3); one on another node never waits for it.
+
+**The aggregate.** The node is the consistency boundary for everything its configuration acquires; only the framework
+changes it, on the main loop. Resources and companions are a closed `std::variant` of kinds (sections 7.3 and 9.6),
+not a class hierarchy.
 
 ```mermaid
 classDiagram
@@ -209,255 +252,298 @@ classDiagram
     name: NodeName
     type: NodeType
     state: NodeState
+    wanted: running or stopped
     health: state, phase, failure, attempt
     block: PortBlock (its ports may reshape)
-    applied: the settings the current run runs
+    applied: the settings its configuration has applied
     queued: the newest settings not yet applied
     recovery: attempts, next try
   }
-  class Run {
-    generation: n
-    phase: setting-up, built, started, reconfiguring, closing
-    code: Code
+  class Configuration {
+    generation: n (internal, I6)
+    instance: the type's object (the hooks' owner)
+    loops: each with its state, owned by the framework
+    code: Code, prepared; driven while running
     resources: list of variant~Kind~
     companions: list of variant~Companion~
-    runObject: the type's, owning its threads and its state
     holds: banks held silent
-    reconfigure: the change in flight, its deadline
+    change: the in-place change in flight, its deadline
   }
-  Node "1" --> "0..1" Run : current
-  Node "1" --> "*" Run : leaked, never freed (I5a)
+  Node "1" --> "0..1" Configuration : current
+  Node "1" --> "*" Configuration : leaked, never freed (I5a)
 ```
 
-The node's state is derived from two small pure machines and the queued settings: the **block's** (made, ready, lost)
-and the **current run's** (its phase). Both are pure, as `NodeLifecycle` is today (`node_lifecycle.hpp:10-15`), so every
-state against every fact is one table-driven test.
+The node's state is derived from two small pure machines, the wanted state and the queued settings: the **block's**
+(made, ready, lost) and the **configuration's** (configuring, configured, driving, changing, going). Both are pure, as
+`NodeLifecycle` is today (`node_lifecycle.hpp:10-15`), so every state against every fact is one table-driven test. The
+configuration and its generation never appear on the wire, in a record or in a type's API.
 
 ### 6.2 The states
 
 ```mermaid
 stateDiagram-v2
-  [*] --> configured: added (plan committed), block made
-  configured --> settingUp: no older node of the name left
-  settingUp --> built: every resource ready, build returned
-  built --> running: block ready, code drives, start returned
-  running --> reconfiguring: in-place change (plan outcome reconfigure)
-  reconfiguring --> reconfiguring: a newer in-place change before the commit point (superseded)
-  reconfiguring --> running: applied, every new resource ready, old ones released
-  reconfiguring --> restarting: hook says restart; a replacement refused or lost; the deadline; restart action
-  running --> restarting: restart, reshape, or the restart action
-  settingUp --> restarting: any change before running
-  built --> restarting: any change before running
-  failed --> restarting: a change, or the restart action
-  restarting --> settingUp: old run closed (or leaked, I5a)
-  settingUp --> failed: setup, a resource or build failed; a readiness deadline passed
-  built --> failed: a resource lost; the run said lost
-  running --> failed: a resource lost; the run said lost
-  reconfiguring --> failed: a kept resource lost; the run said lost
-  failed --> recovering: slice 8, after the backoff starts
-  recovering --> restarting: the wait ended
-  configured --> stopping: removed or stopAll
-  settingUp --> stopping
-  built --> stopping
-  running --> stopping
-  reconfiguring --> stopping
-  restarting --> stopping
-  failed --> stopping
-  recovering --> stopping
-  stopping --> [*]: run closed or leaked, block gone (stopped)
+  [*] --> added: add committed, block made
+  added --> configuring: no older node of the name left; configure(empty, settings)
+  configuring --> configured: every resource ready
+  configured --> starting: wanted running
+  configured --> stopped: wanted stopped
+  starting --> running: block ready, code drives, start() returned
+  running --> stopping: stop, restart, removal, a restart-only change
+  stopping --> stopped: silence acknowledged (a stop)
+  stopped --> starting: start
+  running --> reconfiguring: in-place change; configure(old, new)
+  stopped --> reconfiguring: in-place change; configure(old, new)
+  reconfiguring --> reconfiguring: a newer in-place change before the commit point
+  reconfiguring --> running: committed (was running)
+  reconfiguring --> stopped: committed (was stopped)
+  reconfiguring --> stopping: answered restart; refused; deadline; restart action
+  stopping --> configuring: a restart, once the old configuration is gone
+  stopped --> configuring: a restart-only change
+  configuring --> failed: a resource refused or past its deadline; a hook threw
+  configured --> failed: a resource lost; lost(detail)
+  starting --> failed
+  running --> failed
+  reconfiguring --> failed: a kept resource lost; lost(detail)
+  stopped --> failed: a resource lost; lost(detail)
+  failed --> configuring: a settings change, start, or restart
+  failed --> recovering: slice 8, the backoff
+  recovering --> configuring: the wait ended
+  stopping --> removed: removal, the old configuration gone, block destroyed
+  removed --> [*]
 ```
 
-The block's loss (T11) leads from every state but `stopping` to `failed`, for good; it is left out of the diagram. A
-change in `configured` replaces the settings the first run will start with: there is no run to restart, so no edge.
+Not drawn: the block's loss leads from every state but `removed` to `failed`, for good (T13); removal leads from every
+state to `stopping` (with cause `removing`), and a node never started (`added`, `configuring`, `configured`, `failed`)
+skips `stop()`. A change in `added` replaces the settings the node will be configured with: there is nothing to
+restart, so no edge.
 
 What the framework does in each state. "Silent" means the block is driven by no code: every output sample is 0 and its
-inputs are read by nothing (`drive(nullptr)`, `node_host.hpp:70-71`) [V]. Routes are the desired graph's: the
+inputs are read by nothing (`drive(nullptr)`, `node_host.hpp:70-71`) [V]. Wires are the desired graph's: the
 `Reconciler` links a wanted route whenever both its ends are live, whatever either node's state
-(`reconciler.cpp:107-151`) [V], so a node's routes and links stay through every state but `stopping`, and a peer linked
-to a silent node reads zeros.
+(`reconciler.cpp:107-151`) [V], so **a wire never depends on a node's state**: it stays through every state but
+`removed`, and a peer wired to a silent node reads zeros.
 
-| State | Entered when | Hook that runs | What `process` runs | The node's outputs carry | Health on the wire (`state`, `phase`) | Standard output (`node` record's `msg`) |
+| State | Entered when | Hook called | What `process` runs | The node's outputs carry | Health on the wire (`state`; `phase`) | Standard output (`node` record's `msg`) |
 |---|---|---|---|---|---|---|
-| `configured` | the plan that adds it commits; the block is made at once, silent | none | nothing | zeros | `starting`, `configured` | `node <n> starting` |
-| `setting-up` | no older node of its name is left (today's `olderGoing`, `node_host.cpp:64-75`) | `setup`, once, then the framework readies what it acquired (6.4) | nothing | zeros | `starting`, `setting-up` | — (a wait on a claim says `ear.claim-wait`) |
-| `built` | every resource is ready and `build` returned | `build` has just run | nothing yet: the code is prepared, not driven | zeros | `starting`, `built` | — |
-| `running` | the block is ready (its first STREAMING state) and the run is built: the framework carries the run's latency plan, drives the block with the code and arms its sinks in one data-loop invoke (I4), then calls the run object's `start` | `start`, once, on entry | the run's code | what the code writes; a held bank zeros (6.6) | `running` | `node <n> running` |
-| `reconfiguring` | a committed change whose outcome is `reconfigure` (6.6) | `reconfigure`, once, on entry; then the type's own work, if it asked to finish later | the run's code, then the swapped code, if any | what the code writes; held banks zeros, faded | `reconfiguring`, with the keys | `node <n> reconfiguring: <keys>`, then `node <n> running` |
-| `restarting` | a change whose outcome is `restart` or `reshape`, the `restart` action, a reconfigure that fell back, or a recovery wait that ended | the old run's `close` | the old code for one fade, then nothing | a 5 ms fade, then zeros | `starting`, `restarting`, with the cause | `node <n> restarting: <cause>` |
-| `failed` | a fact against the run (a resource lost or refused, a readiness deadline missed, `handle.lost(detail)`, `setup` or `build` failed) or against the block (lost: final, I1) | the failed run's `close`: it is torn down at once (I5) | the old code for one fade, if it was driving; then nothing | a 5 ms fade, then zeros | `failed`, with `reason` (its code below) | `node <n> failed <code>: <detail>` |
-| `recovering` (slice 8) | the failed run closed and the node's recovery policy waits before another try | none | nothing | zeros | `recovering`, with `attempt`, `retryInMs` | as 8.8 |
-| `stopping` | the plan removes it, or `stopAll` | the run's `close`, after the block is destroyed (the barrier) | the code for one fade, then nothing: the block is gone | a 5 ms fade, then no ports | `stopping` | `node <n> stopping`, then `node <n> stopped dropped=<frames>` |
+| `added` | the add commits; the block is made at once, silent | none | nothing | zeros | `starting`; `added` | `node <n> starting` |
+| `configuring` | no older node of its name is left (today's `olderGoing`, `node_host.cpp:64-75`) [V], or a restart, a retry or a restart-only change | the instance is made, then `configure(cx, nullptr, settings)`, once; the framework readies what it acquired (6.4) | nothing | zeros | `starting`, or `stopped` if wanted stopped; `configuring` with what it waits for | — (a wait over 2 s: a `still` record) |
+| `configured` | every resource is ready; the code is prepared; work staged on its loops is released | none | nothing | zeros | as `configuring`; `configured` | — |
+| `starting` | configured and wanted running, or `start` on a stopped node | `start()` once the block is ready and the code drives (T5) | nothing until the code drives | zeros | `starting`; `starting` (`waiting for the engine` while the block is not ready) | — |
+| `running` | the block is ready: the framework carries the latency plan, drives the block with the code and arms its sinks in one data-loop invoke (I4), then calls `start()` | `start()`, once, on entry | the node's code | what the code writes; a held bank zeros (6.6) | `running` | `node <n> running` |
+| `reconfiguring` | a committed change whose outcome is `reconfigure`, on a running or stopped node (6.6) | `configure(cx, &old, new)`, once, on entry; then the type's own work, if it asked to finish later | the code, then the swapped code, if any (nothing, if it was stopped) | what the code writes; held banks zeros, faded | `reconfiguring`; with the keys | `node <n> reconfiguring: <keys>`, then `node <n> running` or `stopped` |
+| `stopping` | a `stop`; a restart (a restart-only change, a reshape not in place, the `restart` action, an in-place change that fell back); a removal | `stop()`, if the node was running, before the fade | the code for one fade, then nothing | a 5 ms fade, then zeros (no ports once removed) | `stopping`; with the cause (`stop`, `restarting: <keys>`, `removing`) | `node <n> stopping[: <cause>]` |
+| `stopped` | the stop's silence acknowledged; or configured while wanted stopped | none | nothing | zeros | `stopped` | `node <n> stopped` |
+| `failed` | a fact against the node (a resource refused, lost or past its readiness deadline; `lost(detail)` from its handle; a hook threw) or against its block (lost: final, I1) | none: the framework silences the block and tears the configuration down at once (I5) | the code for one fade, if it was driving; then nothing | a 5 ms fade, then zeros | `failed`, with `reason` (its code below) | `node <n> failed <code>: <detail>` |
+| `recovering` (slice 8) | the failed node's configuration is gone and its recovery policy waits before another try | none | nothing | zeros | `recovering`, with `attempt`, `retryInMs` | as 8.8 |
+| `removed` | the removal's teardown ended (or was leaked at its deadline, I5a) and the block is destroyed | none | — | no ports | gone from the graph (`node.removed`) | `node <n> removed dropped=<frames>` |
 
-- **`configured` is short** unless the node's name was just freed by a node still closing (a remove and add of one name
-  in one plan, or a rename): then it waits there, visibly, until the older one has gone (I7, I8).
-- **`built` is short** unless the engine is slow to make the block ready: `start` never runs before `process` can
-  actually be called, so a run object never starts threads whose audio would go nowhere.
-- **A failed run is torn down at once**, releasing its claims and threads, and the block is silent (today the run's code
-  keeps driving and its resources stay until an update, `node_host.cpp:368-377` [V]; gate A3 in 14.2). The node stays
-  `failed` until a change, the `restart` action or recovery (slice 8). A lost block is final (I1).
-- **Health on the wire is two fields**: `state`, a short closed set the editor colours (`starting`, `running`,
-  `reconfiguring`, `failed`, `recovering`, `stopping`), and `phase`, the exact state with its cause (gate A1 in 14.2).
-  Today's clients see the four states they know plus `reconfiguring` and `recovering`, which control-plane.md's protocol
-  1 makes open values (its G7). Every member of `node.state` per phase is control-plane.md 4.8's.
-- **A node that stays in `configured`, `setting-up` or `built` for 2 s** says why on standard output, in a `still`
-  record (written to control-plane.md W4's recommendation; that page's 9.1 is the record's home).
+- **The short-lived states** (`added`, `configured`, `starting`) last milliseconds unless the node's name was just freed
+  by a node still closing (a remove and add of one name in one plan, or a rename, I7, I8), or the engine is slow to make
+  the block ready. `start()` never runs before `process` can actually be called, so a node never begins work whose audio
+  would go nowhere (R19: readiness the engine delivers later is the framework's, never the type's).
+- **A stopped node keeps its configuration** (gate F2): its instance, its claims, its companions and its loops stay, its
+  code is prepared and not driven, and `start` drives it again within one cycle and one main-loop turn. A sound card
+  stays open and plays the block's zeros; a listening port stays claimed. What the type's own activity does while
+  stopped is its `stop()`'s choice (sendspin closes its connection). A sink is disarmed while stopped, so a recording
+  takes no frames; a source plays into a silent block.
+- **A failed node is torn down at once** (R20): its instance and loops go, its claims are released (a listening
+  `sendspin` node's port 8928 is free for another node at once), its companions are destroyed, and the block is silent;
+  its wires stay. It stays `failed` until a settings change, `start`, the `restart` action, its removal, or recovery
+  (slice 8). A lost block is final (I1). Today a failed run keeps its code driving and its resources until an update
+  (`node_host.cpp:369-377`) [V].
+- **Health on the wire is two fields** (R22): `state`, the short closed set the editor colours (`starting`, `running`,
+  `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering`), and `phase`, the exact state with its cause.
+  Today's clients see the four states they know plus `reconfiguring`, `stopped` and `recovering`, which control-plane.md's
+  protocol 1 makes open values (its G7, decided). Every member of `node.state` per phase is control-plane.md 4.8's.
+- **A node that stays in `added`, `configuring`, `configured` or `starting` for 2 s** says why on standard output, in a
+  `still` record (control-plane.md 9.1 is the record's home).
 - **Every barrier that silences a driving block is faded first** (R17's "null audio frames", applied to every planned
   silence): the framework holds every public output bank for one fade (5 ms), waits for the data loop's acknowledgement
-  that the fade reached zero (6.6), then takes the barrier. So a restart, a failure, a removal or a stop never clicks a
-  downstream card. The block's own loss (T11) cannot be faded: the block is gone.
+  that the fade reached zero (6.6), then takes the barrier. So a stop, a restart, a failure or a removal never clicks a
+  downstream card. The block's own loss (T13) cannot be faded: the block is gone.
 
 **Failure codes**, the one home of the codes a `failed` node's `reason` carries (an open set on the wire,
 control-plane.md 4.5, so a new code is additive under protocol 1):
 
 | Code | When | Recovery's first wait (8.6) |
 |---|---|---|
-| `start-failed` | before the node first reached `running` in this run: `setup` or `build` failed, a claim, store or recording refused, a readiness deadline passed, a consumer's `begin` failed, `handle.lost` before T4, a hook threw | the longest (60 s): the cause is in the settings or the host |
-| `engine-refused` | a companion or the block refused or lost, before or after `running` (today's code, `node_host.cpp:368-372` [V]) | by phase: 60 s before the run reached `running`, 1 s after |
-| `run-lost` (new) | `handle.lost(detail)` once the run has been `running` (today this is `start-failed`, `node_host.cpp:376` [V]) | 1 s: a run that ran and died is not a settings problem |
+| `start-failed` | before the node first reached `running` or `stopped` in this configuration: a claim, store or recording refused, a readiness deadline passed, a consumer's `begin` failed, `lost(detail)` before then, a hook threw | the longest (60 s): the cause is in the settings or the host |
+| `engine-refused` | a companion or the block refused or lost, before or after `running` (today's code, `node_host.cpp:369-371` [V]) | by phase: 60 s before the node reached `running` or `stopped`, 1 s after |
+| `lost` (new) | `lost(detail)` from the node's handle once it has reached `running` or `stopped` (today this is `start-failed`, `node_host.cpp:375-377` [V]) | 1 s: a node that ran and died is not a settings problem |
 
-### 6.3 Transitions and their triggers
+### 6.3 Transitions, operations, and what arrives mid-transition
 
 | # | From | To | Trigger | What the framework does |
 |---|---|---|---|---|
-| T1 | — | `configured` | `nodeAdded` (the plan committed) | makes the port block, silent; the node's routes link once its ports are live |
-| T2 | `configured` | `setting-up` | no older node of the name is left | a new run (generation n+1); calls `setup`; readies what it acquired (6.4) |
-| T3 | `setting-up` | `built` | every resource ready | calls `build`; keeps the run object and the code; prepares the code |
-| T4 | `built` | `running` | the block is ready | carries the latency plan; in one data-loop invoke (the barrier), installs the code and arms every sink; once it completed, calls `start` |
-| T5 | `running` | `reconfiguring` | plan outcome `reconfigure` | calls `reconfigure(was, now)`; applies holds; readies new resources beside the old, marking each old one it replaces `retiring` (6.6) |
-| T6 | `reconfiguring` | `running` | the hook's work is done (`applied`, or its `whenReady` continuation's `done`) and every new resource is ready | the commit point: swaps the code and layout if asked, re-arms replaced sinks (one barrier), releases retiring resources by dependency, releases holds with a fade; the run's applied settings become `now` |
-| T7 | `reconfiguring` | `restarting` | the hook returned `restart`, a replacement refused or lost, its token's `fail`, the deadline (default 10 s, the spec's `.lifecycle`, 6.10), or the `restart` action | fades, then tears the whole run down (old and new resources alike) |
-| T8 | `running`, `setting-up`, `built`, `failed` | `restarting` | plan outcome `restart` or `reshape` (not in place); the `restart` action (8.4) | fades if the code drives, then tears the run down (I5); a run not yet ready is torn down as in I5's "before it was ready" |
-| T9 | `restarting` | `setting-up` | the old run closed, or was leaked at the close deadline (I5a) | reshapes the block first if the ports changed (6.7); then as T2 |
-| T10 | `setting-up`, `built`, `running`, `reconfiguring` | `failed` | a resource refused, lost or past its readiness deadline (in `reconfiguring`: a kept resource, never a `retiring` one); `setup` or `build` failed; `handle.lost(detail)` (`built`, `running`, `reconfiguring`: no handle exists before `build`) | fades if the code drives, then tears the run down (I5); the block stays, silent; the code is 6.2's table's |
-| T11 | any but `stopping` | `failed` (final) | the block lost (`PortBlockEvents::lost`) | tears the run down; never starts again (I1) |
-| T12 | `failed` | `recovering` (slice 8) | the failed run closed and the policy allows another try | a main-loop timer (8.6) |
-| T13 | `recovering` | `restarting` | the wait ended | as T9 (the old run already closed, so at once) |
-| T14 | any | `stopping` | `nodeRemoved`, `stopAll` | fades if the code drives, destroys the block (the barrier), then tears the run down; `stopped` once it closed or leaked |
-| T15 | `reconfiguring` | `reconfiguring` | a newer change whose outcome is `reconfigure`, before the commit point | supersedes: below |
+| T1 | — | `added` | the add commits | makes the port block, silent; the node's wires link once its ports are live |
+| T2 | `added` | `configuring` | no older node of the name is left | a new generation; makes the instance; calls `configure(cx, nullptr, settings)`; readies what it acquired (6.4) |
+| T3 | `configuring` | `configured` | every resource ready | prepares the code; releases the work staged on the node's loops |
+| T4 | `configured` | `starting` or `stopped` | at once, by the wanted state | — |
+| T5 | `starting` | `running` | the block is ready | carries the latency plan; in one data-loop invoke (the barrier), drives the code and arms every sink; once it completed, calls `start()` |
+| T6 | `running` | `stopping` | `stop`; a restart (plan outcome `restart`, a reshape not in place, the `restart` action, T11); removal | calls `stop()`; holds every public output bank for one fade and waits for the acknowledgement; then one invoke silences the block (`drive(nullptr)`) and disarms every sink; sinks drain to their consumers |
+| T7 | `stopping` | `stopped` | the silence completed, and the cause was a `stop` | — |
+| T8 | `stopped` | `starting` | `start` | as T5 once the block is ready (it already is) |
+| T9 | `running`, `stopped` | `reconfiguring` | plan outcome `reconfigure` | calls `configure(cx, &old, new)` on the instance; applies holds; readies new resources beside the old, marking each old one it replaces `retiring` (6.6) |
+| T10 | `reconfiguring` | `running` or `stopped`, as before | the hook's work is done (`applied`, or its `whenReady` continuation's `done`) and every new resource is ready | the commit point: swaps the code and layout if asked, re-arms replaced sinks (one barrier, if driving), releases retiring resources by dependency, releases holds with a fade; the node's applied settings become `new` |
+| T11 | `reconfiguring` | `stopping` (or `configuring`, if it was stopped) | the hook answered `restart`, a replacement refused or lost, its token's `fail`, the deadline (default 10 s, the spec's `.lifecycle`, 6.10), or the `restart` action | releases the uncommitted replacements; then as T6 with cause `restarting` |
+| T12 | `stopping` (a restart), `stopped` (a restart-only change, a restart), `failed`, `recovering` | `configuring` | the old configuration is gone (I5), or was leaked at the close deadline (I5a) | reshapes the block first if the ports changed (6.7); then as T2 with the newest settings |
+| T13 | any but `removed` | `failed` (final) | the block lost (`PortBlockEvents::lost`) | tears the configuration down; never configures again (I1) |
+| T14 | `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopped` | `failed` | a resource refused, lost or past its readiness deadline (in `reconfiguring`: a kept resource, never a `retiring` one); `lost(detail)`; a hook threw | fades if the code drives, then silences the block and tears the configuration down (I5); the block stays |
+| T15 | `failed` | `configuring` | a settings change; `start` (a retry, even when the node is already wanted running); the `restart` action | as T12 |
+| T16 | `failed` | `recovering` (slice 8) | the configuration is gone and the policy allows another try | a main-loop timer (8.6) |
+| T17 | any | `stopping` (cause `removing`), then `removed` | the removal commits; `stopAll` | as T6 (`stop()` only if it was running), then destroys the block (the barrier) and tears the configuration down; `removed` once it is gone or leaked |
+| T18 | `reconfiguring` | `reconfiguring` | a newer change whose outcome is `reconfigure`, before the commit point | supersedes: below |
 
 Every barrier is an asynchronous invoke on the block's data loop: the main loop posts it and goes on, and the next step
 continues from its completion, posted back (I4). So no transition of one node waits on the data loop while another's
 work queues behind it.
 
-**Changes that arrive mid-transition** are queued, newest wins, and judged against what the node's run actually runs
-(its applied settings), never against what is in flight:
+**Start and stop.** `start` and `stop` are operations like any other (R20): they change the node's wanted state, which
+`ear.conf` keeps (gate F1: written to its recommendation, `node <type> <name> stopped`), so a stopped node stays stopped
+across a restart of ear and a hand edit can stop one. The framework converges on the wanted state: a node configured
+while wanted stopped rests in `stopped` without calling `start()`; `start` on a `failed` node is a retry (T15), even
+when the file already wants it running, and changes nothing in `ear.conf`. The `restart` action (8.4) is the
+framework's own: a full stop, a configuration from empty and a start back to the wanted state, without editing
+`ear.conf`.
 
-- in `configured`: replaces the settings the first run will start with; nothing else happens;
-- in `setting-up` or `built`: a restart (T8) with the newest settings;
-- in `reconfiguring`, **before the commit point** (T6's swap has not begun, and the hook's `whenReady` continuation has
-  not been posted to its loop): the change supersedes the reconfigure (T15). The framework ends it without touching the
-  run: replacements not yet committed are released (their claims and companions go, by I5's order for those resources
-  only), an unposted continuation is destroyed unrun, its token ignored; holds stay. Then the newest settings are
-  classified afresh against the applied ones: a `reconfigure` calls the hook again with `was` the applied settings and
-  `now` the newest (T15); a `restart` or `reshape` is T7. The deadline restarts with the new call;
-- in `reconfiguring`, **after the commit point** (the continuation is the run's own work, or the swap is under way): the
-  change waits until T6 or T7, then is classified afresh against the applied settings;
-- the `restart` action in `reconfiguring`, before or after the commit point: T7 at once, with the newest settings (a
-  continuation already posted runs, as it would at a stop, node-primitives.md 6.2) (gate B6);
-- in `restarting`: replaces the settings the next run starts with (as today, `node_host.cpp:79-87` [V]);
-- in `failed` or `recovering`: a restart at once (skipping the recovery wait).
+**Operations that arrive mid-transition** are applied when they arrive, newest settings winning, and judged against what
+the node has actually applied, never against what is in flight:
 
-### 6.4 The hooks
+- in `added`: a change replaces the settings it will be configured with; `start` and `stop` set the wanted state;
+- in `configuring`, `configured` or `starting`, before the node first reached `running` or `stopped`: any change tears
+  the configuration down and configures afresh with the newest settings (nothing has started, so nothing is gained by
+  reconfiguring in place); `stop` in `starting` before `start()` was called ends at `stopped` without calling `start()`
+  or `stop()`;
+- in `reconfiguring`, **before the commit point** (T10's swap has not begun, and the hook's `whenReady` continuation
+  has not been posted to its loop): a newer change supersedes it (T18). The framework ends it without touching the
+  node's applied configuration: replacements not yet committed are released (their claims and companions go, by I5's
+  order for those resources only), an unposted continuation is destroyed unrun, its token ignored; holds stay. Then the
+  newest settings are classified afresh against the applied ones: a `reconfigure` calls the hook again with `old` the
+  applied settings and `new` the newest; a `restart` or `reshape` is T11. The deadline restarts with the new call. A
+  `stop` or a removal ends it the same way, then stops;
+- in `reconfiguring`, **after the commit point** (the continuation is the type's own work, or the swap is under way): a
+  change, `stop` or `start` waits until T10 or T11, then is applied;
+- the `restart` action in `reconfiguring`, before or after the commit point: T11 at once (a continuation already posted
+  runs, as it would at a stop, node-primitives.md 6.2);
+- in `stopping`: a change waits for `stopped` (or, for a restart, replaces the settings the next configuration starts
+  with, as today, `node_host.cpp:79-87` [V]); `start` during a stop starts again once stopped;
+- in `failed` or `recovering`: a change or `start` is T15 at once (skipping the recovery wait); `stop` sets the wanted
+  state and leaves the node `failed`.
 
-A type writes these, and nothing else of the lifecycle. `setup`, `build` and `reconfigure` are the behaviour's static
-functions: they run when there is no run object yet, or when they may replace what it holds, and they see the settings
-as the spec typed them. `start` and `close` are the run object's: they begin and end its own threads. The run object's
-type is the behaviour's `using Run = ...;` (absent: none), checked against what `build` returns, so `reconfigure`
-reaches it typed, and only on its loops (6.10). The contexts each hook gets are declared whole in 6.10.
+### 6.4 The three hooks
 
-| Hook | Whose | State | Thread | Gets | May | Returns | If the type writes none |
-|---|---|---|---|---|---|---|---|
-| `check` | behaviour, static | parse | any, pure | `const CheckedOf<spec>&` | nothing else | a refusal or nothing | no rule across settings |
-| `ports` | behaviour, static | parse | any, pure | the checked settings | nothing else | `Members<spec>` | — (required) |
-| `setup` | behaviour, static | `setting-up` | main loop | `SetupOf<spec>&`, the checked settings | acquire only: claims, recordings, companions, latency of its own code. No I/O, no threads, no blocking. Stores and loops are the spec's and need no call | `SetupResult`: nothing, or a `FailureReason` | acquires nothing |
-| `build` | behaviour, static | `setting-up` → `built` | main loop | `BuildOf<spec>&` (every resource ready: stores' text, loops running, sources' writers, sinks' controls, the run handle), the checked settings | construct the run object and the code; hand each sink its consumer, a member of the run object. No I/O, no threads started, no blocking | `BuildResult<Run>`: a `Built<Run>` (the code, its own or `passThrough`; the run object; each sink's consumer), or a `FailureReason` | — (required; `white`'s is one line) |
-| `start` | run object | entering `running` | main loop | — | arm its loop sources, start threads its library owns; return at once | nothing (a failure later is `handle.lost`) | nothing to start |
-| `reconfigure` | behaviour, static | entering `reconfiguring` | main loop | `ReconfigureOf<spec, Run>&`, the applied and the new checked settings | hold banks, acquire replacements make-before-break, swap claims, swap the code, post work to the run object on its loops, continue on a loop once replacements are ready | `Reconfigured`: `applied()`, `restart(reason)`, or what `rx.whenReady` returned (6.6, 6.10) | every change is a restart |
-| `close` | run object | `restarting`, `failed`, `stopping` (I5 step 4a) | main loop, then its own threads | `closed`, to call from any thread | say goodbye on its loops, stop its library's threads | nothing; `closed()` last | `closed()` at once |
-| `prepare`, `process`, `release` | the code | `running`, `reconfiguring` | main loop; realtime; main loop | the format; `Io<spec>` and `GraphCycle`; — | as 7.4 | — | — |
+A type writes exactly three hooks (R23), as member functions of its class, and nothing else of the lifecycle. The class
+is the node's **instance**: the framework makes one when it configures the node from empty (T2, T12, T15), calls its
+hooks on the main loop, and frees it when that configuration ends (a restart, a failure, a removal). Its constructor
+takes the node's context (`NodeOf<spec>&`, kept for the instance's life) or nothing. The contexts are declared whole in
+6.10.
+
+| Hook | Called | Thread | Gets | May | Returns | If the type writes none |
+|---|---|---|---|---|---|---|
+| `check` (static) | parse | any, pure | `const CheckedOf<spec>&` | nothing else | a refusal or nothing | no rule across settings |
+| `ports` (static) | parse | any, pure | the checked settings | nothing else | `Members<spec>` | — (required) |
+| `configure(cx, nullptr, now)` | T2: the node is configured from empty | main loop | `ConfigureOf<spec>&`, the checked settings | acquire (claims, recordings, companions, stores' handles), give each loop its state, give the code, declare its code's latency, post work to its loops (run once `configured`). No I/O, no threads started, no blocking | `Configured::applied()` | — (required; `white`'s is two lines) |
+| `configure(cx, &old, now)` | T9: every changed key is `.inPlace()` or `.live`, at least one `.inPlace()` (6.6) | main loop | the same context, the applied and the new settings | hold banks, acquire replacements make-before-break, swap claims, swap the code, post to its loops, continue on a loop once replacements are ready | `Configured::applied()`, `Configured::restart(reason)`, or what `cx.whenReady` returned | never called with `old`: every change restarts |
+| `start()` | T5, T8: the code drives the block | main loop | its node context | post to its loops (begin dialling, listening, playing) | nothing (a failure later is `lost(detail)`) | nothing to start |
+| `stop()` | T6: before the fade, when the node was running | main loop | its node context | post to its loops (say goodbye, close the connection) | nothing | nothing to stop |
+| `prepare`, `process`, `release` | the code's: prepared at T3 or a swap, driven while `running` | main loop; realtime; main loop | the format; `Io<spec>` and `GraphCycle`; — | as 7.4 | — | — |
+
+- **`configure` is acquire and construct in one** (R19). There is no separate setup, build or close: what revision 5
+  split across `setup` (acquire) and `build` (construct once ready) is one call, because what becomes ready later (a
+  claim granted, a store opened, a companion linked, the block's ports ready) is the framework's to wait for, not the
+  type's. A resource asked for in `configure` is a handle at once; using it is legal on the node's loops, whose work the
+  framework releases only once every resource is ready (T3; node-primitives.md 6.4's staging). So a type writes
+  `configure` as if everything were there, and never writes a readiness callback.
+- **`old` is empty only when the node is configured from empty**: when it is made, and again after a restart, a failure
+  or a recovery. A type whose rows are all restart-only never sees `old`.
+- **Its own threads are the node's, and a hook reaches them only by a message** (designer's decision D-A4, 14.3). A loop
+  declared with a state type (`loop::dedicated<"worker", Worker>`) gets its state in `configure` (`cx.loop(worker,
+  std::make_unique<Worker>(...))`), after which the instance holds no reference to it; a hook reaches it only with
+  `post(worker, [](Worker& w) { ... })`, which runs on that loop. The handle carries the state's type, so a post of the
+  wrong type does not compile, and a hook cannot touch another thread's data, since it holds none. Threads a library owns
+  are the loop state's, started and joined there.
+- **Removal is a stop and the framework frees the rest** (R23). After `stop()` (if the node was running) and the
+  barrier, the framework closes the node's loops (running work already posted, `stop()`'s goodbye among it), destroys
+  each loop's state on its own thread (where a library's threads are joined, never on the main loop), and frees the
+  instance and its code on the main loop (I5). A restart and a failure do the same, keeping the block.
 
 ```cpp
-// sendspin, in revision 5 (9.6 shows its companions; node-primitives.md 6.4 and 6.8 its loop and store)
-struct Sendspin {
-	using Run = SendspinRun;                      // build's run object; reconfigure reaches it as this, on its loops
+// sendspin, in revision 6 (9.6 shows its companions; node-primitives.md 4.1, 6.4 and 6.8 its loop, store and worker)
+// sendspin_spec.hpp: inline constexpr auto worker = loop::dedicated<"worker", Worker>;   // the loop's state type
+class Sendspin {
+public:
 	static Members<spec> ports(const Checked&);   // to, from, to_server, from_server: two members each
-	static SetupResult setup(SetupOf<spec>& sx, const Checked& s) {
-		if (!s.get<serverRow>()) sx.claim(claim::TcpListen{s.get<portRow>()});
-		sx.source(fromServer, {.frames = feedFrames(sx.format())});   // declares [0, frames] on its link itself
-		sx.sink(toServer, {.frames = sx.format().rate / 2});
-		return {};
+	explicit Sendspin(NodeOf<spec>& node) : node_(node) {}
+	Configured configure(ConfigureOf<spec>& cx, const Checked* old, const Checked& now) {
+		if (old) return changeInPlace(cx, *old, now);                        // node-primitives.md 4.2
+		if (!now.get<serverRow>()) cx.claim(claim::TcpListen{now.get<portRow>()});
+		auto& feed = cx.source(fromServer, {.frames = feedFrames(cx.format())});   // declares [0, frames] itself
+		cx.loop(worker, std::make_unique<Worker>(node_.handle(), cx.store(keyStore), feed, now));
+		cx.sink(toServer, {.frames = cx.format().rate / 2}).consumedBy(worker, &Worker::toServer);
+		cx.use(passThrough({bankPair(to, toServer), bankPair(fromServer, from)}));
+		return Configured::applied();
 	}
-	static BuildResult<Run> build(BuildOf<spec>& bx, const Checked& s) {
-		auto run = std::make_unique<SendspinRun>(bx.handle(), bx.store(keyStore), bx.loop(worker),
-		                                         bx.source(fromServer), bx.sink(toServer), s);
-		return Built<Run>{std::move(run), passThrough({bankPair(to, toServer), bankPair(fromServer, from)})}
-			.consume(toServer, &SendspinRun::toServer);   // the run object's member: stamped chunks, on the sink's thread
-	}
-	static Reconfigured reconfigure(ReconfigureOf<spec, Run>& rx, const Checked& was, const Checked& now);   // 6.6
-};
-class SendspinRun final : public RunObject {
-	void start() override;                                            // the worker dials or listens
-	void close(std::move_only_function<void()> closed) override;      // goodbye on the worker
-	ToServer toServer;                                                // a SinkConsumer (node-primitives.md 6.6)
-	// ... the client, pairing, the time filter: the run object owns every piece of state it shares
+	void start() { node_.post(worker, [](Worker& w) { w.begin(); }); }   // dial or listen
+	void stop() { node_.post(worker, [](Worker& w) { w.end(); }); }      // goodbye; the client stops
+private:
+	Configured changeInPlace(ConfigureOf<spec>&, const Checked& old, const Checked& now);
+	NodeOf<spec>& node_;
 };
 ```
 
-**Readiness, between `setup` and `build`**, in this order, so a refusal costs nothing (node-primitives.md 6.1 is the
-home of each step's detail; revision 5 changes only what is acquired):
+**Readiness, between `configure` and `configured`**, the framework's, in this order, so a refusal costs nothing
+(node-primitives.md 6.1 is the home of each step's detail):
 
 | # | What | When it fails |
 |---|---|---|
 | 1 | Claims, judged in the same main-loop turn (I8); ports probed once granted | `start-failed: <claim's text>` |
 | 2 | Stores and recordings, opened on the I/O executor (5 s each) | `start-failed: <file>: <why>` |
-| 3 | Loops started, with nothing armed | `start-failed: cannot start loop <name>: <why>` |
+| 3 | Loops started with their states, nothing posted run yet | `start-failed: cannot start loop <name>: <why>` |
 | 3' | Companions, once the block is ready and step 1 granted, in parallel with 2 and 3: made, running, every link active (9.6) | `engine-refused: <detail>` |
-| 4 | `build`, once 3 and 3' are ready | `build`'s own `FailureReason` |
 | 4' | Every sink consumer has begun (`SinkConsumer::begin` returned on its sink's thread; node-primitives.md 6.6 is its home), 5 s | `start-failed: <detail>` |
 
-Then T4: once the block is ready, one invoke installs the code and arms the sinks, and `start` runs once it completed.
-Nothing of the type runs between `build` and
-`start` but each sink consumer's `begin` (on its own thread, step 4'), and nothing of the run object's loops runs before
-`start`: its loops hold any source armed in `build` until `start` returned (node-primitives.md 6.4's staging, now ended
-by `start`, not by `build`).
+Then T3: the code is prepared and the work staged on the node's loops runs, in the order posted. Then, wanted running,
+T5: once the block is ready, one invoke drives the code and arms the sinks, and `start()` runs once it completed.
+Nothing of the type runs between `configure` and `configured` but each sink consumer's `begin` (on its own thread, step
+4').
 
 **Hooks never block the main loop** (I11). Each hook is timed; one that takes more than 20 ms is `ear.hook-slow`
 (`node`, `hook`, `ms`), a diagnostic, so a type that blocks is seen in the first test that runs it. A hook that throws
-is a type bug: the framework catches it, fails the node with `start-failed: <hook> threw: <what>` and tears the run
-down, so one type's bug never takes ear down.
+is a type bug: the framework catches it, fails the node with `start-failed: <hook> threw: <what>` (or `lost` once the
+node had reached `running` or `stopped`) and tears its configuration down, so one type's bug never takes ear down.
+`configure` on creation answering `restart` is a type bug too (a `std::logic_error`, caught the same way).
 
-### 6.5 What the run object owns
+### 6.5 What the instance owns
 
 The owner asked why mailboxes had to exist before the run object (R13). Because the two-phase start drove the block
-with the code as soon as `start` returned (`node_host.cpp:300-308`) [V], and built the run object only once every
-resource was ready, later; anything the code shared with the run object had to outlive both and be made before either.
-With `start` after `build` (T3, T4), the code is made in `build`, after the run object, and drives only once the run
-object exists:
+with the code as soon as `start` returned (`node_host.cpp:305`) [V], and built the run object only once every resource
+was ready, later; anything the code shared with it had to outlive both and be made before either. With one `configure`
+that makes the instance's parts and gives the code, and the code driven only at T5, the instance exists first:
 
-- **The run object owns the state its code shares**: a `Mailbox<T>` (sendspin's seqlock slot, moved into core as a
-  plain class), counters, a lookup table. The code holds references into it; the run object is held by pointer, so its
-  address never moves.
-- **Teardown already frees the code before the run object** (I5 step 5, as built: "the code first ... it may hold
+- **The instance owns the state its code shares**: a `Mailbox<T>` (sendspin's seqlock slot, moved into core as a plain
+  class), counters, a lookup table. The code holds references into it; the instance is held by pointer, so its address
+  never moves. A loop's state may own such a member too, when its loop is the one that reads it.
+- **Teardown already frees the code before the instance** (I5 step 5, as built: "the code first ... it may hold
   references into the run object", section 13, "Slice 1 as built"), so no change is needed there.
-- **node-primitives.md's `keep<T>` and `kept<T>` go** (its 6.2, gate G2 superseded): a kept value was shared memory made
-  before the run object; now it is the run object's member.
-- **A mailbox works either way** (R13): from the code to the run object (a meter, a position) or back (a value the
-  run object computes for the code). It carries values, never audio: audio crosses through companions (I12, 9.6).
-  Status fields written by the code (`rt` writer, slice 5) are the framework's own mailboxes and need no member.
+- **node-primitives.md's `keep<T>` and `kept<T>` go** (its 3.1, gate G2 superseded): a kept value was shared memory made
+  before the run object; now it is a member.
+- **A mailbox works either way** (R13): from the code to the instance or a loop's state (a meter, a position) or back
+  (a value computed for the code). It carries values, never audio: audio crosses through companions (I12, 9.6). Status
+  fields written by the code (`rt` writer, slice 5) are the framework's own mailboxes and need no member.
 - **A wake** (an eventfd) is not plain memory, so `ear_core` cannot make one. Types do not ask for wakes yet: with
   companions sendspin needs none of its own (its bell becomes the source companion's played wake, 9.6), and
-  node-primitives.md's G23 defers type wakes to the first type that needs one; that page's 6.3 keeps their design.
-- **A sink's consumer is never late** (revision 2's late `attach` and `attached(skipped)` go, gate G4 superseded): it
-  is a member of the run object, named in `Built` (6.10), and a sink is armed in the same data-loop invoke that first
-  drives the run's code (T4) and disarmed in the one that stops it (I5 step 1), so it delivers exactly the cycles the
-  run's code drove: no frame before its consumer exists, none after the code stopped.
+  node-primitives.md 6.3 keeps their design for the first type that needs one (its G23, decided).
+- **A sink's consumer is never late** (revision 2's late `attach` goes, gate G4 superseded): it is a member of a loop's
+  state, or given whole, named in `configure` (`consumedBy`, 6.10), and a sink is armed in the same data-loop invoke that drives the
+  code (T5) and disarmed in the one that silences it (T6, I5 step 1), so it delivers exactly the cycles the code drove:
+  no frame before its consumer exists, none after the code stopped.
 
-### 6.6 Reconfigure in place: the node decides, the framework supports
+### 6.6 Changing settings in place: the node decides, the framework supports
 
 The owner's rule (R17): the node controls whether a setting can change in place; the framework supports it; a change
 of the input and output shape may not be transparent.
 
-**What a type declares.** Every setting row is restart-only by default. A row the type can take while it runs is
+**What a type declares.** Every setting row is restart-only by default. A row the type can take while the node runs is
 marked in its table:
 
 ```cpp
@@ -474,69 +560,71 @@ them (`types.get`, 8.7), and the editor can say beside a field whether changing 
 | Outcome | When | What the node does | Its state |
 |---|---|---|---|
 | `unchanged` | the same settings (today's rule, `desired_graph.cpp:158`) | nothing | as it was |
-| `retune` | every changed key is `.live` | the parameter slots move; no hook (control-plane.md 7.4) | `running` throughout |
-| `reconfigure` | every changed key is `.live` or `.inPlace()`, at least one `.inPlace()`, and the ports are unchanged | the `reconfigure` hook | `reconfiguring`, then `running` |
-| `restart` | any changed key is restart-only, ports unchanged | the run torn down, a new one set up | `restarting`, then as T9 |
-| `reshape` | the same type, the ports differ | 6.7; in place (`inPlace: true`) when every changed key is `.inPlace()` or `.live`, else a restart | `reconfiguring` when in place, else `restarting` |
-| `replace` | another type under the same name | removed and added, as today | `stopping`, then a new node's `configured` |
+| `retune` | every changed key is `.live` | the parameter slots move; no hook (control-plane.md 7.4) | as it was (`running` throughout) |
+| `reconfigure` | every changed key is `.live` or `.inPlace()`, at least one `.inPlace()`, and the ports are unchanged | `configure(cx, &old, new)` | `reconfiguring`, then back to `running` or `stopped` |
+| `restart` | any changed key is restart-only, ports unchanged | stopped if running, its configuration torn down, configured from empty, started again if wanted | `stopping` (cause `restarting`), `configuring`, then as before |
+| `reshape` | the same type, the ports differ | 6.7; in place (`inPlace: true`) when every changed key is `.inPlace()` or `.live`, else a restart | `reconfiguring` when in place, else as `restart` |
+| `replace` | another type under the same name | removed and added, as today | `stopping`, `removed`, then a new node's `added` |
 
 The outcome is part of the committed edit: `node.updated` and the edit's reply carry it as `applied`, and a reshape
 also `inPlace` (control-plane.md 4.9 is the wire's home), and the `node` record's `msg` names it. So a client knows
-before the node acts whether the run will restart. A node not yet `running` treats `reconfigure` as `restart` (6.3).
+before the node acts whether it will restart. A node that has not yet reached `running` or `stopped` takes any change as a
+restart of its configuration (6.3).
 
-**The hook's contract** (6.10 declares `ReconfigureOf<spec, Run>` and `Reconfigured` whole): the hook may hold banks,
-ask for replacements (make-before-break), swap claims, swap the code, post work to the run object on its loops, and
-return `Reconfigured::applied()`, `Reconfigured::restart(reason)`, or what `rx.whenReady(loop, work)` returned (the one
-way to finish later: `work` runs on the run's loop once every replacement is ready, with the token whose `done()` ends
-the reconfigure; node-primitives.md 6.2 is its home). It never touches the run object on the main loop: `rx.post` and
-`rx.whenReady` hand it to the type on one of its loops.
+**The hook's contract** (6.10 declares `ConfigureOf<spec>` and `Configured` whole): called with `old`, `configure` may
+hold banks, ask for replacements (make-before-break), swap claims, swap the code (`cx.use`), post work to the node's
+loops, and return `Configured::applied()`, `Configured::restart(reason)`, or what `cx.whenReady(loop, work)` returned
+(the one way to finish later: `work` runs on that loop, with the loop's state, once every replacement is ready, with the
+token whose `done()` ends the change; node-primitives.md 6.2 is its home). It never touches a loop's state on the main
+loop: `cx.post` and `cx.whenReady` hand the work to the type on that loop (D-A4, 14.3).
 
 **What the framework does, in order.**
 
-1. Calls the hook on the main loop (T5). The node is `reconfiguring`. Its run still runs the applied settings; `now` is
-   the reconfigure's target, applied at the commit point (T6).
+1. Calls `configure(cx, &old, new)` on the main loop (T9). The node is `reconfiguring`. Its configuration still applies
+   the old settings; `new` is the change's target, applied at the commit point (T10). A stopped node takes the change
+   the same way, without audio: nothing is driven, so holds and the code swap cost nothing.
 2. Holds: from the next cycle, each held bank fades to zero over 5 ms and stays at zero (the block applies it after the
    code, so the code needs no branch; levels show the silence). The data loop **acknowledges** a hold in the cycle in
    which its fade reached zero (an atomic flag the block sets, and a signal posted to the main loop); every step that
    would break a held path waits for that acknowledgement. "Null audio frames for a few seconds" (R17) is a hold.
 3. New acquisitions are readied beside the old ones, in readiness order (6.4): claims first (a refusal ends the
-   reconfigure, T7), then files, then companions. Each old resource being replaced is marked `retiring` at once: its
-   loss is a diagnostic (`ear.retiring-lost`), never a failure of the node (T10 is for kept resources). A replacement
+   change, T11), then files, then companions. Each old resource being replaced is marked `retiring` at once: its
+   loss is a diagnostic (`ear.retiring-lost`), never a failure of the node (T14 is for kept resources). A replacement
    companion is linked to the same inside bank as the one it replaces; two sources into one inside input mix for a
    moment, which a hold covers.
-4. **The commit point** (T6), when the hook's work is done (`applied`, or its continuation's `done`) and every new
-   resource is ready: in one data-loop invoke, the new code and its layout are installed (6.7) and replaced sinks are
+4. **The commit point** (T10), when the hook's work is done (`applied`, or its continuation's `done`) and every new
+   resource is ready: in one data-loop invoke (if the node is driving), the new code and its layout are installed (6.7) and replaced sinks are
    disarmed while their replacements are armed, so no chunk is lost or doubled at the swap; its latency plan is carried;
    the old code released; then the retiring resources are released by I5's order, for those resources only (companions
    destroyed, sinks drained to their consumers and finished, unclaimed claims released last); then holds fade back in
-   over 5 ms; the node is `running`, and its applied settings are `now`.
+   over 5 ms; the node is back in `running` or `stopped`, and its applied settings are `new`.
 5. **Deadline**: 10 s from step 1 by default; a type may declare up to 60 s in its spec (`.lifecycle =
    Lifecycle{.reconfigureDeadline = 30s}`, 6.10; node-primitives.md 6.13 places the member). Past it, or on a
-   replacement refused or lost, or on the token's `fail(detail)`: T7, a restart with the new settings. A restart that
+   replacement refused or lost, or on the token's `fail(detail)`: T11, a restart with the new settings. A restart that
    then fails is a failed start like any other (`failed`, then recovery). A failure never rolls back to the old
-   settings: the desired graph committed the new ones, and `ear.conf` holds them (gate B4).
-6. **One reconfigure at a time, never stuck behind one**: a newer change before the commit point supersedes it (T15,
-   6.3); after the commit point it waits; `restart` ends it at once (gate B6).
+   settings: the desired graph committed the new ones, and `ear.conf` holds them (D-B4, 14.3).
+6. **One reconfigure at a time, never stuck behind one**: a newer change before the commit point supersedes it (T18,
+   6.3); after the commit point it waits; `restart` ends it at once (D-B6, 14.3).
 7. **Two nodes swapping ports in one edit** (`a` from 8928 to 8929, `b` the other way) cannot each hold both: each
-   new claim is held by the other's running run, so it is refused, and both fall back to restarts. Each restart's claim
-   then finds the other's old run **going** (it is between I5 steps 1 and 5) and waits for it (I8), whichever teardown
+   new claim is held by the other node's current configuration, so it is refused, and both fall back to restarts. Each
+   restart's claim then finds the other's old configuration **going** (it is between I5 steps 1 and 5) and waits for it (I8), whichever teardown
    finishes first. Both come back on their new ports, after a restart each.
 
 **Break before make**, for a thing that cannot be held twice (one ALSA device opened twice; an RTP receiver on a port
-its run already binds, node-primitives.md 6.9 and G22): the old one is released before the new is made. The framework
+its node already binds, node-primitives.md 6.9 and G22): the old one is released before the new is made. The framework
 first holds every public output bank the inside bank feeds through the pass-through (or, for a type's own code, every
 public output bank), waits for the hold's acknowledgement, and only then destroys the old resource; so a break-first
 replacement fades to zero, stays silent, and fades back in, whether or not the type held anything. The type asks with
 `Order::breakFirst` where only it can know; the same-port receiver is the framework's own case and needs no call.
 
-**Restart-only by default, and why.** A run's code and run object were built from the old settings; only the type knows
+**Restart-only by default, and why.** A node's code, instance and loop states were made from the old settings; only the type knows
 which of its members a key reaches. So nothing is in place unless the type says so, and the hook may still answer
 `restart` for a value it cannot take.
 
-**Refusing a transition.** The hook cannot refuse: by the time it runs the change is committed. A type could judge a
+**Refusing a transition.** `configure` cannot refuse: by the time it is called the change is committed. A type could judge a
 transition at plan time (a pure `static bool canReconfigure(was, now)`), refusing the edit; this page does not give it
 one, because restart is always possible, and a refusal would make a valid `ear.conf` unreachable from a running graph
-against "hand edits win" (gate B2).
+against "hand edits win" (D-B2, 14.3).
 
 **The built-in types** (estimates; each [U] on its library until its slice's tests run it):
 
@@ -545,8 +633,8 @@ against "hand edits win" (gate B2).
 | `white` | — | no settings | — |
 | `file` | — | — | `path`: a new file is a new recording; a gapless switch (open the new file make-before-break, switch the consumer at a chunk) is possible later |
 | `card` | — | — | `card`: the same device cannot be opened twice, so break-first only, which is a restart in all but name; `playback`, `capture`: a reshape (6.7) |
-| `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` | `hold(stream)`; `rtpReceiver(fromRtp, new)`: a new port make-before-break (claims the new UDP port, releases the old at the end); the same port break-first, by the framework (above); the receiver kind declares the new latency | `channels`: a reshape |
-| `sendspin` | `name`, `port`, `server` (pending node-primitives.md G19) | node-primitives.md 4.2 is the home. sendspin-cpp fixes its configuration when a client is made (`client.h:333-335` [V]), so a name or port change makes a new client inside the run: the connection drops, the stream ends (its source fades out by itself, 9.6) and Music Assistant reconnects; a `server` change is a redial of the same client, which also drops the stream. In place keeps the run, its identity without re-reading the key file, its loops, companions and status; it does not keep the audio | — |
+| `rtp` | `address`, `port`, `format`, `rate`, `latencyMs` | `cx.hold(stream)`; `cx.rtpReceiver(fromRtp, new)`: a new port make-before-break (claims the new UDP port, releases the old at the end); the same port break-first, by the framework (above); the receiver kind declares the new latency | `channels`: a reshape |
+| `sendspin` | `name`, `port`, `server` (node-primitives.md G19, decided) | node-primitives.md 4.2 is the home. sendspin-cpp fixes its configuration when a client is made (`client.h:333-335` [V]), so a name or port change makes a new client inside the node's worker: the connection drops, the stream ends (its source fades out by itself, 9.6) and Music Assistant reconnects; a `server` change is a redial of the same client, which also drops the stream. In place keeps the node's instance, its identity without re-reading the key file, its loops, companions and status; it does not keep the audio | — |
 | `gain` (slice 6) | `gainDb` (live) | a retune: no hook | `channels`: a reshape, which `gain` may take in place (6.7) |
 
 **Live parameters are the cheapest case.** A change only of `.live` rows is a `retune`: no hook, no state change, the
@@ -571,16 +659,16 @@ counts are made by `ports(checked)` at parse; a change of them is a **reshape**.
   refused `unknown-port` as today (written to control-plane.md X2's recommendation; its 4.9 is the home). By the time a
   reshape commits, no wanted route names a port that vanishes. Wanted routes may name ports that appear; they link
   once the ports are live.
-- **What the framework does, by default** (T8, T9): a restart with the block reshaped between the old run's teardown
-  and the new run's setup. The block is kept (I1). Ports that vanish are removed from it (no wanted route names them;
+- **What the framework does, by default** (T6, T12): a restart with the block reshaped between the old configuration's
+  teardown and the new one's `configure`. The block is kept (I1). Ports that vanish are removed from it (no wanted route names them;
   a route the same plan removed was unlinked first, since routes are removed before nodes change,
   `desired_graph.cpp:192-199` [V]); ports that appear are added, silent, and registered for levels. Surviving ports keep
   their links throughout and carry zeros while the node restarts. Inside banks are resized with the rest, and their
-  companions are made afresh by the new run's `setup`.
+  companions are made afresh by the new `configure`.
 - **In place, when the type takes it.** A reshape is in place when every changed key is `.inPlace()` or `.live` (what
   the plan can check: it compares the ports `ports()` makes, and cannot see which rows `ports()` read; `.shapesPorts()`
   is the schema's promise, 7.1). It is then a reconfigure: the framework adds the new ports to the engine first, calls
-  the hook, which must `swap` the code (its `Io` layout changed: a hook that does not is a `std::logic_error`, caught
+  `configure(cx, &old, new)`, which must swap the code (`cx.use`) (its `Io` layout changed: a hook that does not is a `std::logic_error`, caught
   by the harness), and removes the vanished ports after the swap's barrier. `gain` going from 2 to 3 channels keeps
   channels 1 and 2 playing. Companions on resized inside banks are replaced make-before-break.
 - **Two layouts while a reshape is in flight.** The block's ports are two flat lists by direction, public then inside
@@ -589,25 +677,25 @@ counts are made by `ports(checked)` at parse; a change of them is a **reshape**.
   are added to PipeWire at once, but the data loop still hands the old code the spans of its own layout, and fills the
   new ports' outputs with zeros and ignores their inputs. The swap's one invoke installs the new code and the new
   layout together, between two cycles; vanished ports are removed from PipeWire only after it. A restart's reshape
-  (between two runs) has no old code running and needs no second layout.
+  (between two configurations) has no old code running and needs no second layout.
 - **What the operator sees.** `node.updated {name, settings, ports, applied: "reshape", inPlace}` (the wire's `node.updated`
   carries only `name` and `settings` today, `test/protocol/edits.json:243-249` [V]; `ports` is added, under
-  control-plane.md's protocol 1); `node <n> restarting: ports changed` then `running` on standard output; routes to
+  control-plane.md's protocol 1); `node <n> stopping: restarting (ports changed)` then `running` on standard output; routes to
   surviving ports never go `pending`; the editor redraws the handles in place and keeps the node's position.
 - **The mechanism** is `PortBlock::reshape(const Ports& next)` on `pw_filter_add_port` and `pw_filter_remove_port`
   on a connected realtime filter [U: that PipeWire 1.4.2 adds and removes ports on a connected `PW_FILTER_FLAG_RT_PROCESS`
   filter without dropping a cycle for other blocks, and that removing a port destroys its links; slice 3d's spike checks
   both, with a type of two input banks and inside banks, so that a port added mid-list moves later banks' indices]. The
   block's port arrays for `process` are rebuilt on the data loop at the barrier. **Fallback**, if the spike
-  fails: a reshape is a replace, as today, and only the UX claim (surviving links stay) is lost (gate B5).
+  fails: a reshape is a replace, as today, and only the UX claim (surviving links stay) is lost (D-B5, 14.3).
 
 ### 6.8 Isolation: what is per node, and what is global
 
 The owner: "it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" (R16).
 
-**Per node** (I10): a node's state, its run, its hooks, its resources and companions, its claims' waits, its recovery
-timer, its close deadline and its leak. One node's `setting-up`, `reconfiguring`, `restarting`, `failed`, `stopping` or
-leaked run changes only:
+**Per node** (I10): a node's state, its configuration, its hooks, its resources and companions, its claims' waits, its recovery
+timer, its close deadline and its leak. One node's `configuring`, `reconfiguring`, `stopping`, `stopped`, `failed` or
+leaked configuration changes only:
 
 - its own block's code (driven, swapped or silenced, each with a barrier on its own block);
 - the audio its peers read from it: zeros on the links from a silent node, or from a held bank;
@@ -628,204 +716,203 @@ leaked run changes only:
 
 ### 6.9 Invariants
 
-Each the framework's to keep, and a test's to prove. Revision 5 changes I1, I5, I7 and I9, and adds I10 to I13.
+Each the framework's to keep, and a test's to prove. Revision 6 restates every invariant without a run, and adds I14 and
+I15.
 
-- **I1. One block, for the node's life.** Settings changes restart or reconfigure the run behind it; a change of ports
-  reshapes it (6.7); only a change of type replaces the node. A lost block is final (`node_lifecycle.hpp:11`): recovery
-  never remakes it.
-- **I2. Health is the framework's.** A type reports facts (a resource lost, `handle.lost(detail)`); it never sets
-  `NodeState`. Status never counts as health. Every fact crosses to the main loop before it acts, so no thread ever
-  tears down the run it runs in (as `Channel::lost` does today, `node_host.cpp:181-185`).
-- **I3. Ready is the conjunction, and never-ready is a fact.** The node is `running` when the block is ready, every
-  resource and companion of the run is ready, `build` returned and `start` returned. Each kind that becomes ready later
-  has a readiness deadline, and missing it is a loss (section 7.3); "never ready, never lost" cannot last. A reconfigure
-  has its own deadline (6.6).
+- **I1. One block, for the node's life.** Settings changes reconfigure the node in place or restart its configuration
+  behind the block; a change of ports reshapes it (6.7); only a change of type replaces the node. A lost block is final
+  (`node_lifecycle.hpp:11`): recovery never remakes it.
+- **I2. Health is the framework's.** A type reports facts (a resource lost, `lost(detail)` on its handle); it never sets
+  the node state. Status never counts as health. Every fact crosses to the main loop before it acts, so no thread ever
+  tears down the configuration it runs in (as `Channel::lost` does today, `node_host.cpp:181-185`).
+- **I3. Ready is the conjunction, and never-ready is a fact.** The node is `configured` when every resource and
+  companion its `configure` asked for is ready, and `running` when, besides, the block is ready, the code drives it and
+  `start()` returned. Each kind that becomes ready later has a readiness deadline, and missing it is a loss (section
+  7.3); "never ready, never lost" cannot last. An in-place change has its own deadline (6.6).
 - **I4. Nothing the realtime thread can reach is freed while it can reach it.** Every teardown starts with a barrier on
-  the block's data loop: `drive(nullptr)` for a restart or a failure, the block's destruction for a removal or stop. A
-  code swap is a barrier too, and a ring companion's destruction is the barrier for its own realtime side. Barriers
-  are asynchronous: an invoke posted without waiting, whose completion is posted back to the main loop, where the next
-  step continues (today `drive` is a blocking invoke, `port_blocks.cpp:154-161` [V]; slice 3a changes it to
-  `drive(code, done)`). The block and its ring companions share one data loop (one driver, 9.6), so one invoke
-  changes the code and every sink's armed flag together: sinks are armed in the invoke that first drives the run's
-  code (T4), re-armed in a swap's (T6), and disarmed in the one that silences or destroys the block (I5 step 1). A
-  planned barrier is preceded by the framework's fade and waits for its acknowledgement (6.2, 6.6).
-- **I5. A resource outlives every thread that can touch it.** Teardown is by dependency, not by reverse acquisition, and
-  every step that waits on another thread is asynchronous. The main loop never joins a thread:
-  1. the fade, then the barrier (I4), which also disarms every sink, so no sink takes the silent block's zeros; then
-     `release`; holds cleared; every source companion's writer closed, so a writer waiting for room wakes with
-     "closed"; the run's loops closed to outside work (node-primitives.md 6.4);
+  the block's data loop: `drive(nullptr)` for a stop, a restart or a failure, the block's destruction for a removal. A
+  code swap is a barrier too, and a ring companion's destruction is the barrier for its own realtime side. Barriers are
+  asynchronous: an invoke posted without waiting, whose completion is posted back to the main loop, where the next step
+  continues (today `drive` is a blocking invoke, `port_blocks.cpp:154-161` [V]; slice 3a changes it to `drive(code,
+  done)`). The block and its ring companions share one data loop (one driver, 9.6), so one invoke changes the code and
+  every sink's armed flag together: sinks are armed in the invoke that drives the code (T5, T8), re-armed in a swap's
+  (T10), and disarmed in the one that silences or destroys the block (T6, I5 step 1). A planned barrier is preceded by
+  the framework's fade and waits for its acknowledgement (6.2, 6.6).
+- **I5. A resource outlives every thread that can touch it.** Tearing a configuration down (a restart, a failure, a
+  removal) is by dependency, not by reverse acquisition, and every step that waits on another thread is asynchronous.
+  The main loop never joins a thread:
+  1. `stop()`, if the node was running; the fade, then the barrier (I4), which also disarms every sink, so no sink takes
+     the silent block's zeros; then `release`; holds cleared; every source companion's writer closed, so a writer
+     waiting for room wakes with "closed"; the node's loops closed to outside work (node-primitives.md 6.4);
   2. companions destroyed, engine and ring alike (they touch only the engine and their rings);
   3. sinks drained: each hands what its ring holds to its consumer and calls `finish` on its own thread, then reports
-     (today's handoff close, `handoffs.cpp:44-91`); a consumer may still use the run object, which is alive;
-  4. the run closes: 4a, the run object's `close` (its goodbye may run on its loops; it stops its library's threads),
-     then `closed` from any thread; 4b, the framework closes the run's loops (node-primitives.md 6.10);
-  5. on the main loop: the code, then the run object, then the companions' rings, wakes, loops, stores, recordings,
-     then claims are released, last; then the config.
+     (today's handoff close, `handoffs.cpp:44-91`); a consumer may still use its loop's state, which is alive;
+  4. the node's loops close: each runs the work already posted (`stop()`'s goodbye among it), then destroys its state
+     on its own thread, where a library's threads are stopped and joined (node-primitives.md 6.10);
+  5. on the main loop: the code, then the instance, then the companions' rings, wakes, loops, stores, recordings, then
+     claims are released, last.
 
-  A reconfigure releases what it replaced by the same steps, for those resources only, after its code swap.
-- **I5a. Close has a deadline.** If steps 3 and 4 have not completed within a bound (default 10 s), the framework stops
-  waiting: the run is leaked (never freed), an `ear.close-overdue` diagnostic names the node, its port claims are
-  abandoned (probed afresh before reuse), and its store and recording claims stay. A leaked run keeps listening: its late
-  close releases its claims, says `ear.close-late`, and starts every node its claims refused (R15; node-primitives.md
-  6.9 and 6.10 are the home). At stop, ear proceeds past the bound, so the last write of `ear.conf` happens before
-  Kubernetes' grace period ends.
-- **I6. Nothing from an old run lands on a new one.** Status, events and facts are written through a per-run handle
-  that carries the run's generation; the main loop drops anything from an older generation, and drops facts once step 1
-  began. A reconfigure keeps the generation (the run goes on), so what the run says during it lands. The handle is
-  shared-owned so a late writer never touches freed memory (as `Channel` is today, `node_host.cpp:173-226`).
-- **I7. One run at a time, one change at a time.** A restart or recovery completes I5 before `setup` is called again,
-  so a node never waits on its own old run. A node has at most one reconfigure in flight; a newer change supersedes it
-  before its commit point and waits after it (6.3).
-- **I8. A claim has one holder.** As revision 4, with R15. A claim held by a **going** run (any run between I5's step
-  1 and step 5: a restart's, a failure's, a removal's or a rename's old run, of any node) is not given to a newer
-  claimant: the claimant waits (a readiness with its own deadline, I3) until that run's step 5 released it. A claim held
-  by a run that is not going (a running node, or one setting up, built or reconfiguring) refuses. A store or recording
-  claim held by a leaked run is refused with a detail saying the node starts when that run closes, and the late close
-  starts it; a leaked run's port is abandoned and probed afresh (I5a). A reconfigure's new
-  claim is judged like any other and the old one is released only at the reconfigure's end, so a node moving from port
-  8928 to 8929 holds both for a moment (node-primitives.md 6.9 is the home of the rules and texts).
-- **I9. Names are the node's.** Every engine object a run makes is named `<node>.<suffix>`: engine companions by kind
+  A stop is step 1's first half only (`stop()`, the fade, the barrier, sinks disarmed and drained): the configuration
+  stays. An in-place change releases what it replaced by the same steps, for those resources only, after its code swap.
+- **I5a. Teardown has a deadline.** If steps 3 and 4 have not completed within a bound (default 10 s), the framework
+  stops waiting: the old configuration is leaked (never freed), an `ear.close-overdue` diagnostic names the node, its
+  port claims are abandoned (probed afresh before reuse), and its store and recording claims stay. A leaked
+  configuration keeps listening: when it finally closes it releases its claims, says `ear.close-late`, and starts every
+  node its claims refused (R15; node-primitives.md 6.9 and 6.10 are the home). At stop, ear proceeds past the bound, so
+  the last write of `ear.conf` happens before Kubernetes' grace period ends.
+- **I6. Nothing from a node's earlier configuration lands on its current one.** Status, events and facts are written
+  through the node's handle, which carries the configuration's generation, an internal counter (4); the main loop drops
+  anything from an older generation, and drops facts once step 1 began. An in-place change keeps the generation, so
+  what the node says during it lands. The handle is shared-owned so a late writer never touches freed memory (as
+  `Channel` is today, `node_host.cpp:173-226`). No type author or operator ever sees the generation (R20).
+- **I7. One configuration at a time, one change at a time.** A restart or recovery completes I5 before `configure` is
+  called again from empty, so a node never waits on its own old configuration. A node has at most one in-place change
+  in flight; a newer change supersedes it before its commit point and waits after it (6.3).
+- **I8. A claim has one holder.** As revision 4, with R15. A claim held by a **going** configuration (any between I5's
+  step 1 and step 5: a restart's, a failure's, a removal's or a rename's, of any node) is not given to a newer claimant:
+  the claimant waits (a readiness with its own deadline, I3) until step 5 released it. A claim held by a configuration
+  that is not going (a node running, stopped, configuring or reconfiguring) refuses. A store or recording claim held by
+  a leaked configuration is refused with a detail saying the node starts when that one closes, and the late close starts
+  it; a leaked configuration's port is abandoned and probed afresh (I5a). A new claim made in place is judged like any
+  other, and the old one is released only at the change's commit point, so a node moving from port 8928 to 8929 holds
+  both for a moment (node-primitives.md 6.9 is the home of the rules and texts). A stopped node keeps its claims (6.2;
+  gate F2).
+- **I9. Names are the node's.** Every engine object a node makes is named `<node>.<suffix>`: engine companions by kind
   (`playback`, `capture`, `rtp`), ring companions by their inside bank (9.6); every stored file is
-  `<type>-<node>.<suffix>`. One run names each once, except a companion and its make-before-break replacement, which
-  share a name for a moment (ear joins companions by global id, never by name, `outside_nodes.hpp:38-41` [V]).
-- **I10. One node never stops the graph, the clock or another node** (R16; 6.8): every barrier is on the node's own
-  block or companion, every wait is the node's own, and a failure tears down only its run. Its routes stay wanted, and
-  peers read zeros from it.
-- **I11. Hooks never block the main loop.** `setup`, `build`, `start` and `reconfigure` acquire, construct and post;
-  I/O, threads that wait and sockets are the framework's (stores, loops, companions) or the run object's own threads.
-  A hook past 20 ms is `ear.hook-slow`.
+  `<type>-<node>.<suffix>`. One configuration names each once, except a companion and its make-before-break replacement,
+  which share a name for a moment (ear joins companions by global id, never by name, `outside_nodes.hpp:38-41` [V]).
+- **I10. One node never stops the graph, the clock or another node** (R16, R20; 6.8): every barrier is on the node's own
+  block or companion, every wait is the node's own, and a failure tears down only its configuration. Its wires stay
+  wanted, and peers read zeros from it.
+- **I11. Hooks never block the main loop.** `configure`, `start()` and `stop()` acquire, construct and post; I/O,
+  threads that wait and sockets are the framework's (stores, loops, companions) or the loop states' own. A hook past
+  20 ms is `ear.hook-slow`.
 - **I12. Audio code only reads inputs and writes outputs** (R14). A type's realtime code reads `io[input]`, writes every
   sample of `io[output]`, reads its parameters and writes `rt` status (slice 5). Audio to or from a non-realtime thread
   crosses only through a companion (9.6); a mailbox carries values, never audio.
-- **I13. A run's state is its run object's** (R13). What the code and the run object share is a member of the run
-  object, made in `build` before the code, and freed after it. So is every sink's consumer (6.10).
+- **I13. A node's state is its instance's** (R13). What the code shares is a member of the instance (or of the loop state
+  that reads it), made in `configure` before the code drives, and freed after the code. So is every sink's consumer
+  (6.10).
+- **I14. Hooks touch no other thread's data** (D-A4). A hook reaches a loop's state only by `post` or `whenReady`, typed
+  by the loop's handle; once given, a loop's state has no reference held by the instance. Debug builds assert the
+  thread in every loop state's posted work.
+- **I15. Wires do not depend on node state.** A wire is added and removed only by an operation on it (or by its node's
+  removal); no node state unlinks it, and a wire to a node that is configuring, stopped or failed carries silence.
 
-### 6.10 The hook facades, whole
+### 6.10 The contexts, whole
 
 This is the one home of what each hook is handed and returns (the type author's API for the lifecycle). Members whose
-rules belong to a module page cite it; that page states the rules and does not redeclare the class. Every facade is a
-thin, spec-typed wrapper over an erased context in core (today's `StartContext` pattern, `node_type.hpp:181-223` [V]).
-All are main-loop only and valid only inside their own hook (a call outside it, or after it returned, is a
-`std::logic_error` naming the node and the call, as `StartContext` throws today, `node_host.cpp:126-127` [V]); a bank,
-store or loop handle the spec lacks, or of the wrong direction or reach, does not compile.
+rules belong to a module page cite it; that page states the rules and does not redeclare the class. Both contexts are
+thin, spec-typed wrappers over an erased context in core (today's `StartContext` pattern, `node_type.hpp:184-225` [V]),
+main-loop only. `ConfigureOf` is valid only inside `configure` (a call outside it, or after it returned, is a
+`std::logic_error` naming the node and the call, as `StartContext` throws today, `node_host.cpp:126-127` [V]);
+`NodeOf` is valid for the instance's life. A bank, store or loop handle the spec lacks, or of the wrong direction or
+reach, does not compile.
 
 ```cpp
 // ear/core/lifecycle.hpp (slice 3a; members marked 3b, 3c, 3d arrive with that slice)
-using SetupResult = std::expected<void, FailureReason>;
 
-template <const auto& Spec> class SetupOf {
+/// What the instance keeps: the node's own, for the instance's life, main loop only.
+template <const auto& Spec> class NodeOf {
 public:
-	AudioFormat format() const;                    // what prepare() will get
+	AudioFormat format() const;
 	const NodeName& node() const;
-	// Companions (9.6), each on an inside bank of Spec of the right direction (static check):
-	template <class Bank> void soundCard(Bank, SoundCardShape);         // 3b; direction from the bank
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverRequest);   // 3b; claims udp:<port>
-	template <class Bank> void source(Bank, SourceShape);               // 3b; an inside input bank
-	template <class Bank> void sink(Bank, SinkShape);                   // 3a (interim, in the block; 13.1), 3b
+	NodeHandle& handle();                                              // 3c (node-primitives.md 5); 3a: today's Channel
+	/// Work on one of the node's loops, with that loop's state; the one way a hook reaches a node's own thread.
+	template <class Loop> void post(Loop, std::move_only_function<void(typename Loop::State&)> work);   // 3c
+};
+
+class ConfigureDone;   // node-primitives.md 6.2: move-only; done() or fail(detail), once, from any thread
+
+/// What configure answers. Only applied() and restart() are public; a "later" answer is made only by whenReady, so a
+/// token and a later answer cannot disagree. restart() on creation is a std::logic_error.
+class Configured {
+public:
+	static Configured applied();                      // the framework still waits for every resource asked for
+	static Configured restart(std::string reason);    // the type cannot take this change in place after all (T11)
+};
+
+template <const auto& Spec> class ConfigureOf {
+public:
+	AudioFormat format() const;
+	const NodeName& node() const;
+	// The code (7.2): its own against Io<Spec>, or passThrough. On creation, prepared at T3 and driven at T5; in place,
+	// installed at the commit point with its layout (6.7). A configure on creation that gives none is a logic_error.
+	void use(NodeCode code);
+	// Loops (node-primitives.md 6.4): give a declared loop its state, on creation; later, post to it.
+	template <class Loop> void loop(Loop, std::unique_ptr<typename Loop::State>);   // 3c
+	template <class Loop> void post(Loop, std::move_only_function<void(typename Loop::State&)> work);
+	template <class Loop> ear::Loop& executor(Loop);   // 3c: the loop itself, for a state's timers and watches (armed
+	                                                   // from configure: staged until configured, node-primitives.md 6.4)
+	// Stores (node-primitives.md 6.8): the handle at once; read and replace on the node's loops once configured.
+	template <class Store> StoreHandle& store(Store);                              // 3c
+	// Companions (9.6), each on an inside bank of Spec of the right direction (static check). In place, each replaces
+	// what the node holds for the same bank, make before break (6.6, step 3).
+	template <class Bank> void soundCard(Bank, SoundCardShape, Order = Order::makeFirst);   // 3b
+	template <class Bank> void rtpReceiver(Bank, RtpReceiverRequest);   // 3b; claims udp:<port>; same port: break-first
+	template <class Bank> SourceWriter& source(Bank, SourceShape);      // 3b; node-primitives.md 6.5 is the writer's home
+	template <class Bank> SinkRequest& sink(Bank, SinkShape);           // 3a (interim, in the block; 13.1), 3b
 	// Primitives (node-primitives.md 6.9 and 6.11 are the rules' home):
-	void claim(claim::TcpListen);   void claim(claim::Udp);             // 3c
-	void recording(RecordingRequest);                                   // 3c: claims recording:<path>
-	// The type's own code's latency (9.4): static, declared once here.
+	void claim(claim::TcpListen);   void unclaim(claim::TcpListen);    // 3c; and claim::Udp
+	int recording(RecordingRequest);                                   // 3c: claims recording:<path>; its descriptor,
+	                                                                   // usable on the node's loops once configured
+	// The type's own code's latency (9.4): static, declared here.
 	template <class From, class To> void declareLatency(From, To, Latency);
-};
-
-template <const auto& Spec> class BuildOf {
-public:
-	AudioFormat format() const;
-	const NodeName& node() const;
-	RunHandle& handle();                                     // 3c (node-primitives.md 5); 3a: today's InsidesEvents
-	template <class Store> Store& store(Store);              // 3c: in Spec.stores, open and trusted
-	template <class Loop> Loop& loop(Loop);                  // 3c: in Spec.loops, running, arming staged until start
-	int recording(std::string_view path);                    // 3c: its descriptor; setup asked for it
-	template <class Bank> SourceWriter& source(Bank);        // 3b: node-primitives.md 6.5 is the writer's home
-	template <class Bank> SinkControl& sink(Bank);           // 3a: node-primitives.md 6.6 is the control's home
-};
-
-/// What build returns. `Run` is the behaviour's `using Run`, or `NoRun` when it declares none; build's return type is
-/// held to it at compile time, so reconfigure sees the same type. The code is a RunCode (its own code against Io<Spec>,
-/// erased once by the constructor, as StartResult's SpecCode constructor does today, node_type.hpp:290 [V]; or
-/// passThrough).
-template <class Run = NoRun> class Built {
-public:
-	Built(std::unique_ptr<Run> run, RunCode code) requires (!std::same_as<Run, NoRun>);
-	explicit Built(RunCode code) requires std::same_as<Run, NoRun>;
-	/// Names the consumer of a sink setup asked for: a member of the run object, so it lives exactly as long as it.
-	/// At build's return: a sink with no consumer, or one named twice, is a std::logic_error naming the node and bank.
-	template <class Bank, class Consumer> Built&& consume(Bank, Consumer Run::*member) &&
-		requires std::derived_from<Consumer, SinkConsumer>;
-	/// The run object itself is the consumer (node-primitives.md 4.3's RTP sender).
-	template <class Bank> Built&& consume(Bank) && requires std::derived_from<Run, SinkConsumer>;
-};
-template <class Run = NoRun> using BuildResult = std::expected<Built<Run>, FailureReason>;
-
-class ReconfigureDone;   // node-primitives.md 6.2: move-only; done() or fail(detail), once, from any thread
-
-/// What reconfigure answers. Only applied() and restart() are public; a "later" answer is made only by whenReady, so a
-/// token and a later answer cannot disagree.
-class Reconfigured {
-public:
-	static Reconfigured applied();                      // the framework still waits for every replacement asked for
-	static Reconfigured restart(std::string reason);    // the type cannot take this change after all (T7)
-};
-
-template <const auto& Spec, class Run = NoRun> class ReconfigureOf {   // 3d
-public:
-	AudioFormat format() const;
-	const NodeName& node() const;
-	RunHandle& handle();                                // the run's, unchanged
-	// Holds (6.6, step 2): from the next cycle, after a fade; released with a fade when the reconfigure ends.
+	// In place only (6.6; 3d). Holds: from the next cycle, after a fade; released with a fade at the commit point.
 	template <class... Banks> void hold(Banks...);      // routable output banks of Spec (static check)
 	void holdAll();
 	template <class... Banks> void release(Banks...);   // earlier than the end, if the node wants
-	// Replacements, make before break (6.6, step 3), each replacing what the run holds for the same bank or claim:
-	template <class Bank> void soundCard(Bank, SoundCardShape, Order = Order::makeFirst);
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverRequest);   // same port: break-first by the framework
-	template <class Bank> void source(Bank, SourceShape);
-	template <class Bank> void sink(Bank, SinkShape);                   // its consumer: on the next call
-	template <class Bank, class Consumer> void consume(Bank, Consumer Run::*member);
-	void claim(claim::TcpListen);   void unclaim(claim::TcpListen);    // and claim::Udp (node-primitives.md 6.9)
-	void recording(RecordingRequest);                                   // node-primitives.md 6.11
-	void swap(RunCode code);                            // installed at the commit point, with its layout (6.7)
-	// The run object, only on its own loops: never a bare Run& on the main loop.
-	template <class Loop> void post(Loop, std::move_only_function<void(Run&)> work)
-		requires (!std::same_as<Run, NoRun>);
-	/// node-primitives.md 6.2: once every replacement is ready, posts work(run, token) to the loop; the one later answer.
-	template <class Loop> Reconfigured whenReady(Loop, std::move_only_function<void(Run&, ReconfigureDone)> work)
-		requires (!std::same_as<Run, NoRun>);
+	/// node-primitives.md 6.2: once every replacement is ready, posts work(state, token) to the loop; the one later
+	/// answer.
+	template <class Loop>
+	Configured whenReady(Loop, std::move_only_function<void(typename Loop::State&, ConfigureDone)> work);
+};
+
+/// A sink's consumer (node-primitives.md 6.6): a member of a loop's state, or given whole; called on the sink's own
+/// thread. At
+/// configure's return a sink with no consumer, or one named twice, is a std::logic_error naming the node and bank.
+class SinkRequest {
+public:
+	template <class Loop, class Consumer>
+	void consumedBy(Loop, Consumer Loop::State::*member) requires std::derived_from<Consumer, SinkConsumer>;
+	/// A loop's state that is itself a SinkConsumer (node-primitives.md 4.3's RTP sender).
+	template <class Loop> void consumedBy(Loop) requires std::derived_from<typename Loop::State, SinkConsumer>;
+	/// Or a consumer of its own, given whole and owned by the sink (file's WavWriter: no loop needed).
+	void consumedBy(std::unique_ptr<SinkConsumer>);
+	SinkControl& control();                              // pause and resume (node-primitives.md 6.6)
 };
 
 /// The spec's lifecycle settings (3d), a TypeSpec member (node-primitives.md 6.13 places it). Refused at compile time:
-/// a deadline below 1 s or above 60 s. The type schema carries it (`reconfigureMs`), so the editor can say how long a
-/// reconfigure may take.
+/// a deadline below 1 s or above 60 s. The type schema carries it (`reconfigureMs`), so the editor can say how long an
+/// in-place change may take.
 struct Lifecycle { std::chrono::milliseconds reconfigureDeadline = std::chrono::seconds(10); };
 ```
 
-The hooks' signatures, each found by name and held to exactly this at compile time (a near miss does not compile; the
-cases are 13.2's `type_spec_bad.cpp` additions):
+The type's class, each member found by name and held to exactly this at compile time (a near miss does not compile;
+the cases are 13.2's `type_spec_bad.cpp` additions):
 
 ```cpp
 static Members<spec> ports(const CheckedOf<spec>&);                                       // required
 static std::expected<void, std::string> check(const CheckedOf<spec>&);                    // optional
-static SetupResult setup(SetupOf<spec>&, const CheckedOf<spec>&);                         // optional
-static BuildResult<Run> build(BuildOf<spec>&, const CheckedOf<spec>&);                    // required
-static Reconfigured reconfigure(ReconfigureOf<spec, Run>&, const CheckedOf<spec>& was,
-                                const CheckedOf<spec>& now);                               // optional: else restart-only
-// RunObject (7.2): virtual void start(); virtual void close(std::move_only_function<void()> closed); ~RunObject()
+explicit Type(NodeOf<spec>&);  /* or */  Type();                                          // one of the two
+Configured configure(ConfigureOf<spec>&, const CheckedOf<spec>* old, const CheckedOf<spec>& now);   // required
+void start();                                                                             // optional
+void stop();                                                                              // optional
 ```
 
-- **What `NoRun` forbids.** A behaviour without `using Run` returns `Built<>` and has no `consume`, `post` or
-  `whenReady`; a sink its `setup` asked for then has no consumer, which is the `std::logic_error` at build's return
-  above (a sink needs a run object to own its consumer), found by the type's first harness test.
-- **What the run object reaches** is what `build` gave it: the handle, stores, loops, sources' writers, sinks'
-  controls. It never sees a facade.
-- **The harness** (7.6) drives these exact signatures; a type's tests never construct a facade.
+- **What a loop handle carries.** `loop::strand<"name", State>` and `loop::dedicated<"name", State>`; the state type may
+  be left out (`loop::strand<"name">`), and the loop then has no state and its posts take none. A loop declared with a
+  state and given none in `configure` on creation is a `std::logic_error` at configure's return.
+- **What a loop's state reaches** is what `configure` gave it: the node's handle, stores, sources' writers, sinks'
+  controls, its loop (timers, fd watches). It never sees a context.
+- **The harness** (7.6) drives these exact signatures; a type's tests never construct a context.
 
 ## 7. The SPI: what a type writes
 
 ### 7.1 The type spec (declarations)
 
 ```cpp
-// rtp, in revision 5 (named handles, as slice 2 built them: section 13, "Slice 2 as built")
+// rtp, in revision 6 (named handles, as slice 2 built them: section 13, "Slice 2 as built")
 inline constexpr auto portRow = setting::required("port", setting::number(1, 65535)).inPlace();
 inline constexpr auto channelsRow = setting::required("channels", setting::number(1, 64));   // shape: a reshape
 // ... the other rows, as today; address, format, rate and latencyMs also .inPlace() (6.6)
@@ -857,7 +944,7 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Ba
   run by `parse` after the table's walk, so `card`'s "playback or capture above 0" is still `invalid-settings` and never
   reaches `ear.conf` (`card_spec.hpp`).
 - **A row's mark says how a change to it is applied** (6.6), and this list is the marks' one home: none, restart-only
-  (the default); `.inPlace()`, the `reconfigure` hook; `.live(smoothing)`, a retune of the parameter slots (8.5), which
+  (the default); `.inPlace()`, `configure(cx, &old, new)`; `.live(smoothing)`, a retune of the parameter slots (8.5), which
   implies `.inPlace()`; and `.shapesPorts()`, the schema's promise that a change to the row may change the node's ports
   (control-plane.md 5.1 builds it and the all-type tests hold it to `ports()`). The plan never reads `.shapesPorts()`:
   a change is a reshape when the ports `ports()` makes differ (6.7), in place when every changed key is `.inPlace()`
@@ -870,7 +957,7 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Ba
   parameters (control-plane.md 5.1).
 - **Stores and loops are declared by handle** (node-primitives.md 6.8 and 6.4; the owner's G14): the framework names
   the file, opens it on its I/O executor, owns the boot sweep (today `narrowKeyFiles`, `sendspin_type.cpp:137-144`), and
-  starts the loops, for every run, before `build`.
+  starts the loops, each time the node is configured from empty, before its work is released (6.4).
 - **Event and log codes are declared** (`EventTable`, `LogCodes`), each with its argument kinds, so a realtime record
   carries only a code and numbers and its text is made off the realtime thread (8.8).
 - **One code grammar.** A type's codes are kebab-case words (`pairing-failed`); the framework's are the same under
@@ -880,71 +967,70 @@ inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Ba
   type's output vocabulary, and the compile-time handles the hooks use. Misspelt handles do not compile, as a misspelt
   setting row does today (`src/core/tests/compile_fail/`).
 
-### 7.2 The behaviour (one plain class) and the run object
+### 7.2 The type's class: its instance and three hooks
 
 ```cpp
-struct Rtp {
+class Rtp {
+public:
 	static Members<spec> ports(const Checked& s) { return {stream(members(s.get<channelsRow>())), fromRtp(...)}; }
-	static SetupResult setup(SetupOf<spec>& sx, const Checked& s) {
-		sx.rtpReceiver(fromRtp, receiverFor(s, sx.format()));   // a companion; claims udp:<port>; declares latencyMs
-		return {};
-	}
-	static BuildResult<> build(BuildOf<spec>&, const Checked&) { return Built<>{passThrough({bankPair(fromRtp, stream)})}; }
-	static Reconfigured reconfigure(ReconfigureOf<spec>& rx, const Checked&, const Checked& now) {
-		rx.hold(stream);                                        // null audio until the new receiver runs
-		rx.rtpReceiver(fromRtp, receiverFor(now, rx.format())); // a new port: make before break; the same: break first
-		return Reconfigured::applied();
+	Configured configure(ConfigureOf<spec>& cx, const Checked* old, const Checked& now) {
+		if (old) cx.hold(stream);                                // in place: null audio until the new receiver runs
+		cx.rtpReceiver(fromRtp, receiverFor(now, cx.format()));  // a companion; claims udp:<port>; declares latencyMs;
+		                                                         // in place: a new port make-before-break, the same
+		                                                         // port break-first, by the framework (6.6)
+		cx.use(passThrough({bankPair(fromRtp, stream)}));        // on creation; in place, the same code again: no swap
+		return Configured::applied();
 	}
 };
 std::unique_ptr<const NodeType> makeRtpNodeType() { return makeNodeType<spec, Rtp>(); }   // the header's one function
 ```
 
-`makeNodeType<spec, Behaviour>()` is a plain function template, called from the type's one named function, which the
+`makeNodeType<spec, Type>()` is a plain function template, called from the type's one named function, which the
 generated type list calls; no macro and no static self-registration (a static library would drop it at link time). It
 keeps the compile-time check that the table is named for its folder. With folders now resources, the header's function
 takes no argument.
 
-**The hooks are section 6.4's**, one per state a type can act in: `setup` (acquire), `build` (construct the run object
-and the code, once everything is ready), the run object's `start` (once the code drives), `reconfigure` (a change while
-running), the run object's `close`. Revision 4's **two phases** (`start` acquired and returned the code, which drove the
-block at once; a recipe built the run object later) are gone: the code now drives only after `build`, so the run object
-exists first and owns what it shares with the code (6.5; R12, R13). Each hook is found by its name and held to its exact
-signature at compile time, as `check` is today (`type_spec.hpp`, `SpecNodeType::makeConfig`), so a near miss is refused
-rather than never called.
+**The hooks are section 6.4's** (R23): `configure(old, new)`, `start()` and `stop()`, members of the type's class, which
+is the node's instance. Revision 5's five hooks (`setup`, `build`, `start`, `reconfigure`, `close`) and revision 4's two
+phases (`start` acquired and returned the code, which drove the block at once; a recipe built the run object later) are
+gone: `configure` acquires and constructs (R19), the framework waits for readiness, the code drives only at T5, so the
+instance exists first and owns what it shares with the code (6.5). Each member is found by its name and held to its
+exact signature at compile time, as `check` is today (`type_spec.hpp`, `SpecNodeType::makeConfig`), so a near miss is
+refused rather than never called. `rtp` and `card` write only `configure`; `white` writes `configure` and its code.
 
-| The run's code (`Built`'s) | When |
+| The node's code (given with `cx.use`) | When |
 |---|---|
 | `passThrough(pairs)` (one or more) | audio joined to a companion: `card`, `rtp`, `file`, `sendspin` |
-| a struct with `process(Io<spec>, const GraphCycle&) noexcept`, and optional `prepare` and `release` (a concept, erased once) | a type that makes or changes audio: `white`, `gain` |
+| a struct with `process(Io<spec>, const GraphCycle&) noexcept`, and optional `prepare` and `release` (a concept, erased once into a `NodeCode`) | a type that makes or changes audio: `white`, `gain` |
 
-There is no `NodeConfig`, `StartResult` or recipe to write. The **run object** derives from `RunObject` (three virtual
-functions, each with a default: `start()`, `close(closed)`, and its destructor); the framework owns it, starts it at T4
-and closes it at I5 step 4a. It holds the threads the type's library owns and the state its code shares, and it alone
-joins its threads, off the main loop. A type with neither threads nor shared state has none (`white`, `card`, `rtp`).
+There is no `NodeConfig`, `StartResult`, `RunObject` or recipe to write, and no base class. The instance's threads, if
+any, are its loops' (6.4): the framework starts each loop when the node is configured from empty and closes it when
+that configuration is torn down; a library's own threads are a loop state's, joined when it is destroyed on its loop.
+A type with neither threads nor shared state keeps nothing (`white`, `card`, `rtp`).
 
 ### 7.3 The resources (acquisitions)
 
-`SetupOf<spec>`'s calls, on the main loop, inside `setup` only (else `std::logic_error`, as `StartContext` today); the
-same calls on `ReconfigureOf<spec>` replace what the run holds (6.6). The list is a closed `std::variant` in core on
+`ConfigureOf<spec>`'s calls, on the main loop, inside `configure` only (else `std::logic_error`, as `StartContext`
+today); the same calls in an in-place `configure` replace what the node holds (6.6). The list is a closed `std::variant` in core on
 purpose: a kind changes what the framework promises. Each kind has one adapter. Companions are resources too; 9.6 is the
 home of their contract.
 
-| Kind | Asked by | The type gets (in `build`) | Ready when (deadline) | Lost when | Replaces |
+| Kind | Asked by | The type gets (in `configure`) | Ready when (deadline) | Lost when | Replaces |
 |---|---|---|---|---|---|
-| Sound card (engine companion) | `sx.soundCard(bank, {card, direction})` | nothing to hold | its PCM runs and every link is active (deadline, slice 8) | ERROR, proxy removed, a link failed, or the follower watchdog (9.5) | `SoundCardRequest` |
-| RTP receiver (engine companion) | `sx.rtpReceiver(bank, {...})`; claims `udp:<port>` | nothing; slice 8's `receiving` field is written for it | its node runs and every link is active (deadline) | as above | `RtpReceiverRequest`, and `rtp`'s `declareLatency` |
-| Sink (ring companion) | `sx.sink(bank, {frames})`, an inside output bank | `bx.sink(bank)`, its control; its consumer named in `Built::consume(bank, &Run::member)` (6.10), called on the sink's thread with stamped chunks | its node runs, every link is active, and its consumer has begun (step 4') | its node refused or lost, a link failed | `HandoffRequest`, `RtWriter`, `HandoffConsumer` |
-| Source (ring companion) | `sx.source(bank, {frames})`, an inside input bank | `bx.source(bank)`: a writer that may wait for room (bounded; woken with "closed" at I5 step 1), with what played | as a sink | as a sink | sendspin's `Feed`, its two mailboxes and bell |
-| Paced source (ring companion, slice 9) | `sx.pacedSource(bank, pcm{format, rate, channels}, latencyFrames)` | a writer for raw PCM from a clockless source | as a sink | as a sink | 7.5's paced feed |
-| Program (future, 7.5) | `sx.program({...})` | nothing | its process runs | its process exits | — |
-| Runtime file | `sx.runtimeFile(suffix, text)` | a file the run generates (a program's configuration), beneath the config folder, removed at close | once written | — | — |
-| Loop | declared in the spec (`loop::strand`, `loop::dedicated`) | `bx.loop(handle)`: a serial executor: post, timers, fd watches, wakes | its thread runs | — | sendspin's worker and notifier, `ConnectionWatch` |
-| Store | declared in the spec | `bx.store(handle)`: read and replace-if-unchanged, on the framework's I/O executor | once opened and trusted (5 s) | a file it cannot trust | `KeyStore`, `narrowKeyFiles` |
-| Recording | `sx.recording({path})`; claims `recording:<path>` | `bx.recording(path)`: a descriptor beneath the recordings folder | once opened on the I/O executor (5 s) | — | `RecordingRequest` (opened in `start` today) |
-| Port claim | `sx.claim(claim::TcpListen{port})`, `claim::Udp{port}` | nothing | at once, or waits (I8), then probed | — | sendspin's type-level `PortClaims` |
-| mDNS advertisement (when a second type needs it) | `sx.advertise({service, port, name, txt})` | nothing | first announcement sent | — | sendspin's `Advertiser` |
+| Sound card (engine companion) | `cx.soundCard(bank, {card, direction})` | nothing to hold | its PCM runs and every link is active (deadline, slice 8) | ERROR, proxy removed, a link failed, or the follower watchdog (9.5) | `SoundCardRequest` |
+| RTP receiver (engine companion) | `cx.rtpReceiver(bank, {...})`; claims `udp:<port>` | nothing; slice 8's `receiving` field is written for it | its node runs and every link is active (deadline) | as above | `RtpReceiverRequest`, and `rtp`'s `declareLatency` |
+| Sink (ring companion) | `cx.sink(bank, {frames})`, an inside output bank | a `SinkRequest`: its control, and its consumer named with `consumedBy(loop, &State::member)` (6.10), called on the sink's thread with stamped chunks | its node runs, every link is active, and its consumer has begun (step 4') | its node refused or lost, a link failed | `HandoffRequest`, `RtWriter`, `HandoffConsumer` |
+| Source (ring companion) | `cx.source(bank, {frames})`, an inside input bank | a writer that may wait for room (bounded; woken with "closed" at I5 step 1), with what played | as a sink | as a sink | sendspin's `Feed`, its two mailboxes and bell |
+| Paced source (ring companion, slice 9) | `cx.pacedSource(bank, pcm{format, rate, channels}, latencyFrames)` | a writer for raw PCM from a clockless source | as a sink | as a sink | 7.5's paced feed |
+| Program (future, 7.5) | `cx.program({...})` | nothing | its process runs | its process exits | — |
+| Runtime file | `cx.runtimeFile(suffix, text)` | a file the node generates (a program's configuration), beneath the config folder, removed with its configuration | once written | — | — |
+| Loop | declared in the spec (`loop::strand`, `loop::dedicated`) | its state, given in `cx.loop(handle, state)`, runs there: post, timers, fd watches, wakes | its thread runs | — | sendspin's worker and notifier, `ConnectionWatch` |
+| Store | declared in the spec | `cx.store(handle)`: read and replace-if-unchanged on the node's loops, on the framework's I/O executor | once opened and trusted (5 s) | a file it cannot trust | `KeyStore`, `narrowKeyFiles` |
+| Recording | `cx.recording({path})`; claims `recording:<path>` | a descriptor, usable once configured, beneath the recordings folder | once opened on the I/O executor (5 s) | — | `RecordingRequest` (opened in `start` today) |
+| Port claim | `cx.claim(claim::TcpListen{port})`, `claim::Udp{port}` | nothing | at once, or waits (I8), then probed | — | sendspin's type-level `PortClaims` |
+| mDNS advertisement (when a second type needs it) | `cx.advertise({service, port, name, txt})` | nothing | first announcement sent | — | sendspin's `Advertiser` |
 
-- **Mailboxes are not a kind** (6.5): the run object owns them. Handoffs and feeds are not kinds either: they became the
+- **Mailboxes are not a kind** (6.5): the instance or a loop's state owns them. Handoffs and feeds are not kinds either: they became the
   sink and source companions (9.6), so the realtime side of every crossing is the framework's. **Wakes** are not a kind
   types ask for yet (node-primitives.md G23); sendspin's bell becomes its source's played wake.
 - **Readiness deadlines.** Today a port held by another program leaves an `rtp` node `starting` for good, because
@@ -959,7 +1045,7 @@ home of their contract.
   in any property ear can read [U], so it is not promised as status.
 - **The framework's I/O executor.** Store reads and writes, recordings, runtime files and `/proc` reads run on one
   framework executor of their own, never on the strand pool, so a slow disk delays no node's loop.
-- **Blocking source writes** are legal only from a dedicated loop or a thread the run object owns, never from a strand
+- **Blocking source writes** are legal only from a dedicated loop or a thread a loop's state owns, never from a strand
   (asserted in debug builds).
 - **Folders become resources**; `NodeFolders` and `make<Type>NodeType(const NodeFolders&)` go.
 - **Live properties of an engine companion** (an ALSA adapter's volume `Props`) belong to its kind's adapter, set
@@ -970,16 +1056,16 @@ home of their contract.
 | What the type writes | Runs on | May |
 |---|---|---|
 | Rows' parse functions, `check`, `ports` | any thread, pure | nothing else |
-| `setup`, `build`, `reconfigure`, the run object's `start` and `close` | the main loop | acquire; construct; post to its loops. No blocking, no I/O, no threads started in `setup` or `build` (I11) |
+| The constructor, `configure`, `start()`, `stop()` | the main loop | acquire; construct; post to its loops. No blocking, no I/O, no threads started (I11); no loop state touched but by a post (I14) |
 | `prepare`, `release` | the main loop, never with `process` | allocate |
-| `process` | the realtime thread | `io` (its banks, its parameters), `rt` status fields, `io.log` and `io.raise`, and members of its run object that are wait-free (a mailbox). No locks, allocation, retry loops on a shared value, or syscalls; clock readings come from `GraphCycle` (9.3), not `clock_gettime`; no audio to or from another thread but through a companion (I12) |
-| Loop handlers, action handlers | the run's loop, serially | block only on a dedicated loop |
-| The run object's own threads (its library's) | its threads | anything; the object stops them in `close` |
+| `process` | the realtime thread | `io` (its banks, its parameters), `rt` status fields, `io.log` and `io.raise`, and members of its instance or loop states that are wait-free (a mailbox). No locks, allocation, retry loops on a shared value, or syscalls; clock readings come from `GraphCycle` (9.3), not `clock_gettime`; no audio to or from another thread but through a companion (I12) |
+| Loop handlers, action handlers, posted work | the node's loop, serially, on its state | block only on a dedicated loop |
+| A loop state's own threads (its library's) | its threads | anything; the state stops and joins them when it is destroyed, on its loop (I5 step 4) |
 | A sink consumer's `consume` and `finish` | the sink's thread | block on I/O |
-| A source writer's `write` and `idle` | a dedicated loop or a thread the run object owns | wait for room, bounded |
+| A source writer's `write` and `idle` | a dedicated loop or a thread a loop's state owns | wait for room, bounded |
 
-Once `start` has returned, no type code runs on the main loop but `reconfigure` and the run object's `close` (I5 step
-4a, which only posts its goodbye and returns) (sendspin's discipline today,
+Once `start()` has returned, no type code runs on the main loop but an in-place `configure` and `stop()`, which only
+post and return (sendspin's discipline today,
 `docs/design/sendspin.md` section 6). Debug builds assert the thread at every acquire, status write, event, loop post and
 source write, as CLAP's thread-check does. Wakes are no longer rung from `process` by type code: a companion rings its
 own (9.6), and the status bell is the framework's (8.2).
@@ -994,7 +1080,7 @@ or must be polled asks for `dedicated` loops, as many as it needs: sendspin keep
 
 The owner's answer (Q7): programs first join through a pipe, not PipeWire's socket.
 
-- **`sx.program({argv, stdout → paced source})`.** ear starts the program with its audio on standard output. A pipe
+- **`cx.program({argv, stdout → paced source})`.** ear starts the program with its audio on standard output. A pipe
   has no clock: the program paces itself on its own host clock, and nothing tells it what played. So the pipe goes into
   a **paced source**, a ring companion (9.6), which converts the declared PCM (`pcm{s16le, 44100, 2}` for
   shairport-sync [U: its exact flags]) to float and resamples it to the graph frequency with a fixed ratio plus an
@@ -1004,9 +1090,9 @@ The owner's answer (Q7): programs first join through a pipe, not PipeWire's sock
   audio and counts it.
 - **Health is process-alive only** (design rule 1): ready when the process runs, lost when it exits. Silence on the
   pipe between sessions is not a loss, so recovery never kills a healthy idle process.
-- **Configuration and session state.** The run writes the program's configuration as a runtime file (7.3) (its name,
+- **Configuration and session state.** The node's `configure` writes the program's configuration as a runtime file (7.3) (its name,
   ports, the pipe backend). The program's standard error is read line by line by a framework thread into its node's
-  log (8.8) and, through a line hook, to the run's loop, so a type can turn "session started" into status.
+  log (8.8) and, through a line hook, to the node's loop, so a type can turn "session started" into status.
 - **What it costs.** With no delay feedback, AirPlay's multi-room alignment across ear and other AirPlay receivers is
   lost; within ear the paced source holds the program's audio on the graph's clock. Claims for its ports (5000, 7000),
   and the mDNS resource or its own Avahi use [U: whether shairport-sync can advertise without a D-Bus Avahi in the
@@ -1017,27 +1103,27 @@ The owner's answer (Q7): programs first join through a pipe, not PipeWire's sock
 
 ### 7.6 Testing a type without PipeWire
 
-Slice 2 ships `ear::testing::TypeHarness<spec, Behaviour>`, the one way a type's own tests run it. Revision 5 makes it
-step the lifecycle, one call per transition, so a test reads as the state machine does. This section is the harness's
-one home: the class whole, as slice 3a leaves it. Every call is on `h.`, typed by the spec's handles; today's `h->`
-(the `NodeHarness` underneath, keyed by names, `type_harness.hpp:20` [V]) stays only for hand-made `NodeTypeOf` types'
-tests. The module pages add calls in the same spelling and list only their additions (node-primitives.md section 10;
-control-plane.md 5.9).
+Slice 2 ships `ear::testing::TypeHarness<spec, Type>`, the one way a type's own tests run it. Revision 6 makes it
+apply operations and step the lifecycle, one call per transition, so a test reads as the state machine does. This
+section is the harness's one home: the class whole, as slice 3a leaves it. Every call is on `h.`, typed by the spec's
+handles; today's `h->` (the `NodeHarness` underneath, keyed by names, `type_harness.hpp:20` [V]) stays only for
+hand-made `NodeTypeOf` types' tests. The module pages add calls in the same spelling and list only their additions
+(node-primitives.md section 10; control-plane.md 5.9).
 
 ```cpp
-template <const auto& Spec, class Behaviour> class TypeHarness {
+template <const auto& Spec, class Type> class TypeHarness {
 public:
 	explicit TypeHarness(AudioFormat = {.rate = 48000, .maxBlock = 256}, NodeName = "node");
-	// The lifecycle, one call per transition (6.3)
+	// Operations (6.3) and the lifecycle's steps, one call per transition
 	std::optional<std::string> parse(const nlohmann::json& settings);   // a refusal's exact text, or nothing
-	void setup();                                    // T2: calls setup, then readiness as far as the fakes allow
+	void add(bool wantedRunning = true);             // T1, T2: the instance made, configure(empty, settings) called,
+	                                                 // readiness as far as the fakes allow
 	template <class Bank> void ready(Bank);          // a companion on that inside bank becomes ready
 	template <class Bank> void lose(Bank, std::string detail);
-	void build();                                    // T3 (and every consumer's begin, step 4')
-	void start();                                    // T4: drives the code, arms sinks, calls start
+	void blockReady();                               // T5: drives the code, arms sinks, calls start()
 	void process(std::uint32_t frames = 256);        // one cycle, with GraphCycle stamps the harness advances
-	Outcome reconfigure(const nlohmann::json& changes);   // the plan's outcome, then T5 or a restart
-	void restart();  void stop();                    // T8; T14, every teardown step observable
+	Outcome change(const nlohmann::json& changes);   // the plan's outcome, then T9 or a restart
+	void stop();  void start();  void restart();  void remove();   // T6 and T7; T8; the action; T17, each step observable
 	NodeState state() const;  std::string phase() const;  std::optional<FailureReason> reason() const;
 	// Buffers and fakes, by the spec's handles
 	template <class Bank> std::span<float> input(Bank, std::size_t member);
@@ -1045,26 +1131,28 @@ public:
 	template <class Bank> CompanionFake& companion(Bank);   // its kind, request, readiness; a source's feed, a sink's chunks
 	template <class Bank> void feed(Bank, std::span<const float> interleaved);   // fills a source's ring
 	template <class Bank> bool held(Bank) const;            // a hold, and whether its fade was acknowledged
-	const std::vector<std::string>& notes() const;          // what the run said, in order
+	void runLoops();                                        // runs what is posted to the node's loops, in order
+	const std::vector<std::string>& notes() const;          // what the node said, in order
 };
 ```
 
 ```cpp
 TypeHarness<rtp::spec, rtp::Rtp> h;
 REQUIRE_FALSE(h.parse({{"address", "0.0.0.0"}, {"port", 5004}, ...}));
-h.setup();                       // what setup acquired, by handle: h.companion(rtp::fromRtp) is an RTP receiver
-h.ready(rtp::fromRtp);           // its readiness (or h.lose(rtp::fromRtp, "gone"))
-h.build();  h.start();           // the code, the run object; h.state() == NodeState::running
+h.add();                         // configure ran: h.companion(rtp::fromRtp) is an RTP receiver; h.phase() == "configuring"
+h.ready(rtp::fromRtp);           // its readiness (or h.lose(rtp::fromRtp, "gone")); now configured
+h.blockReady();                  // h.state() == NodeState::running
 h.process();                     // buffers by bank: h.input(...), h.output(...); h.feed(bank, frames) fills a source
-h.reconfigure({{"port", 5006}}); // the outcome (reconfigure), holds, replacements; h.ready(...) then h.state()
-h.stop();                        // the teardown's steps in order, each observable
+h.change({{"port", 5006}});      // the outcome (reconfigure), holds, replacements; h.ready(...) then h.state()
+h.stop();  h.start();            // silence, then audio again, the configuration kept
+h.remove();                      // the teardown's steps in order, each observable
 ```
 
 It fakes every companion as a ring the test fills or reads (a sink's chunks carry the stamps the test's cycles give), and
 every store, recording, claim and loop as node-primitives.md section 10 says; it captures status (view and change
 record), events, log records and diagnostics in order (control-plane.md 5.9). The all-type tests (`test/nodes/`) run
-every type through it, every state and transition included, as pluginval and clap-validator do for JUCE and CLAP
-plugins.
+every type through it, every state and transition included (stop and start among them), as pluginval and clap-validator
+do for JUCE and CLAP plugins.
 
 ## 8. The control plane
 
@@ -1072,11 +1160,11 @@ plugins.
 
 | Channel | Declared in | Kept | Written by | Delivery | On the wire | On standard output |
 |---|---|---|---|---|---|---|
-| **Settings** (desired) | `SettingsTable`, each row restart-only, `.inPlace()` or `.live` | `ear.conf` | the graph file keeper | as today; each committed change has an outcome per node (6.6) | `node.added`, `node.updated` with `applied` (and `ports` on a reshape) | a `node` record (`reconfiguring`, `restarting: <cause>`) |
+| **Settings** (desired) | `SettingsTable`, each row restart-only, `.inPlace()` or `.live` | `ear.conf` | the graph file keeper | as today; each committed change has an outcome per node (6.6) | `node.added`, `node.updated` with `applied` (and `ports` on a reshape) | a `node` record (`reconfiguring`, `stopping: restarting (<keys>)`) |
 | **Parameters** (desired, live) | rows marked `live` | `ear.conf`, at a gesture's end (8.5) | the keeper, and gesture ticks | to an RT slot, wait-free | control-plane.md 4.2 and 4.3 (`node.set`, `gesture.*`, `gesture.changed`) | control-plane.md 9 (`param` records) |
 | **Status** (observed) | `StatusTable`, one writer per field: a named loop, `rt` or `companion` (control-plane.md 5.2) | memory; in snapshots | that writer | a coalesced live view, and a record of each change (8.2) | `node.statusChanged {name, fields}` | a `status` record per change |
-| **Events** (edges) | `EventTable` | not kept | the run's loops, threads or `process` (numeric arguments only) | queued, rate-limited (8.3) | `node.eventRaised {name, code, args}` | an `event` record |
-| **Actions** (commands in) | `ActionTable` | not kept | a client, through the keeper | to the run's loop; reply | control-plane.md 4.2 (`node.invoke`) | control-plane.md 9 (`action` records) |
+| **Events** (edges) | `EventTable` | not kept | the node's loops, their threads or `process` (numeric arguments only) | queued, rate-limited (8.3) | `node.eventRaised {name, code, args}` | an `event` record |
+| **Actions** (commands in) | `ActionTable` | not kept | a client, through the keeper | to the node's loop; reply | control-plane.md 4.2 (`node.invoke`) | control-plane.md 9 (`action` records) |
 | **Log** (free text) | levels, and `LogCodes` for realtime records | not kept | any node code, `process` as coded records, captured library and program output | queued, rate-limited (8.8) | later, `log.subscribe` | a `log` record |
 | **Diagnostics** (the framework's own observations) | the framework | counters and the latest of each in snapshots | the framework alone | records on the change | `node.diagnostic {name, code, ...}` | a `diagnostic` record |
 
@@ -1086,7 +1174,7 @@ node is `failed` or `recovering` (today's member and meaning), and with slice 8 
 card lost" (written to control-plane.md W2's recommendation; its 4.8 is the members' home). No node writes standard
 output or standard error (8.8).
 
-**Order.** Records from one writer reach the main loop in the order written. Across a run's writers, an event or a fact
+**Order.** Records from one writer reach the main loop in the order written. Across a node's writers, an event or a fact
 first flushes the node's dirty status fields, so `connected="Kitchen"` precedes `paired`, and the last status before a
 `lost` is not overtaken by it; beyond that, records of different writers are ordered by when the drain received them.
 A snapshot carries each node's status, health and latest diagnostics from the same main-loop turn.
@@ -1094,7 +1182,7 @@ A snapshot carries each node's status, health and latest diagnostics from the sa
 ### 8.2 Status: a live view and a change record
 
 - Each field has exactly one declared writer: a named loop (bound to a loop handle of the spec), `rt`, or `companion`
-  (a companion kind writes it, 7.3); a thread the run object owns writes through one of its loops (control-plane.md
+  (a companion kind writes it, 7.3); a thread a loop's state owns writes through that loop (control-plane.md
   5.2 is the writers' home). `rt` fields are fixed-size (flag, whole number, closed enum) and travel in
   atomic words; text fields are written off the realtime thread under a mutex (a seqlock would let the main loop spin
   behind a preempted writer).
@@ -1129,13 +1217,18 @@ counted in one `ear.events-dropped` diagnostic (today's `NoteGate` policy, `note
 
 - Every control request already goes whole to the keeper's thread in arrival order (AGENTS.md, threads); actions do too,
   so an action is ordered with the edits around it. The keeper posts it to the main loop, the framework checks its
-  arguments against the type's table and posts it to the run's loop; the handler's `std::expected<void, std::string>`
+  arguments against the type's table and posts it to the node's loop; the handler's `std::expected<void, std::string>`
   becomes the reply.
-- A queued action whose run ends before it runs gets `restarted` (a restart or recovery) or `stopping`; an action already
-  running finishes and replies before the run's loop closes (I5 step 4). A node with no run answers `not-running`.
-- **`restart` is every node's**, the framework's own: transition T8 (6.3), the same teardown and setup as a
-  restart-only settings change, without editing `ear.conf`; it skips any recovery wait. During a reconfigure it ends
-  the reconfigure at once (T7) and restarts with the newest settings (6.3; gate B6). Its reply and its refusals by
+- A queued action whose node's configuration is torn down before it runs gets `restarted` (a restart or recovery) or
+  `stopping` (a removal); an action already running finishes and replies before the node's loop closes (I5 step 4). A
+  node with no configuration (`added`, `configuring`, `failed`, `recovering`) answers `not-running` (control-plane.md 4.5); a
+  stopped node takes actions (its loops run).
+- **`start`, `stop` and `restart` are every node's**, the framework's own (R20; 6.3). `start` and `stop` change the
+  node's wanted state, which `ear.conf` keeps (gate F1), so they are edits at the source like `node.update`, not
+  actions; `start` on a failed node is also a retry (T15). `restart` is an action: a full stop, a configuration from
+  empty and a start back to the wanted state, the same as a restart-only settings change, without editing `ear.conf`;
+  it skips any recovery wait. During an in-place change it ends it at once (T11) and restarts with the newest settings
+  (6.3; D-B6). Its reply and its refusals by
   phase are control-plane.md 7.6's.
 - An action changes no desired state. What should survive a restart is a setting or a parameter.
 
@@ -1159,14 +1252,14 @@ and `cancel`, `gesture.changed`; its G2) from revision 4's one `node.setParam`.
   never stays on a value `ear.conf` does not hold.
 - Snapshots carry each parameter's `{committed, live}`; they differ only during a gesture.
 - A hand edit or `graphFile.set` that changes a live row's value moves the slot without a restart (a `retune`). A
-  change to an `.inPlace()` row goes to the `reconfigure` hook, to any other row restarts, and to the ports reshapes
+  change to an `.inPlace()` row goes to `configure(cx, &old, new)`, to any other row restarts, and to the ports reshapes
   (6.6, 6.7; the plan's outcome is the home).
 - A live row of an outside node's property (a card's volume) is set by its kind's adapter (7.3).
 - Timestamped changes (a mute at a media time) need an event ring keyed on graph position; reserved, not designed (15).
 
 ### 8.6 Recovery
 
-`NodeState` gains `recovering` (T12, T13 in 6.3; the states themselves change with slice 3a, whose erratum to
+`NodeState` gains `recovering` (T16 in 6.3; the states themselves change with slice 3a, whose erratum to
 `batch2.md` section 11 replaces the frozen `node_lifecycle.hpp`, and slice 8 adds this one). Recovery is per node (I10):
 one node's backoff never delays another's. The default for every type, the owner's answer (Q4), retries for as long as
 the node is in the graph; with the internal clock (section 10) a restart costs only the node's own audio:
@@ -1174,18 +1267,19 @@ the node is in the graph; with the internal clock (section 10) a restart costs o
 The first wait is keyed on **the phase the failure happened in**, never on the code's name (6.2's table gives each
 code's usual phase):
 
-- **After the run had been `running`** (`run-lost`, or `engine-refused` for a companion lost after `running`): the
-  failed run was already torn down at the failure (6.2), so the wait starts once it closed; then `setup` again after
-  1 s, doubling to at most 60 s; a run that stays `running` for 60 s resets the wait. A sendspin library that dies after
+- **After the node had reached `running` or `stopped`** (`lost`, or `engine-refused` for a companion lost after then):
+  the failed node's configuration was already torn down at the failure (6.2), so the wait starts once it is gone; then
+  it is configured from empty again after 1 s, doubling to at most 60 s; a node that stays `running` for 60 s resets the
+  wait. A sendspin library that dies after
   an hour is tried again after 1 s.
-- **Before the run reached `running`** (`start-failed`, or `engine-refused` before `running`: a path that cannot be
+- **Before the node reached `running` or `stopped`** (`start-failed`, or `engine-refused` before `running`: a path that cannot be
   opened, a key file ear will not trust, a port another program holds, a card that never opens): the cause is in the
   settings or the host, so it retries at the longest wait from the first (60 s), not from 1 s. It still never gives up,
   so the cause fixed by hand is picked up within a minute.
 - **Visible, not silent.** Each attempt is a diagnostic; `node.state` carries `attempt`, `retryInMs`, `since` and
   `lastFailure` (control-plane.md 4.8); a node that keeps failing just after the reset is `ear.health-flapping` (8.2). The editor shows
   "recovering forever" as it is.
-- A type may declare `recovery::none` or a cap (`attempts`), after which it is `failed` until `restart` or a settings
+- A type may declare `recovery::none` or a cap (`attempts`), after which it is `failed` until `start`, `restart` or a settings
   change. A lost block is final (I1). The waits are main-loop timers.
 - [U] Whether `snd_pcm_open` on a wedged USB device can block, and on which thread (the adapter may open on the main
   loop); with retries every 60 s that risk recurs, so slice 8 checks it before cards use recovery.
@@ -1208,9 +1302,9 @@ code's usual phase):
   additive; a breaking change bumps it. A client that sees a higher number than it knows shows a banner and keeps
   working with what it understands. The stdout records' `v` follows the same rule.
 - **What the editor must change** (it already ignores unknown methods, `web/src/graph.ts:107-108`): `NodeState` is a
-  closed union (`web/src/protocol.ts:13`) that gains `reconfiguring` and `recovering`, and `phase` beside it; `reason`
+  closed union (`web/src/protocol.ts:13`) that gains `reconfiguring`, `stopped` and `recovering`, and `phase` beside it; `reason`
   stays, present while `failed` and `recovering` (`protocol.ts:47` says "only while failed" today), and slice 8 adds
-  `lastFailure` beside it (control-plane.md W2); `FailureCode` (`protocol.ts:15` [V], two values) gains `run-lost`
+  `lastFailure` beside it (control-plane.md W2); `FailureCode` (`protocol.ts:15` [V], two values) gains `lost`
   (6.2), open from protocol 1; each new state needs a style (`EarNode.tsx:28` builds the class name from
   the state); `protocol.test.ts`'s fixture coverage gains the new notifications.
 - The editor renders forms, status, diagnostics and action buttons from `typeSchemas`, naming no type in `web/`.
@@ -1220,7 +1314,7 @@ code's usual phase):
 The owner's rule (R9): nothing a type writes, and nothing its libraries or programs write, reaches standard output or
 standard error directly. The framework owns every output and decides where it goes.
 
-**What a node gets**, all through its run handle, so generation-checked and dropped after close begins (I6):
+**What a node gets**, all through its node handle, so generation-checked and dropped once teardown begins (I6):
 
 | Primitive | Off the realtime thread | On the realtime thread |
 |---|---|---|
@@ -1230,7 +1324,7 @@ standard error directly. The framework owns every output and decides where it go
 | **Diagnostics** | the framework's alone: status changes, flapping, recovery attempts, readiness deadlines missed, close overdue, hooks slow, reconfigure deadlines missed, sink drops, source shortfalls, xruns, captured output that was cut | — |
 
 - **The realtime path.** `rtlog`, `rtevent` and `rt` status changes write a fixed-size record (code, numbers, the cycle's
-  position) into a per-run single-producer ring acquired at start: no formatting, no allocation, no lock, no syscall
+  position) into a per-node single-producer ring, made with the node's configuration: no formatting, no allocation, no lock, no syscall
   beyond the gated bell (8.2). A full ring drops the record and counts it. The drain formats the text from the code's
   declaration, so the realtime thread never touches a string.
 - **Every write to the process's descriptors is captured**, because a grep of `src/nodes/` cannot see what PipeWire,
@@ -1255,16 +1349,16 @@ standard error directly. The framework owns every output and decides where it go
 writes on standard output is one JSON object, in one schema, from one encoder (`status_log.cpp` stays the one home):
 
 ```json
-{"v":1,"seq":812,"t":"2026-11-07T17:42:03.512094Z","kind":"node","node":"desk","run":4,"state":"recovering","retryInMs":4000,"attempt":3,"lastFailure":{"code":"engine-refused","detail":"card lost"},"msg":"node desk recovering in 4s (attempt 3): card lost"}
-{"v":1,"seq":813,"t":"2026-11-07T17:42:03.600211Z","kind":"status","node":"kitchen","run":2,"field":"connection","from":"dialling","to":"connected","msg":"node kitchen connection dialling -> connected"}
-{"v":1,"seq":814,"t":"2026-11-07T17:42:04.010877Z","kind":"event","node":"kitchen","run":2,"code":"pairing-failed","args":{"reason":"pairing-code-mismatch"},"msg":"node kitchen pairing failed: pairing-code-mismatch"}
-{"v":1,"seq":815,"t":"2026-11-07T17:42:04.011020Z","kind":"log","node":"kitchen","run":2,"level":"warn","source":"sendspin-cpp","text":"…","msg":"node kitchen sendspin-cpp warn: …"}
-{"v":1,"seq":816,"t":"2026-11-07T17:42:10.000000Z","kind":"diagnostic","node":"kitchen","run":2,"code":"ear.status-flapping","field":"connection","transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}
+{"v":1,"seq":812,"t":"2026-11-07T17:42:03.512094Z","kind":"node","node":"desk","state":"recovering","retryInMs":4000,"attempt":3,"lastFailure":{"code":"engine-refused","detail":"card lost"},"msg":"node desk recovering in 4s (attempt 3): card lost"}
+{"v":1,"seq":813,"t":"2026-11-07T17:42:03.600211Z","kind":"status","node":"kitchen","field":"connection","from":"dialling","to":"connected","msg":"node kitchen connection dialling -> connected"}
+{"v":1,"seq":814,"t":"2026-11-07T17:42:04.010877Z","kind":"event","node":"kitchen","code":"pairing-failed","args":{"reason":"pairing-code-mismatch"},"msg":"node kitchen pairing failed: pairing-code-mismatch"}
+{"v":1,"seq":815,"t":"2026-11-07T17:42:04.011020Z","kind":"log","node":"kitchen","level":"warn","source":"sendspin-cpp","text":"…","msg":"node kitchen sendspin-cpp warn: …"}
+{"v":1,"seq":816,"t":"2026-11-07T17:42:10.000000Z","kind":"diagnostic","node":"kitchen","code":"ear.status-flapping","field":"connection","transitions":14,"windowMs":10000,"msg":"node kitchen connection flapping: 14 changes in 10s"}
 ```
 
 - `msg` is a short human sentence, close to today's line, so people read `jq -r .msg` and the system tests migrate a
-  check at a time; tools read the fields. `seq` shows order and gaps; `run` is the run's generation; durations are
-  always `…Ms`.
+  check at a time; tools read the fields. `seq` shows order and gaps; durations are always `…Ms`. Records carry no
+  generation: it is internal (I6, R20).
 - Today's lines (engine scheduling, `control listening`, node states, routes, `graph-file …`, `says`, `stopped`) become
   records of their kinds carrying the same facts; one `graph-file` record per change carries all its diagnostics, where
   today they span several lines.
@@ -1281,6 +1375,7 @@ writes on standard output is one JSON object, in one schema, from one encoder (`
   `diagnostic` come with the slices that make them (1 and 3). A failed node's reason is `failure`, not `lastFailure`
   (there is no recovery yet to make it a past one).
 - **No `run` yet.** Records carry no run generation until slice 1 gives runs one; `LogEntry::run` is the seam.
+  (Revision 6: records never carry one; the generation is internal, I6, and `LogEntry::run`, `log.hpp:23`, goes, 13.2.)
 - **A `graph-file` record's `msg` spans lines**: the plain lines its change printed, joined by `\n`, so `jq -r .msg`
   prints several lines for that one record. One record per change, as above; the lines keep `msg` close to what people
   grepped.
@@ -1352,8 +1447,8 @@ merge rule, from `pw_filter`'s source]. So:
 - port blocks use `PW_FILTER_FLAG_CUSTOM_LATENCY` and the framework propagates latency per bank pair;
 - `passThrough` forwards a companion's latency onto its public bank;
 - a companion declares its own (a source its capacity, an RTP receiver its `latencyMs`, 9.6), so only a type's own code
-  declares latency, in `setup` (static; a dynamic report is still owed, section 13, "Slice 7 as built"); a reconfigure
-  that replaces a companion or swaps the code carries the new plan at its end (6.6);
+  declares latency, in `configure` (static; a dynamic report is still owed, section 13, "Slice 7 as built"); an in-place
+  change that replaces a companion or swaps the code carries the new plan at its commit point (6.6);
 - `process` sees, per output bank, the latency downstream of it, which replaces the single driver `delayFrames` (wrong
   today when sendspin's output reaches a following card or a file).
 
@@ -1384,7 +1479,7 @@ consistency of the processing graph" (R18).
 
 **The rule** (I12). A type's realtime code reads `io[input]` and writes `io[output]`. When audio must leave the realtime
 thread (to a file, a network library) or come in from a non-realtime thread (a decoder, a program), the type declares
-an inside bank and asks in `setup` for a **companion** on it. The framework makes a hidden engine node, links it to that
+an inside bank and asks in `configure` for a **companion** on it. The framework makes a hidden engine node, links it to that
 bank's ports channel for channel, inside the processing graph, and owns its realtime side, its ring and its wakes. The
 type's code is then a `passThrough` between its public banks and its inside banks, or its own code for audio it makes
 or changes; it never touches a ring.
@@ -1401,8 +1496,8 @@ flowchart LR
     FS["from_server (inside in)"] -- passThrough --> FR["from.left/right"]
   end
   TS -- link --> SK["kitchen.to_server<br/>sink companion"]
-  SK -. "ring, stamped chunks" .-> C["consumer on the sink's thread<br/>(the run object's: write_audio)"]
-  W["writer: the library's thread<br/>(the run object's)"] -. ring .-> SR["kitchen.from_server<br/>source companion"]
+  SK -. "ring, stamped chunks" .-> C["consumer on the sink's thread<br/>(a member of the worker's state: write_audio)"]
+  W["writer: the library's thread<br/>(the worker's state)"] -. ring .-> SR["kitchen.from_server<br/>source companion"]
   SR -- link --> FS
   FR --> R2["routes out"]
 ```
@@ -1413,8 +1508,8 @@ flowchart LR
 |---|---|---|---|---|---|---|---|---|---|
 | Sound card, playback or capture | engine | an inside output (playback) or input (capture) bank | `<node>.playback`, `<node>.capture` | PipeWire's ALSA adapter | the card | the card's own buffer | the card's | what the adapter reports (9.4) | `SoundCardRequest` |
 | RTP receiver | engine | an inside input bank | `<node>.rtp` | PipeWire's rtp-source module | the network | rtp-source's | rtp-source's | `latencyMs` (rtp-source reports none) | `RtpReceiverRequest`, `rtp`'s `declareLatency` |
-| Sink | ring | an inside output bank | `<node>.<bank>` | ear's `pw_filter`: copies each cycle into its ring, interleaved, with the cycle's stamp | a consumer the run object gives, called on the sink's own thread (`ear-sink <node>.<bank>`), which may block on I/O | frames the type gives (default 2 s) | a full ring drops frames and counts them (the node's `dropped=`) | none | `HandoffRequest`, `RtWriter`, `HandoffConsumer`, sendspin's capture-stamp mailbox |
-| Source | ring | an inside input bank | `<node>.<bank>` | ear's `pw_filter`: plays its ring into its output, zeros when empty | a writer the run object holds, on a dedicated loop or its library's thread; it may wait for room | frames the type gives | an empty ring plays zeros and counts the frames short (`shortfall`) | `[0, capacity]` | sendspin's `Feed`, its progress mailbox, its bell, its `declareLatency("from")` |
+| Sink | ring | an inside output bank | `<node>.<bank>` | ear's `pw_filter`: copies each cycle into its ring, interleaved, with the cycle's stamp | a consumer, a member of one of the node's loop states, called on the sink's own thread (`ear-sink <node>.<bank>`), which may block on I/O | frames the type gives (default 2 s) | a full ring drops frames and counts them (the node's `dropped=`) | none | `HandoffRequest`, `RtWriter`, `HandoffConsumer`, sendspin's capture-stamp mailbox |
+| Source | ring | an inside input bank | `<node>.<bank>` | ear's `pw_filter`: plays its ring into its output, zeros when empty | a writer a loop's state holds, on a dedicated loop or its library's thread; it may wait for room | frames the type gives | an empty ring plays zeros and counts the frames short (`shortfall`) | `[0, capacity]` | sendspin's `Feed`, its progress mailbox, its bell, its `declareLatency("from")` |
 | Paced source (slice 9) | ring | an inside input bank | `<node>.<bank>` | a source with an adaptive resampler steered by its fill | a writer of raw PCM from a clockless source (a pipe) | the target fill and headroom | drops the oldest | the target fill | 7.5's paced feed |
 | RTP sender, a PipeWire-socket program (later) | engine | an inside bank | by kind | PipeWire's | — | — | — | by kind | — |
 
@@ -1435,8 +1530,8 @@ flowchart LR
 
   `SinkConsumer` (`begin`, `consume`, `finish`) and `SinkControl` (`pause`, `resume`) are declared whole in
   node-primitives.md 6.6, their one home; this section keeps the sink's realtime contract.
-- **A sink is armed in the invoke that first drives the run's code** (T4) and disarmed in the one that silences or
-  destroys the block (I5 step 1; I4), so it records exactly the cycles the code drove: no leading loss, no trailing
+- **A sink is armed in the invoke that drives the node's code** (T5, T8) and disarmed in the one that silences or
+  destroys the block (T6, I5 step 1; I4), so it records exactly the cycles the code drove: no leading loss, no trailing
   zeros (a harness and an engine test: a ramp recorded through a sink starts at the first driven sample and ends at the
   last). Before it is armed and after it is disarmed it takes nothing into its ring.
 - **A source plays what its writer gives, and keeps time.** Its writer is today's feed writer (`write` with a patience,
@@ -1451,15 +1546,15 @@ flowchart LR
 - **A source says what played.** After each cycle that played or skipped frames it publishes
   `Played{totalFrames, heardRawNs}`, where `heardRawNs` is the cycle's `startRawNs` plus the frames it played and the
   most downstream latency of its link, at the graph frequency (sendspin's dating today, `sendspin_code.cpp:34-43` [V]),
-  into a slot it owns, and rings its played wake, at most once until answered. The run object's notifier loop waits on
-  that wake (`bx.source(bank).playedWake()`), as sendspin's notifier waits on its bell today (`worker.cpp:307-323`).
+  into a slot it owns, and rings its played wake, at most once until answered. The node's notifier loop waits on
+  that wake (its writer's `playedWake()`), as sendspin's notifier waits on its bell today (`worker.cpp:307-323`).
   The downstream latency is what the block's pass-through carries back to the source's link from the node's public
   bank (9.4): a following card's buffer reaches sendspin's dating with no code of sendspin's.
 - **Wakes.** A sink wakes its thread when its ring holds frames, at most once per cycle (as the handoff does today,
   `handoffs.cpp:54`, through `pw_loop_signal_event`); a source wakes a writer waiting for room (as `feed.cpp` does).
 - **Latency.** Each companion declares its own latency on its link, and the block's pass-through carries it to the
   public bank, as a card's is carried today (section 13, "Slice 7 as built"). So `StartContext::declareLatency` is left
-  for a type's own code (a delay line), and moves to `setup`.
+  for a type's own code (a delay line), and moves to `configure` (`cx.declareLatency`).
 - **Driven from creation.** A ring companion's `pw_filter` is made as a block is: in the blocks' group (`node.group =
   ear.graph`) and always processing, so the internal clock drives it from creation (`port_blocks.cpp:107-113` [V] for
   the block) and it reaches RUNNING unlinked, as a block does. That is what lets the one join (`joinOutsideNode`, which
@@ -1469,7 +1564,7 @@ flowchart LR
   it in the same cycle, ordered by the link: a source before the block, a sink after it [U: slice 3b's ramp test proves
   it: a ramp written to a source arrives at the node's public output with no offset in position, and a ramp at the
   node's input reaches the sink's chunk stamped with the position it was played at].
-- **Its lifecycle is the node's** (section 6): asked for in `setup` (or replaced in `reconfigure`), made once the block
+- **Its lifecycle is the node's** (section 6): asked for in `configure` (or replaced in an in-place `configure`), made once the block
   is ready, ready once it runs and every link is active, lost on refusal, ERROR, removal or a failed link (the node
   fails `engine-refused: <detail>`). One lifecycle for every kind: `joinOutsideNode` (`outside_nodes.cpp`) joins a ring
   companion's `pw_filter` as it joins an ALSA adapter today (above). Torn down at I5 step 2 (destroyed: the barrier for its own
@@ -1486,12 +1581,12 @@ flowchart LR
 
 **What each type becomes** (its realtime code, and what crosses):
 
-| Type | Realtime code it writes | Companions | Its run's code |
+| Type | Realtime code it writes | Companions | Its code |
 |---|---|---|---|
 | `white` | the noise loop (it makes audio) | none | `WhiteCode` |
 | `card` | none, as today | `playback` on `to_card`, `capture` on `from_card` | `passThrough({play→to_card, from_card→capture})` |
 | `rtp` | none, as today | `rtp` on `from_rtp` | `passThrough({from_rtp→stream})` |
-| `file` | none (today `Recorder`, `file.cpp:47-50`) | a sink on `writer`, 2 s | `passThrough({record→writer})`; its `WavWriter` is the sink's consumer, in the run object |
+| `file` | none (today `Recorder`, `file.cpp:47-50`) | a sink on `writer`, 2 s | `passThrough({record→writer})`; its `WavWriter` is the sink's consumer, given to it whole in `configure` (`consumedBy(std::make_unique<WavWriter>(...))`) |
 | `sendspin` | none (today `SendspinCode`, 46 lines, two mailboxes and a bell, `sendspin_code.cpp`) | a source on `from_server` (about 43 ms, `sendspin_type.cpp:31-33`), a sink on `to_server` (0.5 s) | `passThrough({to→to_server, from_server→from})`; the library's sync thread writes the source; `write_audio` is the sink's consumer, its capture stamps the chunks' |
 | `gain` (slice 6) | its multiply, with `io.param` | none | `GainCode` |
 
@@ -1566,35 +1661,35 @@ and every card follows it.**
 
 ## 11. The types, rewritten
 
-| Type | Today (slice 2, `<type>.cpp` and `<type>_spec.hpp`) | Revision 5 (estimate) | What remains its own |
+| Type | Today (slice 2, `<type>.cpp` and `<type>_spec.hpp`) | Revision 6 (estimate) | What remains its own |
 |---|---|---|---|
-| `white` | 53 lines | about 50 | the noise loop; `build` returns it |
-| `card` | 66 | about 70 | its rows, its `check`, two companions in `setup`, `passThrough` in `build`; restart-only (6.6) |
-| `rtp` | 75 | about 90 | its rows (five `.inPlace()`), one companion, `passThrough`, a `reconfigure` of five lines (7.2); `receiving` comes from its companion (slice 8) |
+| `white` | 53 lines | about 50 | the noise loop; `configure` gives it |
+| `card` | 66 | about 70 | its rows, its `check`, a `configure` of two companions and a `passThrough`; restart-only (6.6) |
+| `rtp` | 75 | about 90 | its rows (five `.inPlace()`), one `configure` of five lines that also serves every in-place change (7.2); `receiving` comes from its companion (slice 8) |
 | `file` | 144 | about 110 | its rows, the path rule, libsndfile in a `SinkConsumer`; no realtime code (9.6) |
-| `sendspin` | about 1,920 | about 1,200 | the protocol, pairing, the time filter's use of played reports, PCM, mDNS (until a second user); its `reconfigure` for `name`, `port` and `server`; status for connection, code, stream, sending; events for pairing results. No realtime code: `SendspinCode`, `Feed`, `Mailbox`, `EventFd` and the capture anchor go (9.6) |
+| `sendspin` | about 1,920 | about 1,200 | the protocol, pairing, the time filter's use of played reports, PCM, mDNS (until a second user); its in-place `configure` for `name`, `port` and `server`; `start()` and `stop()` posting to its worker; status for connection, code, stream, sending; events for pairing results. No realtime code: `SendspinCode`, `Feed`, `Mailbox`, `EventFd` and the capture anchor go (9.6) |
 | `gain` (new; needs `decimal` and `.live`) | — | about 25 | one live row with its smoothing, a multiply |
 
 ```cpp
-// sendspin's hooks, in revision 5 (6.4 shows its setup and build in full)
-// setup:   a claim when listening; a source on from_server; a sink on to_server.        Acquires only.
-// build:   the run object, from the key store, the worker loop, the source's writer;    Constructs only.
-//          the sink's consumer handed over; passThrough both ways.
-// start:   the worker dials or listens (its loop sources, staged since build, are released).
-// reconfigure: node-primitives.md 4.2 (pending its G19): a server URL redials; any other change swaps the client
-//          inside the run on the worker (the connection drops and comes back); a port is claimed make-before-break.
-// close:   goodbye on the worker; the library's threads stopped; closed().
-// Teardown (I5): barrier, release, the source's writer closed (the library's sync thread wakes); both companions
-// destroyed; the sink drains into the run object's consumer; the run closes, then its loops (or I5a's deadline passes);
-// then the rest go.
+// sendspin's hooks, in revision 6 (6.4 shows its class in full)
+// configure, from empty: a claim when listening; a source on from_server; the worker loop given its state (the key
+//          store's handle, the source's writer, the settings); a sink on to_server consumed by the worker's member;
+//          passThrough both ways. Acquires and constructs only; the worker's staged work runs once configured.
+// configure, in place: node-primitives.md 4.2: a server URL redials; any other change swaps the client on the
+//          worker (the connection drops and comes back); a port is claimed make-before-break.
+// start:   posts begin() to the worker: it dials or listens.
+// stop:    posts end() to the worker: goodbye, the client stops; the configuration (claim, store, companions) stays.
+// Removal (I5): stop(), barrier, release, the source's writer closed (the library's sync thread wakes); both
+// companions destroyed; the sink drains into the worker's consumer; the worker runs its queued goodbye and destroys its
+// state on its own thread, joining the library's threads (or I5a's deadline passes); then the rest go.
 ```
 
 ## 12. What it gives up, and costs
 
 - **More compile-time machinery.** The settings table and the type spec already need 59 compile-fail tests (about
-  80 s at one job, AGENTS.md); the hooks add cases for `setup`, `build` and `reconfigure`. Status, event, action and
+  80 s at one job, AGENTS.md); the hooks add cases for `configure`, `start`, `stop` and the loop handles' state types. Status, event, action and
   store tables reuse its rows, so they add cases, not a second machine.
-- **A wider core.** `ear_core` gains the lifecycle's two pure machines, the hooks' contexts, the resource and companion
+- **A wider core.** `ear_core` gains the lifecycle's two pure machines, the two contexts, the resource and companion
   contracts, the per-node ordered stream, parameter slots and main-loop timers (status cap, recovery, readiness and
   reconfigure deadlines). It stays free of PipeWire, sockets, threads and files: the loop pool, eventfds, stores and the
   ring companions' threads are behind interfaces, in `ear_runtime` (the owner's G1) and `ear_pipewire`.
@@ -1604,7 +1699,7 @@ and every card follows it.**
   limit, and flapping is a diagnostic (8.2).
 - **No card is bit-perfect** (section 10), until the anchor exists.
 - **AirPlay loses multi-room alignment** with other AirPlay receivers through a pipe (7.5).
-- **A run past its close deadline is leaked** (I5a): its memory and threads stay until ear exits, said in a diagnostic.
+- **A configuration past its teardown deadline is leaked** (I5a): its memory and threads stay until ear exits, said in a diagnostic.
 - **ear's descriptors 1 and 2 are pipes** (8.8): anything that writes them directly is read back, not lost, but appears
   as unattributed log records.
 - **A shared strand pool** is a new place where one node can delay another; `dedicated` is the escape.
@@ -1614,7 +1709,8 @@ and every card follows it.**
 - **More engine nodes and copies** (9.6). Each crossing to non-realtime code is a node of its own and one copy of each
   sample per cycle: `file` runs two engine nodes, `sendspin` three. At 48 kHz and a 256-frame quantum a stereo copy is
   about 1 µs; the node's scheduling in PipeWire's graph costs more [U: measured in slice 3b with 16 `sendspin` nodes].
-- **A wider lifecycle.** Nine states where there were four, one more listener call (`nodeChanged`), a reconfigure path
+- **A wider lifecycle.** Ten states and an end where there were four, a wanted state per node (and a word in
+  `ear.conf`, gate F1), one more listener call (`nodeChanged`), an in-place path
   with its own deadline, supersession and partial teardown, and a reshape that changes a live `pw_filter`'s ports [U, 6.7]. Each is a
   state-table test, but the number of interleavings (a change during a reconfigure, a loss during a reshape) grows.
 - **Every planned silence costs a fade, not a click.** A held bank, and every restart, failure, removal and stop of a
@@ -1625,19 +1721,22 @@ and every card follows it.**
   thread never holds.
 - **A reconfigure that falls back restarts with the new settings**; it never rolls back. A hand edit that a node cannot
   apply in place costs that node's audio, as every change does today.
-- **The five types move again** (13.2). Every type written in slices 1 and 2 is rewritten from `start` to `setup` and
-  `build`, and `file` and `sendspin` lose their realtime code.
+- **The five types move again** (13.2). Every type written in slices 1 and 2 is rewritten from `start` to a class
+  with `configure` (and, for `sendspin`, `start()` and `stop()`), and `file` and `sendspin` lose their realtime code.
+- **A stopped node holds what it opened** (gate F2): a stopped card keeps its device, a stopped listener its port.
+  Freeing them takes a removal.
 
 ## 13. Slices
 
 Each slice keeps every existing test green, or says which test changes and why, and changes no audio path unless it
-says so. Slices 1, 2, 4 and 7 are built; their "as built" subsections below stay as the record of what was built, and
-13.2 says what revision 5 changes in that code.
+says so. Slices 1, 2, 4 and 7 are built; their "as built" subsections below stay as the record of what was built, in
+the built code's words, and 13.2 says what revision 6 changes in that code.
 
-### 13.1 The slices, re-cut for revision 5
+### 13.1 The slices, re-cut for revision 6
 
-Revision 4's slice 3 (primitives) and slices 5 and 6 (control plane, parameters) were designed on the two-phase start.
-Revision 5 puts the lifecycle first, because every later slice hooks into its states, and splits slice 3 in four:
+Revision 5 put the lifecycle first and split slice 3 in four; revision 6 keeps that order and changes what 3a builds
+(three hooks, the wanted state, `start` and `stop`, no run) and what 3d builds (an in-place `configure`, not a fourth
+hook):
 
 | # | Slice | What it builds | Built? | Needs |
 |---|---|---|---|---|
@@ -1645,89 +1744,96 @@ Revision 5 puts the lifecycle first, because every later slice hooks into its st
 | 2 | The SPI's shape and its harness | as revision 4 | built | 1 |
 | 4 | Output | as revision 4 | built | — |
 | 7 | The internal clock, with latency | as revision 4 | built | 1 |
-| **3a** | **The lifecycle** | The two pure machines and the derived `NodeState` (`configured`, `setting-up`, `built`, `running`, `restarting`, `failed`, `stopping`), with its erratum to `batch2.md` section 11; the facades of 6.10 that 3a needs (`SetupOf`, `BuildOf`, `Built<Run>`, `BuildResult`) and the hooks `setup`, `build`, the run object's `start`; the code driven only after `build` (T3, T4); asynchronous barriers (`drive(code, done)`, I4) with the framework's fade and its acknowledgement before each; a failed run torn down at once; the failure code `run-lost`; `ear.hook-slow`; `state` and `phase` on the wire and in the `node` record. **The sink, with an interim realtime side**: `sx.sink`, `bx.sink`, `Built::consume`, `SinkConsumer` (with `begin`, readiness step 4') and stamped chunks land here, but the ring is written by framework code inside the block's own `process`, after the code, from the inside output bank (today's handoff ring, wake and thread, `handoffs.cpp`, reused), armed and disarmed in the same invoke as the code; handoffs go. All five types move from `start` to `setup` and `build`; `file`'s code becomes `passThrough({record→writer})` onto the interim sink (its `Recorder` goes); `sendspin`'s threads start in `start`, its feed, mailboxes and bell become its run object's members (R13), and its own code writes `to` into its inside bank `to_server`, which the interim sink carries; its feed is still read by its own code until 3b | — | 1, 2 |
+| **3a** | **The lifecycle** | The two pure machines and the derived node state (`added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `failed`, `removed`; `reconfiguring` with 3d, `recovering` with 8), with its erratum to `batch2.md` section 11; the wanted state and the `stopped` word in `ear.conf` (gate F1; the graph file's reader and edits at the source, `knobly-config.md`), and `node.start` and `node.stop` (control-plane.md step L1); the type's class with `configure(cx, nullptr, now)`, `start()` and `stop()`, and the contexts of 6.10 that 3a needs (`ConfigureOf`'s acquire calls, `use`, `declareLatency`, `sink`; `NodeOf` with today's `Channel` as its handle; `Configured::applied()`); readiness as the framework's; the code driven only at T5; asynchronous barriers (`drive(code, done)`, I4) with the framework's fade and its acknowledgement before each; a failed node torn down at once, claims released, wires kept; the failure code `lost`; `ear.hook-slow`; `state` and `phase` on the wire and in the `node` record; `node <n> removed dropped=<frames>`. **The sink, with an interim realtime side**: `cx.sink`, `consumedBy`, `SinkConsumer` (with `begin`, readiness step 4') and stamped chunks land here, but the ring is written by framework code inside the block's own `process`, after the code, from the inside output bank (today's handoff ring, wake and thread, `handoffs.cpp`, reused), armed and disarmed in the same invoke as the code; handoffs go. Loops are not yet the framework's (3c), so 3a's interim gives a consumer to a sink whole only (`file`), and `sendspin` keeps its own threads, started by `start()` and joined off the main loop by its teardown as today's `RunObject::close` does (`node_type.hpp:242`). All five types move from `start` to a class with `configure`; `file`'s code becomes `passThrough({record→writer})` onto the interim sink (its `Recorder` goes); `sendspin`'s feed, mailboxes and bell become its instance's members (R13), and its own code writes `to` into its inside bank `to_server`, which the interim sink carries; its feed is still read by its own code until 3b | — | 1, 2 |
 | **3b** | **Companions** | The sink's realtime side moves out of the block into its ring companion, its API unchanged; the source ring companion, with its fades (`ear_pipewire` for the `pw_filter`, in `ear.graph`; `ear_runtime` for the sink's thread); sound cards and RTP receivers become engine companions on the one join (`joinOutsideNode`); companions declare their latency; chunks carry `upstreamFrames`; `graph.get`'s `companions`; the same-cycle ramp test [U, 9.6]. `file` and `sendspin` lose their realtime code | — | 3a |
-| **3c** | **Primitives** (node-primitives.md, re-cut: 13.3) | The run handle, loops, wakes, the I/O executor, stores with the boot sweep, claims (I8 with R15), recordings opened after their claim; the carried log patch; `sendspin` onto `TypeSpec` and `TypeHarness`; `notYetInHarness` goes | — | 3b |
-| **3d** | **Reconfigure and reshape** (a PipeWire spike first, for `pw_filter`'s ports on a connected filter) | Rows' `.inPlace()`; the plan's outcomes and `nodeChanged`; `ReconfigureOf<spec, Run>`, `Reconfigured`, `Lifecycle`; holds with fades and their acknowledgement, make-before-break with retiring resources, break-first behind a framework hold, claims swapped, code and layout swapped (two layouts, 6.7), the deadline, supersession (T15) and the fallback restart; `PortBlock::reshape`; `rtp` reconfigures in place, and `sendspin` if node-primitives.md G19 is answered (a); `applied`, `inPlace` and `ports` on the wire; the editor's "restarts the node" hint. This slice changes the audio path (holds, swaps, reshapes) | — | 3c (claims) |
-| 5 | The control plane (control-plane.md, revised: 13.3) | as revision 4; `restart` is T8 | — | 3c |
+| **3c** | **Primitives** (node-primitives.md, re-cut: 13.3) | The node handle, loops with their states and typed posts (`cx.loop`, `NodeOf::post`, I14), `consumedBy(loop, member)`, wakes, the I/O executor, stores with the boot sweep, claims (I8 with R15), recordings opened after their claim; the carried log patch; `sendspin` onto `TypeSpec`, its worker a loop state, and `TypeHarness`; `notYetInHarness` goes | — | 3b |
+| **3d** | **Changes in place and reshape** (a PipeWire spike first, for `pw_filter`'s ports on a connected filter) | Rows' `.inPlace()`; the plan's outcomes and `nodeChanged`; `configure(cx, &old, new)`, `Configured::restart`, `cx.whenReady`, `ConfigureDone`, `Lifecycle`; holds with fades and their acknowledgement, make-before-break with retiring resources, break-first behind a framework hold, claims swapped, code and layout swapped (two layouts, 6.7), the deadline, supersession (T18) and the fallback restart; `PortBlock::reshape`; `rtp` and `sendspin` change in place (node-primitives.md G19, decided); `applied`, `inPlace` and `ports` on the wire; the editor's "restarts the node" hint. This slice changes the audio path (holds, swaps, reshapes) | — | 3c (claims) |
+| 5 | The control plane (control-plane.md, revised: 13.3) | as revision 4; `restart` is an action (8.4) | — | 3c |
 | 6 | Parameters (control-plane.md) | as revision 4; a retune is the cheapest outcome of `nodeChanged` | — | 5, 3d |
-| 8 | Recovery | as revision 4, on T12 and T13 | — | 3a, 5 |
+| 8 | Recovery | as revision 4, on T16 | — | 3a, 5 |
 | 9 | Programs | the paced source (a ring companion), runtime files, `program`, then `airplay` | — | 3b, 3c |
 
-**Order: 3a, 3b, 3c, 3d, then 5, 6, 8, 9.** 3a first: it is the shape every hook, test and later slice depends on, and it
-alone answers R12 and R13. 3b before 3c: companions remove two of slice 3's primitives (feeds and late handoffs) and a
-third's use (sendspin's bell), so 3c builds less. 3d after 3c: a reconfigure swaps claims, and claims are 3c's. 5 after
-3c, as control-plane.md's G6 asks, so `Report` sits on the run handle; 6 after 3d, so a retune is one outcome among the
-others (gate D1).
+**Order: 3a, 3b, 3c, 3d, then 5, 6, 8, 9** (decided by the designer, D-D1, 14.3). 3a first: it is the shape every hook,
+test and later slice depends on, and it answers R19 to R23. 3b before 3c: companions remove two of slice 3's primitives
+(feeds and late handoffs) and a third's use (sendspin's bell), so 3c builds less. 3d after 3c: an in-place change swaps
+claims and posts to loops, and both are 3c's. 5 after 3c, so `Report` sits on the node handle; 6 after 3d, so a retune is
+one outcome among the others. Before 3a's code, a module design for 3a, 3b and 3d, `docs/design/node-lifecycle.md`
+(journeys, `NodeHost`'s rewrite, the two machines as tables, the async barriers, the interim sink, the reshape spike's
+plan, the cut into buildable steps), citing 6.10 for the API (D-D2).
 
-### 13.2 What revision 5 changes in the built code, and the migration
+### 13.2 What revision 6 changes in the built code, and the migration
 
 Each built piece and its fate [V, as of the files named]:
 
 | Built piece | Where | Fate | Slice |
 |---|---|---|---|
-| `NodeState`, `NodeLifecycle` (frozen, `batch2.md` section 4) | `node_lifecycle.hpp:8-41`, `node_lifecycle.cpp` | Replaced: `BlockMachine` and `RunMachine` (pure), the node state derived from them; `stateName` gains the new names. An erratum in `batch2.md` section 11 | 3a |
-| `StartContext` | `node_type.hpp:181-223` | Becomes `SetupContext` (erased), behind `SetupOf<spec>` (6.10); its `acquire` calls become the facade's calls by kind; the `HandoffRequest` call becomes `sx.sink(bank, shape)`; `events()` goes; `declareLatency` stays for a type's own code | 3a |
-| `StartResult`, `RunRecipe`, `Ready` | `node_type.hpp:224-306` | Go. `SetupResult`, `Built<Run>` and `BuildResult<Run>`, `BuildContext` behind `BuildOf<spec>` replace them (6.10); `StartResult`'s `SpecCode` constructor becomes `RunCode`'s, which `Built` takes | 3a |
-| `NodeConfig::start` | `node_type.hpp:307-315`; `SpecConfig::start`, `type_spec.hpp` | Becomes `setup` and `build`; `SpecConfig` finds the behaviour's `setup`, `build` and (3d) `reconfigure` by name and holds each to its signature | 3a |
-| `RunObject` | `node_type.hpp:233-243` | Kept; gains `start()` (default: nothing) | 3a |
-| `RunCode`, `passThrough`, `BankPair`, `bankPair`, `makePassThrough` | `node_type.hpp:244-277`, `pass_through.cpp`, `type_spec.hpp` | Kept; `Built` takes a `RunCode` | — |
+| `NodeState`, `NodeLifecycle` (frozen, `batch2.md` section 4) | `node_lifecycle.hpp:8-41`, `node_lifecycle.cpp` | Replaced: `BlockMachine` and `ConfigurationMachine` (pure), the node state derived from them and the wanted state; `stateName` gains the new names. An erratum in `batch2.md` section 11 | 3a |
+| `StartContext` | `node_type.hpp:184-225` | Becomes `ConfigureContext` (erased), behind `ConfigureOf<spec>` (6.10); its `acquire` calls become the context's calls by kind; the `HandoffRequest` call becomes `cx.sink(bank, shape)`; `events()` moves to `NodeOf::handle()`; `declareLatency` stays for a type's own code | 3a |
+| `StartResult`, `RunRecipe`, `Ready` | `node_type.hpp:226-306` (`RunRecipe` at 279, `StartResult` at 283) | Go. The two-phase start and its recipe have no successor: `configure` acquires and constructs at once (R19), and readiness is the framework's. `StartResult`'s `SpecCode` constructor becomes `NodeCode`'s, which `cx.use` takes | 3a |
+| `NodeConfig::start` | `node_type.hpp:307-315`; `SpecConfig::start`, `type_spec.hpp` | Becomes the type's class: `SpecConfig` makes the instance (with `NodeOf<spec>&` or none) and finds `configure`, `start` and `stop` by name, each held to its signature | 3a |
+| `RunObject` | `node_type.hpp:235-243` | Goes: the instance is the type's own class, with no base; its `close` becomes the framework closing the node's loops and destroying their states on their own threads (I5 step 4). 3a keeps its teardown mechanism, renamed, for `sendspin`'s own threads until loops exist (13.1) | 3a, 3c |
+| `RunCode`, `passThrough`, `BankPair`, `bankPair`, `makePassThrough` | `node_type.hpp:244-277`, `pass_through.cpp`, `type_spec.hpp` | Kept; `RunCode` is renamed `NodeCode`, which `cx.use` takes | 3a |
 | `AudioCode`, `Io`, `Members`, `TypeSpec`, `makeNodeType` | `node_type.hpp`, `type_spec.hpp` | Kept. `TypeSpec` gains `.stores` and `.loops` (3c), rows `.inPlace()` (3d) | 3c, 3d |
-| `GraphCycle`, `Latency`, `LatencyPlan`, `PortBlock::carryLatency` | `node_type.hpp:87-118`, `node_host.hpp:53-69` | Kept. The plan is carried at T4 (before the first drive, as now) and again at a reconfigure's end | 3a, 3d |
-| `InsidesEvents`, `Channel` | `node_type.hpp:171-180`, `node_host.cpp:168-226` | 3a keeps `Channel`, reached as `BuildContext::events()`; 3c replaces both with `RunHandle` (node-primitives.md 5) | 3a, 3c |
-| `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `Handoff`, `HandoffAdapter`, `ThreadHandoffs` | `node_type.hpp:134-163`, `node_host.hpp:96-113`, `handoffs.cpp` | 3a: the request, `RtWriter` and the consumer pointer go; the sink's API replaces them, its consumer named in `Built` (a handoff needed its consumer at acquisition, `node_type.hpp:157-161` [V], which `setup` cannot give, since no run object exists yet). `ThreadHandoff`'s ring, wake and drain stay, as the interim sink's, written from the block's own `process` after the code; `HandoffConsumer` becomes `SinkConsumer` with stamped chunks. 3b: the ring's realtime side moves into the sink's `pw_filter` | 3a, 3b |
-| `SoundCardRequest`, `RtpReceiverRequest`, `OutsideAdapter`, `OutsideTarget`, `OutsideNode`, `OutsideNodeEvents` | `node_type.hpp`, `node_host.hpp:114-158` | Kept as the engine companions' requests and adapters, renamed `Companion*`; asked for through `SetupOf` by bank handle | 3b |
+| `GraphCycle`, `Latency`, `LatencyPlan`, `PortBlock::carryLatency` | `node_type.hpp:87-118`, `node_host.hpp:53-69` | Kept. The plan is carried at T5 (before the first drive, as now) and again at an in-place change's commit point | 3a, 3d |
+| `InsidesEvents`, `Channel` | `node_type.hpp:171-180`, `node_host.cpp:168-226` | 3a keeps `Channel`, reached as `NodeOf::handle()`; 3c replaces both with `NodeHandle` (node-primitives.md 5) | 3a, 3c |
+| `LogEntry::run` | `log.hpp:23` | Goes: records carry no generation (I6) | 3a |
+| `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `Handoff`, `HandoffAdapter`, `ThreadHandoffs` | `node_type.hpp:134-163`, `node_host.hpp:96-113`, `handoffs.cpp` | 3a: the request, `RtWriter` and the consumer pointer go; the sink's API replaces them, its consumer named in `configure` (a handoff needed its consumer at acquisition, `node_type.hpp:157-161` [V]; now `configure` both asks for the sink and names its consumer). `ThreadHandoff`'s ring, wake and drain stay, as the interim sink's, written from the block's own `process` after the code; `HandoffConsumer` becomes `SinkConsumer` with stamped chunks. 3b: the ring's realtime side moves into the sink's `pw_filter` | 3a, 3b |
+| `SoundCardRequest`, `RtpReceiverRequest`, `OutsideAdapter`, `OutsideTarget`, `OutsideNode`, `OutsideNodeEvents` | `node_type.hpp`, `node_host.hpp:114-158` | Kept as the engine companions' requests and adapters, renamed `Companion*`; asked for through `ConfigureOf` by bank handle | 3b |
 | `joinOutsideNode`, `AlsaSoundCards`, `RtpReceivers` | `outside_nodes.cpp`, `sound_cards.cpp`, `rtp_receivers.cpp` | Kept: the one companion join; ring companions use it with a `pw_filter` body. `RtpReceivers` declares `latencyMs` on its link | 3b |
-| `RecordingRequest`, `RecordingAdapter`, `RecordingFile` | `node_type.hpp:164-167`, `node_host.hpp:159-174` | A deferred kind: claimed, opened on the I/O executor, reached in `build` (node-primitives.md 6.11) | 3c |
+| `RecordingRequest`, `RecordingAdapter`, `RecordingFile` | `node_type.hpp:164-167`, `node_host.hpp:159-174` | A deferred kind: claimed, opened on the I/O executor, its descriptor usable once configured (node-primitives.md 6.11) | 3c |
 | `ResourceRegistry` | `node_host.hpp:175-196` | Kept: one adapter per kind; gains the ring companions' adapters (3b) and the later kinds | 3b, 3c |
-| `NodeHost` | `node_host.cpp` | Rewritten around the two machines. `startRun` (`node_host.cpp:272-309`) splits into setup, readiness, build and start; a failure (`outsideLost`, `runLost`, `node_host.cpp:368-377`) tears the run down; `nodeChanged` is overridden (3d); a reconfigure path with partial teardown (3d); the block's reshape between teardown and setup (3d). Teardown keeps its steps and deadline (`node_host.cpp:379-464`), with companions at steps 2 and 3 | 3a to 3d |
+| `NodeHost` | `node_host.cpp` | Rewritten around the two machines and the wanted state. `startRun` (`node_host.cpp:272-310`) becomes T2 and T3 (the instance, `configure`, readiness) and T5 (drive, then `start()`); `nodeUpdated` (`node_host.cpp:581`) splits into the plan's outcomes; a failure (`outsideLost`, `runLost`, `node_host.cpp:369-377`) tears the configuration down and keeps the block; new: `stop` and `start` (T6 to T8); `nodeChanged` is overridden (3d); an in-place path with partial teardown (3d); the block's reshape between teardown and `configure` (3d). Teardown keeps its steps and deadline (`node_host.cpp:379-470`), with companions at steps 2 and 3 | 3a to 3d |
 | `NodeHealth`, `NodeHealthListener` | `node_host.hpp:22-37` | Gain `phase`; `StatusLog`'s `node` record and the gateway's `node.state` carry it | 3a |
-| `DesiredGraph::plan`, `commit`, `DesiredNodeListener` | `desired_graph.cpp:149-209`, `desired_graph.hpp:15-27` | The plan names each node's outcome; a change of ports with the same type is a reshape, not a replace; `nodeChanged` with defaults keeps other listeners as they are | 3d |
+| `DesiredGraph::plan`, `commit`, `DesiredNodeListener` | `desired_graph.cpp:149-209`, `desired_graph.hpp:15-27` | The wanted state is part of a node's desired state (3a); the plan names each node's outcome; a change of ports with the same type is a reshape, not a replace; `nodeChanged` with defaults keeps other listeners as they are (3d) | 3a, 3d |
+| The graph file's model | `src/config/` | Reads and writes `node <type> <name> stopped`, edited at its source by `node.start` and `node.stop` (gate F1) | 3a |
 | `FilterPortBlocks` | `port_blocks.cpp` | 3a: `drive(code, done)` asynchronous, arming the interim sinks in the same invoke, and the framework's whole-block fade with its acknowledgement; 3d: `reshape` with the prepared layout kept for the old code, and per-bank holds | 3a, 3d |
-| `TypeHarness`, `NodeHarness` | `ear/testing/`, `testing/node_harness.cpp` | Step the lifecycle (3a), fake companions as rings (3b), the primitives (3c), reconfigure and reshape (3d) | 3a to 3d |
-| `white`, `card`, `rtp` | `src/nodes/*` | `start` becomes `setup` and `build` (3a); `rtp`'s `declareLatency` moves into its companion kind (3b); `rtp` reconfigures in place (3d) | 3a, 3b, 3d |
-| `file` | `src/nodes/file` | 3a: `setup` asks `sx.sink(writer, ...)`; `build` makes `FileRun` and names its `WavWriter` in `Built::consume`; the code is `passThrough({record→writer})`, `Recorder` deleted; 3b: the sink becomes a companion, no change to `file`; 3c: its recording deferred | 3a, 3c |
-| `sendspin` | `src/nodes/sendspin` | 3a: its run object built in `build`, its threads started in `start`, its code made in `build` from its run object's members (still its own code, reading its feed and writing `to` into the inside bank `to_server`, which the interim sink carries to `ToServer`, named in `Built::consume`); 3b: a source on `from_server`, `SendspinCode`, `Feed`, `Mailbox`, the capture anchor and the bell deleted, its code a `passThrough`; 3c: loops, store, claims, `TypeSpec`, `TypeHarness`; 3d: `reconfigure`, pending G19 | 3a to 3d |
+| `TypeHarness`, `NodeHarness` | `ear/testing/`, `testing/node_harness.cpp` | Apply operations and step the lifecycle (3a), fake companions as rings (3b), the primitives and loop states (3c), in-place changes and reshape (3d) | 3a to 3d |
+| `white`, `card`, `rtp` | `src/nodes/*` | `start` becomes `configure` (3a); `rtp`'s `declareLatency` moves into its companion kind (3b); `rtp` changes in place (3d) | 3a, 3b, 3d |
+| `file` | `src/nodes/file` | 3a: `configure` asks `cx.sink(writer, ...)` and gives its `WavWriter` whole; the code is `passThrough({record→writer})`, `Recorder` deleted; 3b: the sink becomes a companion, no change to `file`; 3c: its recording deferred | 3a, 3c |
+| `sendspin` | `src/nodes/sendspin` | 3a: a class with `configure`, `start()` (its threads start) and `stop()` (its connection closes), its code given in `configure` from its instance's members (still its own code, reading its feed and writing `to` into the inside bank `to_server`, which the interim sink carries to `ToServer`); 3b: a source on `from_server`, `SendspinCode`, `Feed`, `Mailbox`, the capture anchor and the bell deleted, its code a `passThrough`; 3c: its worker a loop with a state (`ToServer` its member, `consumedBy`), store, claims, `TypeSpec`, `TypeHarness`; 3d: its in-place `configure` | 3a to 3d |
 
 **Each built test group's fate.** Names are the test executables of AGENTS.md; counts are `TEST_CASE`s today.
 
 | Test group | Today | Fate |
 |---|---|---|
-| `node_lifecycle_test.cpp` (7) | the four-state machine | Rewritten in 3a as state-against-fact tables for both machines and the derived state, every new transition (T1 to T15) included |
-| `node_host_test.cpp` (47) | NodeHost with fake adapters | In 3a: the two order tests ("A node gets its port block, then starts, prepares its code, drives the block and builds its run"; "Start only acquires: the code drives the block at once, and the recipe runs once every resource is ready") are rewritten to the new order (setup, readiness, build, then drive and start once the block is ready); "A node acquires resources and its events only inside start" becomes one case per hook; the two loss cases ("A receiver lost after the node ran ...", "A run lost from its own thread ...") now expect the run torn down and the block silent. Kept as they are, with renamed steps: block lost (I1), stop order and `allGone`, removal, restart behind the same block, update of a failed node, cards and receivers in either order, one name per engine object, the pass-through, the latency plan, the restart and name waits (I7), notes, I5a's leaks, old runs (I6), the barrier first, step 5's order. In 3a the handoff cases (a consumer blocked at teardown; past the deadline; the run object closing after every handoff) move to sinks, and new cases cover a sink with no consumer or two at build's return, the fade acknowledged before every barrier, and a barrier's completion arriving later than the call (asynchronous). In 3c the recording cases follow the deferred kind, and a claim case runs two nodes swapping ports with their teardowns finishing in either order. 3d adds reconfigure, fallback, deadline, supersession (a newer change before and after the commit point; `restart` during a reconfigure), a retiring resource lost, hold, code swap and reshape cases |
-| `type_spec_test.cpp` (8), `compile_fail/type_spec_bad.cpp` | the spec, `Io`, the behaviour's shape | Kept; the behaviour-shape cases move from `start` to `setup` and `build`; new compile-fail cases: a `build` or `reconfigure` of the wrong signature, a `build` whose `Built<Run>` disagrees with the behaviour's `using Run`, a `reconfigure` taking a `ReconfigureOf` of another run type, `consume` naming a member that is not a `SinkConsumer`, a `Lifecycle` deadline above 60 s, a hold of an input bank, a companion on a public bank (3a, 3b, 3d) |
-| `desired_graph_test.cpp` (17) | plans and commits | Kept; in 3d the port-change replacement cases become reshapes, and outcome cases are added |
-| `handoff_test.cpp` (5), ear_pipewire | the handoff on real threads | Become the interim sink's tests in 3a (order, drops counted, close drains, no allocation on the realtime side, and a ramp recorded through it that starts at the first driven sample and ends at the last, with no trailing zeros), then the sink companion's in 3b, plus the source's (shortfall, time kept, played reports, the fade at an underrun and a clear) and the same-cycle ramp test |
+| `node_lifecycle_test.cpp` (7) | the four-state machine | Rewritten in 3a as state-against-fact tables for both machines, the wanted state and the derived state, every transition (T1 to T18) included |
+| `node_host_test.cpp` (47) | NodeHost with fake adapters | In 3a: the two order tests ("A node gets its port block, then starts, prepares its code, drives the block and builds its run"; "Start only acquires: the code drives the block at once, and the recipe runs once every resource is ready") are rewritten to the new order (the instance and `configure`, readiness, then drive and `start()` once the block is ready); "A node acquires resources and its events only inside start" becomes "only inside configure"; the two loss cases ("A receiver lost after the node ran ...", "A run lost from its own thread ...") now expect the configuration torn down, claims released and the block silent with its wires kept. New: stop and start (the configuration kept, sinks disarmed and re-armed, `stop()` before the fade), a node configured while wanted stopped never calling `start()`, `start` on a failed node retrying. Kept as they are, with renamed steps: block lost (I1), stop order and `allGone`, removal, restart behind the same block, update of a failed node, cards and receivers in either order, one name per engine object, the pass-through, the latency plan, the restart and name waits (I7), notes, I5a's leaks, late messages from an older generation (I6), the barrier first, step 5's order. In 3a the handoff cases (a consumer blocked at teardown; past the deadline; the threads closing after every handoff) move to sinks, and new cases cover a sink with no consumer or two at configure's return, the fade acknowledged before every barrier, and a barrier's completion arriving later than the call (asynchronous). In 3c the recording cases follow the deferred kind, loop states are destroyed on their own threads, and a claim case runs two nodes swapping ports with their teardowns finishing in either order. 3d adds in-place, fallback, deadline, supersession (a newer change before and after the commit point; `restart` and `stop` during an in-place change), a retiring resource lost, hold, code swap and reshape cases |
+| `type_spec_test.cpp` (8), `compile_fail/type_spec_bad.cpp` | the spec, `Io`, the behaviour's shape | Kept; the shape cases move from `start` to the class's members; new compile-fail cases: `configure`, `start` or `stop` of the wrong signature, a constructor that is neither of the two, a post whose function takes another loop's state type, `consumedBy` naming a member that is not a `SinkConsumer`, a `Lifecycle` deadline above 60 s, a hold of an input bank, a companion on a public bank (3a, 3b, 3c, 3d) |
+| `desired_graph_test.cpp` (17) | plans and commits | Kept; 3a adds the wanted state; in 3d the port-change replacement cases become reshapes, and outcome cases are added |
+| `handoff_test.cpp` (5), ear_pipewire | the handoff on real threads | Become the interim sink's tests in 3a (order, drops counted, close drains, no allocation on the realtime side, and a ramp recorded through it that starts at the first driven sample and ends at the last, with no trailing zeros, across a stop and a start too), then the sink companion's in 3b, plus the source's (shortfall, time kept, played reports, the fade at an underrun and a clear) and the same-cycle ramp test |
 | `port_block_test.cpp` (13), `sound_card_test.cpp` (6), `rtp_receiver_test.cpp` (9), `engine_test.cpp` (7) | blocks, cards, receivers, the engine | Kept; 3d adds reshape (a port added and removed beside a running ramp, links of surviving ports kept) and holds (the fade, then zeros) |
-| `white_test.cpp` (3), `card_test.cpp` (4), `rtp_test.cpp` (6), `file_test.cpp` (7) | each type through `TypeHarness` | Rewritten in 3a to the harness's lifecycle steps, with the same assertions; `file`'s exact-samples test reads the sink fake's chunks from 3b; `rtp` gains reconfigure cases in 3d |
+| `white_test.cpp` (3), `card_test.cpp` (4), `rtp_test.cpp` (6), `file_test.cpp` (7) | each type through `TypeHarness` | Rewritten in 3a to the harness's operations, with the same assertions; `file`'s exact-samples test reads the sink fake's chunks from 3b; `rtp` gains in-place cases in 3d |
 | sendspin's `code_test.cpp` (13), `feed_test.cpp` (8), `to_server_test.cpp` (4) | its realtime code, feed and handoff consumer | In 3b: the skip and dating cases move to the source companion's tests (the rule moved, 9.6); the feed's to the source's ring; `to_server`'s adapt to stamped chunks. `clock_test.cpp` (4) is kept as it is: end to end, it proves the dating through a following card with companions in the path |
-| `test/nodes/` all-type tests | every type through the harness | Kept; the harness walks every state and transition for every type |
-| `ear_system_tests` | the real `out/ear` | Kept. Lines that wait for `node <n> starting` after an edit wait for `node <n> restarting: ...` (3a). The sendspin ramp test, frame for frame through a source and a sink, is 3b's proof. New: an `rtp` port changed in place (silence, then the tone, no `restarting`), a card's playback count reshaped on the test card (the surviving channel's link never pending), an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the fade's slope), and, if node-primitives.md G19 is answered (a), a `sendspin` name changed in place: `reconfiguring` and never `restarting`, the same client id, the key file not read again, the connection dropped and back (3d) |
+| `test/nodes/` all-type tests | every type through the harness | Kept; the harness walks every state and transition for every type, stop and start included |
+| `ear_config_tests` | the graph file model and keeper | 3a adds the `stopped` word: read, written, edited at its source by `node.start` and `node.stop`, refused as `shared-definition` where a snippet makes the node line for several nodes |
+| `ear_system_tests` | the real `out/ear` | Kept. Lines that wait for `node <n> starting` after an edit wait for `node <n> stopping: restarting (<keys>)` then `starting` (3a); lines that wait for a removal's `node <n> stopped dropped=<frames>` wait for `node <n> removed dropped=<frames>` (3a). New in 3a: `node.stop` silences a `white` node's recording (exact zeros, the WAV still growing), `node.start` brings the noise back, the `stopped` word written in `ear.conf` and honoured at the next boot. The sendspin ramp test, frame for frame through a source and a sink, is 3b's proof. New in 3d: an `rtp` port changed in place (silence, then the tone, no `stopping`), a card's playback count reshaped on the test card (the surviving channel's link never pending), an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the fade's slope), and a `sendspin` name changed in place: `reconfiguring` and never `stopping`, the same client id, the key file not read again, the connection dropped and back |
 
 ### 13.3 Where the two module designs are the home
 
-Both pages are at revision 3, written to this revision and reconciled with it in review round 3 (section 16). Each fact
-has one home; the other pages cite it.
+Both pages are at revision 4, written to this revision in the same change. Each fact has one home; the other pages cite
+it.
 
-- **`docs/design/node-primitives.md`** (slice 3c, and the primitives' part of 3d, its G18) is the home of: the run
-  handle (its 5); readiness steps 1 to 3 and 4' (6.1); `whenReady` and `ReconfigureDone` (6.2); wakes (6.3, deferred
-  for types by G23); loops (6.4); the source writer's contract (6.5); `SinkConsumer` and `SinkControl` (6.6); the I/O
-  executor (6.7); stores (6.8); claims, their holders and texts, the same-key rule and break-first for a same-port
-  receiver (6.9); each primitive's place in teardown, full and partial, and the leaked-run record (6.10); recordings
-  (6.11); `TypeSpec`'s member list and order, `.lifecycle` included (6.13); sendspin's reconfigure (4.2, G19).
+- **`docs/design/node-primitives.md`** (slice 3c, and the primitives' part of 3d, its G18, decided) is the home of: the
+  node handle (its 5); readiness steps 1 to 3 and 4' (6.1); `whenReady` and `ConfigureDone` (6.2); wakes (6.3, deferred
+  for types); loops, their states and posts (6.4); the source writer's contract (6.5); `SinkConsumer` and `SinkControl`
+  (6.6); the I/O executor (6.7); stores (6.8); claims, their holders and texts, the same-key rule and break-first for a
+  same-port receiver (6.9); each primitive's place in teardown, full and partial, and the leaked-configuration record
+  (6.10); recordings (6.11); `TypeSpec`'s member list and order, `.lifecycle` included (6.13); sendspin's in-place
+  `configure` (4.2).
 - **`docs/design/control-plane.md`** (slices 5 and 6, and the wire of 3a, 3b, 3d and 8) is the home of: every member of
-  `node.state` per phase, `reason` and `lastFailure` (4.8); `applied`, `inPlace`, `dryRun`, `ports-in-use` and
-  `dropRoutes` (4.9); companions on the wire (4.10); every method and notification (4.2, 4.3), error codes (4.5) and
-  framework diagnostic codes (4.6); `.shapesPorts()`'s build and schema (5.1); `restart`'s reply by phase (7.6); the
-  `node` records' fields and the `still` record (9.1).
-- **This page** is the home of: the states, transitions and failure codes (6.2, 6.3), the hooks and their facades
-  (6.4, 6.10), the plan's outcomes and the rows' marks (6.6, 7.1), holds and their acknowledgement, the commit point,
-  supersession (6.3, 6.6), reshape and its two layouts (6.7), the invariants (6.9), the harness's class (7.6), and the
-  companions' realtime contract (9.6).
+  `node.state` per phase, `reason` and `lastFailure` (4.8); `node.start` and `node.stop` (4.2); `applied`, `inPlace`,
+  `dryRun`, `ports-in-use` and `dropRoutes` (4.9); companions on the wire (4.10); every method and notification (4.2,
+  4.3), error codes (4.5) and framework diagnostic codes (4.6); `.shapesPorts()`'s build and schema (5.1); `restart`'s
+  reply by phase (7.6); the `node` records' fields and the `still` record (9.1).
+- **This page** is the home of: the graph's operations (6.1), the states, transitions and failure codes (6.2, 6.3), the
+  hooks and their contexts (6.4, 6.10), the plan's outcomes and the rows' marks (6.6, 7.1), holds and their
+  acknowledgement, the commit point, supersession (6.3, 6.6), reshape and its two layouts (6.7), the invariants (6.9),
+  the harness's class (7.6), and the companions' realtime contract (9.6).
 
 ### Slice 1 as built
 
-(Revision 5 supersedes parts of this record: 13.2 says which built pieces change.)
+(Revisions 5 and 6 supersede parts of this record: 13.2 says which built pieces change. The record keeps the built
+code's words, run, recipe and `RunObject` among them, which revision 6 retires.)
 
 Slice 1 is built (`node_type.hpp`, `node_host.hpp`, `timers.hpp`, `pass_through.hpp` in `ear_core`). Where it differs
 from the sections above, and why:
@@ -1783,7 +1889,8 @@ from the sections above, and why:
 
 ### Slice 2 as built
 
-(Revision 5 supersedes parts of this record: 13.2 says which built pieces change.)
+(Revisions 5 and 6 supersede parts of this record: 13.2 says which built pieces change. The record keeps the built
+code's words, run, recipe and `RunObject` among them, which revision 6 retires.)
 
 Slice 2 is built (`type_spec.hpp` in `ear_core`; `ear/testing/node_harness.hpp` and `type_harness.hpp` in the test-only
 library `ear_type_harness`); `white`, `file`, `card` and `rtp` are written against it, and `sendspin` keeps its shape
@@ -1858,7 +1965,8 @@ until slice 3. Where it differs from sections 7.1, 7.2, 7.3, 7.6 and 9.2, and wh
 
 ### Slice 7 as built
 
-(Revision 5 supersedes parts of this record: 13.2 says which built pieces change.)
+(Revisions 5 and 6 supersede parts of this record: 13.2 says which built pieces change. The record keeps the built
+code's words, run, recipe and `RunObject` among them, which revision 6 retires.)
 
 Slice 7 is built (`engine.conf`, `engine.cpp`, `port_blocks.cpp`, `sound_cards.cpp` in `ear_pipewire`; `GraphCycle`,
 `Latency`, `StartContext::declareLatency`, `LatencyPlan` and `PortBlock::carryLatency` in `ear_core`), on the mechanism
@@ -1947,7 +2055,8 @@ sections above, and why:
 ## 14. Gate answers
 
 The owner's answers, 2026-11-07, in chat (current choices; later evidence may reopen them); 14.1 adds those of
-2026-11-08, and 14.2 asks revision 5's questions:
+2026-11-08; 14.2 asks revision 6's owner questions; 14.3 lists what the designer decided; 14.4 says what became of every
+gate revision 5 asked.
 
 | # | Question | The owner's answer | Where it lands |
 |---|---|---|---|
@@ -1961,242 +2070,118 @@ The owner's answers, 2026-11-07, in chat (current choices; later evidence may re
 | Q8 | The internal clock's host clock (after the second review found timerfd cannot arm the raw clock, and that chrony may slew `CLOCK_MONOTONIC` by up to 83,333 ppm) | "Track the raw clock": the dummy's timer steered to `CLOCK_MONOTONIC_RAW`; if PipeWire cannot, fall back to `CLOCK_MONOTONIC` with bounded slewing in the deployment | Section 10, 9.3; slice 7 |
 | Q9 | How people read JSON output (after the second review asked for a human mode) | "JSON with a msg field": every record carries a short human sentence; one format, no flag | 8.8; slice 4 |
 
-### 14.1 The owner's answers of 2026-11-08 (revision 5)
+### 14.1 The owner's answers of 2026-11-08 (revisions 5 and 6)
 
 | # | Question | The owner's answer | Where it lands |
 |---|---|---|---|
 | Q10 | node-primitives.md G1: where do loops, wakes, the I/O executor, the probe and stores live? | (a), a new `ear_runtime` package | 3c; 9.6 (the sink's thread) |
-| Q11 | node-primitives.md G14: how does a type get its loops? | (a), declared in the spec as handles | 7.1, 7.3 |
-| Q12 | node-primitives.md G15: how is the run object made? | (a), a static `build` reaching resources by handle, not a recipe lambda | 6.4 (now after `setup`, before `start`) |
-| Q13 | node-primitives.md G17: the run handle's accessor | (a), `ready.handle()` (here `bx.handle()`) | 6.4 |
-| Q14 | node-primitives.md G3: a store, recording path or port held by a leaked run | R15: (a), refused with a detail saying the node starts when that run closes; the late close starts it | I8, I5a |
-| Q15 | node-primitives.md G2: is a mailbox a resource kind or a kept value? | R13: neither; mailboxes existed before the run object only because of the two-phase start. The run object owns them | 6.5 |
+| Q11 | node-primitives.md G14: how does a type get its loops? | (a), declared in the spec as handles | 7.1, 7.3 (revision 6: each handle names its loop's state type, 6.10) |
+| Q12 | node-primitives.md G15: how is the run object made? | (a), reached by handle, not a recipe lambda | revision 6: inside `configure`, which constructs the instance's parts by handle (6.4); there is no separate `build` (R19) |
+| Q13 | node-primitives.md G17: the run handle's accessor | (a), `ready.handle()` | revision 6: `node.handle()` on the node's context (6.10) |
+| Q14 | node-primitives.md G3: a store, recording path or port held by a leaked run | R15: (a), refused with a detail saying the node starts when that one closes; the late close starts it | I8, I5a (a leaked configuration) |
+| Q15 | node-primitives.md G2: is a mailbox a resource kind or a kept value? | R13: neither; mailboxes existed before the run object only because of the two-phase start | 6.5: the instance owns them |
 | Q16 | node-primitives.md G4: a handoff whose consumer is part of the run object | R14: the wrong question; audio code reads inputs and writes outputs, and the framework crosses to non-realtime code | 9.6, I12 |
-| Q17 | The lifecycle's shape | R12, R16: one state machine per node, a hook for each viable state (at least setup, build, start); the sketch's shape liked; isolation per node | Section 6 |
+| Q17 | The lifecycle's shape | R12, R16: one state machine per node; the sketch's shape liked; isolation per node | Section 6 (R12's hook list replaced by Q21) |
 | Q18 | Settings changes while audio runs | R11, R17: supported; the node decides what it can change in place, the framework supports it; a change of shape may not be transparent | 6.6, 6.7 |
 | Q19 | Crossing to non-realtime code | R18: through hidden nodes the node pipes its inside banks to | 9.6 |
+| Q20 | Revision 5's A1: health on the wire, one field or two? | R22: (b), a short set the editor colours, and `phase` with the exact state and its cause | 6.2; control-plane.md 4.8. The set, derived for revision 6's states: `starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering` |
+| Q21 | The hooks | R23: exactly three, `configure(old, new)`, `start()`, `stop()` | 6.4, 6.10 |
+| Q22 | Revision 5's A2: when does `start` run against `build`? | R19: "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 6.4: one `configure`; readiness is the framework's; `start()` once configured and the block ready |
+| Q23 | Revision 5's A3: what happens to a failed run? | R20, R21: there is no run; only a node fails; the graph always runs; operations are asynchronous | 6.1 to 6.3: a failed node is torn down at once, keeps its wires, releases its claims |
+| Q24 | Revision 5's A4: where reconfigure lives, and how it reaches the type's threads | R24: "too technical for me to properly answer" | Decided by the designer: D-A4 (14.3) |
+| Q25 | Can nodes be started and stopped? | R20: "nodes can be added to it, configured, wired, start/stop" | 6.3; `node.start` and `node.stop` (control-plane.md 4.2); how `ear.conf` says it is gate F1 |
 
-### 14.2 Gate questions for revision 5
+**A change of practice** (R24). From revision 6, the owner is asked only about what an operator or a type author sees:
+what the editor shows, what `ear.conf` can say, what happens to audio, what a type author writes. Each question gives
+plain background, a concrete scenario, options, a recommendation and why. Purely technical or internal choices are
+decided by the designer and listed in 14.3 with their reasons, so the owner can overturn any of them. The three pages
+together ask the owner eight questions: F1, F2 and C2 here; W3, X2, G1, G3 and G4 in control-plane.md 14.
 
-Grouped. Each gives the background a question depends on, a concrete scenario, the options and a recommendation with
-its reason. The page is written to the recommendations. Groups A to D are open; group E lists the rules a module page
-changed, each asked once in that page. Already answered and settled: Q1 to Q19 above, among them node-primitives.md's
-G1, G3, G14, G15 and G17.
+### 14.2 Owner gates for revision 6
 
-#### A. The state machine
+The page is written to each recommendation.
 
-**A1. Health on the wire: one field or two?**
-*Background.* A node's health is what the editor colours it by and what scripts wait for: today `node.state` is one of
-four words (`starting`, `running`, `failed`, `stopping`, `node_lifecycle.hpp:8`), and the `node` record's `msg` says
-the same. Revision 5 has nine states (6.2), some of them short-lived (`configured`, `built`). *Scenario.* An operator
-changes an `rtp` node's port: the node goes `running` → `reconfiguring` (outputs held silent while the new receiver
-binds) → `running`. A script that deploys a graph waits for every node to say `running`.
-*Options.* (a) `state` carries all nine values. (b) `state` keeps a short set the editor colours (`starting`,
-`running`, `reconfiguring`, `failed`, `recovering`, `stopping`), and a second field, `phase`, gives the exact state and
-its cause (`setting-up: waiting for udp:5004`, `restarting: playback changed`). (c) Keep today's four in `state`;
-everything else only in `phase`.
-*Recommendation: (b).* The colours stay few and each means something to an operator; scripts that wait for `running`
-keep working; the detail is there for whoever looks. `reconfiguring` earns a colour of its own because the node may be
-silent on purpose, and the operator must see why. (c) would show a node held silent as `running`.
+**F1. Can `ear.conf` say that a node is stopped, and how?**
+*Background.* You said nodes can be started and stopped while the graph runs. A stopped node stays in the graph with its
+settings and its wires, but plays silence. `ear.conf` is the one description of the graph: the editor's text pane shows
+it, a hand edit wins over anything the editor did, and ear rebuilds the graph from it when it restarts. So the question
+is whether "stopped" is part of the graph (written in the file) or only a moment's state (forgotten at the next
+restart). *Scenario.* An operator clicks Stop on the `porch` card node because the porch is empty tonight. At 3 a.m.
+the pod is rescheduled and ear restarts. In the morning, is the porch silent or playing? And a colleague who prefers
+`vi` wants to stop the node by editing the file.
+*Options.* (a) Not in the file: Stop and Start are buttons only; every node runs again after a restart; a hand edit
+cannot stop a node. (b) A word in the node's line, written and removed by the buttons: `node card porch stopped {
+card USB2; playback 2; }`. (c) A setting inside the braces, reserved by ear for every type: `running false;`.
+*Recommendation: (b).* What the editor shows and what the file says stay the same thing, a stop survives a restart, and
+a hand edit can stop or start a node. The word sits beside the node's type and name, which are ear's, not the type's,
+so it never collides with a type's own settings, unlike (c). With (a), the file would no longer describe the graph that
+is running, and the porch would play at 3 a.m.
 
-**A2. When does the run object's `start` run?**
-*Background.* `build` makes the run object once every resource is ready. The block (the node's engine node) becomes
-ready on its own schedule, usually within milliseconds, sometimes later on a loaded host. Until it is ready, `process`
-is never called. *Scenario.* A `sendspin` node's worker starts and Music Assistant begins streaming at once; if the
-block is not processing yet, nothing plays and no "played" report goes back, and the library's time filter waits on
-nothing.
-*Options.* (a) Right after `build`. (b) Once the block is ready and the code drives it (`built` waits for it).
-*Recommendation: (b).* A run object never starts work whose audio goes nowhere, and `built` gets a meaning an operator
-can read ("waiting for the engine"). The cost is a few milliseconds on a normal start.
+**F2. What does a stopped node keep?**
+*Background.* Starting a node opens what it needs: a sound card's device, a network port to listen on, a file to record
+into. Stopping it ends its audio. Either it keeps those things open, ready to start again at once, or it gives them
+back, and starting it opens them again (which can fail, or take a few seconds). *Scenario.* The operator stops the
+`desk` card node to let another program use the MOTU for a while, and stops `kitchen`, a `sendspin` node listening on
+port 8928, then tries to give port 8928 to a new node.
+*Options.* (a) A stopped node keeps everything it opened: the card stays open (playing silence), the port stays
+reserved for it; Start is instant and cannot fail for a missing device or a taken port. To free them, remove the node.
+(b) A stopped node gives everything back: the card is closed, the port is free; Start opens them again and may fail.
+*Recommendation: (a).* "Stopped" then means "silent, and ready": the operator can rely on Start, and no other node can
+take a stopped node's port behind its back. Freeing a device is what removing the node is for, and removing then adding
+it again is two clicks. (b) makes Stop a hidden removal and Start a hidden add, with their failures.
 
-**A3. What happens to a failed run?**
-*Background.* Today a run that fails after it started (a card lost, a library thread that says it is dead) keeps its
-code driving the block and keeps every resource until a settings change arrives (`node_host.cpp:368-377`). Recovery
-(slice 8) will need the run gone before it tries again. *Scenario.* A listening `sendspin` node's library fails; today
-it keeps its claim on port 8928 and its threads; the operator moves another node to 8928 and is refused, "held by node
-kitchen".
-*Options.* (a) Tear the failed run down at once (I5): threads stopped, claims released, block silent, routes kept; the
-node stays `failed` until a change, `restart` or recovery. (b) Keep it as today until a change.
-*Recommendation: (a).* A dead run holds nothing anyone can use; releasing it keeps claims honest, frees threads, and
-lets recovery start from a clean slate. What the operator loses: a failed run's last threads cannot be inspected while
-it sits failed (its logs and diagnostics already say why).
+**C2. What does the editor show of a node's hidden helpers?**
+*Background.* Some nodes reach outside the realtime audio path through hidden helper nodes ear makes for them: a
+recording node's file writer, a sound card's device, a network stream's receiver, a Music Assistant node's sender and
+receiver. They are never written in `ear.conf` and never wired by hand, but each can be ready or not, and can drop audio
+(a slow disk) or run short (a slow network). *Scenario.* A two-hour recording has gaps because the disk is slow; the
+operator opens the editor to see why.
+*Options.* (a) Small badges inside the node's box, one per helper (its kind and a dot for ready; its drop count on
+hover). (b) Nothing in the editor; standard output and diagnostics only. (c) Full boxes for the helpers, without wiring
+handles.
+*Recommendation: (a).* The operator sees each helper at the node it belongs to, and the slow writer at a glance, without
+a second graph to read; (c) doubles the boxes on screen for things nobody wires; (b) hides the answer in logs.
 
-**A4. Where does the `reconfigure` hook live, and how does it reach the run object?**
-*Background.* A **run object** exists only for types with threads or shared state (`sendspin`, `file`); `rtp` and
-`card` have none (their audio is a pass-through to companions). A reconfigure must see the old and the new settings, and
-may replace companions the run object never knew of. The run object's threads run while the hook runs on the main loop,
-so the hook must not touch the run object's state there. *Scenario.* An `rtp` node changes port: it has no run object;
-its reconfigure replaces its receiver companion and holds its outputs. A `sendspin` node changes its server URL: its
-reconfigure must tell the running client, on its worker.
-*Options.* (a) A static function of the behaviour, `reconfigure(ReconfigureOf<spec, Run>&, was, now)`; the run
-object's type is the behaviour's `using Run`, checked against `build`'s return type at compile time, and the hook
-reaches the run object only through `rx.post(loop, fn(Run&))` and `rx.whenReady(loop, fn(Run&, token))`, on its own
-loops. (b) As (a), but with `rx.run<T>()`, a `T&` on the main loop checked at run time (revision 5 as first written).
-(c) A virtual function of the run object; a type without one is restart-only or must write one.
-*Recommendation: (a).* One place, typed by the spec, for types with and without a run object, beside `setup` and
-`build`, which it mirrors. A wrong run type does not compile, and a data race with the run object's threads cannot be
-written: there is no bare reference on the main loop. The run object keeps the two hooks that are its own threads'
-beginning and end, `start` and `close`.
+### 14.3 Decided by the designer
 
-#### B. Reconfigure and reshape
+Each is a technical or internal choice the owner need not make (R24); each says what was decided and why, and the owner
+can overturn any. The pages are written to them.
 
-**B1. How does a type say what it can change in place?**
-*Background.* R17: the node controls this. The desired graph commits a change before any node hears of it, and the
-editor and the edit's reply could say what a change will do (restart or not) only if that is known at plan time.
-*Scenario.* In the editor's settings panel, beside `rtp`'s `port`, the operator should see "applies in place"; beside
-`channels`, "restarts the node".
-*Options.* (a) A mark on each row in the type's table (`.inPlace()`), read by `plan`; the hook may still answer
-`restart` for a value it cannot take. (b) No marks: every change goes to the hook, which answers in place or restart at
-run time. (c) A plan-time function the type writes (`canReconfigure(was, now)`).
-*Recommendation: (a).* It is data, in the one table a type declares its settings in, so the plan, the schema and the
-editor read it with no type code; the default is restart, so a type gains nothing by accident; the hook keeps the last
-word for values it cannot take. (b) hides from the operator what a change will do until it is done.
+| # | Decision | Why |
+|---|---|---|
+| D-A4 | Hooks run on the graph's thread (the main loop). A node's own threads are its loops'; a hook reaches a loop only by posting a function that takes that loop's state, typed by the loop's handle (`post(worker, [](Worker& w) {...})`), and holds no reference to any loop's state (6.4, I14) | One place for every hook, for types with and without threads; a hook cannot race a node's thread, because it holds nothing a thread owns, and a post of the wrong type does not compile. It replaces revision 5's `using Run` and `rx.post`, which needed a run object |
+| D-A5 | `configure` has two answers, `applied` and `restart` (R23); there is no "fail" answer. A configuration fails when a resource it asked for is refused or never ready, when the node says `lost(detail)`, or when a hook throws. A rule a value breaks belongs in `check`, at parse | A type never decides health (I2); a value that can never work is refused before it reaches `ear.conf` |
+| D-A6 | A loop's state is destroyed on its own loop, after the work already posted ran (`stop()`'s goodbye among it); its destructor stops and joins its library's threads. There is no close hook | R23's three hooks; joining a thread off the main loop keeps I11; the teardown deadline (I5a) still bounds it |
+| D-A7 | Any change that arrives before the node first reached `running` or `stopped` restarts its configuration; in-place changes apply only from then on | Nothing has started, so nothing is gained by changing in place, and one rule is easier to test |
+| D-A8 | A `stop` or a removal during an in-place change ends it as a newer change would before its commit point, and waits for it after (6.3) | The operator's newest intent wins at once, and a type's own work is never cut in half |
+| D-A9 | The `restart` action stays (8.4): a full stop, configure from empty, and back to the wanted state, without editing `ear.conf` | It is the only way to start a node afresh with unchanged settings (a key file fixed by hand), and costs nothing beyond stop and start |
+| D-A10 | Standard output: `node <n> stopped` now means a resting stopped node; a removal ends with `node <n> removed dropped=<frames>` (control-plane.md 9.1) | `stopped` must mean one thing; the system tests that wait for a removal's line change once, in 3a |
+| D-A11 | The generation (6.1, I6) is internal: never on the wire, in a record or in a type's API | R20: no run; late messages still need dropping, which a counter does invisibly |
+| D-B1 | Each setting row says whether it changes in place (`.inPlace()`, `.live`), restart-only by default; the plan reads the marks; `configure` may still answer `restart` | It is data in the one settings table, so the editor shows "applies in place" or "restarts the node" with no type code, and nothing is in place by accident |
+| D-B2 | A type cannot refuse a change it cannot make in place; restart is the fallback | A refusal would make a valid `ear.conf` unreachable from a running graph while the same file boots fine, against "hand edits win" |
+| D-B3 | A type asks for the outputs it wants silent during a change (`cx.hold`); the framework fades them out and in over 5 ms. The framework itself fades every planned silence (6.2) and holds before a break-first replacement (6.6) | Only the node knows which outputs a change breaks; fades in framework code keep type code free of realtime work (R14) |
+| D-B4 | An in-place change that fails or passes its deadline (10 s, up to 60 s declared) restarts with the new settings; it never rolls back | A restart is what the change would cost without in-place support; a rollback would leave the audio on a value `ear.conf` does not hold |
+| D-B5 | A change of ports keeps the block and the links of surviving ports (a reshape), restarting unless every changed key is in place; if slice 3d's spike fails, a reshape is a replace, as today | Surviving wires never blink and the editor keeps the node where it is; the fallback loses only that |
+| D-B6 | A newer change, `stop`, removal or `restart` supersedes an in-place change that has not reached its commit point; after it, they wait | The newest intent wins within milliseconds, and nothing is left half-done |
+| D-C3 | A type's own audio code may share values (never audio) with its instance or a loop's state, through wait-free members (`Mailbox<T>`) | Internal values are not operator-facing status; audio stays companions-only (I12) |
+| D-C4 | A source companion keeps time by default: it skips what a stalled graph missed, counting it played | Every network source wants it, and the rule is subtle enough to write once |
+| D-D1 | Slices in the order 3a, 3b, 3c, 3d, then 5, 6, 8, 9 (13.1) | Each later slice hooks into 3a's states; companions remove primitives 3c would otherwise build; in-place changes need claims and loops |
+| D-D2 | A module design, `docs/design/node-lifecycle.md`, for 3a, 3b and 3d's cut and tests, reviewed before 3a's code; it cites 6.10 for the API | 3a changes a frozen interface, every type and `NodeHost`'s teardown; the owner works design first |
 
-**B2. May a type refuse a change it cannot apply in place?**
-*Background.* By the time `reconfigure` runs, the change is committed and `ear.conf` holds it, so a refusal could come
-only at plan time. Restart is always possible. *Scenario.* A type that cannot change its sample format while playing
-would rather refuse than restart.
-*Options.* (a) No: restart is the fallback for anything not in place. (b) Yes: an optional plan-time
-`canReconfigure(was, now)` that refuses the edit.
-*Recommendation: (a).* A refusal would make a valid `ear.conf` unreachable from a running graph while the same file
-boots fine, which breaks "hand edits win"; (b) can be added later without changing (a)'s types.
+### 14.4 What became of revision 5's gates
 
-**B3. Who silences the outputs during a reconfigure?**
-*Background.* R17's example: a node changing its network port "must output null audio frames for a few seconds".
-Cutting audio to zero mid-wave clicks; a short fade does not. Whatever the answer, the framework fades every barrier
-that silences a block (6.2) and holds by itself before a break-first replacement (6.6); this question is only about
-holds a type asks for. *Scenario.* `rtp` changes port: its old receiver goes, the new one binds, and in between its
-outputs should be silent, not half of two streams. A future `rtpsend` changing its target address has no outputs at
-all, and a `sendspin` reconfigure loses its stream anyway (its source fades out by itself, 9.6): neither needs a
-hold.
-*Options.* (a) The node asks (`rx.hold(bank)`), the framework fades to zero over 5 ms, holds, and fades back when the
-reconfigure ends. (b) The framework holds every output of every reconfiguring node. (c) Never; a type that wants
-silence writes zeros itself.
-*Recommendation: (a).* Only the node knows which of its outputs a change breaks; (b) would hold banks a change never
-touches (a mixer's other buses); (c) puts click-free fades in every type's realtime code, against R14.
-
-**B4. A reconfigure that fails or takes too long**
-*Background.* A reconfigure acquires new resources (a port, a receiver) before it releases the old. Any of them can be
-refused or never become ready. The desired graph already committed the new settings. *Scenario.* `rtp` moves to port
-5006, which another program holds; the new receiver never binds.
-*Options.* (a) Fall back once to a restart with the new settings (which then fails visibly as a start would, and
-recovery takes over); deadline 10 s by default, a type may declare up to 60 s. (b) Fail the node at once. (c) Roll back
-to the old settings.
-*Recommendation: (a).* A restart is what the change would have cost without in-place support, so the fallback is never
-worse than today; (c) would leave the audio on a value `ear.conf` does not hold.
-
-**B5. A change of shape (ports, banks, member counts)**
-*Background.* A node's ports are its public interface: routes name them. Today a change of ports replaces the node:
-its engine node is destroyed and made again, and every route to it unlinks and links again, surviving ports included
-(`desired_graph.cpp:159-174`). PipeWire lets a running filter add and remove ports, but ear has not tried it on a
-connected realtime filter [U]. *Scenario.* A card node goes from 2 to 4 playback channels while `noise` plays into
-`desk:play.1`.
-*Options.* (a) Replace, as today. (b) Reshape: keep the block, add and remove ports, keep the links of surviving ports;
-the run restarts by default, and a reshape whose every changed key is `.inPlace()` is taken in place (the type must swap its
-code). (c) Reshape, always with a restart.
-*Recommendation: (b), subject to slice 3d's spike, falling back to (a).* Surviving routes never go `pending`, the
-editor keeps the node where it is, and a type like a mixer can add a channel without a gap; the card restarts anyway
-(its ALSA devices change), which is the "not fully transparent" case R17 names.
-
-**B6. A change, or `restart`, while a reconfigure is in flight**
-*Background.* A reconfigure may wait for seconds: a claim held by a node still closing, a receiver that binds slowly, a
-library that reconnects (its deadline is 10 s by default, up to 60 s if the type declares it). Revision 5 as first
-written made every change and the `restart` action wait until it ended. control-plane.md asked the same question for
-the action (its X4); it is asked once, here. *Scenario.* An operator sets `fpp`'s port to 5006, which another program
-holds; seeing "reconfiguring port" not end, they type 5008, or click Restart.
-*Options.* (a) Everything waits for the reconfigure to end (up to its deadline). (b) A newer change supersedes a
-reconfigure that has not reached its commit point (the code swap, or its continuation posted to the run's loop): its
-uncommitted replacements are released, and the newest settings are classified afresh against what the run actually
-runs (a reconfigure again, or a restart); after the commit point a change waits. `restart` ends any reconfigure at once
-(T7). (c) As (b) for `restart` only; settings changes wait.
-*Recommendation: (b).* The operator's newest intent wins within milliseconds, never after a deadline, and nothing
-half-done is left: before the commit point nothing of the run has changed, and after it the type's own work is
-running and must finish whole. (a) makes a wrong value cost up to a minute; (c) fixes the button but not the typo.
-
-#### C. Companions
-
-**C1. Real hidden engine nodes, or rings inside the block?**
-*Background.* Today a handoff's ring is written by the block's own `process` (`file`'s `Recorder`), and sendspin's
-feed is read there too; only sound cards and RTP receivers are separate engine nodes linked to the block's inside
-banks. R18 proposes hidden nodes. *Scenario.* `file` records from `noise`: with (a), `rec`'s block passes `record` to its
-inside bank `writer`, linked to the engine node `rec.writer`, whose ring feeds the WAV writer's thread.
-*Options.* (a) Every crossing is its own engine node (a companion), linked to an inside bank. (b) Keep rings inside the
-block's `process`, written by framework code, and call them companions. (c) Engine nodes for engine-made things only
-(cards, receivers), rings inside the block for the rest.
-*Recommendation: (a), as R18 asks.* Every path is a link the engine knows, so latency is carried the same way for a
-card and a feed, teardown has one barrier per companion, and graph tools see every crossing. It costs one engine node
-and one copy per crossing per cycle (section 12); (b) is cheaper and keeps the type free of realtime code too, but the
-graph would no longer show where audio leaves.
-
-**C2. What do clients see of companions?**
-*Background.* Companions are never in `ear.conf` and never named by a route. An operator debugging a silent `file` node
-wants to know whether its writer is ready or dropping. *Scenario.* `rec.writer`'s ring overflows on a slow disk.
-*Options.* (a) `graph.get` lists each node's companions under it (`name`, `kind`, `bank`, `ready`, drops or
-shortfall), and the editor draws small badges inside the node's box. (b) Nothing on the wire; standard output and
-diagnostics only. (c) Full boxes in the editor, without handles.
-*Recommendation: (a).* The operator sees the machinery at the node it belongs to without a second graph to read; (c)
-doubles the boxes on screen for things nobody routes.
-
-**C3. May a type's own audio code share values (not audio) with its run object?**
-*Background.* R13: "mailboxes could be supportable in either mode". R14: audio code reads inputs and writes outputs.
-Slice 5 adds `rt` status fields (operator-facing values the code writes) and slice 6 parameters (values into the code).
-*Scenario.* A future sequencer type's code reports its play position to its run object, which is not an operator-facing
-status.
-*Options.* (a) Yes, through members of the run object that are wait-free (a `Mailbox<T>`), values only, never audio.
-(b) No: values cross only as status fields and parameters.
-*Recommendation: (a).* Status is what an operator reads; a type's internal values are not, and forcing them through
-status would put them on the wire. Audio stays companions-only (I12).
-
-**C4. Does a source companion keep time by default?**
-*Background.* When the data thread stalls, the graph's clock jumps ahead; a source can either play on where it was
-(falling behind the graph) or skip what the graph missed. sendspin's code skips today (`sendspin_code.cpp:13-17`).
-*Scenario.* A 20 ms stall on a loaded host: sendspin's audio should stay aligned with the server's clock.
-*Options.* (a) The source skips what the graph missed, by default, counting it played; a type may turn it off. (b) The
-type decides, writing it each time.
-*Recommendation: (a).* Every network source wants it, and its rule is subtle (a backward or too-large jump is a new
-clock, not a skip); written once, it is tested once.
-
-#### D. Order and documents
-
-**D1. The slice order**
-*Background.* 13.1. Slices 3 (primitives), 5 and 6 were designed on the two-phase start. *Scenario.* A builder ready
-to start wants the slice that unblocks the most: `sendspin`'s port change in place needs states (3a), its source and
-sink (3b), claims and loops (3c) and the reconfigure path (3d). *Options.* (a) 3a (lifecycle),
-3b (companions), 3c (primitives), 3d (reconfigure, reshape), then 5, 6, 8, 9. (b) 3c as designed first, then the
-lifecycle. (c) 3a and 3d first (the lifecycle with reconfigure), then 3b and 3c.
-*Recommendation: (a).* The lifecycle is the frame every primitive hooks into; companions remove two primitives before
-they are built; reconfigure needs claims (3c). (b) would build `keep<T>` and late handoffs only to delete them.
-
-**D2. Module designs before code**
-*Background.* The owner works design first. This page is a system design; node-primitives.md and control-plane.md are
-module designs at revision 3, reconciled with this page. The review of revision 5 found that the hook facades, the
-type author's core API, had no home: both module pages deferred to a `node-lifecycle.md` that did not exist. This page
-now declares them whole (6.10). *Options.* (a) A further module design, `docs/design/node-lifecycle.md`, for 3a, 3b and
-3d (journeys, `NodeHost`'s rewrite, the two machines as tables, the async barriers, the interim sink, the reshape
-spike's plan, the cut into buildable steps), citing 6.10 for the API, reviewed before 3a's code. (b) Build 3a from
-this page and the two module pages as they are; write the cut into 13.1's rows.
-*Recommendation: (a).* 3a changes a frozen interface (`node_lifecycle.hpp`), every type and `NodeHost`'s teardown;
-its cut and tests deserve the review the other slices got. The API it builds is already fixed here, so the new page
-adds no second home for it.
-
-#### E. Where a module page changed this page's rule
-
-Each row was a conflict between this page and a module page; this page is now written to the module page's
-recommendation, pending that page's gate, so the owner answers each once, there.
-
-| Rule | This page said (revision 5 as first written) | The module page's proposal, now written here | Where | Gate |
-|---|---|---|---|---|
-| A failed node's reason on the wire | `reason` "becomes `lastFailure`" (8.7) | keep `reason` with today's meaning; slice 8 adds `lastFailure` beside it | 8.1, 8.7 | control-plane.md W2 |
-| A reshape that strands routes | refused `unknown-port` (6.7) | through the control port `ports-in-use`, with `dropRoutes`; a hand edit still `unknown-port` | 6.7 | control-plane.md X2 |
-| `restart` during a reconfigure | waits (6.3, 8.4) | ends it at once | 6.3, 8.4 | B6 here (was control-plane.md X4) |
-| sendspin's listening/dialling switch | restart from the hook (6.6) | in place, like a name or port change | 6.6, 11 | node-primitives.md G19 |
-| A node stuck before `running` on standard output | nothing until it changes (6.2) | a `still` record after 2 s | 6.2 | control-plane.md W4 |
-| Which rows make ports | "whatever its mark" (7.1) | `.shapesPorts()`, the schema's promise, held to `ports()` | 7.1 | control-plane.md X1 |
-| Status writers | a loop, `rt`, `resource` or `thread` (8.1, 8.2) | a loop, `rt` or `companion`; no `writer::thread` | 8.1, 8.2 | control-plane.md 5.2 (settled in its revision 2) |
-| Gestures | `node.setParam {gesture}`, `node.paramChanged` (8.5) | `node.set`, `gesture.*`, `gesture.changed` | 8.5 | control-plane.md G2 |
-| Type wakes | `sx.wake`, `bx.wake` (6.5, 7.3) | deferred to the first type that needs one | 6.5, 7.3 | node-primitives.md G23 |
-| Same-port receiver replacement | make-before-break for every in-place change (7.2) | break-first, by the framework | 6.6, 7.2 | node-primitives.md G22 |
-| Sink readiness | ended at step 4 (6.4) | step 4': every consumer's `begin` returned | 6.4 | node-primitives.md (settled in its revision 3) |
+| Gate | Now |
+|---|---|
+| A1 (health on the wire) | Answered (Q20, R22) |
+| A2 (when `start` runs) | Obsolete (R19): there is no `build`; `start()` runs once the node is configured and its block is ready, the framework's concern (6.4) |
+| A3 (a failed run) | Settled by R20: only a node fails; it is torn down at once and keeps its wires (6.2) |
+| A4 (where reconfigure lives) | Decided by the designer: D-A4 |
+| B1 to B6 | Decided by the designer: D-B1 to D-B6 |
+| C1 (companions as real engine nodes) | Settled by R18 |
+| C2 (what clients see of companions) | Kept as an owner gate, rewritten (14.2) |
+| C3, C4 | Decided by the designer: D-C3, D-C4 |
+| D1, D2 | Decided by the designer: D-D1, D-D2 |
+| Group E (rules a module page changed) | Every row is now decided in its module page (node-primitives.md 18.3; control-plane.md 14) or is the owner gate named there: `reason` kept and `lastFailure` beside it (control-plane.md W2, decided); a reshape stranding wires (X2, an owner gate); `restart` during an in-place change (D-B6); sendspin's listening and dialling switch in place (node-primitives.md G19, decided); a `still` record (W4, decided); `.shapesPorts()` (X1, decided); status writers a loop, `rt` or `companion` (settled); gestures `node.set`, `gesture.*` (G2, decided); type wakes deferred (G23, decided); a same-port receiver replaced break-first (G22, decided); sink readiness at step 4' (settled) |
 
 ## 15. Open items
 
@@ -2223,7 +2208,7 @@ recommendation, pending that page's gate, so the owner answers each once, there.
   stops 16 nodes and measures it.
 - Timestamped parameter changes and events (8.5): reserved.
 - A driver resource kind (9.5): not designed.
-- Revision 5 (sections 6 and 9.6), each checked by the slice named:
+- Revisions 5 and 6 (sections 6 and 9.6), each checked by the slice named:
   - [U] `pw_filter_add_port` and `pw_filter_remove_port` on a connected `PW_FILTER_FLAG_RT_PROCESS` filter in PipeWire
     1.4.2: ports appear in the registry and link, a removed port takes its links, and no other block loses a cycle
     (slice 3d's spike; the fallback is a replace, 6.7).
@@ -2247,8 +2232,12 @@ recommendation, pending that page's gate, so the owner answers each once, there.
     between two cycles exactly as the blocking one does (slice 3a, against today's `drive` tests).
   - [U] How long rtp-source takes to unload and load on a port change, which is how long `rtp` holds its outputs
     (slice 3d's system test).
-  - The fade (5 ms), the hook-slow bound (20 ms) and the reconfigure deadline (10 s, at most 60 s) are first choices,
+  - The fade (5 ms), the hook-slow bound (20 ms) and the in-place deadline (10 s, at most 60 s) are first choices,
     to be tuned when slice 3d runs on the MOTU.
+  - That knobly reads `node <type> <name> stopped { ... }` as ear's directive with one more word and edits it at its
+    source like a setting (gate F1): slice 3a's `ear_config_tests`, before the reader changes.
+  - [U] That `start` after `stop` drives a prepared code again within one cycle and one main-loop turn, with the sink
+    re-armed in the same invoke (slice 3a's harness and `handoff_test.cpp`'s ramp across a stop and a start).
 
 ## 16. Review record
 
@@ -2395,3 +2384,21 @@ Revision 5 (2026-11-08) was written to the owner's words R11 to R18; round 3 abo
 given sections 6, 9.6, 13 and 14.2 and the code they cite, and asked to judge at least: the state machine's completeness (every
 state against every fact, changes mid-transition), the reconfigure's partial teardown against I4 to I6, the reshape's
 PipeWire facts, the companions' realtime cost and ordering, and whether 13.2's migration keeps every slice buildable.
+
+### Revision 6 (2026-11-08, not reviewed)
+
+Revision 6 takes the owner's answers to revision 5's state-machine gates (R19 to R24, Q20 to Q25) and rewrites the
+lifecycle without a run: the graph always runs and takes asynchronous, ordered operations (6.1); a node's states are
+`added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `failed`,
+`recovering` and `removed` (6.2), with `start` and `stop` as operations and a wanted state `ear.conf` keeps (6.3, gate
+F1); a type writes a class with three hooks, `configure(old, new)`, `start()` and `stop()` (6.4, 6.10), and reaches its
+own threads only by typed posts to its loops (D-A4, I14); a failed node is torn down at once and keeps its wires (6.2,
+I15); the run's generation is an internal counter (I6). Revision 5's good parts are kept and restated: row marks,
+holds with fades and their acknowledgement, make-before-break, the deadline and fallback, supersession, reshape with
+two layouts, companions, isolation, and every round 3 fix (sinks armed in the same invoke as the code, fades before
+barriers, asynchronous barriers, `retiring` resources, `going` claims). The gates were re-sorted (14.2 to 14.4): three
+owner questions remain here, and every other choice is listed as the designer's in 14.3. Both module pages were
+rewritten to revision 4 in the same change. A review is owed before slice 3a's module design (D-D2); it should judge at
+least: the state machine against every operation mid-transition (6.3), the stopped state against claims and companions
+(I8, F2), the typed posts' compile-time guarantee (I14), the interim for `sendspin`'s threads in 3a (13.1), and whether
+13.2's migration keeps every slice buildable.
