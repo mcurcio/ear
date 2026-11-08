@@ -1042,6 +1042,49 @@ not a criterion: the image's libpipewire is not instrumented, so TSan cannot see
 PipeWire built with TSan in a throwaway image is a cost 3d may choose if the code reading leaves a doubt. Fail: a
 reshape stays a replace (D-B5).
 
+### 10.5 Results (step L-0, 2026-11-08)
+
+Built as `src/pipewire/tests/spikes_test.cpp` (the malloc hook moved to `allocation_count.cpp`, shared with
+`port_block_test.cpp`), each run 10 times on the dev image; the whole suite 603/603. PipeWire 1.4.2's sources read for
+the facts below: `spa/plugins/support/loop.c`, `pipewire/context.c`, `pipewire/filter.c`.
+
+| Spike | Verdict | Measured |
+|---|---|---|
+| S1 | Pass; D-L26 not needed | 13,000 invokes (bursts, singles, and 3,000 during a 2 s stall) ran in posting order, on the data thread, never inside any `process`; every post returned the async code, never the function's result; completions all reached the main loop (about 2,000 coalesced events); no allocation on the data thread; a burst of 1,000 cost the main loop 0.3 to 0.9 ms; the slowest post during the stall 0.04 to 0.81 ms |
+| S2 | Take-up and sample exactness pass; the literal "identical position sequences" fails under xruns | 1,000 requests a run under a storm of about 490,000 invokes a second: every one taken up once, in order, `takenAt` one cycle after publication; U, B, D entered in link order in every cycle they all ran (0 misordered of about 17,845); D's ramp exact at every take-up and silence. But 1 to 17 cycles a run were run by only an upstream prefix (U, or U and B), at driver resyncs and xruns |
+| S3 | Pass in substance | the property reads 1; one `data-loop.0` thread in the process; a filter's `pw_filter_get_data_loop` is that loop; adapters and the rtp module name `data-loop.0` in their info, while `pw_filter`s name no loop (so `node.loop.name` is set only by a node's maker) |
+
+What the spikes changed in this page's criteria (the kept tests assert the corrected ones):
+
+- **A full invoke queue is never refused.** In 1.4.2 a full 32 KiB queue (about 455 items) makes the *posting* thread
+  `calloc` an overflow queue and go on; `flush_all_queues` keeps posting order across queues. So S1's "a full queue is
+  reported by a negative result" cannot happen. Corrected: posts never fail or wait; a full queue costs the posting
+  thread one allocation per 32 KiB; the data thread allocates nothing.
+- **"Returns before its function ran" was ill-posed**: the data thread runs concurrently, and 169 to 1,286 of 13,000
+  functions had run before their post returned. Corrected: the post's result is the async code, and the function never
+  runs on the poster. A loop whose thread is not running (not started, or stopped) runs the function inline on the
+  caller and returns its result: a second test pins this, and it is why completions are posted, never run inline
+  (D-L30).
+- **An unbounded producer wedges the data loop.** S2's storm "as fast as it can" outran the flush: the data loop spun at
+  100% CPU in `flush_all_queues`, never ran `process` again, and memory grew. The kept storm posts bursts of 100 with at
+  most 2,000 outstanding. This confirms D-L38 (one invoke in flight per block) as a requirement, not a nicety: ear
+  bounds every producer of invokes.
+- **A cycle cut short by an xrun is run by an upstream prefix only.** S2's corrected criterion: in every cycle all three
+  run, they see one position, in link order; a cycle cut short is run only by an upstream prefix (U, or U and B), never
+  by a downstream node without its upstream. For 3a this changes nothing (the sink is inside the block). For 3b it
+  means a *source* companion, upstream of its block, can run a cycle its block never runs, so a source must not count
+  a chunk as played until its block took it up (its `takenAt`); 3b's design either adopts that rule or takes D-L25
+  (ring companions' realtime side inside the block). Recorded as open in 16 and node-framework.md 15.
+- **S3's literal "every node names the loop" fails for `pw_filter`s.** Corrected: the property reads 1; the process has
+  one data-loop thread; a block's filter loop is the context's loop; any node that names a loop names that one. The
+  fallback (naming the loop on every adapter and module) is not needed.
+- **Two deviations, both in the test's favour of running on CI:** S2 runs at a 64-frame block (24 s instead of 95 s;
+  at 256 frames its load made two load-sensitive sendspin clock tests fail in the parallel suite), and its storm is
+  bounded as above.
+- After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then resets about 70
+  times within 7 ms (`node-driver.c on_timeout ... resetting`); 5.4's bounds already treat a stall as no wedge while
+  the loop answers.
+
 ## 11. Tests
 
 Names are the test executables of AGENTS.md; today's counts are `TEST_CASE`s [V]. 13.2 of node-framework.md says each
@@ -1279,9 +1322,11 @@ None. Every choice here is internal or follows an owner's answer already given (
 
 ## 16. Open items
 
-- [U] S1 and S3 (10.1, 10.3): asynchronous invokes, their behaviour while the data loop stalls and when the queue
-  fills (the value PipeWire 1.4.2 returns), one data-loop thread. Step L-0; they gate 3a.
-- [U] S2 (10.2): one position per cycle under an invoke storm. Step L-0; it gates 3b's companions only (D-L29).
+- [V] S1 and S3 (10.1, 10.3, results in 10.5): asynchronous invokes pass, a full queue is never refused (the poster
+  allocates an overflow queue), one data-loop thread. Step L-0 done; 3a may proceed.
+- Open for 3b (10.5): S2 passed take-up and sample exactness, but a cycle cut short by an xrun is run by an upstream
+  prefix only, so a source companion can run a cycle its block never runs. 3b's design either counts a source's chunk
+  as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block).
 - [U] knobly's layout of `insert_statements` into a one-line block (8.3). Step L-5's first test.
 - [U] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7). Step L-2's test
   links an outside node by it.
@@ -1355,3 +1400,10 @@ Answers round 1 above. Changed: the status; 2; 3; 4.1 to 4.6; 5.1 to 5.5, 5.7, 5
 8.2 (I4, 6.2's failure codes, 6.3's wedged data loop, 9.6, 13.1; its rows 136 to 139) and control-plane.md to revision
 6.2 (4.8, 7.6), each by a minimal edit. No owner gate is open. Step L-1 may start once L-0's S1 and S3 pass; a second
 look at 4.2 to 4.4 against node-framework.md 6.3, and at 5.3 against S1's stalled phases, is worth having before L-3a.
+
+### Revision 2.1 (2026-11-08, step L-0's results)
+
+10.5 records S1, S2 and S3 as built (`src/pipewire/tests/spikes_test.cpp`) and the criteria they corrected: a full
+invoke queue is never refused in PipeWire 1.4.2; "returns before its function ran" is ill-posed; an unbounded producer
+of invokes wedges the data loop, which makes D-L38 a requirement; a cycle cut short by an xrun is run by an upstream
+prefix only, an open item for 3b's sources; `pw_filter`s name no loop. 16 updated. 3a's gates (S1, S3) pass.

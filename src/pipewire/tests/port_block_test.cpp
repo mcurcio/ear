@@ -29,36 +29,9 @@
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 
-// Counts allocations made by a thread that asks for it (the realtime thread, from a test
-// code's process() on). handoff_test.cpp in this binary already replaces operator new, so this
-// file counts one level lower: it replaces malloc, calloc and realloc (glibc supports that) and
-// forwards to glibc's own; operator new reaches malloc either way.
-extern "C" {
-void* __libc_malloc(std::size_t size) noexcept;
-void* __libc_calloc(std::size_t count, std::size_t size) noexcept;
-void* __libc_realloc(void* memory, std::size_t size) noexcept;
-}
-namespace {
-std::atomic<std::uint64_t> realtimeAllocations{0};
-thread_local bool countAllocations = false;
-void counted() noexcept {
-	if (countAllocations) realtimeAllocations.fetch_add(1, std::memory_order_relaxed);
-}
-} // namespace
-extern "C" {
-void* malloc(std::size_t size) noexcept {
-	counted();
-	return __libc_malloc(size);
-}
-void* calloc(std::size_t count, std::size_t size) noexcept {
-	counted();
-	return __libc_calloc(count, size);
-}
-void* realloc(void* memory, std::size_t size) noexcept {
-	counted();
-	return __libc_realloc(memory, size);
-}
-}
+// Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
+// binary's one malloc hook.
+#include "allocation_count.hpp"
 
 namespace {
 using namespace ear;
@@ -161,7 +134,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
 	             const ear::GraphCycle&) noexcept override {
-		countAllocations = countHere.load(std::memory_order_acquire);
+		ear::pipewire::testing::countAllocationsOnThisThread(countHere.load(std::memory_order_acquire));
 		for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
@@ -544,7 +517,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 
 	// From the source's next process() on, the realtime thread counts its allocations, over
 	// several published windows.
-	const std::uint64_t before = realtimeAllocations.load();
+	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
 	source.countHere.store(true);
 	const std::uint64_t armedAt = source.calls();
 	std::uint64_t firstWindow = 0;
@@ -557,7 +530,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 	source.countHere.store(false);
 	const std::uint64_t disarmedAt = source.calls();
 	REQUIRE(waiter.until([&] { return source.calls() > disarmedAt; }));
-	CHECK(realtimeAllocations.load() - before == 0);
+	CHECK(ear::pipewire::testing::countedAllocations() - before == 0);
 }
 
 TEST_CASE("drive returns only when the old code can no longer run, and nullptr silences", "[blocks][drive]") {

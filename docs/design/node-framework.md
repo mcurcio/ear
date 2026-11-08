@@ -2570,6 +2570,10 @@ can overturn any. The pages are written to them.
 
 ## 15. Open items
 
+- Settled by slice 3a's step L-0 (node-lifecycle.md 10.5, [V]): asynchronous `pw_loop_invoke` from the main loop
+  keeps posting order, never waits and never allocates on the data thread; a full queue is never refused (the poster
+  allocates); one data-loop thread. Open for 3b: a cycle cut short by an xrun is run by an upstream prefix of the graph
+  only, so a source companion must count a chunk as played only once its block took it up, or 3b takes D-L25.
 - Settled by the slice 7 spike (section 10, [V]): the dummy stays the driver by joining `ear.graph`, not by cards marked
   `node.driver = false`; `clock.id = monotonic-raw` works as a steered `CLOCK_MONOTONIC` timer, with `clock.nsec` in
   `CLOCK_MONOTONIC`; the dummy's delay is always 0; the follower's rate match is private to the adapter (logs only); and

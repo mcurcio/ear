@@ -224,7 +224,7 @@ void Engine::onStopSignal(std::function<void()> handler) {
 	if (impl_->sigterm == nullptr) impl_->sigterm = pw_loop_add_signal(loop, SIGTERM, &Impl::onSignal, impl_.get());
 }
 
-/// The context's one data loop (engine.conf keeps context.num-data-loops at its default, 1)
+/// The context's one data loop (engine.conf pins context.num-data-loops = 1)
 /// runs every port block's process(); the question is asked on that thread itself.
 Scheduling Engine::dataThreadScheduling() const {
 	Scheduling result{false, "unknown"};

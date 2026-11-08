@@ -1,0 +1,1164 @@
+// Slice 3a's PipeWire spikes, kept as regressions (docs/design/node-lifecycle.md section 10, step L-0; the [U] items of
+// docs/design/node-framework.md section 15 they settle), on the real in-process engine:
+//  - S1 (10.1): pw_loop_invoke from the main loop without blocking: where, when and in what order the functions run,
+//    their completions back through a main-loop event, nothing allocated on the data thread, what a burst costs, and a
+//    stalled data loop (one process() asleep 2 s). PipeWire 1.4.2 (spa/plugins/support/loop.c) never refuses or waits
+//    on a full invoke queue: the posting thread allocates an overflow queue and carries on. A loop with no thread
+//    (not yet entered, or stopped) runs the function inline on the caller. A function may run before its post returns.
+//  - S2 (10.2): take-up by position (node-lifecycle.md 5.3) under an invoke storm: a block and its peers see one
+//    clock.position per cycle, in link order, and a ramp switched on and off by position arrives sample-exact. An xrun
+//    cuts a cycle short: only a prefix of the graph runs it.
+//  - S3 (10.3): one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
+//    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
+// Everything here is test-only: the probes are bare pw_filters, and S2's take-up block implements 5.3's take-up
+// itself; production's FilterPortBlock is unchanged (step L-2 builds 5.3 into it). Every wait is event-gated: the main
+// loop runs until the events a test waits for have arrived; a deadline only fails the test. Measurements are printed on
+// standard output (run the binary, or ctest -V, to see them).
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cinttypes>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <optional>
+#include <random>
+#include <span>
+#include <string>
+#include <thread>
+#include <vector>
+
+#include <pthread.h>
+
+#include <pipewire/filter.h>
+#include <pipewire/pipewire.h>
+#include <spa/utils/result.h>
+
+#include "allocation_count.hpp"
+#include "catch2/catch.hpp"
+#include "ear/pipewire/engine.hpp"
+#include "ear/pipewire/links.hpp"
+#include "ear/pipewire/live_graph.hpp"
+#include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/rtp_receivers.hpp"
+#include "ear/pipewire/sound_cards.hpp"
+#include "engine_harness.hpp"
+#include "rtp_tone.hpp"
+#include "temp_folder.hpp"
+
+namespace {
+using namespace ear;
+using namespace ear::pipewire;
+using namespace ear::pipewire::testing;
+using namespace std::chrono_literals;
+
+/// What a probe runs each cycle, on the data thread.
+class ProbeCode {
+public:
+	virtual void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const> outputs,
+	                   std::uint32_t frames) noexcept = 0;
+
+protected:
+	~ProbeCode() = default;
+};
+
+/// A bare pw_filter as a port block is one (port_blocks.cpp): in ear.graph (engine_names.hpp's graphGroup), always
+/// processing, RT_PROCESS, one 32-bit float mono port per name ("in.<i>", "out.<i>"). An input with no buffer this cycle
+/// reads zeros; an output with none writes to scratch.
+class Probe {
+public:
+	Probe(Engine& engine, Waiter& waiter, const char* name, std::size_t inputs, std::size_t outputs, ProbeCode& code)
+		: waiter_(waiter), code_(code), zeros_(8192, 0.0F), scratch_(8192, 0.0F), inputs_(inputs), outputs_(outputs) {
+		filter_ = pw_filter_new(engine.core(), name,
+		                        pw_properties_new(PW_KEY_NODE_NAME, name, PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_NODE_GROUP,
+		                                          "ear.graph", PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr));
+		REQUIRE(filter_ != nullptr);
+		pw_filter_add_listener(filter_, &listener_, &events(), this);
+		for (std::size_t i = 0; i < inputs; ++i) inPorts_.push_back(addPort(PW_DIRECTION_INPUT, "in", i + 1));
+		for (std::size_t i = 0; i < outputs; ++i) outPorts_.push_back(addPort(PW_DIRECTION_OUTPUT, "out", i + 1));
+		REQUIRE(pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) >= 0);
+	}
+	~Probe() {
+		spa_hook_remove(&listener_);
+		pw_filter_destroy(filter_);
+	}
+	Probe(const Probe&) = delete;
+	Probe& operator=(const Probe&) = delete;
+
+	bool streaming() const { return streaming_; }
+	pw_loop* dataLoop() const { return pw_filter_get_data_loop(filter_); }
+
+private:
+	void* addPort(pw_direction direction, const char* bank, std::size_t member) {
+		const std::string name = std::string(bank) + "." + std::to_string(member);
+		return pw_filter_add_port(
+			filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+			pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name.c_str(), nullptr),
+			nullptr, 0);
+	}
+	static const pw_filter_events& events() {
+		static const pw_filter_events table = [] {
+			pw_filter_events events{};
+			events.version = PW_VERSION_FILTER_EVENTS;
+			events.state_changed = &Probe::onStateChanged;
+			events.process = &Probe::onProcess;
+			return events;
+		}();
+		return table;
+	}
+	static void onStateChanged(void* data, pw_filter_state, pw_filter_state state, const char*) {
+		auto* self = static_cast<Probe*>(data);
+		if (state == PW_FILTER_STATE_STREAMING) self->streaming_ = true;
+		self->waiter_.wake();
+	}
+	static void onProcess(void* data, spa_io_position* position) {
+		auto* self = static_cast<Probe*>(data);
+		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
+		if (frames > self->zeros_.size()) return;
+		for (std::size_t i = 0; i < self->inPorts_.size(); ++i) {
+			const auto* in = static_cast<const float*>(pw_filter_get_dsp_buffer(self->inPorts_[i], frames));
+			self->inputs_[i] = in != nullptr ? in : self->zeros_.data();
+		}
+		for (std::size_t i = 0; i < self->outPorts_.size(); ++i) {
+			auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(self->outPorts_[i], frames));
+			self->outputs_[i] = out != nullptr ? out : self->scratch_.data();
+		}
+		self->code_.cycle(position->clock, self->inputs_, self->outputs_, frames);
+	}
+
+	Waiter& waiter_;
+	ProbeCode& code_;
+	std::vector<float> zeros_;
+	std::vector<float> scratch_;
+	std::vector<const float*> inputs_;
+	std::vector<float*> outputs_;
+	std::vector<void*> inPorts_;
+	std::vector<void*> outPorts_;
+	pw_filter* filter_ = nullptr;
+	spa_hook listener_{};
+	bool streaming_ = false;
+};
+
+class PortLog final : public LivePortListener {
+public:
+	explicit PortLog(Waiter& waiter) : waiter_(waiter) {}
+	void portAppeared(const LivePort& port) override {
+		appeared.push_back(port);
+		waiter_.wake();
+	}
+	void portGone(EnginePortId) override { waiter_.wake(); }
+	std::optional<LivePort> find(const NodeName& node, const PortName& port) const {
+		for (const LivePort& live : appeared) {
+			if (live.port.node == node && live.port.port == port) return live;
+		}
+		return std::nullopt;
+	}
+	std::vector<LivePort> appeared;
+
+private:
+	Waiter& waiter_;
+};
+
+class LinkLog final : public LinkListener {
+public:
+	explicit LinkLog(Waiter& waiter) : waiter_(waiter) {}
+	void linkActive(LinkId) override {
+		++active;
+		waiter_.wake();
+	}
+	void linkFailed(LinkId, std::string) override {
+		++failed;
+		waiter_.wake();
+	}
+	void linkGone(LinkId) override { waiter_.wake(); }
+	int active = 0;
+	int failed = 0;
+
+private:
+	Waiter& waiter_;
+};
+
+/// Live ports and links, as port_block_test.cpp's.
+struct Wiring {
+	Wiring(Engine& engine, Waiter& waiter) : live(engine), links(engine), ports(waiter), linkLog(waiter) {
+		live.subscribe(ports);
+		links.subscribe(linkLog);
+	}
+	bool link(Waiter& waiter, const PortRef& from, const PortRef& to) {
+		if (!waiter.until([&] { return ports.find(from.node, from.port) && ports.find(to.node, to.port); })) {
+			return false;
+		}
+		const int before = linkLog.active;
+		links.createLink(nextLink++, ports.find(from.node, from.port)->id, ports.find(to.node, to.port)->id);
+		return waiter.until([&] { return linkLog.active > before || linkLog.failed > 0; }) && linkLog.failed == 0;
+	}
+	LiveGraph live;
+	Links links;
+	PortLog ports;
+	LinkLog linkLog;
+	LinkId nextLink = 1;
+};
+
+/// The context's data loop: with context.num-data-loops = 1 (S3) the loop of every block.
+pw_loop* contextDataLoop(Engine& engine) { return pw_data_loop_get_loop(pw_context_get_data_loop(engine.context())); }
+
+double millisecondsSince(std::chrono::steady_clock::time_point start) {
+	return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S1
+
+/// What S1 shares between the main loop, the blocks' code and the invoked functions. The data thread writes only into
+/// storage made beforehand.
+struct InvokeRecord {
+	static constexpr std::uint64_t kNormal = 10'000; // in bursts of 1,000 and singly, the data loop running
+	static constexpr std::uint64_t kStalled = 3'000; // while one block's process sleeps 2 s
+	static constexpr std::uint64_t kCount = kNormal + kStalled;
+	static constexpr int kFunctionResult = 7; // what each function returns: a blocking invoke would return it
+
+	InvokeRecord(Waiter& waiter, pw_loop* mainLoop)
+		: waiter(waiter), mainLoop(mainLoop), order(kCount, 0), onDataThread(kCount, 0), duringProcess(kCount, 0),
+		  async(kCount, 0) {
+		completion = pw_loop_add_event(mainLoop, &InvokeRecord::onCompletion, this);
+	}
+	~InvokeRecord() { pw_loop_destroy_source(mainLoop, completion); }
+	InvokeRecord(const InvokeRecord&) = delete;
+	InvokeRecord& operator=(const InvokeRecord&) = delete;
+
+	/// Main loop: a completion signalled from the data thread. Signals coalesce; the number does not.
+	static void onCompletion(void* data, std::uint64_t /*count*/) {
+		auto* self = static_cast<InvokeRecord*>(data);
+		++self->completionEvents;
+		self->seen = self->completed.load(std::memory_order_acquire);
+		self->waiter.wake();
+	}
+
+	/// Data thread: one invoked function.
+	static int onInvoked(spa_loop* /*loop*/, bool isAsync, std::uint32_t /*seq*/, const void* data, std::size_t size,
+	                     void* userData) {
+		auto* self = static_cast<InvokeRecord*>(userData);
+		std::uint64_t number = 0;
+		if (size == sizeof(number)) std::memcpy(&number, data, sizeof(number));
+		if (number == 1) countAllocationsOnThisThread(true);
+		const std::size_t at = self->ran.load(std::memory_order_relaxed);
+		if (at < kCount) {
+			self->order[at] = number;
+			self->onDataThread[at] = self->dataThreadKnown.load(std::memory_order_acquire) &&
+			                         pthread_equal(pthread_self(), self->dataThread) != 0;
+			self->duringProcess[at] = self->insideProcess.load(std::memory_order_acquire) != 0 ? 1 : 0;
+			self->async[at] = isAsync ? 1 : 0;
+		}
+		self->ran.store(at + 1, std::memory_order_release);
+		self->completed.store(number, std::memory_order_release);
+		pw_loop_signal_event(self->mainLoop, self->completion);
+		if (number == kCount) countAllocationsOnThisThread(false);
+		return kFunctionResult;
+	}
+
+	/// Data thread: every block's code, on entry and on exit.
+	void enter() noexcept {
+		insideProcess.fetch_add(1, std::memory_order_acq_rel);
+		if (!dataThreadKnown.load(std::memory_order_relaxed)) {
+			dataThread = pthread_self();
+			dataThreadKnown.store(true, std::memory_order_release);
+		}
+	}
+	void leave() noexcept {
+		cycles.fetch_add(1, std::memory_order_relaxed);
+		insideProcess.fetch_sub(1, std::memory_order_acq_rel);
+		waiter.wake();
+	}
+
+	Waiter& waiter;
+	pw_loop* mainLoop;
+	spa_source* completion = nullptr;
+	// Data thread.
+	std::vector<std::uint64_t> order;        // the numbers in the order the functions ran
+	std::vector<std::uint8_t> onDataThread;  // per run: the function ran on the thread that runs process()
+	std::vector<std::uint8_t> duringProcess; // per run: some block's process() was running at that moment
+	std::vector<std::uint8_t> async;         // per run: the loop told the function it ran asynchronously
+	std::atomic<std::size_t> ran{0};
+	std::atomic<std::uint64_t> completed{0};
+	std::atomic<int> insideProcess{0};
+	std::atomic<std::uint64_t> cycles{0};
+	pthread_t dataThread{};
+	std::atomic<bool> dataThreadKnown{false};
+	// Main loop.
+	std::uint64_t seen = 0; // the newest completion the main loop has heard through the event
+	std::uint64_t completionEvents = 0;
+};
+
+/// A block's code (FilterPortBlock's AudioCode) that flags "inside process" and counts cycles.
+class FlaggedCode final : public AudioCode {
+public:
+	explicit FlaggedCode(InvokeRecord& record) : record_(record) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		record_.enter();
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		record_.leave();
+	}
+	void release() noexcept override {}
+
+private:
+	InvokeRecord& record_;
+};
+
+/// A block's code that, once armed, sleeps 2 s inside one process(): the data loop stalled, as a wedged card or a
+/// page fault on a loaded host would stall it.
+class StallingCode final : public AudioCode {
+public:
+	explicit StallingCode(InvokeRecord& record) : record_(record) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		record_.enter();
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		if (armed.exchange(false, std::memory_order_acq_rel)) {
+			stalling.store(true, std::memory_order_release);
+			record_.waiter.wake();
+			const timespec twoSeconds{2, 0};
+			nanosleep(&twoSeconds, nullptr);
+			stalling.store(false, std::memory_order_release);
+			stalled.store(true, std::memory_order_release);
+		}
+		record_.leave();
+	}
+	void release() noexcept override {}
+	std::atomic<bool> armed{false};
+	std::atomic<bool> stalling{false};
+	std::atomic<bool> stalled{false};
+
+private:
+	InvokeRecord& record_;
+};
+
+/// The same for a probe.
+class FlaggedProbe final : public ProbeCode {
+public:
+	explicit FlaggedProbe(InvokeRecord& record) : record_(record) {}
+	void cycle(const spa_io_clock&, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		record_.enter();
+		for (float* out : outputs) std::fill_n(out, frames, 0.0F);
+		record_.leave();
+	}
+
+private:
+	InvokeRecord& record_;
+};
+
+/// Posts S1's invokes: each from the main thread, without blocking, its number as seq and as data.
+class Poster {
+public:
+	Poster(InvokeRecord& record, pw_loop* dataLoop, pw_loop* mainLoop)
+		: record_(record), dataLoop_(dataLoop), mainLoop_(mainLoop), results_(InvokeRecord::kCount, 0) {
+		single_ = pw_loop_add_event(mainLoop, &Poster::onSingle, this);
+	}
+	~Poster() { pw_loop_destroy_source(mainLoop_, single_); }
+	Poster(const Poster&) = delete;
+	Poster& operator=(const Poster&) = delete;
+
+	/// Numbers [first, last] in one go; returns what the whole burst cost the main loop, in ms.
+	double burst(std::uint64_t first, std::uint64_t last) {
+		const auto start = std::chrono::steady_clock::now();
+		for (std::uint64_t number = first; number <= last; ++number) post(number);
+		return millisecondsSince(start);
+	}
+	/// Numbers [first, last], one per main-loop turn (each turn posts one and signals the next turn).
+	void singly(std::uint64_t first, std::uint64_t last) {
+		next_ = first;
+		last_ = last;
+		pw_loop_signal_event(mainLoop_, single_);
+	}
+
+	/// One number now; returns what the post cost, in ms.
+	double one(std::uint64_t number) {
+		const auto start = std::chrono::steady_clock::now();
+		post(number);
+		return millisecondsSince(start);
+	}
+
+	std::span<const int> results() const { return results_; }
+	std::uint64_t ranBeforeReturn() const { return ranBeforeReturn_; }
+	double slowestSingleMs() const { return slowestSingleMs_; }
+
+private:
+	void post(std::uint64_t number) {
+		results_[number - 1] = pw_loop_invoke(dataLoop_, &InvokeRecord::onInvoked, static_cast<std::uint32_t>(number),
+		                                      &number, sizeof(number), false, &record_);
+		// The functions run in order (checked below), so function `number` ran iff `ran` reached it.
+		if (record_.ran.load(std::memory_order_acquire) >= number) ++ranBeforeReturn_;
+	}
+	static void onSingle(void* data, std::uint64_t /*count*/) {
+		auto* self = static_cast<Poster*>(data);
+		if (self->next_ > self->last_) return;
+		const auto start = std::chrono::steady_clock::now();
+		self->post(self->next_++);
+		self->slowestSingleMs_ = std::max(self->slowestSingleMs_, millisecondsSince(start));
+		if (self->next_ <= self->last_) pw_loop_signal_event(self->mainLoop_, self->single_);
+	}
+
+	InvokeRecord& record_;
+	pw_loop* dataLoop_;
+	pw_loop* mainLoop_;
+	spa_source* single_ = nullptr;
+	std::vector<int> results_;
+	std::uint64_t next_ = 1;
+	std::uint64_t last_ = 0;
+	std::uint64_t ranBeforeReturn_ = 0;
+	double slowestSingleMs_ = 0.0;
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S2
+
+/// One value per frame of the graph clock: nonzero, exact as a float, and different for every frame within 2^24.
+float rampAt(std::uint64_t frame) noexcept { return static_cast<float>((frame & 0xFFFFFFU) + 1U); }
+
+/// One entry per recorded cycle: its clock.position and the shared entry sequence number it took on entry.
+struct CycleLog {
+	explicit CycleLog(std::size_t capacity) : position(capacity), entry(capacity) {}
+	/// Data thread; returns the cycle's index, or none when full.
+	std::optional<std::size_t> add(std::uint64_t at, std::uint64_t sequence) noexcept {
+		const std::size_t n = count.load(std::memory_order_relaxed);
+		if (n >= position.size()) return std::nullopt;
+		position[n] = at;
+		entry[n] = sequence;
+		return n;
+	}
+	void commit(std::size_t n) noexcept { count.store(n + 1, std::memory_order_release); }
+	std::vector<std::uint64_t> position;
+	std::vector<std::uint64_t> entry;
+	std::atomic<std::size_t> count{0};
+};
+
+/// What S2's three filters share: the entry sequence and whether cycles are recorded.
+struct Shared {
+	std::atomic<std::uint64_t> sequence{0};
+	std::atomic<bool> recording{false};
+};
+
+constexpr std::size_t kS2Requests = 1000;
+/// S2 runs at a 64-frame block (1.3 ms a cycle at 48 kHz): its 1,000 requests 1 to 30 cycles apart take about 18,000
+/// cycles whatever the block, so this keeps it near 25 s where 256 frames take 95 s; nothing it checks depends on the
+/// block size.
+constexpr std::uint32_t kS2Block = 64;
+
+/// The in-process engine at the graph frequency and `block`, as engine_harness.hpp's makeEngine.
+std::unique_ptr<Engine> engineAt(std::uint32_t block) {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, block});
+	if (!engine) FAIL("Engine::create: " << engine.error().detail);
+	return std::move(*engine);
+}
+constexpr std::size_t kS2Capacity = kS2Requests * 40 + 4000; // cycles: at most 30 between requests, plus take-ups
+
+/// U: records its cycles and writes zeros.
+class Upstream final : public ProbeCode {
+public:
+	explicit Upstream(Shared& shared) : shared_(shared), log(kS2Capacity) {}
+	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		std::fill_n(outputs[0], frames, 0.0F);
+		if (!shared_.recording.load(std::memory_order_acquire)) return;
+		if (const auto n = log.add(clock.position, sequence)) log.commit(*n);
+	}
+
+private:
+	Shared& shared_;
+
+public:
+	CycleLog log;
+};
+
+/// B: node-lifecycle.md 5.3's take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives by a
+/// non-blocking invoke into `pending`; the next cycle that sees it publishes takenAt = position + duration and runs the
+/// old code once more; the cycle whose position reaches takenAt swaps the code (a cycle that jumped past it, at once)
+/// and completes the request: its number into `applied`, then a main-loop signal.
+class TakeUp final : public ProbeCode {
+public:
+	struct Request {
+		std::uint64_t number;
+		bool drive;
+	};
+	struct Taken {
+		std::uint64_t number;
+		bool drive;
+		std::uint64_t publishedAt; // the position of the cycle that published takenAt
+		std::uint64_t takenAt;
+		std::uint64_t swappedAt; // the position of the first cycle that ran the new code
+	};
+
+	TakeUp(Shared& shared, Waiter& waiter) : shared_(shared), waiter_(waiter), log(kS2Capacity), taken_(kS2Requests) {}
+
+	/// Main thread: returns pw_loop_invoke's result.
+	int post(pw_loop* dataLoop, Request request) {
+		return pw_loop_invoke(dataLoop, &TakeUp::onRequest, SPA_ID_INVALID, &request, sizeof(request), false, this);
+	}
+	std::uint64_t applied() const { return applied_.load(std::memory_order_acquire); }
+	std::uint64_t cycles() const { return cycles_.load(std::memory_order_acquire); }
+	std::uint64_t takenAt() const { return takenAt_.load(std::memory_order_acquire); }
+	std::span<const Taken> taken() const { return {taken_.data(), takenCount_.load(std::memory_order_acquire)}; }
+	std::uint64_t overlaps() const { return overlaps_.load(std::memory_order_acquire); }
+	std::uint64_t jumps() const { return jumps_.load(std::memory_order_acquire); }
+	std::uint64_t backwardJumps() const { return backwardJumps_.load(std::memory_order_acquire); }
+	/// Whether `position` lies within `cycles` cycles of a jump B saw (on either side of it).
+	bool nearJump(std::uint64_t position, std::uint64_t cycles) const {
+		const std::size_t n = std::min<std::size_t>(jumps(), jumpFrom_.size());
+		for (std::size_t j = 0; j < n; ++j) {
+			const std::uint64_t low = std::min(jumpFrom_[j], jumpTo_[j]), high = std::max(jumpFrom_[j], jumpTo_[j]);
+			if (position + cycles * kS2Block >= low && position <= high + cycles * kS2Block) return true;
+		}
+		return false;
+	}
+
+	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		const std::uint64_t at = clock.position;
+		if (cycles_.load(std::memory_order_relaxed) > 0 && at != next_) {
+			const std::size_t j = jumps_.load(std::memory_order_relaxed);
+			if (j < jumpFrom_.size()) {
+				jumpFrom_[j] = next_;
+				jumpTo_[j] = at;
+			}
+			jumps_.fetch_add(1, std::memory_order_release);
+			if (at < next_) backwardJumps_.fetch_add(1, std::memory_order_relaxed);
+		}
+		next_ = at + clock.duration;
+		if (hasPending_) {
+			if (!published_) {
+				published_ = true;
+				publishedAt_ = at;
+				takenAtLocal_ = at + clock.duration;
+				takenAt_.store(takenAtLocal_, std::memory_order_release);
+			} else if (at >= takenAtLocal_) {
+				driving_ = pending_.drive;
+				const std::size_t n = takenCount_.load(std::memory_order_relaxed);
+				if (n < taken_.size()) {
+					taken_[n] = Taken{pending_.number, pending_.drive, publishedAt_, takenAtLocal_, at};
+					takenCount_.store(n + 1, std::memory_order_release);
+				}
+				hasPending_ = false;
+				published_ = false;
+				applied_.store(pending_.number, std::memory_order_release);
+			}
+		}
+		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = driving_ ? rampAt(at + i) : 0.0F;
+		if (shared_.recording.load(std::memory_order_acquire)) {
+			if (const auto n = log.add(at, sequence)) log.commit(*n);
+		}
+		cycles_.fetch_add(1, std::memory_order_release);
+		waiter_.wake(); // every cycle, and so every completion, reaches the main loop through one event
+	}
+
+private:
+	/// Data loop, between cycles.
+	static int onRequest(spa_loop*, bool, std::uint32_t, const void* data, std::size_t size, void* userData) {
+		auto* self = static_cast<TakeUp*>(userData);
+		if (size != sizeof(Request)) return 0;
+		if (self->hasPending_) self->overlaps_.fetch_add(1, std::memory_order_relaxed);
+		std::memcpy(&self->pending_, data, sizeof(Request));
+		self->hasPending_ = true;
+		return 0;
+	}
+
+	Shared& shared_;
+	Waiter& waiter_;
+
+public:
+	CycleLog log;
+
+private:
+	// Data thread only.
+	Request pending_{};
+	bool hasPending_ = false;
+	bool published_ = false;
+	bool driving_ = false;
+	std::uint64_t publishedAt_ = 0;
+	std::uint64_t takenAtLocal_ = 0;
+	std::uint64_t next_ = 0;
+	// Read elsewhere.
+	std::atomic<std::uint64_t> takenAt_{0};
+	std::atomic<std::uint64_t> applied_{0};
+	std::atomic<std::uint64_t> cycles_{0};
+	std::atomic<std::uint64_t> overlaps_{0};
+	std::atomic<std::uint64_t> jumps_{0};
+	std::atomic<std::uint64_t> backwardJumps_{0};
+	std::vector<Taken> taken_;
+	std::atomic<std::size_t> takenCount_{0};
+	std::array<std::uint64_t, 256> jumpFrom_{}; // where the clock should have been, per jump
+	std::array<std::uint64_t, 256> jumpTo_{};   // where it was
+};
+
+/// D: records its cycles, the B takenAt it sees, and what each cycle's samples were.
+class Downstream final : public ProbeCode {
+public:
+	enum class Heard : std::uint8_t { zeros, ramp, other };
+
+	Downstream(Shared& shared, const TakeUp& block)
+		: shared_(shared), block_(block), log(kS2Capacity), takenAtSeen(kS2Capacity), heard(kS2Capacity),
+		  firstWrong(kS2Capacity), frames(kS2Capacity) {}
+	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
+	           std::uint32_t count) noexcept override {
+		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		const std::uint64_t seenTakenAt = block_.takenAt();
+		if (!shared_.recording.load(std::memory_order_acquire)) return;
+		const auto n = log.add(clock.position, sequence);
+		if (!n) return;
+		const float* in = inputs[0];
+		bool zeros = true;
+		bool ramp = true;
+		std::uint32_t wrong = count;
+		for (std::uint32_t i = 0; i < count; ++i) {
+			if (in[i] != 0.0F) zeros = false;
+			if (in[i] != rampAt(clock.position + i)) {
+				ramp = false;
+				if (wrong == count && in[i] != 0.0F) wrong = i;
+			}
+		}
+		takenAtSeen[*n] = seenTakenAt;
+		heard[*n] = zeros ? Heard::zeros : ramp ? Heard::ramp : Heard::other;
+		firstWrong[*n] = wrong;
+		frames[*n] = count;
+		log.commit(*n);
+	}
+
+private:
+	Shared& shared_;
+	const TakeUp& block_;
+
+public:
+	CycleLog log;
+	std::vector<std::uint64_t> takenAtSeen;
+	std::vector<Heard> heard;
+	std::vector<std::uint32_t> firstWrong; // with Heard::other: the first sample neither zero nor the ramp
+	std::vector<std::uint32_t> frames;
+};
+
+/// The three logs compared position by position, between the first and the last position all three hold.
+struct Compared {
+	std::size_t common = 0;                // positions every log holds
+	std::size_t misordered = 0;            // of those, the ones whose entries are not U < B < D
+	std::vector<std::uint64_t> partial;    // positions only some logs hold
+	std::vector<std::string> partialWhich; // for each: which logs hold it ("UB-")
+	std::vector<std::uint64_t> backwards;  // positions a log stepped back to (each log's should strictly increase)
+};
+
+Compared compare(const CycleLog& u, const CycleLog& b, const CycleLog& d) {
+	Compared result;
+	std::map<std::uint64_t, std::array<std::optional<std::uint64_t>, 3>> byPosition;
+	const std::array<const CycleLog*, 3> logs{&u, &b, &d};
+	std::uint64_t lo = 0, hi = UINT64_MAX;
+	for (std::size_t which = 0; which < logs.size(); ++which) {
+		const std::size_t n = logs[which]->count.load();
+		if (n == 0) return result;
+		lo = std::max(lo, logs[which]->position[0]);
+		hi = std::min(hi, logs[which]->position[n - 1]);
+		for (std::size_t i = 0; i < n; ++i) {
+			if (i > 0 && logs[which]->position[i] <= logs[which]->position[i - 1])
+				result.backwards.push_back(logs[which]->position[i]);
+			byPosition[logs[which]->position[i]][which] = logs[which]->entry[i];
+		}
+	}
+	for (auto it = byPosition.lower_bound(lo); it != byPosition.end() && it->first <= hi; ++it) {
+		const auto& [eu, eb, ed] = it->second;
+		if (eu && eb && ed) {
+			++result.common;
+			if (!(*eu < *eb && *eb < *ed)) ++result.misordered;
+		} else {
+			result.partial.push_back(it->first);
+			result.partialWhich.push_back(std::string(eu ? "U" : "-") + (eb ? "B" : "-") + (ed ? "D" : "-"));
+		}
+	}
+	return result;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S3
+
+/// Threads of this process whose name starts with `prefix` (/proc/self/task/<tid>/comm).
+std::vector<std::string> threadsNamed(const std::string& prefix) {
+	std::vector<std::string> names;
+	for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+		std::ifstream comm(task.path() / "comm");
+		std::string name;
+		std::getline(comm, name);
+		if (name.starts_with(prefix)) names.push_back(name);
+	}
+	return names;
+}
+
+class OutsideEvents final : public OutsideNodeEvents {
+public:
+	explicit OutsideEvents(Waiter& waiter) : waiter_(waiter) {}
+	void ready() override {
+		isReady = true;
+		waiter_.wake();
+	}
+	void lost(std::string detail) override {
+		lostDetail = std::move(detail);
+		waiter_.wake();
+	}
+	bool isReady = false;
+	std::optional<std::string> lostDetail;
+
+private:
+	Waiter& waiter_;
+};
+
+class Silence final : public AudioCode {
+public:
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+	}
+	void release() noexcept override {}
+};
+
+class Counting final : public ProbeCode {
+public:
+	void cycle(const spa_io_clock&, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		for (float* out : outputs) std::fill_n(out, frames, 0.0F);
+		cycles.fetch_add(1, std::memory_order_release);
+	}
+	std::atomic<std::uint64_t> cycles{0};
+};
+
+} // namespace
+
+TEST_CASE(
+	"S1: invokes posted from the main loop without blocking run on the data thread between cycles, in order, "
+	"each completion heard through a main-loop event, allocating nothing there, and a stalled data loop never makes "
+	"a post wait or fail",
+	"[spike][s1]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoBell bell;
+	FilterPortBlocks blocks(*engine, bell);
+	InvokeRecord record(waiter, engine->mainLoop());
+	FlaggedCode codeA(record);
+	StallingCode codeB(record);
+	FlaggedProbe probeCode(record);
+	BlockEvents eventsA(waiter), eventsB(waiter);
+	auto a = blocks.make("a", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, eventsA);
+	auto b =
+		blocks.make("b", Ports{{{Direction::input, "in", {"1"}}, {Direction::output, "out", {"1"}}}}, kFormat, eventsB);
+	a->drive(&codeA);
+	b->drive(&codeB);
+	Probe probe(*engine, waiter, "probe", 0, 1, probeCode);
+	REQUIRE(waiter.until([&] {
+		return eventsA.isReady && eventsB.isReady && probe.streaming() &&
+		       record.cycles.load(std::memory_order_relaxed) > 30;
+	}));
+	pw_loop* dataLoop = contextDataLoop(*engine);
+	REQUIRE(probe.dataLoop() == dataLoop); // the blocks' loop is the context's one data loop (S3)
+	REQUIRE(record.dataThreadKnown.load());
+
+	Poster poster(record, dataLoop, engine->mainLoop());
+	std::vector<double> burstMs;
+	constexpr std::uint64_t kPhase = 1000;
+	for (std::uint64_t phase = 0; phase < InvokeRecord::kNormal / kPhase; ++phase) {
+		const std::uint64_t first = phase * kPhase + 1, last = (phase + 1) * kPhase;
+		if (phase % 2 == 0) {
+			burstMs.push_back(poster.burst(first, last));
+		} else {
+			poster.singly(first, last);
+		}
+		REQUIRE(waiter.until([&] { return record.seen >= last; }, 10s));
+	}
+
+	// The stall: block b's process sleeps 2 s while the main thread keeps posting, 3,000 invokes 200 us apart (about
+	// 0.6 s, inside the stall): far more than one invoke queue holds (32 KiB, spa/plugins/support/loop.c), so it fills.
+	codeB.armed.store(true);
+	REQUIRE(waiter.until([&] { return codeB.stalling.load(); }));
+	const std::size_t ranBeforeStall = record.ran.load();
+	const std::uint64_t allocationsBefore = countedAllocations();
+	countAllocationsOnThisThread(true); // the main thread's own, while the data thread sleeps
+	double slowestStalledMs = 0.0;
+	std::size_t stalledOverOneMs = 0;
+	for (std::uint64_t number = InvokeRecord::kNormal + 1; number <= InvokeRecord::kCount; ++number) {
+		const double ms = poster.one(number);
+		slowestStalledMs = std::max(slowestStalledMs, ms);
+		if (ms >= 1.0) ++stalledOverOneMs;
+		const timespec pause{0, 200'000};
+		nanosleep(&pause, nullptr);
+	}
+	countAllocationsOnThisThread(false);
+	const bool stillStalled = codeB.stalling.load();
+	const std::uint64_t mainAllocations = countedAllocations() - allocationsBefore;
+	const std::size_t ranDuringStall = record.ran.load() - ranBeforeStall;
+	REQUIRE(waiter.until([&] { return record.seen >= InvokeRecord::kCount; }, 10s));
+	CHECK(codeB.stalled.load());
+	a->drive(nullptr);
+	b->drive(nullptr);
+
+	const std::size_t ran = record.ran.load();
+	const auto results = poster.results();
+	std::size_t refused = 0, notAsync = 0, outOfOrder = 0, offThread = 0, insideProcess = 0, toldSync = 0;
+	for (std::size_t i = 0; i < InvokeRecord::kCount; ++i) {
+		if (results[i] < 0) ++refused;
+		if (results[i] != static_cast<int>(SPA_RESULT_RETURN_ASYNC(static_cast<std::uint32_t>(i + 1)))) ++notAsync;
+		if (record.order[i] != i + 1) ++outOfOrder;
+		if (record.onDataThread[i] == 0) ++offThread;
+		if (record.duringProcess[i] != 0) ++insideProcess;
+		if (record.async[i] == 0) ++toldSync;
+	}
+	const std::uint64_t allocations = countedAllocations() - mainAllocations; // the data thread's
+	const double worstBurst = *std::ranges::max_element(burstMs);
+	std::string bursts;
+	for (double ms : burstMs) bursts += std::to_string(ms) + " ";
+	std::printf(
+		"S1: %zu invokes ran; bursts of 1000 cost the main loop %sms (worst %.3f); slowest single post %.3f ms; "
+		"%" PRIu64 " completion events for %" PRIu64 " completions; %" PRIu64
+		" functions had already run when their post returned; %" PRIu64 " allocations on the data thread\n",
+		ran, bursts.c_str(), worstBurst, poster.slowestSingleMs(), record.completionEvents, record.seen,
+		poster.ranBeforeReturn(), allocations);
+	INFO("bursts (ms): " << bursts);
+	CHECK(ran == InvokeRecord::kCount);
+	CHECK(refused == 0);
+	CHECK(notAsync == 0); // never the function's own result: no post waited for its function or ran it inline
+	CHECK(outOfOrder == 0);
+	CHECK(offThread == 0);
+	CHECK(insideProcess == 0);
+	CHECK(toldSync == 0);
+	CHECK(record.seen == InvokeRecord::kCount); // every completion reached the main loop, though signals coalesced
+	CHECK(record.completionEvents <= InvokeRecord::kCount);
+	CHECK(allocations == 0);
+	CHECK(worstBurst < 5.0);
+	// The stall. PipeWire 1.4.2 never refuses or waits on a full queue: the posting thread allocates an overflow queue
+	// (loop.c, loop_queue_invoke's xrun path) and carries on; the data thread runs everything, in order, once it wakes.
+	std::printf(
+		"S1 stall: %" PRIu64 " posts during a 2 s stall (still stalled after them: %s), slowest %.3f ms, %zu of "
+		"them 1 ms or more, %zu functions ran meanwhile, %" PRIu64 " allocations on the posting (main) thread\n",
+		InvokeRecord::kStalled, stillStalled ? "yes" : "no", slowestStalledMs, stalledOverOneMs, ranDuringStall,
+		mainAllocations);
+	CHECK(stillStalled);
+	CHECK(ranDuringStall == 0);
+	// A post costs microseconds; one past 1 ms is the main thread preempted on a loaded host, never a wait on the
+	// stalled loop, which would cost the rest of the 2 s. So a few are let through, and none near the stall.
+	CHECK(stalledOverOneMs <= InvokeRecord::kStalled / 1000);
+	CHECK(slowestStalledMs < 50.0);
+}
+
+TEST_CASE(
+	"S1: on a data loop whose thread is not running (not yet started, or stopped), a non-blocking invoke runs its "
+	"function inline on the caller and returns its result",
+	"[spike][s1]") {
+	auto engine = makeEngine(); // pw_init
+	pw_data_loop* dataLoop = pw_data_loop_new(nullptr);
+	REQUIRE(dataLoop != nullptr);
+	struct Seen {
+		std::atomic<int> calls{0};
+		std::atomic<bool> onCaller{false};
+		pthread_t caller = pthread_self();
+	} seen;
+	const auto function = [](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* userData) {
+		auto* self = static_cast<Seen*>(userData);
+		self->onCaller.store(pthread_equal(pthread_self(), self->caller) != 0);
+		self->calls.fetch_add(1);
+		return InvokeRecord::kFunctionResult;
+	};
+	pw_loop* loop = pw_data_loop_get_loop(dataLoop);
+	// Not started: inline, the function's own result.
+	CHECK(pw_loop_invoke(loop, function, 1, nullptr, 0, false, &seen) == InvokeRecord::kFunctionResult);
+	CHECK(seen.calls.load() == 1);
+	CHECK(seen.onCaller.load());
+	// Started: inline until its thread enters the loop (the race Engine::create waits out), then on that thread.
+	REQUIRE(pw_data_loop_start(dataLoop) >= 0);
+	int inlineAfterStart = 0;
+	int result = 0;
+	const auto deadline = std::chrono::steady_clock::now() + 5s;
+	while (std::chrono::steady_clock::now() < deadline) {
+		const int before = seen.calls.load();
+		result = pw_loop_invoke(loop, function, 2, nullptr, 0, false, &seen);
+		while (seen.calls.load() == before && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+		if (!seen.onCaller.load()) break;
+		++inlineAfterStart;
+	}
+	CHECK_FALSE(seen.onCaller.load());
+	CHECK(result == static_cast<int>(SPA_RESULT_RETURN_ASYNC(2)));
+	// Stopped: inline again (loop.c's loop_leave clears the loop's thread).
+	REQUIRE(pw_data_loop_stop(dataLoop) >= 0);
+	const int calls = seen.calls.load();
+	CHECK(pw_loop_invoke(loop, function, 3, nullptr, 0, false, &seen) == InvokeRecord::kFunctionResult);
+	CHECK(seen.calls.load() == calls + 1);
+	CHECK(seen.onCaller.load());
+	std::printf("S1 no thread: inline before start and after stop; %d inline invokes after start before the thread "
+	            "entered its loop\n",
+	            inlineAfterStart);
+	pw_data_loop_destroy(dataLoop);
+}
+
+TEST_CASE(
+	"S2: under an invoke storm a block and its peers see one position per cycle in link order, an xrun cut "
+	"short only by a prefix of the graph, and a ramp taken up by position arrives sample-exact across 1000 requests",
+	"[spike][s2]") {
+	// Declared before the engine, so a storm invoke still queued when the test leaves never touches a freed counter.
+	std::atomic<bool> stormOn{true};
+	std::atomic<std::uint64_t> stormPosts{0};
+	std::atomic<std::uint64_t> stormRan{0};
+	std::atomic<std::uint64_t> stormRefused{0};
+	auto engine = engineAt(kS2Block);
+	Waiter waiter(*engine);
+	Wiring wiring(*engine, waiter);
+	Shared shared;
+	Upstream upCode(shared);
+	TakeUp blockCode(shared, waiter);
+	Downstream downCode(shared, blockCode);
+	Probe up(*engine, waiter, "u", 0, 1, upCode);
+	Probe block(*engine, waiter, "b", 1, 1, blockCode);
+	Probe down(*engine, waiter, "d", 1, 0, downCode);
+	REQUIRE(waiter.until([&] { return up.streaming() && block.streaming() && down.streaming(); }));
+	REQUIRE(wiring.link(waiter, {"u", "out.1"}, {"b", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"b", "out.1"}, {"d", "in.1"}));
+	pw_loop* dataLoop = contextDataLoop(*engine);
+	REQUIRE(block.dataLoop() == dataLoop);
+
+	// The storm: no-op invokes into the data loop from a second thread, for the whole test, as fast as the data loop
+	// takes them: bursts of 100, at most kBacklog outstanding, with a 50 us pause after each burst. Unpaced ("as fast
+	// as it can"), one thread wedges PipeWire 1.4.2's data loop for good: loop.c's flush_all_queues runs until every
+	// queue is empty and scans every overflow queue for each item, so once the poster gets ahead the data loop only
+	// flushes, never processes again, and the overflow queues grow without bound (the first run of this spike).
+	constexpr std::uint64_t kBacklog = 2000; // under one queue's worth of overflow chains: about 4 queues of 32 KiB
+	std::thread storm([&] {
+		const auto noop = [](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* userData) {
+			static_cast<std::atomic<std::uint64_t>*>(userData)->fetch_add(1, std::memory_order_relaxed);
+			return 0;
+		};
+		while (stormOn.load(std::memory_order_relaxed)) {
+			for (int i = 0; i < 100; ++i) {
+				if (stormPosts.load(std::memory_order_relaxed) - stormRan.load(std::memory_order_relaxed) >= kBacklog)
+					break;
+				if (pw_loop_invoke(dataLoop, noop, SPA_ID_INVALID, nullptr, 0, false, &stormRan) < 0)
+					stormRefused.fetch_add(1, std::memory_order_relaxed);
+				stormPosts.fetch_add(1, std::memory_order_relaxed);
+			}
+			const timespec pause{0, 50'000};
+			nanosleep(&pause, nullptr);
+		}
+	});
+	struct StopStorm {
+		std::atomic<bool>& on;
+		std::thread& thread;
+		~StopStorm() {
+			on.store(false);
+			if (thread.joinable()) thread.join();
+		}
+	} stopStorm{stormOn, storm};
+
+	shared.recording.store(true);
+	const std::uint64_t armed = blockCode.cycles();
+	REQUIRE(waiter.until([&] { return blockCode.cycles() > armed + 4; }));
+
+	// Drive and silence alternately: each request once the previous one completed, then 1 to 30 cycles later.
+	const auto storm0 = std::chrono::steady_clock::now();
+	std::mt19937 random(20261108);
+	std::uniform_int_distribution<std::uint64_t> interval(1, 30);
+	std::uint64_t posted = 0;
+	std::uint64_t waitUntil = 0;
+	bool waitingForDone = false;
+	std::size_t refusedPosts = 0;
+	const auto postNext = [&] {
+		++posted;
+		if (blockCode.post(dataLoop, TakeUp::Request{posted, posted % 2 == 1}) < 0) ++refusedPosts;
+		waitingForDone = true;
+	};
+	postNext();
+	const bool finished = waiter.until(
+		[&] {
+			if (waitingForDone) {
+				if (blockCode.applied() != posted) return false;
+				waitingForDone = false;
+				waitUntil = blockCode.cycles() + interval(random);
+			}
+			if (blockCode.cycles() < waitUntil) return false;
+			if (posted == kS2Requests) return true;
+			postNext();
+			return false;
+		},
+		std::chrono::seconds(kS2Requests * 40 * kS2Block / kRate * 3 + 30));
+	const double seconds = millisecondsSince(storm0) / 1000.0;
+	// Two cycles more, so every log holds the last request's cycles, then stop recording and the storm.
+	const std::uint64_t last = blockCode.cycles();
+	REQUIRE(waiter.until([&] { return blockCode.cycles() > last + 2; }));
+	shared.recording.store(false);
+	stormOn.store(false);
+	storm.join();
+	REQUIRE(finished);
+	REQUIRE(waiter.until([&] { return stormRan.load() == stormPosts.load(); }));
+
+	// One clock.position per cycle for all three, and U entered before B, B before D, in every cycle all three ran. A
+	// cycle the data thread cannot finish before the driver's next one (the graph's xrun: a loaded host, or the dummy
+	// driver resyncing after a stall) is abandoned part way: only a prefix of the graph in link order runs it (U, or U
+	// and B), its audio never reaches the rest, and the next cycle carries a later position. So such a cycle is counted
+	// and printed, and fails only if a node ran it without every node upstream of it ("-B-", "--D", "U-D", "-BD"). The
+	// first node may also run a cycle at a position a resync then takes back (its own positions stepping back): that
+	// fails only away from a jump B saw.
+	const Compared compared = compare(upCode.log, blockCode.log, downCode.log);
+	std::size_t notPrefix = 0;
+	std::string partials;
+	for (std::size_t i = 0; i < compared.partial.size(); ++i) {
+		const bool near = blockCode.nearJump(compared.partial[i], 4);
+		if (compared.partialWhich[i] != "U--" && compared.partialWhich[i] != "UB-") ++notPrefix;
+		partials += std::to_string(compared.partial[i]) + ":" + compared.partialWhich[i] + (near ? "(resync) " : " ");
+	}
+	std::size_t backwardsAwayFromJump = 0;
+	for (const std::uint64_t at : compared.backwards)
+		if (!blockCode.nearJump(at, 4)) ++backwardsAwayFromJump;
+	INFO("positions not every node ran: " << partials);
+	CHECK(backwardsAwayFromJump == 0);
+	CHECK(compared.common > 0);
+	CHECK(compared.misordered == 0);
+	CHECK(notPrefix == 0);
+
+	// Every request taken up once, in order, alternating; takenAt published one cycle before.
+	const auto taken = blockCode.taken();
+	REQUIRE(taken.size() == kS2Requests);
+	std::size_t wrongOrder = 0, notOneCycle = 0, resynced = 0;
+	for (std::size_t i = 0; i < taken.size(); ++i) {
+		if (taken[i].number != i + 1 || taken[i].drive != (i % 2 == 0)) ++wrongOrder;
+		if (taken[i].takenAt != taken[i].publishedAt + kS2Block) ++notOneCycle;
+		if (taken[i].swappedAt != taken[i].takenAt) ++resynced;
+	}
+	CHECK(wrongOrder == 0);
+	CHECK(notOneCycle == 0);
+	CHECK(blockCode.overlaps() == 0);
+
+	// D, cycle by cycle: the ramp from exactly each drive's swap to exactly the cycle before the next silence's swap,
+	// zeros elsewhere: no gap, no trailing zero. And D saw takenAt in the very cycle B published it.
+	const std::size_t nd = downCode.log.count.load();
+	std::size_t wrongCycles = 0, otherCycles = 0, rampCycles = 0, wrongFrames = 0, missedPublish = 0;
+	std::string firstWrong;
+	std::size_t next = 0; // the first taken entry not yet in force
+	bool driving = false;
+	std::map<std::uint64_t, std::size_t> publishedAt;
+	for (std::size_t i = 0; i < taken.size(); ++i) publishedAt[taken[i].publishedAt] = i;
+	for (std::size_t i = 0; i < nd; ++i) {
+		const std::uint64_t at = downCode.log.position[i];
+		while (next < taken.size() && taken[next].swappedAt <= at) driving = taken[next++].drive;
+		if (downCode.frames[i] != kS2Block) ++wrongFrames;
+		const auto heard = downCode.heard[i];
+		if (heard == Downstream::Heard::ramp) ++rampCycles;
+		if (heard == Downstream::Heard::other) ++otherCycles;
+		const auto wanted = driving ? Downstream::Heard::ramp : Downstream::Heard::zeros;
+		if (heard != wanted) {
+			if (wrongCycles == 0) {
+				firstWrong = "D cycle " + std::to_string(i) + " at " + std::to_string(at) + ": heard " +
+				             std::to_string(static_cast<int>(heard)) + ", wanted " +
+				             std::to_string(static_cast<int>(wanted)) + ", first wrong sample " +
+				             std::to_string(downCode.firstWrong[i]);
+			}
+			++wrongCycles;
+		}
+		if (const auto found = publishedAt.find(at);
+		    found != publishedAt.end() && downCode.takenAtSeen[i] != taken[found->second].takenAt)
+			++missedPublish;
+	}
+	std::printf("S2: %zu requests taken up in %.1f s over %zu cycles of D (%zu with the ramp); %zu take-ups after a "
+	            "jump; B saw %" PRIu64 " position jumps (%" PRIu64 " backwards); %" PRIu64
+	            " storm invokes (%.0f a second, %" PRIu64 " refused); %zu cycles every node ran, %zu misordered; %zu "
+	            "positions not every node ran (%s), %zu steps back; %zu D cycles wrong (%zu neither zeros nor the "
+	            "ramp)\n",
+	            taken.size(), seconds, nd, rampCycles, resynced, blockCode.jumps(), blockCode.backwardJumps(),
+	            stormPosts.load(), static_cast<double>(stormPosts.load()) / seconds, stormRefused.load(),
+	            compared.common, compared.misordered, compared.partial.size(), partials.c_str(),
+	            compared.backwards.size(), wrongCycles, otherCycles);
+	INFO(firstWrong);
+	CHECK(refusedPosts == 0);
+	CHECK(stormRefused.load() == 0);
+	CHECK(stormPosts.load() > 0);
+	CHECK(wrongFrames == 0);
+	CHECK(wrongCycles == 0);
+	CHECK(missedPublish == 0);
+	CHECK(rampCycles > 0);
+}
+
+TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blocks, a sound card and an RTP receiver "
+          "all run on it",
+          "[spike][s3]") {
+	ear::test::TempFolder alsaOut("card");
+	setenv("ALSA_CONFIG_PATH", EAR_ALSA_TEST_DIR "/alsa.conf", 1);
+	setenv("EAR_ALSA_OUT", alsaOut.path().c_str(), 1);
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Registry registry(*engine, waiter);
+	NoBell bell;
+	FilterPortBlocks blocks(*engine, bell);
+	AlsaSoundCards cards(*engine, clocklessCardProperties());
+	RtpReceivers receivers(*engine);
+	Silence cardCode, fppCode;
+	BlockEvents cardBlockEvents(waiter), fppBlockEvents(waiter);
+	auto cardBlock = blocks.make("card",
+	                             Ports{{{Direction::input, "play", {"1", "2"}},
+	                                    {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
+	                             kFormat, cardBlockEvents);
+	auto fppBlock = blocks.make("fpp",
+	                            Ports{{{Direction::output, "stream", {"1", "2"}},
+	                                   {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
+	                            kFormat, fppBlockEvents);
+	cardBlock->drive(&cardCode);
+	fppBlock->drive(&fppCode);
+	Counting probeCode;
+	Probe probe(*engine, waiter, "probe", 0, 1, probeCode);
+	REQUIRE(waiter.until([&] { return cardBlockEvents.isReady && fppBlockEvents.isReady && probe.streaming(); }));
+
+	OutsideEvents cardEvents(waiter), receiverEvents(waiter);
+	auto card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
+	                       SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, cardEvents);
+	auto receiver = receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat},
+	                               RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
+	                                                  RtpEncoding::l24, kRate, 100, "from_rtp"},
+	                               receiverEvents);
+	const std::vector<NodeName> nodes{"Dummy-Driver", "card", "fpp", "probe", "card.playback", "fpp.rtp"};
+	REQUIRE(waiter.until([&] {
+		return (cardEvents.isReady || cardEvents.lostDetail) && (receiverEvents.isReady || receiverEvents.lostDetail) &&
+		       std::ranges::all_of(nodes, [&](const NodeName& name) { return registry.props(name) != nullptr; });
+	}));
+	REQUIRE(cardEvents.lostDetail.value_or("") == "");
+	REQUIRE(receiverEvents.lostDetail.value_or("") == "");
+	REQUIRE(registry.reread(nodes)); // every node's whole current info
+
+	const char* loops = pw_properties_get(pw_context_get_properties(engine->context()), "context.num-data-loops");
+	const std::string theLoop = probe.dataLoop()->name;
+	const auto dataThreads = threadsNamed("data-loop");
+	std::string named, unnamed, other;
+	for (const NodeName& name : nodes) {
+		const auto& props = *registry.props(name);
+		const auto found = props.find(PW_KEY_NODE_LOOP_NAME);
+		if (found == props.end()) {
+			unnamed += name + " ";
+		} else if (found->second == theLoop) {
+			named += name + " ";
+		} else {
+			other += name + "=" + found->second + " ";
+		}
+	}
+	std::string threads;
+	for (const std::string& thread : dataThreads) threads += thread + " ";
+	std::printf("S3: context.num-data-loops = %s; the blocks' loop is %s (the context's: %s); data-loop threads: %s; "
+	            "nodes naming it: %s; naming none: %s; naming another: %s\n",
+	            loops != nullptr ? loops : "(unset)", theLoop.c_str(), contextDataLoop(*engine)->name, threads.c_str(),
+	            named.c_str(), unnamed.c_str(), other.empty() ? "(none)" : other.c_str());
+	CHECK(loops != nullptr);
+	CHECK(std::string(loops != nullptr ? loops : "") == "1");
+	CHECK(probe.dataLoop() == contextDataLoop(*engine));
+	CHECK(dataThreads == std::vector<std::string>{theLoop}); // one data thread in the process, the blocks' loop's
+	CHECK(other.empty());                                    // no node names any other loop
+	CHECK(named.find("fpp.rtp") != std::string::npos);       // rtp-source names its loop itself
+}

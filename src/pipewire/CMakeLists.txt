@@ -36,13 +36,15 @@ configure_file(engine.conf "${PROJECT_BINARY_DIR}/engine.conf" COPYONLY)
 
 if(BUILD_TESTS)
 	add_executable(ear_pipewire_tests
+		tests/allocation_count.cpp
 		tests/engine_log_test.cpp
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
 		tests/main_loop_executor_test.cpp
 		tests/port_block_test.cpp
 		tests/rtp_receiver_test.cpp
-		tests/sound_card_test.cpp)
+		tests/sound_card_test.cpp
+		tests/spikes_test.cpp)
 	# PipeWire directly: the tests drive the engine's loops and sync with its core themselves.
 	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders.
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main
