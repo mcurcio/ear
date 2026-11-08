@@ -1,13 +1,16 @@
 // FilterPortBlocks on the real in-process engine (docs/design/batch2.md section 4.3; acceptance
 // criteria E1(2)-(8)): levels on the graph clock, complete snapshots, the drive barrier, a lost
 // block, inside ports and the graph group; docs/design/node-framework.md slice 7: each cycle's
-// clock facts, latency carried per bank pair, and denormals flushed on the data thread. Every wait is event-gated: the main loop runs until
+// clock facts, latency carried per bank pair, and denormals flushed on the data thread; docs/design/node-lifecycle.md
+// section 5.3 (step L-2): the asynchronous drive applied in its invoke, the fade, settle(), one invoke in flight per
+// block, takenAt and blockId (section 11.6's cases). Every wait is event-gated: the main loop runs until
 // the events a test waits for have arrived; the deadline only fails the test. The Waiter and
 // makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <functional>
 #include <list>
 #include <map>
@@ -16,9 +19,11 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <pipewire/pipewire.h>
+#include <spa/node/command.h>
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
@@ -28,6 +33,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "probes.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
 // binary's one malloc hook.
@@ -288,6 +294,31 @@ public:
 		}
 		return false;
 	}
+	/// Every node of this name the registry announced, in its order.
+	std::vector<std::uint32_t> ids(const NodeName& name) const {
+		std::vector<std::uint32_t> found;
+		for (const Node& node : nodes_) {
+			if (node.name == name) found.push_back(node.id);
+		}
+		return found;
+	}
+	/// Suspends the node through its proxy, as a session manager would: the engine deactivates it, so it processes no
+	/// more, and its filter goes PAUSED (impl-node.c suspend_node, filter.c impl_send_command).
+	bool suspend(const NodeName& name) {
+		for (const Node& node : nodes_) {
+			if (node.name != name) continue;
+			const spa_command command = SPA_NODE_COMMAND_INIT(SPA_NODE_COMMAND_Suspend);
+			return pw_node_send_command(reinterpret_cast<pw_node*>(node.proxy), &command) >= 0;
+		}
+		return false;
+	}
+	/// The node's state, once its info carried one.
+	std::optional<pw_node_state> state(const NodeName& name) const {
+		for (const Node& node : nodes_) {
+			if (node.name == name && node.stateSeen) return node.state;
+		}
+		return std::nullopt;
+	}
 
 private:
 	struct Node {
@@ -297,6 +328,8 @@ private:
 		pw_proxy* proxy = nullptr;
 		spa_hook hook{};
 		bool infoSeen = false;
+		bool stateSeen = false;
+		pw_node_state state = PW_NODE_STATE_CREATING;
 		std::map<std::string, std::string> props;
 	};
 
@@ -342,6 +375,10 @@ private:
 			spa_dict_for_each(item, info->props) node->props[item->key] = item->value;
 		}
 		node->infoSeen = true;
+		if ((info->change_mask & PW_NODE_CHANGE_MASK_STATE) != 0) {
+			node->state = info->state;
+			node->stateSeen = true;
+		}
 		node->owner->waiter_.wake();
 	}
 
@@ -924,3 +961,729 @@ TEST_CASE("process() runs with denormals flushed to zero (FTZ and DAZ), and the 
 	CHECK(_mm_getcsr() == mainBefore);
 }
 #endif
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Slice 3a's PortBlock (docs/design/node-lifecycle.md section 5.3, step L-2): the asynchronous drive, applied inside
+// its invoke between two cycles; fadeOut; settle(); one invoke in flight per block; takenAt; blockId.
+
+namespace {
+
+constexpr std::uint32_t kFade = kRate * 5 / 1000; // 240 frames: the fade's length at 48 kHz
+
+/// The fade's gain at `at` (0 to kFade), computed as the block computes it.
+float fadeGain(std::uint32_t at) { return static_cast<float>(at) / static_cast<float>(kFade); }
+
+/// One value per frame of the graph clock, nonzero and exact as a float (as spikes_test.cpp's).
+float rampAt(std::uint64_t frame) noexcept { return static_cast<float>((frame & 0xFFFFFFU) + 1U); }
+
+/// The context's one data loop (S3), the loop of every block: a test posts its own markers there.
+pw_loop* contextDataLoop(Engine& engine) { return pw_data_loop_get_loop(pw_context_get_data_loop(engine.context())); }
+
+/// A non-blocking no-op invoke on the data loop that says when it ran. Invokes run in posting order, so once it ran,
+/// every invoke posted before it ran too.
+class Marker {
+public:
+	void post(pw_loop* dataLoop) {
+		ran_.store(false, std::memory_order_release);
+		pw_loop_invoke(dataLoop, &Marker::onRun, 0, nullptr, 0, false, this);
+	}
+	/// Spins on the main thread (its loop not run) until the marker ran; false past the deadline.
+	bool spin(std::chrono::milliseconds deadline = 2000ms) const {
+		const auto until = std::chrono::steady_clock::now() + deadline;
+		while (!ran_.load(std::memory_order_acquire)) {
+			if (std::chrono::steady_clock::now() > until) return false;
+			std::this_thread::yield();
+		}
+		return true;
+	}
+
+private:
+	static int onRun(spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) {
+		static_cast<Marker*>(data)->ran_.store(true, std::memory_order_release);
+		return 0;
+	}
+	std::atomic<bool> ran_{false};
+};
+
+/// What a block's completions did, each `done` recorded on the main loop.
+struct Done {
+	explicit Done(Waiter& waiter) : waiter_(waiter) {}
+	std::move_only_function<void(std::uint64_t)> drive(int tag) {
+		return [this, tag](std::uint64_t taken) {
+			order.push_back(tag);
+			takens.push_back(taken);
+			waiter_.wake();
+		};
+	}
+	std::move_only_function<void()> fade(int tag) {
+		return [this, tag] {
+			order.push_back(tag);
+			waiter_.wake();
+		};
+	}
+	bool has(int tag) const { return std::ranges::find(order, tag) != order.end(); }
+	std::vector<int> order;            // the tags, in the order their `done` ran
+	std::vector<std::uint64_t> takens; // each drive's position, in order
+
+private:
+	Waiter& waiter_;
+};
+
+/// Writes rampAt(position + i) to every output, so a sample says which frame of the graph clock wrote it; records its
+/// first cycle's position and the xrun count of each cycle.
+class PositionRamp final : public AudioCode {
+public:
+	explicit PositionRamp(Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		if (calls_.load(std::memory_order_relaxed) == 0) {
+			first_.store(cycle.position, std::memory_order_relaxed);
+			firstXruns_.store(cycle.xruns, std::memory_order_relaxed);
+		}
+		for (const std::span<float> out : outputs) {
+			for (std::uint32_t i = 0; i < frames; ++i) out[i] = rampAt(cycle.position + i);
+		}
+		calls_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	std::uint64_t first() const { return first_.load(std::memory_order_relaxed); }
+	std::uint64_t firstXruns() const { return firstXruns_.load(std::memory_order_relaxed); }
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<std::uint64_t> first_{0};
+	std::atomic<std::uint64_t> firstXruns_{0};
+};
+
+/// Writes `value` to every output; once armed, sleeps 150 ms inside one process(), so requests made meanwhile reach the
+/// data loop together, in one invoke, before any further cycle.
+class Stalling final : public AudioCode {
+public:
+	Stalling(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
+		calls_.fetch_add(1, std::memory_order_release);
+		if (armed.exchange(false, std::memory_order_acq_rel)) {
+			stalling.store(true, std::memory_order_release);
+			waiter_.wake();
+			const timespec stall{0, 150'000'000};
+			nanosleep(&stall, nullptr);
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	std::atomic<bool> armed{false};
+	std::atomic<bool> stalling{false};
+
+private:
+	Waiter& waiter_;
+	float value_;
+	std::atomic<std::uint64_t> calls_{0};
+};
+
+/// A probe downstream of a block: records every frame its inputs received, with the frame's clock position.
+class Listener final : public ear::pipewire::testing::ProbeCode {
+public:
+	static constexpr std::size_t kCapacity = 6 * kRate;
+	Listener(Waiter& waiter, std::size_t inputs)
+		: waiter_(waiter), positions_(kCapacity), samples_(inputs, std::vector<float>(kCapacity)) {}
+	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
+	           std::uint32_t frames) noexcept override {
+		std::size_t n = count_.load(std::memory_order_relaxed);
+		for (std::uint32_t i = 0; i < frames && n < kCapacity; ++i, ++n) {
+			positions_[n] = clock.position + i;
+			for (std::size_t c = 0; c < samples_.size(); ++c) samples_[c][n] = inputs[c][i];
+		}
+		count_.store(n, std::memory_order_release);
+		waiter_.wake();
+	}
+	std::size_t count() const { return count_.load(std::memory_order_acquire); }
+	std::uint64_t position(std::size_t n) const { return positions_[n]; }
+	float sample(std::size_t input, std::size_t n) const { return samples_[input][n]; }
+
+private:
+	Waiter& waiter_;
+	std::vector<std::uint64_t> positions_;
+	std::vector<std::vector<float>> samples_;
+	std::atomic<std::size_t> count_{0};
+};
+
+/// The first recorded frame at or after `from` whose position is `position`, or none.
+std::optional<std::size_t> frameAt(const Listener& listener, std::uint64_t position, std::size_t from = 0) {
+	for (std::size_t n = from; n < listener.count(); ++n) {
+		if (listener.position(n) == position) return n;
+	}
+	return std::nullopt;
+}
+
+const Ports oneOutput{{{Direction::output, "out", {"a"}}}};
+
+} // namespace
+
+TEST_CASE("drive returns at once and its completion arrives on the main loop, and after the completion no process of "
+          "the old code runs",
+          "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Constant a(waiter, 0.0F), b(waiter, 0.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	auto block = blocks.make("switch", oneOutput, kFormat, events);
+
+	block->drive(DriveRequest{&a, {}}, done.drive(1));
+	CHECK(done.order.empty()); // never inside the call
+	REQUIRE(waiter.until([&] { return done.has(1) && a.calls() >= 3; }));
+	block->drive(DriveRequest{&b, {}}, done.drive(2));
+	CHECK(done.order.size() == 1);
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::uint64_t aCalls = a.calls();
+	REQUIRE(waiter.until([&] { return b.calls() >= 3; }));
+	CHECK(a.calls() == aCalls);
+	CHECK(done.order == std::vector<int>{1, 2});
+	CHECK(done.takens[1] > done.takens[0]);
+	CHECK(block->takenAt() == done.takens[1]);
+
+	// A silence the same way: from its completion on, b runs no more.
+	block->drive(DriveRequest{nullptr, {}}, done.drive(3));
+	REQUIRE(waiter.until([&] { return done.has(3); }));
+	const std::uint64_t bCalls = b.calls();
+	const std::uint64_t aliveCalls = a.calls();
+	Constant witness(waiter, 0.0F);
+	BlockEvents witnessEvents(waiter);
+	auto other = blocks.make("witness", oneOutput, kFormat, witnessEvents);
+	other->drive(DriveRequest{&witness, {}}, done.drive(4));
+	REQUIRE(waiter.until([&] { return witness.calls() >= 8; }));
+	CHECK(b.calls() == bCalls);
+	CHECK(a.calls() == aliveCalls);
+}
+
+TEST_CASE("drive and fadeOut on a block whose engine node is gone complete by signal, never inline",
+          "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EngineNodes nodes(*engine, waiter);
+	Constant before(waiter, 0.0F), after(waiter, 0.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	auto gone = blocks.make("gone", oneOutput, kFormat, events);
+	gone->drive(DriveRequest{&before, {}}, done.drive(1));
+	REQUIRE(waiter.until([&] { return before.calls() > 0 && nodes.props("gone") != nullptr; }));
+
+	REQUIRE(nodes.destroy("gone"));
+	REQUIRE(waiter.until([&] { return events.lostDetail.has_value(); }));
+	const bool faded[] = {true};
+	gone->drive(DriveRequest{&after, faded}, done.drive(2));
+	gone->fadeOut(done.fade(3));
+	gone->drive(DriveRequest{nullptr, {}}, done.drive(4));
+	gone->fadeOut(done.fade(5));
+	CHECK(done.order == std::vector<int>{1});
+	REQUIRE(waiter.until([&] { return done.has(5); }));
+	// Nothing processes, so each fade-out is acknowledged in the invoke that finds it, unless that invoke also holds
+	// the drive behind it (the fade-out at 3 and the drive at 4 in one invoke): then it was cancelled, never run.
+	const bool cancelled = done.order == std::vector<int>{1, 2, 4, 5};
+	const bool acknowledged = done.order == std::vector<int>{1, 2, 3, 4, 5};
+	INFO("completed: " << done.order.size());
+	CHECK((cancelled || acknowledged));
+	CHECK(after.calls() == 0);
+}
+
+// node-lifecycle.md 16's [U]: PipeWire runs a loop's invokes while a node on it is not processing, so a request
+// applied in its invoke completes without a cycle (5.3, D-L29).
+TEST_CASE("A block that is PAUSED takes a drive in its invoke and completes it", "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EngineNodes nodes(*engine, waiter);
+	Constant a(waiter, 0.0F), b(waiter, 0.0F), witness(waiter, 0.0F);
+	BlockEvents events(waiter), witnessEvents(waiter);
+	Done done(waiter);
+	auto other = blocks.make("witness", oneOutput, kFormat, witnessEvents);
+	other->drive(DriveRequest{&witness, {}}, done.drive(0));
+	auto block = blocks.make("paused", oneOutput, kFormat, events);
+	block->drive(DriveRequest{&a, {}}, done.drive(1));
+	REQUIRE(waiter.until([&] { return a.calls() > 0 && nodes.state("paused") == PW_NODE_STATE_RUNNING; }));
+
+	REQUIRE(nodes.suspend("paused"));
+	REQUIRE(waiter.until([&] { return nodes.state("paused") == PW_NODE_STATE_SUSPENDED; }));
+	// It processes no more: the data loop runs other blocks' cycles, never this one's.
+	const std::uint64_t aCalls = a.calls();
+	const std::uint64_t witnessCalls = witness.calls();
+	REQUIRE(waiter.until([&] { return witness.calls() >= witnessCalls + 8; }));
+	CHECK(a.calls() == aCalls);
+
+	block->drive(DriveRequest{&b, {}}, done.drive(2));
+	block->fadeOut(done.fade(3)); // not processing: acknowledged in its invoke
+	REQUIRE(waiter.until([&] { return done.has(2) && done.has(3); }));
+	// Again after other blocks ran more cycles: the same position, since this block ran none.
+	const std::uint64_t moreCalls = witness.calls();
+	REQUIRE(waiter.until([&] { return witness.calls() >= moreCalls + 4; }));
+	block->drive(DriveRequest{&a, {}}, done.drive(4));
+	REQUIRE(waiter.until([&] { return done.has(4); }));
+	CHECK(b.calls() == 0);
+	CHECK(a.calls() == aCalls);
+	CHECK(done.order == std::vector<int>{0, 1, 2, 3, 4});
+	REQUIRE(done.takens.size() == 4);
+	CHECK(done.takens[3] == done.takens[2]);
+	CHECK(block->takenAt() == done.takens[3]);
+	CHECK(nodes.state("paused") == PW_NODE_STATE_SUSPENDED);
+}
+
+TEST_CASE("A fade-out reaches exactly 0 over 5 ms and is acknowledged in the cycle it did", "[blocks][fade][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Constant one(waiter, 1.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	Listener listener(waiter, 2);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
+	auto block = blocks.make("fader", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	const bool faded[] = {true, false}; // out.a fades, out.b never does
+	block->drive(DriveRequest{&one, faded}, done.drive(1));
+	REQUIRE(wiring.link(waiter, {"fader", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"fader", "out.b"}, {"listener", "in.2"}));
+	// Both links carry full gain for a while (the fade-in long over).
+	std::size_t full = 0;
+	REQUIRE(waiter.until([&] {
+		while (full < listener.count() && (listener.sample(0, full) != 1.0F || listener.sample(1, full) != 1.0F)) {
+			++full;
+		}
+		return full + 4 * kBlock <= listener.count();
+	}));
+
+	const std::uint64_t cyclesAtFade = one.calls();
+	block->fadeOut(done.fade(2));
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	const std::uint64_t cyclesAtAck = one.calls();
+	const std::size_t ackedBy = listener.count();
+	REQUIRE(waiter.until([&] { return listener.count() >= ackedBy + 4 * kBlock; }));
+
+	// out.a: 1.0, then (kFade - k) / kFade for k = 0..kFade (its first frame still at full gain), then exact zeros.
+	std::size_t start = full;
+	while (start < listener.count() && listener.sample(0, start) == 1.0F) ++start;
+	REQUIRE(start > full);
+	--start; // k = 0 of the fade
+	REQUIRE(start + kFade + 2 * kBlock < listener.count());
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("fade frame " << k);
+		CHECK(listener.sample(0, start + k) == fadeGain(kFade - k));
+	}
+	std::size_t nonzero = 0;
+	for (std::size_t n = start + kFade; n < listener.count(); ++n) nonzero += listener.sample(0, n) != 0.0F ? 1 : 0;
+	CHECK(nonzero == 0);
+	// Contiguous frames: no cycle was lost across the fade.
+	for (std::size_t n = start; n < start + kFade; ++n) CHECK(listener.position(n + 1) == listener.position(n) + 1);
+	// out.b untouched.
+	std::size_t notFull = 0;
+	for (std::size_t n = full; n < listener.count(); ++n) notFull += listener.sample(1, n) != 1.0F ? 1 : 0;
+	CHECK(notFull == 0);
+	// 240 frames fit one cycle and the fade starts at a cycle's start, so the first cycle of the fade ends at zero and
+	// signals; the acknowledgement reaches the main loop that many cycles later as the host lets it (not judged).
+	INFO("cycles from fadeOut to its acknowledgement: " << cyclesAtAck - cyclesAtFade);
+	CHECK(cyclesAtAck >= cyclesAtFade + 1);
+}
+
+TEST_CASE("A fade-out on a block that is not processing, or that leaves STREAMING mid-fade, is acknowledged by signal",
+          "[blocks][fade][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EngineNodes nodes(*engine, waiter);
+	Done done(waiter);
+
+	SECTION("a block not yet STREAMING") {
+		BlockEvents events(waiter);
+		auto block = blocks.make("young", oneOutput, kFormat, events);
+		// Posted in the turn that made it, so its invoke finds the block not STREAMING (the main loop has not heard
+		// so yet), whenever the block's first STREAMING is dispatched beside the completion.
+		CHECK(events.readyCount == 0);
+		block->fadeOut(done.fade(1));
+		CHECK(done.order.empty());
+		REQUIRE(waiter.until([&] { return done.has(1); }));
+	}
+
+	SECTION("a block that leaves STREAMING with the fade pending") {
+		// The data thread is held in one process() while the fade is posted and the node suspended; the fade's invoke
+		// then finds the block still STREAMING (as the main loop last heard), no cycle of it follows, and the
+		// acknowledgement comes from the invoke posted when the block left STREAMING.
+		Stalling code(waiter, 1.0F);
+		BlockEvents events(waiter);
+		auto block = blocks.make("leaving", oneOutput, kFormat, events);
+		const bool faded[] = {true};
+		block->drive(DriveRequest{&code, faded}, done.drive(1));
+		REQUIRE(waiter.until([&] {
+			return code.calls() > 0 && events.readyCount == 1 && nodes.state("leaving") == PW_NODE_STATE_RUNNING;
+		}));
+		code.armed.store(true);
+		REQUIRE(waiter.until([&] { return code.stalling.load(); }));
+		block->fadeOut(done.fade(2));
+		REQUIRE(nodes.suspend("leaving"));
+		CHECK(done.order == std::vector<int>{1});
+		REQUIRE(waiter.until([&] { return done.has(2); }));
+		REQUIRE(waiter.until([&] { return nodes.state("leaving") == PW_NODE_STATE_SUSPENDED; }));
+		CHECK(done.order == std::vector<int>{1, 2});
+	}
+}
+
+TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks][fade][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Constant code(waiter, 1.0F), witness(waiter, 0.0F);
+	BlockEvents events(waiter), witnessEvents(waiter);
+	Done done(waiter);
+	// The engine runs 256-frame cycles; a block whose largest is 128 runs none of them (its outputs zeros).
+	auto block = blocks.make("small", oneOutput, AudioFormat{kRate, kBlock / 2}, events);
+	auto other = blocks.make("witness", oneOutput, kFormat, witnessEvents);
+	other->drive(DriveRequest{&witness, {}}, done.drive(0));
+	REQUIRE(waiter.until([&] { return events.readyCount == 1 && witness.calls() >= 4; }));
+
+	const bool faded[] = {true};
+	block->drive(DriveRequest{&code, faded}, done.drive(1));
+	REQUIRE(waiter.until([&] { return done.has(1); }));
+	block->fadeOut(done.fade(2));
+	REQUIRE(waiter.until([&] { return done.has(2); }));
+	// Take-up goes on by position all the same.
+	const std::uint64_t witnessCalls = witness.calls();
+	REQUIRE(waiter.until([&] { return witness.calls() >= witnessCalls + 4; }));
+	block->drive(DriveRequest{nullptr, {}}, done.drive(3));
+	REQUIRE(waiter.until([&] { return done.has(3); }));
+	CHECK(code.calls() == 0);
+	REQUIRE(done.takens.size() == 3);
+	CHECK(done.takens[2] > done.takens[1]);
+	CHECK(done.order == std::vector<int>{0, 1, 2, 3});
+}
+
+/// Writes `value` to every output; once armed, holds the data thread inside one process() until released or for 8 ms at
+/// most (under max_resync's 10 ms, so the driver does not resync and every cycle reaches the probes downstream), so
+/// requests made meanwhile reach the data loop together, in one invoke, before any further cycle.
+class Holding final : public AudioCode {
+public:
+	Holding(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, value_);
+		if (armed.exchange(false, std::memory_order_acq_rel)) {
+			holding.store(true, std::memory_order_release);
+			waiter_.wake();
+			const auto until = std::chrono::steady_clock::now() + 8ms;
+			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until) {
+			}
+			overran.store(!released.load(std::memory_order_acquire), std::memory_order_release);
+			holding.store(false, std::memory_order_release);
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::atomic<bool> armed{false};
+	std::atomic<bool> holding{false};
+	std::atomic<bool> released{false};
+	std::atomic<bool> overran{false}; // the hold ended before the main thread released it
+
+private:
+	Waiter& waiter_;
+	float value_;
+};
+
+TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blocks][fade][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	Holding half(waiter, 0.5F);
+	Constant one(waiter, 1.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	Listener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	auto block = blocks.make("fader", oneOutput, kFormat, events);
+	const bool faded[] = {true};
+	REQUIRE(wiring.link(waiter, {"fader", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; })); // silent so far
+
+	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output.
+	block->drive(DriveRequest{&half, faded}, done.drive(1));
+	REQUIRE(waiter.until([&] { return done.has(1); }));
+	const std::uint64_t firstTaken = done.takens[0];
+	REQUIRE(waiter.until([&] { return frameAt(listener, firstTaken + kFade + kBlock).has_value(); }));
+	const std::size_t from = *frameAt(listener, firstTaken);
+	CHECK(listener.sample(0, from - 1) == 0.0F);
+	for (std::uint32_t k = 0; k <= kFade; ++k) {
+		INFO("fade-in frame " << k);
+		CHECK(listener.sample(0, from + k) == 0.5F * fadeGain(k));
+	}
+	CHECK(listener.sample(0, from + kFade + 1) == 0.5F);
+
+	// A fade-out and then a drive reach the data loop in one invoke, while it is held in one process(): the drive
+	// cancels the fade-out (its done never runs) and fades in from 0 again, whatever gain the fade-out had reached. A
+	// hold the main loop was too slow to use (a loaded host) is tried again.
+	int tag = 2;
+	bool held = false;
+	for (int attempt = 0; attempt < 10 && !held; ++attempt) {
+		half.released.store(false);
+		block->drive(DriveRequest{&half, faded}, done.drive(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		const std::size_t before = listener.count();
+		REQUIRE(waiter.until([&] { return listener.count() >= before + 2 * kBlock; })); // at full gain again
+		half.armed.store(true);
+		REQUIRE(waiter.until([&] { return half.holding.load(); }));
+		const std::size_t heldAt = listener.count();
+		const int fadeTag = tag++;
+		const int driveTag = tag++;
+		block->fadeOut(done.fade(fadeTag));
+		block->drive(DriveRequest{&one, faded}, done.drive(driveTag));
+		half.released.store(true);
+		REQUIRE(waiter.until([&] { return done.has(driveTag); }));
+		if (half.overran.load()) {
+			WARN("the hold ended before both requests were made; again");
+			continue;
+		}
+		held = true;
+		const std::uint64_t taken = done.takens.back();
+		std::size_t again = heldAt;
+		REQUIRE(waiter.until([&] {
+			while (again < listener.count() && listener.sample(0, again) == 0.5F) ++again;
+			return again + kFade + kBlock < listener.count();
+		}));
+		CHECK(listener.position(again) == taken);
+		CHECK(listener.sample(0, again - 1) == 0.5F); // the old code at full gain up to the drive
+		for (std::uint32_t k = 0; k <= kFade; ++k) {
+			INFO("second fade-in frame " << k);
+			CHECK(listener.sample(0, again + k) == fadeGain(k));
+		}
+		// The cancelled fade-out's done is dropped; a later fade-out is acknowledged as usual.
+		block->fadeOut(done.fade(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		CHECK_FALSE(done.has(fadeTag));
+		CHECK(done.order.back() == tag - 1);
+	}
+	CHECK(held);
+}
+
+TEST_CASE("The published position is where the new code's first sample is", "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	Listener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	auto block = blocks.make("source", oneOutput, kFormat, events);
+	REQUIRE(wiring.link(waiter, {"source", "out.a"}, {"listener", "in.1"}));
+	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; }));
+
+	// Several take-ups, each a fresh code (a ramp by position), each between silences.
+	for (int round = 0; round < 5; ++round) {
+		INFO("round " << round);
+		PositionRamp ramp(waiter);
+		block->drive(DriveRequest{&ramp, {}}, done.drive(round * 2 + 1));
+		REQUIRE(waiter.until([&] { return done.has(round * 2 + 1) && ramp.calls() >= 2; }));
+		const std::uint64_t taken = done.takens.back();
+		CHECK(block->takenAt() == taken);
+		// The code's first cycle is at the published position, unless the clock jumped (an xrun) right there.
+		if (ramp.firstXruns() == 0 || ramp.first() == taken) {
+			CHECK(ramp.first() == taken);
+		} else {
+			WARN("an xrun at the take-up: first cycle at " << ramp.first() << ", published " << taken);
+		}
+		// Downstream, the first frame of the ramp is at the published position, and the frame before it is silent.
+		std::optional<std::size_t> first;
+		REQUIRE(waiter.until([&] { return (first = frameAt(listener, ramp.first())).has_value(); }));
+		CHECK(listener.sample(0, *first) == rampAt(ramp.first()));
+		if (*first > 0 && listener.position(*first - 1) + 1 == ramp.first()) {
+			CHECK(listener.sample(0, *first - 1) == 0.0F);
+		}
+		block->drive(DriveRequest{nullptr, {}}, done.drive(round * 2 + 2));
+		REQUIRE(waiter.until([&] { return done.has(round * 2 + 2); }));
+		const std::uint64_t calls = ramp.calls();
+		const std::size_t heard = listener.count();
+		REQUIRE(waiter.until([&] { return listener.count() >= heard + 2 * kBlock; }));
+		CHECK(ramp.calls() == calls);
+	}
+}
+
+TEST_CASE("settle() runs a completion whose event has not been dispatched", "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Constant a(waiter, 0.0F), b(waiter, 0.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	auto block = blocks.make("settled", oneOutput, kFormat, events);
+	block->drive(DriveRequest{&a, {}}, done.drive(1));
+	REQUIRE(waiter.until([&] { return done.has(1) && a.calls() > 0; }));
+
+	// One main-loop turn: post the drive, wait (without running the loop) until the data loop ran it, then settle.
+	Marker marker;
+	block->drive(DriveRequest{&b, {}}, done.drive(2));
+	block->fadeOut(done.fade(3));
+	marker.post(contextDataLoop(*engine));
+	REQUIRE(marker.spin());
+	CHECK(done.order == std::vector<int>{1});
+	block->settle();
+	REQUIRE(done.order.size() >= 2);
+	CHECK(done.order[1] == 2);
+	// The event, dispatched later, runs nothing twice; the fade completes in its own time.
+	REQUIRE(waiter.until([&] { return done.has(3); }));
+	const std::uint64_t bCalls = b.calls();
+	REQUIRE(waiter.until([&] { return b.calls() >= bCalls + 4; }));
+	block->settle();
+	CHECK(done.order == std::vector<int>{1, 2, 3});
+}
+
+TEST_CASE("A thousand requests to one block keep one invoke in flight", "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Constant a(waiter, 0.0F), b(waiter, 0.0F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	auto block = blocks.make("busy", oneOutput, kFormat, events);
+	block->drive(DriveRequest{&a, {}}, done.drive(0));
+	REQUIRE(waiter.until([&] { return done.has(0) && a.calls() > 0; }));
+
+	// In one main-loop turn: 1,000 requests, then a marker invoke behind whatever the block posted. Once the marker
+	// ran, every invoke the block posted before it ran: with one in flight, that is one invoke, which drained at most
+	// the ring's eight requests; the next is posted only once the main loop hears the completion.
+	constexpr int kRequests = 1000;
+	const auto start = std::chrono::steady_clock::now();
+	for (int i = 1; i <= kRequests; ++i) {
+		if (i % 10 == 0) {
+			block->fadeOut(done.fade(i));
+		} else {
+			block->drive(DriveRequest{i % 2 == 0 ? &a : &b, {}}, done.drive(i));
+		}
+	}
+	const double postMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	Marker marker;
+	marker.post(contextDataLoop(*engine));
+	REQUIRE(marker.spin());
+	block->settle();
+	const std::size_t byFirstInvoke = done.order.size() - 1;
+	INFO("requests completed by the block's first invoke: " << byFirstInvoke << "; 1,000 requests cost " << postMs
+	                                                        << " ms");
+	CHECK(byFirstInvoke >= 1);
+	CHECK(byFirstInvoke <= 8);
+	CHECK(postMs < 100.0);
+
+	// Every drive completes, in order; a fade-out completes unless a drive behind it reached the data loop first (then
+	// it was cancelled, its done dropped). The last request is a fade-out with nothing behind it.
+	REQUIRE(waiter.until([&] { return done.has(kRequests); }, 20s));
+	CHECK(std::ranges::is_sorted(done.order));
+	CHECK(std::ranges::adjacent_find(done.order) == done.order.end());
+	int drives = 0;
+	for (const int tag : done.order) drives += tag % 10 != 0 ? 1 : 0;
+	CHECK(drives == kRequests - kRequests / 10); // tags 1 to 1,000 but every tenth (tag 0 counts with the fades)
+	CHECK(done.takens.size() == static_cast<std::size_t>(drives + 1));
+	CHECK(std::ranges::is_sorted(done.takens));
+}
+
+TEST_CASE("Drives, fades and their completions allocate nothing on the data thread", "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Constant a(waiter, 0.5F), b(waiter, 0.25F);
+	BlockEvents events(waiter);
+	Done done(waiter);
+	auto block = blocks.make("quiet", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	const bool faded[] = {true, false};
+	block->drive(DriveRequest{&a, faded}, done.drive(0));
+	REQUIRE(waiter.until([&] { return done.has(0) && a.calls() > 0; }));
+
+	// Every process() from here on turns counting on for the data thread, where the invokes run too.
+	a.countHere.store(true);
+	b.countHere.store(true);
+	const std::uint64_t armedAt = a.calls();
+	REQUIRE(waiter.until([&] { return a.calls() > armedAt; }));
+	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
+	int tag = 1;
+	for (int round = 0; round < 50; ++round) {
+		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded}, done.drive(tag++));
+		block->fadeOut(done.fade(tag++));
+		block->drive(DriveRequest{round % 2 == 0 ? &a : &b, faded}, done.drive(tag++));
+		const std::size_t want = done.order.size() + 2; // the fade between the two drives is cancelled, or acknowledged
+		REQUIRE(waiter.until([&] { return done.order.size() >= want && done.has(tag - 1); }));
+	}
+	const std::uint64_t counted = ear::pipewire::testing::countedAllocations() - before;
+	a.countHere.store(false);
+	b.countHere.store(false);
+	const std::uint64_t calls = a.calls() + b.calls();
+	REQUIRE(waiter.until([&] { return a.calls() + b.calls() > calls + 1; }));
+	CHECK(counted == 0);
+}
+
+// node-lifecycle.md 16's [U]: pw_filter_get_node_id gives the block's global id once STREAMING, and an outside node's
+// link made by it (as joinOutsideNode will write link.output.node, 5.7) reaches that block even beside an older block of
+// the same name.
+TEST_CASE("A block's id is its engine node's global id once STREAMING, and a link made by it reaches that block, not "
+          "another of its name",
+          "[blocks][drive][async]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EngineNodes nodes(*engine, waiter);
+	Constant older(waiter, 0.25F), newer(waiter, 0.5F);
+	BlockEvents olderEvents(waiter), newerEvents(waiter);
+	Done done(waiter);
+	auto first = blocks.make("twin", oneOutput, kFormat, olderEvents);
+	CHECK(first->blockId() == SPA_ID_INVALID);
+	first->drive(DriveRequest{&older, {}}, done.drive(1));
+	auto second = blocks.make("twin", oneOutput, kFormat, newerEvents);
+	second->drive(DriveRequest{&newer, {}}, done.drive(2));
+	Listener listener(waiter, 1);
+	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
+	REQUIRE(waiter.until([&] {
+		return olderEvents.readyCount == 1 && newerEvents.readyCount == 1 && probe.streaming() &&
+		       nodes.ids("twin").size() == 2;
+	}));
+	const std::vector<std::uint32_t> ids = nodes.ids("twin");
+	CHECK(first->blockId() != SPA_ID_INVALID);
+	CHECK(second->blockId() != SPA_ID_INVALID);
+	CHECK(first->blockId() != second->blockId());
+	CHECK(std::ranges::find(ids, first->blockId()) != ids.end());
+	CHECK(std::ranges::find(ids, second->blockId()) != ids.end());
+
+	// The link as link-factory makes it for an outside node: each end by node id, each port by name.
+	const std::string output = std::to_string(second->blockId());
+	const std::string input = std::to_string(probe.nodeId());
+	pw_properties* props =
+		pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, output.c_str(), PW_KEY_LINK_OUTPUT_PORT, "out.a",
+	                      PW_KEY_LINK_INPUT_NODE, input.c_str(), PW_KEY_LINK_INPUT_PORT, "in.1", nullptr);
+	auto* link = static_cast<pw_proxy*>(pw_core_create_object(engine->core(), "link-factory", PW_TYPE_INTERFACE_Link,
+	                                                          PW_VERSION_LINK, &props->dict, 0));
+	pw_properties_free(props);
+	REQUIRE(link != nullptr);
+	std::size_t heard = 0;
+	REQUIRE(waiter.until([&] {
+		while (heard < listener.count() && listener.sample(0, heard) == 0.0F) ++heard;
+		return heard + 4 * kBlock <= listener.count();
+	}));
+	std::size_t notNewer = 0;
+	for (std::size_t n = heard; n < listener.count(); ++n) notNewer += listener.sample(0, n) != 0.5F ? 1 : 0;
+	CHECK(notNewer == 0);
+	pw_proxy_destroy(link);
+}

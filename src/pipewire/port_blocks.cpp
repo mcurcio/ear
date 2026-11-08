@@ -2,13 +2,19 @@
 // block in EAR's graph group, drive() as a barrier with the block's data loop, and level
 // metering of the public ports in windows aligned on the graph clock. Each cycle's GraphCycle is
 // made here, both clock domains sampled once (docs/design/node-framework.md section 9.3), and
-// latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4).
+// latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4). Slice 3a's
+// asynchronous drive and fade (docs/design/node-lifecycle.md section 5.3, step L-2): requests in a
+// ring of eight, one invoke in flight per block, applied inside it, completed through the block's
+// own event source.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <ctime>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -95,7 +101,8 @@ public:
 		  inputPeers_(inputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
 		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)), inputHeard_(inputs_.size(), false),
 		  outputHeard_(outputs_.size(), false), inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
-		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)) {
+		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
+		  fadeFrames_(std::max(format.rate * 5 / 1000, 1U)), fadeMask_(outputs_.size(), 0) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
 		}
@@ -104,6 +111,7 @@ public:
 			levels_->blocks.push_back(&registered_);
 		}
 		refusal_ = pw_loop_add_event(loop_, &FilterPortBlock::onRefusal, this);
+		completion_ = pw_loop_add_event(loop_, &FilterPortBlock::onCompletion, this);
 		// pw_filter_new's name becomes media.name; node.name (how the registry, and so the live
 		// graph, names the node) defaults to the program's name unless set here. node.group puts
 		// every block in one group, so one driver clocks them all.
@@ -137,11 +145,19 @@ public:
 	// pw_filter_destroy removes the node from that loop, so process() is never called after
 	// either returns. Only then does the block leave the registry, so nothing writes a mailbox
 	// that latestLevels can no longer reach, and nothing reads one that is freed.
+	//
+	// An invoke of this block's still queued (posted, not yet run) would run on a freed block, so one blocking no-op
+	// invoke on the loop it was posted to flushes it first (invokes run in posting order). Only then is the completion
+	// source destroyed, so a completion for a destroyed block runs nothing; requests not completed are dropped.
 	~FilterPortBlock() override {
 		if (filter_ != nullptr) {
 			spa_hook_remove(&listener_);
 			pw_filter_destroy(filter_);
 		}
+		if (postedLoop_ != nullptr && invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) {
+			pw_loop_invoke(postedLoop_, &FilterPortBlock::onNothing, 0, nullptr, 0, true, nullptr);
+		}
+		if (completion_ != nullptr) pw_loop_destroy_source(loop_, completion_);
 		if (refusal_ != nullptr) pw_loop_destroy_source(loop_, refusal_);
 		const std::scoped_lock lock(levels_->mutex);
 		std::erase(levels_->blocks, &registered_);
@@ -164,6 +180,43 @@ public:
 		}
 		pw_loop_invoke(dataLoop, &FilterPortBlock::onDrive, 0, &code, sizeof(code), true, this);
 	}
+
+	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+		pending_.push_back(Pending{Kind::drive, request.code, request.faded, std::move(done), {}});
+		pump();
+	}
+
+	void fadeOut(std::move_only_function<void()> done) override {
+		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, std::move(done)});
+		pump();
+	}
+
+	/// Runs the `done` of every request the data loop completed, in order, then hands the ring what waits behind it
+	/// and posts the next invoke if one is due. A `done` may make new requests (they queue behind) or destroy the
+	/// block (nothing of it is touched afterwards).
+	void settle() override {
+		const std::weak_ptr<int> alive = life_;
+		const std::uint64_t completed = completed_.load(std::memory_order_acquire);
+		while (finished_ < completed) {
+			Pending next = std::move(pending_.front());
+			pending_.pop_front();
+			const Request& slot = ring_[finished_ % kRing];
+			const std::uint64_t taken = slot.takenAt;
+			const bool cancelled = slot.cancelled;
+			++finished_;
+			if (next.kind == Kind::drive) {
+				if (next.driven) next.driven(taken);
+			} else if (!cancelled && next.faded) {
+				next.faded();
+			}
+			if (alive.expired()) return;
+		}
+		pump();
+	}
+
+	std::uint64_t takenAt() const noexcept override { return takenAt_.load(std::memory_order_acquire); }
+
+	std::uint32_t blockId() const noexcept override { return blockId_; }
 
 	void carryLatency(const LatencyPlan& plan) override {
 		for (const BankPair& pair : plan.pairs) {
@@ -216,6 +269,18 @@ private:
 	/// proxy_removed), is a loss. The block's own destroy removes this listener first.
 	static void onStateChanged(void* data, pw_filter_state old, pw_filter_state state, const char* error) {
 		auto* self = static_cast<FilterPortBlock*>(data);
+		// Whether the block processes, for the data loop's fades; leaving STREAMING acknowledges a fade still pending,
+		// by one more invoke, since no cycle may come to end it.
+		const bool streaming = state == PW_FILTER_STATE_STREAMING;
+		self->processing_.store(streaming, std::memory_order_release);
+		if (streaming && self->blockId_ == SPA_ID_INVALID && self->filter_ != nullptr) {
+			self->blockId_ = pw_filter_get_node_id(self->filter_);
+		}
+		if (!streaming && old == PW_FILTER_STATE_STREAMING &&
+		    self->completed_.load(std::memory_order_acquire) < self->pushed_) {
+			self->kick_ = true;
+			self->pump();
+		}
 		if (state == PW_FILTER_STATE_STREAMING && !self->readyTold_) {
 			self->readyTold_ = true;
 			self->events_.ready();
@@ -337,6 +402,121 @@ private:
 		}
 	}
 
+	// ---------------------------------------------------------------------------------------------------------------
+	// The asynchronous drive and fade (node-lifecycle.md 5.3). Request n sits in ring_[n % kRing] from its push until
+	// the main thread ran its `done`; the main thread pushes only into a slot whose request it finished, and publishes
+	// what it pushed (published_, release); the data loop drains up to that and writes each request's result into its
+	// slot before it publishes the request completed (completed_, release). Requests complete in order: a drive at
+	// once, in the invoke; a fade-out when a cycle ended at zero, or at once on a block not processing, or (cancelled)
+	// when a later drive is applied. So the requests drained but not completed are always fade-outs, all pending.
+
+	/// Main thread: moves what waits into the ring while it has room, then posts an invoke if none is in flight and
+	/// the ring holds what the data loop has not drained (or a fade must be acknowledged after leaving STREAMING).
+	/// Never runs a `done`.
+	void pump() {
+		while (pushed_ < finished_ + pending_.size() && pushed_ - finished_ < kRing) {
+			const Pending& next = pending_[pushed_ - finished_];
+			ring_[pushed_ % kRing] = Request{next.kind, next.code, next.mask.data(), next.mask.size(), 0, false};
+			++pushed_;
+		}
+		published_.store(pushed_, std::memory_order_release);
+		if (invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) return; // its completion pumps again
+		if (drained_.load(std::memory_order_acquire) == pushed_ && !kick_) return;
+		kick_ = false;
+		pw_loop* dataLoop = filter_ != nullptr ? pw_filter_get_data_loop(filter_) : nullptr;
+		if (dataLoop == nullptr) {
+			// Nothing processes: applied here, and still completed by signal.
+			apply();
+			pw_loop_signal_event(loop_, completion_);
+			return;
+		}
+		// One invoke in flight per block (D-L38). A loop whose thread is not running runs it inline: it only sets
+		// data-loop state and signals, never runs a `done`.
+		postedLoop_ = dataLoop;
+		++invokesPosted_;
+		pw_loop_invoke(dataLoop, &FilterPortBlock::onRequests, 0, nullptr, 0, false, this);
+	}
+
+	/// Data loop, between two cycles: applies every request the ring holds, then says the invoke ran and signals.
+	static int onRequests(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
+	                      std::size_t /*size*/, void* userData) {
+		auto* self = static_cast<FilterPortBlock*>(userData);
+		self->apply();
+		self->invokesRun_.fetch_add(1, std::memory_order_acq_rel);
+		pw_loop_signal_event(self->loop_, self->completion_);
+		return 0;
+	}
+
+	static int onNothing(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
+	                     std::size_t /*size*/, void* /*userData*/) {
+		return 0;
+	}
+
+	/// Data loop (or the main thread of a block with no data loop): drains the ring.
+	void apply() noexcept {
+		const std::uint64_t until = published_.load(std::memory_order_acquire);
+		std::uint64_t drained = drained_.load(std::memory_order_relaxed);
+		std::uint64_t completed = completed_.load(std::memory_order_relaxed);
+		for (; drained < until; ++drained) {
+			Request& request = ring_[drained % kRing];
+			if (request.kind == Kind::fade) {
+				request.cancelled = false;
+				fade_ = Fade::out;
+				continue;
+			}
+			for (std::uint64_t pending = completed; pending < drained; ++pending)
+				ring_[pending % kRing].cancelled = true;
+			code_.store(request.code, std::memory_order_release);
+			fresh_ = true; // the new code's first cycle is a discontinuity to it
+			bool anyFaded = false;
+			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
+				fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
+				anyFaded = anyFaded || fadeMask_[i] != 0;
+			}
+			fade_ = anyFaded ? Fade::in : Fade::none;
+			fadeAt_ = 0;
+			request.takenAt = nextPosition_;
+			takenAt_.store(nextPosition_, std::memory_order_release);
+			completed = drained + 1;
+		}
+		drained_.store(drained, std::memory_order_release);
+		if (completed < drained && !processing_.load(std::memory_order_acquire)) {
+			fadeAt_ = 0; // no cycle will come to end it
+			completed = drained;
+		}
+		completed_.store(completed, std::memory_order_release);
+	}
+
+	/// Realtime thread, after the code: the fade's gain on the faded outputs, sample by sample (fadeAt_ / fadeFrames_,
+	/// exact at both ends), and a fade-out acknowledged at the end of the first cycle that ended at zero.
+	void applyFade(std::uint32_t frames) noexcept {
+		if (fade_ == Fade::none) return;
+		for (std::uint32_t i = 0; i < frames; ++i) {
+			const float gain = static_cast<float>(fadeAt_) / static_cast<float>(fadeFrames_);
+			for (std::size_t o = 0; o < outputs_.size(); ++o) {
+				if (fadeMask_[o] != 0) outputs_[o][i] = fadeAt_ == 0 ? 0.0f : outputs_[o][i] * gain;
+			}
+			if (fade_ == Fade::in && fadeAt_ < fadeFrames_) {
+				++fadeAt_;
+			} else if (fade_ == Fade::out && fadeAt_ > 0) {
+				--fadeAt_;
+			}
+		}
+		if (fade_ == Fade::in && fadeAt_ == fadeFrames_) fade_ = Fade::none;
+		if (fade_ == Fade::out && fadeAt_ == 0) acknowledgeFade();
+	}
+
+	/// Realtime thread: every pending fade-out is done.
+	void acknowledgeFade() noexcept {
+		const std::uint64_t drained = drained_.load(std::memory_order_relaxed);
+		if (completed_.load(std::memory_order_relaxed) == drained) return;
+		completed_.store(drained, std::memory_order_release);
+		pw_loop_signal_event(loop_, completion_);
+	}
+
+	/// Main loop: the data loop completed requests, or an invoke ran.
+	static void onCompletion(void* data, std::uint64_t /*count*/) { static_cast<FilterPortBlock*>(data)->settle(); }
+
 	/// Data loop: drive()'s barrier.
 	static int onDrive(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* data,
 	                   std::size_t /*size*/, void* userData) {
@@ -391,6 +571,11 @@ private:
 					std::fill_n(out, frames, 0.0f);
 				}
 			}
+			// It wrote zeros: a fade-out ends here.
+			if (self->fade_ == Fade::out) {
+				self->fadeAt_ = 0;
+				self->acknowledgeFade();
+			}
 		}
 		// Every block of one driver sees the same clock position, so every block's windows end at
 		// the same multiples of windowFrames_, whenever the block was made.
@@ -417,6 +602,7 @@ private:
 		} else {
 			for (const std::span<float> out : outputs_) std::ranges::fill(out, 0.0f);
 		}
+		applyFade(frames); // before metering, so levels show the fade
 		// Public ports only: inputs_ and outputs_ list the public ports before the inside ones.
 		for (std::size_t i = 0; i < publicInputs_; ++i) meters_[i].add(inputs_[i]);
 		for (std::size_t i = 0; i < publicOutputs_; ++i) meters_[publicInputs_ + i].add(outputs_[i]);
@@ -474,6 +660,49 @@ private:
 	bool lostTold_ = false;
 	spa_source* refusal_ = nullptr;
 	std::string refusalDetail_;
+
+	// The asynchronous drive and fade (see pump()).
+	enum class Kind : std::uint8_t { drive, fade };
+	enum class Fade : std::uint8_t { none, in, out };
+	static constexpr std::size_t kRing = 8; // node-lifecycle.md 16: a first choice
+	/// One request in the ring: what the main thread hands, then what the data loop writes back.
+	struct Request {
+		Kind kind = Kind::drive;
+		AudioCode* code = nullptr;
+		const bool* faded = nullptr;
+		std::size_t fadedCount = 0;
+		std::uint64_t takenAt = 0; // a drive: where it took effect
+		bool cancelled = false;    // a fade-out: a later drive cancelled it
+	};
+	/// One request on the main thread, from drive() or fadeOut() until its `done` ran.
+	struct Pending {
+		Kind kind;
+		AudioCode* code;
+		std::span<const bool> mask;
+		std::move_only_function<void(std::uint64_t)> driven;
+		std::move_only_function<void()> faded;
+	};
+	std::uint32_t fadeFrames_;
+	std::vector<std::uint8_t> fadeMask_; // per output; data loop only
+	Fade fade_ = Fade::none;             // data loop only
+	std::uint32_t fadeAt_ = 0;           // the fade's position, 0 (silent) to fadeFrames_ (full); data loop only
+	std::array<Request, kRing> ring_{};
+	std::atomic<std::uint64_t> published_{0}; // requests the main thread pushed into the ring
+	std::atomic<std::uint64_t> drained_{0};   // requests the data loop applied
+	std::atomic<std::uint64_t> completed_{0}; // requests the data loop completed
+	std::atomic<std::uint64_t> takenAt_{0};
+	std::atomic<bool> processing_{false}; // STREAMING, as the main loop last heard
+	std::atomic<std::uint64_t> invokesRun_{0};
+	// Main thread only.
+	std::deque<Pending> pending_; // from request finished_ on
+	std::uint64_t pushed_ = 0;
+	std::uint64_t finished_ = 0;
+	std::uint64_t invokesPosted_ = 0;
+	pw_loop* postedLoop_ = nullptr;
+	bool kick_ = false;
+	std::uint32_t blockId_ = SPA_ID_INVALID;
+	spa_source* completion_ = nullptr;
+	std::shared_ptr<int> life_ = std::make_shared<int>(0); // a `done` that destroyed the block expires it
 };
 
 } // namespace

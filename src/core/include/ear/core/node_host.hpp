@@ -2,8 +2,9 @@
 // section 11's erratum; NodeNoteListener and the executor by docs/design/sendspin.md section 14, S1; the resource
 // registry with one adapter per kind, NodeHealth, the two-phase start, teardown by dependency, run generations, the close
 // deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1; the recording
-// kind by its slice 2; LatencyPlan and PortBlock::carryLatency by its section 9.4, slice 7). Change it only through a
-// design page and a re-cut, never a local edit.
+// kind by its slice 2; LatencyPlan and PortBlock::carryLatency by its section 9.4, slice 7; DriveRequest and PortBlock's
+// asynchronous drive, fadeOut, settle, takenAt and blockId by docs/design/node-lifecycle.md section 5.3, step L-2).
+// Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -59,6 +61,14 @@ struct LatencyPlan {
 	std::vector<BankPair> pairs;
 	std::vector<std::pair<std::string, Latency>> internal;
 };
+/// What an asynchronous drive hands a block (docs/design/node-lifecycle.md section 5.3): the code (null: silence) and
+/// which outputs its fades touch, one flag per output in process()'s order (outputs, then inside outputs; a shorter span
+/// leaves the rest unfaded). The interim sinks join it in step L-4b. All of it outlives the drive's completion or the
+/// block.
+struct DriveRequest {
+	AudioCode* code = nullptr;
+	std::span<const bool> faded;
+};
 /// Engine side of a port block. Destroying it removes its ports and their links; after the
 /// destructor returns, no process() of any code is running or will run.
 class PortBlock {
@@ -71,8 +81,33 @@ public:
 	/// output. Returns only when the realtime thread can no longer be inside a process() of the
 	/// code it ran before: a blocking barrier with the block's data loop. On a block the engine
 	/// refused or lost that has no data loop, nothing can run, so it returns at once; the barrier
-	/// holds either way. `code` must outlive the next drive() or the block.
+	/// holds either way. `code` must outlive the next drive() or the block. Today's NodeHost's; step L-3a moves it
+	/// onto the asynchronous drive below and removes this one.
 	virtual void drive(AudioCode* code) = 0;
+	/// Main thread; returns at once (docs/design/node-lifecycle.md section 5.3, D-L29). The data loop applies the
+	/// request inside an invoke, between two cycles, whatever the block's state (PAUSED, its driver gone, its engine
+	/// node destroyed): the code and a fade gain reset to the fade-in's start for the faded outputs together, any
+	/// pending fade-out cancelled (its `done` is dropped, never run). From the next cycle no process() of the previous
+	/// code runs. `done(P)` then runs on the main loop, never inside this call, with P the position the request takes
+	/// effect from (the next cycle's expected position, as takenAt). A block with no data loop applies it on the main
+	/// thread and still completes by signal. What `request` points to outlives `done` or the block. Requests to one
+	/// block complete in the order they were made, whichever of drive and fadeOut made them.
+	virtual void drive(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) = 0;
+	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms (rate * 5 /
+	/// 1000 frames) and stays there, the code still running; `done()` runs on the main loop once a cycle ended at zero
+	/// (a cycle too large to run counts as one). A block that is not processing (not STREAMING, or no data loop)
+	/// completes it by signal, never inline, and so does a block that leaves STREAMING before the fade ended.
+	virtual void fadeOut(std::move_only_function<void()> done) = 0;
+	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event
+	/// would. A caller calls it before judging any bound (section 5.4), so a main loop that stalled never mistakes a
+	/// late dispatch for a late data loop.
+	virtual void settle() = 0;
+	/// Any thread: the position from which the block runs what it was last driven with (0 before any cycle ran).
+	virtual std::uint64_t takenAt() const noexcept = 0;
+	/// Main thread: the block's engine node's global id, read once the block was first STREAMING
+	/// (pw_filter_get_node_id), so an outside node links it by id, not by name (section 5.7); before that, or on a
+	/// block with no engine node, 0xFFFFFFFF (no id).
+	virtual std::uint32_t blockId() const noexcept = 0;
 };
 class PortBlockEvents { // main thread
 public:

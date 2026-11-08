@@ -406,7 +406,7 @@ becomes:
 struct DriveRequest {
 	AudioCode* code;
 	std::span<const bool> faded;            // one per output (outputs then inside outputs, as process's spans)
-	std::span<SinkTap* const> sinks;        // interim (3a): each with its inside output bank's first port and count
+	std::span<SinkTap* const> sinks;        // interim (L-4b on): each with its inside output bank's first port, count
 };
 class PortBlock {
 public:
@@ -427,6 +427,8 @@ public:
 	virtual void settle() = 0;
 	/// Any thread: the position from which the block runs what it was last given (for 3b's companions, and tests).
 	virtual std::uint64_t takenAt() const noexcept = 0;
+	/// Main thread: the block's engine node's global id, read when first STREAMING (5.7); SPA_ID_INVALID before.
+	virtual std::uint32_t blockId() const noexcept = 0;
 };
 ```
 
@@ -463,12 +465,29 @@ How `FilterPortBlock` (`port_blocks.cpp`) does it:
   invoke, by signal; and on every transition out of STREAMING the main loop posts one more invoke that acknowledges a
   fade still pending. So a fade completes within one cycle, or at once when no cycle comes, and the 100 ms bound only
   ever fires for a block that is STREAMING and silent, never judged as the loop.
+- **Built in L-2** (revision 2.2): `DriveRequest` has no `sinks` until L-4b, which brings `SinkTap`. `blockId()` is a
+  member of `PortBlock` (main thread, read in `onStateChanged` at the first STREAMING), so L-3b's `ready()` hands what
+  it returns; `pw_filter_get_node_id` is set when the filter's proxy is bound (`filter.c` `proxy_bound_props`), before
+  STREAMING [V]. A request the ring has no room for waits in a main-thread queue behind it and enters as `done`s run, so
+  no request is refused and none waits on the data loop; a ring slot is free once its request's `done` ran (the main
+  thread reads the result from it). A fade-out a later drive cancelled has its `done` dropped, never run: running it
+  would tell the caller its outputs are silent when the drive has just faded them in. A fade-out is linear in frames,
+  frame `k` at `k / N` in and `(N - k) / N` out (`N = rate * 5 / 1000`), so exact at both ends; a fade-out's first frame
+  is still at full gain and frame `N` on is zero. `takenAt` is the *expected* position: when a stall longer than the
+  driver's resync bound (480 frames, 10 ms) makes the dummy driver reset, the next cycle carries another position (L-2's
+  fade test found it); nothing in 3a reads it but tests, and 3b's companions must allow for it.
 - **Completing.** The data loop writes the completed request's number into an atomic (`appliedSeq`, `fadedSeq`) and
   calls `pw_loop_signal_event` on an event source the block made on the main loop at construction (as the handoff
   does from `process` today, `handoffs.cpp:54` [V], and as the block already does for refusals, `port_blocks.cpp:106`
   [V]). The main-loop callback, and `settle()`, read the atomics and run every `done` up to them, in order; signals
-  coalesce, the numbers do not. Never an invoke towards the main loop (D-R7).
-- **Destroying.** The event source is destroyed in the destructor after `pw_filter_destroy`, so a completion for a
+  coalesce, the numbers do not. Never an invoke towards the main loop (D-R7). As built (L-2) the two numbers are one,
+  `completed`: requests complete in the order they were made, a drive at once in its invoke and a fade-out at its zero,
+  at once when not processing, or cancelled by the drive behind it, so the requests applied but not completed are
+  always pending fade-outs and one number says which `done`s may run.
+- **Destroying.** An invoke of the block still queued (posted, not run) would run on a freed block, so the destructor
+  first posts one blocking no-op invoke to the loop it posted to, which runs after it (posting order), when one is in
+  flight (L-2; a wedged loop's block is leaked, never destroyed, 5.4, so this never waits on one). The event source is
+  destroyed in the destructor after `pw_filter_destroy`, so a completion for a
   destroyed block runs nothing.
 
 `NodeHost` wraps each `done` with the node's serial, its generation and the barrier number (5.6) before passing it.
@@ -1328,10 +1347,13 @@ None. Every choice here is internal or follows an owner's answer already given (
   prefix only, so a source companion can run a cycle its block never runs. 3b's design either counts a source's chunk
   as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block).
 - [U] knobly's layout of `insert_statements` into a one-line block (8.3). Step L-5's first test.
-- [U] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7). Step L-2's test
-  links an outside node by it.
-- [U] That PipeWire runs a loop's invokes while a node on it is PAUSED or its driver gone, so a request applied in its
-  invoke completes without a cycle (5.3, D-L29). Step L-2's "A block that is PAUSED takes a drive in its invoke".
+- [V] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7): L-2's test finds
+  it among the registry's ids for the name and a link made by it (link-factory, as `joinOutsideNode` makes one) reaches
+  that block and not an older block of the same name.
+- [V] That PipeWire runs a loop's invokes while a node on it is PAUSED or its driver gone, so a request applied in its
+  invoke completes without a cycle (5.3, D-L29): L-2's test suspends a block through its node proxy (SUSPENDED, its
+  filter PAUSED, no cycle of it while other blocks run) and its drives and fade-out complete, two drives at the same
+  position.
 - [U] The three bounds against CI's stalls (5.4; node-framework.md 15). Step L-3c and 11.6's 16-node test.
 - [U] That `start` after `stop` drives again within a cycle and one turn, with the sink rebound in the same request
   (node-framework.md 15). Step L-4b's `sink_test.cpp` ramp.
@@ -1400,6 +1422,14 @@ Answers round 1 above. Changed: the status; 2; 3; 4.1 to 4.6; 5.1 to 5.5, 5.7, 5
 8.2 (I4, 6.2's failure codes, 6.3's wedged data loop, 9.6, 13.1; its rows 136 to 139) and control-plane.md to revision
 6.2 (4.8, 7.6), each by a minimal edit. No owner gate is open. Step L-1 may start once L-0's S1 and S3 pass; a second
 look at 4.2 to 4.4 against node-framework.md 6.3, and at 5.3 against S1's stalled phases, is worth having before L-3a.
+
+### Revision 2.2 (2026-11-08, found building L-2)
+
+Step L-2 built 5.3 in `FilterPortBlock` (`port_block_test.cpp`'s cases of 11.6, with the probes moved to
+`src/pipewire/tests/probes.hpp`). 5.3 gains what building it settled: `blockId()` on `PortBlock`; `sinks` waiting for
+L-4b; requests beyond the ring queued on the main thread; a cancelled fade-out's `done` dropped; the fade's exact
+shape; `takenAt` as an expected position, wrong after a driver reset; one completion number for both kinds; the
+destructor's flush of a queued invoke. 16's two [U] for L-2 are verified.
 
 ### Revision 2.1 (2026-11-08, step L-0's results)
 

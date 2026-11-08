@@ -83,6 +83,12 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 
 struct Block final : PortBlock {
 	void drive(AudioCode*) override {}
+	// The asynchronous interface (node-lifecycle.md 5.3): NodeHost does not use it before step L-3a.
+	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)>) override {}
+	void fadeOut(std::move_only_function<void()>) override {}
+	void settle() override {}
+	std::uint64_t takenAt() const noexcept override { return 0; }
+	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
 };
 
 struct Blocks final : PortBlockFactory {

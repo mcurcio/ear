@@ -10,10 +10,10 @@
 //    cuts a cycle short: only a prefix of the graph runs it.
 //  - S3 (10.3): one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
-// Everything here is test-only: the probes are bare pw_filters, and S2's take-up block implements 5.3's take-up
-// itself; production's FilterPortBlock is unchanged (step L-2 builds 5.3 into it). Every wait is event-gated: the main
-// loop runs until the events a test waits for have arrived; a deadline only fails the test. Measurements are printed on
-// standard output (run the binary, or ctest -V, to see them).
+// Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), and S2's
+// take-up block implements 9.6's deferred take-up itself (step L-2 built 5.3's drive, applied in its invoke, into
+// FilterPortBlock). Every wait is event-gated: the main loop runs until the events a test waits for have arrived; a
+// deadline only fails the test. Measurements are printed on standard output (run the binary, or ctest -V, to see them).
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -49,6 +49,7 @@
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
 #include "engine_harness.hpp"
+#include "probes.hpp"
 #include "rtp_tone.hpp"
 #include "temp_folder.hpp"
 
@@ -57,93 +58,6 @@ using namespace ear;
 using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
 using namespace std::chrono_literals;
-
-/// What a probe runs each cycle, on the data thread.
-class ProbeCode {
-public:
-	virtual void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const> outputs,
-	                   std::uint32_t frames) noexcept = 0;
-
-protected:
-	~ProbeCode() = default;
-};
-
-/// A bare pw_filter as a port block is one (port_blocks.cpp): in ear.graph (engine_names.hpp's graphGroup), always
-/// processing, RT_PROCESS, one 32-bit float mono port per name ("in.<i>", "out.<i>"). An input with no buffer this cycle
-/// reads zeros; an output with none writes to scratch.
-class Probe {
-public:
-	Probe(Engine& engine, Waiter& waiter, const char* name, std::size_t inputs, std::size_t outputs, ProbeCode& code)
-		: waiter_(waiter), code_(code), zeros_(8192, 0.0F), scratch_(8192, 0.0F), inputs_(inputs), outputs_(outputs) {
-		filter_ = pw_filter_new(engine.core(), name,
-		                        pw_properties_new(PW_KEY_NODE_NAME, name, PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_NODE_GROUP,
-		                                          "ear.graph", PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr));
-		REQUIRE(filter_ != nullptr);
-		pw_filter_add_listener(filter_, &listener_, &events(), this);
-		for (std::size_t i = 0; i < inputs; ++i) inPorts_.push_back(addPort(PW_DIRECTION_INPUT, "in", i + 1));
-		for (std::size_t i = 0; i < outputs; ++i) outPorts_.push_back(addPort(PW_DIRECTION_OUTPUT, "out", i + 1));
-		REQUIRE(pw_filter_connect(filter_, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) >= 0);
-	}
-	~Probe() {
-		spa_hook_remove(&listener_);
-		pw_filter_destroy(filter_);
-	}
-	Probe(const Probe&) = delete;
-	Probe& operator=(const Probe&) = delete;
-
-	bool streaming() const { return streaming_; }
-	pw_loop* dataLoop() const { return pw_filter_get_data_loop(filter_); }
-
-private:
-	void* addPort(pw_direction direction, const char* bank, std::size_t member) {
-		const std::string name = std::string(bank) + "." + std::to_string(member);
-		return pw_filter_add_port(
-			filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
-			pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, name.c_str(), nullptr),
-			nullptr, 0);
-	}
-	static const pw_filter_events& events() {
-		static const pw_filter_events table = [] {
-			pw_filter_events events{};
-			events.version = PW_VERSION_FILTER_EVENTS;
-			events.state_changed = &Probe::onStateChanged;
-			events.process = &Probe::onProcess;
-			return events;
-		}();
-		return table;
-	}
-	static void onStateChanged(void* data, pw_filter_state, pw_filter_state state, const char*) {
-		auto* self = static_cast<Probe*>(data);
-		if (state == PW_FILTER_STATE_STREAMING) self->streaming_ = true;
-		self->waiter_.wake();
-	}
-	static void onProcess(void* data, spa_io_position* position) {
-		auto* self = static_cast<Probe*>(data);
-		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
-		if (frames > self->zeros_.size()) return;
-		for (std::size_t i = 0; i < self->inPorts_.size(); ++i) {
-			const auto* in = static_cast<const float*>(pw_filter_get_dsp_buffer(self->inPorts_[i], frames));
-			self->inputs_[i] = in != nullptr ? in : self->zeros_.data();
-		}
-		for (std::size_t i = 0; i < self->outPorts_.size(); ++i) {
-			auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(self->outPorts_[i], frames));
-			self->outputs_[i] = out != nullptr ? out : self->scratch_.data();
-		}
-		self->code_.cycle(position->clock, self->inputs_, self->outputs_, frames);
-	}
-
-	Waiter& waiter_;
-	ProbeCode& code_;
-	std::vector<float> zeros_;
-	std::vector<float> scratch_;
-	std::vector<const float*> inputs_;
-	std::vector<float*> outputs_;
-	std::vector<void*> inPorts_;
-	std::vector<void*> outPorts_;
-	pw_filter* filter_ = nullptr;
-	spa_hook listener_{};
-	bool streaming_ = false;
-};
 
 class PortLog final : public LivePortListener {
 public:
