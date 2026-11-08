@@ -45,6 +45,14 @@ class GoodType final : public NodeTypeOf<table> {
 constexpr auto bad = setting::required("", setting::number(1, 2));
 #endif
 
+#ifdef EAR_CASE_key_reserved_disabled
+constexpr auto bad = setting::optional("disabled", setting::text<anyText>("true or false"));
+#endif
+
+#ifdef EAR_CASE_key_reserved_disabled_family
+constexpr auto bad = setting::required("disabled.1", setting::number(0, 1));
+#endif
+
 #ifdef EAR_CASE_key_twice
 constexpr auto twin = setting::required("n", setting::number(1, 2));
 constexpr SettingsTable<numberRow, twin> bad{"t"};

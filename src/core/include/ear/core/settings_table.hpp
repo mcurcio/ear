@@ -106,6 +106,9 @@ private:
 	              std::optional<std::uint32_t> byDefault = std::nullopt)
 		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
+		// The framework's key on every node (node-framework.md D-F9): never a type's, nor an indexed family's base.
+		if (key == "disabled" || key.starts_with("disabled."))
+			throw "disabled is the framework's key: no type may declare it";
 	}
 	template <class V> friend consteval Row<V, true> required(std::string_view key, Rule<V> rule);
 	template <class V> friend consteval Row<V, false> optional(std::string_view key, Rule<V> rule);

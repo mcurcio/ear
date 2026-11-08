@@ -495,3 +495,126 @@ TEST_CASE("commit of a stale plan or of another graph's plan is a wiring bug", "
 		CHECK_THROWS_AS(f.graph.commit(std::move(*again)), std::logic_error);
 	}
 }
+
+namespace desired_graph_test {
+
+/// Records nodeChanged with its outcome and keys, and every other node event, in one log.
+struct ChangeRecorder final : DesiredNodeListener, DesiredRouteListener {
+	Log log;
+	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log.push_back("nodeAdded " + node.name + (node.disabled ? " disabled" : ""));
+	}
+	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log.push_back("nodeUpdated " + node.name);
+	}
+	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
+		static constexpr const char* names[] = {"restart", "disable", "enable", "stored"};
+		std::string keys;
+		for (const auto& key : change.keys) keys += " " + key;
+		log.push_back("nodeChanged " + node.name + " " + names[static_cast<int>(change.outcome)] +
+		              (node.disabled ? " disabled" : "") + keys);
+	}
+	void nodeRemoved(const NodeName& node) override { log.push_back("nodeRemoved " + node); }
+	void routeAdded(const Route& route) override { log.push_back("routeAdded " + text(route)); }
+	void routeRemoved(const Route& route) override { log.push_back("routeRemoved " + text(route)); }
+};
+
+NodeSpec disabledSpec(NodeSpec spec, bool disabled = true) {
+	spec.disabled = disabled;
+	return spec;
+}
+
+using Outcomes = std::vector<std::pair<NodeName, NodeOutcome>>;
+
+} // namespace desired_graph_test
+
+TEST_CASE("A changed disabled is a disable, an enable or stored, told by nodeChanged in the commit's order",
+          "[desired_graph]") {
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ChangeRecorder recorder;
+	graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
+	graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
+	apply(graph, {noiseSpec, recSpec, deskSpec(2)}, {noiseToFl});
+	recorder.log.clear();
+
+	SECTION("false to true: disable, with no key changed; routes kept") {
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, disabledSpec(recSpec), deskSpec(2)},
+		                       std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->outcomes() == Outcomes{{"rec", NodeOutcome::disable}});
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeChanged rec disable disabled"});
+		CHECK(graph.nodes()[2].spec.disabled);
+		CHECK(graph.routes() == std::vector<Route>{noiseToFl});
+	}
+	SECTION("true to false: enable; true to true with other settings: stored; false to false: restart, with its keys") {
+		apply(graph, {disabledSpec(noiseSpec), recSpec, disabledSpec(deskSpec(2))}, {noiseToFl});
+		recorder.log.clear();
+		NodeSpec desk = disabledSpec(deskSpec(2));
+		desk.settings["card"] = "USB2";
+		const NodeSpec rec{"rec", "sink", {{"level", 3}}};
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, rec, desk}, std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->outcomes() ==
+		      Outcomes{{"desk", NodeOutcome::stored}, {"noise", NodeOutcome::enable}, {"rec", NodeOutcome::restart}});
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeChanged desk stored disabled card", "nodeChanged noise enable",
+		                          "nodeChanged rec restart level"});
+	}
+	SECTION("a disabled node equal to the held one is no change") {
+		apply(graph, {noiseSpec, disabledSpec(recSpec), deskSpec(2)}, {noiseToFl});
+		recorder.log.clear();
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, disabledSpec(recSpec), deskSpec(2)},
+		                       std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->empty());
+		CHECK(plan->outcomes().empty());
+	}
+	SECTION("nodeChanged comes where nodeUpdated came: after removals, before additions and routes") {
+		const NodeSpec hiss{"hiss", "source", json::object()};
+		auto plan =
+			graph.plan(std::vector<NodeSpec>{hiss, disabledSpec(recSpec), deskSpec(2)}, std::vector<Route>{hissToFl});
+		REQUIRE(plan.has_value());
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"routeRemoved noise:noise.mono -> rec:record.left", "nodeRemoved noise",
+		                          "nodeChanged rec disable disabled", "nodeAdded hiss",
+		                          "routeAdded hiss:noise.mono -> rec:record.left"});
+	}
+}
+
+TEST_CASE("A replace keeps its disabled change's outcome: stored on a node staying disabled, restart on one enabled",
+          "[desired_graph]") {
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ChangeRecorder recorder;
+	graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
+	graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
+
+	const auto replaceOutcome = [&](bool was, bool now) {
+		apply(graph, {disabledSpec(deskSpec(2), was)}, {});
+		recorder.log.clear();
+		auto plan = graph.plan(std::vector<NodeSpec>{disabledSpec(deskSpec(4), now)}, std::vector<Route>{});
+		REQUIRE(plan.has_value());
+		const auto outcomes = plan->outcomes();
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeRemoved desk", std::string("nodeAdded desk") + (now ? " disabled" : "")});
+		REQUIRE(outcomes.size() == 1);
+		return outcomes[0].second;
+	};
+	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // D-R23
+	CHECK(replaceOutcome(false, false) == NodeOutcome::restart); // D-L5
+	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // D-L46
+	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // D-L46
+}
+
+TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no outcome apart sees an update",
+          "[desired_graph]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec}, {});
+	f.log.clear();
+	apply(f.graph, {disabledSpec(noiseSpec)}, {});
+	CHECK(f.log == Log{"sub nodeUpdated noise"});
+	REQUIRE(f.recorder.updates.size() == 1);
+	CHECK(f.recorder.updates[0].first.disabled);
+}

@@ -26,6 +26,9 @@ struct NodeSpec {
 	NodeName name;
 	std::string type;
 	NodeSettings settings; // {} when absent
+	/// The framework's reserved key, `disabled true;` in the node's block (node-framework.md 6.3, D-F8, D-F9): beside
+	/// the settings, never in them, so no type's parse, check or setting kinds sees it. False when absent.
+	bool disabled = false;
 	friend bool operator==(const NodeSpec&, const NodeSpec&) = default;
 };
 struct GraphSpec {

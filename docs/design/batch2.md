@@ -1528,6 +1528,11 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **The plan's outcomes, 2026-11-08 (slice 3a step L-5, `docs/design/node-lifecycle.md` 8.4):** `desired_graph.hpp`
+  gains `NodeOutcome` (`restart`, `disable`, `enable`, `stored`), `NodeChange {outcome, keys}`,
+  `DesiredNodeListener::nodeChanged`, whose default tells `nodeUpdated` (so every listener written before it is
+  unchanged), and `Plan::outcomes()`. `commit` tells `nodeChanged` where it told `nodeUpdated`; the order is as before.
+  A node whose spec changes only in `disabled` (`NodeSpec::disabled`, m1-white-to-file.md's errata) is a change too.
 - **Settings rows and folders, 2026-11-06 (latest): what the two errata below claimed, made true.** A further review of PR 24
   built what they said could not compile. (1) `Number` and `Text` are one type, `setting::Rule<T>`, and only `number` and
   `text<parse>` make one; a row keeps its `SettingRow` private and gives it to read only; `byDefault` moved from

@@ -29,6 +29,25 @@ bool validName(const NodeName& name) {
 	});
 }
 
+/// What a change of `disabled` asks (node-framework.md 6.6): 3a's outcomes, decided by it alone.
+NodeOutcome outcomeOf(bool wasDisabled, bool isDisabled) {
+	if (wasDisabled) return isDisabled ? NodeOutcome::stored : NodeOutcome::enable;
+	return isDisabled ? NodeOutcome::disable : NodeOutcome::restart;
+}
+
+/// The keys whose values differ between two settings objects (one given and not the other included), in key order.
+std::vector<std::string> changedKeys(const NodeSettings& was, const NodeSettings& now) {
+	std::set<std::string> keys;
+	const auto differing = [&](const NodeSettings& one, const NodeSettings& other) {
+		if (!one.is_object()) return;
+		for (const auto& [key, value] : one.items())
+			if (!other.is_object() || !other.contains(key) || other.at(key) != value) keys.insert(key);
+	};
+	differing(was, now);
+	differing(now, was);
+	return {keys.begin(), keys.end()};
+}
+
 } // namespace
 
 struct DesiredGraph::Impl {
@@ -87,9 +106,15 @@ struct Plan::Impl {
 	std::uint64_t generation;           // that graph's generation then
 	std::vector<Route> routesRemoved;   // Route order
 	std::vector<NodeName> nodesRemoved; // name order; replaced nodes included
-	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesUpdated; // name order
-	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesAdded;   // name order; replaced included
-	std::vector<Route> routesAdded;                                                   // Route order
+	struct Changed {
+		NodeSpec spec;
+		std::shared_ptr<const NodeConfig> config;
+		NodeChange change;
+	};
+	std::vector<Changed> nodesChanged;                                              // name order
+	std::vector<std::pair<NodeSpec, std::shared_ptr<const NodeConfig>>> nodesAdded; // name order; replaced included
+	std::vector<Route> routesAdded;                                                 // Route order
+	std::vector<std::pair<NodeName, NodeOutcome>> outcomes;                         // name order; changed and replaced
 };
 
 Plan::Plan(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -99,7 +124,11 @@ Plan::~Plan() = default;
 
 bool Plan::empty() const noexcept {
 	return impl_ == nullptr || (impl_->routesRemoved.empty() && impl_->nodesRemoved.empty() &&
-	                            impl_->nodesUpdated.empty() && impl_->nodesAdded.empty() && impl_->routesAdded.empty());
+	                            impl_->nodesChanged.empty() && impl_->nodesAdded.empty() && impl_->routesAdded.empty());
+}
+
+std::vector<std::pair<NodeName, NodeOutcome>> Plan::outcomes() const {
+	return impl_ == nullptr ? std::vector<std::pair<NodeName, NodeOutcome>>{} : impl_->outcomes;
 }
 
 std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> nodes,
@@ -146,7 +175,7 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 	changes->graph = impl_.get();
 	changes->generation = impl_->generation;
 
-	// Nodes, in name order: removed, replaced (removed and added), updated, added.
+	// Nodes, in name order: removed, replaced (removed and added), changed, added.
 	std::set<NodeName, std::less<>> replaced;
 	for (const auto& [name, held] : impl_->nodes) {
 		const auto it = wanted.find(name);
@@ -156,8 +185,11 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		}
 		const auto& next = it->second;
 		if (next.spec == held.spec) continue;
+		const NodeOutcome outcome = outcomeOf(held.spec.disabled, next.spec.disabled);
+		changes->outcomes.emplace_back(name, outcome);
 		if (next.spec.type == held.spec.type && next.config->ports() == held.config->ports()) {
-			changes->nodesUpdated.emplace_back(next.spec, next.config);
+			changes->nodesChanged.push_back(Plan::Impl::Changed{
+				next.spec, next.config, NodeChange{outcome, changedKeys(held.spec.settings, next.spec.settings)}});
 		} else {
 			changes->nodesRemoved.push_back(name);
 			replaced.insert(name);
@@ -197,11 +229,11 @@ std::expected<void, CommandError> DesiredGraph::commit(Plan plan) {
 		impl_->nodes.erase(name);
 		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeRemoved(name); });
 	}
-	for (auto& [spec, config] : changes.nodesUpdated) {
+	for (auto& [spec, config, change] : changes.nodesChanged) {
 		auto& held = impl_->nodes.at(spec.name);
 		held.spec = std::move(spec);
 		held.config = std::move(config);
-		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeUpdated(held.spec, held.config); });
+		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeChanged(held.spec, held.config, change); });
 	}
 	for (auto& [spec, config] : changes.nodesAdded) {
 		const auto name = spec.name;

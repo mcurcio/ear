@@ -683,6 +683,9 @@ NOT RUN: nothing was built or compiled by the architect.
 
 ## Errata (corrected after the work, slice D)
 
+- **2026-11-08, `disabled`:** `graph_spec.hpp`'s `NodeSpec` gains `bool disabled = false`, the framework's reserved key
+  read from `disabled true;` in a node's block, beside `settings` and never in them, compared by `operator==`
+  (`docs/design/node-lifecycle.md` 8; node-framework.md D-F8, D-F9).
 - **2026-11-06, port names:** `graph_spec.hpp`'s `PortName` comment now names a bank's port (`docs/design/batch2.md` section 11). The type is unchanged.
 - Land command named branch claude/pipewire-design; the work landed on claude/m1-white-to-file.
 - engine.conf's path was not given; it is src/pipewire/engine.conf (configure copies it beside out/ear).

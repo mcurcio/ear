@@ -23,6 +23,7 @@ target_link_libraries(ear_config PUBLIC ear_core ear_control ear_folder PRIVATE 
 
 if(BUILD_TESTS)
 	add_executable(ear_config_tests
+		tests/graph_file_disabled_test.cpp
 		tests/graph_file_edit_test.cpp
 		tests/graph_file_keeper_test.cpp
 		tests/graph_file_model_test.cpp

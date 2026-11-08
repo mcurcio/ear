@@ -1,6 +1,7 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.2, 2026-11-08 (2.2: gaps found building step L-1, section 17). Revision 1 went to one
+Status: proposal, revision 2.3, 2026-11-08 (2.2: gaps found building step L-1; 2.3: building L-5's graph file and
+desired graph; section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -780,7 +781,7 @@ a node; empty means "between calls".
 | `src/core/include/ear/core/type_spec.hpp` | `SpecConfig::make`, `SpecInstance`, the class's static checks (5.9); `StartResult` construction from a spec code kept for `NodeCode` | L-4a |
 | `src/core/include/ear/core/settings_table.hpp` | `Row`'s consteval constructor refuses the key `disabled` ("disabled is the framework's key: no type may declare it"), beside "a setting's key is empty" (`settings_table.hpp:104-108` [V]) | L-5 |
 | `src/core/include/ear/core/graph_spec.hpp` | `NodeSpec::disabled` (`bool`, default false), compared by `operator==`; erratum in `m1-white-to-file.md` | L-5 |
-| `src/core/include/ear/core/desired_graph.hpp`, `desired_graph.cpp` | `NodeChange {outcome, keys, portCaused}` (L-3d marks the port-caused replace, D-L36); `DesiredNodeListener::nodeChanged` with a default calling `nodeUpdated`; the plan's outcome per node (`restart`, `disable`, `enable`, `stored`; a change of ports or type stays a replace, D-R23, D-L5); `Plan::outcomes()` for the reply (L-5) | L-3d, L-5 |
+| `src/core/include/ear/core/desired_graph.hpp`, `desired_graph.cpp` | `NodeChange {outcome, keys, portCaused}` (L-3d marks the port-caused replace, D-L36); `DesiredNodeListener::nodeChanged` with a default calling `nodeUpdated`; the plan's outcome per node (`restart`, `disable`, `enable`, `stored`; a change of ports or type stays a replace, D-R23, D-L5); `Plan::outcomes()` for the reply (L-5): every node kept by name whose spec changes, a replaced one included with its `disabled` change's outcome (D-R23, D-L5, D-L46) | L-3d, L-5 |
 | `src/core/include/ear/core/timers.hpp` | `Timers::now()` (D-L12) | L-3a |
 | `src/core/include/ear/core/log.hpp` | `LogEntry::run` removed | L-3d |
 | `src/core/include/ear/core/graph_view.hpp` | `NodeView` gains `phase`, `wanted`, `cause`, `waitingFor`, `disabled`, `blockLost` | L-6 |
@@ -797,7 +798,7 @@ a node; empty means "between calls".
 | `src/nodes/file` | the class (7.4); its spec gains the inside bank `writer` | L-4b |
 | `src/nodes/sendspin` | nothing (5.10) | — |
 | `src/config/graph_file_model.cpp`, `.hpp` | the reserved key read and written (8): `readNode`, `addNode`, `updateNode` leaving `disabled` alone, `disableNode`, `enableNode`, `dropBlock` | L-5 |
-| `src/config/keeper.cpp`, `keeper.hpp`, `main_loop_side.cpp`, `.hpp` | `DisableNode` and `EnableNode` as edits (L-5); `StartNode`, `StopNode`, `RestartNode` as a new step kind needing no file (D-L19), answered by `NodeOperations` through `MainLoopSide`, which maps `LifecycleApplied` and `LifecycleRefusal` to the wire's values (L-6) | L-5, L-6 |
+| `src/config/keeper.cpp`, `keeper.hpp`, `main_loop_side.cpp`, `.hpp` | `DisableNode` and `EnableNode` as edits (L-6, with `ear_control`'s `Command`s they carry; L-5 built the model's `disableNode` and `enableNode` they call); `StartNode`, `StopNode`, `RestartNode` as a new step kind needing no file (D-L19), answered by `NodeOperations` through `MainLoopSide`, which maps `LifecycleApplied` and `LifecycleRefusal` to the wire's values (L-6) | L-5, L-6 |
 | `src/control/` | `StatusLog`: the new diagnostics and the node-less `diagnostic` record (L-3c); `node` records with `phase` and `cause`, the new sentences, `still`, `LogEntry::run`'s line removed (L-3d); `ear.hook-slow` (L-4a); commands, results with `applied`, the two new refusal codes, `node.state`'s members, `node.updated`'s `applied` and `disabled`, `node.gone`, the protocol frame, `action` records (L-6); the stall records (L-7) | L-3c to L-7 |
 | `test/protocol/` | each fixture changes in the step that changes its encoder (9): `output-records.json`'s diagnostics (L-3c), its `node` records and `"run": 2` removed (L-3d), `ear.hook-slow` (L-4a), `action` records (L-6), stall records (L-7); `lifecycle.json`, `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json` (L-6) | L-3c to L-7 |
 | `test/system/` | the seven removal lines and `sendspin_connections_test.cpp:334`'s search (11.7) | L-3d |
@@ -938,20 +939,31 @@ So `parse`, `check`, `settingKinds()` and every hook never see the key, and the 
 |---|---|
 | `node.add` with `"disabled": true` | `addNode` writes `node <t> <n> { disabled true; <settings> }`, the key first (`graph_file_model.cpp:628-641` [V]) |
 | `node.update` | `updateNode` skips any rendered setting named `disabled`: today it would remove a key absent from the new settings (`graph_file_model.cpp:598` [V]), which would enable the node. A `disabled` key inside the given settings is refused `invalid-settings` with D-F12's wire text before any edit (D-L20) |
-| `node.disable` (new `disableNode`) | the node's own rendered `disabled` setting, if any: refused `shared-definition` when its statement makes more than one rendered directive (`Editing::shared`, D-F11); else `replace_with_text("disabled true;")` on that statement (a `disabled $quiet;` line is replaced and `$quiet`'s `@set` is left alone, R34). With no such setting: `insert_statements(0, "disabled true;")` on the node's block (knobly `written.hpp:516`, spec `spec.md:1071` [V]); with no block, today's `addBlock` (`graph_file_model.cpp:438-452` [V]) makes `{ disabled true; }`. Already disabled: `unchanged` (no candidate) |
-| `node.enable` (new `enableNode`) | the node's own `disabled` statement: `shared-definition` as above; else removed; a block left with no statement and no comment is dropped by `dropBlock`, `addBlock`'s inverse: the `{ ... }` replaced by `;`, comments outside it kept (D-L21). No such line, or one that reads false: `unchanged` |
+| `node.disable` (new `disableNode`) | the node's own rendered `disabled` setting, if any: refused `shared-definition` when its statement makes more than one rendered directive (`Editing::shared`, D-F11); else its values are set to `true` (`written_directive::set`, so a comment the line owns stays; `replace_with_text` would drop it), which turns `disabled $quiet;` into `disabled true;` and leaves `$quiet`'s `@set` alone (R34). With no such setting: refused `shared-definition` when the node's own statement makes more than one rendered directive (a node line in a snippet used twice, as `updateNode`'s added key is); else `disabled true;` goes first in the node's block as 8.3 pins it (`insertFirst`); with no block, today's `addBlock` makes `{ disabled true; }`. Already disabled: `unchanged` (no candidate) |
+| `node.enable` (new `enableNode`) | the node's own `disabled` statement: `shared-definition` as above; else removed, with the comments it owns (knobly's `remove`: a comment on the lines just above it goes with it, as with any removed statement); then, on a fresh load of that text, a block left with no statement and no comment is dropped by `dropBlock`, `addBlock`'s inverse: the `{ ... }` replaced by `;`, comments outside it kept (D-L21). No such line, or one that reads false: `unchanged` |
 
 Each makes a candidate as every edit does, so the plan judges it and the keeper writes it behind.
 
-### 8.3 The knobly [U], and its test
+### 8.3 The knobly layout, and its test
 
-What remains unverified is the layout: `insert_statements` puts statements "on lines of their own, indented as the
+What was unverified was the layout: `insert_statements` puts statements "on lines of their own, indented as the
 block's first statement" (`written.hpp:508-509` [V]), so a one-line block (`node card porch { card USB2; playback 2; }`)
 may become several lines. The first test of step L-5, before the reader changes, pins what knobly gives for: a
 multi-line block, a one-line block, a block whose first statement is a `@use`, a block with a leading comment, and a
 node with no block; and that comments survive each. If knobly's result for a one-line block is not acceptable to read
 (the test shows it), the designer appends the line last in the block instead, as node-framework.md 15 already allows,
 and records it there; no owner question follows, since the meaning is the same.
+
+**As built (L-5, `graph_file_disabled_test.cpp`'s first case) [V].** For a block whose first statement starts on a
+line after the `{` (a multi-line block, its first statement with or without a comment above it, or an empty `{` and `}`
+on two lines), `insert_statements(0, ...)` writes `disabled true;` on a line of its own, indented as that statement,
+above any comment the statement owns; a comment after the `{` stays on its line. For a block whose first statement
+starts on the `{`'s line (a one-line block, one that starts with `@use`), knobly breaks the line after the new
+statement and leaves the old first statement at column 1 (`node card porch { disabled true;` then `card USB2; playback
+2; }`), which is not acceptable to read. So `insertFirst` uses knobly there and, on the `{`'s line, writes the line
+textually before the first statement (or before the `}` of an empty one-line block), the node's statement replaced as
+`addBlock` replaces it: `node card porch { disabled true; card USB2; playback 2; }`. The line stays first, as D-F10
+says, so node-framework.md 15 needs no change. Comments survive in every case.
 
 ### 8.4 The plan
 
@@ -1270,10 +1282,10 @@ step's `ctest` and `make web-test` pass on their own.
 | L-3a | `NodeHost` on the machines with the asynchronous drive, every type on the old SPI through the legacy adapter (5.10, its recipe check included); `Timers::now()`; no fades, no flush, no wedge, the old `NodeHealth` and records: behaviour identical to today's, the blocking `drive` removed | Every node's start and teardown now waits for a completion; a missed one hangs a node (no bound yet). Mitigated: L-1's tables and the rewritten `node_host_test` cases; every system test unchanged and green |
 | L-3b | The per-turn flush (destroys first, re-entrancy, deferred inputs), T1's wait for an older block, the join by `blockId`, `MainLoopActivity` written | A name added back and a ready told inside a make (m6); the flush's cases in `node_host_test`, `sound_card_test` and `rtp_receiver_test` linking by id |
 | L-3c | Fades before every planned silence and the fade-in, the three bounds with `settle()`, the wedge and `EngineDiagnosticListener`, a failed node torn down at once; `leaked()`; `StatusLog`'s three new diagnostics with their `output-records.json` cases | A bound tuned too tight for CI (11.6's 16-node test measures it); a fade on a block that stops processing (B1's cases) |
-| L-3d | `NodeHealth`'s members, health told per transition, `waitingFor` pacing, `NodeOperations` (core's types, not yet on the wire), the port-caused replace's continuity (with `NodeChange::portCaused` from the plan), the failure code `lost`; `StatusLog`'s new sentences (`removed dropped=`, `stopping: <cause>`, `stopped`, `disabled`, `still`); `LogEntry::run` removed; `output-records.json`'s `node` cases and `"run": 2`; the seven system-test removal lines | The records every script reads change; the fixtures and system lines change in this same step |
+| L-3d | `NodeHost` honours `disabled` (from L-5: `nodeChanged` overridden for `disable`, `enable`, `stored`; a node added disabled is never configured); `NodeHealth`'s members, health told per transition, `waitingFor` pacing, `NodeOperations` (core's types, not yet on the wire), the port-caused replace's continuity (with `NodeChange::portCaused` from the plan), the failure code `lost`; `StatusLog`'s new sentences (`removed dropped=`, `stopping: <cause>`, `stopped`, `disabled`, `still`); `LogEntry::run` removed; `output-records.json`'s `node` cases and `"run": 2`; the seven system-test removal lines | The records every script reads change; the fixtures and system lines change in this same step |
 | L-4a | The new SPI: `lifecycle.hpp`, `InstanceContexts`, `CreateContext`, `SpecInstance`, hooks timed (`ear.hook-slow` and its fixture case), the harness over `NodeHost`; `white`, `card`, `rtp` moved; the compile-fail cases; `run_requests.hpp` removed | The harness and `NodeHost` must agree (they are one); `card`'s system test on the test card is the gate |
 | L-4b | The interim sink: `SinkAdapter`, `SinkTap`, `ThreadSinks`, `Chunk`, `SinkConsumer`, the harness's sink fake; `file` moved | `file`'s recording path is the first audio path through new code: its system test (exact samples) and `sink_test.cpp`'s ramp are the gate |
-| L-5 | `disabled`: the `Row` refusal, `NodeSpec::disabled`, the reader and writer (8.3's pin first), the plan's outcomes, `nodeChanged`; `NodeHost` honours `disabled` (a hand edit disables and enables) | knobly's layout (8.3); the plan's outcome reaching listeners in the commit's order |
+| L-5 | `disabled`: the `Row` refusal, `NodeSpec::disabled`, the reader and writer (8.3's pin first), the plan's outcomes, `nodeChanged`. `NodeHost` honouring `disabled` (a hand edit disables and enables) moved to L-3d (revision 2.3): L-5 was built while L-3a rewrote `NodeHost` | knobly's layout (8.3); the plan's outcome reaching listeners in the commit's order |
 | L-6 | The wire (9): commands, the keeper's no-file step, `MainLoopSide` mapping `NodeOperations`' replies, the gateway's members, the protocol frame, `node.gone`, `action` records, `lifecycle.json`, `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json`, the batch2.md erratum, `rpc-call.mjs --until`, `image-smoke.sh`, the editor's minimum | A frozen header and the web's frozen `protocol.ts` change through their errata; the reducer must take unknown values (`unknown-values.json`) |
 | L-7 | `StallWatch` with its `where` callback, wired in `main.cpp` over `MainLoopActivity`; the stall records and their fixture cases | A false stall report on CI's loaded host; the bound is tuned by 11.6's measurement |
 | L-8 | 3a's remaining system tests (stop, disable across a restart of ear, `$quiet`, restart of a card on the test card, a held UDP port's `still` record); AGENTS.md, the two skills; node-framework.md's "Slice 3a as built" | Flaky timing under load; every test is event-gated (AGENTS.md) |
@@ -1357,7 +1369,8 @@ None. Every choice here is internal or follows an owner's answer already given (
 - Open for 3b (10.5): S2 passed take-up and sample exactness, but a cycle cut short by an xrun is run by an upstream
   prefix only, so a source companion can run a cycle its block never runs. 3b's design either counts a source's chunk
   as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block).
-- [U] knobly's layout of `insert_statements` into a one-line block (8.3). Step L-5's first test.
+- [V] knobly's layout of `insert_statements` into a one-line block (8.3): not acceptable on the `{`'s line, so that
+  case is written textually; pinned by L-5's first test.
 - [V] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7): L-2's test finds
   it among the registry's ids for the name and a link made by it (link-factory, as `joinOutsideNode` makes one) reaches
   that block and not an older block of the same name.
@@ -1474,3 +1487,29 @@ node-framework.md 6.2 or 6.3, which needed no change:
 - 6 and 11.1: L-1 cannot replace `node_lifecycle.hpp` while `NodeHost` and `NodeHealth` still use it, so the machines
   are in `node_machines.hpp` under `ear::lifecycle` until L-3d.
 
+### Revision 2.3 (2026-11-08, found building L-5)
+
+Step L-5's graph file and desired graph part built 8 (`graph_file_model.cpp`, `desired_graph.cpp`, `settings_table.hpp`;
+`graph_file_disabled_test.cpp`, `desired_graph_test.cpp`, two compile-fail cases). Gaps found, each fixed by a minimal
+edit:
+
+- 8.3's pin: knobly's insert into a block whose first statement is on the `{`'s line breaks the line and leaves that
+  statement at column 1; that case is written textually, still first in the block (8.3, "As built"). 16's item is [V].
+- 8.2's Disable replaced the whole line with `replace_with_text`, which drops a comment the line owns: it sets the
+  line's values instead. With no line, a node statement that makes several nodes is refused `shared-definition`, as an
+  update's added key is (8.2 said nothing).
+- 8.2's Enable: knobly's `remove` takes the comments the line owns (those just above it), as every removal does; only a
+  comment it does not own (after the `{`) keeps a block. `dropBlock` runs on a fresh load of the text the removal left.
+- 6: `Plan::outcomes()` carries a replaced node too, so the reply's `applied` for D-R23, D-L5 and D-L46 comes from one
+  place. `NodeChange` has `outcome` and `keys`; `portCaused` stays L-3d's.
+- 6 and 12: the keeper's `DisableNode` and `EnableNode` need `ear_control`'s `Command`s, which are L-6's (9), so they
+  move to L-6. `NodeHost` honouring `disabled` moves to L-3d, since `NodeHost` was being rewritten (L-3a) while L-5 was
+  built. Until then `nodeChanged`'s default tells `NodeHost` `nodeUpdated`, so any changed `disabled` restarts the node
+  with its config and a disabled node runs (today's behaviour), and the gateway sends `node.updated` as for an update.
+  L-3d overrides `nodeChanged` in `NodeHost` (`disable`: T20 or T21, the stop dropped; `enable`: T22; `stored`: the
+  config kept, nothing runs; `restart`: as today) and makes a node added with `spec.disabled` rest `disabled` without
+  configuring, a port-caused replace following D-L46.
+- The node line's hint is appended to today's message after `; ` ("...; to disable a node, write disabled true; inside
+  its braces"); the wire's text for a `disabled` key in settings is control-plane.md 4.2's, refused by the model's
+  `updateNode` and `addNode` before any edit.
+- `NodeSpec` and `desired_graph.hpp` are frozen interfaces: errata in m1-white-to-file.md and batch2.md section 11.

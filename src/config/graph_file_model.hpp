@@ -76,10 +76,22 @@ public:
 	/// Each changed value's definition is set (every node using it changes too); an added key is
 	/// appended in the node's own block (one is written when it has none); a removed key's statement
 	/// is removed. SharedDefinition when an added or removed key's statement makes more than one
-	/// rendered directive.
+	/// rendered directive. The node's `disabled` line is never touched; a `disabled` key in `settings` is
+	/// InvalidSettings before any edit (node-lifecycle.md D-L20).
 	EditOutcome updateNode(const NodeName& node, const NodeSettings& settings) const;
-	/// Appends `node <type> <name>;` or `node <type> <name> { <key> <value>; ... }` (keys in JSON order).
+	/// Appends `node <type> <name>;` or `node <type> <name> { <key> <value>; ... }` (keys in JSON order),
+	/// `disabled true;` first in the block when the node is disabled. A `disabled` key in its settings is
+	/// InvalidSettings.
 	EditOutcome addNode(const NodeSpec& node) const;
+	/// node.disable (node-framework.md 6.3, D-F10, D-F11; R34): edits only the node's own `disabled` line, setting
+	/// its value to true (a variable it named is left as it is); with no such line, puts `disabled true;` first in
+	/// its block, making `{ disabled true; }` for a node with none. SharedDefinition when the line edited (or, with
+	/// none, the node's own statement) makes more than one rendered directive. Nothing when already disabled.
+	EditOutcome disableNode(const NodeName& node) const;
+	/// node.enable: removes the node's own `disabled` line, and a block it leaves with nothing in it, not even a
+	/// comment (`node white noise { disabled true; }` comes back as `node white noise;`). SharedDefinition when that
+	/// line makes more than one rendered directive. Nothing when the node is not disabled.
+	EditOutcome enableNode(const NodeName& node) const;
 	/// Removes its statement and every route statement naming it; SharedDefinition when any of them
 	/// makes more than one rendered directive, and then nothing is removed.
 	EditOutcome removeNode(const NodeName& node) const;
