@@ -227,6 +227,14 @@ InsidesEvents& NodeHarness::events() {
 	return *events_;
 }
 
+void NodeHarness::declareLatency(const std::string& bank, Latency internal) {
+	if (!inStart_) throw std::logic_error("node " + node_ + ": latency was declared outside start()");
+	static_cast<void>(ports().bank(bank)); // throws for a bank the node lacks, as NodeHost does
+	if (std::ranges::any_of(latency_, [&](const auto& declared) { return declared.first == bank; }))
+		throw std::logic_error("node " + node_ + ": latency declared twice for bank \"" + bank + "\"");
+	latency_.emplace_back(bank, internal);
+}
+
 StartContext::Acquired NodeHarness::acquireResource(const ResourceRequest& request) {
 	if (!inStart_) throw std::logic_error("node " + node_ + ": a resource was asked for outside start()");
 	requests_.push_back(request);

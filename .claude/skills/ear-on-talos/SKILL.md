@@ -64,7 +64,7 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 - The kernel validates every rate a MOTU (USB vendor 0x07fd) reports
   (`QUIRK_FLAG_VALIDATE_RATES`, `sound/usb/quirks.c`; the quirk flags below turn it off), so a graph frequency the card is not set
   to fails the card when it opens: the node is `failed engine-refused: <detail>`, and every other
-  node keeps running on the dummy driver. Fix the rate, then restart the pod, or change a setting of the card node
+  node keeps running on ear's internal clock, which drives the graph whether or not a card works. Fix the rate, then restart the pod, or change a setting of the card node
   with `node.update` (an update with the same settings changes nothing; no retry happens by
   itself; issue #19). A `node.update` on the card node has also hung until the
   pod was restarted (issue #18).
@@ -194,7 +194,7 @@ machine:
 1. Realtime: `ear`'s boot line says `engine: realtime SCHED_FIFO <n>`, and `graph.get` has
    `"realtime": true` (`node scripts/rpc-call.mjs ws://<node>:7777/rpc graph.get`). The image
    smoke proved this in a container with `--cap-add SYS_NICE`; the pod is not proven.
-2. The card drives: the card node is `running`, its routes are `linked`, and audio routed to
+2. The card follows: the card node is `running`, its routes are `linked`, and audio routed to
    `motu:play.<n>` comes out of that output only. Play into `play.1` and listen on
    output 1: hearing it on output 17 is the rotation in section 3. CI checks the same path with
    a test ALSA card (alsa-lib's file and null PCMs), not the MOTU. `running` alone is not proof
@@ -219,14 +219,41 @@ machine:
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
 
-6. **[check]** A `sendspin` node's sync on the MOTU. CI's test card has no clock of its own and runs
-   the graph about 2.1% fast, so the protocol's 1 ms bound is proven only on the dummy driver
-   (`docs/design/sendspin.md` section 16, erratum 1). On the hardware: the card driving, Music
-   Assistant playing, how far the node's `from.*` outputs sit from what the library's time
-   filter predicts, and no repeated corrections in ear's log. The node now puts what the card says it
-   holds (`position->clock.delay`) in the finish time, which no test card has reported, so also
-   measure past the block: a test tone on another Sendspin device and on the MOTU, recorded together,
-   within the protocol's bound once `output_delay` is 0. NOT RUN.
+6. **[check]** A `sendspin` node's sync on the MOTU. Since slice 7 the graph always runs on ear's
+   internal clock and the card follows it (`docs/design/node-framework.md` section 10), so the
+   protocol's 1 ms bound at the block holds as on the dummy driver; CI proves it through a
+   following test card, dated by that card's latency (the test card is clockless, so it shows no
+   drift). The node dates what it played by the latency downstream of its `from` outputs, which
+   the card block carries back from the MOTU's playback node (one quantum plus its headroom); no
+   real card has reported it yet. On the hardware: Music Assistant playing, how far the node's
+   `from.*` outputs sit from what the library's time filter predicts, no repeated corrections in
+   ear's log, and past the block: a test tone on another Sendspin device and on the MOTU, recorded
+   together, within the protocol's bound once `output_delay` is 0. NOT RUN.
+7. **[check]** The MOTU as a follower (slice 7; NOT RUN). The card no longer drives: PipeWire's ALSA
+   node runs a delay-locked loop on its buffer against the internal clock and steers the adapter's
+   resampler, so every MOTU channel is resampled all the time. Check, and write down what you see:
+   - Drift tracking: the rate settles within a few seconds of the card starting and stays there.
+     With `PIPEWIRE_DEBUG="2,spa.alsa:4"` (in the pod's env) the ALSA node logs its rate match and
+     delay; the correction should stay within the MOTU's crystal's tolerance (tens of ppm), not
+     climb.
+   - Follower resyncs at a 256-frame quantum: a USB card reports its pointer at URB granularity, so
+     the follower's "delay too big" resync can fire and click. Count them in the log over an hour of
+     playback. If they come, raise `api.alsa.headroom` (frames of extra buffer) or the period size
+     (`api.alsa.period-size`) on the card's adapter; both are adapter properties, so a change is a
+     code change to `AlsaCardBody` (`sound_cards.cpp`), not a graph setting yet.
+   - CPU: 24 resampled channels at 48 kHz on the node's CPU (`top -H` in the pod: the data thread),
+     with and without the card linked.
+   - Playback and capture of one card follow with two loops: their relative latency jitters by
+     tens of samples; measure it with the loopback of check 5 if a round trip matters.
+   - The host clock: the internal clock tracks `CLOCK_MONOTONIC_RAW` through a loop that corrects
+     at most 1 ms a cycle, so a host whose NTP slews `CLOCK_MONOTONIC` hard is followed only up to
+     that. Fallback if it is not: bound slewing in the node's chrony (`maxslewrate 500`, in ppm;
+     Talos sets time sync in its machine config, `machine.time`), so no follower loop has to chase
+     chrony's default of up to 83,333 ppm.
+   - A frozen MOTU (check 4) no longer stalls the graph: the blocks keep the internal clock. Nothing
+     in the graph shows a frozen follower yet (the follower watchdog is slice 8), so watch the
+     card's own state: `cat /proc/asound/<card>/pcm0p/sub0/status` on the node, a `hw_ptr` that
+     stops moving while `state: RUNNING`.
 
 ## 6. FPP's audio over RTP
 

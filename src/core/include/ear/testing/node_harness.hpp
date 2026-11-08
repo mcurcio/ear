@@ -44,6 +44,8 @@ public:
 	std::expected<void, FailureReason> start();
 	/// Every request start made, in order.
 	const std::vector<ResourceRequest>& requests() const noexcept { return requests_; }
+	/// Every latency start declared (StartContext::declareLatency), by bank, in order; refused as NodeHost refuses.
+	const std::vector<std::pair<std::string, Latency>>& declaredLatency() const noexcept { return latency_; }
 	/// The outside resources (sound cards, RTP receivers) among them, in order.
 	std::size_t outsideCount() const noexcept { return outside_.size(); }
 	/// The engine name the framework would give outside resource `index` ("<node>.<suffix>").
@@ -93,6 +95,7 @@ private:
 	const NodeName& node() const override { return node_; }
 	InsidesEvents& events() override;
 	Acquired acquireResource(const ResourceRequest& request) override;
+	void declareLatency(const std::string& bank, Latency internal) override;
 
 	void buildIfAllReady();
 	void fail(FailureReason reason);
@@ -108,6 +111,7 @@ private:
 	bool inStart_ = false;
 	bool inRecipe_ = false;
 	std::vector<ResourceRequest> requests_;
+	std::vector<std::pair<std::string, Latency>> latency_;
 	std::vector<Outside> outside_;
 	std::vector<std::unique_ptr<RecordingFile>> recordingFiles_;
 	std::vector<std::unique_ptr<Handoff>> handoffs_;

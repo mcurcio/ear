@@ -2,8 +2,8 @@
 // section 11's erratum; NodeNoteListener and the executor by docs/design/sendspin.md section 14, S1; the resource
 // registry with one adapter per kind, NodeHealth, the two-phase start, teardown by dependency, run generations, the close
 // deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1; the recording
-// kind by its slice 2). Change it only
-// through a design page and a re-cut, never a local edit.
+// kind by its slice 2; LatencyPlan and PortBlock::carryLatency by its section 9.4, slice 7). Change it only through a
+// design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -50,11 +50,23 @@ public:
 protected:
 	~NodeDiagnosticListener() = default;
 };
+/// How one run's latency crosses its block (docs/design/node-framework.md section 9.4): the pairs of banks it is
+/// carried between (a pass-through's pairs), and what the run declared it adds on a bank (StartContext::declareLatency).
+/// An output bank tells its linked ports its internal latency plus the most upstream of any input bank paired with it;
+/// an input bank tells its internal latency plus the most downstream of any output bank paired with it. A bank in no
+/// pair tells its internal latency alone.
+struct LatencyPlan {
+	std::vector<BankPair> pairs;
+	std::vector<std::pair<std::string, Latency>> internal;
+};
 /// Engine side of a port block. Destroying it removes its ports and their links; after the
 /// destructor returns, no process() of any code is running or will run.
 class PortBlock {
 public:
 	virtual ~PortBlock() = default;
+	/// Main thread. Carries latency through the block by `plan` from now on, replacing the last plan, and tells the
+	/// linked ports what changed. Ignored by a block that carries no latency (a test's fake).
+	virtual void carryLatency(const LatencyPlan& plan) { static_cast<void>(plan); }
 	/// Main thread. The realtime thread runs `code` from its next cycle; nullptr silences every
 	/// output. Returns only when the realtime thread can no longer be inside a process() of the
 	/// code it ran before: a blocking barrier with the block's data loop. On a block the engine

@@ -91,6 +91,16 @@ TEST_CASE("Rtp start acquires exactly one receiver with its settings, joined to 
 	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
 }
 
+TEST_CASE("Rtp declares its receive buffer as the latency of its stream bank, in frames of the graph",
+          "[rtp][latency]") {
+	auto harness = parseOk(settingsWith({{"latencyMs", 250}, {"rate", 96000}}), 44100);
+	REQUIRE(harness->start());
+	const auto& latency = harness->declaredLatency();
+	REQUIRE(latency.size() == 1);
+	CHECK(latency[0].first == rtp::stream.name);
+	CHECK(latency[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
+}
+
 TEST_CASE("Rtp maps L24 to l24 and L16 to l16", "[rtp]") {
 	CHECK(startOk(settingsWith({{"format", "L24"}})).encoding == ear::RtpEncoding::l24);
 	CHECK(startOk(settingsWith({{"format", "L16"}})).encoding == ear::RtpEncoding::l16);

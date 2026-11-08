@@ -4,9 +4,9 @@ Status: proposal, revision 4, 2026-11-07. Revision 1 went to three independent r
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
 answers them with two more answers from the owner (sections 14 and 16). Built: slice 1 (section 13, "Slice 1 as
 built", says where it differs) and slice 4's framework side (8.8's erratum: the node-facing primitives, log and event
-calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5). Slice 2 is built
-(section 13, "Slice 2 as built"). The slice 7 spike has run, and its verified answers are in section 10 and 15. Nothing
-else is built.
+calls on a run handle and the realtime coded ring, wait for the run handle and land with slice 5), slice 2, the type
+interface and its harness (section 13, "Slice 2 as built"), and slice 7, the internal clock with latency (section 13,
+"Slice 7 as built"; its spike's verified answers are in sections 10 and 15). Nothing else is built.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
@@ -950,6 +950,92 @@ until slice 3. Where it differs from sections 7.1, 7.2, 7.3, 7.6 and 9.2, and wh
   descriptor, before the descriptor closes. `ResourceRegistry`'s three-adapter constructor, which refuses every
   recording, is for hosts that run no `file` node, tests among them; `main.cpp` always gives the folder's adapter.
 
+### Slice 7 as built
+
+Slice 7 is built (`engine.conf`, `engine.cpp`, `port_blocks.cpp`, `sound_cards.cpp` in `ear_pipewire`; `GraphCycle`,
+`Latency`, `StartContext::declareLatency`, `LatencyPlan` and `PortBlock::carryLatency` in `ear_core`), on the mechanism
+the spike verified (section 10): the dummy joins `ear.graph` with `clock.id = monotonic-raw` and keeps the highest
+`priority.driver`; cards keep running alone until their PCM runs and follow once linked. Where it differs from the
+sections above, and why:
+
+- **9.3: the xrun count is the framework's.** PipeWire gives a filter no xrun count: `spa_io_clock.xrun` is set only by a
+  driving ALSA node, and a node's activation (where `xrun_count` lives) is private [V: `alsa-pcm.c`, `impl-node.c`]. So
+  `GraphCycle::xruns` counts the cycles a block saw start ahead of where its last one ended on the same driver: the graph
+  lost time (with the tracking dummy, a resync after a stall past `resync.ms`; a shorter stall is caught up without a
+  jump and is not counted; a backward resync, which `node-driver.c` can also make, is a discontinuity but no xrun).
+  `discontinuity` marks the block's first cycle, a new code's first cycle (each `drive`), a cycle on a new driver
+  (`clock.id` changed), any position jump, and the cycle after one too large for the block (which runs no code). The driver's identity is `driverId`, its global id (`clock.id`); the clock's name is not carried.
+  `delayFrames` is gone: the dummy's delay is always 0, so it is replaced, not kept beside the latency. **A merge hazard:**
+  `GraphCycle`'s third member was `std::uint32_t delayFrames` and is now `std::int64_t startRawNs`, so code written
+  against the old shape with three positional initialisers (`GraphCycle{start, position, delay}`) still compiles and puts
+  a frame count into the raw start. At the merge with slice 2 every `GraphCycle{` was searched: there are only
+  two-argument and designated ones.
+- **9.4: the latency a type declares is static, and goes through `StartContext`.** `TypeSpec` is slice 2's, so a type
+  declares its own latency per bank with `StartContext::declareLatency(bank, Latency)` in `start` (a default no-op on the
+  interface, so a type's own test's fake context ignores it; `NodeHost` refuses a bank the node lacks or one declared
+  twice). Nothing reports latency while a run runs: `rtp`'s `latencyMs` and `sendspin`'s feed are fixed for the run. When
+  `TypeSpec` lands, a static declaration can move into it; a dynamic report is still owed.
+- **9.4: how latency crosses a block.** `NodeHost` hands each run's `LatencyPlan` to its block before the code drives it
+  (`carryLatency`), and clears it at the run's teardown (a silent block carries nothing). The plan's pairs are the
+  pass-through's `BankPair`s; a run with its own code has none, so its banks tell only what it declared. An output bank
+  tells its peers its internal latency plus the most upstream latency of any input bank paired with it; an input bank its
+  internal latency plus the most downstream latency of any output bank paired with it. Each bank's ports are combined
+  (`spa_latency_info_combine`: least of the least, most of the most) and every port of a bank tells the same. Only ports
+  whose peers reported a latency are combined (as `pw_impl_port_recalc_latency` combines only a port's links), so one
+  unrouted port does not pull its bank's least to 0. A `Latency`
+  is a range in frames of the graph: a quantum counts the block size, nanoseconds are taken at the graph frequency.
+- **9.4: what `process` sees.** `GraphCycle::downstream` holds one `Latency` per output port (outputs then inside
+  outputs, as the spans), each its bank's combined downstream; `downstreamOf(i)` gives none when it is not told (a test's
+  cycle). The main loop publishes it in one atomic word per port, which the realtime side copies into the cycle. Sendspin
+  takes the most of its `from` bank: what it plays is heard once that much has played. Only routed paths count, so an
+  unrouted node, or one routed to a `file` node, dates by 0.
+- **`pw_filter`'s latency in 1.4.2, verified** (`filter.c`, `impl-port.c`) [V]: without the flag the filter merges every
+  output's downstream latency into every input and every input's upstream into every output, plus its process latency
+  (`default_latency`), so 9.4's concern was right. The engine recomputes a port's latency from its peers on every link and
+  peer change (`pw_impl_port_recalc_latency`) and sets it on the port; under the flag the filter stores it and only emits
+  `param_changed` for the far side's direction. A block tells its own with `pw_filter_update_params`. **But when a port's
+  last link goes, the engine sets a null param, and `handle_latency` returns on null before it emits**: the block is never
+  told, and keeps the latency its last peers reported until another peer reports one. So a lost card's latency stays on
+  its card block's inside ports (and, through the pass-through, upstream) until a card is made again. It is harmless while
+  nothing is linked there, since what the block sends is heard nowhere; a test pins the behaviour so a PipeWire bump that
+  fixes it is noticed. Forgetting it ourselves would need the block to watch its links (the live graph knows them):
+  owed.
+- **Section 10: the test card's seam.** `AlsaSoundCards(engine, extra)` adds adapter properties after a card's own, and
+  `clocklessCardProperties()` gives CI's: `clock.name = clock.system.monotonic-raw`, the dummy's name with that clock id
+  (`engine_names.hpp`, `internalClockName`). `main.cpp` passes none. The three card cases that asserted the card drives
+  now assert it follows (the card's and the blocks' `node.driver-id` is the dummy's, the code is told the dummy's id, and
+  neither the card's joining nor its loss is a discontinuity). The channel test is bit-exact with no breaks. The test card
+  reports 256 frames of playback latency at a 256 quantum (one quantum, no headroom).
+- **Section 10: sendspin's clock tests.** The case driven by the test card, which held only the hard sync's bound, became
+  "through a following test card, dated by the card's latency, within 1 ms": the card block runs the framework's
+  pass-through with the card's latency carried back to sendspin's `from` bank, and the 1 ms bound now holds there as on the
+  dummy alone. The lost-card case checks that no driver change happened. Sendspin's own code reads no clock: `startRawNs`
+  replaces its conversion, so the conversion is never applied twice.
+- **Section 10: the internal clock takes seconds to reach the raw clock.** The tracking dummy starts at the rate of its
+  `CLOCK_MONOTONIC` timer and its loop (PipeWire's DLL at its least bandwidth, `node-driver.c`) moves `rate_diff` to the
+  raw clock's over about ten seconds, wandering by some tens of ppm before it settles. This host's `CLOCK_MONOTONIC` ran
+  up to 140 ppm off the raw clock, varying between runs (NTP slewing it), so a sendspin stream started within seconds of
+  the engine saw the graph off by that much, and the library corrected by interpolating frames (one in twenty cycles,
+  failing the 1 ms test's bound on bad cycles in two runs of five). In ear the engine runs for hours, so only the first
+  seconds after boot are affected; the sendspin clock tests wait until two seconds of cycles ran within 20 ppm of the
+  rate on the raw clock before they play (at most 20 s, then they play with a warning: on a loaded host the data
+  thread's stalls make the clock resync past `resync.ms`, which restarts its loop). Before slice 7 the graph followed `CLOCK_MONOTONIC` for good, so on such a host
+  the same test would have seen the full offset all along.
+- **Section 10: denormals.** `Engine::create` sets FTZ and DAZ on x86 and FZ on arm64 with a blocking invoke on the
+  context's data loop right after `pw_context_new`; a test reads the MXCSR from `process` and checks the main thread's is
+  untouched. `cpu.zero.denormals` stays unset. **The invoke races the data thread's start** [V: review, 11 failures in
+  300 runs of the test]: `pw_data_loop_start` (`data-loop.c`) creates the thread and returns without waiting, and
+  `loop_invoke` (`spa/plugins/support/loop.c`) treats a loop whose thread has not yet entered it as its own and runs the
+  function inline, on the caller. That is the same race that puts `cpu.zero.denormals` on the main thread. So the function
+  does nothing when it runs on the thread that invoked it, and `Engine::create` invokes again (1 ms apart, for at most
+  5 s, then fails) until it ran on the data loop's thread; a failed invoke fails `Engine::create` too.
+- **Not built, as planned elsewhere:** the follower watchdog and adapter-sourced card status (slice 8), the anchor
+  (section 10, later), and the MOTU checks (drift tracking, follower resyncs at a 256-frame quantum, `api.alsa.headroom`
+  and the period size, CPU for 24 resampled channels, playback and capture's relative jitter, the chrony `maxslewrate`
+  fallback), which are owed on the hardware and listed in the `ear-on-talos` skill. `docs/design/sendspin.md` section 11
+  still lists "PipeWire's port latency in the clock": the following card's latency now reaches the dating; a resampler
+  before the card is still left to Music Assistant's output delay.
+
 ## 14. Gate answers
 
 The owner's answers, 2026-11-07, in chat (current choices; later evidence may reopen them):
@@ -979,7 +1065,8 @@ The owner's answers, 2026-11-07, in chat (current choices; later evidence may re
   this container and in CI, and the test card lives inside alsa-lib with no `/proc` entry, so the watchdog's PCM-status
   source is injectable and CI fakes it [V: spike]. Whether a USB unplug
   reaches the adapter's ERROR state without udev in the container; whether `snd_pcm_open` can block, and on which thread.
-- [U] `pw_filter`'s default latency merge, and `PW_FILTER_FLAG_CUSTOM_LATENCY`'s behaviour in 1.4.2.
+- Settled by slice 7 (section 13, "Slice 7 as built"; `filter.c`, `impl-port.c` [V]): `pw_filter`'s default merge, and
+  `PW_FILTER_FLAG_CUSTOM_LATENCY`'s behaviour in 1.4.2, including that a port's last link going is never told.
 - [U] `cleanup.sec`'s smallest safe value for `rtp`'s `receiving`.
 - sendspin-cpp has no log hook (8.8's erratum): a carried patch that routes `SS_LOG*` through a settable callback
   carrying the client is owed; until then its lines are unattributed `stderr` records at `warn`.

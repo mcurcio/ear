@@ -53,6 +53,9 @@ struct Rtp {
 		                                   .rate = s.get<rateRow>().value_or(context.format().rate),
 		                                   .latencyMs = s.get<latencyRow>(),
 		                                   .bank = std::string(fromRtp.name)});
+		// The receive buffer holds the stream that long before it leaves; PipeWire's receiver reports none of it.
+		const std::uint32_t buffered = s.get<latencyRow>() * context.format().rate / 1000;
+		context.declareLatency(std::string(stream.name), Latency{buffered, buffered});
 		return passThrough({bankPair(fromRtp, stream)});
 	}
 };

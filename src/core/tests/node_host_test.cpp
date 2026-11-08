@@ -117,24 +117,27 @@ std::shared_ptr<TestConfig> withReceiver(Log& log, std::string tag = {}) {
 struct TestBlock final : PortBlock {
 	Log& log;
 	AudioCode** driven;
-	TestBlock(Log& l, AudioCode** d) : log(l), driven(d) {}
+	std::vector<LatencyPlan>* plans;
+	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p) : log(l), driven(d), plans(p) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
 	void drive(AudioCode* code) override {
 		*driven = code;
 		log.push_back(code != nullptr ? "drive code" : "drive nothing");
 	}
+	void carryLatency(const LatencyPlan& plan) override { plans->push_back(plan); }
 };
 
 struct TestBlocks final : PortBlockFactory {
 	Log& log;
 	std::vector<PortBlockEvents*> events;
-	std::deque<AudioCode*> driven; // what each block runs now, in make order
+	std::deque<AudioCode*> driven;              // what each block runs now, in make order
+	std::deque<std::vector<LatencyPlan>> plans; // every latency plan each block was given, in make order
 	explicit TestBlocks(Log& l) : log(l) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		events.push_back(&e);
-		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr));
+		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back());
 	}
 };
 
@@ -963,6 +966,54 @@ TEST_CASE("The framework's pass-through copies each bank to its pair and silence
 	CHECK(out[2] == in[0]);                                 // play.1 -> out.1
 	CHECK(out[3] == in[1]);                                 // play.2 -> out.2
 	f.stopAll();
+}
+
+namespace {
+
+/// PassConfig's banks and pairs, with latency declared on "capture" (and `extra`, each by start()).
+struct LatencyConfig final : NodeConfig {
+	PassConfig pass;
+	std::vector<std::pair<std::string, Latency>> extra;
+	mutable StartContext* context = nullptr;
+	const Ports& ports() const override { return pass.ports_; }
+	StartResult start(StartContext& c) const override {
+		context = &c;
+		c.declareLatency("capture", Latency{100, 200});
+		for (const auto& [bank, latency] : extra) c.declareLatency(bank, latency);
+		return passThrough(pass.pairs);
+	}
+};
+} // namespace
+
+TEST_CASE("A run's latency plan reaches its block before its code: the pass-through's pairs and what start declared, "
+          "cleared at the run's teardown",
+          "[node_host][latency]") {
+	Fixture f;
+	auto config = std::make_shared<LatencyConfig>();
+	f.add("card", config);
+	REQUIRE(f.blocks.plans.at(0).size() == 1);
+	const LatencyPlan& plan = f.blocks.plans.at(0).at(0);
+	CHECK(plan.pairs == config->pass.pairs);
+	REQUIRE(plan.internal.size() == 1);
+	CHECK(plan.internal[0].first == "capture");
+	CHECK(plan.internal[0].second == Latency{100, 200});
+	CHECK_THROWS_AS(config->context->declareLatency("spare", Latency{1, 1}), std::logic_error); // outside start()
+
+	f.update("card", std::make_shared<LatencyConfig>());
+	REQUIRE(f.blocks.plans.at(0).size() == 3); // cleared by the teardown, then the new run's
+	CHECK(f.blocks.plans.at(0).at(1).pairs.empty());
+	CHECK(f.blocks.plans.at(0).at(1).internal.empty());
+	CHECK(f.blocks.plans.at(0).at(2).internal.size() == 1);
+	f.stopAll();
+}
+
+TEST_CASE("Latency declared twice for a bank, or for a bank the node lacks, is a type bug", "[node_host][latency]") {
+	for (const std::string bank : {"capture", "nowhere"}) {
+		Fixture f;
+		auto config = std::make_shared<LatencyConfig>();
+		config->extra = {{bank, Latency{1, 1}}};
+		CHECK_THROWS_AS(f.add("card", config), std::logic_error);
+	}
 }
 
 TEST_CASE("A pass-through between banks of different sizes, the wrong way or of an unknown bank is a type bug",

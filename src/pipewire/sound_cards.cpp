@@ -3,7 +3,7 @@
 // adapter and hears from it through its own proxy; the one outside-node lifecycle
 // (outside_nodes.hpp, docs/design/rtp.md section 6) runs it alone until its PCM runs, then links
 // its channels to its port block, and on any failure destroys its links and its engine node
-// before it reports the loss.
+// before it reports the loss. Linked, it follows ear's internal clock, never drives the blocks.
 #include "ear/pipewire/sound_cards.hpp"
 
 #include <cerrno>
@@ -41,7 +41,7 @@ std::string channelPort(CardDirection direction, std::size_t channel) {
 class AlsaCardBody final : public OutsideBody {
 public:
 	AlsaCardBody(Engine& engine, const OutsideTarget& target, const SoundCardRequest& request,
-	             OutsideBodyEvents& events)
+	             const AlsaSoundCards::Properties& extra, OutsideBodyEvents& events)
 		: direction_(request.direction), channels_(target.blockPorts.size()), rate_(target.format.rate),
 		  events_(events) {
 		const NodeName& engineNode = target.engineNode;
@@ -49,12 +49,15 @@ public:
 		const auto channels = std::to_string(channels_);
 		const auto rate = std::to_string(format.rate);
 		const auto priority = std::to_string(cardPriority);
-		// No node.group: the card collects no port block until its own links join it to one.
+		// No node.group: a card in the group would follow from creation and never start before it is linked, which
+		// the lifecycle (link once RUNNING) cannot do. Alone it drives itself until its links join it to the blocks,
+		// where the internal clock outranks it and it follows (docs/design/node-framework.md section 10).
 		pw_properties* props = pw_properties_new(
 			SPA_KEY_FACTORY_NAME, direction_ == CardDirection::playback ? "api.alsa.pcm.sink" : "api.alsa.pcm.source",
 			"api.alsa.path", alsaPath(request.card).c_str(), "audio.channels", channels.c_str(), "audio.rate",
 			rate.c_str(), "audio.position", auxPositions(channels_).c_str(), PW_KEY_NODE_NAME, engineNode.c_str(),
 			PW_KEY_NODE_ALWAYS_PROCESS, "true", PW_KEY_PRIORITY_DRIVER, priority.c_str(), nullptr);
+		for (const auto& [key, value] : extra) pw_properties_set(props, key.c_str(), value.c_str());
 		node_ = static_cast<pw_proxy*>(
 			pw_core_create_object(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, &props->dict, 0));
 		pw_properties_free(props);
@@ -146,7 +149,9 @@ private:
 
 } // namespace
 
-AlsaSoundCards::AlsaSoundCards(Engine& engine) : engine_(engine) {}
+AlsaSoundCards::AlsaSoundCards(Engine& engine, Properties extra) : engine_(engine), extra_(std::move(extra)) {}
+
+AlsaSoundCards::Properties clocklessCardProperties() { return {{"clock.name", internalClockName}}; }
 
 std::unique_ptr<OutsideNode> AlsaSoundCards::make(const OutsideTarget& target, const SoundCardRequest& request,
                                                   OutsideNodeEvents& events) {
@@ -162,7 +167,7 @@ std::unique_ptr<OutsideNode> AlsaSoundCards::make(const OutsideTarget& target, c
 	                                   .nodePorts = std::move(cardPorts),
 	                                   .blockPorts = target.blockPorts},
 	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<AlsaCardBody>(engine_, target, request, body);
+							   return std::make_unique<AlsaCardBody>(engine_, target, request, extra_, body);
 						   });
 }
 

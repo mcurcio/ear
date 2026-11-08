@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the dummy driver and sound cards that clock the graph, the graph group, outside nodes (sound cards and RTP receivers loaded from module-rtp-source), drive(), level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, outside nodes, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never drives or never becomes ready, an rtp node stays starting or is silent, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, outside nodes (sound cards and RTP receivers loaded from module-rtp-source), drive(), level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, outside nodes, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays starting or is silent, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -18,10 +18,10 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 
 | Piece | Where | Why |
 |---|---|---|
-| Main loop, context, own connection | `Engine::create` | One process, one loop; every core object and adapter runs on the main loop's thread |
+| Main loop, context, own connection | `Engine::create` | One process, one loop; every core object and adapter runs on the main loop's thread; denormals flushed on the data thread |
 | `engine.conf` | `src/pipewire/engine.conf`, copied beside `out/ear` | Read by `pw_context_new` (passed as `config.name`); loads the modules and the driver |
 | Clock settings | `contextProperties()` in `engine.cpp` | The graph frequency and block size, from `ear.conf`'s `graph_frequency` and `block_size` at boot (else `--graph-frequency` and `--block-size`) |
-| Port blocks | `port_blocks.cpp` | One `pw_filter` per node, one 32-bit float mono port per declared port (public and inside); every block in the graph group; `drive()`; level metering |
+| Port blocks | `port_blocks.cpp` | One `pw_filter` per node, one 32-bit float mono port per declared port (public and inside); every block in the graph group; `drive()`; level metering; each cycle's `GraphCycle`; latency per bank pair (`carryLatency`) |
 | Level mailbox | `level_mailbox.hpp` | One triple buffer per block: the realtime thread publishes a level window, an ordinary thread reads the latest |
 | Live ports | `live_graph.cpp` | Registry globals joined into node name, port name, direction, port id |
 | Links | `links.cpp`, `link_proxy.hpp` | `link-factory` links by port global id, owned by EAR's connection |
@@ -30,7 +30,7 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | RTP receivers | `rtp_receivers.cpp` | The other kind: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
 | Handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `spa_ringbuffer` plus one `pw_thread_loop` each |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread (the control port's graph calls) runs on the main loop: a mutex-guarded queue plus a `pw_loop` event source |
-| Shared names | `engine_names.hpp` | The graph group's name and a card's driver priority |
+| Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority and the internal clock's name |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's
 file (`EAR_ENGINE_CONF`). `Engine` does no lookup of its own. The ctest
@@ -69,10 +69,21 @@ node with `pw_context_load_module` (section "RTP receivers"). Debian's `libpipew
 holds it.
 
 `context.objects`: one `spa-node-factory` object, `factory.name = support.node.driver`,
-`node.name = Dummy-Driver`, `priority.driver = 200000`. It is the driver that clocks the graph
-while no sound card does. It has no ports, so it never shows up as a live port. A card's
-`priority.driver` (`cardPriority` in `engine_names.hpp`, 1) must stay below it, so a card that
-runs alone is never the driver the port blocks fall back to.
+`node.name = Dummy-Driver`, `priority.driver = 200000`, `node.group = ear.graph`, `clock.id =
+monotonic-raw`. It is ear's internal clock, the graph's one driver whatever links or fails
+(`docs/design/node-framework.md` section 10, next section but one). It has no ports, so it never
+shows up as a live port. A card's `priority.driver` (`cardPriority` in `engine_names.hpp`, 1) must
+stay below it: that is what keeps the dummy the driver once a card is linked.
+
+Never `cpu.zero.denormals` in `context.properties`: on 1.4.2 it lands on the main thread in this
+engine (the data loop's setup runs inline there before the data thread enters) and leaks to every
+thread made later. `Engine::create` sets FTZ and DAZ (FZ on arm64) with a blocking invoke on the
+data loop instead (`flushDenormals`); "process() runs with denormals flushed to zero" reads the
+MXCSR from `process`. That invoke races the data thread too: `pw_data_loop_start` returns before
+the thread enters its loop, and until it does `loop_invoke` runs the function inline on the caller
+(about 4% of boots). So `flushDenormals` does nothing on the thread that invoked it, and
+`Engine::create` invokes again until it ran on the data thread (1 ms apart, failing after 5 s). Any
+blocking invoke made right after `pw_context_new` meets the same race.
 
 ## The clock
 
@@ -92,13 +103,76 @@ is accepted for everything else and reported as pending restart (`pendingRestart
 `pending_restart` pattern): it applies at the next start. Nodes always see the engine's
 format (`NodeGrant::format()`), never the file's pending one.
 
-## The graph group
+## The graph group and the internal clock
 
-Every port block sets `node.group = ear.graph` (`graphGroup` in `engine_names.hpp`). PipeWire
-puts every node of one group on the same driver, so one clock drives every block: the dummy
-while no card drives, else the card. The test "Every block is in the ear.graph group and
-processes on the dummy driver alone" checks it. A card's adapter node has no `node.group`
-(next section).
+Every port block sets `node.group = ear.graph` (`graphGroup` in `engine_names.hpp`), and so does
+the dummy driver. PipeWire puts every node of one group on the same driver, and it walks drivers in
+`priority.driver` order: the dummy (200000) comes first, so it collects the group and everything
+linked to it, and a linked card (1) is a follower. So one clock always drives every block, the
+dummy, and no card ever moves it (the slice 7 spike, `docs/design/node-framework.md` section 10).
+The test "Every block is in the ear.graph group and processes on the dummy driver alone" checks the
+group, the dummy's group and its clock name. A card's adapter node has no `node.group` (next
+section).
+
+**It tracks `CLOCK_MONOTONIC_RAW`.** `CLOCK_MONOTONIC` is slewed by NTP (chrony may slew it by up
+to 83,333 ppm), and timerfd cannot arm `CLOCK_MONOTONIC_RAW` (`EINVAL`). With `clock.id =
+monotonic-raw` the driver runs in its tracking mode (`node-driver.c`): its timer stays on
+`CLOCK_MONOTONIC`, a delay-locked loop steers it so `clock.position` follows raw time, and
+`rate_diff` is the loop's correction. `clock.nsec` and `next_nsec` stay `CLOCK_MONOTONIC`. Its
+error is clamped at 1 ms a cycle; past `resync.ms` (10 ms, e.g. after a data-thread stall) the
+position jumps to raw time. Its `clock.name` is `clock.system.monotonic-raw` (`internalClockName`).
+Whether it follows a host slewed at chrony's worst case is untested; the fallback is chrony's
+`maxslewrate` (the `ear-on-talos` skill).
+
+**`GraphCycle`** is made by the block once a cycle (`port_blocks.cpp`, `onProcess`), so no type reads
+a clock: `startNs` (`clock.nsec`), `position`, `startRawNs` (both clocks sampled together, the
+difference added to `clock.nsec`, so a late wake cancels out), `rateDiff` (`clock.rate_diff`),
+`driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`), `xruns` and
+`discontinuity`. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA
+node), so the block counts cycles that start ahead of where the last one ended on the same driver
+(a backward resync is no xrun); `discontinuity` marks the block's first cycle, a new code's first
+cycle, a new driver, any position jump (the dummy's resync), and the cycle after one too large for
+the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
+`node-driver.c` does. `downstream` is the latency downstream of each output (below). The dummy's
+`clock.delay` is always 0, followers or not: a following ALSA node writes its delay into its own
+clock, never into the driver's position.
+
+## Latency, per bank pair
+
+A port block connects with `PW_FILTER_FLAG_CUSTOM_LATENCY`. Without it `pw_filter` merges every
+output's downstream latency into every input, and every input's upstream into every output
+(`filter.c`, `default_latency`, plus the filter's process latency), which mixes paths that never
+meet (a card's playback and capture; sendspin's `to` and `from`). What 1.4.2 does under the flag
+(read in `filter.c` and `impl-port.c`):
+
+- The engine recomputes a port's latency from its peers whenever a link or a peer's latency
+  changes (`pw_impl_port_recalc_latency`): an output gets the combined playback latency of the
+  inputs it feeds (direction INPUT), an input the combined capture latency of what feeds it
+  (direction OUTPUT), and sets it on the port. The filter stores it and, under the flag, emits
+  `param_changed(port, SPA_PARAM_Latency)` and does nothing else (`handle_latency`). A port's
+  own-direction latency it is told is ignored.
+- The block then tells its ports' latency itself with `pw_filter_update_params` (a Latency param
+  of the port's own direction), which the engine hands to the peers.
+- **Trap: the last link going is never told.** When a port loses its last peer the engine sets a
+  null Latency param, and `handle_latency` returns on null before it emits anything. So a block
+  keeps the latency its last peers reported until another peer reports. A lost card leaves its
+  latency on the card block's inside ports (and, through the pass-through, upstream): harmless
+  while nothing hears what goes there, and a card made again reports afresh. "A following card's
+  latency reaches its block's inside bank" checks this trap, so a PipeWire that fixes it fails.
+
+The block's rule (`retell`), from the run's `LatencyPlan` (`carryLatency`, given by `NodeHost`
+before the run's code drives the block, cleared at its teardown): each output bank's downstream
+latency is its ports' peers combined (only ports whose peers reported one: an unrouted port is no
+path and does not pull the least to 0), published to the realtime side (`GraphCycle::downstream`, one
+per output port); an output bank tells upstream (capture) latency = what reaches the input banks
+paired with it, plus what the run declared on it; an input bank tells downstream (playback)
+latency = what lies beyond the output banks paired with it, plus what the run declared. The pairs
+are the pass-through's, so a card block forwards the card's playback latency from `to_card` to
+`play`, and the card's capture latency from `from_card` to `capture`. A run declares its own with
+`StartContext::declareLatency(bank, Latency)`: `rtp` its `latencyMs` on `stream` (rtp-source's own
+stream reports none), `sendspin` its feed (0 to its size) on `from`. Frames: a quantum is the block
+size and nanoseconds are at the graph frequency. ALSA's playback node reports one quantum plus its
+headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
 
 ## Sound cards and the clock
 
@@ -114,33 +188,46 @@ how its node is made and heard from (its own proxy) and what fails it:
    out, because ALSA's `file` plugin can run commands), `audio.rate` = the graph frequency,
    `audio.channels`, `audio.position = [ AUX0 AUX1 ... ]`, `node.always-process = true`,
    `priority.driver = 1` and no `node.group`. So it runs alone, on its own clock, and holds no
-   port block while it opens.
+   port block while it opens. In the group it would follow the dummy from creation and never
+   start before it is linked, which this lifecycle (link once RUNNING) cannot do. Never mark it
+   `node.driver = false` either: the ALSA node publishes `node.driver = true` again (the spike).
 2. **Linking.** When the node reports RUNNING (its PCM runs), the card makes one link per
    channel through `link-factory` (`link.output.node`, `link.output.port`, `link.input.node`,
    `link.input.port`): the adapter named by its global id, the block by its node name, ports by
    name: block port `to_card.<i>` to the adapter's `playback_AUX<i-1>`, or the adapter's
    `capture_AUX<j-1>` to `from_card.<j>`. By id, because a node of the same name that is still
    going (a restart's old node) would otherwise match first.
-   Linked to its block, the card joins the blocks' clock and, as the only driver among them
-   (the dummy is linked to nothing and in no group), drives every block: every block's
-   `node.driver-id` becomes the card's (E2's test).
+   Linked to its block, the card joins the blocks' graph, where the dummy outranks it: it
+   becomes a follower (one repeated sample at the switch on the test card) and every block's
+   and the card's `node.driver-id` is the dummy's. As a follower the ALSA node runs a
+   delay-locked loop on its buffer against the graph clock and steers the adapter's resampler,
+   so every card is resampled all the time (no output is bit-perfect) and its rate takes a few
+   seconds to settle.
 3. **Ready** once every link is active. Its health (PCM running, every link active) is the
    node's insides readiness, so the node is `running` only then.
 4. **Lost.** Any failure (refused at open, the node going to ERROR, a rate the kernel refuses,
    the card unplugged, a link that fails or goes) first destroys the links and the adapter, then
-   waits for a `pw_core_sync` round trip, and only then tells `lost(detail)`. So a lost card
-   never holds the graph: the blocks go back to the dummy and keep processing. The node becomes
+   waits for a `pw_core_sync` round trip, and only then tells `lost(detail)`. A lost card never
+   held the clock, so the blocks keep the dummy and their position without a discontinuity. The node becomes
    `failed engine-refused: <detail>`; its block and routes stay. No retry: a `node.update`
    with changed settings restarts it, and one with the same settings changes nothing
    (`graph_file_model.cpp`, `desired_graph.cpp`), so with none to change, restart ear.
 
 CI has no sound card. `src/pipewire/tests/alsa/alsa.conf`, set as `ALSA_CONFIG_PATH` in the
 test process, defines `hw` so `hw:CARD=Test` is alsa-lib's `file` PCM over its `null` PCM
-(what the card is sent lands in `$EAR_ALSA_OUT/card.raw`); any other card id cannot open. E2's
-spike showed this card runs and drives on PipeWire 1.4.2, so CI checks ready, driving, the
-channel mapping sample for sample, a card that cannot open and a lost card. The ALSA-error path
-on a running PCM, the rate a real card refuses, and latency are checked only on the hardware
-(the `ear-on-talos` skill).
+(what the card is sent lands in `$EAR_ALSA_OUT/card.raw`); any other card id cannot open. It has
+no oscillator, so as a follower its rate match never settles (it always reports a delay of 0 and
+the correction climbs: the mean step fell 6.6% in 20 s, with breaks). Tests therefore make it with
+`AlsaSoundCards(engine, clocklessCardProperties())`, a test seam of extra adapter properties that
+sets its `clock.name` to the dummy's: an ALSA follower whose clock name equals the driver's turns
+matching off (`alsa-pcm.c`, `setup_matching`), so it is bit-exact. `main.cpp` never passes it: a
+real card keeps matching on. CI checks ready, following, the channel mapping sample for sample,
+the card's latency carried through the pass-through, a card that cannot open and a lost card
+leaving the clock alone. The system test "A sound card node runs and its route is linked" runs the
+test card as `main.cpp` makes it, with matching on, so it is a follower that never settles: it
+proves the wiring (running, linked) and nothing about following. Drift tracking, follower resyncs, the ALSA-error path on a running PCM,
+the rate a real card refuses and a real card's latency are checked only on the hardware (the
+`ear-on-talos` skill).
 
 ## RTP receivers (module-rtp-source in-process)
 
@@ -304,6 +391,9 @@ Nothing like WirePlumber runs. Two things make that work:
   session manager would: `pw_node_set_param(SPA_PARAM_PortConfig)` in dsp mode with 32-bit float
   planar and AUX positions, which names the ports `playback_AUX<n>` and `capture_AUX<n>`. On
   an RTP receiver's stream the same key works and is what gives it ports.
+- **`cpu.zero.denormals` sets the wrong thread.** See `engine.conf` above: the engine flushes
+  denormals with an invoke on the data loop.
+- **Custom latency is never told a lost last link.** See "Latency, per bank pair".
 - **`node.driver-id` changes reach no client on 1.4.2.** The engine sets a node's
   `node.driver-id` when its driver changes but sends no info event for it. A test that reads it
   binds the node again (`sound_card_test.cpp`).

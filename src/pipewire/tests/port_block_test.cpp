@@ -1,6 +1,7 @@
 // FilterPortBlocks on the real in-process engine (docs/design/batch2.md section 4.3; acceptance
 // criteria E1(2)-(8)): levels on the graph clock, complete snapshots, the drive barrier, a lost
-// block, inside ports and the graph group. Every wait is event-gated: the main loop runs until
+// block, inside ports and the graph group; docs/design/node-framework.md slice 7: each cycle's
+// clock facts, latency carried per bank pair, and denormals flushed on the data thread. Every wait is event-gated: the main loop runs until
 // the events a test waits for have arrived; the deadline only fails the test. The Waiter and
 // makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
 #include <algorithm>
@@ -18,6 +19,9 @@
 #include <vector>
 
 #include <pipewire/pipewire.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+#endif
 
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
@@ -692,6 +696,12 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
 		REQUIRE(group != props->end());
 		CHECK(group->second == "ear.graph");
 	}
+	// The internal clock is in the group too, so it collects the blocks and whatever is linked to them first
+	// (docs/design/node-framework.md section 10), and it tracks the raw clock.
+	REQUIRE(waiter.until([&] { return nodes.props("Dummy-Driver") != nullptr; }));
+	const auto* dummy = nodes.props("Dummy-Driver");
+	CHECK(dummy->at(PW_KEY_NODE_GROUP) == "ear.graph");
+	CHECK(dummy->at("clock.name") == "clock.system.monotonic-raw");
 }
 
 namespace {
@@ -707,8 +717,12 @@ public:
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at < kCapacity) {
 			timespec now{};
+			timespec raw{};
 			clock_gettime(CLOCK_MONOTONIC, &now);
-			seen_[at] = {cycle, frames, static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec};
+			clock_gettime(CLOCK_MONOTONIC_RAW, &raw);
+			seen_[at] = {cycle, frames, static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec,
+			             static_cast<std::int64_t>(raw.tv_sec) * 1000000000 + raw.tv_nsec, cycle.downstream.size()};
+			seen_[at].cycle.downstream = {}; // the block's own memory: not kept past the cycle
 			count_.store(at + 1, std::memory_order_release);
 		}
 		waiter_.wake();
@@ -718,6 +732,8 @@ public:
 		ear::GraphCycle cycle;
 		std::uint32_t frames;
 		std::int64_t nowNs;
+		std::int64_t rawNs;
+		std::size_t downstreamSize;
 	};
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
 	const Seen& at(std::size_t index) const { return seen_[index]; }
@@ -760,3 +776,178 @@ TEST_CASE("Each cycle's position advances by its frames and its start is no late
 	}
 	CHECK(advancedByFrames >= (CycleLog::kCapacity - 1) / 2);
 }
+
+TEST_CASE("Each cycle carries its start on both clocks, the internal clock as its driver, its rate and the next "
+          "cycle's start, and only the first is a discontinuity",
+          "[port_blocks][clock]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EngineNodes nodes(*engine, waiter);
+	CycleLog log(waiter);
+	BlockEvents events(waiter);
+	auto block = blocks.make("timed", Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "out", {"a", "b"}}}},
+	                         kFormat, events);
+	block->drive(&log);
+	REQUIRE(waiter.until([&] { return log.count() == CycleLog::kCapacity && nodes.props("Dummy-Driver"); }));
+	block->drive(nullptr);
+	const auto dummy = static_cast<std::uint32_t>(std::stoul(nodes.props("Dummy-Driver")->at(PW_KEY_OBJECT_ID)));
+
+	const std::int64_t cycleNs = std::int64_t{kBlock} * 1000000000 / kRate;
+	CHECK(log.at(0).cycle.discontinuity); // the first cycle the block runs
+	std::size_t jumps = 0;
+	std::size_t forward = 0;
+	for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
+		const auto& seen = log.at(i);
+		INFO("cycle " << i);
+		CHECK(seen.cycle.driverId == dummy);
+		// Both clocks read together: the raw start sits as far before the raw now as the start before now.
+		CHECK(std::abs((seen.rawNs - seen.cycle.startRawNs) - (seen.nowNs - seen.cycle.startNs)) < 1000000);
+		CHECK(seen.cycle.rateDiff == Approx(1.0).margin(0.01));
+		CHECK(seen.cycle.nextNs - seen.cycle.startNs == Approx(cycleNs).epsilon(0.1));
+		CHECK(seen.downstreamSize == 2); // one per output: out.a, out.b
+		if (i > 0 && seen.cycle.discontinuity) ++jumps;
+		if (i > 0 && seen.cycle.position > log.at(i - 1).cycle.position + log.at(i - 1).frames) ++forward;
+		if (i > 0) CHECK(seen.cycle.xruns >= log.at(i - 1).cycle.xruns);
+	}
+	// A loaded host's stall makes the internal clock resync (a jump, and an xrun when it is forward); a quiet one
+	// makes none. A backward resync is a discontinuity but no xrun.
+	CHECK(forward <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
+	CHECK(jumps <= 2);
+
+	// A new code's first cycle is a discontinuity to it, though the clock ran on.
+	CycleLog next(waiter);
+	block->drive(&next);
+	REQUIRE(waiter.until([&] { return next.count() >= 4; }));
+	block->drive(nullptr);
+	CHECK(next.at(0).cycle.discontinuity);
+}
+
+namespace {
+
+/// Records the latency downstream of each of its outputs, latest cycle.
+class LatencyProbe final : public AudioCode {
+public:
+	LatencyProbe(Waiter& waiter, std::size_t outputs) : waiter_(waiter), seen_(outputs) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		for (std::size_t i = 0; i < seen_.size(); ++i) {
+			const Latency latency = cycle.downstreamOf(i);
+			seen_[i].store((std::uint64_t{latency.minFrames} << 32U) | latency.maxFrames, std::memory_order_relaxed);
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	Latency downstream(std::size_t output) const {
+		const std::uint64_t word = seen_[output].load(std::memory_order_relaxed);
+		return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word)};
+	}
+
+private:
+	Waiter& waiter_;
+	std::vector<std::atomic<std::uint64_t>> seen_;
+};
+
+} // namespace
+
+TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to the block upstream, never across "
+          "banks it does not pair, plus what a run declared",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	// source:out -> mid:in, mid's pair in -> thru; mid:thru.1 -> sink:in (thru.2 is linked to nothing), and mid's
+	// unpaired bank side -> other:in. sink declares 300 frames on its input (a following card would report its buffer
+	// there), other 900.
+	LatencyProbe sourceProbe(waiter, 2), midProbe(waiter, 3), sinkProbe(waiter, 0), otherProbe(waiter, 0);
+	BlockEvents sourceEvents(waiter), midEvents(waiter), sinkEvents(waiter), otherEvents(waiter);
+	auto source = blocks.make("source", Ports{{{Direction::output, "out", {"1"}}, {Direction::output, "spare", {"1"}}}},
+	                          kFormat, sourceEvents);
+	source->drive(&sourceProbe);
+	auto mid = blocks.make("mid",
+	                       Ports{{{Direction::input, "in", {"1"}},
+	                              {Direction::output, "thru", {"1", "2"}},
+	                              {Direction::output, "side", {"1"}}}},
+	                       kFormat, midEvents);
+	mid->carryLatency(LatencyPlan{{{"in", "thru"}}, {{"in", Latency{10, 20}}}});
+	mid->drive(&midProbe);
+	auto sink = blocks.make("sink", Ports{{{Direction::input, "in", {"1", "2"}}}}, kFormat, sinkEvents);
+	sink->carryLatency(LatencyPlan{{}, {{"in", Latency{300, 300}}}});
+	sink->drive(&sinkProbe);
+	auto other = blocks.make("other", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, otherEvents);
+	other->carryLatency(LatencyPlan{{}, {{"in", Latency{900, 900}}}});
+	other->drive(&otherProbe);
+	// side is linked first, so whatever source hears after thru is linked already holds side's 900 if it leaked.
+	REQUIRE(wiring.link(waiter, {"source", "out.1"}, {"mid", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"mid", "side.1"}, {"other", "in.1"}));
+	REQUIRE(waiter.until([&] { return midProbe.downstream(2) == Latency{900, 900}; }));
+	REQUIRE(wiring.link(waiter, {"mid", "thru.1"}, {"sink", "in.1"}));
+
+	// mid's thru sees the sink's 300 (its unlinked thru.2 is no path, so the least stays 300), and side the other's
+	// 900; mid's input tells thru's 300 plus its own 10..20 upstream, and side's 900 does not reach it (a leak would
+	// tell 310..920). source's spare output is linked to nothing.
+	CHECK(waiter.until([&] { return midProbe.downstream(0) == Latency{300, 300}; }));
+	CHECK(waiter.until([&] { return midProbe.downstream(1) == Latency{300, 300}; }));
+	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
+	CHECK(midProbe.downstream(2) == Latency{900, 900});
+	CHECK(sourceProbe.downstream(1) == Latency{});
+
+	// A new plan replaces the last at once: mid unpaired carries nothing through, only its own.
+	mid->carryLatency(LatencyPlan{{}, {{"in", Latency{10, 20}}}});
+	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{10, 20}; }));
+	mid->carryLatency({});
+	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{}; }));
+
+	source->drive(nullptr);
+	mid->drive(nullptr);
+	sink->drive(nullptr);
+	other->drive(nullptr);
+}
+
+#if defined(__x86_64__) || defined(__i386__)
+namespace {
+
+/// Reads the MXCSR of the thread that runs process().
+class Mxcsr final : public AudioCode {
+public:
+	explicit Mxcsr(Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		value_.store(_mm_getcsr() | 0x80000000U, std::memory_order_relaxed); // the top bit: seen
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint32_t value() const { return value_.load(std::memory_order_relaxed); }
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint32_t> value_{0};
+};
+
+} // namespace
+
+TEST_CASE("process() runs with denormals flushed to zero (FTZ and DAZ), and the main thread is left alone",
+          "[port_blocks][denormals]") {
+	const std::uint32_t mainBefore = _mm_getcsr();
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Mxcsr probe(waiter);
+	BlockEvents events(waiter);
+	auto block = blocks.make("csr", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	block->drive(&probe);
+	REQUIRE(waiter.until([&] { return probe.value() != 0; }));
+	block->drive(nullptr);
+	CHECK((probe.value() & 0x8000U) != 0); // FTZ
+	CHECK((probe.value() & 0x0040U) != 0); // DAZ
+	CHECK(_mm_getcsr() == mainBefore);
+}
+#endif
