@@ -1,6 +1,6 @@
 # Node primitives: slice 3c of the node framework
 
-Status: proposal, revision 5, 2026-11-08. Revision 2 followed two independent reviews (section 20); revision 3 rebased
+Status: proposal, revision 5.1, 2026-11-08. Revision 2 followed two independent reviews (section 20); revision 3 rebased
 the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that page's review round 3. Revision 4
 rebases it onto the framework page's revision 6 ("the framework page" below), which took the owner's answers of
 2026-11-08 (R19 to R24): there is no run; the graph always runs and takes asynchronous, ordered operations; a type
@@ -8,8 +8,10 @@ writes three hooks, `configure(old, new)`, `start()` and `stop()`; a node's own 
 hook only by a typed post. Revision 4 also re-sorts this page's gates (section 18): every open question here was
 technical, so each is now decided by the designer, with its reason, for the owner to overturn. Revision 5 follows the
 framework page's revision 7, which took the owner's answers to its gates F1 and F2 (R25 to R28): a `stopped` node keeps
-every primitive, as revision 4 said, and a new resting state, `disabled` (a word in `ear.conf`), releases every one by
-the full teardown (6.1, 6.9, 6.10, 10). Revisions 4 and 5 are not reviewed yet. Nothing here is built.
+every primitive, as revision 4 said, and a new resting state, `disabled` (`disabled true;` inside the node's braces in
+`ear.conf`, a key the framework reserves: framework page R29, D-F8 to D-F12), releases every one by the full teardown
+(6.1, 6.9, 6.10, 10). Revision 5.1 follows the framework page's revision 7.1 (R29): `disabled` is an attribute in the
+node's block, not a word on its line, and never one of the type's settings. Revisions 4 and 5 are not reviewed yet. Nothing here is built.
 Layer: module design, beneath the framework page. It designs that page's slice 3c (primitives: the node handle, loops
 and their states, the I/O executor, stores, claims, recordings, the carried log patch, `sendspin` onto the type
 interface) and the part of slice 3d that is a primitive's (claims swapped make-before-break, an in-place change that
@@ -17,7 +19,7 @@ goes on on a loop, a sink paused while a library is swapped, `sendspin` and the 
 node lifecycle itself (states, operations, holds, the code swap, reshape, companions) is the framework page's sections
 6 and 9.6; the two contexts (`ConfigureOf`, `NodeOf`) and `Configured` are declared whole in its 6.10, members of this
 page's included, and this page is the home of those members' rules; section 3.3 draws the line. Slices 5 and 6 are
-`docs/design/control-plane.md` (revision 5, rewritten in the same change); section 14 is the boundary, and 6.13 is the
+`docs/design/control-plane.md` (revision 5.1, rewritten in the same change); section 14 is the boundary, and 6.13 is the
 one home of `TypeSpec`'s member list for every page.
 
 [V] = verified in the file named, as of `3adc02b` (the code is unchanged since `f677a50`); [U] = unverified, with the
@@ -46,6 +48,7 @@ are cited by their path in it; PipeWire 1.4.2's source as `pipewire-1.4.2/<path>
 | R20, R21 | "A “run” can’t fail — only a node can fail. We should drop the “run” concept entirely and work with “graph” and “node” concepts. The graph is always running, while nodes can be added to it, configured, wired, start/stop all synchronously within the graph runtime"; "I meant “asynchronously”" | 2026-11-08, chat (framework page R20, R21) | The run handle is the node handle (5); a primitive lives as long as the node's configuration, an internal word; what a closing thread says late is dropped by a generation no type sees |
 | R23 | Exactly three hooks: `configure(old, new)`, `start()`, `stop()` | 2026-11-08, chat (framework page R23) | No `setup`, `build` or `close`: a loop's state is destroyed on its own loop, after the goodbye `stop()` posted (6.4, 6.10) |
 | R25 to R28 | On the framework page's F1 and F2: "“Disabled” would be a better term"; "Keeps everything"; "Both words"; "Only disabled in file" | 2026-11-08, chat (framework page R25 to R28) | Two resting states: `stopped` keeps every primitive (claims, stores, recordings, loops, companions), `disabled` releases every one by the full teardown, with the block kept (6.1, 6.10) |
+| R29 | "the “disabled” key should be an attribute within the node scope — not a keyword on the node name" | 2026-11-08, chat (framework page R29) | `disabled true;` inside the node's braces, a key the framework reserves and no type may declare; it never reaches a type's settings, `configure` or any primitive (framework page 6.3, D-F8 to D-F12; 18.3, G24) |
 | R24 | "too technical for me to properly answer" (the framework page's A4); the owner is asked only what an operator or a type author sees | 2026-11-08, chat (framework page R24) | Hooks reach loops only by typed posts (D-A4); this page's gates are decided by the designer (18.3) |
 
 The owner's answers to revision 2's gate questions, 2026-11-08, stand: **G1** (a), a new `ear_runtime` package; **G14**
@@ -1354,7 +1357,8 @@ spec's handle (a misnamed or undeclared handle does not compile, as `harness.inp
   `runLoops()`.
 - **`stop()`** calls `stop()`, silences and disarms; the configuration stays. **`disable()`** runs I5 whole, as
   `remove()` does, and leaves the harness's block with no configuration (`state()` is `disabled`); **`enable()`**
-  configures afresh, as `add()` does. **`remove()`** (and a restart) runs I5 as
+  configures afresh, as `add()` does. `disabled` is never one of the settings the harness is given or a hook sees:
+  `change({"disabled": true})` is refused as an undeclared key, as `parse` refuses it (framework page D-F9). **`remove()`** (and a restart) runs I5 as
   the framework does: `stop()` if running, release, writers closed, loops closed to others, sinks finished, then the
   harness turns each loop until its posted work ran and its state is destroyed. **If a loop's state, once destroyed,
   leaves sources armed, the test fails** with `std::runtime_error` naming the loop and its sources. Then step 5. A real-time bound (10 s) applies only when the test chose to start real
@@ -1554,6 +1558,7 @@ G1, G3 and G4) were all answered on 2026-11-08 (framework page 14.1, Q26 to Q28;
 | G4 | A handoff whose consumer is part of the run object | Superseded by R14: companions (framework page 9.6) | 3.1 |
 | G6 | `notYetInHarness` | Settled by the framework page's 13.1: it goes in 3c | 10 |
 | G10 | The run handle in slice 3 or 5 | Settled by the framework page's 13.1 and 13.2: the node handle, 3c | 5 |
+| R29 | Where `ear.conf` writes `disabled` (framework page Q29) | The owner: inside the node's braces, an attribute, not a word on the node's line | Framework page 6.3, D-F8 to D-F12; here: no primitive sees it (18.3, G24) |
 | G20 | How an in-place change acts once its new resources are ready | Settled by R23 (no fourth hook): `cx.whenReady` (6.2) is the only way left that is neither a hook nor a callback per kind | 6.2 |
 
 ### 18.2 Owner gates
@@ -1575,6 +1580,7 @@ None on this page (see the paragraph above).
 | G5, G11 | The node handle paces every type's `say` (32, then one a second, `notes-dropped <n>`); boot findings stay `log` records from the type's name until slice 5 | sendspin deletes `NoteGate` now; slice 5 replaces both texts |
 | G8 | A carried sendspin-cpp patch adds a log hook with a per-thread context (section 9) | Small enough to rebase at each pin bump; worth offering upstream |
 | G9 | The strand pool: `min(4, cores)` threads, slow at 100 ms, a replacement thread at 1 s, at most 16 | One stuck strand delays the others for at most 1 s; measured on the Talos CPU once known (U5) |
+| G24 | No primitive sees `disabled` (framework page R29, D-F9): it is not in the checked values a `configure` gets, no store, claim or recording is keyed on it, and the harness's `disable()` and `enable()` are calls, never settings; a type's settings table cannot declare it (refused at compile time) | A disable and an enable are the framework's teardown and configuration from empty (6.10, 10), not a change the type judges, so a type never needs to read the key |
 | G12 | A configure-time guard refuses `std::thread`, `std::jthread`, `std::async`, `pthread_create` and `fork` under `src/nodes/` outside tests (7) | A type's threads are its loops' (framework page D-A4), checked on every build as standard output already is. A type author meets it as "declare a loop" |
 
 ## 19. Open items
@@ -1730,3 +1736,11 @@ Follows the framework page's revision 7 (the owner's R25 to R28): a `stopped` no
 from revision 4; the new `disabled` state releases every primitive by the full teardown and keeps the block (6.1, 6.10),
 holds no claim, so another node may take its port and an enable judges its claims afresh (6.9), and has `disable()` and
 `enable()` in the harness (10). No decision of 18.3 changes, and no owner gate is open.
+
+### Revision 5.1 (2026-11-08, not reviewed)
+
+Follows the framework page's revision 7.1 (the owner's R29: "the “disabled” key should be an attribute within the node
+scope — not a keyword on the node name"): `disabled` is written `disabled true;` inside the node's braces, a key the
+framework reserves (framework page D-F8 to D-F12). Here: the status, R29 in section 1 and 18.1, the harness's
+`disable()` and `enable()` (10: `disabled` is never a setting it is given), and G24 in 18.3. No primitive changes, and
+no owner gate is open.

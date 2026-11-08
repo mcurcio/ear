@@ -1,6 +1,6 @@
 # The control plane and parameters: one schema, one write path, one wire
 
-Status: proposal, revision 5, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
+Status: proposal, revision 5.1, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
 (section 16). Revision 3 rebased the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that
 page's review round 3. Revision 4 rebases it onto node-framework.md revision 6, which took the owner's answers of
 2026-11-08 (its R19 to R24): **there is no run**. The graph always runs; operations on a node (add, configure, start,
@@ -13,7 +13,8 @@ configuration's (4.3), and the editor and records in each state (8.6, 9.1). It a
 owner's new practice (section 14): the owner is asked only what an operator sees; every technical question is decided by
 the designer, with its reason. Revision 5 takes the owner's answers of 2026-11-08 to all eight gates (section 1, R25 to
 R31; 14.1): two resting states, `stopped` (Stop and Start: keeps everything, never written, forgotten at a restart) and
-`disabled` (Disable and Enable: releases everything, the word `disabled` in `ear.conf`), with `node.disable` and
+`disabled` (Disable and Enable: releases everything, `disabled true;` inside the node's braces in `ear.conf`; revision
+5.1, R32), with `node.disable` and
 `node.enable` beside `node.start` and `node.stop`, which no longer edit `ear.conf` (4.2, 4.8, 7.6, 8.6); no "held"
 marks, but a live meter on every port, inputs and outputs, so audio can be followed through the graph (8.6); a save
 of `ear.conf` stops a fader only when it changes the dragged value or its line (7.3); a fader whose browser
@@ -71,7 +72,7 @@ texts are node-primitives.md's (6.4, 6.9, 6.10), put on the wire by 4.6 here; th
 |---|---|---|
 | 6.2, health on the wire | `node.state` carries `state` (a short set) and `phase` (the exact state, with its cause) | every member of `node.state` per state, with `wanted`, `cause`, `keys` and slice 8's recovery members, and no run (no `holds`: the meters show a hold, W3); one notification per phase change; `reason` kept with today's meaning, so no protocol bump (4.8; W1, W2) |
 | 6.2, standard output | a `node` record per change of the short state (`starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering`) and `removed`; none for the phases inside `starting` | the records' fields (`phase`, `cause`, `keys`, `afterMs`, no run); one more record, `still <phase>`, when a node stays in `added`, `configuring`, `configured` or `starting` past 2 s (9.1; W4) |
-| 6.3, start and stop; disable and enable | `stop` and `start` set the node's stop, held in memory and never written; `disable` and `enable` write the word `disabled` in `ear.conf` (R25 to R28) | `node.start` and `node.stop`, ordered by the keeper but writing nothing, with their own replies; `node.disable` and `node.enable`, edits at the source like `node.update`; `start` on a failed node a retry; `start`, `stop` and `restart` refused `node-disabled` on a disabled node (4.2, 4.5, 7.6) |
+| 6.3, start and stop; disable and enable | `stop` and `start` set the node's stop, held in memory and never written; `disable` and `enable` write and remove `disabled true;` inside the node's braces in `ear.conf` (R25 to R28, R32) | `node.start` and `node.stop`, ordered by the keeper but writing nothing, with their own replies; `node.disable` and `node.enable`, edits at the source like `node.update`; `start` on a failed node a retry; `start`, `stop` and `restart` refused `node-disabled` on a disabled node (4.2, 4.5, 7.6) |
 | 6.6, the plan's outcome | `node.updated` and the edit's reply carry `applied` | `applied` is the plan's outcome, never what the node later did (that is `node.state`'s `cause`); `dryRun` on `node.set` answers the outcome without committing; the schema says per row how a change applies (`change`, `shapes`) (4.2, 4.9; X1, X3) |
 | 6.6, 6.7, reshape | a reshape is in place when every changed key is `.inPlace()` or `.live`; a plan keeping a route to a vanishing port is refused | `inPlace` on the reshape's `applied`; through the control port refused `ports-in-use`, naming every such route, and `dropRoutes: true` removes their lines in the same commit (4.9; X2) |
 | 6.3, 6.6, 8.4, a change, `stop` or `restart` during an in-place change | a newer change, `stop` or removal supersedes one before its commit point and waits after it; `restart` ends it at once (its D-B6, which absorbed this page's X4) | what a client sees of each: `node.state`'s `keys` replaced on a supersession, `next` for keys waiting after the commit point, `restart`'s reply (4.8, 7.6, 7.7) |
@@ -119,6 +120,7 @@ texts are node-primitives.md's (6.4, 6.9, 6.10), put on the wire by 4.6 here; th
 | R29 | On gate W3: "I would like each port to show meter levels so I can see audio traversing the graph" | 2026-11-08, chat (W3) | No "held" marks: every port of every node, inputs and outputs, shows a live meter, so a hold, a stop or a failure reads as silence on that port and on every port it feeds, and the box says why in words (8.6) |
 | R30 | On gate G3: "Only a related save" | 2026-11-08, chat (G3; not the recommendation) | A save of `ear.conf`, by hand or from the text pane, stops a fader only when it changes the dragged value, the line that value is defined on, or which settings share it; any other save leaves the drag going, and its release writes onto the new text (7.3) |
 | R31 | On gate G4: "Keep last value" | 2026-11-08, chat (G4; not the recommendation) | A fader whose browser disconnects mid-drag is ended as released: ear writes the last value it heard to `ear.conf`. A tab that goes silent for 30 s is treated the same (designer's decision G15, 14.2) (7.3) |
+| R32 | "the “disabled” key should be an attribute within the node scope — not a keyword on the node name" | 2026-11-08, chat (node-framework.md R29) | `node.disable` writes `disabled true;` inside the node's braces and `node.enable` removes that line; `disabled` is a key the framework reserves, never one of a node's `settings` on the wire (4.2, 4.3, 4.6; node-framework.md D-F8 to D-F12; revision 5.1) |
 
 The same walkthrough's earlier answers to node-primitives.md's gates hold (node-framework.md 14.1): its G1 (a new
 `ear_runtime` package for loops, wakes, the I/O executor, the probe and stores), G14 (loops declared in the spec as
@@ -293,19 +295,19 @@ laptop's Wi-Fi drops.
 **Disables a node, and enables it again.** The porch is closed for the season, and another program wants the USB card.
 The operator clicks Disable on `porch`.
 
-1. The editor sends `node.disable {"name":"porch"}`. The keeper writes the word into the node's line, `node card porch
-   disabled { card USB2; playback 2; }`, comments and layout kept, and commits; in one main-loop turn:
+1. The editor sends `node.disable {"name":"porch"}`. The keeper writes the attribute first in the node's block, `node
+   card porch { disabled true; card USB2; playback 2; }`, comments and layout kept, and commits; in one main-loop turn:
    `graphFile.changed` (cause `edit`), `node.updated {"name":"porch",...,"disabled":true,"applied":"disable"}`,
    `node.state` `stopping` (cause `disabling`, `wanted: "disabled"`), then the reply `{"applied":"disable"}`.
 2. The outputs fade; the whole configuration is torn down (node-framework.md T20): the card's companions are destroyed,
    so the device is closed and free for the other program; `node.companionsChanged` empties the strip. Then
    `node.state` `disabled`. The box turns the `disabled` colour with "disabled in ear.conf" and an Enable button; its
    wires stay drawn and carry silence, and the meters on its input ports still show what reaches it. Standard output:
-   `graph-file edit ...`, `node porch stopping: disabling`, `node porch disabled`. The text pane shows the new word.
-3. In spring the operator clicks Enable: `node.enable` removes the word; `node.state` `starting` (phase `configuring`,
+   `graph-file edit ...`, `node porch stopping: disabling`, `node porch disabled`. The text pane shows the new line.
+3. In spring the operator clicks Enable: `node.enable` removes the `disabled true;` line; `node.state` `starting` (phase `configuring`,
    cause `enabling`), then `running` once the card opens. If the other program still holds the card, the node fails
    `engine-refused: the card failed: ...` as any start does, and the box offers Start (a retry). A colleague could do
-   either by editing the word in `vi`; the editor shows it the same way.
+   either by adding or removing the line in `vi`; the editor shows it the same way.
 
 **Restarts a node.** The Restart action (7.6) is offered on every node but one whose block is lost: a full stop, a
 configuration from empty and a start back to the wanted state, without editing `ear.conf`; the box shows `stopping`
@@ -391,7 +393,7 @@ node scripts/rpc-call.mjs $U graph.get | jq -r '.nodes[] | select(.name=="kitche
 node scripts/rpc-call.mjs $U node.stop '{"name":"porch"}'
 {"applied":"stop"}
 node scripts/rpc-call.mjs $U --until 'porch running' node.start '{"name":"porch"}'
-# Disable a node (written to ear.conf as `disabled`; everything released), and enable it again.
+# Disable a node (written to ear.conf as `disabled true;` in its braces; everything released), and enable it again.
 node scripts/rpc-call.mjs $U node.disable '{"name":"porch"}'
 {"applied":"disable"}
 node scripts/rpc-call.mjs $U --until 'porch running' node.enable '{"name":"porch"}'
@@ -687,14 +689,21 @@ whose message names the JSON pointer, as today, and whose `data.pointer` now car
 | `node.invoke` | `actions` | `{"name", "action", "args"?: {...}}` | `{}` | unknown-node, unknown-action, invalid-args, not-running, not-restartable, restarted, stopping, action-failed, action-timeout | keeper, then the node's loop |
 | `node.start` | `lifecycle` | `{"name"}` | `{"applied"}`: `start` (the node's stop cleared), `retry` (a failed or recovering node configured afresh), or `unchanged` (it was neither stopped nor failed); `ear.conf` is never touched | unknown-node, node-disabled, not-restartable (a lost block), stopping | keeper (ordering only), then the main loop |
 | `node.stop` | `lifecycle` | `{"name"}` | `{"applied"}`: `stop` (the node's stop set), or `unchanged` (already stopped); `ear.conf` is never touched | unknown-node, node-disabled, stopping | keeper (ordering only), then the main loop |
-| `node.disable` | `lifecycle` | `{"name"}` | `{"applied"}`: `disable` (the word `disabled` written on its line), or `unchanged` (already there; nothing written) | unknown-node, shared-definition, file-invalid, stopping | keeper |
-| `node.enable` | `lifecycle` | `{"name"}` | `{"applied"}`: `enable` (the word removed), or `unchanged` (no word to remove; a stopped node stays stopped) | unknown-node, shared-definition, file-invalid, stopping | keeper |
+| `node.disable` | `lifecycle` | `{"name"}` | `{"applied"}`: `disable` (`disabled true;` written first in its block, or its `disabled false;` set `true`), or `unchanged` (already disabled; nothing written) | unknown-node, shared-definition, file-invalid, stopping | keeper |
+| `node.enable` | `lifecycle` | `{"name"}` | `{"applied"}`: `enable` (its `disabled` line removed), or `unchanged` (no `disabled true;` to remove; a stopped node stays stopped) | unknown-node, shared-definition, file-invalid, stopping | keeper |
 
 `node.update`'s result gains `applied` too (additive, with the `node.set` feature), and takes `dropRoutes` from feature
-`reshape` (4.9). `node.disable` and `node.enable` are edits at the source (node-framework.md 6.3, R25, R28): they add or
-remove the word `disabled` after the node's name in its line (`node card porch disabled { ... }`), so a node whose line
-a snippet makes for several nodes is refused `shared-definition` as any edit of that line is; `node.add` takes an
-optional `"disabled": true` from feature `lifecycle`, and `node.update` keeps the word as it is. `node.start` and
+`reshape` (4.9). `node.disable` and `node.enable` are edits at the source (node-framework.md 6.3, R25, R28, R32): they
+add or remove the attribute `disabled true;` inside the node's braces (`node card porch { disabled true; card USB2;
+playback 2; }`; node-framework.md D-F8 to D-F11): `node.disable` writes it first in the block, making the block for a
+node written without one, or sets an existing `disabled false;` to `true` where it is defined; `node.enable` removes the
+node's `disabled` line, and a block it leaves empty. A `disabled` line inside a snippet another node uses is refused
+`shared-definition` with that line's place, as any edit of that line is. `node.add` takes an optional `"disabled":
+true` from feature `lifecycle` beside `settings`, and the keeper appends the node with `disabled true;` first in its
+block; `node.update` keeps the node's `disabled` line as it is. `disabled` is a key the framework reserves, not a
+setting: a `disabled` key inside `settings` on `node.add`, `node.update` or `node.set` is refused `invalid-settings`
+("disabled is not a setting: use node.disable and node.enable, or \"disabled\": true on node.add"; node-framework.md
+D-F12), and a change of it is always a disable or an enable, never a reconfiguration. `node.start` and
 `node.stop` are not edits (R28): the keeper only orders them with the requests around it, as it does `node.invoke`, and
 the main loop applies them to the node's stop, which only the framework holds; they make no graph-file version, send no
 `graphFile.changed` or `node.updated`, are answered in the main-loop turn that applies them, and work while `ear.conf`
@@ -772,6 +781,10 @@ When `ifNoneMatch` equals the hash: `{"protocol":1,"hash":"fnv1a64:9c2e41f07a3b5
   can say how long "reconfiguring" may last.
 - `inputs` and `outputs` are the public banks' names, in declaration order. Members come from settings, so the schema
   does not list them; inside banks are never on the wire.
+- No type's `settings` lists `disabled`: it is a key the framework reserves on every node (node-framework.md D-F9,
+  R32), never a row, so the schema, `settingKinds()` and the hash are as they would be without it. A client learns it
+  from the `lifecycle` feature (`node.disable`, `node.enable`, `node.add`'s `disabled`), and the editor's settings
+  form never offers it as a field.
 - A status field: `name`, `kind` (`flag`, `wholeNumber`, `decimal`, `choice`, `text`), `initial` (`null` when it starts
   unknown), `display` (`panel`, `box`, `callout`), `flapsAbove` (`{"transitions","windowMs"}`), and as they apply
   `min`, `max`, `unit`, `values` (a choice's), `maxBytes`, `help`. Its writer is not on the wire.
@@ -900,9 +913,9 @@ members of 4.8 and five more:
 
 - `features`: 4.1.
 - `state`, `phase` and the members each phase carries (`cause`, `keys`, `reason`, and slice 8's): 4.8.
-- `wanted`: `running`, `stopped` (the node's stop, held in memory) or `disabled` (`ear.conf`'s word) (4.8).
-- `disabled`: `true` when the node's line in `ear.conf` says `disabled`, absent otherwise; part of the node's
-  description, with `settings`, so `node.added` and `node.updated` carry it too (W9).
+- `wanted`: `running`, `stopped` (the node's stop, held in memory) or `disabled` (`disabled true;` in its block in `ear.conf`) (4.8).
+- `disabled`: `true` when the node's block in `ear.conf` says `disabled true;`, absent otherwise (`disabled false;` and
+  no line alike); part of the node's description beside `settings`, never inside it, so `node.added` and `node.updated` carry it too (W9).
 - `blockLost`: the node's block is gone (I1); it cannot restart until it is removed and added, or ear restarts.
 - `status`: every declared field, each at its initial value until the node writes it; reset to the initial values when
   its configuration closes (I6), and the reset is sent (below); kept through an in-place change, a stop and a start. Always present (`{}` for a type with
@@ -1132,7 +1145,7 @@ members its phase gives below; a member not given is absent now (4.4 replaces ev
 - `phase`: the exact state, an open set: `added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`,
   `stopping`, `stopped`, `disabled`, `failed`, `recovering`. A client explains by it and never colours by it.
 - `since`: when this phase began (UTC to the microsecond, as `t`).
-- `wanted`: what the graph wants of the node (node-framework.md 6.3): `disabled` when its line in `ear.conf` says so;
+- `wanted`: what the graph wants of the node (node-framework.md 6.3): `disabled` when its block in `ear.conf` says `disabled true;`;
   else `stopped` while the node's stop is held (set by `node.stop`, in memory only, forgotten when ear restarts);
   else `running`. A node `failed` with `wanted: "stopped"` stays failed until asked (a `start` retries it and clears
   the stop); `wanted` changes on `node.state` alone when `node.stop` or `node.start` is applied, with the phase it
@@ -2094,8 +2107,9 @@ answers, and the keeper drops it, so the working copy, the disk and every client
   `stop`, `start`, `retry` or `unchanged`; `node-disabled` on a disabled node. Nothing is written, no version is made,
   and `file-invalid` never applies, so Stop and Start work while `ear.conf` has errors. Each writes an `action` record
   on standard output (`node porch stop invoked`), so a stop at 3 a.m. is in `kubectl logs` (G8).
-- `node.disable` and `node.enable` (4.2) are edits at the source (R25, R28): the keeper adds or removes the word
-  `disabled` on the node's line in a candidate, as it edits a setting, the plan's outcome is `disable` or `enable`
+- `node.disable` and `node.enable` (4.2) are edits at the source (R25, R28, R32): the keeper adds or removes the
+  `disabled true;` line inside the node's braces in a candidate (node-framework.md D-F10, D-F11), as it edits a
+  setting, the plan's outcome is `disable` or `enable`
   (node-framework.md 6.6), and the reply is the edit's, at the commit; `ear.conf` is written behind as for any edit.
 - A trigger: the counter is incremented and the reply posted at once; `not-running` (with the `phase`) when the node's
   code is not driving (any phase but `running` and `reconfiguring`).
@@ -2331,8 +2345,8 @@ box (R16).
 | `running` | "running" | the type's box status fields (8.4), or nothing | live; meters move | editable, with 8.2's hints and Apply flow | Stop, Disable, `restart` and type actions enabled |
 | `reconfiguring` | "reconfiguring", its own style (not a warning colour) | "reconfiguring port" (from `keys`); "; latencyMs next" (from `next`) | wires drawn as always; a held bank's meters fall to silence and its wires thin with their level, and the meters of the ports they feed fall with them; unheld banks live. No "held" mark (the owner's W3, R29) | editable; an edit to a key in `keys` or `next` says "applies after this change" | Stop ("ends the change and stops"), Disable ("ends the change and disables"), `restart` ("ends the change and restarts", D-B6); type actions enabled (the configuration goes on) |
 | `stopping` | "stopping", neutral | "stopping", "disabling", "restarting: settings changed (card)", "restarting: ports changed", "restarting: restart invoked", "restarting: could not apply port in place: <detail>", "removing" (from `cause`) | fading to silence | editable (read-only while removing) | all disabled |
-| `stopped` | "stopped", its own quiet style (not a fault) | the type's box status fields, or "stopped until Start or a restart of ear" | silent, wires kept and drawn; its output meters at zero, its input meters still live | editable: an in-place change applies, any other configures afresh, still stopped | Start; Disable (its description: "release the device and keep it off across restarts; writes ear.conf"); `restart`; type actions enabled (its loops run) |
-| `disabled` | "disabled", its own quiet style, apart from `stopped`'s (not a fault) | "disabled in ear.conf" | silent, wires kept and drawn; its output meters at zero, its input meters still live; no companions | editable: an edit is written and kept for when it is enabled (`applied: "stored"`); a change of ports redraws its handles | Enable; Start, Stop and `restart` disabled ("disabled in ear.conf: enable it first"); type actions disabled ("not configured") |
+| `stopped` | "stopped", its own quiet style (not a fault) | the type's box status fields, or "stopped until Start or a restart of ear" | silent, wires kept and drawn; its output meters at zero, its input meters still live | editable: an in-place change applies, any other configures afresh, still stopped | Start; Disable (its description: "release the device and keep it off across restarts; adds disabled true; to its block in ear.conf"); `restart`; type actions enabled (its loops run) |
+| `disabled` | "disabled", its own quiet style, apart from `stopped`'s (not a fault) | "disabled in ear.conf" | silent, wires kept and drawn; its output meters at zero, its input meters still live; no companions | editable: an edit is written and kept for when it is enabled (`applied: "stored"`); a change of ports redraws its handles | Enable (its description: "removes disabled true; from its block in ear.conf"); Start, Stop and `restart` disabled ("disabled in ear.conf: enable it first"); type actions disabled ("not configured") |
 | `failed` | "failed", the failure style | `reason.detail`, in full in the tooltip and the panel | silent, wires kept | editable: a change configures it afresh (node-framework.md 6.3) | Start ("try again", a retry) and `restart` enabled unless `blockLost`; Stop; Disable; type actions disabled |
 | `recovering` (slice 8) | "recovering" | "retry in 4 s (attempt 3): card lost", counting down from `retryInMs` | silent | editable: a change tries at once | Start ("try now"), `restart`, Stop, Disable; type actions disabled |
 
@@ -2561,8 +2575,8 @@ batch2.md erratum naming this page as the wire's home from protocol 1 (10.3), `u
 `NodeHealth` and `node.state` with `phase`, `since`, `wanted`, `cause`, `keys`, `next` and `waitingFor` (4.8; `keys`
 and `next` stay absent until 3d makes an in-place change); the same members in snapshots and `node.added`, and
 `disabled` on a node; `node.start` and `node.stop` through the keeper writing nothing, with their `action` records, and
-`node.disable` and `node.enable` as edits at the source, with the graph file's `disabled` word (node-framework.md 13.1,
-3a); `node-disabled`; `node.gone`; the `node` record's `phase` and `cause`, the `stopping`, `stopped`, `disabled`,
+`node.disable` and `node.enable` as edits at the source, with the graph file's reserved key `disabled` inside the node's
+braces and `invalid-settings` for a `disabled` key inside `settings` (node-framework.md 13.1, 3a, D-F8 to D-F12); `node-disabled`; `node.gone`; the `node` record's `phase` and `cause`, the `stopping`, `stopped`, `disabled`,
 `removed` and `still` records (9.1);
 `ear.hook-slow` on the wire; `health.ts` and 8.6's table for the phases 3a has; `rpc-call.mjs --until`. Tests:
 `lifecycle.json` (the phases 3a has) in `ear_control_tests` and vitest; `ear_core_tests` with fake adapters (a
@@ -2574,8 +2588,9 @@ a restart of the harness's ear and kept through a hand edit that keeps the node;
 and enabled actions; a starting phase hidden for 250 ms; an unknown phase drawn by its word); a system test: an `rtp`
 node on a UDP port another socket holds writes `node fpp still configuring after 2s: waiting for fpp.rtp`, and `graph.get`
 shows `waitingFor`; another: `node.stop` writes nothing to `ear.conf` and a restart of ear runs the node again, while
-`node.disable` writes `node white noise disabled;`, survives the restart (`node noise disabled` at boot) and
-`node.enable` removes it; `scripts/image-smoke.sh` checks `protocol` and `features`.
+`node.disable` turns `node white noise;` into `node white noise { disabled true; }`, survives the restart (`node noise
+disabled` at boot) and `node.enable` gives back `node white noise;`; a hand-written `node white noise disabled;` boots
+nothing and is shown as `ear/bad-directive` with the hint to write `disabled true;` inside the braces; `scripts/image-smoke.sh` checks `protocol` and `features`.
 
 **L2 Companions on the wire** (with slice 3b). `companions` in snapshots and `node.added`; `node.companionsChanged`,
 whole lists, on each change and counters at most once a second (4.10); `ear.sink-dropped` and `ear.source-shortfall`;
@@ -2816,7 +2831,9 @@ and why; every technical question is decided by the designer, listed in 14.2 wit
 any. Across the three pages the owner was asked eight questions (node-framework.md revision 6, this page's revision 4): node-framework.md's F1, F2 and C2, and this
 page's W3, X2, G1, G3 and G4. The owner answered all eight on 2026-11-08 (node-framework.md 14.1, Q26 to Q28, for the
 first three; 14.1 here for the other five), and revision 5 is written to the answers. No owner gate is open, and the
-answers raise no new owner question.
+answers raise no new owner question. The owner's later word on where `disabled` is written (R32, node-framework.md
+R29 and Q29) is recorded there and here; it raised no question, and its spelling is the designer's (W11; node-framework.md
+D-F8 to D-F12).
 
 ### 14.1 The owner's answers of 2026-11-08
 
@@ -2827,6 +2844,7 @@ answers raise no new owner question.
 | G1 | A fader for a value several settings share (`amp2`'s `trimDb.1` and `trimDb.2` both read `$trim`) | (b): the fader moves every user together when all are faders of one kind and unit, within the range they all allow; the release writes the shared value once; other sharing is refused | (b), as recommended | 4.2 (`gesture.begin`), 7.2 |
 | G3 | What happens to a fader being dragged when someone saves `ear.conf` (by hand or from the text pane)? | (a): every save stops every fader being dragged | R30: "Only a related save", option (b): only a save that changes the dragged value, or the line it is defined on, stops it; any other save leaves the drag going and its release writes onto the new text | 7.3 (the rule, how ear decides it, its tests), 2.1, 4.3, 8.3; G14 |
 | G4 | A fader whose browser disconnects or goes quiet (Wi-Fi drops while its owner holds -3.5 dB; the file says -6) | (a): back to the file's value, also after 30 s without a word | R31: "Keep last value", option (b): ear keeps and writes the last value heard, as if released | 7.2, 7.3, 6.5, 6.6, 2.1, 4.3, 8.3, 9; G15, G16 |
+| R32 | Where `ear.conf` writes `disabled` (revision 5 wrote it after the node's name, `node card porch disabled { ... }`); not a gate, the owner's own correction | — | R32: "the “disabled” key should be an attribute within the node scope — not a keyword on the node name" | 4.2, 4.3, 7.6, W9, W11; node-framework.md 6.3, D-F8 to D-F12 (revision 5.1) |
 
 The gates' full texts (background, scenario, options, recommendation and why) are in revision 4 of this page, in git.
 
@@ -2841,8 +2859,9 @@ The gates' full texts (background, scenario, options, recommendation and why) ar
 | W6 | `node.start` and `node.stop` are neither edits nor type actions: ordered by the keeper, applied by the framework, writing nothing; replied in the turn that applies them (`stop`, `start`, `retry`, `unchanged`); no `graphFile.changed` or `node.updated`; an `action` record on stdout. `node.disable` and `node.enable` are edits at the source. `start` on a failed node is a retry (node-framework.md D-F6) | The owner: only `disabled` is in `ear.conf` (R28); the owner said a start leaves `failed`; a stop must show in `kubectl logs` though it edits nothing (G8) |
 | W7 | No `holds` member on `node.state` or the `node` record, and no "held" marks in the editor; the framework's holds stay (node-framework.md D-B3), seen through the meters | The member existed only for W3's marks, which the owner did not take (R29); every port's meter shows a hold, and where its silence travels, without one |
 | W8 | Every port's meter, inputs and outputs, in every phase: kept as built (`levels.subscribe` per public port, a `Meter` per handle); new only: no held styling, levels registered for a reshape's new ports at its barrier, and a system test of a hold seen on the meters (8.6) | R29 asks for what the editor already draws for every port; the lifecycle must not take it away (a disabled or stopped node keeps its block, so its meters keep reading) |
-| W9 | `disabled: true` on the node's description (snapshot, `node.added`, `node.updated`) beside `settings`, as well as `wanted: "disabled"` on health; `node.add` takes `"disabled": true` | The description is what `ear.conf` says, health what the framework converges on; a client editing the node's line needs the first, one colouring it the second |
-| W10 | `node-disabled` refuses `node.start`, `node.stop` and `restart` on a disabled node; the editor disables those buttons with "disabled in ear.conf: enable it first" | node-framework.md D-F2: a Start that does not write the word would be undone by the next restart |
+| W9 | `disabled: true` on the node's description (snapshot, `node.added`, `node.updated`) beside `settings`, never inside it, as well as `wanted: "disabled"` on health; `node.add` takes `"disabled": true` beside `settings`; a `disabled` key inside `settings` is refused `invalid-settings` (revision 5.1, R32) | The description is what `ear.conf` says, health what the framework converges on; a client editing the node's line needs the first, one colouring it the second |
+| W10 | `node-disabled` refuses `node.start`, `node.stop` and `restart` on a disabled node; the editor disables those buttons with "disabled in ear.conf: enable it first" | node-framework.md D-F2: a Start that does not remove `disabled true;` would be undone by the next restart |
+| W11 | `disabled` is not a setting on the wire (revision 5.1, R32): no type schema lists it, `node.add` takes it beside `settings`, `node.disable` and `node.enable` change it, and `node.update`, `node.set` and `dryRun` never see it; the editor's settings form has no `disabled` field, and the text pane shows the `disabled true;` line as written | node-framework.md D-F9: the key is the framework's, reserved on every node; keeping it out of `settings` keeps a change of it a disable or an enable, never a reconfiguration, and keeps the schema's hash per type |
 | X1 | The schema's per-row `change`, `.shapesPorts()` held to `ports()` by the all-type tests, and `dryRun` on `node.set` | The hint beside each field needs no round trip; the dry run gives the exact answer, routes included |
 | X3 | An edit's reply comes at the commit, with `applied`; a client waits for `node.state` | R21: operations are asynchronous; holding replies would stall every client behind one slow change |
 | X4 | Moved to node-framework.md D-B6 (a newer change, `stop` or `restart` supersedes an in-place change before its commit point) | One rule for the lifecycle |
@@ -2892,9 +2911,11 @@ The gates' full texts (background, scenario, options, recommendation and why) ar
   ending an in-place change in flight (6.3, 8.4; its D-B6, absorbing X4); `.shapesPorts()` in 7.1's marks (X1); no
   `writer::thread` (8.1, 8.2; 5.2); `reason` kept, `lastFailure` beside it (8.1, 8.7; W2); `ports-in-use` and
   `dropRoutes` (6.7; X2, answered by the owner as recommended).
-- [U] That knobly reads `node <type> <name> disabled;` and `node <type> <name> disabled { ... }` and the keeper writes
-  and removes the word at its source, comments and layout kept (node-framework.md R25, R28; its 15 names the fallback);
-  step L1's `ear_config_tests`. The framework diagnostics' codes stay this page's (4.6).
+- [U] That the keeper writes `disabled true;` first in a node's block (making the block when there is none), sets a
+  `disabled false;` at its source and removes the line and an emptied block, comments and layout kept (node-framework.md
+  R29, D-F10; its 15 names the fallback, appending the line last); step L1's `ear_config_tests`. Settled in revision
+  5.1: knobly parses `disabled true;` in a block as a directive with one value and reads it with its `boolean` reader
+  (node-framework.md 15, D-F8 [V]). The framework diagnostics' codes stay this page's (4.6).
 - [U] That knobly's `definition()` gives a source range from which the keeper can take the defining statement's whole
   lines for the related-save rule (7.3, G14), for a setting, a `@set`, a chain's end and a line inside a `@snippet`;
   step 6.4's `ear_config_tests`. If a snippet's use hides the range, the rule treats every save that changes the
@@ -3087,3 +3108,14 @@ gesture state machine and notices (8.1, 8.3), the records (9, 9.1), fixtures (4.
 and rejected alternatives follow. No owner gate is open. The review owed for revision 4 now covers revision 5; it should
 also judge the related-save rule's cases (7.3) and the end on a closed session's behalf against the session's queued
 requests (6.6).
+
+### Revision 5.1 (2026-11-08): `disabled` inside the node's braces (not reviewed)
+
+Follows node-framework.md revision 7.1 and the owner's words (R32 here, its R29): "the “disabled” key should be an
+attribute within the node scope — not a keyword on the node name". `node.disable` writes `disabled true;` first in the
+node's block and `node.enable` removes the line (node-framework.md D-F8 to D-F12, the spelling and rules the designer
+chose); `disabled` is never a setting on the wire (W11): no schema lists it, `node.add` takes it beside `settings`, and
+a `disabled` key inside `settings` is refused `invalid-settings`. Changed: the status, R32, 2.2's journey, 3's table,
+the script examples, 4.2 (the table and its paragraph), the schema's list (4.2), 4.3's `wanted` and `disabled`, 4.8's
+`wanted`, 7.6, step L1's cut and tests, W9, W10, W11 and section 15's knobly item. No wire member, notification, error
+code or record changes; no owner gate is open.
