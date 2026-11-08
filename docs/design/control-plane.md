@@ -1,6 +1,6 @@
 # The control plane and parameters: one schema, one write path, one wire
 
-Status: proposal, revision 6, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
+Status: proposal, revision 6.1, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
 (section 16). Revision 3 rebased the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that
 page's review round 3. Revision 4 rebases it onto node-framework.md revision 6, which took the owner's answers of
 2026-11-08 (its R19 to R24): **there is no run**. The graph always runs; operations on a node (add, configure, start,
@@ -2594,7 +2594,7 @@ wire's additions from protocol 1 on (as `knobly-config.md`'s "Wire additions" is
 | `settings_table.hpp` | decimal, indexed and live rows; text hints, `defaultFrom`; `initial<row>()`, `get` refused on live rows | 5.1, 6.1, 6.2, 6.3 |
 | `type_spec.hpp` | `TypeSpec`'s later members; `Io`'s `param`, `set`, `raise`, `log`, `triggered`; `Smoothed`; status, event, action and log tables; `Report`, `NodeOf::report` | 5.2, 5.3, 5.4, 6.3 |
 | `node_host.hpp` | status, event and gesture listeners; `setLive`, `invoke`; `RealtimeBell`; `blockLost` in the view | 5.2, 5.3, 5.4, 6.3 |
-| `desired_graph.hpp` | nothing of this page's: the plan's outcome and `nodeChanged` are slice 3d's (node-framework.md 6.6); a dry run uses `plan` without `commit`, as built | — |
+| `desired_graph.hpp` | nothing of this page's: the plan's outcome and `nodeChanged` are node-framework.md 6.6's, landing in slice 3a with 3a's outcomes and completed in 3d (node-lifecycle.md D-L4); a dry run uses `plan` without `commit`, as built | — |
 | `commands.hpp`, `events.hpp`, `gateway.hpp`, `session.hpp`, `graph_file_state.hpp` | the new commands and events; `node.state`'s members, `node.companionsChanged`, `node.updated`'s `applied` and `ports`; `dryRun` and `dropRoutes`; the direct gesture crossing; read-ahead; session ids; `ControlRefusal` | L1 to 6.4 |
 | `graph_view.hpp` | `NodeView`'s health members, `wanted`, `companions`, `blockLost`, `status`, `gestures`, `diagnostics`; `GraphView`'s `protocol`, `features`, `typeSchemaHash` | L1, L2, 5.1, 5.2, 6.4 |
 | `web/src/protocol.ts` | section 4's types | each step |
@@ -3204,3 +3204,10 @@ and what changed here:
 Revision 6 changes: the status, the scope's table, section 1 (one register, R33, R34, the R15 and R25-R28 rows), 2.2's
 script, 3.1's Action row, 4.2, 4.3, 4.5, 4.6, 4.7, 4.8, 5.5, 5.7, 5.8, 7.3, 7.6, 7.7, 8.3, 8.4, 8.6, 8.7, 9, 9.1, 11
 (L1 and 5.4), 14 (W1, W5, W12 to W16) and this record. No owner gate is open.
+
+### Revision 6.1 (2026-11-08, not reviewed)
+
+One row follows node-framework.md revision 8.1 (its finding 134, found while writing `docs/design/node-lifecycle.md`):
+10.3's `desired_graph.hpp` row says the plan's outcome and `nodeChanged` land in slice 3a with 3a's outcomes
+(`restart`, `disable`, `enable`, `stored`), completed in 3d, instead of "slice 3d's". Nothing else changes; step L1's
+wire is unchanged, and node-lifecycle.md section 9 says where 3a builds it.
