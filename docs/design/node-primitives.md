@@ -1,13 +1,15 @@
 # Node primitives: slice 3c of the node framework
 
-Status: proposal, revision 4, 2026-11-08. Revision 2 followed two independent reviews (section 20); revision 3 rebased
+Status: proposal, revision 5, 2026-11-08. Revision 2 followed two independent reviews (section 20); revision 3 rebased
 the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that page's review round 3. Revision 4
 rebases it onto the framework page's revision 6 ("the framework page" below), which took the owner's answers of
 2026-11-08 (R19 to R24): there is no run; the graph always runs and takes asynchronous, ordered operations; a type
 writes three hooks, `configure(old, new)`, `start()` and `stop()`; a node's own threads are its loops', reached from a
 hook only by a typed post. Revision 4 also re-sorts this page's gates (section 18): every open question here was
-technical, so each is now decided by the designer, with its reason, for the owner to overturn. Revision 4 is not
-reviewed yet. Nothing here is built.
+technical, so each is now decided by the designer, with its reason, for the owner to overturn. Revision 5 follows the
+framework page's revision 7, which took the owner's answers to its gates F1 and F2 (R25 to R28): a `stopped` node keeps
+every primitive, as revision 4 said, and a new resting state, `disabled` (a word in `ear.conf`), releases every one by
+the full teardown (6.1, 6.9, 6.10, 10). Revisions 4 and 5 are not reviewed yet. Nothing here is built.
 Layer: module design, beneath the framework page. It designs that page's slice 3c (primitives: the node handle, loops
 and their states, the I/O executor, stores, claims, recordings, the carried log patch, `sendspin` onto the type
 interface) and the part of slice 3d that is a primitive's (claims swapped make-before-break, an in-place change that
@@ -15,7 +17,7 @@ goes on on a loop, a sink paused while a library is swapped, `sendspin` and the 
 node lifecycle itself (states, operations, holds, the code swap, reshape, companions) is the framework page's sections
 6 and 9.6; the two contexts (`ConfigureOf`, `NodeOf`) and `Configured` are declared whole in its 6.10, members of this
 page's included, and this page is the home of those members' rules; section 3.3 draws the line. Slices 5 and 6 are
-`docs/design/control-plane.md` (revision 4, rewritten in the same change); section 14 is the boundary, and 6.13 is the
+`docs/design/control-plane.md` (revision 5, rewritten in the same change); section 14 is the boundary, and 6.13 is the
 one home of `TypeSpec`'s member list for every page.
 
 [V] = verified in the file named, as of `3adc02b` (the code is unchanged since `f677a50`); [U] = unverified, with the
@@ -43,6 +45,7 @@ are cited by their path in it; PipeWire 1.4.2's source as `pipewire-1.4.2/<path>
 | R19 | "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 2026-11-08, chat (framework page R19) | One `configure` acquires and constructs; each primitive here is asked for, or reached by handle, inside it, and readied by the framework (6.1) |
 | R20, R21 | "A “run” can’t fail — only a node can fail. We should drop the “run” concept entirely and work with “graph” and “node” concepts. The graph is always running, while nodes can be added to it, configured, wired, start/stop all synchronously within the graph runtime"; "I meant “asynchronously”" | 2026-11-08, chat (framework page R20, R21) | The run handle is the node handle (5); a primitive lives as long as the node's configuration, an internal word; what a closing thread says late is dropped by a generation no type sees |
 | R23 | Exactly three hooks: `configure(old, new)`, `start()`, `stop()` | 2026-11-08, chat (framework page R23) | No `setup`, `build` or `close`: a loop's state is destroyed on its own loop, after the goodbye `stop()` posted (6.4, 6.10) |
+| R25 to R28 | On the framework page's F1 and F2: "“Disabled” would be a better term"; "Keeps everything"; "Both words"; "Only disabled in file" | 2026-11-08, chat (framework page R25 to R28) | Two resting states: `stopped` keeps every primitive (claims, stores, recordings, loops, companions), `disabled` releases every one by the full teardown, with the block kept (6.1, 6.10) |
 | R24 | "too technical for me to properly answer" (the framework page's A4); the owner is asked only what an operator or a type author sees | 2026-11-08, chat (framework page R24) | Hooks reach loops only by typed posts (D-A4); this page's gates are decided by the designer (18.3) |
 
 The owner's answers to revision 2's gate questions, 2026-11-08, stand: **G1** (a), a new `ear_runtime` package; **G14**
@@ -492,7 +495,12 @@ protected:
 The framework page's states (6.2 there) against this page's primitives. "—" means the primitive is not touched in that
 state.
 
-| Primitive | `configuring`: `configure` | `configuring`: readiness (step) | `configured` | `running` (`start()`) and `stopped` (`stop()`) | `reconfiguring` | Teardown (I5 step) |
+`disabled` (framework page 6.2, R25 to R28) is not a column: a disabled node has no configuration, so every primitive
+below is as after the teardown column (claims released, stores and recordings closed, loops' states destroyed,
+companions gone), and enabling it starts again at `configuring` with nothing held over. A `stopped` node keeps them all
+(R26).
+
+| Primitive | `configuring`: `configure` | `configuring`: readiness (step) | `configured` | `running` (`start()`) and `stopped` (`stop()`) | `reconfiguring` | Teardown (I5 step; a disable runs it whole) |
 |---|---|---|---|---|---|---|
 | Claim (6.9) | `cx.claim(...)`; implicit for stores, recordings, RTP receivers | judged first (1), then ports probed | held | held, running or stopped | `cx.claim` judged now; `cx.unclaim` released at the commit point; unchanged ones kept | released last (5); abandoned or kept by a leak (I5a) |
 | Store (6.8) | declared in the spec; `cx.store(h)`, a handle | opened on the I/O executor (2), 5 s | `text()`, `replace`, `replaceLater` on the node's loops | the same | kept | usable until step 4; freed (5) |
@@ -1010,6 +1018,7 @@ removed (`./a//take1.wav` is `recording:a/take1.wav`); `..` and absolute paths a
 | none | granted, then probed (ports only) | the kernel's reason |
 | the same node (an in-place change asking a key its node holds) | its own: granted, not probed (G22) | — |
 | a configuration that is not going: a node running, stopped, configuring or reconfiguring | refused at once | `held by node <n>` |
+| a disabled node | — (it holds no claim; its settings may name the key, but nothing is claimed until it is enabled, and an enable judges its claims afresh, as here) | — |
 | a configuration that is **going**: any between I5's step 1 and step 5, of any node (a restart's, a failure's, a removal's or a rename's old one) | waits: `ear.claim-wait` says why; granted when its step 5 releases it, then probed | after 15 s (in an in-place change, its deadline): `held by node <n>, which did not let go within 15 s` |
 | a leaked configuration (I5a), port | abandoned: probed afresh; granted if it passes | the kernel's reason, and the node starts by itself at the late close (R15) |
 | a leaked configuration, store or recording | refused | `held by node <n>'s earlier configuration, which did not close; it starts when that closes` (R15) |
@@ -1071,7 +1080,13 @@ exists.
 
 **A stop** (framework page T6) is step 1's first half only: `stop()`, the fade, the barrier with every sink disarmed,
 and each sink drained to its consumer; the configuration, its loops and their states, its claims, stores, recordings
-and companions stay.
+and companions stay (R26).
+
+**A disable** (framework page T20) is the whole table, as a restart's teardown is, except that nothing is configured
+after step 5: `stop()` and the fade only if the node was running (a stopped node is already silent), then steps 1 to 5;
+the block stays. Its claims are released at step 5, so a node waiting on one (`ear.claim-wait`) is granted then; a
+disable that passes the close deadline leaves a leaked configuration as any teardown does (I5a), and the node is
+`disabled` all the same.
 
 **An in-place change's commit point** (framework page T10) releases what it replaced by the same steps, for those resources only, after
 its commit point's one invoke (the new code and layout installed, replaced sinks disarmed and their replacements
@@ -1337,7 +1352,9 @@ spec's handle (a misnamed or undeclared handle does not compile, as `harness.inp
   replacement is ready, then the replaced claims and recordings are released and `state()` is `running` (or `stopped`).
 - **Store writes.** A `replace` completes inside the call; a `replaceLater` completes, and its `done` runs, on the next
   `runLoops()`.
-- **`stop()`** calls `stop()`, silences and disarms; the configuration stays. **`remove()`** (and a restart) runs I5 as
+- **`stop()`** calls `stop()`, silences and disarms; the configuration stays. **`disable()`** runs I5 whole, as
+  `remove()` does, and leaves the harness's block with no configuration (`state()` is `disabled`); **`enable()`**
+  configures afresh, as `add()` does. **`remove()`** (and a restart) runs I5 as
   the framework does: `stop()` if running, release, writers closed, loops closed to others, sinks finished, then the
   harness turns each loop until its posted work ran and its state is destroyed. **If a loop's state, once destroyed,
   leaves sources armed, the test fails** with `std::runtime_error` naming the loop and its sources. Then step 5. A real-time bound (10 s) applies only when the test chose to start real
@@ -1521,7 +1538,8 @@ plan's outcomes) exists.
 Revision 4 follows the owner's change of practice (framework page R24, 14.1): the owner is asked only about what an
 operator or a type author sees, and every technical choice is decided by the designer and listed with its reason. Every
 question this page asked was technical, so none is left to the owner; 18.3 lists each decision so the owner can overturn
-any. The three pages' owner gates are the framework page's F1, F2 and C2 and control-plane.md's W3, X2, G1, G3 and G4.
+any. The three pages' owner gates (revision 6 of the framework page and revision 4 of control-plane.md: the framework page's F1, F2 and C2 and control-plane.md's W3, X2,
+G1, G3 and G4) were all answered on 2026-11-08 (framework page 14.1, Q26 to Q28; control-plane.md 14.1); none is open.
 
 ### 18.1 Answered, superseded or settled
 
@@ -1705,3 +1723,10 @@ stop keeps every primitive (6.1, 6.6, 6.10); `whenReady` and `ConfigureDone` bel
 Every open gate was technical and is now decided by the designer (18.3), G20 settled by R23. A review is owed with the
 framework page's; it should judge at least the loop state's ownership against I14 (a state that leaks a reference to
 the instance), the sink consumer as a loop state's member across a pause, and the interim for sendspin's threads in 3a.
+
+### Revision 5 (2026-11-08, not reviewed)
+
+Follows the framework page's revision 7 (the owner's R25 to R28): a `stopped` node keeps every primitive, unchanged
+from revision 4; the new `disabled` state releases every primitive by the full teardown and keeps the block (6.1, 6.10),
+holds no claim, so another node may take its port and an enable judges its claims afresh (6.9), and has `disable()` and
+`enable()` in the harness (10). No decision of 18.3 changes, and no owner gate is open.

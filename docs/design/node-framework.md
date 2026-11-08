@@ -1,6 +1,6 @@
 # The node framework: the primitives every node type builds on
 
-Status: proposal, revision 6, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them;
+Status: proposal, revision 7, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them;
 revision 3 took the owner's gate answers; revision 3 went to a second round of two independent reviews, and revision 4
 answers them with two more answers from the owner (sections 14 and 16). Revision 5 took the owner's words R11 to R18 and
 went to a third round of two reviews. Revision 6 takes the owner's answers to revision 5's state-machine gates
@@ -11,14 +11,21 @@ revision 5 called the run object is the node's own object, the type's instance (
 message is dropped by an internal counter no type author or operator sees (I6). Revision 6 also changes how questions
 are put to the owner: only what an operator or a type author sees is asked (14.2); every internal choice is decided here
 and listed, with its reason, in 14.3, so the owner can overturn any. It changes built code; section 13 says what, the
-migration and each test group's fate, and re-cuts the slices. Revision 6 is not reviewed yet (section 16). Built: slice 1
+migration and each test group's fate, and re-cuts the slices. Revision 7 takes the owner's answers to revision 6's
+gates (2026-11-08, R25 to R28 and 14.1's Q26 to Q28): a node has **two resting states**. `stopped` is silent and keeps
+everything it opened; it is a moment's state, set by Stop and Start, never written to `ear.conf` and forgotten when ear
+restarts. `disabled` is silent and releases everything; it is a word on the node's line in `ear.conf`
+(`node card porch disabled { ... }`), set by Disable and Enable or by a hand edit, and it survives a restart (6.2, 6.3).
+Companions are badges in the node's box (gate C2, as recommended). Revisions 6 and 7 are not reviewed yet (section 16).
+Built: slice 1
 (section 13, "Slice 1 as built", says where it differs) and slice 4's framework side (8.8's erratum), slice 2, the type
 interface and its harness (section 13, "Slice 2 as built"), and slice 7, the internal clock with latency (section 13,
 "Slice 7 as built"; its spike's verified answers are in sections 10 and 15). Those records keep the built code's own
 words (`RunObject`, the recipe, `StartContext`): they name code that 13.2 retires. Nothing else is built. The two module
 designs beneath this page, `docs/design/node-primitives.md` (slice 3c and the primitives' part of 3d) and
-`docs/design/control-plane.md` (slices 5 and 6, and the wire of 3a, 3b, 3d and 8), are both at revision 4, written to
-this revision in the same change; 13.3 says where each is the home of a fact this page cites.
+`docs/design/control-plane.md` (slices 5 and 6, and the wire of 3a, 3b, 3d and 8), are both at revision 5, written to
+this revision in the same change (control-plane.md also records the owner's answers to its own gates W3, X2, G1, G3 and
+G4); 13.3 says where each is the home of a fact this page cites.
 Layer: system design (domain model and public interfaces), beneath the agreed system design
 (`docs/design/pipewire-graph.md`) and over the module designs it would change (`docs/design/batch2.md` sections 4 and 6,
 `docs/design/sendspin.md` sections 3 to 8).
@@ -54,6 +61,14 @@ open.
 | R22 | Gate A1: (b), a short set of states the editor colours, and a `phase` field with the exact state and its cause | 2026-11-08, chat | `state` and `phase` (6.2; control-plane.md 4.8) |
 | R23 | On the hooks: exactly three, `configure(old, new)`, `start()` and `stop()` | 2026-11-08, chat | 6.4: no `setup`, `build` or `close` hook; removal is a stop and the framework frees the rest |
 | R24 | Gate A4 (where reconfigure lives and how it reaches the type's threads): "too technical for me to properly answer" | 2026-11-08, chat | Decided by the designer (14.3, D-A4): hooks run on the graph's thread and reach a node's own thread only by a typed message. And a change of practice: the owner is asked only what an operator or a type author sees (14.2) |
+| R25 | On gate F1 (can `ear.conf` say a node is stopped): "“Disabled” would be a better term" | 2026-11-08, chat (gate F1) | The word written in `ear.conf` is `disabled`, not `stopped` (6.3) |
+| R26 | On gate F2 (what a stopped node keeps): "Keeps everything" | 2026-11-08, chat (gate F2) | A `stopped` node keeps everything it opened: Start is instant and cannot fail for a missing device or a taken port (6.2) |
+| R27 | Asked whether `stopped` and `disabled` are two states or one: "Both words" | 2026-11-08, chat | Two resting states: `stopped` keeps everything, `disabled` releases everything (6.2) |
+| R28 | Asked which of the two `ear.conf` keeps: "Only disabled in file" | 2026-11-08, chat | `disabled` is written in `ear.conf` and survives a restart; `stopped` is never written, and is forgotten when ear restarts (6.3) |
+
+R25 to R28 split revision 6's one stopped state in two: Stop and Start (`stopped`, kept in memory, keeping everything)
+and Disable and Enable (`disabled`, kept in `ear.conf`, releasing everything). The owner's F2 answer is `stopped`'s;
+`disabled` is what F2's option (b) described, now a state of its own.
 
 R19 to R23 replace R12's "at a minimum, there should be setup+build+start" with three hooks, and R13's question ("why must
 mailboxes be built before the run object exists?") is answered by them: the node's object exists before its audio code
@@ -115,7 +130,8 @@ crossing into type code (R11 to R20) [V]:
 ## 3. The answer, in one paragraph
 
 The **graph** always runs: ear's internal clock drives it from boot to stop (section 10), and nothing done to one node
-pauses it or another node. A **node** is added to it, configured, wired, started, stopped, reconfigured and removed,
+pauses it or another node. A **node** is added to it, configured, wired, started, stopped, disabled, enabled,
+reconfigured and removed,
 each an **operation** applied on the graph's thread, asynchronously and in arrival order: its reply says what was
 applied, and the node's slow work (opening a USB card, waiting for Music Assistant) goes on in the engine or on the
 node's own thread while the node shows a transitional state. A node type is **declarations, three hooks, and
@@ -141,21 +157,23 @@ built code still uses them, 13.2 says what replaces each.
 | Term | Meaning | Today's name, if different |
 |---|---|---|
 | **Graph** | ear's one running audio graph: the engine, the internal clock, every node and wire. It always runs (R6, R20) | — |
-| **Operation** | A change asked of the graph: add, configure, start, stop, remove a node; add or remove a wire. Applied on the graph's thread one at a time, in arrival order; asynchronous (R21): its reply says what was applied, never waits for a node's slow work (6.3) | an edit |
+| **Operation** | A change asked of the graph: add, configure, start, stop, disable, enable, remove a node; add or remove a wire. Applied on the graph's thread one at a time, in arrival order; asynchronous (R21): its reply says what was applied, never waits for a node's slow work (6.3) | an edit |
 | **Node type** | A built-in kind of node: its type spec and its class, found by its folder in `src/nodes/` | `NodeType` + `NodeTypeOf` |
 | **Type spec** | A type's declarations, pure and constexpr (`TypeSpec`; `NodeSpec` stays the graph's name+type+settings, `graph_spec.hpp:25`) | the settings table, plus `NodeConfig::ports()` |
 | **Node** | One named instance of a type in the graph; the aggregate root of everything below. Only a node fails (R20) | — |
 | **Instance** | The type's own object for one node: a plain class whose three member functions are the hooks, holding the node's main-loop state and what its code shares (6.4). Made by the framework when the node is configured from empty; replaced only by a restart | `RunObject`, members of `NodeInsides` |
 | **Settings** | A node's *desired* state, kept in `ear.conf`, judged by the desired graph | `NodeSettings` |
-| **Wanted state** | Whether the graph wants the node running or stopped; kept in `ear.conf` (gate F1, 14.2) and changed by `start` and `stop` (6.3) | — (every node runs) |
+| **Wanted state** | What the graph wants of the node: `running`, `stopped` or `disabled` (6.3). `disabled` is the node's word in `ear.conf` (R25, R28), changed by `disable` and `enable` or a hand edit; `stopped` is the node's stop, held in memory by the framework, changed by `stop` and `start`, never written and forgotten when ear restarts (R28); otherwise `running` | — (every node runs) |
+| **Stopped** | A resting state: silent, keeping everything its configuration opened (R26); a moment's state, not part of `ear.conf` | — |
+| **Disabled** | A resting state: silent, with no configuration (everything released), the block and wires kept; written in `ear.conf` as `disabled` after the node's name (R25, R27) | — |
 | **Parameter** | A setting declared `live`: it also has a realtime value that can move without a restart | — |
 | **In-place row** | A setting declared `.inPlace()`: a change to it goes to `configure(old, new)` instead of a restart (6.6) | — (every change restarts) |
 | **Port block** | The node's one `pw_filter`, made once for the node's life; owner of its public ports and the wires' ends; its ports may change (a reshape, 6.7) | as today |
 | **Bank** | A named, directed group of ports, public or inside; its name and direction in the spec, its members from the settings | `PortBank` (public only); inside ports are a flat list today |
-| **Wire** | A route, as the editor draws it: from an output port to an input port. Kept whatever either node's state; a wire to a stopped or failed node carries silence | route |
-| **Node state** | Where a node is in its lifecycle: `added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering` (slice 8), and `removed`, the end; the one machine of section 6 | `NodeState` (four values) |
+| **Wire** | A route, as the editor draws it: from an output port to an input port. Kept whatever either node's state; a wire to a stopped, disabled or failed node carries silence | route |
+| **Node state** | Where a node is in its lifecycle: `added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering` (slice 8), and `removed`, the end; the one machine of section 6 | `NodeState` (four values) |
 | **Hook** | One of the type's three member functions the framework calls: `configure(old, new)`, `start()`, `stop()` (6.4) | `start`, the recipe, `RunObject::close` |
-| **Configuration** | What the node's instance, its code and its resources are for one settings value and every in-place change after it, from `configure(empty, settings)` until a restart, a failure or the node's removal tears it down. An internal word of the framework's, never on the wire | a run |
+| **Configuration** | What the node's instance, its code and its resources are for one settings value and every in-place change after it, from `configure(empty, settings)` until a restart, a failure, a disable or the node's removal tears it down. An internal word of the framework's, never on the wire | a run |
 | **Generation** | An internal counter the framework raises each time it configures a node from empty; a message from an older generation's thread is dropped (I6). Never seen by a type author or an operator | the run's generation |
 | **Configure context** | What `configure` is handed: the format, the node's name, the acquire calls, holds, the code, and typed posts to the node's loops (`ConfigureOf<spec>`); 6.10 declares it whole | `StartContext`, `Ready` |
 | **Node context** | What the instance keeps for its life: the node's name, its handle, posts to its loops (`NodeOf<spec>`, 6.10) | — |
@@ -220,10 +238,10 @@ flowchart LR
 
 ## 6. The node: its lifecycle, hooks and invariants
 
-This section is the one home of the node lifecycle (R11, R16, R17, R19 to R23). Every other section cites it. Its shape
-is the owner's (2026-11-08): the graph always runs; a node is added, configured, started and stopped, reconfigured and
-removed inside it, asynchronously; a node goes added → configured → running ⇄ stopped, beside failed, and ends removed;
-a type writes three hooks. There is no run: what a settings value made (the instance, its code, its resources) is the
+This section is the one home of the node lifecycle (R11, R16, R17, R19 to R23, R25 to R28). Every other section cites
+it. Its shape is the owner's (2026-11-08): the graph always runs; a node is added, configured, started and stopped,
+disabled and enabled, reconfigured and removed inside it, asynchronously; a node goes added → configured → running ⇄
+stopped, beside disabled and failed, and ends removed; a type writes three hooks. There is no run: what a settings value made (the instance, its code, its resources) is the
 framework's internal **configuration**, and only the framework knows when one ends and the next begins.
 
 ### 6.1 The graph, its operations, and the aggregate
@@ -232,10 +250,12 @@ framework's internal **configuration**, and only the framework knows when one en
 processes whether wired or not; nothing done to one node pauses the clock, the data loop or another node (I10).
 
 **Operations are asynchronous and ordered** (R20, R21). Every operation on a node (add it, change its settings, start
-it, stop it, remove it, add or remove a wire to it, and the framework's `restart` action) reaches the graph's thread
-(the main loop) whole, through the keeper (AGENTS.md, "How a change moves"), and is applied there one at a time, in
-arrival order. Applying an operation means: the desired graph judges it and commits it, and the framework sets the
-node's next step going (a hook called, a barrier posted, a resource asked for) without waiting for it. The reply is sent
+it, stop it, disable it, enable it, remove it, add or remove a wire to it, and the framework's `restart` action) reaches
+the graph's thread (the main loop) whole, through the keeper (AGENTS.md, "How a change moves"), and is applied there one
+at a time, in arrival order. Disable and enable are edits of `ear.conf`, like a settings change; start, stop and
+`restart` are not (R28): the keeper orders them with the edits around it but writes nothing, and the framework applies
+them to the node alone (6.3). Applying an operation means: the desired graph judges it and commits it (an edit), or the
+framework checks it against the node (start, stop, `restart`), and the framework sets the node's next step going (a hook called, a barrier posted, a resource asked for) without waiting for it. The reply is sent
 in the same main-loop turn and says what was applied (the plan's outcome, 6.6); it never waits for the node's slow
 work. That work (an ALSA device opening, a claim waiting for a closing node, a library reconnecting to Music
 Assistant) goes on in the engine, on the I/O executor or on the node's own threads, and the node shows a transitional
@@ -252,7 +272,9 @@ classDiagram
     name: NodeName
     type: NodeType
     state: NodeState
-    wanted: running or stopped
+    disabled: from ear.conf (R28)
+    stopHeld: Stop pressed, in memory only (R28)
+    wanted: running, stopped or disabled, derived (6.3)
     health: state, phase, failure, attempt
     block: PortBlock (its ports may reshape)
     applied: the settings its configuration has applied
@@ -273,7 +295,8 @@ classDiagram
   Node "1" --> "*" Configuration : leaked, never freed (I5a)
 ```
 
-The node's state is derived from two small pure machines, the wanted state and the queued settings: the **block's**
+The node's state is derived from two small pure machines, the wanted state (the desired graph's `disabled` and the
+framework's stop) and the queued settings: the **block's**
 (made, ready, lost) and the **configuration's** (configuring, configured, driving, changing, going). Both are pure, as
 `NodeLifecycle` is today (`node_lifecycle.hpp:10-15`), so every state against every fact is one table-driven test. The
 configuration and its generation never appear on the wire, in a record or in a type's API.
@@ -284,13 +307,19 @@ configuration and its generation never appear on the wire, in a record or in a t
 stateDiagram-v2
   [*] --> added: add committed, block made
   added --> configuring: no older node of the name left; configure(empty, settings)
+  added --> disabled: disabled in ear.conf; nothing configured
   configuring --> configured: every resource ready
   configured --> starting: wanted running
   configured --> stopped: wanted stopped
   starting --> running: block ready, code drives, start() returned
-  running --> stopping: stop, restart, removal, a restart-only change
+  running --> stopping: stop, disable, restart, removal, a restart-only change
   stopping --> stopped: silence acknowledged (a stop)
+  stopping --> disabled: a disable, the configuration gone
+  stopped --> stopping: disable (no fade: already silent)
   stopped --> starting: start
+  disabled --> configuring: enable
+  failed --> disabled: disable
+  recovering --> disabled: disable
   running --> reconfiguring: in-place change; configure(old, new)
   stopped --> reconfiguring: in-place change; configure(old, new)
   reconfiguring --> reconfiguring: a newer in-place change before the commit point
@@ -313,9 +342,10 @@ stateDiagram-v2
 ```
 
 Not drawn: the block's loss leads from every state but `removed` to `failed`, for good (T13); removal leads from every
-state to `stopping` (with cause `removing`), and a node never started (`added`, `configuring`, `configured`, `failed`)
-skips `stop()`. A change in `added` replaces the settings the node will be configured with: there is nothing to
-restart, so no edge.
+state to `stopping` (with cause `removing`), and a node never started (`added`, `configuring`, `configured`, `failed`,
+`disabled`) skips `stop()`; a disable leads from `configuring`, `configured`, `starting` and `reconfiguring` to
+`stopping` too (cause `disabling`). A change in `added` replaces the settings the node will be configured with, and a
+change in `disabled` is stored for when it is enabled: there is nothing to restart, so no edge.
 
 What the framework does in each state. "Silent" means the block is driven by no code: every output sample is 0 and its
 inputs are read by nothing (`drive(nullptr)`, `node_host.hpp:70-71`) [V]. Wires are the desired graph's: the
@@ -326,13 +356,14 @@ inputs are read by nothing (`drive(nullptr)`, `node_host.hpp:70-71`) [V]. Wires 
 | State | Entered when | Hook called | What `process` runs | The node's outputs carry | Health on the wire (`state`; `phase`) | Standard output (`node` record's `msg`) |
 |---|---|---|---|---|---|---|
 | `added` | the add commits; the block is made at once, silent | none | nothing | zeros | `starting`; `added` | `node <n> starting` |
-| `configuring` | no older node of its name is left (today's `olderGoing`, `node_host.cpp:64-75`) [V], or a restart, a retry or a restart-only change | the instance is made, then `configure(cx, nullptr, settings)`, once; the framework readies what it acquired (6.4) | nothing | zeros | `starting`, or `stopped` if wanted stopped; `configuring` with what it waits for | — (a wait over 2 s: a `still` record) |
+| `configuring` | no older node of its name is left (today's `olderGoing`, `node_host.cpp:64-75`) [V], or a restart, a retry, an enable or a restart-only change | the instance is made, then `configure(cx, nullptr, settings)`, once; the framework readies what it acquired (6.4) | nothing | zeros | `starting`, or `stopped` if wanted stopped; `configuring` with what it waits for | — (a wait over 2 s: a `still` record) |
 | `configured` | every resource is ready; the code is prepared; work staged on its loops is released | none | nothing | zeros | as `configuring`; `configured` | — |
 | `starting` | configured and wanted running, or `start` on a stopped node | `start()` once the block is ready and the code drives (T5) | nothing until the code drives | zeros | `starting`; `starting` (`waiting for the engine` while the block is not ready) | — |
 | `running` | the block is ready: the framework carries the latency plan, drives the block with the code and arms its sinks in one data-loop invoke (I4), then calls `start()` | `start()`, once, on entry | the node's code | what the code writes; a held bank zeros (6.6) | `running` | `node <n> running` |
 | `reconfiguring` | a committed change whose outcome is `reconfigure`, on a running or stopped node (6.6) | `configure(cx, &old, new)`, once, on entry; then the type's own work, if it asked to finish later | the code, then the swapped code, if any (nothing, if it was stopped) | what the code writes; held banks zeros, faded | `reconfiguring`; with the keys | `node <n> reconfiguring: <keys>`, then `node <n> running` or `stopped` |
-| `stopping` | a `stop`; a restart (a restart-only change, a reshape not in place, the `restart` action, an in-place change that fell back); a removal | `stop()`, if the node was running, before the fade | the code for one fade, then nothing | a 5 ms fade, then zeros (no ports once removed) | `stopping`; with the cause (`stop`, `restarting: <keys>`, `removing`) | `node <n> stopping[: <cause>]` |
+| `stopping` | a `stop`; a `disable`; a restart (a restart-only change, a reshape not in place, the `restart` action, an in-place change that fell back); a removal | `stop()`, if the node was running, before the fade | the code for one fade, then nothing | a 5 ms fade, then zeros (no ports once removed) | `stopping`; with the cause (`stop`, `disabling`, `restarting: <keys>`, `removing`) | `node <n> stopping[: <cause>]` |
 | `stopped` | the stop's silence acknowledged; or configured while wanted stopped | none | nothing | zeros | `stopped` | `node <n> stopped` |
+| `disabled` | added while `ear.conf` says `disabled` (no configuration is ever made); or a disable's teardown ended (the configuration gone, or leaked at its deadline, I5a) | none (`stop()` ran in `stopping` if it was running) | nothing | zeros | `disabled` | `node <n> disabled` |
 | `failed` | a fact against the node (a resource refused, lost or past its readiness deadline; `lost(detail)` from its handle; a hook threw) or against its block (lost: final, I1) | none: the framework silences the block and tears the configuration down at once (I5) | the code for one fade, if it was driving; then nothing | a 5 ms fade, then zeros | `failed`, with `reason` (its code below) | `node <n> failed <code>: <detail>` |
 | `recovering` (slice 8) | the failed node's configuration is gone and its recovery policy waits before another try | none | nothing | zeros | `recovering`, with `attempt`, `retryInMs` | as 8.8 |
 | `removed` | the removal's teardown ended (or was leaked at its deadline, I5a) and the block is destroyed | none | — | no ports | gone from the graph (`node.removed`) | `node <n> removed dropped=<frames>` |
@@ -341,26 +372,37 @@ inputs are read by nothing (`drive(nullptr)`, `node_host.hpp:70-71`) [V]. Wires 
   by a node still closing (a remove and add of one name in one plan, or a rename, I7, I8), or the engine is slow to make
   the block ready. `start()` never runs before `process` can actually be called, so a node never begins work whose audio
   would go nowhere (R19: readiness the engine delivers later is the framework's, never the type's).
-- **A stopped node keeps its configuration** (gate F2): its instance, its claims, its companions and its loops stay, its
-  code is prepared and not driven, and `start` drives it again within one cycle and one main-loop turn. A sound card
-  stays open and plays the block's zeros; a listening port stays claimed. What the type's own activity does while
-  stopped is its `stop()`'s choice (sendspin closes its connection). A sink is disarmed while stopped, so a recording
-  takes no frames; a source plays into a silent block.
+- **A stopped node keeps its configuration** (R26, "Keeps everything"): its instance, its claims, its companions and its
+  loops stay, its code is prepared and not driven, and `start` drives it again within one cycle and one main-loop turn,
+  so Start cannot fail for a missing device or a taken port. A sound card stays open and plays the block's zeros; a
+  listening port stays claimed, so no other node can take it. What the type's own activity does while stopped is its
+  `stop()`'s choice (sendspin closes its connection). A sink is disarmed while stopped, so a recording takes no frames;
+  a source plays into a silent block. The stop is a moment's state (R28): never written to `ear.conf`, forgotten when
+  ear restarts (the node then runs), and kept through a hand edit that keeps the node (6.3).
+- **A disabled node has no configuration** (R25, R27): it is torn down as a failed node is (I5): its instance and loops
+  go, its claims are released (a disabled `sendspin` node's port 8928 is free for another node at once), its stores and
+  recordings are closed, its companions are destroyed (a disabled card's device is closed, so another program may use
+  it). Its block stays, silent, with its ports and its wires (I1, I15), and its input meters still show what reaches it.
+  Its settings are still parsed and checked, so a disabled node's line is still valid settings, but nothing is acquired
+  for it, and two nodes may name one port while one of them is disabled. `enable` configures it from empty (T22), which
+  may fail like any start (`start-failed: cannot listen on port 8928: held by node kitchen2`). A disabled node never
+  retries and never recovers (slice 8 skips it). The word survives a restart of ear, and a hand edit can write or
+  remove it (R28).
 - **A failed node is torn down at once** (R20): its instance and loops go, its claims are released (a listening
   `sendspin` node's port 8928 is free for another node at once), its companions are destroyed, and the block is silent;
   its wires stay. It stays `failed` until a settings change, `start`, the `restart` action, its removal, or recovery
   (slice 8). A lost block is final (I1). Today a failed run keeps its code driving and its resources until an update
   (`node_host.cpp:369-377`) [V].
 - **Health on the wire is two fields** (R22): `state`, the short closed set the editor colours (`starting`, `running`,
-  `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering`), and `phase`, the exact state with its cause.
-  Today's clients see the four states they know plus `reconfiguring`, `stopped` and `recovering`, which control-plane.md's
+  `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering`), and `phase`, the exact state with its
+  cause. Today's clients see the four states they know plus `reconfiguring`, `stopped`, `disabled` and `recovering`, which control-plane.md's
   protocol 1 makes open values (its G7, decided). Every member of `node.state` per phase is control-plane.md 4.8's.
 - **A node that stays in `added`, `configuring`, `configured` or `starting` for 2 s** says why on standard output, in a
   `still` record (control-plane.md 9.1 is the record's home).
 - **Every barrier that silences a driving block is faded first** (R17's "null audio frames", applied to every planned
   silence): the framework holds every public output bank for one fade (5 ms), waits for the data loop's acknowledgement
-  that the fade reached zero (6.6), then takes the barrier. So a stop, a restart, a failure or a removal never clicks a
-  downstream card. The block's own loss (T13) cannot be faded: the block is gone.
+  that the fade reached zero (6.6), then takes the barrier. So a stop, a disable, a restart, a failure or a removal never
+  clicks a downstream card. The block's own loss (T13) cannot be faded: the block is gone.
 
 **Failure codes**, the one home of the codes a `failed` node's `reason` carries (an open set on the wire,
 control-plane.md 4.5, so a new code is additive under protocol 1):
@@ -375,12 +417,12 @@ control-plane.md 4.5, so a new code is additive under protocol 1):
 
 | # | From | To | Trigger | What the framework does |
 |---|---|---|---|---|
-| T1 | — | `added` | the add commits | makes the port block, silent; the node's wires link once its ports are live |
+| T1 | — | `added` | the add commits | makes the port block, silent; the node's wires link once its ports are live; a node `ear.conf` says is `disabled` goes on at once to T19 |
 | T2 | `added` | `configuring` | no older node of the name is left | a new generation; makes the instance; calls `configure(cx, nullptr, settings)`; readies what it acquired (6.4) |
 | T3 | `configuring` | `configured` | every resource ready | prepares the code; releases the work staged on the node's loops |
-| T4 | `configured` | `starting` or `stopped` | at once, by the wanted state | — |
+| T4 | `configured` | `starting` or `stopped` | at once, by the wanted state (`stopped` while the node's stop is held) | — |
 | T5 | `starting` | `running` | the block is ready | carries the latency plan; in one data-loop invoke (the barrier), drives the code and arms every sink; once it completed, calls `start()` |
-| T6 | `running` | `stopping` | `stop`; a restart (plan outcome `restart`, a reshape not in place, the `restart` action, T11); removal | calls `stop()`; holds every public output bank for one fade and waits for the acknowledgement; then one invoke silences the block (`drive(nullptr)`) and disarms every sink; sinks drain to their consumers |
+| T6 | `running` | `stopping` | `stop`; `disable` (T20); a restart (plan outcome `restart`, a reshape not in place, the `restart` action, T11); removal | calls `stop()`; holds every public output bank for one fade and waits for the acknowledgement; then one invoke silences the block (`drive(nullptr)`) and disarms every sink; sinks drain to their consumers |
 | T7 | `stopping` | `stopped` | the silence completed, and the cause was a `stop` | — |
 | T8 | `stopped` | `starting` | `start` | as T5 once the block is ready (it already is) |
 | T9 | `running`, `stopped` | `reconfiguring` | plan outcome `reconfigure` | calls `configure(cx, &old, new)` on the instance; applies holds; readies new resources beside the old, marking each old one it replaces `retiring` (6.6) |
@@ -393,23 +435,62 @@ control-plane.md 4.5, so a new code is additive under protocol 1):
 | T16 | `failed` | `recovering` (slice 8) | the configuration is gone and the policy allows another try | a main-loop timer (8.6) |
 | T17 | any | `stopping` (cause `removing`), then `removed` | the removal commits; `stopAll` | as T6 (`stop()` only if it was running), then destroys the block (the barrier) and tears the configuration down; `removed` once it is gone or leaked |
 | T18 | `reconfiguring` | `reconfiguring` | a newer change whose outcome is `reconfigure`, before the commit point | supersedes: below |
+| T19 | `added` | `disabled` | the add commits with the node disabled in `ear.conf` (a boot, a hand edit, `node.add` with `disabled`) | nothing: no instance, no configuration; the block stays silent |
+| T20 | `configuring`, `configured`, `starting`, `running`, `reconfiguring`, `stopped` | `stopping` (cause `disabling`), then `disabled` | the disable commits (plan outcome `disable`) | ends an in-place change as a stop does (6.3); as T6 (`stop()` and the fade only if it was running; a stopped node is already silent), then tears the whole configuration down by I5, claims released last; `disabled` once it is gone or leaked (I5a); the node's stop, if held, is dropped |
+| T21 | `failed`, `recovering` | `disabled` | the disable commits | the configuration is already gone; the recovery timer is cancelled |
+| T22 | `disabled` | `configuring` | the enable commits (plan outcome `enable`) | as T12 with the newest settings: reshapes nothing (the block already has the newest ports, below), a new generation, `configure(cx, nullptr, settings)`; then by the wanted state, `running` |
 
 Every barrier is an asynchronous invoke on the block's data loop: the main loop posts it and goes on, and the next step
 continues from its completion, posted back (I4). So no transition of one node waits on the data loop while another's
 work queues behind it.
 
-**Start and stop.** `start` and `stop` are operations like any other (R20): they change the node's wanted state, which
-`ear.conf` keeps (gate F1: written to its recommendation, `node <type> <name> stopped`), so a stopped node stays stopped
-across a restart of ear and a hand edit can stop one. The framework converges on the wanted state: a node configured
-while wanted stopped rests in `stopped` without calling `start()`; `start` on a `failed` node is a retry (T15), even
-when the file already wants it running, and changes nothing in `ear.conf`. The `restart` action (8.4) is the
-framework's own: a full stop, a configuration from empty and a start back to the wanted state, without editing
-`ear.conf`.
+**Start and stop; disable and enable** (R25 to R28). The wanted state is derived from two facts with two owners:
+
+- **`disabled`, the desired graph's**, from the node's line in `ear.conf`: `node <type> <name> disabled;` or `node
+  <type> <name> disabled { <settings> }`. `disable` and `enable` are edits at the source like `node.update`
+  (control-plane.md 4.2): they write or remove the word after the node's name, committed and written as any edit, so
+  the word survives a restart of ear, and a hand edit can disable or enable a node. A line that also makes other nodes
+  (inside a snippet) is refused `shared-definition`, as any edit of it is. The plan's outcome is `disable` or `enable`
+  (6.6).
+- **The node's stop, the framework's**, held by `NodeHost` in memory (R28): `stop` sets it and `start` clears it. They
+  are operations the keeper orders with the edits around it, but they write nothing, make no graph-file version and
+  are judged by no plan; the framework applies them to the node, and the reply says what it did (control-plane.md 4.2).
+  So Stop and Start work while `ear.conf` has errors, and a node's stop is forgotten when ear restarts: after a restart
+  every node runs unless `ear.conf` says `disabled`.
+
+The wanted state is `disabled` when the line says so, else `stopped` while the node's stop is held, else `running`, and
+the framework converges on it: a node configured while its stop is held rests in `stopped` without calling `start()`; a
+disabled node is never configured. The rules where the two meet, decided by the designer (14.3, D-F1 to D-F7):
+
+- `stop` or `start` on a disabled node is refused (`node-disabled`, control-plane.md 4.5): a disabled node has nothing
+  open to keep, and starting it means enabling it, which is an edit of `ear.conf`. The `restart` action is refused the
+  same way.
+- `disable` on a stopped node tears its configuration down (T20) and drops its stop; enabling it later runs it.
+  `enable` on a stopped node changes nothing (the line has no word to remove; `applied: "unchanged"`, nothing written):
+  it stays stopped until Start.
+- A hand edit (or `graphFile.set`) that keeps a node, by name and type, keeps its stop, whatever else it changes in
+  the node: a stopped node with a restart-only change is configured afresh and rests in `stopped` again (T12, T4); an
+  in-place change returns it to `stopped` (T10). A hand edit that writes `disabled` on a stopped node disables it and
+  drops its stop. A node the edit removes, renames or replaces (another type) loses its stop: the new node runs.
+- `start` on a `failed` node is a retry (T15), even when nothing holds it stopped, and clears its stop. `stop` on a
+  failed or recovering node sets the stop and leaves the node `failed`; a retry or a recovery then rests in `stopped`.
+- A settings change to a disabled node commits and is written; nothing runs (plan outcome `stored`, 6.6). A change of
+  ports reshapes the block alone (6.7), so its wires and the editor's handles follow the file; there is no
+  configuration to restart.
+
+The `restart` action (8.4) is the framework's own: a full stop, a configuration from empty and a start back to the
+wanted state, without editing `ear.conf`.
 
 **Operations that arrive mid-transition** are applied when they arrive, newest settings winning, and judged against what
 the node has actually applied, never against what is in flight:
 
-- in `added`: a change replaces the settings it will be configured with; `start` and `stop` set the wanted state;
+- in `added`: a change replaces the settings it will be configured with; `start` and `stop` set or clear the node's
+  stop; a `disable` is T19 at once;
+- `disable`, in any state but `disabled` and `removed`: ends an in-place change as a `stop` does (before the commit
+  point it is superseded; after it, the disable waits for T10 or T11, then applies), then T20 or T21; a disable that
+  arrives in `stopping` for a restart goes on to `disabled` once the old configuration is gone, instead of configuring;
+- `enable` in `stopping` for a disable: the node is configured afresh with the newest settings once the old
+  configuration is gone (as `start` during a stop starts again once stopped); `enable` in `disabled`: T22;
 - in `configuring`, `configured` or `starting`, before the node first reached `running` or `stopped`: any change tears
   the configuration down and configures afresh with the newest settings (nothing has started, so nothing is gained by
   reconfiguring in place); `stop` in `starting` before `start()` was called ends at `stopped` without calling `start()`
@@ -565,6 +646,9 @@ them (`types.get`, 8.7), and the editor can say beside a field whether changing 
 | `restart` | any changed key is restart-only, ports unchanged | stopped if running, its configuration torn down, configured from empty, started again if wanted | `stopping` (cause `restarting`), `configuring`, then as before |
 | `reshape` | the same type, the ports differ | 6.7; in place (`inPlace: true`) when every changed key is `.inPlace()` or `.live`, else a restart | `reconfiguring` when in place, else as `restart` |
 | `replace` | another type under the same name | removed and added, as today | `stopping`, `removed`, then a new node's `added` |
+| `disable` | the line gains `disabled` (other changes in the same edit are stored with it) | T20 or T21: a stop if running, the whole configuration torn down, claims released | `stopping` (cause `disabling`), then `disabled` |
+| `enable` | the line loses `disabled` (other changes in the same edit are taken with it) | T22: configured from empty with the newest settings, then by the wanted state | `configuring` (cause `enabling`), then `running` |
+| `stored` | any settings change to a node that stays disabled | written; nothing runs; a change of ports reshapes the block alone (6.7) | `disabled` throughout |
 
 The outcome is part of the committed edit: `node.updated` and the edit's reply carry it as `applied`, and a reshape
 also `inPlace` (control-plane.md 4.9 is the wire's home), and the `node` record's `msg` names it. So a client knows
@@ -645,7 +729,10 @@ becomes one case of the outcome listener below.
 `nodeChanged(const NodeSpec&, std::shared_ptr<const NodeConfig>, const NodeChange&)` (outcome, changed keys, the old and
 new ports), whose default calls `nodeUpdated` for `retune`, `reconfigure` and `restart`, and `nodeRemoved` then
 `nodeAdded` for `reshape`; so the gateway, `StatusLog` and every test listener keep working, and only `NodeHost` and the
-gateway (for `applied` and the ports) override it. `replace` stays a removal and an addition.
+gateway (for `applied` and the ports) override it. `replace` stays a removal and an addition. `disable`, `enable` and
+`stored` are told by `nodeChanged` too; their default calls `nodeUpdated` (the gateway's `node.updated` then carries the
+node's `disabled`). Start and stop have no plan outcome: they edit nothing (6.3), and their replies say what the
+framework did (control-plane.md 4.2).
 
 ### 6.7 A change of shape: reshape
 
@@ -656,7 +743,7 @@ counts are made by `ports(checked)` at parse; a change of them is a **reshape**.
   (`desired_graph.cpp:125-142` [V]): a plan that keeps a route to `desk:play.4` while `desk` goes to two playback
   channels is refused. Through the control port it is refused `ports-in-use`, naming every such route, and
   `dropRoutes: true` removes those route lines in the same commit; a hand edit or `graphFile.set` that keeps one is
-  refused `unknown-port` as today (written to control-plane.md X2's recommendation; its 4.9 is the home). By the time a
+  refused `unknown-port` as today (control-plane.md X2, answered by the owner as recommended; its 4.9 is the home). By the time a
   reshape commits, no wanted route names a port that vanishes. Wanted routes may name ports that appear; they link
   once the ports are live.
 - **What the framework does, by default** (T6, T12): a restart with the block reshaped between the old configuration's
@@ -665,6 +752,9 @@ counts are made by `ports(checked)` at parse; a change of them is a **reshape**.
   `desired_graph.cpp:192-199` [V]); ports that appear are added, silent, and registered for levels. Surviving ports keep
   their links throughout and carry zeros while the node restarts. Inside banks are resized with the rest, and their
   companions are made afresh by the new `configure`.
+- **On a disabled node** (no configuration, 6.2): the block alone is reshaped at the commit, ports that vanish removed
+  and ports that appear added silent, with no hook called; the plan's outcome is `stored`, with its `ports` (6.6), and
+  enabling the node later configures it with the ports the block already has.
 - **In place, when the type takes it.** A reshape is in place when every changed key is `.inPlace()` or `.live` (what
   the plan can check: it compares the ports `ports()` makes, and cannot see which rows `ports()` read; `.shapesPorts()`
   is the schema's promise, 7.1). It is then a reconfigure: the framework adds the new ports to the engine first, calls
@@ -694,8 +784,8 @@ counts are made by `ports(checked)` at parse; a change of them is a **reshape**.
 The owner: "it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" (R16).
 
 **Per node** (I10): a node's state, its configuration, its hooks, its resources and companions, its claims' waits, its recovery
-timer, its close deadline and its leak. One node's `configuring`, `reconfiguring`, `stopping`, `stopped`, `failed` or
-leaked configuration changes only:
+timer, its close deadline and its leak. One node's `configuring`, `reconfiguring`, `stopping`, `stopped`, `disabled`,
+`failed` or leaked configuration changes only:
 
 - its own block's code (driven, swapped or silenced, each with a barrier on its own block);
 - the audio its peers read from it: zeros on the links from a silent node, or from a held bank;
@@ -730,7 +820,8 @@ I15.
   `start()` returned. Each kind that becomes ready later has a readiness deadline, and missing it is a loss (section
   7.3); "never ready, never lost" cannot last. An in-place change has its own deadline (6.6).
 - **I4. Nothing the realtime thread can reach is freed while it can reach it.** Every teardown starts with a barrier on
-  the block's data loop: `drive(nullptr)` for a stop, a restart or a failure, the block's destruction for a removal. A
+  the block's data loop: `drive(nullptr)` for a stop, a disable, a restart or a failure, the block's destruction for a
+  removal. A
   code swap is a barrier too, and a ring companion's destruction is the barrier for its own realtime side. Barriers are
   asynchronous: an invoke posted without waiting, whose completion is posted back to the main loop, where the next step
   continues (today `drive` is a blocking invoke, `port_blocks.cpp:154-161` [V]; slice 3a changes it to `drive(code,
@@ -739,7 +830,7 @@ I15.
   (T10), and disarmed in the one that silences or destroys the block (T6, I5 step 1). A planned barrier is preceded by
   the framework's fade and waits for its acknowledgement (6.2, 6.6).
 - **I5. A resource outlives every thread that can touch it.** Tearing a configuration down (a restart, a failure, a
-  removal) is by dependency, not by reverse acquisition, and every step that waits on another thread is asynchronous.
+  disable, a removal) is by dependency, not by reverse acquisition, and every step that waits on another thread is asynchronous.
   The main loop never joins a thread:
   1. `stop()`, if the node was running; the fade, then the barrier (I4), which also disarms every sink, so no sink takes
      the silent block's zeros; then `release`; holds cleared; every source companion's writer closed, so a writer
@@ -776,7 +867,8 @@ I15.
   it; a leaked configuration's port is abandoned and probed afresh (I5a). A new claim made in place is judged like any
   other, and the old one is released only at the change's commit point, so a node moving from port 8928 to 8929 holds
   both for a moment (node-primitives.md 6.9 is the home of the rules and texts). A stopped node keeps its claims (6.2;
-  gate F2).
+  R26); a disabled node holds none, so enabling it judges its claims afresh, and a claim another node took meanwhile
+  fails it, naming that node (6.2; R27).
 - **I9. Names are the node's.** Every engine object a node makes is named `<node>.<suffix>`: engine companions by kind
   (`playback`, `capture`, `rtp`), ring companions by their inside bank (9.6); every stored file is
   `<type>-<node>.<suffix>`. One configuration names each once, except a companion and its make-before-break replacement,
@@ -797,7 +889,8 @@ I15.
   by the loop's handle; once given, a loop's state has no reference held by the instance. Debug builds assert the
   thread in every loop state's posted work.
 - **I15. Wires do not depend on node state.** A wire is added and removed only by an operation on it (or by its node's
-  removal); no node state unlinks it, and a wire to a node that is configuring, stopped or failed carries silence.
+  removal); no node state unlinks it, and a wire to a node that is configuring, stopped, disabled or failed carries
+  silence.
 
 ### 6.10 The contexts, whole
 
@@ -1116,14 +1209,15 @@ public:
 	explicit TypeHarness(AudioFormat = {.rate = 48000, .maxBlock = 256}, NodeName = "node");
 	// Operations (6.3) and the lifecycle's steps, one call per transition
 	std::optional<std::string> parse(const nlohmann::json& settings);   // a refusal's exact text, or nothing
-	void add(bool wantedRunning = true);             // T1, T2: the instance made, configure(empty, settings) called,
-	                                                 // readiness as far as the fakes allow
+	void add(bool disabled = false);                 // T1, T2: the instance made, configure(empty, settings) called,
+	                                                 // readiness as far as the fakes allow; disabled: T19, nothing made
 	template <class Bank> void ready(Bank);          // a companion on that inside bank becomes ready
 	template <class Bank> void lose(Bank, std::string detail);
 	void blockReady();                               // T5: drives the code, arms sinks, calls start()
 	void process(std::uint32_t frames = 256);        // one cycle, with GraphCycle stamps the harness advances
 	Outcome change(const nlohmann::json& changes);   // the plan's outcome, then T9 or a restart
 	void stop();  void start();  void restart();  void remove();   // T6 and T7; T8; the action; T17, each step observable
+	void disable();  void enable();                  // T20 or T21, the whole teardown observable; T22
 	NodeState state() const;  std::string phase() const;  std::optional<FailureReason> reason() const;
 	// Buffers and fakes, by the spec's handles
 	template <class Bank> std::span<float> input(Bank, std::size_t member);
@@ -1221,11 +1315,13 @@ counted in one `ear.events-dropped` diagnostic (today's `NoteGate` policy, `note
   becomes the reply.
 - A queued action whose node's configuration is torn down before it runs gets `restarted` (a restart or recovery) or
   `stopping` (a removal); an action already running finishes and replies before the node's loop closes (I5 step 4). A
-  node with no configuration (`added`, `configuring`, `failed`, `recovering`) answers `not-running` (control-plane.md 4.5); a
+  node with no configuration (`added`, `configuring`, `disabled`, `failed`, `recovering`) answers `not-running` (control-plane.md 4.5); a
   stopped node takes actions (its loops run).
-- **`start`, `stop` and `restart` are every node's**, the framework's own (R20; 6.3). `start` and `stop` change the
-  node's wanted state, which `ear.conf` keeps (gate F1), so they are edits at the source like `node.update`, not
-  actions; `start` on a failed node is also a retry (T15). `restart` is an action: a full stop, a configuration from
+- **`start`, `stop`, `disable`, `enable` and `restart` are every node's**, the framework's own (R20, R25 to R28; 6.3).
+  `disable` and `enable` write or remove the node's `disabled` word in `ear.conf`, so they are edits at the source like
+  `node.update`. `start` and `stop` set or clear the node's stop, which only the framework holds and nothing writes, so
+  they are neither edits nor type actions: the keeper orders them and the framework applies them at once; `start` on a
+  failed node is also a retry (T15), and both are refused on a disabled node. `restart` is an action: a full stop, a configuration from
   empty and a start back to the wanted state, the same as a restart-only settings change, without editing `ear.conf`;
   it skips any recovery wait. During an in-place change it ends it at once (T11) and restarts with the newest settings
   (6.3; D-B6). Its reply and its refusals by
@@ -1247,9 +1343,12 @@ and `cancel`, `gesture.changed`; its G2) from revision 4's one `node.setParam`.
 - **A gesture** belongs to one session, moves the slot while it lasts, and commits once, at its end, as a settings
   edit at the row's source through the keeper; `ear.conf` is written behind as usual. A begin that could not commit is
   refused at once.
-- **Hand edits win** (AGENTS.md). A hand edit or `graphFile.set` that lands during a gesture aborts it, and so do a
-  refused end, the owning session closing and a gesture left idle: the slot returns to the file's value. The audio
-  never stays on a value `ear.conf` does not hold.
+- **Hand edits win** (AGENTS.md). A hand edit or `graphFile.set` that lands during a gesture aborts it when it changes
+  the dragged value or the line it is defined on (the owner's G3, "Only a related save", control-plane.md 7.3), and so
+  does a refused end: the slot returns to the file's value. Any other save leaves the gesture going, and its end writes
+  onto the new text. The owning session closing, or going silent for 30 s, ends the gesture as if released, writing the
+  last value heard (the owner's G4, "Keep last value", control-plane.md 7.3). The audio never stays on a value
+  `ear.conf` does not hold once a gesture is over.
 - Snapshots carry each parameter's `{committed, live}`; they differ only during a gesture.
 - A hand edit or `graphFile.set` that changes a live row's value moves the slot without a restart (a `retune`). A
   change to an `.inPlace()` row goes to `configure(cx, &old, new)`, to any other row restarts, and to the ports reshapes
@@ -1262,7 +1361,8 @@ and `cancel`, `gesture.changed`; its G2) from revision 4's one `node.setParam`.
 `NodeState` gains `recovering` (T16 in 6.3; the states themselves change with slice 3a, whose erratum to
 `batch2.md` section 11 replaces the frozen `node_lifecycle.hpp`, and slice 8 adds this one). Recovery is per node (I10):
 one node's backoff never delays another's. The default for every type, the owner's answer (Q4), retries for as long as
-the node is in the graph; with the internal clock (section 10) a restart costs only the node's own audio:
+the node is in the graph and not disabled (a disable cancels the wait, T21; an enable that fails is retried like any
+start that fails); with the internal clock (section 10) a restart costs only the node's own audio:
 
 The first wait is keyed on **the phase the failure happened in**, never on the code's name (6.2's table gives each
 code's usual phase):
@@ -1302,7 +1402,7 @@ code's usual phase):
   additive; a breaking change bumps it. A client that sees a higher number than it knows shows a banner and keeps
   working with what it understands. The stdout records' `v` follows the same rule.
 - **What the editor must change** (it already ignores unknown methods, `web/src/graph.ts:107-108`): `NodeState` is a
-  closed union (`web/src/protocol.ts:13`) that gains `reconfiguring`, `stopped` and `recovering`, and `phase` beside it; `reason`
+  closed union (`web/src/protocol.ts:13`) that gains `reconfiguring`, `stopped`, `disabled` and `recovering`, and `phase` beside it; `reason`
   stays, present while `failed` and `recovering` (`protocol.ts:47` says "only while failed" today), and slice 8 adds
   `lastFailure` beside it (control-plane.md W2); `FailureCode` (`protocol.ts:15` [V], two values) gains `lost`
   (6.2), open from protocol 1; each new state needs a style (`EarNode.tsx:28` builds the class name from
@@ -1573,7 +1673,8 @@ flowchart LR
   public ports are, `port_blocks.cpp`). `graph.get` shows each node's companions as a list under it,
   `companions: [{name, kind, bank, ready, dropped | shortfall}]`, and `node.state` and the `node` record name a companion
   in a failure's detail (`failed engine-refused: the card failed: ...`). The editor draws them as small badges inside
-  the node's box (kind and a dot for ready), never as boxes with handles (gate C2).
+  the node's box (kind and a dot for ready, the drop count on hover), never as boxes with handles (gate C2, answered as
+  recommended, 14.1's Q28; control-plane.md 8.7 is the home of the badges).
 - **Names.** Engine companions by kind, ring companions by their inside bank (I9). Inside banks are therefore named for
   what they reach: `file`'s `writer`, `sendspin`'s `to_server` and `from_server`. A node's name has no `.` (AGENTS.md:
   letters, digits, `-` and `_`), so a companion's name never equals a node's, and the live graph's lookups by node name
@@ -1709,8 +1810,8 @@ and every card follows it.**
 - **More engine nodes and copies** (9.6). Each crossing to non-realtime code is a node of its own and one copy of each
   sample per cycle: `file` runs two engine nodes, `sendspin` three. At 48 kHz and a 256-frame quantum a stereo copy is
   about 1 µs; the node's scheduling in PipeWire's graph costs more [U: measured in slice 3b with 16 `sendspin` nodes].
-- **A wider lifecycle.** Ten states and an end where there were four, a wanted state per node (and a word in
-  `ear.conf`, gate F1), one more listener call (`nodeChanged`), an in-place path
+- **A wider lifecycle.** Eleven states and an end where there were four, a wanted state per node from two owners (the
+  `disabled` word in `ear.conf` and the framework's stop in memory, R28), one more listener call (`nodeChanged`), an in-place path
   with its own deadline, supersession and partial teardown, and a reshape that changes a live `pw_filter`'s ports [U, 6.7]. Each is a
   state-table test, but the number of interleavings (a change during a reconfigure, a loss during a reshape) grows.
 - **Every planned silence costs a fade, not a click.** A held bank, and every restart, failure, removal and stop of a
@@ -1723,8 +1824,10 @@ and every card follows it.**
   apply in place costs that node's audio, as every change does today.
 - **The five types move again** (13.2). Every type written in slices 1 and 2 is rewritten from `start` to a class
   with `configure` (and, for `sendspin`, `start()` and `stop()`), and `file` and `sendspin` lose their realtime code.
-- **A stopped node holds what it opened** (gate F2): a stopped card keeps its device, a stopped listener its port.
-  Freeing them takes a removal.
+- **A stopped node holds what it opened** (R26): a stopped card keeps its device, a stopped listener its port. Freeing
+  them takes Disable (R27), which writes `ear.conf`, or a removal.
+- **A stop does not survive a restart of ear** (R28). An operator who stops a node for the night and expects it silent
+  after a reschedule must Disable it instead; the editor says so beside Stop (control-plane.md 8.6).
 
 ## 13. Slices
 
@@ -1736,7 +1839,8 @@ the built code's words, and 13.2 says what revision 6 changes in that code.
 
 Revision 5 put the lifecycle first and split slice 3 in four; revision 6 keeps that order and changes what 3a builds
 (three hooks, the wanted state, `start` and `stop`, no run) and what 3d builds (an in-place `configure`, not a fourth
-hook):
+hook); revision 7 adds `disabled` to 3a (the word in `ear.conf`, `disable` and `enable`) and takes `stop` out of
+`ear.conf`:
 
 | # | Slice | What it builds | Built? | Needs |
 |---|---|---|---|---|
@@ -1744,7 +1848,7 @@ hook):
 | 2 | The SPI's shape and its harness | as revision 4 | built | 1 |
 | 4 | Output | as revision 4 | built | — |
 | 7 | The internal clock, with latency | as revision 4 | built | 1 |
-| **3a** | **The lifecycle** | The two pure machines and the derived node state (`added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `failed`, `removed`; `reconfiguring` with 3d, `recovering` with 8), with its erratum to `batch2.md` section 11; the wanted state and the `stopped` word in `ear.conf` (gate F1; the graph file's reader and edits at the source, `knobly-config.md`), and `node.start` and `node.stop` (control-plane.md step L1); the type's class with `configure(cx, nullptr, now)`, `start()` and `stop()`, and the contexts of 6.10 that 3a needs (`ConfigureOf`'s acquire calls, `use`, `declareLatency`, `sink`; `NodeOf` with today's `Channel` as its handle; `Configured::applied()`); readiness as the framework's; the code driven only at T5; asynchronous barriers (`drive(code, done)`, I4) with the framework's fade and its acknowledgement before each; a failed node torn down at once, claims released, wires kept; the failure code `lost`; `ear.hook-slow`; `state` and `phase` on the wire and in the `node` record; `node <n> removed dropped=<frames>`. **The sink, with an interim realtime side**: `cx.sink`, `consumedBy`, `SinkConsumer` (with `begin`, readiness step 4') and stamped chunks land here, but the ring is written by framework code inside the block's own `process`, after the code, from the inside output bank (today's handoff ring, wake and thread, `handoffs.cpp`, reused), armed and disarmed in the same invoke as the code; handoffs go. Loops are not yet the framework's (3c), so 3a's interim gives a consumer to a sink whole only (`file`), and `sendspin` keeps its own threads, started by `start()` and joined off the main loop by its teardown as today's `RunObject::close` does (`node_type.hpp:242`). All five types move from `start` to a class with `configure`; `file`'s code becomes `passThrough({record→writer})` onto the interim sink (its `Recorder` goes); `sendspin`'s feed, mailboxes and bell become its instance's members (R13), and its own code writes `to` into its inside bank `to_server`, which the interim sink carries; its feed is still read by its own code until 3b | — | 1, 2 |
+| **3a** | **The lifecycle** | The two pure machines and the derived node state (`added`, `configuring`, `configured`, `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`, `removed`; `reconfiguring` with 3d, `recovering` with 8), with its erratum to `batch2.md` section 11; the wanted state (R28): the `disabled` word in `ear.conf` (the graph file's reader and edits at the source, `knobly-config.md`; plan outcomes `disable`, `enable` and `stored`; T19 to T22) and the node's stop held by `NodeHost` in memory; `node.disable` and `node.enable` (edits), and `node.start` and `node.stop` (ordered by the keeper, writing nothing) (control-plane.md step L1); a disabled node's block reshaped alone on a change of ports waits for 3d's `PortBlock::reshape` (until then, a replace, as today); the type's class with `configure(cx, nullptr, now)`, `start()` and `stop()`, and the contexts of 6.10 that 3a needs (`ConfigureOf`'s acquire calls, `use`, `declareLatency`, `sink`; `NodeOf` with today's `Channel` as its handle; `Configured::applied()`); readiness as the framework's; the code driven only at T5; asynchronous barriers (`drive(code, done)`, I4) with the framework's fade and its acknowledgement before each; a failed node torn down at once, claims released, wires kept; the failure code `lost`; `ear.hook-slow`; `state` and `phase` on the wire and in the `node` record; `node <n> removed dropped=<frames>`. **The sink, with an interim realtime side**: `cx.sink`, `consumedBy`, `SinkConsumer` (with `begin`, readiness step 4') and stamped chunks land here, but the ring is written by framework code inside the block's own `process`, after the code, from the inside output bank (today's handoff ring, wake and thread, `handoffs.cpp`, reused), armed and disarmed in the same invoke as the code; handoffs go. Loops are not yet the framework's (3c), so 3a's interim gives a consumer to a sink whole only (`file`), and `sendspin` keeps its own threads, started by `start()` and joined off the main loop by its teardown as today's `RunObject::close` does (`node_type.hpp:242`). All five types move from `start` to a class with `configure`; `file`'s code becomes `passThrough({record→writer})` onto the interim sink (its `Recorder` goes); `sendspin`'s feed, mailboxes and bell become its instance's members (R13), and its own code writes `to` into its inside bank `to_server`, which the interim sink carries; its feed is still read by its own code until 3b | — | 1, 2 |
 | **3b** | **Companions** | The sink's realtime side moves out of the block into its ring companion, its API unchanged; the source ring companion, with its fades (`ear_pipewire` for the `pw_filter`, in `ear.graph`; `ear_runtime` for the sink's thread); sound cards and RTP receivers become engine companions on the one join (`joinOutsideNode`); companions declare their latency; chunks carry `upstreamFrames`; `graph.get`'s `companions`; the same-cycle ramp test [U, 9.6]. `file` and `sendspin` lose their realtime code | — | 3a |
 | **3c** | **Primitives** (node-primitives.md, re-cut: 13.3) | The node handle, loops with their states and typed posts (`cx.loop`, `NodeOf::post`, I14), `consumedBy(loop, member)`, wakes, the I/O executor, stores with the boot sweep, claims (I8 with R15), recordings opened after their claim; the carried log patch; `sendspin` onto `TypeSpec`, its worker a loop state, and `TypeHarness`; `notYetInHarness` goes | — | 3b |
 | **3d** | **Changes in place and reshape** (a PipeWire spike first, for `pw_filter`'s ports on a connected filter) | Rows' `.inPlace()`; the plan's outcomes and `nodeChanged`; `configure(cx, &old, new)`, `Configured::restart`, `cx.whenReady`, `ConfigureDone`, `Lifecycle`; holds with fades and their acknowledgement, make-before-break with retiring resources, break-first behind a framework hold, claims swapped, code and layout swapped (two layouts, 6.7), the deadline, supersession (T18) and the fallback restart; `PortBlock::reshape`; `rtp` and `sendspin` change in place (node-primitives.md G19, decided); `applied`, `inPlace` and `ports` on the wire; the editor's "restarts the node" hint. This slice changes the audio path (holds, swaps, reshapes) | — | 3c (claims) |
@@ -1767,7 +1871,7 @@ Each built piece and its fate [V, as of the files named]:
 
 | Built piece | Where | Fate | Slice |
 |---|---|---|---|
-| `NodeState`, `NodeLifecycle` (frozen, `batch2.md` section 4) | `node_lifecycle.hpp:8-41`, `node_lifecycle.cpp` | Replaced: `BlockMachine` and `ConfigurationMachine` (pure), the node state derived from them and the wanted state; `stateName` gains the new names. An erratum in `batch2.md` section 11 | 3a |
+| `NodeState`, `NodeLifecycle` (frozen, `batch2.md` section 4) | `node_lifecycle.hpp:8-41`, `node_lifecycle.cpp` | Replaced: `BlockMachine` and `ConfigurationMachine` (pure), the node state derived from them and the wanted state (`disabled` and the stop); `stateName` gains the new names, `disabled` among them. An erratum in `batch2.md` section 11 | 3a |
 | `StartContext` | `node_type.hpp:184-225` | Becomes `ConfigureContext` (erased), behind `ConfigureOf<spec>` (6.10); its `acquire` calls become the context's calls by kind; the `HandoffRequest` call becomes `cx.sink(bank, shape)`; `events()` moves to `NodeOf::handle()`; `declareLatency` stays for a type's own code | 3a |
 | `StartResult`, `RunRecipe`, `Ready` | `node_type.hpp:226-306` (`RunRecipe` at 279, `StartResult` at 283) | Go. The two-phase start and its recipe have no successor: `configure` acquires and constructs at once (R19), and readiness is the framework's. `StartResult`'s `SpecCode` constructor becomes `NodeCode`'s, which `cx.use` takes | 3a |
 | `NodeConfig::start` | `node_type.hpp:307-315`; `SpecConfig::start`, `type_spec.hpp` | Becomes the type's class: `SpecConfig` makes the instance (with `NodeOf<spec>&` or none) and finds `configure`, `start` and `stop` by name, each held to its signature | 3a |
@@ -1782,10 +1886,10 @@ Each built piece and its fate [V, as of the files named]:
 | `joinOutsideNode`, `AlsaSoundCards`, `RtpReceivers` | `outside_nodes.cpp`, `sound_cards.cpp`, `rtp_receivers.cpp` | Kept: the one companion join; ring companions use it with a `pw_filter` body. `RtpReceivers` declares `latencyMs` on its link | 3b |
 | `RecordingRequest`, `RecordingAdapter`, `RecordingFile` | `node_type.hpp:164-167`, `node_host.hpp:159-174` | A deferred kind: claimed, opened on the I/O executor, its descriptor usable once configured (node-primitives.md 6.11) | 3c |
 | `ResourceRegistry` | `node_host.hpp:175-196` | Kept: one adapter per kind; gains the ring companions' adapters (3b) and the later kinds | 3b, 3c |
-| `NodeHost` | `node_host.cpp` | Rewritten around the two machines and the wanted state. `startRun` (`node_host.cpp:272-310`) becomes T2 and T3 (the instance, `configure`, readiness) and T5 (drive, then `start()`); `nodeUpdated` (`node_host.cpp:581`) splits into the plan's outcomes; a failure (`outsideLost`, `runLost`, `node_host.cpp:369-377`) tears the configuration down and keeps the block; new: `stop` and `start` (T6 to T8); `nodeChanged` is overridden (3d); an in-place path with partial teardown (3d); the block's reshape between teardown and `configure` (3d). Teardown keeps its steps and deadline (`node_host.cpp:379-470`), with companions at steps 2 and 3 | 3a to 3d |
+| `NodeHost` | `node_host.cpp` | Rewritten around the two machines and the wanted state. `startRun` (`node_host.cpp:272-310`) becomes T2 and T3 (the instance, `configure`, readiness) and T5 (drive, then `start()`); `nodeUpdated` (`node_host.cpp:581`) splits into the plan's outcomes; a failure (`outsideLost`, `runLost`, `node_host.cpp:369-377`) tears the configuration down and keeps the block; new: `stop` and `start` (T6 to T8), with the node's stop held per node and dropped when the node goes; `disable` and `enable` (T19 to T22); `nodeChanged` is overridden (3d); an in-place path with partial teardown (3d); the block's reshape between teardown and `configure` (3d). Teardown keeps its steps and deadline (`node_host.cpp:379-470`), with companions at steps 2 and 3 | 3a to 3d |
 | `NodeHealth`, `NodeHealthListener` | `node_host.hpp:22-37` | Gain `phase`; `StatusLog`'s `node` record and the gateway's `node.state` carry it | 3a |
-| `DesiredGraph::plan`, `commit`, `DesiredNodeListener` | `desired_graph.cpp:149-209`, `desired_graph.hpp:15-27` | The wanted state is part of a node's desired state (3a); the plan names each node's outcome; a change of ports with the same type is a reshape, not a replace; `nodeChanged` with defaults keeps other listeners as they are (3d) | 3a, 3d |
-| The graph file's model | `src/config/` | Reads and writes `node <type> <name> stopped`, edited at its source by `node.start` and `node.stop` (gate F1) | 3a |
+| `DesiredGraph::plan`, `commit`, `DesiredNodeListener` | `desired_graph.cpp:149-209`, `desired_graph.hpp:15-27` | `disabled` is part of a node's desired state (`NodeSpec` gains it, 3a), with the outcomes `disable`, `enable` and `stored`; the node's stop is not (it is `NodeHost`'s); the plan names each node's outcome; a change of ports with the same type is a reshape, not a replace; `nodeChanged` with defaults keeps other listeners as they are (3d) | 3a, 3d |
+| The graph file's model | `src/config/` | Reads and writes `node <type> <name> disabled`, edited at its source by `node.disable` and `node.enable` (R25, R28); `node.start` and `node.stop` pass through the keeper as steps that need no file, as `node.invoke` does (control-plane.md 7.6) | 3a |
 | `FilterPortBlocks` | `port_blocks.cpp` | 3a: `drive(code, done)` asynchronous, arming the interim sinks in the same invoke, and the framework's whole-block fade with its acknowledgement; 3d: `reshape` with the prepared layout kept for the old code, and per-bank holds | 3a, 3d |
 | `TypeHarness`, `NodeHarness` | `ear/testing/`, `testing/node_harness.cpp` | Apply operations and step the lifecycle (3a), fake companions as rings (3b), the primitives and loop states (3c), in-place changes and reshape (3d) | 3a to 3d |
 | `white`, `card`, `rtp` | `src/nodes/*` | `start` becomes `configure` (3a); `rtp`'s `declareLatency` moves into its companion kind (3b); `rtp` changes in place (3d) | 3a, 3b, 3d |
@@ -1796,21 +1900,21 @@ Each built piece and its fate [V, as of the files named]:
 
 | Test group | Today | Fate |
 |---|---|---|
-| `node_lifecycle_test.cpp` (7) | the four-state machine | Rewritten in 3a as state-against-fact tables for both machines, the wanted state and the derived state, every transition (T1 to T18) included |
-| `node_host_test.cpp` (47) | NodeHost with fake adapters | In 3a: the two order tests ("A node gets its port block, then starts, prepares its code, drives the block and builds its run"; "Start only acquires: the code drives the block at once, and the recipe runs once every resource is ready") are rewritten to the new order (the instance and `configure`, readiness, then drive and `start()` once the block is ready); "A node acquires resources and its events only inside start" becomes "only inside configure"; the two loss cases ("A receiver lost after the node ran ...", "A run lost from its own thread ...") now expect the configuration torn down, claims released and the block silent with its wires kept. New: stop and start (the configuration kept, sinks disarmed and re-armed, `stop()` before the fade), a node configured while wanted stopped never calling `start()`, `start` on a failed node retrying. Kept as they are, with renamed steps: block lost (I1), stop order and `allGone`, removal, restart behind the same block, update of a failed node, cards and receivers in either order, one name per engine object, the pass-through, the latency plan, the restart and name waits (I7), notes, I5a's leaks, late messages from an older generation (I6), the barrier first, step 5's order. In 3a the handoff cases (a consumer blocked at teardown; past the deadline; the threads closing after every handoff) move to sinks, and new cases cover a sink with no consumer or two at configure's return, the fade acknowledged before every barrier, and a barrier's completion arriving later than the call (asynchronous). In 3c the recording cases follow the deferred kind, loop states are destroyed on their own threads, and a claim case runs two nodes swapping ports with their teardowns finishing in either order. 3d adds in-place, fallback, deadline, supersession (a newer change before and after the commit point; `restart` and `stop` during an in-place change), a retiring resource lost, hold, code swap and reshape cases |
+| `node_lifecycle_test.cpp` (7) | the four-state machine | Rewritten in 3a as state-against-fact tables for both machines, the wanted state and the derived state, every transition (T1 to T22) included |
+| `node_host_test.cpp` (47) | NodeHost with fake adapters | In 3a: the two order tests ("A node gets its port block, then starts, prepares its code, drives the block and builds its run"; "Start only acquires: the code drives the block at once, and the recipe runs once every resource is ready") are rewritten to the new order (the instance and `configure`, readiness, then drive and `start()` once the block is ready); "A node acquires resources and its events only inside start" becomes "only inside configure"; the two loss cases ("A receiver lost after the node ran ...", "A run lost from its own thread ...") now expect the configuration torn down, claims released and the block silent with its wires kept. New: stop and start (the configuration kept, sinks disarmed and re-armed, `stop()` before the fade), a node configured while wanted stopped never calling `start()`, `start` on a failed node retrying; disable and enable (the whole configuration torn down with the block and wires kept, `stop()` only from `running`, an enable configuring afresh, a node added disabled never configured, a stopped node's stop dropped by a disable, `start`, `stop` and `restart` on a disabled node refused, a stop kept through a hand edit's restart-only change and dropped by a rename). Kept as they are, with renamed steps: block lost (I1), stop order and `allGone`, removal, restart behind the same block, update of a failed node, cards and receivers in either order, one name per engine object, the pass-through, the latency plan, the restart and name waits (I7), notes, I5a's leaks, late messages from an older generation (I6), the barrier first, step 5's order. In 3a the handoff cases (a consumer blocked at teardown; past the deadline; the threads closing after every handoff) move to sinks, and new cases cover a sink with no consumer or two at configure's return, the fade acknowledged before every barrier, and a barrier's completion arriving later than the call (asynchronous). In 3c the recording cases follow the deferred kind, loop states are destroyed on their own threads, and a claim case runs two nodes swapping ports with their teardowns finishing in either order. 3d adds in-place, fallback, deadline, supersession (a newer change before and after the commit point; `restart` and `stop` during an in-place change), a retiring resource lost, hold, code swap and reshape cases |
 | `type_spec_test.cpp` (8), `compile_fail/type_spec_bad.cpp` | the spec, `Io`, the behaviour's shape | Kept; the shape cases move from `start` to the class's members; new compile-fail cases: `configure`, `start` or `stop` of the wrong signature, a constructor that is neither of the two, a post whose function takes another loop's state type, `consumedBy` naming a member that is not a `SinkConsumer`, a `Lifecycle` deadline above 60 s, a hold of an input bank, a companion on a public bank (3a, 3b, 3c, 3d) |
-| `desired_graph_test.cpp` (17) | plans and commits | Kept; 3a adds the wanted state; in 3d the port-change replacement cases become reshapes, and outcome cases are added |
+| `desired_graph_test.cpp` (17) | plans and commits | Kept; 3a adds `disabled` and the outcomes `disable`, `enable` and `stored`; in 3d the port-change replacement cases become reshapes, and outcome cases are added |
 | `handoff_test.cpp` (5), ear_pipewire | the handoff on real threads | Become the interim sink's tests in 3a (order, drops counted, close drains, no allocation on the realtime side, and a ramp recorded through it that starts at the first driven sample and ends at the last, with no trailing zeros, across a stop and a start too), then the sink companion's in 3b, plus the source's (shortfall, time kept, played reports, the fade at an underrun and a clear) and the same-cycle ramp test |
 | `port_block_test.cpp` (13), `sound_card_test.cpp` (6), `rtp_receiver_test.cpp` (9), `engine_test.cpp` (7) | blocks, cards, receivers, the engine | Kept; 3d adds reshape (a port added and removed beside a running ramp, links of surviving ports kept) and holds (the fade, then zeros) |
 | `white_test.cpp` (3), `card_test.cpp` (4), `rtp_test.cpp` (6), `file_test.cpp` (7) | each type through `TypeHarness` | Rewritten in 3a to the harness's operations, with the same assertions; `file`'s exact-samples test reads the sink fake's chunks from 3b; `rtp` gains in-place cases in 3d |
 | sendspin's `code_test.cpp` (13), `feed_test.cpp` (8), `to_server_test.cpp` (4) | its realtime code, feed and handoff consumer | In 3b: the skip and dating cases move to the source companion's tests (the rule moved, 9.6); the feed's to the source's ring; `to_server`'s adapt to stamped chunks. `clock_test.cpp` (4) is kept as it is: end to end, it proves the dating through a following card with companions in the path |
 | `test/nodes/` all-type tests | every type through the harness | Kept; the harness walks every state and transition for every type, stop and start included |
-| `ear_config_tests` | the graph file model and keeper | 3a adds the `stopped` word: read, written, edited at its source by `node.start` and `node.stop`, refused as `shared-definition` where a snippet makes the node line for several nodes |
-| `ear_system_tests` | the real `out/ear` | Kept. Lines that wait for `node <n> starting` after an edit wait for `node <n> stopping: restarting (<keys>)` then `starting` (3a); lines that wait for a removal's `node <n> stopped dropped=<frames>` wait for `node <n> removed dropped=<frames>` (3a). New in 3a: `node.stop` silences a `white` node's recording (exact zeros, the WAV still growing), `node.start` brings the noise back, the `stopped` word written in `ear.conf` and honoured at the next boot. The sendspin ramp test, frame for frame through a source and a sink, is 3b's proof. New in 3d: an `rtp` port changed in place (silence, then the tone, no `stopping`), a card's playback count reshaped on the test card (the surviving channel's link never pending), an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the fade's slope), and a `sendspin` name changed in place: `reconfiguring` and never `stopping`, the same client id, the key file not read again, the connection dropped and back |
+| `ear_config_tests` | the graph file model and keeper | 3a adds the `disabled` word: read (with and without a block), written and removed at its source by `node.disable` and `node.enable` with comments and layout kept, refused as `shared-definition` where a snippet makes the node line for several nodes; `node.start` and `node.stop` through the keeper write nothing and make no version, also while the file has errors |
+| `ear_system_tests` | the real `out/ear` | Kept. Lines that wait for `node <n> starting` after an edit wait for `node <n> stopping: restarting (<keys>)` then `starting` (3a); lines that wait for a removal's `node <n> stopped dropped=<frames>` wait for `node <n> removed dropped=<frames>` (3a). New in 3a: `node.stop` silences a `white` node's recording (exact zeros, the WAV still growing), `node.start` brings the noise back, and `ear.conf` is untouched; a node stopped before a restart of ear runs after it; `node.disable` writes `disabled` into `ear.conf`, silences the recording and is honoured at the next boot (`node <n> disabled`, nothing configured), and `node.enable` removes it; a disabled `sendspin` node's listening port taken by another node, then the enable failing `start-failed` naming it. The sendspin ramp test, frame for frame through a source and a sink, is 3b's proof. New in 3d: an `rtp` port changed in place (silence, then the tone, no `stopping`), a card's playback count reshaped on the test card (the surviving channel's link never pending), an `rtp` format changed on the same port (a fade to exactly 0, silence, a fade in, no step above the fade's slope), and a `sendspin` name changed in place: `reconfiguring` and never `stopping`, the same client id, the key file not read again, the connection dropped and back |
 
 ### 13.3 Where the two module designs are the home
 
-Both pages are at revision 4, written to this revision in the same change. Each fact has one home; the other pages cite
+Both pages are at revision 5, written to this revision in the same change. Each fact has one home; the other pages cite
 it.
 
 - **`docs/design/node-primitives.md`** (slice 3c, and the primitives' part of 3d, its G18, decided) is the home of: the
@@ -1821,7 +1925,7 @@ it.
   (6.10); recordings (6.11); `TypeSpec`'s member list and order, `.lifecycle` included (6.13); sendspin's in-place
   `configure` (4.2).
 - **`docs/design/control-plane.md`** (slices 5 and 6, and the wire of 3a, 3b, 3d and 8) is the home of: every member of
-  `node.state` per phase, `reason` and `lastFailure` (4.8); `node.start` and `node.stop` (4.2); `applied`, `inPlace`,
+  `node.state` per phase, `reason` and `lastFailure` (4.8); `node.start`, `node.stop`, `node.disable` and `node.enable` (4.2); `applied`, `inPlace`,
   `dryRun`, `ports-in-use` and `dropRoutes` (4.9); companions on the wire (4.10); every method and notification (4.2,
   4.3), error codes (4.5) and framework diagnostic codes (4.6); `.shapesPorts()`'s build and schema (5.1); `restart`'s
   reply by phase (7.6); the `node` records' fields and the `still` record (9.1).
@@ -2055,8 +2159,8 @@ sections above, and why:
 ## 14. Gate answers
 
 The owner's answers, 2026-11-07, in chat (current choices; later evidence may reopen them); 14.1 adds those of
-2026-11-08; 14.2 asks revision 6's owner questions; 14.3 lists what the designer decided; 14.4 says what became of every
-gate revision 5 asked.
+2026-11-08; 14.2 says that no owner gate is open (revision 6's three were answered on 2026-11-08); 14.3 lists what the
+designer decided; 14.4 says what became of every gate revision 5 asked.
 
 | # | Question | The owner's answer | Where it lands |
 |---|---|---|---|
@@ -2070,7 +2174,7 @@ gate revision 5 asked.
 | Q8 | The internal clock's host clock (after the second review found timerfd cannot arm the raw clock, and that chrony may slew `CLOCK_MONOTONIC` by up to 83,333 ppm) | "Track the raw clock": the dummy's timer steered to `CLOCK_MONOTONIC_RAW`; if PipeWire cannot, fall back to `CLOCK_MONOTONIC` with bounded slewing in the deployment | Section 10, 9.3; slice 7 |
 | Q9 | How people read JSON output (after the second review asked for a human mode) | "JSON with a msg field": every record carries a short human sentence; one format, no flag | 8.8; slice 4 |
 
-### 14.1 The owner's answers of 2026-11-08 (revisions 5 and 6)
+### 14.1 The owner's answers of 2026-11-08 (revisions 5, 6 and 7)
 
 | # | Question | The owner's answer | Where it lands |
 |---|---|---|---|
@@ -2089,58 +2193,32 @@ gate revision 5 asked.
 | Q22 | Revision 5's A2: when does `start` run against `build`? | R19: "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 6.4: one `configure`; readiness is the framework's; `start()` once configured and the block ready |
 | Q23 | Revision 5's A3: what happens to a failed run? | R20, R21: there is no run; only a node fails; the graph always runs; operations are asynchronous | 6.1 to 6.3: a failed node is torn down at once, keeps its wires, releases its claims |
 | Q24 | Revision 5's A4: where reconfigure lives, and how it reaches the type's threads | R24: "too technical for me to properly answer" | Decided by the designer: D-A4 (14.3) |
-| Q25 | Can nodes be started and stopped? | R20: "nodes can be added to it, configured, wired, start/stop" | 6.3; `node.start` and `node.stop` (control-plane.md 4.2); how `ear.conf` says it is gate F1 |
+| Q25 | Can nodes be started and stopped? | R20: "nodes can be added to it, configured, wired, start/stop" | 6.3; `node.start` and `node.stop` (control-plane.md 4.2); how `ear.conf` says it is gate F1 (Q26) |
+| Q26 | Revision 6's F1: can `ear.conf` say that a node is stopped, and how? (recommended: the word `stopped` on the node's line) | R25: "“Disabled” would be a better term"; then R27: "Both words"; then R28: "Only disabled in file" | 6.2, 6.3: `disabled` is a state of its own, written `node <type> <name> disabled { ... }`, set by `node.disable` and `node.enable` or a hand edit, surviving a restart; `stopped` is never written, set by `node.stop` and `node.start`, forgotten at a restart (D-F1 to D-F7) |
+| Q27 | Revision 6's F2: what does a stopped node keep? (recommended: (a), everything) | R26: "Keeps everything" | 6.2: a `stopped` node keeps its configuration, claims and companions, and Start cannot fail for a missing device or a taken port; a `disabled` node releases everything (R27) |
+| Q28 | Revision 6's C2: what does the editor show of a node's hidden helpers? | (a), as recommended: small badges in the node's box, one per helper, its kind and a dot for ready, its drop count on hover | 9.6; control-plane.md 8.7 |
+
+The owner also answered control-plane.md's five gates the same day: W3 in the owner's words ("I would like each port to
+show meter levels so I can see audio traversing the graph"), X2 and G1 as recommended, G3 "Only a related save" and G4
+"Keep last value", neither as recommended. They are recorded there (its section 1, R29 to R31, and 14.1) and change
+nothing on this page but 6.7's citation of X2.
 
 **A change of practice** (R24). From revision 6, the owner is asked only about what an operator or a type author sees:
 what the editor shows, what `ear.conf` can say, what happens to audio, what a type author writes. Each question gives
 plain background, a concrete scenario, options, a recommendation and why. Purely technical or internal choices are
 decided by the designer and listed in 14.3 with their reasons, so the owner can overturn any of them. The three pages
-together ask the owner eight questions: F1, F2 and C2 here; W3, X2, G1, G3 and G4 in control-plane.md 14.
+together asked the owner eight questions in revision 6: F1, F2 and C2 here; W3, X2, G1, G3 and G4 in control-plane.md
+14. All eight were answered on 2026-11-08, and none is open.
 
-### 14.2 Owner gates for revision 6
+### 14.2 Owner gates
 
-The page is written to each recommendation.
-
-**F1. Can `ear.conf` say that a node is stopped, and how?**
-*Background.* You said nodes can be started and stopped while the graph runs. A stopped node stays in the graph with its
-settings and its wires, but plays silence. `ear.conf` is the one description of the graph: the editor's text pane shows
-it, a hand edit wins over anything the editor did, and ear rebuilds the graph from it when it restarts. So the question
-is whether "stopped" is part of the graph (written in the file) or only a moment's state (forgotten at the next
-restart). *Scenario.* An operator clicks Stop on the `porch` card node because the porch is empty tonight. At 3 a.m.
-the pod is rescheduled and ear restarts. In the morning, is the porch silent or playing? And a colleague who prefers
-`vi` wants to stop the node by editing the file.
-*Options.* (a) Not in the file: Stop and Start are buttons only; every node runs again after a restart; a hand edit
-cannot stop a node. (b) A word in the node's line, written and removed by the buttons: `node card porch stopped {
-card USB2; playback 2; }`. (c) A setting inside the braces, reserved by ear for every type: `running false;`.
-*Recommendation: (b).* What the editor shows and what the file says stay the same thing, a stop survives a restart, and
-a hand edit can stop or start a node. The word sits beside the node's type and name, which are ear's, not the type's,
-so it never collides with a type's own settings, unlike (c). With (a), the file would no longer describe the graph that
-is running, and the porch would play at 3 a.m.
-
-**F2. What does a stopped node keep?**
-*Background.* Starting a node opens what it needs: a sound card's device, a network port to listen on, a file to record
-into. Stopping it ends its audio. Either it keeps those things open, ready to start again at once, or it gives them
-back, and starting it opens them again (which can fail, or take a few seconds). *Scenario.* The operator stops the
-`desk` card node to let another program use the MOTU for a while, and stops `kitchen`, a `sendspin` node listening on
-port 8928, then tries to give port 8928 to a new node.
-*Options.* (a) A stopped node keeps everything it opened: the card stays open (playing silence), the port stays
-reserved for it; Start is instant and cannot fail for a missing device or a taken port. To free them, remove the node.
-(b) A stopped node gives everything back: the card is closed, the port is free; Start opens them again and may fail.
-*Recommendation: (a).* "Stopped" then means "silent, and ready": the operator can rely on Start, and no other node can
-take a stopped node's port behind its back. Freeing a device is what removing the node is for, and removing then adding
-it again is two clicks. (b) makes Stop a hidden removal and Start a hidden add, with their failures.
-
-**C2. What does the editor show of a node's hidden helpers?**
-*Background.* Some nodes reach outside the realtime audio path through hidden helper nodes ear makes for them: a
-recording node's file writer, a sound card's device, a network stream's receiver, a Music Assistant node's sender and
-receiver. They are never written in `ear.conf` and never wired by hand, but each can be ready or not, and can drop audio
-(a slow disk) or run short (a slow network). *Scenario.* A two-hour recording has gaps because the disk is slow; the
-operator opens the editor to see why.
-*Options.* (a) Small badges inside the node's box, one per helper (its kind and a dot for ready; its drop count on
-hover). (b) Nothing in the editor; standard output and diagnostics only. (c) Full boxes for the helpers, without wiring
-handles.
-*Recommendation: (a).* The operator sees each helper at the node it belongs to, and the slow writer at a glance, without
-a second graph to read; (c) doubles the boxes on screen for things nobody wires; (b) hides the answer in logs.
+None is open. Revision 6 asked three here (F1, can `ear.conf` say that a node is stopped, and how; F2, what does a
+stopped node keep; C2, what does the editor show of a node's hidden helpers), each with plain background, a scenario,
+options and a recommendation; the owner answered all three on 2026-11-08 (14.1, Q26 to Q28; R25 to R28). F1's
+recommendation, the word `stopped` in the node's line, was not taken as asked: the owner named the written state
+`disabled` (R25), kept both words (R27), and put only `disabled` in the file (R28); F2's answer, "Keeps everything"
+(R26), is `stopped`'s. The designer's choices where the two states meet are D-F1 to D-F7 (14.3). The answers raise no new
+owner question.
 
 ### 14.3 Decided by the designer
 
@@ -2154,8 +2232,8 @@ can overturn any. The pages are written to them.
 | D-A6 | A loop's state is destroyed on its own loop, after the work already posted ran (`stop()`'s goodbye among it); its destructor stops and joins its library's threads. There is no close hook | R23's three hooks; joining a thread off the main loop keeps I11; the teardown deadline (I5a) still bounds it |
 | D-A7 | Any change that arrives before the node first reached `running` or `stopped` restarts its configuration; in-place changes apply only from then on | Nothing has started, so nothing is gained by changing in place, and one rule is easier to test |
 | D-A8 | A `stop` or a removal during an in-place change ends it as a newer change would before its commit point, and waits for it after (6.3) | The operator's newest intent wins at once, and a type's own work is never cut in half |
-| D-A9 | The `restart` action stays (8.4): a full stop, configure from empty, and back to the wanted state, without editing `ear.conf` | It is the only way to start a node afresh with unchanged settings (a key file fixed by hand), and costs nothing beyond stop and start |
-| D-A10 | Standard output: `node <n> stopped` now means a resting stopped node; a removal ends with `node <n> removed dropped=<frames>` (control-plane.md 9.1) | `stopped` must mean one thing; the system tests that wait for a removal's line change once, in 3a |
+| D-A9 | The `restart` action stays (8.4): a full stop, configure from empty, and back to the wanted state, without editing `ear.conf`; refused on a disabled node (D-F2) | It is the only way to start a node afresh with unchanged settings (a key file fixed by hand), and costs nothing beyond stop and start |
+| D-A10 | Standard output: `node <n> stopped` now means a resting stopped node, and `node <n> disabled` a disabled one; a removal ends with `node <n> removed dropped=<frames>` (control-plane.md 9.1) | `stopped` must mean one thing; the system tests that wait for a removal's line change once, in 3a |
 | D-A11 | The generation (6.1, I6) is internal: never on the wire, in a record or in a type's API | R20: no run; late messages still need dropping, which a counter does invisibly |
 | D-B1 | Each setting row says whether it changes in place (`.inPlace()`, `.live`), restart-only by default; the plan reads the marks; `configure` may still answer `restart` | It is data in the one settings table, so the editor shows "applies in place" or "restarts the node" with no type code, and nothing is in place by accident |
 | D-B2 | A type cannot refuse a change it cannot make in place; restart is the fallback | A refusal would make a valid `ear.conf` unreachable from a running graph while the same file boots fine, against "hand edits win" |
@@ -2166,6 +2244,13 @@ can overturn any. The pages are written to them.
 | D-C3 | A type's own audio code may share values (never audio) with its instance or a loop's state, through wait-free members (`Mailbox<T>`) | Internal values are not operator-facing status; audio stays companions-only (I12) |
 | D-C4 | A source companion keeps time by default: it skips what a stalled graph missed, counting it played | Every network source wants it, and the rule is subtle enough to write once |
 | D-D1 | Slices in the order 3a, 3b, 3c, 3d, then 5, 6, 8, 9 (13.1) | Each later slice hooks into 3a's states; companions remove primitives 3c would otherwise build; in-place changes need claims and loops |
+| D-F1 | The wanted state has two owners: `disabled` is the desired graph's (`NodeSpec`, read from and written to `ear.conf`); the node's stop is `NodeHost`'s, in memory, per node, dropped when the node is removed, renamed, replaced or disabled (6.3) | R28: only `disabled` is in the file, so the desired graph, which is the file's, holds only it; the stop is the framework's moment-to-moment state |
+| D-F2 | `stop`, `start` and the `restart` action on a disabled node are refused `node-disabled` (control-plane.md 4.5); the editor disables Stop and Start there and offers Enable | A stop's promise (keep everything open, R26) cannot be kept by a node that holds nothing without opening it, and a Start that enabled it without writing the word would leave `ear.conf` saying `disabled` while it plays, so the next restart would silence it |
+| D-F3 | `disable` on a stopped node tears it down and drops its stop, so a later `enable` runs it; `enable` on a stopped (or running) node is `unchanged`, writes nothing, and leaves a stopped node stopped | Enable means "remove the word", never "start what the operator stopped"; after a disable the operator's last word is the file's, and enabling it means on |
+| D-F4 | A hand edit or `graphFile.set` that keeps a node (same name and type) keeps its stop, whatever else it changes; one that removes, renames or replaces it drops the stop, and the new node runs; one that writes `disabled` disables it (6.3) | The stop is not in the file, so no text can say to keep or drop it; the same node keeps the operator's intent, a new one starts as `ear.conf` says |
+| D-F5 | A disabled node keeps its port block, its ports and its wires (silent, its input meters live); a settings change to it is the plan outcome `stored` (written, nothing run), a change of ports reshapes the block alone (6.7); it never retries or recovers | I1 (one block for the node's life) and R27's wires that stay; the editor keeps drawing the node where it is, with handles that match the file |
+| D-F6 | `node.start` and `node.stop` pass through the keeper as steps that need no file, as `node.invoke` does; the reply comes in the main-loop turn that applies them (`applied`: `start`, `stop`, `retry` or `unchanged`); no `graphFile.changed` and no `node.updated`; the new `wanted` is on `node.state` (control-plane.md 4.2, 4.8) | They stay ordered with the edits around them, as every request is, and they work while `ear.conf` has errors, since they edit nothing |
+| D-F7 | A disable's teardown shows as `stopping` with cause `disabling`, an enable's configuration as `configuring` with cause `enabling`; `disabled` joins the short `state` set (`starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering`) | No new transitional colour; the cause says why, as for a restart. `disabled` needs its own colour: it is a resting state the file chose, unlike `stopped` |
 | D-D2 | A module design, `docs/design/node-lifecycle.md`, for 3a, 3b and 3d's cut and tests, reviewed before 3a's code; it cites 6.10 for the API | 3a changes a frozen interface, every type and `NodeHost`'s teardown; the owner works design first |
 
 ### 14.4 What became of revision 5's gates
@@ -2178,10 +2263,10 @@ can overturn any. The pages are written to them.
 | A4 (where reconfigure lives) | Decided by the designer: D-A4 |
 | B1 to B6 | Decided by the designer: D-B1 to D-B6 |
 | C1 (companions as real engine nodes) | Settled by R18 |
-| C2 (what clients see of companions) | Kept as an owner gate, rewritten (14.2) |
+| C2 (what clients see of companions) | Kept as an owner gate, rewritten in revision 6; answered as recommended (Q28) |
 | C3, C4 | Decided by the designer: D-C3, D-C4 |
 | D1, D2 | Decided by the designer: D-D1, D-D2 |
-| Group E (rules a module page changed) | Every row is now decided in its module page (node-primitives.md 18.3; control-plane.md 14) or is the owner gate named there: `reason` kept and `lastFailure` beside it (control-plane.md W2, decided); a reshape stranding wires (X2, an owner gate); `restart` during an in-place change (D-B6); sendspin's listening and dialling switch in place (node-primitives.md G19, decided); a `still` record (W4, decided); `.shapesPorts()` (X1, decided); status writers a loop, `rt` or `companion` (settled); gestures `node.set`, `gesture.*` (G2, decided); type wakes deferred (G23, decided); a same-port receiver replaced break-first (G22, decided); sink readiness at step 4' (settled) |
+| Group E (rules a module page changed) | Every row is now decided in its module page (node-primitives.md 18.3; control-plane.md 14) or is the owner gate named there: `reason` kept and `lastFailure` beside it (control-plane.md W2, decided); a reshape stranding wires (X2, answered by the owner as recommended); `restart` during an in-place change (D-B6); sendspin's listening and dialling switch in place (node-primitives.md G19, decided); a `still` record (W4, decided); `.shapesPorts()` (X1, decided); status writers a loop, `rt` or `companion` (settled); gestures `node.set`, `gesture.*` (G2, decided); type wakes deferred (G23, decided); a same-port receiver replaced break-first (G22, decided); sink readiness at step 4' (settled) |
 
 ## 15. Open items
 
@@ -2234,8 +2319,11 @@ can overturn any. The pages are written to them.
     (slice 3d's system test).
   - The fade (5 ms), the hook-slow bound (20 ms) and the in-place deadline (10 s, at most 60 s) are first choices,
     to be tuned when slice 3d runs on the MOTU.
-  - That knobly reads `node <type> <name> stopped { ... }` as ear's directive with one more word and edits it at its
-    source like a setting (gate F1): slice 3a's `ear_config_tests`, before the reader changes.
+  - [U] That knobly reads `node <type> <name> disabled;` and `node <type> <name> disabled { ... }` as ear's directive
+    with one more word, and that the keeper writes and removes the word at its source like a setting, keeping comments
+    and layout (R25, R28): slice 3a's `ear_config_tests`, before the reader changes. The fallback, if knobly's grammar
+    cannot take a fourth word before the block, is `node disabled <type> <name> { ... }`, decided by the designer then
+    and recorded here.
   - [U] That `start` after `stop` drives a prepared code again within one cycle and one main-loop turn, with the sink
     re-armed in the same invoke (slice 3a's harness and `handoff_test.cpp`'s ramp across a stop and a start).
 
@@ -2402,3 +2490,19 @@ rewritten to revision 4 in the same change. A review is owed before slice 3a's m
 least: the state machine against every operation mid-transition (6.3), the stopped state against claims and companions
 (I8, F2), the typed posts' compile-time guarantee (I14), the interim for `sendspin`'s threads in 3a (13.1), and whether
 13.2's migration keeps every slice buildable.
+
+### Revision 7 (2026-11-08, not reviewed)
+
+Revision 7 takes the owner's answers to revision 6's gates (R25 to R28, Q26 to Q28): two resting states instead of one.
+`stopped` keeps everything its configuration opened, Start cannot fail for a missing device or a taken port, and the
+stop is held in memory only, never written to `ear.conf` and forgotten at a restart; `disabled` releases everything (the
+configuration torn down by I5, claims released, companions destroyed), keeps the block and its wires, is the word
+`disabled` on the node's line in `ear.conf`, set by `disable` and `enable` or a hand edit, and survives a restart (6.2,
+6.3, T19 to T22, the plan outcomes `disable`, `enable` and `stored`, I8). The designer decided where the two meet
+(D-F1 to D-F7): start, stop and restart refused on a disabled node, a disable dropping a stop, a hand edit keeping a
+kept node's stop, `node.start` and `node.stop` ordered by the keeper but writing nothing. Gate C2 was answered as
+recommended (badges). Slice 3a builds both states (13.1); 13.2's migration and tests follow. Both module pages moved to
+revision 5 in the same change; control-plane.md also takes the owner's answers to W3, X2, G1, G3 and G4. No owner gate
+is open. The review owed for revision 6 now covers revision 7; it should judge, beside revision 6's list: the two
+owners of the wanted state (D-F1) against "hand edits win", a disable during an in-place change and during a restart's
+teardown (6.3), and an enable that finds its port taken (I8).

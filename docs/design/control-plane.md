@@ -1,6 +1,6 @@
 # The control plane and parameters: one schema, one write path, one wire
 
-Status: proposal, revision 4, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
+Status: proposal, revision 5, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
 (section 16). Revision 3 rebased the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that
 page's review round 3. Revision 4 rebases it onto node-framework.md revision 6, which took the owner's answers of
 2026-11-08 (its R19 to R24): **there is no run**. The graph always runs; operations on a node (add, configure, start,
@@ -11,9 +11,16 @@ the wire and the records (the framework drops a closed configuration's late mess
 `node.stop` and the `wanted` member (4.2, 4.8), restates health for the new states (4.8), status as the node's
 configuration's (4.3), and the editor and records in each state (8.6, 9.1). It also re-sorts its gate questions to the
 owner's new practice (section 14): the owner is asked only what an operator sees; every technical question is decided by
-the designer, with its reason. Revision 4 is not reviewed yet.
+the designer, with its reason. Revision 5 takes the owner's answers of 2026-11-08 to all eight gates (section 1, R25 to
+R31; 14.1): two resting states, `stopped` (Stop and Start: keeps everything, never written, forgotten at a restart) and
+`disabled` (Disable and Enable: releases everything, the word `disabled` in `ear.conf`), with `node.disable` and
+`node.enable` beside `node.start` and `node.stop`, which no longer edit `ear.conf` (4.2, 4.8, 7.6, 8.6); no "held"
+marks, but a live meter on every port, inputs and outputs, so audio can be followed through the graph (8.6); a save
+of `ear.conf` stops a fader only when it changes the dragged value or its line (7.3); a fader whose browser
+disconnects or goes silent is ended as released, keeping its last value (7.3); X2, G1 and C2 as recommended.
+Revisions 4 and 5 are not reviewed yet.
 Nothing here is built. Layer: module design for slices 5 (control plane) and 6 (parameters) of node-framework.md
-(revision 6), beneath that page, and the wire and editor side of its slices 3a, 3b, 3d and 8 (section 11 says which
+(revision 7), beneath that page, and the wire and editor side of its slices 3a, 3b, 3d and 8 (section 11 says which
 step lands with which slice). It refines that page's sections 6.2, 6.3, 6.6, 6.7 (on the wire), 8.1 to 8.7, 9.2 where
 parameters touch the audio contract, 9.6 (what clients see of companions), and section 13's slices; the table "What
 this page changes" below says exactly where. It also lands slice 4's deferred node-facing primitives (8.8's erratum:
@@ -28,7 +35,8 @@ knobly's citations (`/opt/knobly/...`) were checked in the dev image.
 
 Slices 5 and 6 are designed together because they share six things: one type schema (a parameter is a settings row
 marked `.live`), one write path for what lasts (the graph file keeper: a gesture commits at its end into `ear.conf`, and
-a hand edit aborts it; actions, start, stop and restart are ordered by the keeper too), one wire vocabulary and protocol
+a related hand edit aborts it; actions, start, stop and restart are ordered by the keeper too, and disable and
+enable are edits), one wire vocabulary and protocol
 number, one line drawn between parameter, status and event, one family of realtime channels (wait-free parameter slots
 into the audio thread, the realtime coded ring out of it), and one editor model that renders controls, status and
 diagnostics from the schema.
@@ -37,13 +45,14 @@ diagnostics from the schema.
 the states, the transitions T1 to T18, the three hooks and their contexts (its 6.4 and 6.10: `configure(old, new)`,
 `start()`, `stop()`, `ConfigureOf`, `NodeOf`), the plan's outcomes (`unchanged`, `retune`, `reconfigure`, `restart`,
 `reshape`, `replace`, its 6.6), the rows' change marks (`.inPlace()`, `.live`), holds, reshape (6.7), companions (9.6),
-the wanted state (its gate F1), and each state's `node` record `msg` (6.2's table). This page owns how all of that
-reaches clients and people: `node.state`'s members for each state (4.8), `node.start` and `node.stop` (4.2),
+the wanted state (its 6.3: `disabled` in `ear.conf`, the node's stop in memory, R25 to R28), and each state's `node`
+record `msg` (6.2's table). This page owns how all of that reaches clients and people: `node.state`'s members for each
+state (4.8), `node.start`, `node.stop`, `node.disable` and `node.enable` (4.2),
 `applied`, `ports`, `dryRun` and the routes a reshape drops (4.9), the companions' view and notification (4.10), the
 type schema's per-row `change` (4.2), the editor in each state (8.6), the `node` record's fields (9.1), and the
 `restart` action (7.6).
 
-**The boundary with slice 3c** (`docs/design/node-primitives.md`, revision 4, rewritten in the same change; its section
+**The boundary with slice 3c** (`docs/design/node-primitives.md`, revision 5, rewritten in the same change; its section
 14 states the same boundary from its side). Slice 3c owns loops and their states (strands, dedicated), wakes, the I/O
 executor, stores, claims, recordings, and **the node handle**: `NodeHandle` (its section 5), shared-owned and bound to
 the node's current configuration by an internal generation (node-framework.md I6), with `node()`, `lost`, `log` and an
@@ -60,9 +69,9 @@ texts are node-primitives.md's (6.4, 6.9, 6.10), put on the wire by 4.6 here; th
 
 | node-framework.md | What it says | What this page decides |
 |---|---|---|
-| 6.2, health on the wire | `node.state` carries `state` (a short set) and `phase` (the exact state, with its cause) | every member of `node.state` per state, with `wanted`, `cause`, `keys`, `holds` and slice 8's recovery members, and no run; one notification per phase change; `reason` kept with today's meaning, so no protocol bump (4.8; W1, W2) |
-| 6.2, standard output | a `node` record per change of the short state (`starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering`) and `removed`; none for the phases inside `starting` | the records' fields (`phase`, `cause`, `keys`, `holds`, `afterMs`, no run); one more record, `still <phase>`, when a node stays in `added`, `configuring`, `configured` or `starting` past 2 s (9.1; W4) |
-| 6.3, start and stop | operations that change the wanted state, kept in `ear.conf` (its gate F1) | `node.start` and `node.stop`, edits at the source like `node.update`; `start` on a failed node a retry (4.2, 7.6) |
+| 6.2, health on the wire | `node.state` carries `state` (a short set) and `phase` (the exact state, with its cause) | every member of `node.state` per state, with `wanted`, `cause`, `keys` and slice 8's recovery members, and no run (no `holds`: the meters show a hold, W3); one notification per phase change; `reason` kept with today's meaning, so no protocol bump (4.8; W1, W2) |
+| 6.2, standard output | a `node` record per change of the short state (`starting`, `running`, `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering`) and `removed`; none for the phases inside `starting` | the records' fields (`phase`, `cause`, `keys`, `afterMs`, no run); one more record, `still <phase>`, when a node stays in `added`, `configuring`, `configured` or `starting` past 2 s (9.1; W4) |
+| 6.3, start and stop; disable and enable | `stop` and `start` set the node's stop, held in memory and never written; `disable` and `enable` write the word `disabled` in `ear.conf` (R25 to R28) | `node.start` and `node.stop`, ordered by the keeper but writing nothing, with their own replies; `node.disable` and `node.enable`, edits at the source like `node.update`; `start` on a failed node a retry; `start`, `stop` and `restart` refused `node-disabled` on a disabled node (4.2, 4.5, 7.6) |
 | 6.6, the plan's outcome | `node.updated` and the edit's reply carry `applied` | `applied` is the plan's outcome, never what the node later did (that is `node.state`'s `cause`); `dryRun` on `node.set` answers the outcome without committing; the schema says per row how a change applies (`change`, `shapes`) (4.2, 4.9; X1, X3) |
 | 6.6, 6.7, reshape | a reshape is in place when every changed key is `.inPlace()` or `.live`; a plan keeping a route to a vanishing port is refused | `inPlace` on the reshape's `applied`; through the control port refused `ports-in-use`, naming every such route, and `dropRoutes: true` removes their lines in the same commit (4.9; X2) |
 | 6.3, 6.6, 8.4, a change, `stop` or `restart` during an in-place change | a newer change, `stop` or removal supersedes one before its commit point and waits after it; `restart` ends it at once (its D-B6, which absorbed this page's X4) | what a client sees of each: `node.state`'s `keys` replaced on a supersession, `next` for keys waiting after the commit point, `restart`'s reply (4.8, 7.6, 7.7) |
@@ -72,8 +81,8 @@ texts are node-primitives.md's (6.4, 6.9, 6.10), put on the wire by 4.6 here; th
 | 8.1, status on stdout | every change | every change, paced per node and field, with the field's last value always written (6.5, 9; G9) |
 | 8.2, text fields | written under a mutex per field | every off-realtime write goes into one bounded queue per node's configuration, under one mutex, drained by the tick; one FIFO per writer gives 8.1's "an event first flushes the status" for free (6.3) |
 | 8.3, diagnostics | the framework's, per code | kept per code and **subject** (a field, a loop, a claim), each with `active` and the server's `count` (4.3, 4.6) |
-| 8.4 | the handler's result is the reply | the reply of a batch holding an action waits for the handler (deadline 10 s), but the keeper never waits (7.6); `restart` is a stop, a configuration from empty and a start back to the wanted state, replies once the teardown began, and is refused `not-restartable` on a lost block or before the node was first configured; `start` and `stop` are edits (4.2); a second kind of action, a **trigger**, goes to the node's code wait-free (5.5) |
-| 8.5 | one method with a `gesture` field; `begin` refused when the row is on a line that makes other nodes | separate `gesture.*` methods; `begin` answered on the main loop from a **reach index** the keeper posts with each version (7.2); a gesture's **reach** is every node and key whose value is defined at the same place, all live and of one kind and unit, and the gesture moves them all (G1); any hand edit aborts every open gesture (G3); the committed value is rounded to the reach's `decimals` (G5) |
+| 8.4 | the handler's result is the reply | the reply of a batch holding an action waits for the handler (deadline 10 s), but the keeper never waits (7.6); `restart` is a stop, a configuration from empty and a start back to the wanted state, replies once the teardown began, and is refused `not-restartable` on a lost block or before the node was first configured, and `node-disabled` on a disabled node; `disable` and `enable` are edits, `start` and `stop` are not (4.2); a second kind of action, a **trigger**, goes to the node's code wait-free (5.5) |
+| 8.5 | one method with a `gesture` field; `begin` refused when the row is on a line that makes other nodes | separate `gesture.*` methods; `begin` answered on the main loop from a **reach index** the keeper posts with each version (7.2); a gesture's **reach** is every node and key whose value is defined at the same place, all live and of one kind and unit, and the gesture moves them all (G1); a save aborts a gesture only when it changes the dragged value, its defining line or its reach (G3, 7.3); a session that closes or goes silent ends its gestures as released, keeping the last value (G4); the committed value is rounded to the reach's `decimals` (G5) |
 | 8.5, hand edit of a live row | moves the slot without a restart | the `retune` outcome of node-framework.md 6.6's `nodeChanged`, whose default calls `nodeUpdated`, so `NodeHost` retunes and every other listener is unchanged (7.4); a retune never waits for a reconfigure or a restart in flight (7.7) |
 | 8.5, a gesture on a row that is not live | — | refused `not-live` whatever the row's mark: an `.inPlace()` row is edited by `node.set` and reconfigures once, never per tick (7.7; X5) |
 | 8.7 | `graph.get` gains `typeSchemaHashes`, a hash per type | one opaque hash for the whole set (`typeSchemaHash`); types are compiled in, so they change only with ear (4.2) |
@@ -100,19 +109,24 @@ texts are node-primitives.md's (6.4, 6.9, 6.10), put on the wire by 4.6 here; th
 | R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08, chat (node-framework.md R14) | `process` reads inputs, writes outputs and uses this page's wait-free channels (parameters, `rt` status, coded records), never a ring of audio (6.2) |
 | R15 | G3: "(a)": a leaked configuration holding a store, recording path or port: refused with a detail saying the node starts when that run closes; the late close starts it | 2026-11-08, chat (node-primitives.md G3) | The wait is visible: `phase` and its `cause` say which run holds what (4.8) |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08, chat (node-framework.md R16) | Every lifecycle notification, record and editor cue is per node; one node's state changes nothing another node shows (4.8, 8.6) |
-| R17 | "I want the node to control whether settings can be changed in place, with the framework supporting it. For example, changing a network port on a node is something that a node can handle on its own — even if it must output null audio frames for a few seconds. But if reconfiguring changes the shape of the input/output bus, then that might not be fully transparent" | 2026-11-08, chat (node-framework.md R17) | The schema says per row whether a change is live, applied in place or a restart, and which rows change the ports; silence on purpose is shown as held, not as a fault; a shape change says which routes it removes before it does (4.2, 4.9, 8.6) |
+| R17 | "I want the node to control whether settings can be changed in place, with the framework supporting it. For example, changing a network port on a node is something that a node can handle on its own — even if it must output null audio frames for a few seconds. But if reconfiguring changes the shape of the input/output bus, then that might not be fully transparent" | 2026-11-08, chat (node-framework.md R17) | The schema says per row whether a change is live, applied in place or a restart, and which rows change the ports; silence on purpose is said in words on the box ("reconfiguring port") and shown by every port's meter, not as a fault (R29); a shape change says which routes it removes before it does (4.2, 4.9, 8.6) |
 | R18 | "crossing to a non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing graph" | 2026-11-08, chat (node-framework.md R18) | Companions are hidden, not secret: listed under their node, never a box or a route (4.10, 8.7) |
 | R19 | "Shouldn't that all be part of the build stage? How is build different from [re]configure?" | 2026-11-08, chat (node-framework.md R19) | A type writes `configure` once; what the engine readies later is the framework's, and shows as `configuring` with `waitingFor` (4.8) |
 | R20, R21 | "A “run” can’t fail — only a node can fail. We should drop the “run” concept entirely and work with “graph” and “node” concepts. The graph is always running, while nodes can be added to it, configured, wired, start/stop all synchronously within the graph runtime"; "I meant “asynchronously”" | 2026-11-08, chat (node-framework.md R20, R21) | No `run` on the wire or in a record; `node.start` and `node.stop`; a reply says what was applied and never waits for a node's slow work (4.8, 4.9) |
 | R22 | Gate A1: (b), a short set the editor colours and a `phase` with the exact state and cause | 2026-11-08, chat (node-framework.md R22) | `state` and `phase` (4.8) |
-| R24 | "too technical for me to properly answer"; the owner is asked only what an operator or a type author sees | 2026-11-08, chat (node-framework.md R24) | Section 14: five owner gates; every other question decided by the designer |
+| R24 | "too technical for me to properly answer"; the owner is asked only what an operator or a type author sees | 2026-11-08, chat (node-framework.md R24) | Section 14: five owner gates (all answered on 2026-11-08, R29 to R31 and 14.1); every other question decided by the designer |
+| R25 to R28 | On node-framework.md's F1 and F2: "“Disabled” would be a better term"; "Keeps everything"; "Both words"; "Only disabled in file" | 2026-11-08, chat (node-framework.md R25 to R28) | `node.stop` and `node.start` write nothing and a stop is forgotten at a restart; `node.disable` and `node.enable` write `disabled` on the node's line; `wanted` is `running`, `stopped` or `disabled`; `disabled` is a state the editor colours (4.2, 4.8, 8.6) |
+| R29 | On gate W3: "I would like each port to show meter levels so I can see audio traversing the graph" | 2026-11-08, chat (W3) | No "held" marks: every port of every node, inputs and outputs, shows a live meter, so a hold, a stop or a failure reads as silence on that port and on every port it feeds, and the box says why in words (8.6) |
+| R30 | On gate G3: "Only a related save" | 2026-11-08, chat (G3; not the recommendation) | A save of `ear.conf`, by hand or from the text pane, stops a fader only when it changes the dragged value, the line that value is defined on, or which settings share it; any other save leaves the drag going, and its release writes onto the new text (7.3) |
+| R31 | On gate G4: "Keep last value" | 2026-11-08, chat (G4; not the recommendation) | A fader whose browser disconnects mid-drag is ended as released: ear writes the last value it heard to `ear.conf`. A tab that goes silent for 30 s is treated the same (designer's decision G15, 14.2) (7.3) |
 
 The same walkthrough's earlier answers to node-primitives.md's gates hold (node-framework.md 14.1): its G1 (a new
 `ear_runtime` package for loops, wakes, the I/O executor, the probe and stores), G14 (loops declared in the spec as
 handles), G15 (resources reached by handle, now inside `configure`) and G17 (the node handle reached as
 `node.handle()`, so `Report::handle()` here). This page's own gate questions (revision 2's G1 to G13, revision 3's W,
-X, K and O) are re-sorted in section 14: five remain the owner's, rewritten to what an operator sees; the rest are
-decided by the designer.
+X, K and O) are re-sorted in section 14: five were the owner's in revision 4, rewritten to what an operator sees, and
+all five were answered on 2026-11-08 (R29 to R31 above; X2 and G1 as recommended; 14.1); the rest are decided by the
+designer.
 
 Design rules 1 to 3 of `pipewire-graph.md` hold: one owner per piece of state; a node reaches the engine only through
 powers the framework grants; the graph always runs. The graph file's rules hold (`knobly-config.md`, design rules 1 to
@@ -178,18 +192,44 @@ route fpp:stream.2 rec:record.right;
    is not restarted: no `node.state` follows, the card keeps playing. `ear.conf` is written behind as today. Standard
    output has a `graph-file` record and one `param` record (`node amp gainDb -6 -> -3.5`).
 
-**A hand edit lands mid-gesture.** The operator is holding `amp`'s knob at `-3.5`; a colleague saves `ear.conf` from
-`vi` with `gainDb -10;` and a new comment.
+**A hand edit lands mid-gesture, elsewhere in the file.** The operator is holding `amp`'s knob at `-3.5`; a colleague
+adds a comment above `node card desk` and saves `ear.conf` from `vi`.
 
-1. The keeper's inotify watch fires; it reads the file and offers it (cause `disk`).
-2. On the main loop, before the plan, every open gesture is closed as aborted (G3): every client gets
-   `gesture.changed {"gesture":"g4","phase":"aborted","reason":"hand-edit"}`, with no value. The slots stay where the
-   hand left them for the rest of this turn. Then `graphFile.changed` (cause `disk`), the plan, the retune of `amp` to
-   `-10` with `node.updated`; last in the turn every slot the gesture reached is set to the value now running. So the
-   audio ramps once, from -3.5 straight to -10 (7.3).
+1. The keeper's inotify watch fires; it reads the file and offers it (cause `disk`), with the new text's reach index.
+2. On the main loop, before the plan, each open gesture is compared with the new index (7.3, the owner's G3, R30):
+   `g4`'s definition is still the line `node gain amp { gainDb -6; }`, unchanged, now one line lower; its value is still
+   `-6`; its reach is still `amp gainDb`. The save is not related to `g4`, so nothing is sent about it; its place moves
+   to the new line. Then `graphFile.changed` (cause `disk`), and a plan that changes no node.
+3. The knob keeps following the hand, and the audio with it. Pointer up at `-3.5` ends the gesture as before; the keeper
+   edits `gainDb -6;` in the new text, so the colleague's comment is kept.
+
+**A hand edit lands mid-gesture, on the dragged value.** The operator is holding `amp`'s knob at `-3.5`; a colleague
+saves `ear.conf` from `vi` with `gainDb -10;`.
+
+1. The keeper reads the file and offers it, as above.
+2. On the main loop, before the plan, `g4`'s defining line has changed (and so has its value): the save is related, so
+   `g4` is closed as aborted: every client gets `gesture.changed {"gesture":"g4","phase":"aborted","reason":"hand-edit"}`,
+   with no value. The slots stay where the hand left them for the rest of this turn. Then `graphFile.changed` (cause
+   `disk`), the plan, the retune of `amp` to `-10` with `node.updated`; last in the turn every slot the gesture reached
+   is set to the value now running. So the audio ramps once, from -3.5 straight to -10 (7.3).
 3. The operator's editor snaps the knob to `-10`, ignores the pointer until it is released, and shows a notice: "ear.conf
-   was edited by hand while you held amp gainDb; it now says -10." with a button "Set -3.5 again" (a `node.set`).
-   Releasing sends nothing (the gesture is gone). The audio never stayed on a value `ear.conf` did not hold.
+   was edited by hand and changed amp gainDb while you held it; it now says -10." with a button "Set -3.5 again" (a
+   `node.set`). Releasing sends nothing (the gesture is gone). The audio never stayed on a value `ear.conf` did not hold
+   once the gesture was over.
+
+**The laptop's Wi-Fi drops mid-gesture.** The operator holds `amp`'s knob at `-3.5` (the file says `-6`) when the
+laptop's Wi-Fi drops.
+
+1. No ticks arrive. The socket stays open on ear's side (TCP has not noticed), so ear sees silence, not a close.
+2. 30 s after the last message about `g4` (the editor's keep-alive comes every 2 s while the pointer is held), the
+   control thread ends the gesture on its owner's behalf, as a `gesture.end` with no value (the owner's G4, R31; 7.3).
+   The keeper edits `gainDb -6;` to `gainDb -3.5;`; every other client gets `graphFile.changed`, `node.updated` and
+   `gesture.changed {"phase":"end","value":-3.5,"reason":"idle"}`. Standard output has `node amp gainDb -6 -> -3.5`
+   with `"reason":"idle"`. Had the socket closed first, the same end would have come at once, with reason
+   `session-closed`.
+3. When the laptop reconnects, its editor reads the snapshot: the knob shows `-3.5`, what the operator last chose and
+   what `ear.conf` now says. A notice says so if the tab survived ("Your change to amp gainDb was kept at -3.5 after 30 s
+   without a word from this editor").
 
 **A node flaps.** `kitchen`'s connection to Music Assistant drops and comes back every few hundred milliseconds.
 
@@ -227,8 +267,8 @@ route fpp:stream.2 rec:record.right;
 1. The failed node was torn down when it failed (node-framework.md 6.2): its companions are gone, its block is silent,
    and its wires stay drawn, carrying zeros. The box says `failed` with "the card failed: ..." and an empty companion
    strip (8.7), and offers Start (a retry) beside Restart. The operator clicks Start.
-2. The editor sends `node.start {"name":"desk"}`. The keeper orders it with every other request; the node is already
-   wanted running, so `ear.conf` is not touched, and on the main loop `NodeHost` takes T15 behind the same block. The
+2. The editor sends `node.start {"name":"desk"}`. The keeper orders it with every other request and writes nothing (a
+   start never edits `ear.conf`, R28); on the main loop `NodeHost` takes T15 behind the same block. The
    client gets `node.state` `starting` (phase `configuring`, cause `{"kind":"retry"}`), then the reply `{"applied":
    "retry"}`, then `configured`, `starting` and `running` (4.3's order rule 5, 4.8). A failed node has no
    configuration to reset, so no reset is sent.
@@ -237,15 +277,35 @@ route fpp:stream.2 rec:record.right;
    (`"blockLost": true` in the snapshot), its description then saying why: "the node's engine block is gone; remove
    and add the node, or restart ear". A script that tries anyway is refused `not-restartable`.
 
-**Stops a node, and starts it again.** The porch is empty tonight; the operator clicks Stop on `porch`, a card node.
+**Stops a node, and starts it again.** The porch is quiet for an hour; the operator clicks Stop on `porch`, a card node.
 
-1. The editor sends `node.stop {"name":"porch"}`. The keeper writes the word into its line (`node card porch stopped {
-   ... }`, node-framework.md gate F1) and commits; in one main-loop turn: `graphFile.changed`, `node.updated {...,
-   "wanted": "stopped"}`, `node.state` `stopping`, then the reply `{"applied":"stop"}`.
-2. The outputs fade over 5 ms; the box turns the `stopped` colour with "stopped" and a Start button; its wires stay
-   drawn and carry silence; the card stays open and plays the silence (gate F2), so the companion strip stays green.
-   Standard output: `node porch stopping: stop`, then `node porch stopped`.
-3. Start sends `node.start`, which removes the word; `starting`, then `running` within a cycle and a main-loop turn.
+1. The editor sends `node.stop {"name":"porch"}`. The keeper orders it and writes nothing (R28): there is no
+   `graphFile.changed` and no `node.updated`. In one main-loop turn: `node.state` `stopping` (cause `stop`, `wanted:
+   "stopped"`), then the reply `{"applied":"stop"}`.
+2. The outputs fade over 5 ms; the box turns the `stopped` colour with "stopped until Start or a restart of ear" and a
+   Start button; its wires stay drawn and carry silence, and the meters on its ports and on the ports it feeds read
+   silence; the card stays open and plays the silence (R26), so the companion strip stays green. Standard output:
+   `node porch stop invoked` (an `action` record), `node porch stopping: stop`, then `node porch stopped`.
+3. Start sends `node.start`; `starting`, then `running` within a cycle and a main-loop turn. It cannot fail for the
+   card: the card never closed. Had the pod restarted in between, the porch would have played again: a stop is not in
+   `ear.conf` (8.6 says so beside the button).
+
+**Disables a node, and enables it again.** The porch is closed for the season, and another program wants the USB card.
+The operator clicks Disable on `porch`.
+
+1. The editor sends `node.disable {"name":"porch"}`. The keeper writes the word into the node's line, `node card porch
+   disabled { card USB2; playback 2; }`, comments and layout kept, and commits; in one main-loop turn:
+   `graphFile.changed` (cause `edit`), `node.updated {"name":"porch",...,"disabled":true,"applied":"disable"}`,
+   `node.state` `stopping` (cause `disabling`, `wanted: "disabled"`), then the reply `{"applied":"disable"}`.
+2. The outputs fade; the whole configuration is torn down (node-framework.md T20): the card's companions are destroyed,
+   so the device is closed and free for the other program; `node.companionsChanged` empties the strip. Then
+   `node.state` `disabled`. The box turns the `disabled` colour with "disabled in ear.conf" and an Enable button; its
+   wires stay drawn and carry silence, and the meters on its input ports still show what reaches it. Standard output:
+   `graph-file edit ...`, `node porch stopping: disabling`, `node porch disabled`. The text pane shows the new word.
+3. In spring the operator clicks Enable: `node.enable` removes the word; `node.state` `starting` (phase `configuring`,
+   cause `enabling`), then `running` once the card opens. If the other program still holds the card, the node fails
+   `engine-refused: the card failed: ...` as any start does, and the box offers Start (a retry). A colleague could do
+   either by editing the word in `vi`; the editor shows it the same way.
 
 **Restarts a node.** The Restart action (7.6) is offered on every node but one whose block is lost: a full stop, a
 configuration from empty and a start back to the wanted state, without editing `ear.conf`; the box shows `stopping`
@@ -268,12 +328,14 @@ says "applies in place" (4.2's `change`).
 
 1. Apply sends `node.set {"name":"fpp","settings":{"port":5006}}`. The keeper edits `port 5004;` to `port 5006;`; the
    plan's outcome is `reconfigure`; in one main-loop turn: `graphFile.changed`, `node.updated {..., "applied":
-   "reconfigure"}`, `node.state` `reconfiguring` with `keys: ["port"]` and `holds: ["stream"]` (`rtp`'s hook, called
-   in the commit, holds its outputs while the new receiver binds), then the reply `{"applied":"reconfigure"}`.
-2. The box turns the `reconfiguring` colour with "reconfiguring port", and both `stream` handles carry a "held" mark;
-   the wires to `rec` stay drawn, marked held, and their meters fall to silence over 5 ms. Nothing is shown as a fault:
-   the operator asked for this silence (R17). The companion strip shows two `fpp.rtp` entries for a moment, the old one
-   marked retiring.
+   "reconfigure"}`, `node.state` `reconfiguring` with `keys: ["port"]` (`rtp`'s hook, called in the commit, holds its
+   outputs while the new receiver binds), then the reply `{"applied":"reconfigure"}`.
+2. The box turns the `reconfiguring` colour with "reconfiguring port". The meters on `fpp:stream.1` and `fpp:stream.2`
+   fall to silence over 5 ms, the wires to `rec` thin as their level falls (they stay drawn), and the meters on
+   `rec:record.left` and `rec:record.right` fall with them: the operator follows the silence from the port that makes
+   it to every port it reaches (R29). Nothing is shown as a fault: the box says why in words, and the operator asked
+   for this silence (R17). The companion strip shows two `fpp.rtp` entries for a moment, the old one marked
+   retiring.
 3. The new receiver runs; the old one is released; the hold fades out; `node.state` `running` (`afterMs` in the record). Standard output: `node fpp reconfiguring: port`, then `node fpp running`. The recording has about
    `latencyMs` of silence, and no restart: the WAV, the routes and the meters never stopped.
 4. Had 5006 been held too, the change would fall back (node-framework.md 6.6 step 5): `node.state` `stopping`
@@ -286,7 +348,8 @@ The operator sets `playback` to 1; the field says "changes the ports; restarts t
 
 1. Before sending, the panel asks ear: `node.set {"name":"desk","settings":{"playback":1},"dryRun":true}` answers
    `{"applied":"reshape","inPlace":false,"ports":{"removed":["play.2"],"added":[]},"routes":[{"from":"kitchen:from.left","to":"desk:play.2"}]}`
-   (4.9). The panel shows "This removes 1 route: kitchen:from.left → desk:play.2" with Apply and Cancel.
+   (4.9). The panel shows "This removes 1 route: kitchen:from.left → desk:play.2" with Apply and Cancel (X2, answered
+   as recommended).
 2. Apply sends the same `node.set` with `"dropRoutes": true`. One commit removes the route line and edits `playback 2;`:
    `graphFile.changed`, `route.removed`, `node.updated {..., "applied":"reshape","ports":{...}}`, `node.state`
    `stopping` (cause `{"kind":"restarting","restart":{"kind":"reshape"}}`), then the reply.
@@ -323,10 +386,15 @@ node scripts/rpc-call.mjs $U node.set '{"name":"amp2","settings":{"trimDb.2":nul
 # Read a status field.
 node scripts/rpc-call.mjs $U graph.get | jq -r '.nodes[] | select(.name=="kitchen") | .status.pairingCode'
 123-456
-# Stop a node (written to ear.conf as `stopped`), and start it again; start on a failed node retries.
+# Stop a node (silent, keeping everything; not written to ear.conf, forgotten at a restart), and start it again;
+# start on a failed node retries.
 node scripts/rpc-call.mjs $U node.stop '{"name":"porch"}'
 {"applied":"stop"}
 node scripts/rpc-call.mjs $U --until 'porch running' node.start '{"name":"porch"}'
+# Disable a node (written to ear.conf as `disabled`; everything released), and enable it again.
+node scripts/rpc-call.mjs $U node.disable '{"name":"porch"}'
+{"applied":"disable"}
+node scripts/rpc-call.mjs $U --until 'porch running' node.enable '{"name":"porch"}'
 # Restart a node (not written to ear.conf).
 node scripts/rpc-call.mjs $U node.invoke '{"name":"desk","action":"restart"}'
 {}
@@ -349,8 +417,8 @@ session's replies and notifications share one ordered queue, so nothing older ca
 snapshot it subscribed to, no `node.state` will come (4.8), so it exits 0 at once. `--timeout <s>` (default 60, the
 longest in-place deadline) exits 2 with the last `node.state` seen, so a script never waits for ever. To wait for anything else (a pairing code), step 5.2 adds `--follow`: it subscribes to the graph and
 prints every notification as one line, so `| jq --unbuffered 'select(.method=="node.statusChanged")'` waits on what it
-needs. A script that holds a gesture must send a tick at least every 30 s (6.5); scripts rarely need one,
-since `node.set` changes a live row without a gesture.
+needs. A script that holds a gesture must send a tick at least every 30 s (6.5), or ear ends the gesture as released,
+writing its last value (G4); scripts rarely need one, since `node.set` changes a live row without a gesture.
 
 ### 2.3 The client implementer
 
@@ -368,14 +436,17 @@ since `node.set` changes a live row without a gesture.
 4. **Fold notifications into the snapshot** (4.4). A node carries `state`, `phase`, `wanted` and the members 4.8 gives
    each phase, `status`, `gestures`, `diagnostics`, `companions` and `blockLost`. Colour by `state` (a short open set),
    explain by `phase` and `cause`; never infer a phase from `state`. A `node.state` replaces every health member: a
-   member it leaves out is absent now (a `holds` from a reconfigure that ended is gone). A `node.statusChanged` with
+   member it leaves out is absent now (the `keys` of a reconfigure that ended are gone). A `node.statusChanged` with
    `reset: true` *replaces* the status; any other merges. `node.diagnostic` replaces
    the entry of its code and subject, and carries the server's `count`. `node.eventRaised` changes nothing (an event has
    no lasting value) and goes to an activity list that starts when you connect. Order is today's: one ordered stream per
    client, a change's notification before the statuses it causes (batch2.md section 6).
 5. **Gestures.** Begin, tick with notifications (keep-alive every 2 s while held), end. You get no `begin` or `change`
    echo for your own gestures, so any `begin` you see is another session's. On `phase: "aborted"` stop the control,
-   show `value` when it is given, else wait for the `node.updated` that follows, and tell the person (8.3).
+   show `value` when it is given, else wait for the `node.updated` that follows, and tell the person (8.3). A save of
+   `ear.conf` that does not touch your value leaves your gesture open: keep going. If you go silent for 30 s, or your
+   socket closes, ear ends your gesture with your last value, as if you had released it (`phase: "end"` with a
+   `reason`).
 
 ### 2.4 The node type author
 
@@ -484,7 +555,7 @@ TEST_CASE("gain follows a gesture and latches clipping", "[gain]") {
 | **Node diagnostic** | What the framework observes about a node's machinery | the framework's code list (4.6) | the framework alone | per code and subject: the latest, whether active, a count | the framework | node `diagnostics`; `node.diagnostic` | `diagnostic` record |
 | **Log** | Free text for people debugging | levels; `LogCodes` for the realtime thread | any node code; captured output | not kept | whoever wrote it | not yet (`log.subscribe`, later) | `log` record |
 | **Note** | Retired. Today's `InsidesEvents::say` sentence; about 11 of sendspin's 17 are state, the rest edges | `notes.hpp` | sendspin | not kept | — | — | `note` record, until step 5.5 removes the last |
-| **Health** | Where the node is in its lifecycle and why: `state` (the colour), `phase` (the exact state), its `cause`, what the graph wants of it (`wanted`), the keys an in-place change applies and the banks it holds, the failure, whether its block is lost (and from slice 8 the attempt and last failure) | the framework's per-node state machine (node-framework.md section 6) | the framework alone (`NodeHost`'s two machines) | memory | the framework | node `state`, `phase` and 4.8's members, `blockLost`; `node.state` | `node` record (9.1) |
+| **Health** | Where the node is in its lifecycle and why: `state` (the colour), `phase` (the exact state), its `cause`, what the graph wants of it (`wanted`: `running`, `stopped` or `disabled`), the keys an in-place change applies, the failure, whether its block is lost (and from slice 8 the attempt and last failure) | the framework's per-node state machine (node-framework.md section 6) | the framework alone (`NodeHost`'s two machines) | memory | the framework | node `state`, `phase` and 4.8's members, `blockLost`; `node.state` | `node` record (9.1) |
 | **Companion** | A hidden engine node a node's configuration made to cross to or from non-realtime code (a card's adapter, a receiver, a sink, a source); machinery the operator may inspect, never route | the type's `configure` (node-framework.md 9.6) | the framework | memory, per node | the framework | node `companions`; `node.companionsChanged` (4.10) | in a failure's detail; drops and shortfalls as diagnostics (4.6) |
 
 A **node diagnostic** is not a **graph-file diagnostic**. The second is today's problem in `ear.conf`'s text (a knobly
@@ -535,7 +606,8 @@ warning text is a log line.
 
 ### 3.3 Aggregates and owners
 
-- **The node** (node-framework.md section 6) gains: the wanted state, the health members of 4.8, the status view (one value per declared field), transition counters, the companions' view (4.10), the
+- **The node** (node-framework.md section 6) gains: the wanted state (`disabled` from `ear.conf`, the stop from
+  `NodeHost`), the health members of 4.8, the status view (one value per declared field), transition counters, the companions' view (4.10), the
   node diagnostics kept per code and subject, `blockLost`, and, per live row, the live value and the gesture holding
   it, if any. All on the main loop, owned by `NodeHost`. Node diagnostics belong to the node, not to one configuration: a
   restart does not clear them (flapping across restarts is exactly what they are for). Status and companions belong to
@@ -544,10 +616,12 @@ warning text is a log line.
 - **The gesture** is its own small aggregate, owned by a new main-loop service, `Gestures` (`ear_core`): an id (opaque,
   unique for the process's life, never reused), the session that owns it, its reach (the node and key pairs it moves)
   with the combined range and decimals, the committed value, the live value, the last sequence number, the time of the
-  last tick, and whether its end or cancel has been read. It never outlives its session, its nodes, or a hand edit.
+  last tick, and whether its end or cancel has been read. It never outlives its nodes or a related save (7.3); when its
+  session closes or goes silent it is ended, committing its live value (G4).
 - **The reach index** is a value the keeper makes on its thread for each version of the working copy and the main loop
-  holds for the running one: for each (node, live key) that `ear.conf` gives, the definition's place, the reach, and
-  the committed value (7.2). It lets `gesture.begin` answer without the keeper.
+  holds for the running one: for each (node, live key) that `ear.conf` gives, the definition's place, the text of the
+  lines it is written on, the reach, and the committed value (7.2). It lets `gesture.begin` answer without the keeper,
+  and lets the main loop tell a related save from an unrelated one (7.3).
 - **The type schema** is a value made from the type spec at compile time and encoded once at boot: what the wire's
   `types.get` returns and what the editor renders.
 
@@ -571,7 +645,8 @@ warning text is a log line.
 - **Features, for additive growth.** The graph also gains `"features": [...]`, a list of names; a client gates every
   method and every request member it sends on the feature that added it, never on a -32601 probe. This page's features,
   each added by the step that builds it (section 11): `lifecycle` (L1: `phase`, `since`, `wanted`, `cause`, `keys`,
-  `holds`, `waitingFor` on health; `node.start`, `node.stop`; `node.gone`), `companions` (L2), `node.set`, `reshape` and `dryRun` (L3: `node.set`, `applied` with
+  `waitingFor` on health; `disabled` on a node; `node.start`, `node.stop`, `node.disable`, `node.enable`, `node-disabled`;
+  `node.gone`), `companions` (L2), `node.set`, `reshape` and `dryRun` (L3: `node.set`, `applied` with
   `reconfigure` and `reshape`, `ports`, `dropRoutes`, `ports-in-use`, `dryRun`), `types` (5.1), `status` (5.2: status,
   events, node diagnostics), `actions` (5.4: `node.invoke`), `live` (6.3: decimal, indexed and live rows, `applied:
   retune`), `gestures` (6.4), `recovery` (R8: slice 8's members). The list only grows within a protocol. Steps L1 to L3
@@ -610,13 +685,21 @@ whose message names the JSON pointer, as today, and whose `data.pointer` now car
 | `gesture.end` | `gestures` | `{"gesture", "value"?}` | `{"value"}`: what was committed | unknown-gesture, invalid-settings (the gesture stays open), stopping, and the desired graph's (the gesture is aborted) | keeper |
 | `gesture.cancel` | `gestures` | `{"gesture"}` | `{}` if sent with an id | unknown-gesture, not-in-batch | control thread, then the main loop directly |
 | `node.invoke` | `actions` | `{"name", "action", "args"?: {...}}` | `{}` | unknown-node, unknown-action, invalid-args, not-running, not-restartable, restarted, stopping, action-failed, action-timeout | keeper, then the node's loop |
-| `node.start` | `lifecycle` | `{"name"}` | `{"applied"}`: `start` (the `stopped` word removed from its line), `retry` (a failed node configured afresh, `ear.conf` untouched), or `unchanged` | unknown-node, not-restartable (a lost block), shared-definition, file-invalid, stopping | keeper |
-| `node.stop` | `lifecycle` | `{"name"}` | `{"applied"}`: `stop` (the word written), or `unchanged` | unknown-node, shared-definition, file-invalid, stopping | keeper |
+| `node.start` | `lifecycle` | `{"name"}` | `{"applied"}`: `start` (the node's stop cleared), `retry` (a failed or recovering node configured afresh), or `unchanged` (it was neither stopped nor failed); `ear.conf` is never touched | unknown-node, node-disabled, not-restartable (a lost block), stopping | keeper (ordering only), then the main loop |
+| `node.stop` | `lifecycle` | `{"name"}` | `{"applied"}`: `stop` (the node's stop set), or `unchanged` (already stopped); `ear.conf` is never touched | unknown-node, node-disabled, stopping | keeper (ordering only), then the main loop |
+| `node.disable` | `lifecycle` | `{"name"}` | `{"applied"}`: `disable` (the word `disabled` written on its line), or `unchanged` (already there; nothing written) | unknown-node, shared-definition, file-invalid, stopping | keeper |
+| `node.enable` | `lifecycle` | `{"name"}` | `{"applied"}`: `enable` (the word removed), or `unchanged` (no word to remove; a stopped node stays stopped) | unknown-node, shared-definition, file-invalid, stopping | keeper |
 
 `node.update`'s result gains `applied` too (additive, with the `node.set` feature), and takes `dropRoutes` from feature
-`reshape` (4.9). `node.start` and `node.stop` are edits at the source (node-framework.md gate F1): they add or remove the
-word `stopped` after the node's name in its line, so a node whose line a snippet makes for several nodes is refused
-`shared-definition` as any edit of that line is; `node.add` takes an optional `"wanted": "stopped"`.
+`reshape` (4.9). `node.disable` and `node.enable` are edits at the source (node-framework.md 6.3, R25, R28): they add or
+remove the word `disabled` after the node's name in its line (`node card porch disabled { ... }`), so a node whose line
+a snippet makes for several nodes is refused `shared-definition` as any edit of that line is; `node.add` takes an
+optional `"disabled": true` from feature `lifecycle`, and `node.update` keeps the word as it is. `node.start` and
+`node.stop` are not edits (R28): the keeper only orders them with the requests around it, as it does `node.invoke`, and
+the main loop applies them to the node's stop, which only the framework holds; they make no graph-file version, send no
+`graphFile.changed` or `node.updated`, are answered in the main-loop turn that applies them, and work while `ear.conf`
+has errors (node-framework.md D-F6). Their effect is told by `node.state` (its `wanted` and phase), and on standard output
+by an `action` record (`node porch stop invoked`, section 9).
 
 **`types.get`**
 
@@ -728,8 +811,8 @@ then edits the value with `node.set` or in the text pane, which change every use
 ```
 
 A key that the node's type declares but `ear.conf` does not give reaches only that node, and its committed value is the
-row's default. A node with no run (failed, starting) can be held: ticks set the node's live value, which seeds its next
-node's slots, and the end commits as usual.
+row's default. A node with no configuration (failed, starting, disabled) can be held: ticks set the node's live value,
+which seeds its next configuration's slots, and the end commits as usual.
 
 **`gesture.change`** moves the gesture's live value. `seq` counts from 1 per gesture; a tick whose `seq` is not above
 the last taken is dropped. A tick whose value is the gesture's live value already keeps it alive and does nothing else
@@ -789,20 +872,20 @@ members of 4.8 and five more:
  "types":["card","file","gain","rtp","sendspin","white"],
  "nodes":[
    {"name":"amp","type":"gain","settings":{"gainDb":-6},"inputs":["in.1","in.2"],"outputs":["out.1","out.2"],
-    "state":"running","phase":"running","blockLost":false,
+    "state":"running","phase":"running","wanted":"running","blockLost":false,
     "status":{"clipping":false},
     "gestures":[{"gesture":"g4","key":"gainDb","value":-4.25}],
     "diagnostics":[],
     "companions":[]},
    {"name":"fpp","type":"rtp","settings":{"address":"0.0.0.0","port":5006,"format":"L24","channels":2},
     "inputs":[],"outputs":["stream.1","stream.2"],
-    "state":"reconfiguring","phase":"reconfiguring","blockLost":false,"keys":["port"],"holds":["stream"],
+    "state":"reconfiguring","phase":"reconfiguring","wanted":"running","blockLost":false,"keys":["port"],
     "status":{},"gestures":[],"diagnostics":[],
     "companions":[{"name":"fpp.rtp","kind":"rtp-receiver","bank":"from_rtp","ready":true,"retiring":true},
                   {"name":"fpp.rtp","kind":"rtp-receiver","bank":"from_rtp","ready":false}]},
    {"name":"kitchen","type":"sendspin","settings":{"server":"ws://192.168.1.10:8927/sendspin","name":"Kitchen"},
     "inputs":["to.left","to.right"],"outputs":["from.left","from.right"],
-    "state":"running","phase":"running","blockLost":false,
+    "state":"running","phase":"running","wanted":"running","blockLost":false,
     "status":{"clientId":"5d0c...","connection":"connected","url":"ws://192.168.1.10:8927/sendspin","listenPort":0,
               "instance":"","serverName":"Music Assistant","paired":false,"pairingCode":"123-456","pairingHeld":false,
               "stream":"none","streamRate":0,"streamChannels":0,"streamBits":0,"sending":false,"sendingRate":0},
@@ -816,8 +899,10 @@ members of 4.8 and five more:
 ```
 
 - `features`: 4.1.
-- `state`, `phase` and the members each phase carries (`cause`, `keys`, `holds`, `reason`, and slice 8's): 4.8.
-- `wanted`: `running` or `stopped`, as `ear.conf` says (4.8).
+- `state`, `phase` and the members each phase carries (`cause`, `keys`, `reason`, and slice 8's): 4.8.
+- `wanted`: `running`, `stopped` (the node's stop, held in memory) or `disabled` (`ear.conf`'s word) (4.8).
+- `disabled`: `true` when the node's line in `ear.conf` says `disabled`, absent otherwise; part of the node's
+  description, with `settings`, so `node.added` and `node.updated` carry it too (W9).
 - `blockLost`: the node's block is gone (I1); it cannot restart until it is removed and added, or ear restarts.
 - `status`: every declared field, each at its initial value until the node writes it; reset to the initial values when
   its configuration closes (I6), and the reset is sent (below); kept through an in-place change, a stop and a start. Always present (`{}` for a type with
@@ -830,11 +915,12 @@ members of 4.8 and five more:
 - One main-loop turn makes the whole snapshot, so status, health, gestures, diagnostics and companions agree with each
   other.
 
-`node.added` gains the health members (`state` `starting` or `stopped`, `phase` `added`, `wanted`, and `waitingFor`
-when the node waits for an older one of its name), `blockLost`, `status` (the initial values), `gestures` (`[]`), `diagnostics`
+`node.added` gains the health members (`state` `starting`, `phase` `added`, `wanted`, and `waitingFor` when the node
+waits for an older one of its name; for a node added disabled, `state` and `phase` `disabled`), `blockLost`, `status` (the initial values), `gestures` (`[]`), `diagnostics`
 (`[]`) and `companions` (`[]`), so a client need not fetch the schema to show a new node. `node.state` is 4.8's.
-`node.updated` gains `applied` (any outcome but `replace`, which stays `node.removed` and `node.added`, as today) and,
-on a reshape, `ports` (4.9).
+`node.updated` gains `applied` (any outcome but `replace`, which stays `node.removed` and `node.added`, as today:
+`disable`, `enable` and `stored` among them), `disabled`, and, on a reshape, `ports` (4.9). `node.start` and
+`node.stop` send no `node.updated`: they change no description.
 
 | Notification | Params | From | Rate |
 |---|---|---|---|
@@ -857,6 +943,7 @@ other.)
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"begin","value":-6,"reach":[{"name":"amp","key":"gainDb"}]}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"change","value":-4.25}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"end","value":-3.5}}
+{"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"end","value":-3.5,"reason":"session-closed"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"aborted","reason":"cancelled","value":-6}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"aborted","reason":"hand-edit"}}
 {"jsonrpc":"2.0","method":"gesture.changed","params":{"gesture":"g4","phase":"tick-refused","code":"invalid-settings","key":"gainDb","detail":"must be a number of dB from -90 to 24"}}
@@ -868,12 +955,15 @@ other.)
 - **Own echoes.** The session that owns a gesture gets no `begin` and no `change` for it (it shows its local value);
   it gets `end`, `aborted` and `tick-refused`. Every other session gets `begin`, `change`, `end` and `aborted`, never
   `tick-refused`.
-- `phase: "aborted"` carries `reason`: `hand-edit` (a disk change), `file-saved` (`graphFile.set`), `cancelled`,
-  `session-closed`, `idle` (no message about it for 30 s, 6.5), `refused` (its end was refused; the end's reply carries
-  the code), `node-removed` (removed or replaced), `key-removed` (a reshape removed a key it reaches, 7.7). It
-  carries `value`, the committed value the slots returned to,
-  except on `hand-edit` and `file-saved`, where the slots take the value the new file runs, told by the `node.updated`
-  that follows (7.3).
+- `phase: "end"` carries `reason` when ear ended the gesture for its owner (the owner's G4, R31; 7.3): `session-closed`
+  (the owner's socket closed) or `idle` (no message about it from its owner for 30 s, 6.5). Its `value` is what was
+  committed: the last value heard. An end the owner sent carries no `reason`.
+- `phase: "aborted"` carries `reason`: `hand-edit` (a related disk change, 7.3), `file-saved` (a related
+  `graphFile.set`), `cancelled`, `refused` (its end was refused: the end's reply carries the code; for an end ear sent
+  for a closed or silent session, the refusal is the `aborted` alone), `node-removed` (removed or replaced),
+  `key-removed` (a reshape removed a key it reaches, 7.7). It carries `value`, the committed value the slots returned
+  to, except on `hand-edit` and `file-saved`, where the slots take the value the new file runs, told by the
+  `node.updated` that follows (7.3).
 - **A configuration's status reset.** When a node's configuration closes (I6: its teardown's step 5, or its leak past
   the close deadline), the node's status view goes back to every field's initial value, and the drain sends one
   `node.statusChanged` with `reset: true` and every field, after that configuration's last values. A client replaces
@@ -888,13 +978,18 @@ other.)
 3. A gesture's begin: `gesture.changed` `begin` to the other sessions, then the reply to the owner, in one main-loop
    turn. A gesture's end: `graphFile.changed`, then `node.updated` (the committed settings, `applied: "retune"`), then
    `gesture.changed` `end`, then the reply.
-4. An abort by a hand edit or a save: `gesture.changed` `aborted` for each open gesture, then `graphFile.changed`, then
-   that change's graph events; the slots settle last, in the same turn.
+4. An abort by a related hand edit or save: `gesture.changed` `aborted` for each gesture the save is related to (7.3),
+   then `graphFile.changed`, then that change's graph events; the slots settle last, in the same turn. Gestures the
+   save is not related to send nothing.
 5. A restart, whatever its cause: `node.state` phase `stopping` (cause `restarting`), then the reply if a request
    caused it, all in the commit's turn; then, once the old configuration closed (I5), its last status values and its
    reset; then `node.state` phase `configuring`; `configured`, `starting` and `running` later. A failed node has no
    configuration to close, so `configuring` comes at once. A stop: `node.state` `stopping`, the reply, then `stopped`;
-   a start: `starting`, the reply, then `running`.
+   a start: `starting`, the reply, then `running` (neither sends `graphFile.changed` or `node.updated`). A disable:
+   `graphFile.changed`, `node.updated` (`disabled`, `applied: "disable"`), `node.state` `stopping` (cause
+   `disabling`), the reply; then the configuration's last status values and its reset, and `node.state` `disabled`. An
+   enable: `graphFile.changed`, `node.updated`, `node.state` `configuring` (cause `enabling`), the reply; then as a
+   start.
 6. An in-place change: `node.updated` (with `applied: "reconfigure"`), then `node.state` phase `reconfiguring`, then
    the reply, in the commit's turn; status the node writes during it; then `node.state` `running` (or `stopped`). A retune of the same node during it changes no `node.state`.
 7. A reshape: the dropped routes' `route.removed`, then `node.updated` with `ports`, then rule 5. The block's new
@@ -910,10 +1005,10 @@ other.)
 | `node.statusChanged` | with `reset`: the node's `status` replaced; otherwise merged | the node is unknown |
 | `node.state` | every health member (4.8) replaced: a member absent from it is absent now | the node is unknown |
 | `node.companionsChanged` | the node's `companions` replaced | the node is unknown |
-| `node.updated` | `settings`; with `ports`, the node's `inputs` and `outputs` replaced (handles redrawn in place) | the node is unknown |
+| `node.updated` | `settings` and `disabled`; with `ports`, the node's `inputs` and `outputs` replaced (handles redrawn in place) | the node is unknown |
 | `node.eventRaised` | nothing in the graph; the activity list | the node is unknown |
 | `node.diagnostic` | the node's `diagnostics`: the entry of the same `code` and `subject` replaced, `count` as sent | the node is unknown |
-| `gesture.changed` | `begin` adds `{gesture, key, value}` to each reached node's `gestures`; `change` sets `value` wherever the id is; `end` and `aborted` remove it everywhere; `tick-refused` changes nothing (the owner's notice) | no node holds the id (except `begin`) |
+| `gesture.changed` | `begin` adds `{gesture, key, value}` to each reached node's `gestures`; `change` sets `value` wherever the id is; `end` (with or without `reason`) and `aborted` remove it everywhere; `tick-refused` changes nothing (the owner's notice) | no node holds the id (except `begin`) |
 | any other unknown method | nothing | always |
 
 ### 4.5 Error codes
@@ -932,8 +1027,9 @@ All -32000, message `describe(...)` as today, `data.code` from this table. Every
 | `not-in-batch` | `gesture.change` or `gesture.cancel` inside a batch | |
 | `unknown-action` | `node.invoke`: the type declares no such action | `action` |
 | `invalid-args` | `node.invoke`: the arguments fail the action's table; message as a settings refusal | `key`, `detail` |
-| `not-running` | `node.invoke` of a type's action: the node cannot take it now: no configuration (`added`, `failed`, `recovering`), one tearing down (`stopping` for a restart or removal), or one not yet configured (`configuring`: its loops hold outside work until configured, node-framework.md 6.4). A `stopped` node takes actions | `phase` |
+| `not-running` | `node.invoke` of a type's action: the node cannot take it now: no configuration (`added`, `disabled`, `failed`, `recovering`), one tearing down (`stopping` for a restart or removal), or one not yet configured (`configuring`: its loops hold outside work until configured, node-framework.md 6.4). A `stopped` node takes actions | `phase` |
 | `not-restartable` | `node.invoke` of `restart`, or `node.start`: the node's block is lost (I1); or (`restart` only) it has not been configured yet (phase `added`: it is waiting for an older node of its name, and will start by itself) | `reason` (`block-lost`, `not-started`) |
+| `node-disabled` | `node.start`, `node.stop`, or `node.invoke` of `restart`: the node is disabled in `ear.conf`; enable it first (`node.enable`) (node-framework.md D-F2) | |
 | `ports-in-use` | `node.set`, `node.update`: the change would remove ports that wanted routes name, and `dropRoutes` is not set (4.9) | `ports` (the vanishing ports), `routes` (each `{from, to}`) |
 | `restarted` | `node.invoke`: the node's configuration was torn down (a restart, a settings change) before the action ran | |
 | `action-failed` | the handler refused; message: its text | `detail` |
@@ -950,6 +1046,7 @@ starts with the key. The editor places a refusal under its field by `data.key` a
 {"jsonrpc":"2.0","id":18,"error":{"code":-32000,"message":"unknown-action desk forget-pairing","data":{"code":"unknown-action","action":"forget-pairing"}}}
 {"jsonrpc":"2.0","id":19,"error":{"code":-32000,"message":"action-failed kitchen forget-pairing: no pairing with ma-0000","data":{"code":"action-failed","detail":"no pairing with ma-0000"}}}
 {"jsonrpc":"2.0","id":20,"error":{"code":-32000,"message":"not-restartable desk: block-lost","data":{"code":"not-restartable","reason":"block-lost"}}}
+{"jsonrpc":"2.0","id":23,"error":{"code":-32000,"message":"node-disabled porch","data":{"code":"node-disabled"}}}
 {"jsonrpc":"2.0","id":22,"error":{"code":-32000,"message":"ports-in-use desk: play.2 (1 route)","data":{"code":"ports-in-use","ports":["play.2"],"routes":[{"from":"kitchen:from.left","to":"desk:play.2"}]}}}
 {"jsonrpc":"2.0","id":21,"error":{"code":-32000,"message":"shared-definition amp2 trimDb.1 at 3:6: also amp3 latencyMs","data":{"code":"shared-definition","place":{"line":3,"column":6},"with":{"name":"amp3","key":"latencyMs"}}}}
 ```
@@ -1003,14 +1100,14 @@ tests and the editor's reducer tests.
 | `test/protocol/types.json` | `types.get` with no hash, a stale hash and the current one; the schema of every built-in type, each row's `change` and `shapes`, a `defaultFrom` row |
 | `test/protocol/status.json` | a snapshot with status (a choice at `null`); `node.statusChanged` merges; `node.eventRaised` after a flush, with `severity`; a configuration's reset (`reset: true`) and then a new configuration's first fields; status kept across a stop and a start |
 | `test/protocol/diagnostics.json` | two fields flapping at once (two entries), one settling (`active: false`) while the other stays active; `count` as sent; an observation code; an unknown code drawn generically |
-| `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another session first, then the reply), changes (one stale, one keep-alive changing nothing), end with its order; a reach of two keys; a reach of 64 keys as one notification per tick; a reach refused `shared-definition` (a non-live row; a row of another unit); `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; an abort by a hand edit (no value) with its order; an abort by `file-saved`; `unknown-gesture` after the abort; `not-in-batch` |
-| `test/protocol/lifecycle.json` | a node's whole life as notifications: `node.added` (`added`), `configuring`, `configured`, `starting`, `running`; a stop and a start (`node.stop`, `stopping`, `stopped`, `node.start`, `starting`, `running`); a node added stopped; a wait for an older node of the name (`waitingFor` `older-node`); an in-place change with `keys` and `holds`, then `running`; a failed node retried by `node.start`; `node.gone` after a removal; a reconfigure that falls back (`restarting`, cause `fell-back`); a restart by the action and by a restart-only row, with the old run's reset between `restarting` and `configuring`; a failure (`reason`), then `restarting` and a new `run`; `stopping` and `node.stopped`; a `node.state` with a stale `run` ignored; an unknown `phase` and an unknown `cause.kind` drawn generically |
+| `test/protocol/gestures.json` | begin (no echo to the owner, `begin` to another session first, then the reply), changes (one stale, one keep-alive changing nothing), end with its order; a reach of two keys; a reach of 64 keys as one notification per tick; a reach refused `shared-definition` (a non-live row; a row of another unit); `parameter-held`; a begin on a failed node; cancel; `tick-refused` to the owner only; an end refused `invalid-settings` leaving the gesture open; an abort by a related hand edit (no value) with its order; an abort by a related `file-saved`; an unrelated hand edit and an unrelated `graphFile.set` leaving the gesture open (no `gesture.changed`), then its end; an end for a closed session (`end` with `reason: "session-closed"` to the other sessions) and for a silent one (`reason: "idle"`, to the owner too); `unknown-gesture` after the abort; `not-in-batch` |
+| `test/protocol/lifecycle.json` | a node's whole life as notifications: `node.added` (`added`), `configuring`, `configured`, `starting`, `running`; a stop and a start (`node.stop`, `stopping`, `stopped`, `node.start`, `starting`, `running`, with no `graphFile.changed` or `node.updated`); a disable and an enable (`graphFile.changed`, `node.updated` with `disabled` and `applied`, `stopping` with cause `disabling`, the reset, `disabled`; then `configuring` with cause `enabling` and `running`); a node added disabled; `node.start` on a disabled node refused `node-disabled`; a wait for an older node of the name (`waitingFor` `older-node`); an in-place change with `keys`, then `running`; a failed node retried by `node.start`; `node.gone` after a removal; a reconfigure that falls back (`restarting`, cause `fell-back`); a restart by the action and by a restart-only row, with the old run's reset between `restarting` and `configuring`; a failure (`reason`), then `restarting` and a new `run`; `stopping` and `node.stopped`; a `node.state` with a stale `run` ignored; an unknown `phase` and an unknown `cause.kind` drawn generically |
 | `test/protocol/companions.json` | a snapshot with each kind; `node.companionsChanged` as companions become ready; a make-before-break (`retiring`); counters moving; the list emptied by a teardown; the list kept across a stop and a start |
 | `test/protocol/node-set.json` | merge, `null` removing a key, a missing required key (`data.key`), each `applied` value, `parameter-held`; `dryRun` for each outcome (nothing committed, no notification); a reshape refused `ports-in-use`, then the same with `dropRoutes` and its `route.removed`, `ports` and `routesDropped`; `node.update` with `dropRoutes` |
 | `test/protocol/actions.json` | restart with its order (4.3's rule 5) for a running and a failed node; restart during an in-place change (node-framework.md D-B6); an in-place change superseded by a newer change or a stop; a trigger; `not-restartable` (`block-lost`, `not-started`); `not-running` with its `phase`; every refusal of 4.5 that an action can get |
 | `test/protocol/unknown-values.json` | an unknown state, node phase, `cause.kind`, companion kind, route status, status field, event code, diagnostic code, gesture phase, `applied` value, `change` value, member and notification; the graph after them |
 | `test/protocol/errors.json` | every new code of 4.5 with its `data`; an unknown request member (-32602 with `data.pointer`) |
-| `test/protocol/snapshot.json`, `edits.json` | regenerated: `protocol`, `features`, `typeSchemaHash`, and each node's `phase`, `wanted`, `blockLost`, `status`, `gestures`, `diagnostics`, `companions` (additive); `node.update`'s `applied` and `run`; `node.state`'s new members |
+| `test/protocol/snapshot.json`, `edits.json` | regenerated: `protocol`, `features`, `typeSchemaHash`, and each node's `phase`, `wanted`, `disabled`, `blockLost`, `status`, `gestures`, `diagnostics`, `companions` (additive); `node.update`'s `applied` and `run`; `node.state`'s new members |
 | `test/protocol/output-records.json` | the records of section 9 |
 
 ### 4.8 Health on the wire: every lifecycle state
@@ -1022,27 +1119,30 @@ framework drops what a node's earlier configuration says before it is sent (node
 counter to order health.
 
 ```json
-{"jsonrpc":"2.0","method":"node.state","params":{"name":"fpp","state":"reconfiguring","phase":"reconfiguring","since":"2026-11-08T10:06:00.120000Z","keys":["port"],"holds":["stream"]}}
+{"jsonrpc":"2.0","method":"node.state","params":{"name":"fpp","state":"reconfiguring","phase":"reconfiguring","since":"2026-11-08T10:06:00.120000Z","wanted":"running","keys":["port"]}}
 ```
 
-**Members.** Every `node.state` carries `name`, `state`, `phase`, `since` and `wanted` (`running` or `stopped`), and the
+**Members.** Every `node.state` carries `name`, `state`, `phase`, `since` and `wanted` (`running`, `stopped` or `disabled`), and the
 members its phase gives below; a member not given is absent now (4.4 replaces every health member). Node snapshots and
 `node.added` carry the same members at the top of the node.
 
 - `state`: the colour, a short open set (the owner's answer to A1, node-framework.md R22): `starting`, `running`,
-  `reconfiguring`, `stopping`, `stopped`, `failed`, `recovering`. Today's four keep their meaning, so a script that
+  `reconfiguring`, `stopping`, `stopped`, `disabled`, `failed`, `recovering`. Today's four keep their meaning, so a script that
   waits for `running` keeps working.
 - `phase`: the exact state, an open set: `added`, `configuring`, `configured`, `starting`, `running`, `reconfiguring`,
-  `stopping`, `stopped`, `failed`, `recovering`. A client explains by it and never colours by it.
+  `stopping`, `stopped`, `disabled`, `failed`, `recovering`. A client explains by it and never colours by it.
 - `since`: when this phase began (UTC to the microsecond, as `t`).
-- `wanted`: what the graph wants of the node, from `ear.conf` (node-framework.md gate F1): a node `failed` with `wanted:
-  "stopped"` stays failed and is not retried by `start` unless asked.
-- `cause` (`stopping`, and `configuring` after a restart): why, an object with an open `kind` (below).
+- `wanted`: what the graph wants of the node (node-framework.md 6.3): `disabled` when its line in `ear.conf` says so;
+  else `stopped` while the node's stop is held (set by `node.stop`, in memory only, forgotten when ear restarts);
+  else `running`. A node `failed` with `wanted: "stopped"` stays failed until asked (a `start` retries it and clears
+  the stop); `wanted` changes on `node.state` alone when `node.stop` or `node.start` is applied, with the phase it
+  causes.
+- `cause` (`stopping`, and `configuring` after a restart, a retry or an enable): why, an object with an open `kind`
+  (below).
 - `keys` and `next` (`reconfiguring` only): the keys this in-place change applies; the keys changed since its commit
   point, which the node takes when it ends (node-framework.md 6.3). A change before the commit point supersedes it
   instead (T18): a new `node.state` `reconfiguring` with the new `keys` (or a `stopping` with cause `restarting` if the
   newest change needs one), after an `ear.reconfigure-superseded` diagnostic.
-- `holds` (`reconfiguring` only, when `configure` held any): the public output banks the framework holds silent (W3).
 - `waitingFor` (`added`, `configuring`, `configured`, `starting`, only once the phase has lasted 2 s): what the node
   still waits for, a list of objects with an open `kind`: `older-node` (`name`: a removed or renamed node of its name
   still closing, I7), `claim` (`subject`, `holder`, and `leaked: true` when the holder is a leaked configuration, which
@@ -1059,13 +1159,14 @@ members its phase gives below; a member not given is absent now (4.4 replaces ev
 | `phase` | `state` | Entered (node-framework.md 6.3) | Members beyond the five | `cause.kind` | The editor shows (8.6) |
 |---|---|---|---|---|---|
 | `added` | `starting` (`stopped` if wanted stopped) | T1: added; the block is made, silent | `waitingFor` after 2 s (`older-node`) | — | "starting", with what it waits for |
-| `configuring` | as `added` | T2, T12, T15: `configure` called, resources readying | `waitingFor` after 2 s; `cause` after a restart | `settings` (`keys`), `reshape` (`added`, `removed`), `action`, `fell-back` (`reason`, `detail`), `retry`, `recovery` (`attempt`) | "configuring", with what it waits for |
+| `configuring` | as `added` | T2, T12, T15, T22: `configure` called, resources readying | `waitingFor` after 2 s; `cause` after a restart, a retry or an enable | `settings` (`keys`), `reshape` (`added`, `removed`), `action`, `fell-back` (`reason`, `detail`), `retry`, `recovery` (`attempt`), `enabling` | "configuring", with what it waits for |
 | `configured` | as `added` | T3: every resource ready | — (momentary) | — | as `configuring` |
 | `starting` | `starting` | T4, T8: wanted running | `waitingFor` after 2 s (`block`) | — | "waiting for the engine" |
 | `running` | `running` | T5, or T10 (an in-place change ended) | — | — | the node's own status line |
-| `reconfiguring` | `reconfiguring` | T9 | `keys`, `next`, `holds` | — | "reconfiguring port", held banks marked |
-| `stopping` | `stopping` | T6, T11, T17 | `cause` | `stop`, `restarting` (with the restart's own kind, as `configuring`'s), `removing` | "stopping", "restarting: ports changed", "removing" |
-| `stopped` | `stopped` | T7, or T4 when wanted stopped | — | — | "stopped", and Start |
+| `reconfiguring` | `reconfiguring` | T9 | `keys`, `next` | — | "reconfiguring port"; every port's meter shows what is held (W3) |
+| `stopping` | `stopping` | T6, T11, T17, T20 | `cause` | `stop`, `disabling`, `restarting` (with the restart's own kind, as `configuring`'s), `removing` | "stopping", "disabling", "restarting: ports changed", "removing" |
+| `stopped` | `stopped` | T7, or T4 when wanted stopped | — | — | "stopped until Start or a restart of ear", Start and Disable |
+| `disabled` | `disabled` | T19 (added disabled), T20's end, T21 | — | — | "disabled in ear.conf", and Enable |
 | `failed` | `failed` | T13, T14 | `reason` | — | the failure, and Start (a retry) unless the block is lost |
 | `recovering` | `recovering` | T16 (slice 8) | `reason`, `attempt`, `retryInMs` | — | "recovering in 4 s (attempt 3): card lost" |
 
@@ -1081,9 +1182,9 @@ members its phase gives below; a member not given is absent now (4.4 replaces ev
 - **A retune changes no health.** A `retune` outcome, a gesture and a status write never send `node.state`.
 - **Order.** Health is ordered per node by the session's one queue (4.3's rule 8); nothing a closed configuration says
   reaches the wire (node-framework.md I6).
-- **Today's clients** (protocol 0, the editor before step L1) see `state` as before plus three values they do not know,
-  `reconfiguring`, `stopped` and, with slice 8, `recovering`; `EarNode.tsx:28` [V] then builds the class
-  `state-reconfiguring` or `state-stopped`, which have no style and read as plain text. Nothing they rely on changes
+- **Today's clients** (protocol 0, the editor before step L1) see `state` as before plus four values they do not know,
+  `reconfiguring`, `stopped`, `disabled` and, with slice 8, `recovering`; `EarNode.tsx:28` [V] then builds the class
+  `state-reconfiguring`, `state-stopped` or `state-disabled`, which have no style and read as plain text. Nothing they rely on changes
   meaning, so this is additive within protocol 1 (4.1).
 
 ### 4.9 Changes while the node runs: `applied`, `dryRun` and reshape
@@ -1091,8 +1192,10 @@ members its phase gives below; a member not given is absent now (4.4 replaces ev
 What a committed edit does to each node is node-framework.md 6.6's plan outcome; this section is how a client sees it,
 before and after.
 
-- **`applied` is the plan's outcome, at the commit** (X3, X7): `retune`, `reconfigure`, `restart`, `reshape` or
-  `unchanged` on the reply of `node.set` and `node.update` and on `node.updated`. A `reshape` also carries `inPlace`:
+- **`applied` is the plan's outcome, at the commit** (X3, X7): `retune`, `reconfigure`, `restart`, `reshape`,
+  `disable`, `enable`, `stored` (any settings change to a node that stays disabled: written, nothing runs, its block
+  reshaped if its ports changed) or `unchanged` on the reply of `node.set`, `node.update`, `node.disable` and
+  `node.enable` and on `node.updated`. A `reshape` also carries `inPlace`:
   `true` when every changed key is `.inPlace()` or `.live`, so the node reshapes while it runs and keeps its configuration;
   `false` when it restarts (node-framework.md 6.6, 6.7). So a client knows, before the node acts, the one thing an
   operator asks of a change: whether the node restarts. It says what the change asks of the
@@ -1623,7 +1726,7 @@ the test's thread:
 | `h.trigger<action>()`, `h.invoke<action>(args)` | a trigger; a call, on the harness's manual loops (node-primitives.md section 10) |
 | `h.drain()` | runs the tick now (the harness drains after every `process` and every operation by default) |
 | `h.advance(ms)` | moves the harness's clock, node-primitives.md section 10's one fake clock: flapping windows, rate limits and trailing records, the gesture idle deadline, the 2 s after which `waitingFor` is told |
-| `h.health()` | every health notification, in order, as 4.8 encodes it (`state`, `phase`, `cause`, `keys`, `holds`, `waitingFor`), so a type's test checks what an operator would see |
+| `h.health()` | every health notification, in order, as 4.8 encodes it (`state`, `phase`, `wanted`, `cause`, `keys`, `waitingFor`), so a type's test checks what an operator would see |
 | `h.outcome(settings)` | the plan's outcome of a change from the current settings (what `dryRun` answers), without applying it |
 
 The all-type tests gain: every type's schema encodes; every status field's initial value is of its kind or null;
@@ -1706,7 +1809,7 @@ records, so a node whose only output is realtime is drained, and a node at rest 
 | `gesture.changed` `change` | 30 a second per gesture, one per gesture whatever its reach | sent at the tick; never to the owner |
 | Off-realtime queue | 1024 records per node | dropped, counted |
 | Action reply | 10 s | `action-timeout`; the handler's late answer is dropped |
-| Gesture idle | 30 s with no message about it from its owner (a tick, keep-alives included) | aborted, `idle`; the timer stops once the owner's end or cancel was read (6.6) |
+| Gesture idle | 30 s with no message about it from its owner (a tick, keep-alives included), timed by the owner's session on the control thread | ended as released, keeping the last value heard (`end`, `reason: "idle"`, the owner's G4; G15); the timer stops once the owner's end or cancel was read (6.6) |
 | A session's queued requests | 16 messages with an id (or batches) read ahead | at 16, the socket is not read until one is answered (6.6) |
 
 ### 6.6 The tick path from the socket
@@ -1727,13 +1830,19 @@ session now reads ahead (G12):
   `gesture.end` or `gesture.cancel` for an id (with an id, queued in the FIFO), it marks that gesture *ending* on the
   control thread at once: later ticks for it are dropped there, and the gesture's idle timer stops. An end queued
   behind a slow request therefore never races a tick, and never loses to the idle deadline.
+- **Idle and close** (the owner's G4, R31; G15, G16). The session keeps each of its open gestures' idle timer on the
+  control thread, reset by every message about it (ticks and keep-alives, read ahead or not). When 30 s pass, or the
+  socket closes, the session first hands the gesture's newest pending tick to the gateway (so the last value heard
+  reaches the slots), then marks it *ending* and queues, behind the session's earlier requests, a `gesture.end` with no
+  value and a `cause` (`idle` or `session-closed`), which goes to the keeper as any end does. A closed session's queued
+  requests with an id are still run in order and their replies dropped, so its end keeps its place among them.
 
 **Coalescing.** The gateway keeps, per gesture, the newest pending tick; if none was pending it posts one task to the
 main loop, which takes whichever tick is newest when it runs. So a client sending 1000 ticks a second costs the main
 loop at most one task per turn, and the audio still follows the last value.
 
-**On the main loop**, `Gestures::move` checks the gesture and its owner, drops a stale `seq`, resets the idle timer,
-and stops there when the value equals the live value (a keep-alive). Otherwise it checks the value against every
+**On the main loop**, `Gestures::move` checks the gesture and its owner, drops a stale `seq`, and stops there when
+the value equals the live value (a keep-alive). Otherwise it checks the value against every
 reached row and the type's `check` (`NodeType::checkLive`, 5.6; a refusal is dropped and the owner gets
 `tick-refused`, at most once a second), writes every reached slot through `NodeHost::setLive` (for a node with no configuration,
 only the node's live value), marks the gesture dirty and arms the tick (6.4).
@@ -1750,11 +1859,11 @@ or the other way round.
 | T2, `configure` from empty | the node's channels are made: slots (seeded from the committed values, or the node's held live values), `rt` words, transition counters, trigger counts, the ring, the queue; the status view starts at its initial values; the `Report` is made (5.3) |
 | T3, configured | the code is prepared and bound to them (`bindChannels`); nothing runs on the realtime thread yet, and the block is silent |
 | T5, T8, the code drives (a barrier) | the first block after it starts every ramp at its slot's value, without a ramp (5.4); the code may write `rt` fields and records from its first cycle; the block rings the bell as 6.2 says; then `start()` runs |
-| retune, in any phase | the slots move at once, wait-free; with no configuration (`added`, `configuring` before T2's channels, `failed`, `recovering`) only the node's live value moves, and seeds the next configuration's slots (7.7); while `stopped` the slots move and the code, not driven, ramps from them at the next start |
+| retune, in any phase | the slots move at once, wait-free; with no configuration (`added`, `configuring` before T2's channels, `disabled`, `failed`, `recovering`) only the node's live value moves, and seeds the next configuration's slots (7.7); while `stopped` the slots move and the code, not driven, ramps from them at the next start |
 | T9, an in-place `configure`; holds | the code keeps running and writing; a hold is applied by the block after the code (node-framework.md 6.6 step 2), so a held bank's `rt` fields, events and levels are the code's own, and the meters show the silence the hold makes (they read the block's outputs after the hold) |
 | T10 with a code swap (a barrier) | the new code is prepared on the main loop and bound to the same channels; at the barrier it replaces the old one between two cycles. Each ramp goes on from where it was (its state is the node's), each `rt` field's last written value is kept (so a value the new code writes the same is no change), and a trigger invoked before the swap and not yet seen is seen once by the new code. The old code is released after the barrier |
 | T6 (a stop: `drive(nullptr)`) | the code stops; the ring is drained to its end by the tick; the channels stay, and the status is kept |
-| T6 or T11 for a restart, T14, T17 (a barrier: `drive(nullptr)` or the block's destruction), then teardown | the code stops; the ring is drained to its end by the tick; the queue's records are drained until the configuration closed, so a goodbye is heard (6.4 step 5); then the reset (4.3) |
+| T6 or T11 for a restart, T14, T17, T20 (a barrier: `drive(nullptr)` or the block's destruction), then teardown | the code stops; the ring is drained to its end by the tick; the queue's records are drained until the configuration closed, so a goodbye is heard (6.4 step 5); then the reset (4.3) |
 | I5 step 5 | the channels are freed, after the code and the loops' states (node-framework.md I5) |
 
 - **Realtime safety is unchanged by the lifecycle.** Every barrier is `drive`, an invoke on the node's own block,
@@ -1782,7 +1891,9 @@ or the other way round.
 | `gesture.begin`: file state, the reach index, rows, holds | main loop | the keeper's main-loop side (which holds the running version's index), `Gestures` |
 | Open, move, close and abort gestures; write slots; tell listeners | main loop | `Gestures` (`ear_core`), `NodeHost` |
 | Plan, commit (each node's outcome to `NodeHost` through `nodeChanged`), or a dry run's plan answered without a commit | main loop | the keeper's main-loop side, `DesiredGraph`, `NodeHost` |
-| `gesture.change`, `gesture.cancel` notifications, a session's close | control, then main loop directly | the gateway, `Gestures` |
+| `gesture.change`, `gesture.cancel` notifications | control, then main loop directly | the gateway, `Gestures` |
+| A gesture's idle timer; on idle or a session's close, its end on the owner's behalf (G4) | control, then keeper as any end | the session (`ear_control`), then `Keeper` |
+| Whether a save is related to each open gesture (G3): the new reach index against the running one, before the plan | main loop | the keeper's main-loop side, `Gestures` |
 
 The control thread never holds a gesture (it holds the newest pending tick and an *ending* mark only); the keeper thread
 never holds one either (it makes reach indexes and candidates); `Gestures` on the main loop is the one owner.
@@ -1820,8 +1931,9 @@ sequenceDiagram
 
 - **The reach index** (keeper thread). With every offer it posts (an accepted edit's candidate, a disk read,
   `graphFile.set`), the keeper sends the reach index of that text: `GraphFileModel::reachIndex()`, new, gives for each
-  node and live key `ear.conf` gives the definition's place, every node and key whose expanded value has that
-  definition (knobly's `definition()`, `written.hpp:926` in the image [V]), and the committed value. It is small (one
+  node and live key `ear.conf` gives the definition's place, the text of the whole lines the defining statement is
+  written on (its **defining lines**, 7.3), every node and key whose expanded value has that definition (knobly's
+  `definition()`, `written.hpp:926` in the image [V]), and the committed value. It is small (one
   entry per live key in the file) and made only when the text changed. On the main loop it becomes the running index at
   commit. A text with errors has none (begin is refused `file-invalid`); a disk text the graph refused leaves the old
   running index but marks the file *not running* (begin is refused `file-refused`), since the working copy is then not
@@ -1845,8 +1957,12 @@ sequenceDiagram
   rounding moved it), tells `gesture.changed` `end`, and the reply carries the committed value. A candidate that
   changes nothing (the value is the committed one) posts a step that only closes the gesture. An end refused for its
   value leaves the gesture open; any other refusal aborts it (`refused`).
-- **Cancel, session close, idle, node removed** abort on the main loop: every reached slot returns to the committed
-  value, `gesture.changed` `aborted` with the reason and that value.
+- **Cancel and node removed** abort on the main loop: every reached slot returns to the committed value,
+  `gesture.changed` `aborted` with the reason and that value. **Session close and idle** end the gesture as released
+  (the owner's G4): the control thread queues an end with no value (6.6), which commits the last live value as above;
+  `gesture.changed` `end` carries `reason`, and the `param` record too. If that end is refused (its value no longer
+  passes the rows, or the desired graph refuses it), the gesture is aborted (`refused`) and the slots return to the
+  committed value, since no owner is left to send a better end.
 - **What is written, and when.** Only an end (and `node.set`, `node.update`, `graphFile.set`) changes the working copy;
   `ear.conf` is written behind as today, when the keeper is free (`keeper.cpp:78-81` [V]); its fsyncs
   (`confined_folder.cpp:251`, `277` [V]) delay the next keeper step, never a begin or a tick. At most one commit per
@@ -1856,26 +1972,69 @@ sequenceDiagram
 
 | Lands during a gesture | What happens |
 |---|---|
-| A hand edit (disk), whatever it changes | every open gesture closed as aborted (`hand-edit`, no value) on the main loop before the offer's plan (G3); then the file is offered as today; last in the turn each reached slot is set to its node's running value (the new file's, if the plan accepted it and changed the key; else the committed value) |
-| A hand edit with errors, or one the graph refuses | aborted as above; the graph keeps what it ran; slots return to the running version's values |
-| `graphFile.set` (the pane's Save) | as a hand edit, reason `file-saved` |
+| A hand edit (disk) **related** to the gesture: it changes the dragged value, its defining lines or its reach (below) | the gesture closed as aborted (`hand-edit`, no value) on the main loop before the offer's plan (the owner's G3, R30); then the file is offered as today; last in the turn each reached slot is set to its node's running value (the new file's, if the plan accepted it and changed the key; else the committed value) |
+| A hand edit **not related** to the gesture | nothing happens to the gesture: no `gesture.changed`, the slots keep the hand's value, its places are rebased onto the new text's index; then the file is offered as today, and the gesture's end later edits the new text |
+| A hand edit with errors, or one the graph refuses | every open gesture aborted as a related one, whatever it changed (G14): no end could commit onto it, since every end is judged against the whole working copy; the graph keeps what it ran; slots return to the running version's values |
+| `graphFile.set` (the pane's Save) | as a hand edit, reason `file-saved` when related |
 | `node.set` or `node.update` changing a held key | refused `parameter-held`; nothing changes |
 | `node.set` or `node.update` changing other keys of a reached node | applied, whatever its outcome (7.7): a reconfigure keeps the slots; a restart keeps the hand's live value (the node's live value seeds the new node's slots) |
 | A reshape that removes a reached key (an indexed member above the new count) | applied; the gesture aborted (`key-removed`) before the commit's events |
 | The reached node fails, recovers or restarts (by the action) | nothing: the gesture stays open; ticks move the node's live value, which seeds the next run |
 | `node.remove` of a reached node, or its replacement (another type) | applied; the gesture aborted (`node-removed`) |
 | Another session's `gesture.begin` on a reached pair | refused `parameter-held` |
-| The owning session closes (socket gone) | aborted (`session-closed`) (G4) |
-| No message about the gesture from its owner for 30 s, and no end or cancel read | aborted (`idle`) (G4) |
-| `SIGTERM` | `DesiredGraph::close()`: later begins and ends get `stopping`; open gestures are not committed and are not announced (clients are closed with 1001); the last write writes the last accepted version, which holds no live value |
+| The owning session closes (socket gone) | ended as released, the last value heard committed (`end`, `reason: "session-closed"`; the owner's G4, R31) |
+| No message about the gesture from its owner for 30 s, and no end or cancel read | ended as released, the same (`reason: "idle"`; G15) |
+| The reached node is disabled, stopped or started | nothing: the gesture stays open; ticks move the node's live value (a disabled node has no slots: its live value seeds the configuration an enable makes) |
+| `SIGTERM` | `DesiredGraph::close()`: later begins and ends get `stopping`; open gestures are not committed and are not announced (clients are closed with 1001); the last write writes the last accepted version, which holds no live value (G16: a stop of ear is not a release) |
 
 The keeper's main-loop side learns the change's kind from the offer: a new member `OfferKind` (`disk`, `set`, `edit`,
 `gestureEnd{id}`) beside today's members. Today's `Offer` (`main_loop_side.hpp:24-30` [V]) has `file`, `wanted`,
 `placements`, `cause` (`edit` or `disk`) and `droppedEdits`; `cause` does not tell `graphFile.set` from a node edit, nor
 a gesture's end from either. The offer also gains the version's reach index (7.2).
 
-A gesture's reach changes only by a hand edit (`node.set` sets values, never which definition a key uses; `node.add`
-appends literal values), and a hand edit aborts every gesture first, so a reach never changes under an open gesture.
+A gesture's reach changes only by a hand edit or `graphFile.set` (`node.set` sets values, never which definition a key
+uses; `node.add` appends literal values), and a save that changes a gesture's reach is related to it and aborts it
+first, so a reach never changes under an open gesture.
+
+**When a save is related to a gesture** (the owner's G3, "Only a related save", R30). The owner's words: a save stops a
+fader only when it changes the dragged value or the line it is defined on. ear decides it on the main loop, for each
+open gesture, when the offer of a disk read or a `graphFile.set` arrives and before its plan, from two reach indexes:
+the running one, which the gesture was begun against (or last rebased onto), and the new text's, which the keeper made
+on its thread and posted with the offer (7.2). Neither knobly nor the text crosses to the main loop. The save is
+**related** to gesture `g` when, for any pair `(node, key)` of `g`'s reach, any of these holds:
+
+1. **The defining lines changed.** The pair's defining statement (knobly's `definition()` for the key: the `@set $trim
+   0;` a variable's users share, or the setting statement `gainDb -6;` itself; for a chain of variables, the chain's
+   end, as the reach is) is written on lines whose text differs, byte for byte, between the two versions. The lines are
+   whole source lines, so a comment added at the end of `@set $trim 0;` is related, and a comment on the line above, or
+   the same line moved elsewhere unchanged, is not (its place is rebased).
+2. **The value changed.** The pair's evaluated value, after knobly's expansion, differs from the running one. This
+   catches a change the lines do not show: a chain's base changed elsewhere (`@set $base -6;` behind `@set $trim
+   $base;`).
+3. **The reach changed.** The pair is defined elsewhere now (`trimDb.1 $other;`), or the set of pairs sharing its
+   definition is not `g`'s reach (a third node now uses `$trim`, or `trimDb.2` stopped using it).
+4. **The pair is gone.** The node is removed, renamed or replaced, or its key is no longer declared (a reshape removed
+   the indexed member); these also abort as `node-removed` or `key-removed` when the commit says so, and the
+   comparison aborts them first, as `hand-edit` or `file-saved`.
+5. **The new text has errors, or the graph refuses it** (G14): every gesture, as the table above says.
+
+A key the file did not give (the gesture moves the row's default) has no defining lines: the save is related when the
+new text gives the key, or when its node's own `node` line changes. Anything else (another node's settings, a route, a
+comment or a blank line elsewhere, a new node, the same lines moved) is unrelated: the gesture stays open, its index
+entries are replaced by the new text's (same pairs, new places), and nothing is sent about it. The gesture's end is then
+an edit of the new working copy like any other (7.2), so it keeps the colleague's change. The plan of an unrelated save
+never touches the gesture's keys (their values did not change), so the slots keep the hand's value without a rule of
+their own.
+
+Its cost is one comparison per open gesture per save, over entries the keeper already makes (one per live key the file
+gives); the defining lines are carried as their text's 64-bit hash with their line range, so the index stays small.
+Tests: `ear_config_tests` (each entry's defining lines and their hash: a setting, a `@set`, a chain's end, a snippet's
+line, a key the file does not give); `ear_core_tests` on `Gestures` with pairs of hand-made indexes (a comment on the
+line above kept, a comment on the defining line aborted, the line moved kept and rebased, the value changed aborted, a
+chain's base changed aborted by value, a third user of `$trim` aborted by reach, another node's setting changed kept,
+a text with errors aborting all, a refused text aborting all, an unrelated `graphFile.set` kept; two gestures, one
+related and one not); and a system test (a comment added by hand above the node during a gesture, the gesture's end
+writing onto the new text with the comment kept; a hand edit of the same value aborting it).
 
 ### 7.4 Retune: a live change without a restart
 
@@ -1923,13 +2082,21 @@ answers, and the keeper drops it, so the working copy, the disk and every client
   | `stopping` for a restart | nothing more: a restart is already under way | `{}` at once |
   | `added` | refused `not-restartable` (`not-started`): the node is configured by itself once the older node of its name is gone | the refusal |
   | `stopping` for a removal | refused `stopping` | the refusal |
+  | `disabled`, or `stopping` for a disable | refused `node-disabled`: there is nothing configured to restart; `node.enable` configures it afresh (node-framework.md D-F2) | the refusal |
 
   A node whose block is lost cannot restart (`restartRequested` does nothing then, `node_lifecycle.hpp:29-31` [V]): it
   is refused `not-restartable` (`reason: block-lost`), and the snapshot's `blockLost` lets the editor disable the
   button first. A restart's reply never waits for the node to be `running` (X3); `--until` waits for that.
-- `node.start` and `node.stop` are edits (4.2), not actions: they reach the keeper as `node.update` does, change the
-  node's wanted state in `ear.conf`, and are applied by node-framework.md 6.3's rules (T6, T7, T8; T15 for `start` on
-  a failed node). Their reply is the edit's, at the commit.
+- `node.start` and `node.stop` (4.2) are neither edits nor type actions (the owner's R28): they reach the keeper's
+  thread in order with every other request, which needs no file and posts a step to the main loop at once, as for
+  `node.invoke`; there `NodeHost` sets or clears the node's stop and applies node-framework.md 6.3's rules (T6, T7, T8;
+  T15 for `start` on a failed node). The reply is posted in that main-loop turn, after the `node.state` it causes:
+  `stop`, `start`, `retry` or `unchanged`; `node-disabled` on a disabled node. Nothing is written, no version is made,
+  and `file-invalid` never applies, so Stop and Start work while `ear.conf` has errors. Each writes an `action` record
+  on standard output (`node porch stop invoked`), so a stop at 3 a.m. is in `kubectl logs` (G8).
+- `node.disable` and `node.enable` (4.2) are edits at the source (R25, R28): the keeper adds or removes the word
+  `disabled` on the node's line in a candidate, as it edits a setting, the plan's outcome is `disable` or `enable`
+  (node-framework.md 6.6), and the reply is the edit's, at the commit; `ear.conf` is written behind as for any edit.
 - A trigger: the counter is incremented and the reply posted at once; `not-running` (with the `phase`) when the node's
   code is not driving (any phase but `running` and `reconfiguring`).
 - A call: posted to the loop it names with `NodeLoop::postFromOutside`; the reply when the handler returns. When the
@@ -1950,6 +2117,11 @@ phase the node is in. The plan's outcome is node-framework.md 6.6's; an edit tha
 the strongest outcome (`retune` < `reconfigure` < `restart` < `reshape`), and its live keys move the slots at the
 commit whatever that outcome is.
 
+A **disabled** node takes every row the same way: the change is written and the outcome is `stored`; a live row moves
+only the node's live value (which seeds the configuration an enable makes), a gesture on it is allowed as on a failed
+node, and a change of ports reshapes the block alone (node-framework.md 6.7), still refused `ports-in-use` without
+`dropRoutes` when routes would be stranded.
+
 | Row | `node.set` | A gesture | Node `running` or `stopped` | Node `reconfiguring` | Node `added`, `configuring`, `configured`, `starting`, or `stopping` for a restart | Node `failed`, `recovering` |
 |---|---|---|---|---|---|---|
 | **live** (`.live`) | `retune`: slots move at once | yes: ticks move the slots, the end commits once (section 7) | ramps; no `node.state` | ramps at once; the reconfigure goes on (the slots are the node's, 6.7) | the node's live value moves and seeds the next configuration | the same; no restart and no recovery skip (a retune is not a reason to try again) |
@@ -1957,8 +2129,8 @@ commit whatever that outcome is.
 | **restart-only** (no mark) | `restart` | refused `not-live` | `stopping` (cause `restarting`), then `configuring` | before the commit point: ends it as T11, with the newest settings; after it: queued, then a restart (6.3) | the newest settings replace those the next configuration starts with | a restart at once |
 | **makes ports** (`.shapesPorts()`) | `reshape`; refused `ports-in-use` without `dropRoutes` when routes would be stranded (4.9) | refused `not-live` (a live row never makes ports, 5.1) | `stopping` with cause `restarting` (`reshape`), the block reshaped between configurations (`inPlace: false`); or `reconfiguring` when every changed key is `.inPlace()` or `.live` (`inPlace: true`, node-framework.md 6.7) | queued, then as running | as restart-only, the block reshaped before `setup` | as restart-only |
 
-- **Gestures meet the lifecycle only through slots.** A gesture holds live keys; whatever happens to the node's run
-  (reconfigure, restart, failure, recovery), the gesture stays open and its live value is the node's: a reconfigure
+- **Gestures meet the lifecycle only through slots.** A gesture holds live keys; whatever happens to the node's
+  configuration (reconfigure, restart, failure, recovery, stop, disable), the gesture stays open and its live value is the node's: a reconfigure
   keeps the slots, a new node's slots are seeded from it (5.6). Two lifecycle events end a gesture: the node removed or
   replaced (`node-removed`, as today), and a reshape that removes a key the gesture reaches (an indexed member above the
   new count), aborted as `key-removed` before the commit's events, with the committed value it returns to (4.3).
@@ -1976,8 +2148,8 @@ commit whatever that outcome is.
 | Module | Holds | Tested by |
 |---|---|---|
 | `protocol.ts` | the wire types of section 4; `ControlErrorCode`; `NodeDiagnostic`, `EventSeverity`; open enums typed as `Known \| (string & {})` | typecheck |
-| `graph.ts` | the graph, now with each node's health members (4.8), `wanted`, `blockLost`, `status`, `gestures`, `diagnostics`, `companions`; handlers for the new notifications (4.4) | vitest, every fixture of 4.7 |
-| `health.ts` (new, pure) | from a node's health members to what 8.6 shows: the state word and style, the line under it, the held banks, which actions are enabled and why not, what to announce | vitest, `lifecycle.json` |
+| `graph.ts` | the graph, now with each node's health members (4.8), `wanted`, `disabled`, `blockLost`, `status`, `gestures`, `diagnostics`, `companions`; handlers for the new notifications (4.4) | vitest, every fixture of 4.7 |
+| `health.ts` (new, pure) | from a node's health members to what 8.6 shows: the state word and style, the line under it, which actions are enabled and why not (Start, Stop, Disable, Enable, Restart, the type's), what to announce | vitest, `lifecycle.json` |
 | `types.ts` (new) | the type schemas by hash; `types.get` with `ifNoneMatch` on every snapshot whose hash differs; cached in `localStorage` (wrapped in `try`, as storage may be absent) | vitest, `types.json` |
 | `gesture.ts` (new, pure) | the session's own gestures as a state machine (below); what to send for each input; the control mapping (8.3) | vitest, a fake client |
 | `form.ts` (new, pure) | the settings form's per-field drafts against server values; the Apply flow with its dry run and the routes a reshape drops (8.2) | vitest |
@@ -2007,7 +2179,8 @@ Features gate the UI: without `gestures` live rows render as plain number fields
 | ending | reply | — | idle; shows the committed value |
 | ending | refusal `invalid-settings` | `gesture.cancel` | idle; notice |
 | any | `gesture.changed` `aborted` for its id | — | aborted until release, then idle; notice (8.3) |
-| any | connection lost | — | idle (ear aborts with `session-closed`) |
+| any | `gesture.changed` `end` with a `reason` for its id (ear ended it: `idle`) | — | idle; shows the committed value; notice (8.3) |
+| any | connection lost | — | idle; the snapshot after reconnecting shows the value ear committed for it (`session-closed`, G4) |
 
 ### 8.2 How each row kind renders
 
@@ -2085,13 +2258,16 @@ mapped value rounded to `decimals`.
 
   | Reason | Notice |
   |---|---|
-  | `hand-edit` | "ear.conf was edited by hand while you held amp gainDb; it now says -10." [Set -3.5 again] |
-  | `file-saved` | "ear.conf was saved from the text pane while you held amp gainDb; it now says -10." [Set -3.5 again] |
-  | `idle` | "Your change to amp gainDb was dropped after 30 s without a word from this editor." |
+  | `hand-edit` | "ear.conf was edited by hand and changed amp gainDb while you held it; it now says -10." [Set -3.5 again] (or, for a file with errors or one the graph refused: "ear.conf was edited by hand and has a problem, so your change to amp gainDb was dropped; see the text pane.") |
+  | `file-saved` | "ear.conf was saved from the text pane and changed amp gainDb while you held it; it now says -10." [Set -3.5 again] |
   | `node-removed` | "amp was removed or replaced while you held gainDb." |
   | `key-removed` | "amp2 now has 2 channels, so trimDb.3, which you held, is gone." |
   | `refused` | the end's refusal message |
-  | `session-closed` | none (the editor reconnects and shows the snapshot) |
+
+  An end ear made for the control (`phase: "end"` with `reason: "idle"`; G4, G15) shows: "Your change to amp gainDb was
+  kept at -3.5 after 30 s without a word from this editor." A `session-closed` end reaches no control (its session is
+  gone); after reconnecting the snapshot shows the committed value. A save that is not related to the gesture (7.3)
+  shows nothing on the control: the drag goes on, and the text pane shows the new file as usual.
 
   "Set ... again" sends `node.set` with the value the operator last chose. On `hand-edit` and `file-saved` the control
   takes the value from the `node.updated` that follows (or keeps the committed value when none follows).
@@ -2112,8 +2288,8 @@ mapped value rounded to `decimals`.
   An unknown code is shown by its `msg`, badged while active.
 - **Actions**: one button per action, `restart` first; a call with arguments opens a small form from its rows; disabled
   while the request is in flight, and as 8.6's table says per phase (a type's action needs a configured node; `restart` is
-  disabled in `added` and `stopping`, and while `blockLost`; Start and Stop sit beside the actions, as the wanted state
-  allows), with the reason as its description; a
+  disabled in `added`, `stopping` and `disabled`, and while `blockLost`; Start and Stop, and Disable and Enable, sit
+  beside the actions, as 8.6's table allows), with the reason as its description; a
   refusal shows its message.
 - **Unknown values** (a newer ear): an unknown state is drawn as `starting`'s neutral style with its name; an unknown
   phase or `cause.kind` as its word; an unknown companion kind as its word; an unknown status kind as text; an unknown
@@ -2125,36 +2301,40 @@ mapped value rounded to `decimals`.
   dB", "-inf dB") and a label from the key, keyboard per the WAI-ARIA slider pattern (8.3); held by another editor:
   `aria-disabled` with the reason as its description.
 - A polite live region announces callout fields when they change ("kitchen pairing code 123-456"), aborted gestures, a
-  node turning `failed`, a node's outputs held and released ("fpp outputs held while it reconfigures"), a reconfigure
-  that fell back, and flapping starting; at most one announcement per node per 5 s. Phases inside `starting` are not
+  node turning `failed`, `stopped` or `disabled`, a node reconfiguring ("fpp reconfiguring port") and back, a
+  reconfigure that fell back, and flapping starting; at most one announcement per node per 5 s. Phases inside `starting` are not
   announced (they pass in milliseconds), but a `waitingFor` is ("fpp still setting up: waiting for fpp.rtp"). `error`
   events are announced assertively. A refusal is shown near its control with `role="alert"`.
 - When the selected node is removed or replaced, focus moves to the panel's heading; after a refused action, focus
   returns to its button.
 - A keyboard path joins the canvas and the panel: Enter on a focused node box moves focus into its panel, Escape in the
   panel returns it to the box.
-- State, phase, holds, flapping, companions' readiness and route status are never shown by colour alone: each has its
-  word or a text badge ("held", "ready", "not ready").
+- State, phase, flapping, companions' readiness and route status are never shown by colour alone: each has its word or
+  a text badge ("ready", "not ready"). A meter's level is also its tooltip's text ("peak -12.3 dBFS, rms -18.0 dBFS",
+  or "silent"), as `Meter.tsx` gives it today.
 - Focus is visible on every control; the panel's controls are in reading order; every action button has a text label.
 
 ### 8.6 The lifecycle in the editor
 
 What the operator sees of a node in each phase (4.8 gives the members; `health.ts` is the one place that turns them
-into this). Three rules run through it: silence the operator asked for is never drawn as a fault (R17); routes stay
-drawn in every phase but `stopping`, because the graph keeps them linked (node-framework.md 6.2), and a wire from a
-silent node reads zeros, which its meter shows; and one node's phase changes nothing on another node's box (R16).
+into this). Four rules run through it: silence the operator asked for is never drawn as a fault (R17), and the box
+says in words why a node is silent; every port shows its level, so audio can be followed through the graph (the
+owner's W3, R29; below); routes stay drawn in every phase, because the graph keeps them linked (node-framework.md 6.2),
+and a wire from a silent node reads zeros, which its meters show; and one node's phase changes nothing on another node's
+box (R16).
 
 | `phase` | Box: state word, style | The line under it | Outputs and their wires | Settings panel | Actions |
 |---|---|---|---|---|---|
-| `added` | "starting" (or "stopped" if wanted stopped), neutral | "waiting for the previous desk to stop" (from `waitingFor` after 2 s; empty before) | silent; wires drawn, meters at zero | editable: an edit commits and the node is configured with it | Stop or Start (the wanted state); `restart` disabled ("starts by itself"); type actions disabled ("not configured") |
-| `configuring` | as `added`, a slow pulse | "configuring"; after 2 s "configuring: waiting for tcp:8928 (held by kitchen, closing)"; after a restart, the restart's cause | silent | editable | Stop or Start; `restart` enabled; type actions disabled |
+| `added` | "starting" (or "stopped" if wanted stopped), neutral | "waiting for the previous desk to stop" (from `waitingFor` after 2 s; empty before) | silent; wires drawn, meters at zero | editable: an edit commits and the node is configured with it | Stop or Start (by the node's stop); Disable; `restart` disabled ("starts by itself"); type actions disabled ("not configured") |
+| `configuring` | as `added`, a slow pulse | "configuring"; after 2 s "configuring: waiting for tcp:8928 (held by kitchen, closing)"; after a restart, an enable or a retry, its cause | silent | editable | Stop or Start; Disable; `restart` enabled; type actions disabled |
 | `configured`, `starting` | "starting", neutral | "waiting for the engine"; these phases last milliseconds unless the engine is slow | silent | editable | as `configuring`; type actions enabled (its loops run) |
-| `running` | "running" | the type's box status fields (8.4), or nothing | live; meters move | editable, with 8.2's hints and Apply flow | Stop, `restart` and type actions enabled |
-| `reconfiguring` | "reconfiguring", its own style (not a warning colour) | "reconfiguring port" (from `keys`); "; latencyMs next" (from `next`) | each held bank's handles carry a "held" mark and its wires a held style (dashed), meters at zero; unheld banks live (gate W3) | editable; an edit to a key in `keys` or `next` says "applies after this change" | Stop ("ends the change and stops"), `restart` ("ends the change and restarts", D-B6); type actions enabled (the configuration goes on) |
-| `stopping` | "stopping", neutral | "stopping", "restarting: settings changed (card)", "restarting: ports changed", "restarting: restart invoked", "restarting: could not apply port in place: <detail>", "removing" (from `cause`) | fading to silence | editable (read-only while removing) | all disabled |
-| `stopped` | "stopped", its own quiet style (not a fault) | the type's box status fields, or "stopped" | silent, wires kept and drawn, meters at zero | editable: an in-place change applies, any other configures afresh, still stopped | Start; `restart`; type actions enabled (its loops run) |
-| `failed` | "failed", the failure style | `reason.detail`, in full in the tooltip and the panel | silent, wires kept | editable: a change configures it afresh (node-framework.md 6.3) | Start ("try again", a retry) and `restart` enabled unless `blockLost`; Stop; type actions disabled |
-| `recovering` (slice 8) | "recovering" | "retry in 4 s (attempt 3): card lost", counting down from `retryInMs` | silent | editable: a change tries at once | Start ("try now"), `restart`, Stop; type actions disabled |
+| `running` | "running" | the type's box status fields (8.4), or nothing | live; meters move | editable, with 8.2's hints and Apply flow | Stop, Disable, `restart` and type actions enabled |
+| `reconfiguring` | "reconfiguring", its own style (not a warning colour) | "reconfiguring port" (from `keys`); "; latencyMs next" (from `next`) | wires drawn as always; a held bank's meters fall to silence and its wires thin with their level, and the meters of the ports they feed fall with them; unheld banks live. No "held" mark (the owner's W3, R29) | editable; an edit to a key in `keys` or `next` says "applies after this change" | Stop ("ends the change and stops"), Disable ("ends the change and disables"), `restart` ("ends the change and restarts", D-B6); type actions enabled (the configuration goes on) |
+| `stopping` | "stopping", neutral | "stopping", "disabling", "restarting: settings changed (card)", "restarting: ports changed", "restarting: restart invoked", "restarting: could not apply port in place: <detail>", "removing" (from `cause`) | fading to silence | editable (read-only while removing) | all disabled |
+| `stopped` | "stopped", its own quiet style (not a fault) | the type's box status fields, or "stopped until Start or a restart of ear" | silent, wires kept and drawn; its output meters at zero, its input meters still live | editable: an in-place change applies, any other configures afresh, still stopped | Start; Disable (its description: "release the device and keep it off across restarts; writes ear.conf"); `restart`; type actions enabled (its loops run) |
+| `disabled` | "disabled", its own quiet style, apart from `stopped`'s (not a fault) | "disabled in ear.conf" | silent, wires kept and drawn; its output meters at zero, its input meters still live; no companions | editable: an edit is written and kept for when it is enabled (`applied: "stored"`); a change of ports redraws its handles | Enable; Start, Stop and `restart` disabled ("disabled in ear.conf: enable it first"); type actions disabled ("not configured") |
+| `failed` | "failed", the failure style | `reason.detail`, in full in the tooltip and the panel | silent, wires kept | editable: a change configures it afresh (node-framework.md 6.3) | Start ("try again", a retry) and `restart` enabled unless `blockLost`; Stop; Disable; type actions disabled |
+| `recovering` (slice 8) | "recovering" | "retry in 4 s (attempt 3): card lost", counting down from `retryInMs` | silent | editable: a change tries at once | Start ("try now"), `restart`, Stop, Disable; type actions disabled |
 
 - **A reshape** redraws the box's handles in place when `node.updated` brings `ports`: surviving handles keep their
   wires (which never go `pending`, node-framework.md 6.7), new handles appear unwired, and the box keeps its position.
@@ -2164,16 +2344,33 @@ silent node reads zeros, which its meter shows; and one node's phase changes not
   8.4): "fpp could not apply port in place, so it restarted: <detail>". The panel keeps the new value: `ear.conf` holds
   it.
 - **The wait is the answer to "why is it silent".** Whenever the node is silent, the box says why in words: not configured
-  yet, configuring and what for, held while reconfiguring, stopped by the operator, restarting and why, failed and why,
-  recovering and when.
+  yet, configuring and what for, reconfiguring and which keys, stopped by the operator (until Start or a restart),
+  disabled in `ear.conf`, restarting and why, failed and why, recovering and when.
+- **Every port shows its level** (the owner's W3: "I would like each port to show meter levels so I can see audio
+  traversing the graph", R29). What is built today, and stays: each block meters every public port, inputs and outputs,
+  every cycle, whether its code drives it or not (`port_blocks.cpp:414-422`, after the code or the silence [V]), and
+  publishes a peak and RMS window 30 times a second (`levels.subscribe`, keyed by node and public port, `protocol.ts:151`
+  [V]); the editor draws a meter beside every port handle, inputs and outputs alike (`EarNode.tsx`'s `Port` renders a
+  `Meter` for each, `Meter.tsx` [V]), and draws each wire by its from port's level (`LevelEdge.tsx` [V]). An input's
+  meter reads what arrives on it (the sum of its wires), so a silent node's inputs still show the audio that reaches it.
+  What revision 5 adds: (1) no "held" marks or dashed held wires, and no `holds` member on the wire (W7): a held bank
+  is seen as its meters reading silence, its wires thinning, and the meters of the ports it feeds falling with it, with
+  the box's "reconfiguring <keys>" saying why; the framework's hold applies after the code and before metering
+  (6.7), so the meters show exactly what peers hear; (2) the meters keep running in every phase, `stopped`, `disabled`
+  and `failed` included, since the block is kept and always processes (node-framework.md I1, 6.2), which today's
+  editor already does for any state it draws; (3) a reshape registers the block's new public ports for levels and drops
+  the vanished ones at its barrier (node-framework.md 6.7), so a new handle's meter moves from its first window: new in
+  slice 3d, since today a block's metered ports are fixed when it is made (`port_blocks.cpp:93` [V]); (4) a test in
+  step L3 that a held bank's output meter, the wire's level and the fed input's meter all read silence during an `rtp`
+  port change and come back after. Inside banks (the companions') stay unmetered: they are never drawn.
 - **Fast phases do not flicker.** `health.ts` shows a `starting` phase's line only once it has lasted 250 ms (or at
   once when it carries `waitingFor`), so a normal start reads "starting" then "running". `stopped` is drawn as quiet, never as a fault: the operator
   asked for it.
 
 ### 8.7 Companions in the editor
 
-Companions are hidden, not secret (node-framework.md 9.6, gate C2): the box shows them as small badges along its
-bottom edge, never as boxes, handles or wires.
+Companions are hidden, not secret (node-framework.md 9.6; gate C2, answered by the owner as recommended, its 14.1 Q28):
+the box shows them as small badges along its bottom edge, never as boxes, handles or wires.
 
 - **A badge per companion**: its kind as a short word (`card out`, `card in`, `rtp`, `sink`, `source`) and a dot that
   is filled when `ready` and hollow when not, with "ready" or "not ready" as its accessible text; a `retiring` one is
@@ -2181,8 +2378,9 @@ bottom edge, never as boxes, handles or wires.
 - **The tooltip and the panel** give the companion's engine name, the inside bank it joins and its counter ("rec.writer:
   4096 frames dropped this run"). A counter above zero puts a small warning mark on the badge; `ear.sink-dropped` and
   `ear.source-shortfall` appear in the diagnostics list (8.4).
-- **No companions, no strip**: `white` and `gain` show nothing. A failed node's strip is empty (its run was torn down),
-  and its `reason` names the companion that failed.
+- **No companions, no strip**: `white` and `gain` show nothing. A failed or disabled node's strip is empty (its
+  configuration was torn down), and a failed node's `reason` names the companion that failed. A stopped node's strip
+  stays as it was: it keeps its companions (R26).
 - Companions never take part in selection, dragging, deletion or route-making on the canvas.
 
 ## 9. Standard-output records
@@ -2202,7 +2400,9 @@ run or a generation (node-framework.md I6).
 {"v":1,"seq":124,"t":"2026-11-08T10:03:00.500001Z","kind":"param","node":"amp","key":"gainDb","from":-6,"to":-3.5,"cause":"gesture","gesture":"g4","msg":"node amp gainDb -6 -> -3.5"}
 {"v":1,"seq":125,"t":"2026-11-08T10:03:40.000300Z","kind":"param","node":"amp","key":"gainDb","from":-4.25,"to":-6,"cause":"aborted","gesture":"g4","reason":"cancelled","msg":"node amp gainDb gesture g4 aborted (cancelled): back to -6"}
 {"v":1,"seq":126,"t":"2026-11-08T10:03:41.000300Z","kind":"param","node":"amp","key":"gainDb","from":-3.5,"cause":"aborted","gesture":"g4","reason":"hand-edit","msg":"node amp gainDb gesture g4 aborted (hand-edit) at -3.5"}
+{"v":1,"seq":126,"t":"2026-11-08T10:03:50.000300Z","kind":"param","node":"amp","key":"gainDb","from":-6,"to":-3.5,"cause":"gesture","gesture":"g4","reason":"idle","msg":"node amp gainDb -6 -> -3.5 (gesture g4 ended: idle)"}
 {"v":1,"seq":127,"t":"2026-11-08T10:05:12.770000Z","kind":"action","node":"desk","action":"restart","result":"ok","msg":"node desk restart invoked"}
+{"v":1,"seq":129,"t":"2026-11-08T10:09:29.990000Z","kind":"action","node":"porch","action":"stop","result":"ok","msg":"node porch stop invoked"}
 {"v":1,"seq":128,"t":"2026-11-08T10:05:20.770000Z","kind":"action","node":"kitchen","action":"forget-pairing","result":"action-failed","detail":"no pairing with ma-0000","msg":"node kitchen forget-pairing refused: no pairing with ma-0000"}
 ```
 
@@ -2217,9 +2417,12 @@ run or a generation (node-framework.md I6).
 - `param`: one per reached node and key at each committed live change, whatever made it (`cause`: `gesture`, `set` for
   `node.set` and `node.update`, `disk` for a hand edit or `graphFile.set`) and at each abort (`cause`: `aborted`, with
   `reason`; `to` is the committed value it returned to, absent for `hand-edit` and `file-saved`, whose new value the
-  following `param` or `graph-file` record says). A non-live change has no `param` record: its `graph-file` and `node`
+  following `param` or `graph-file` record says). A gesture ear ended for its owner (G4) is a `cause: gesture` record
+  with `reason` (`idle` or `session-closed`). A non-live change has no `param` record: its `graph-file` and `node`
   records say it.
-- `action`: one per `node.invoke` answered, with `result` (`ok` or the refusal's code) and `detail` for a refusal.
+- `action`: one per `node.invoke`, `node.start` or `node.stop` answered (`action` is `start` or `stop` for the last
+  two, which leave no `graph-file` record, since they edit nothing), with `result` (`ok` or the refusal's code) and
+  `detail` for a refusal. `node.disable` and `node.enable` are edits: their `graph-file` and `node` records say them.
 - `note`: written only by `sendspin` until step 5.5; then no code writes it, and the kind is removed from the encoder.
   No record's shape changes, so `v` stays 1; but operators grep `says pairing-code` (the `ear-on-talos` skill), so step
   5.5's commit carries a `BREAKING CHANGE:` footer naming the replacement (10.1), and the release notes say it.
@@ -2235,23 +2438,26 @@ I6). Today's removal line, `node <n> stopped dropped=<frames>`, becomes `node <n
 `stopped` now names a resting node (node-framework.md D-A10); the system tests that wait for it change in step L1.
 
 ```json
-{"v":1,"seq":301,"t":"2026-11-08T10:06:00.118000Z","kind":"node","node":"fpp","state":"reconfiguring","phase":"reconfiguring","keys":["port"],"holds":["stream"],"msg":"node fpp reconfiguring: port"}
+{"v":1,"seq":301,"t":"2026-11-08T10:06:00.118000Z","kind":"node","node":"fpp","state":"reconfiguring","phase":"reconfiguring","keys":["port"],"msg":"node fpp reconfiguring: port"}
 {"v":1,"seq":302,"t":"2026-11-08T10:06:02.258000Z","kind":"node","node":"fpp","state":"running","phase":"running","afterMs":2140,"msg":"node fpp running"}
 {"v":1,"seq":310,"t":"2026-11-08T10:07:10.000300Z","kind":"node","node":"desk","state":"stopping","phase":"stopping","cause":{"kind":"restarting","restart":{"kind":"reshape","added":[],"removed":["play.2"]}},"msg":"node desk stopping: restarting (ports changed)"}
 {"v":1,"seq":320,"t":"2026-11-08T10:08:00.400000Z","kind":"node","node":"fpp","state":"stopping","phase":"stopping","cause":{"kind":"restarting","restart":{"kind":"fell-back","reason":"resource-refused","detail":"udp:5006 is held by another program"}},"msg":"node fpp stopping: restarting (could not apply port in place: udp:5006 is held by another program)"}
 {"v":1,"seq":330,"t":"2026-11-08T10:09:02.000000Z","kind":"node","node":"fpp","state":"starting","phase":"configuring","waitingFor":[{"kind":"companion","name":"fpp.rtp"}],"msg":"node fpp still configuring after 2s: waiting for fpp.rtp"}
 {"v":1,"seq":335,"t":"2026-11-08T10:09:30.000000Z","kind":"node","node":"porch","state":"stopped","phase":"stopped","msg":"node porch stopped"}
+{"v":1,"seq":337,"t":"2026-11-08T10:09:40.000000Z","kind":"node","node":"porch","state":"stopping","phase":"stopping","cause":{"kind":"disabling"},"msg":"node porch stopping: disabling"}
+{"v":1,"seq":338,"t":"2026-11-08T10:09:40.250000Z","kind":"node","node":"porch","state":"disabled","phase":"disabled","msg":"node porch disabled"}
 {"v":1,"seq":340,"t":"2026-11-08T10:10:00.000000Z","kind":"node","node":"rec","state":"stopping","phase":"removed","droppedFrames":0,"msg":"node rec removed dropped=0"}
 ```
 
 | Transition (node-framework.md 6.3) | `phase` | Fields beyond `node`, `state`, `phase` | `msg` (node-framework.md 6.2's) |
 |---|---|---|---|
-| T1 | `added` | — | `node <n> starting` (or `node <n> stopped` when added wanted stopped, once configured) |
-| T2, T3, T4 | `configuring`, `configured`, `starting` | `cause` on `configuring` after a restart | none, but `node <n> starting: <cause>` after a restart or retry (W4) |
+| T1 | `added` | — | `node <n> starting` |
+| T19, T20's end, T21 | `disabled` | — | `node <n> disabled` (at boot, one per node `ear.conf` disables) |
+| T2, T3, T4, T22 | `configuring`, `configured`, `starting` | `cause` on `configuring` after a restart, a retry or an enable | none, but `node <n> starting: <cause>` after a restart, retry or enable (`enabling`) (W4) |
 | still in `added`, `configuring`, `configured` or `starting` after 2 s, and again whenever `waitingFor` changes, at most once per 10 s per node | that phase | `waitingFor` | `node <n> still <phase> after <s>s: waiting for <what>`, `<what>` from `waitingFor`: `the previous <n>`, `tcp:8928 (held by kitchen)`, `tcp:8928 (held by a leaked configuration of kitchen; starts when it closes)`, `its store`, `its recording`, `loop <name>`, `<companion>`, `its consumer`, `the engine` (new, W4) |
 | T5, T10 | `running` | `afterMs` after an in-place change (from T9) | `node <n> running` |
-| T9 | `reconfiguring` | `keys`, `holds` | `node <n> reconfiguring: <keys, comma-separated>` |
-| T6, T11, T17 | `stopping` | `cause` | `node <n> stopping[: <cause>]`, `<cause>` by kind: `stop`, `removing`, `restarting (<restart>)`, `<restart>` by kind: `settings changed: <keys>`, `ports changed`, `restart invoked`, `could not apply <keys> in place: <detail>` (`fell-back`; `<detail>` is the hook's reason, the refusal, `deadline 10s passed` or the loss), `recovery attempt <n>` |
+| T9 | `reconfiguring` | `keys` | `node <n> reconfiguring: <keys, comma-separated>` |
+| T6, T11, T17, T20 | `stopping` | `cause` | `node <n> stopping[: <cause>]`, `<cause>` by kind: `stop`, `disabling`, `removing`, `restarting (<restart>)`, `<restart>` by kind: `settings changed: <keys>`, `ports changed`, `restart invoked`, `could not apply <keys> in place: <detail>` (`fell-back`; `<detail>` is the hook's reason, the refusal, `deadline 10s passed` or the loss), `recovery attempt <n>` |
 | T7, T4 when wanted stopped, T10 when it was stopped | `stopped` | — | `node <n> stopped` |
 | T13, T14 | `failed` | `failure` (today's, `{code, detail}`) | `node <n> failed <code>: <detail>` (today's) |
 | T16 (slice 8) | `recovering` | `failure`, `attempt`, `retryInMs` | as node-framework.md 8.8's example |
@@ -2266,7 +2472,7 @@ I6). Today's removal line, `node <n> stopped dropped=<frames>`, becomes `node <n
   and stop once the phase ends; they are never dropped by the log pacing, since they are `node` records, which are not
   paced (`status_log.hpp:53-56` paces `log` records only [V]).
 - `output-records.json` gains one case per row above and per `cause.kind`; AGENTS.md's record table gains the new
-  `msg` lines (`reconfiguring`, `stopping: <cause>`, `stopped`, `removed`, `still`, `recovering`).
+  `msg` lines (`reconfiguring`, `stopping: <cause>`, `stopped`, `disabled`, `removed`, `still`, `recovering`).
 
 ## 10. Migration
 
@@ -2302,11 +2508,11 @@ Step 5.5 rewrites sendspin's reporting against 3.2's table in one change:
 
 | Client | What changes for it |
 |---|---|
-| The editor before this page | works: it ignores the new notifications and members, and draws `reconfiguring` (and later `recovering`) as an unstyled word (4.8). A `node.update` changing only live rows no longer restarts the node, and one changing only in-place rows reconfigures it (better, and not observable as an error). A `node.update` that would strand routes is refused `ports-in-use` where today it is refused `unknown-port` (the plan checks every wanted route against the new ports, node-framework.md 6.7); the editor shows either by its message |
+| The editor before this page | works: it ignores the new notifications and members, and draws `reconfiguring`, `stopped`, `disabled` (and later `recovering`) as an unstyled word (4.8); it has no Stop, Disable or Enable buttons, and a node another client disabled shows as `disabled` with its wires and meters, as any node. A `node.update` changing only live rows no longer restarts the node, and one changing only in-place rows reconfigures it (better, and not observable as an error). A `node.update` that would strand routes is refused `ports-in-use` where today it is refused `unknown-port` (the plan checks every wanted route against the new ports, node-framework.md 6.7); the editor shows either by its message |
 | `scripts/rpc-call.mjs` | works unchanged; gains `--until` (step L1) and `--follow` (step 5.2) |
 | `scripts/image-smoke.sh` | works; step 5.1 adds a `types.get` check |
 | The system tests | `says` matches move to `status` and `event` records (step 5.5); new tests per step |
-| Tools reading stdout | new kinds appear; `node` records gain `phase` and new phases (`reconfiguring`, `stopping: <cause>`, `stopped`, `still`), and a removal's line becomes `removed dropped=`; `note` disappears at step 5.5 (a `BREAKING CHANGE:` release). A system test that waits for `node <n> starting` after an edit waits for `node <n> restarting: ...` (node-framework.md 13.2) |
+| Tools reading stdout | new kinds appear; `node` records gain `phase` and new phases (`reconfiguring`, `stopping: <cause>`, `stopped`, `disabled`, `still`), `action` records for `start` and `stop`, and a removal's line becomes `removed dropped=`; `note` disappears at step 5.5 (a `BREAKING CHANGE:` release). A system test that waits for `node <n> starting` after an edit waits for `node <n> restarting: ...` (node-framework.md 13.2) |
 
 ### 10.3 What changes in frozen headers
 
@@ -2319,7 +2525,7 @@ wire's additions from protocol 1 on (as `knobly-config.md`'s "Wire additions" is
 | Header | Change | Step |
 |---|---|---|
 | `node_lifecycle.hpp` | replaced by slice 3a's machines (node-framework.md 13.2, its erratum to batch2.md section 11); this page adds nothing to it | 3a |
-| `node_host.hpp`'s `NodeHealth`, `NodeHealthListener` | `phase`, `since`, `cause`, `keys`, `next`, `holds`, `waitingFor` (L1; 3a gives `phase` and `cause`, this page the rest); `NodeCompanionsListener` (L2) | L1, L2 |
+| `node_host.hpp`'s `NodeHealth`, `NodeHealthListener` | `phase`, `since`, `wanted`, `cause`, `keys`, `next`, `waitingFor` (L1; 3a gives `phase` and `cause`, this page the rest); `NodeCompanionsListener` (L2) | L1, L2 |
 | `node_type.hpp` | `SettingKind::decimal`; `SettingDeclaration::live`, `indexed`, `shapesPorts`; `NodeConfig::liveValues()`; `NodeType::schema()`, `checkLive()` | 5.1, 6.1, 6.3 |
 | `run_handle.hpp` (slice 3c's) | the per-node queue behind it; `say` removed | 5.2, 5.5 |
 | `command_error.hpp` | `InvalidSettings::key` | 5.1 |
@@ -2352,18 +2558,24 @@ outcomes and the node's queue); **R8 lands inside slice 8**.
 **L1 The lifecycle on the wire, and the protocol frame** (with slice 3a). The frame first: `protocol: 1` and
 `features` in the graph, every enum open in `protocol.ts` (`Known | (string & {})`) with neutral fallbacks, the
 batch2.md erratum naming this page as the wire's home from protocol 1 (10.3), `unknown-values.json`. Then health:
-`NodeHealth` and `node.state` with `phase`, `since`, `wanted`, `cause`, `keys`, `next`, `holds` and `waitingFor` (4.8;
-`keys`, `next` and `holds` stay absent until 3d makes an in-place change); the same members in snapshots and
-`node.added`; `node.start` and `node.stop` (4.2), with the graph file's `stopped` word (node-framework.md 13.1, 3a);
-`node.gone`; the `node` record's `phase` and `cause`, the `stopping`, `stopped`, `removed` and `still` records (9.1);
+`NodeHealth` and `node.state` with `phase`, `since`, `wanted`, `cause`, `keys`, `next` and `waitingFor` (4.8; `keys`
+and `next` stay absent until 3d makes an in-place change); the same members in snapshots and `node.added`, and
+`disabled` on a node; `node.start` and `node.stop` through the keeper writing nothing, with their `action` records, and
+`node.disable` and `node.enable` as edits at the source, with the graph file's `disabled` word (node-framework.md 13.1,
+3a); `node-disabled`; `node.gone`; the `node` record's `phase` and `cause`, the `stopping`, `stopped`, `disabled`,
+`removed` and `still` records (9.1);
 `ear.hook-slow` on the wire; `health.ts` and 8.6's table for the phases 3a has; `rpc-call.mjs --until`. Tests:
 `lifecycle.json` (the phases 3a has) in `ear_control_tests` and vitest; `ear_core_tests` with fake adapters (a
 `node.state` per phase change, in order with the commit's events (4.3's rule 5); a stop and a start keeping status and
-companions; a late message from a closed configuration never sent; `waitingFor` told after 2 s of the harness's clock and again on a change, at most once a second; the
+companions, with no `graphFile.changed`; a disable resetting status and emptying companions, then `disabled`; an
+enable configuring afresh; `start`, `stop` and `restart` on a disabled node refused `node-disabled`; a stop forgotten by
+a restart of the harness's ear and kept through a hand edit that keeps the node; a late message from a closed configuration never sent; `waitingFor` told after 2 s of the harness's clock and again on a change, at most once a second; the
 `still` record once per 10 s); `output-records.json`'s new cases; vitest for `health.ts` (every phase's line, style
 and enabled actions; a starting phase hidden for 250 ms; an unknown phase drawn by its word); a system test: an `rtp`
 node on a UDP port another socket holds writes `node fpp still configuring after 2s: waiting for fpp.rtp`, and `graph.get`
-shows `waitingFor`; `scripts/image-smoke.sh` checks `protocol` and `features`.
+shows `waitingFor`; another: `node.stop` writes nothing to `ear.conf` and a restart of ear runs the node again, while
+`node.disable` writes `node white noise disabled;`, survives the restart (`node noise disabled` at boot) and
+`node.enable` removes it; `scripts/image-smoke.sh` checks `protocol` and `features`.
 
 **L2 Companions on the wire** (with slice 3b). `companions` in snapshots and `node.added`; `node.companionsChanged`,
 whole lists, on each change and counters at most once a second (4.10); `ear.sink-dropped` and `ear.source-shortfall`;
@@ -2376,15 +2588,18 @@ records, and a route naming `rec.writer` is refused; vitest for the badges' stat
 **L3 Changes while running** (with slice 3d). `applied` with `reconfigure` and `reshape` on `node.update` and
 `node.updated`; `node.set` (the merge patch, 4.2, 7.5); `dryRun` (a plan without a commit, 4.9); `ports` on
 `node.updated` and the reply, with `inputs` and `outputs`; `ports-in-use` and `dropRoutes`, the keeper removing
-stranded route lines in the candidate; `keys`, `next` and `holds` on `node.state`; the `fell-back` cause and
-`ear.reconfigure-fell-back`; the `reconfiguring` record with `afterMs` on the `running` that ends it; 8.6's held marks
-and reshape redraw; `node.set`'s abort reason `key-removed` waits for 6.4. Tests: `node-set.json` and the reconfigure
+stranded route lines in the candidate; `keys` and `next` on `node.state`; the `fell-back` cause and
+`ear.reconfigure-fell-back`; the `reconfiguring` record with `afterMs` on the `running` that ends it; 8.6's reshape
+redraw, and levels registered for a reshape's new ports at its barrier (8.6, W3); a disabled node's `stored` outcome
+and its block reshaped alone; `node.set`'s abort reason `key-removed` waits for 6.4. Tests: `node-set.json` and the reconfigure
 and reshape cases of `lifecycle.json`; `ear_config_tests` (`node.set`'s merge; a dry run changes nothing and tells no
 one; `dropRoutes` removes exactly the stranded route lines in one write; a route line inside a snippet refused
-`shared-definition`; `ports-in-use` naming every route); `ear_core_tests` (`holds` and `keys` on `node.state`; an edit
-during an in-place change in `next`; a fallback's cause and diagnostic before its `stopping`); a system test: `node.set`
-of an `rtp` node's port answers `reconfigure`, `node.state` goes `reconfiguring` with `holds: ["stream"]` and back to
-`running` with no status reset, and the WAV it feeds has silence and then the tone with no `stopping` record; another: a card's `playback` from 2 to 1 on the test card with `dropRoutes`, the surviving
+`shared-definition`; `ports-in-use` naming every route); `ear_core_tests` (`keys` on `node.state`; an edit during an
+in-place change in `next`; a fallback's cause and diagnostic before its `stopping`); `ear_pipewire_tests` (a reshape's
+new port metered from its first window, a vanished one gone from the levels); a system test: `node.set` of an `rtp`
+node's port answers `reconfigure`, `node.state` goes `reconfiguring` with `keys: ["port"]` and back to `running` with
+no status reset, the WAV it feeds has silence and then the tone with no `stopping` record, and `levels` shows
+`fpp:stream.1` and `rec:record.left` silent during the change and back after (W3); another: a card's `playback` from 2 to 1 on the test card with `dropRoutes`, the surviving
 route's `route.status` never `pending`.
 
 **5.1 The schema on the wire.** `NodeType::schema()` from the settings table (today's rows; text hints and
@@ -2461,24 +2676,30 @@ and no `node.state` record.
 
 **6.4 Gestures.** `Gestures`, `gesture.*`, the reach index (`GraphFileModel::reachIndex`) posted with each offer, begin
 on the main loop, the mixed-reach refusal and the combined range, the session's read-ahead and *ending* mark, the direct
-crossing with its pending tick, keep-alives, the idle deadline, every abort of 7.3 (`key-removed` among them),
+crossing with its pending tick, keep-alives, the idle deadline and the session's close as ends on the owner's behalf
+(G4), the related-save rule with its defining lines' hashes (7.3, G3), every abort of 7.3 (`key-removed` among them),
 `OfferKind`, rounding at the end, `gesture.changed` without own echoes, `tick-refused`, `not-live` for an `.inPlace()`
 row, the harness's gestures. Tests: `gestures.json`; `ear_config_tests` (the index of a `@set` used twice, a key not
-given, a snippet's line; an index withheld for a text with errors; an end's candidate; a hand edit mid-gesture aborting
-before the plan and the slots settling after it); `ear_core_tests` (stale `seq`, a keep-alive moving nothing,
-out-of-range tick, a tick the type's `check` refuses, the idle deadline reset by keep-alives and stopped by a read end,
-session close, node removed, a reshape removing a reached member, a gesture surviving the node's in-place change, stop, start,
+given, a snippet's line, each with its defining lines and hash; an index withheld for a text with errors; an end's
+candidate, also on a text an unrelated hand edit changed; a related hand edit mid-gesture aborting before the plan and
+the slots settling after it); `ear_core_tests` (stale `seq`, a keep-alive moving nothing, out-of-range tick, a tick the
+type's `check` refuses, the related-save cases of 7.3, node removed, an end on the owner's behalf refused and so
+aborted, a reshape removing a reached member, a gesture surviving the node's in-place change, stop, start,
 restart, failure and recovery with its live value seeding the next configuration, a begin on a failed node, a reach mixing a non-live row
 refused, two ranges intersected); `ear_server_tests` (a slow request in flight on a socket while that socket's ticks
-still move the slot; an end queued behind it never losing to the idle deadline; the FIFO's bound); a latency test:
+still move the slot; an end queued behind it never losing to the idle deadline; the idle deadline reset by keep-alives,
+stopped by a read end, and on expiry sending an end with the last tick handed over first; a socket reset mid-gesture
+sending the end with `session-closed` behind the session's earlier requests; the FIFO's bound); a latency test:
 begin answered while the keeper is writing, in less than one main-loop turn after the control thread hands it over; a
-system test: two clients, one holds a gesture, the other's `node.set` is `parameter-held`, a hand edit aborts and the
-WAV goes straight to the file's new level.
+system test: two clients, one holds a gesture, the other's `node.set` is `parameter-held`, a hand edit of the held
+value aborts it and the WAV goes straight to the file's new level, while a hand edit elsewhere leaves it going; a client
+that drops its socket mid-gesture leaves its last value in `ear.conf` and in the WAV.
 
 **6.5 The editor's controls.** Fader and knob with 8.3's mapping, keyboard and wheel gestures, held and aborted states,
 notices with "Set again", accessibility of 8.5. Tests: `gesture.ts` against a fake client (every edge of 8.1's table:
 release and Escape while beginning, a refused begin, buffered moves, keep-alive after 2 s held still, end on lost
-capture, Escape, keyboard idle end, aborted while dragging, reconnect); the taper formulas and their inverses; Backspace
+capture, Escape, keyboard idle end, aborted while dragging, ended by ear (`end` with `reason`), reconnect showing the
+committed value); the taper formulas and their inverses; Backspace
 on a focused knob sends no `node.remove`; rendering by eye, as today.
 
 **R8 Recovery on the wire** (with slice 8). `recovering` with `reason`, `attempt` and `retryInMs`; `lastFailure` kept
@@ -2503,8 +2724,15 @@ wait, a change skipping it, a retune not skipping it); vitest for the countdown.
   which the *ending* mark exists to prevent.
 - **Gestures cross the control thread straight to the main loop**, beside the keeper, and begin now answers from the
   reach index rather than the keeper. The index is made from the same model `updateNode` edits, at the same version,
-  so a begin and its end agree on the reach; a hand edit replaces the index and aborts every gesture in one main-loop
-  turn. A bug here breaks "the audio never stays on a value `ear.conf` does not hold".
+  so a begin and its end agree on the reach; a hand edit replaces the index, and aborts the gestures it is related to,
+  in one main-loop turn. A bug here breaks "the audio never stays on a value `ear.conf` does not hold".
+- **The related-save rule can miss or over-reach** (G3, R30). It compares defining lines' text and evaluated values; a
+  change it judges unrelated leaves a gesture going over a file the colleague changed, and its end then writes onto
+  that file. The rule errs towards aborting (a comment on the defining line, any error in the file, any change of
+  reach), and its cases are tests (7.3). An operator surprised by an abort sees why in the notice.
+- **A dropped connection writes its last value** (G4, R31). A laptop that loses Wi-Fi mid-drag leaves `ear.conf` on the
+  value the hand was at, 30 s later at most, with nobody pressing release; the `param` record (`reason: "idle"` or
+  `session-closed`) says so in `kubectl logs`, and the editor tells the operator when the tab survives.
 - **The reach depends on knobly's `definition()`.** A file whose value comes through two variables (`@set $a $b;`) has
   one definition at the end of the chain; whether that is what the operator means by "the same value" is the same
   question `updateNode` answers today, so the two agree by construction.
@@ -2548,7 +2776,7 @@ wait, a change skipping it, a retune not skipping it); vitest for the countdown.
 | Client-chosen gesture ids, so ticks can follow a begin before its reply | — | a begin answered on the main loop is fast enough; ids chosen by clients need a collision rule across sessions (G13) |
 | One `node.setParam` with a `gesture` phase field (node-framework.md 8.5) | CLAP's `CLAP_EVENT_PARAM_GESTURE_BEGIN`/`END` beside `PARAM_VALUE` | separate methods give each its own params, errors and path (keeper or direct); a script never needs gestures, only `node.set` |
 | One `node.paramChanged` per reached node and key (revision 1) | — | a 64-trim gang is 1920 messages a second per client against a 256-message queue |
-| Gesture begin/end implied by the first and an idle timeout | OSC controllers, MIDI CC | no commit point the operator chose; the idle timeout remains only as a guard |
+| Gesture begin/end implied by the first and an idle timeout | OSC controllers, MIDI CC | no commit point the operator chose for a fader in use; the idle timeout remains only for a tab that went silent, where it acts as the release (G4, G15) |
 | A 10 s idle per gesture with ticks only on movement (revision 1) | — | a fader held still while listening snaps back |
 | Sample-accurate parameter events with offsets in the block | CLAP's input events, VST3's `IParameterChanges` | a ramp per block is enough for faders and gains; timestamped changes stay reserved (node-framework.md 8.5, 15) |
 | Constant-slope ramps (re-aimed at the same slope) | — | the ramp's length would depend on how far the value moves; constant time keeps every move 20 ms and the test vectors simple |
@@ -2569,7 +2797,11 @@ wait, a change skipping it, a retune not skipping it); vitest for the countdown.
 | `applied` rewritten to what the node did (a reconfigure that fell back answering `restart`) | — | the reply is sent in the commit's turn, before the hook or a resource has answered; a later correction would need a second notification for the same fact `node.state` already carries (X7) |
 | Every phase in `state` (one field) | — | an editor colours by it and scripts wait on `running`; ten values, three of them milliseconds long, make both worse (the owner's A1 answer, node-framework.md R22) |
 | A `run` number on health, status and records (revision 3) | — | R20: no run; the framework drops a closed configuration's messages before they reach the wire (node-framework.md I6), so a client needs no counter, and the reply's order in the session's queue serves `--until` |
-| Start and stop as actions, not written to `ear.conf` | — | the file would no longer describe the running graph, and a stopped node would play again after a restart of ear (node-framework.md gate F1) |
+| `stopped` written in `ear.conf` as a word on the node's line, `node.start` and `node.stop` as edits (revision 4, to node-framework.md gate F1's recommendation) | — | the owner: "Only disabled in file" (R28). The written state is `disabled`, which releases everything; a stop keeps everything and is a moment's state |
+| One resting state for both (revision 4) | — | the owner: "Both words" (R27): keeping a card open (Stop) and giving it back (Disable) are two different intents |
+| A "held" mark on outputs and a dashed style on their wires during an in-place change (revision 4, W3's recommendation) | — | the owner asked for meters on every port instead (R29): a meter shows the silence wherever it travels, a mark only where it starts |
+| Every save of `ear.conf` aborting every open gesture (revision 4, G3's recommendation) | — | the owner: "Only a related save" (R30): a colleague's comment must not stop a fader |
+| A dropped or silent tab's gesture returning to the file's value (revision 4, G4's recommendation) | — | the owner: "Keep last value" (R31) |
 | A batch of `route.remove`s then `node.set` for a reshape | — | batches are not atomic (batch2.md section 6): a refused `node.set` would leave the routes removed (X2) |
 | Silently dropping routes a reshape strands | — | an edit to a channel count must not remove an operator's wiring without saying so (X2) |
 | Companions as boxes without handles | — | doubles the boxes on screen for things nobody routes (node-framework.md gate C2) |
@@ -2581,67 +2813,22 @@ wait, a change skipping it, a retune not skipping it); vitest for the countdown.
 Revision 4 follows the owner's change of practice (node-framework.md R24, 14.1): the owner is asked only about what an
 operator or a type author sees, each question with plain background, a concrete scenario, options, a recommendation
 and why; every technical question is decided by the designer, listed in 14.2 with its reason, so the owner can overturn
-any. The page is written to every recommendation and decision. Across the three pages the owner has eight questions:
-node-framework.md's F1, F2 and C2, and this page's W3, X2, G1, G3 and G4.
+any. Across the three pages the owner was asked eight questions (node-framework.md revision 6, this page's revision 4): node-framework.md's F1, F2 and C2, and this
+page's W3, X2, G1, G3 and G4. The owner answered all eight on 2026-11-08 (node-framework.md 14.1, Q26 to Q28, for the
+first three; 14.1 here for the other five), and revision 5 is written to the answers. No owner gate is open, and the
+answers raise no new owner question.
 
-### 14.1 Owner gates
+### 14.1 The owner's answers of 2026-11-08
 
-**W3. When a node goes silent on purpose during a change, how does the editor show it?**
-*Background.* Some settings changes make a node go quiet for a moment on purpose: an `rtp` node moving to another
-network port stops its stream while the new port opens, which can take a second or two. ear knows this silence is
-intended; on screen, though, a silent output looks exactly like a broken one (the level meters fall to zero).
-*Scenario.* The operator moves `fpp` from port 5004 to 5006. The recording fed by `fpp` goes silent for two seconds,
-then the audio comes back.
-*Options.* (a) The box says "reconfiguring port", and the outputs and wires that are silent on purpose carry a "held"
-mark (a dashed wire) until the sound comes back. (b) The box says "reconfiguring port"; the wires look as always and the
-meters show the silence.
-*Recommendation: (a).* Silence the operator asked for should read as intended, not as a fault, and only ear knows which
-outputs are held (a node may keep one output playing and hold another). It costs one small list on a message ear sends
-anyway.
+| # | Question (revision 4) | Recommended | The owner's answer | Where it lands |
+|---|---|---|---|---|
+| W3 | When a node goes silent on purpose during a change (an `rtp` node moving from port 5004 to 5006), how does the editor show it? | (a): "reconfiguring port" on the box, and a "held" mark (a dashed wire) on the outputs and wires silent on purpose | R29: "I would like each port to show meter levels so I can see audio traversing the graph". Neither option as put: no held marks; every port of every node shows a live meter, and the box still says "reconfiguring port" | 8.6 (what is built and what is new), 2.1, 4.8 (no `holds`), 9.1; W7, W8 |
+| X2 | A change that removes ports that are wired (`desk`'s playback from 2 to 1 while `kitchen:from.left → desk:play.2` is wired) | (a): the editor lists the wires that would go before applying; Apply removes them and changes the setting in one step (one save of `ear.conf`) or neither; a script must ask (`dropRoutes: true`), else it is refused naming the wires | (a), as recommended | 4.9, 2.1, 7.5, 8.2 |
+| G1 | A fader for a value several settings share (`amp2`'s `trimDb.1` and `trimDb.2` both read `$trim`) | (b): the fader moves every user together when all are faders of one kind and unit, within the range they all allow; the release writes the shared value once; other sharing is refused | (b), as recommended | 4.2 (`gesture.begin`), 7.2 |
+| G3 | What happens to a fader being dragged when someone saves `ear.conf` (by hand or from the text pane)? | (a): every save stops every fader being dragged | R30: "Only a related save", option (b): only a save that changes the dragged value, or the line it is defined on, stops it; any other save leaves the drag going and its release writes onto the new text | 7.3 (the rule, how ear decides it, its tests), 2.1, 4.3, 8.3; G14 |
+| G4 | A fader whose browser disconnects or goes quiet (Wi-Fi drops while its owner holds -3.5 dB; the file says -6) | (a): back to the file's value, also after 30 s without a word | R31: "Keep last value", option (b): ear keeps and writes the last value heard, as if released | 7.2, 7.3, 6.5, 6.6, 2.1, 4.3, 8.3, 9; G15, G16 |
 
-**X2. A change that removes ports that are wired.**
-*Background.* Wires connect named ports (`desk:play.2`). Lowering a sound card's playback channels from 2 to 1 removes
-`play.2`, so any wire to it can no longer exist. Today such an edit is refused, and the operator must delete the wires
-first, then change the setting.
-*Scenario.* The operator sets `desk`'s playback from 2 to 1 while `kitchen:from.left → desk:play.2` is wired.
-*Options.* (a) The editor says before applying "This removes 1 wire: kitchen:from.left → desk:play.2" and, on Apply,
-removes that wire and changes the setting in one step (one save of `ear.conf`); a script must ask for it explicitly
-(`dropRoutes: true`), else it is refused naming the wires. (b) The editor removes the wires first, then sends the
-change, as two steps (if the second is refused, the wires are gone anyway). (c) Remove the wires silently.
-*Recommendation: (a).* The operator is told exactly which wiring goes, before it goes, and it goes together with the
-change or not at all. (b) can leave the wires removed and the channel count unchanged; (c) removes wiring nobody agreed
-to. A hand edit of `ear.conf` that keeps such a wire is still refused, as today.
-
-**G1. A fader for a value several settings share.**
-*Background.* In `ear.conf` one value can feed several settings: `@set $trim 0;` used by two channels' trims, or by two
-nodes. Editing that value changes every user of it at once, by design. A fader (a gesture) moves a value continuously
-while the pointer is held and writes `ear.conf` once, when it is released.
-*Scenario.* `amp2`'s `trimDb.1` and `trimDb.2` both read `$trim`; the operator drags `trimDb.1`'s fader.
-*Options.* (a) Refuse to drag a shared value; the operator types it instead. (b) The fader moves every user of the
-value together (when all are faders of one kind and unit, within the range they all allow), and the release writes the
-shared value once; other sharing is refused. (c) Move only `trimDb.1` while dragging, and the others jump on release.
-*Recommendation: (b).* What the operator hears while dragging is what the file will say after, and ganged faders come
-for free. (c) plays, for a moment, a value `ear.conf` will never hold.
-
-**G3. What happens to a fader being dragged when someone edits `ear.conf` by hand?**
-*Background.* "Hand edits win": an edit saved to `ear.conf` from a text editor replaces what ear holds. A fader being
-dragged holds a value the file does not have yet.
-*Scenario.* The operator holds `amp`'s fader while a colleague adds a comment to `ear.conf` in `vi` and saves.
-*Options.* (a) Every save of `ear.conf`, by hand or from the text pane, stops every fader being dragged, which returns
-to the file's value; the editor says why and offers "set again". (b) Only a save that changes the dragged value, or the
-line it is defined on, stops it.
-*Recommendation: (a).* Simple to state, show and test, and hand edits during a drag are rare. The cost is a fader that
-stops for a comment, softened by the audio going straight to the file's value and the "set again" notice. (b) is
-kinder but needs ear to compare two versions of the file's meaning on every save.
-
-**G4. A fader whose browser disconnects or goes quiet.**
-*Background.* A fader belongs to one browser tab. Connections drop, and scripts have bugs.
-*Scenario.* A laptop's Wi-Fi drops while its owner holds a fader at -3.5 dB (the file says -6).
-*Options.* (a) The value returns to the file's (-6); the same after 30 s without a word from that tab (the editor sends
-a small "still holding" message every 2 s while the fader is held, so a hand holding still is never cut off). (b) Keep
-and write the last value heard (-3.5). (c) Only a closed connection counts, never silence.
-*Recommendation: (a).* Nobody chose the dropped connection's last value, and writing it would change `ear.conf`
-without a release. The 30 s rule guards against a script that never lets go.
+The gates' full texts (background, scenario, options, recommendation and why) are in revision 4 of this page, in git.
 
 ### 14.2 Decided by the designer
 
@@ -2650,8 +2837,12 @@ without a release. The 30 s rule guards against a script that never lets go.
 | W1 | One `node.state` per phase change, never coalesced; the editor hides a `starting` phase for 250 ms | Phases are rare (four per start); coalescing would hide the one a node is stuck in |
 | W2 | Keep `reason` with today's meaning; slice 8 adds `lastFailure` beside it | Additive within protocol 1; today's editor keeps its tooltip |
 | W4 | A `still` record on standard output when a node stays before `running` past 2 s, at most once per 10 s | A stuck node says why within 2 s in `kubectl logs`; a normal start keeps its lines |
-| W5 | No `run` member anywhere; `wanted` on health; `node.stopped` (a removed node gone) renamed `node.gone` in protocol 1, kept for protocol 0 clients; a removal's record is `removed dropped=` | R20; `stopped` now names a resting node, so one word must not mean two things |
-| W6 | `node.start` and `node.stop` are edits at the source, not actions; `start` on a failed node is a retry answering `applied: "retry"` without touching `ear.conf` | The wanted state is in `ear.conf` (gate F1); the owner said a start leaves `failed` |
+| W5 | No `run` member anywhere; `wanted` on health (`running`, `stopped` or `disabled`); `node.stopped` (a removed node gone) renamed `node.gone` in protocol 1, kept for protocol 0 clients; a removal's record is `removed dropped=` | R20; `stopped` now names a resting node, so one word must not mean two things |
+| W6 | `node.start` and `node.stop` are neither edits nor type actions: ordered by the keeper, applied by the framework, writing nothing; replied in the turn that applies them (`stop`, `start`, `retry`, `unchanged`); no `graphFile.changed` or `node.updated`; an `action` record on stdout. `node.disable` and `node.enable` are edits at the source. `start` on a failed node is a retry (node-framework.md D-F6) | The owner: only `disabled` is in `ear.conf` (R28); the owner said a start leaves `failed`; a stop must show in `kubectl logs` though it edits nothing (G8) |
+| W7 | No `holds` member on `node.state` or the `node` record, and no "held" marks in the editor; the framework's holds stay (node-framework.md D-B3), seen through the meters | The member existed only for W3's marks, which the owner did not take (R29); every port's meter shows a hold, and where its silence travels, without one |
+| W8 | Every port's meter, inputs and outputs, in every phase: kept as built (`levels.subscribe` per public port, a `Meter` per handle); new only: no held styling, levels registered for a reshape's new ports at its barrier, and a system test of a hold seen on the meters (8.6) | R29 asks for what the editor already draws for every port; the lifecycle must not take it away (a disabled or stopped node keeps its block, so its meters keep reading) |
+| W9 | `disabled: true` on the node's description (snapshot, `node.added`, `node.updated`) beside `settings`, as well as `wanted: "disabled"` on health; `node.add` takes `"disabled": true` | The description is what `ear.conf` says, health what the framework converges on; a client editing the node's line needs the first, one colouring it the second |
+| W10 | `node-disabled` refuses `node.start`, `node.stop` and `restart` on a disabled node; the editor disables those buttons with "disabled in ear.conf: enable it first" | node-framework.md D-F2: a Start that does not write the word would be undone by the next restart |
 | X1 | The schema's per-row `change`, `.shapesPorts()` held to `ports()` by the all-type tests, and `dryRun` on `node.set` | The hint beside each field needs no round trip; the dry run gives the exact answer, routes included |
 | X3 | An edit's reply comes at the commit, with `applied`; a client waits for `node.state` | R21: operations are asynchronous; holding replies would stall every client behind one slow change |
 | X4 | Moved to node-framework.md D-B6 (a newer change, `stop` or `restart` supersedes an in-place change before its commit point) | One rule for the lifecycle |
@@ -2670,6 +2861,9 @@ without a release. The 30 s rule guards against a script that never lets go.
 | G11 | No flag (switch) setting kind yet | No built-in type needs one; adding it later is additive |
 | G12 | A session reads ahead for `gesture.change` and `gesture.cancel` | Nothing with an id changes order, so every rule and fixture holds |
 | G13 | A gesture's begin is answered on the main loop from a reach index the keeper posts | The second drag moves the audio within a main-loop turn |
+| G14 | "Related" (the owner's G3) is judged per gesture on the main loop, before the plan, from the running and the new reach index: the defining lines' text (whole source lines, compared by a 64-bit hash), the evaluated value, the reach, the pairs' existence; a text with errors or one the graph refuses aborts every gesture; an unrelated save rebases the gesture's places (7.3) | The owner's words name the value and its line; the value catches chains, the reach catches a new sharer; a broken file cannot take any end, so keeping a gesture open over it would only delay the abort. The keeper already makes the index on its thread, so knobly never leaves it |
+| G15 | A tab silent for 30 s about its gesture (no tick or keep-alive), its socket still open, is treated as released, like a closed one: its last value is committed (`end`, `reason: "idle"`); the editor's 2 s keep-alive while the pointer is held stays | The owner chose "Keep last value" for a disconnect (R31), and a Wi-Fi drop usually shows as silence before TCP closes the socket, so the two must agree; a hand holding still keeps its gesture by the keep-alive. Returning to the file's value after silence would contradict the owner's answer for the most common case of a drop |
+| G16 | The idle timer and the end on the owner's behalf live in the session on the control thread, which hands over the newest tick, then queues a `gesture.end` with no value through the keeper; an end so made that is refused aborts the gesture; a stop of ear (SIGTERM) commits no open gesture | The session sees every message, so the timer needs no crossing; the end then takes the one write path every end takes. At SIGTERM edits are refused, and a stop is nobody's release |
 
 ## 15. Open items
 
@@ -2692,20 +2886,26 @@ without a release. The 30 s rule guards against a script that never lets go.
   an operator expects that is checked with the owner on the first real file that does it.
 - node-primitives.md's G14, G15 and G17 are answered (section 1): loops as spec handles, resources reached by handle
   inside `configure`, and the handle as `node.handle()`, so `Report::handle()`. node-primitives.md revision 4 and this
-  page were rewritten with node-framework.md revision 6 in one change (section 16).
+  page were rewritten with node-framework.md revision 6 in one change, and both again (revision 5) with its revision 7
+  (section 16).
 - **Taken by node-framework.md**, each now decided or an owner gate here: the `still` record (6.2; W4); `restart`
   ending an in-place change in flight (6.3, 8.4; its D-B6, absorbing X4); `.shapesPorts()` in 7.1's marks (X1); no
   `writer::thread` (8.1, 8.2; 5.2); `reason` kept, `lastFailure` beside it (8.1, 8.7; W2); `ports-in-use` and
-  `dropRoutes` (6.7; X2, an owner gate).
-- [U] That knobly reads `node <type> <name> stopped { ... }` and the keeper edits the word at its source (node-framework.md
-  gate F1); step L1's `ear_config_tests`. The framework diagnostics' codes stay this page's (4.6).
+  `dropRoutes` (6.7; X2, answered by the owner as recommended).
+- [U] That knobly reads `node <type> <name> disabled;` and `node <type> <name> disabled { ... }` and the keeper writes
+  and removes the word at its source, comments and layout kept (node-framework.md R25, R28; its 15 names the fallback);
+  step L1's `ear_config_tests`. The framework diagnostics' codes stay this page's (4.6).
+- [U] That knobly's `definition()` gives a source range from which the keeper can take the defining statement's whole
+  lines for the related-save rule (7.3, G14), for a setting, a `@set`, a chain's end and a line inside a `@snippet`;
+  step 6.4's `ear_config_tests`. If a snippet's use hides the range, the rule treats every save that changes the
+  snippet or its `@use` line as related (it errs towards aborting).
 - [U] A dry run's cost: a candidate (knobly edit on the keeper's thread) and a plan per Apply; the editor sends one per
   Apply, never per keystroke. Step L3's test times a dry run on the record's example file.
 - [U] The keeper's view of a type's ports: `parse` and `ports` are pure (node-framework.md 7.4), so the keeper can run
   them for `dropRoutes`; that `NodeType` is safe to share with the keeper's thread (no mutable state) is checked in step
   L3 by a test that parses on the keeper's thread while the main loop does.
 - [U] How long `rtp`'s hold lasts in practice (rtp-source's unload and load, node-framework.md 15), which is how long the
-  editor shows "held"; step L3's system test measures it.
+  meters on `fpp`'s outputs and the ports they feed read silence; step L3's system test measures it.
 - `writer::companion` is named here and built by slice 8.
 - `watch<row>(loop, fn)` for live rows off the realtime thread: reserved (X6).
 - A `flag` setting row: deferred (G11).
@@ -2870,3 +3070,20 @@ G3, G4), rewritten to what an operator sees, and every other question decided by
 history below keeps its words. A review is owed with node-framework.md's revision 6; it should judge at least the
 ordering claim that replaces `run` (a session's one queue, I6's drop before sending), `node.gone` against today's
 clients, and the editor's Start, Stop and Restart in every phase (8.6).
+
+### Revision 5 (2026-11-08): the owner's answers to the eight gates (not reviewed)
+
+The owner answered all eight gates of revision 4's three pages on 2026-11-08 (section 1, R25 to R31; 14.1 here;
+node-framework.md 14.1, Q26 to Q28). This page now: has two resting states on the wire, `stopped` and `disabled`
+(`state`, `phase` and `wanted` gain `disabled`; a node's description gains `disabled`; 4.3, 4.8); keeps `node.start` and
+`node.stop` but makes them write nothing (ordered by the keeper, replied in the turn that applies them, an `action`
+record on stdout, `node-disabled` on a disabled node; 4.2, 4.5, 7.6, W6, W10) and adds `node.disable` and
+`node.enable` as edits at the source (`applied` `disable`, `enable` and, for any change to a disabled node, `stored`;
+4.2, 4.9); drops `holds` and the "held" marks, keeping every port's meter, which is built, and adding only what the
+lifecycle needs of it (8.6, W7, W8); decides when a save is related to a gesture and leaves an unrelated one going
+(7.3, G14); ends a closed or silent session's gesture as released, committing its last value (6.5, 6.6, 7.2, 7.3, G15,
+G16); records X2, G1 and C2 as answered as recommended. Journeys (2.1, 2.2), the editor's lifecycle table (8.6), the
+gesture state machine and notices (8.1, 8.3), the records (9, 9.1), fixtures (4.7), the cut (L1, L3, 6.4, 6.5), costs
+and rejected alternatives follow. No owner gate is open. The review owed for revision 4 now covers revision 5; it should
+also judge the related-save rule's cases (7.3) and the end on a closed session's behalf against the session's queued
+requests (6.6).
