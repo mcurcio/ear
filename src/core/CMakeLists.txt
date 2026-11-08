@@ -12,6 +12,7 @@ add_library(ear_core STATIC
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
+	node_machines.cpp
 	pass_through.cpp
 	ports.cpp
 	reconciler.cpp
@@ -36,6 +37,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/node_folders.hpp
 	include/ear/core/node_host.hpp
 	include/ear/core/node_lifecycle.hpp
+	include/ear/core/node_machines.hpp
 	include/ear/core/node_type.hpp
 	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
@@ -67,6 +69,7 @@ if(BUILD_TESTS)
 		tests/levels_test.cpp
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
+		tests/node_machines_test.cpp
 		tests/ports_test.cpp
 		tests/reconciler_test.cpp
 		tests/rtp_receiver_test.cpp

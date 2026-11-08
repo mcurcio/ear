@@ -1,6 +1,7 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2, 2026-11-08. Revision 1 went to one independent review; revision 2 answers it (section 17,
+Status: proposal, revision 2.2, 2026-11-08 (2.2: gaps found building step L-1, section 17). Revision 1 went to one
+independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
 machines as tables, `NodeHost`'s rewrite, the asynchronous barriers and their bounds, the published position (3a
@@ -151,12 +152,12 @@ follows in the same turn, so T3 (a legacy recipe included, 5.10) always runs and
 | State | Event | Next | Actions | node-framework.md |
 |---|---|---|---|---|
 | `none` | configure (aggregate) | `readying` | new generation; make the instance; call creation's `configure`; ask the resources (5.8) | T2, T12, T15, T22 |
-| `none` | configure; `configure` answered `failed(d)` or threw | `tearing` | fault `start-failed: d` (or `<hook> threw: <what>`) | T2 then T14 |
+| `none` | configure; `configure` answered `failed(d)` or threw | `tearing` | fault `start-failed: d` (or `<hook> threw: <what>`); built as the row above, whose action calls the hook, then its answer as a fault in `readying` | T2 then T14 |
 | `readying` | every resource ready (outside nodes linked, sink consumers begun; at once when none is pending) | `prepared` | legacy: run the recipe (5.10); prepare the code | T3 |
 | `readying`, `prepared` | stop or start asked | unchanged | nothing: the aggregate's `stopHeld` decides at `prepared` (rule 1) | T4, 6.3 |
 | `prepared` | rest (aggregate: wanted stopped, not `rested`) | `prepared` | `rested = true` | T4 |
 | `prepared` | drive (aggregate: wanted running, block `ready`, no change pending) | `arming` | carry the latency plan; post `drive(code, faded, sinks)`, `n++` | T5, T8 |
-| `arming` | `driven(n, P)` | `driving` | unless `stopAsked`: call `start()`, `started = true` once it returned; `rested = true` | T5 |
+| `arming` | `driven(n, P)` | `driving` | unless `stopAsked`: call `start()`, `started = true` once it returned; `rested = true`; a `start()` that threw undoes both (`start-failed`, not `lost`: it never reached `running`) | T5 |
 | `arming` | `driven(n, P)` with `stopAsked` | `fading` | no `start()`; post a fade | 6.3 ("stop in starting") |
 | `arming` | stop or teardown asked | `arming` | `stopAsked = true` (the intent is the aggregate's) | 6.3 |
 | `arming` | start asked while `stopAsked` and the intent is `stop` | `arming` | `stopAsked = false` | 6.3 |
@@ -191,8 +192,11 @@ The node (`NodeHost::Impl::Node`) holds the two machines and these facts: `disab
 `configuring`), `queued` (the newest committed settings and their config), `changePending` (`queued` differs from the
 configuration's config), `failure` (code and detail), `retryAsked` (a `start`, a `restart` or a committed change arrived
 on a failed node, D-L31), `heldFault` (a fault that arrived during a stop's fade or silence, D-L32), `predecessor` (the
-serial of an older `Node` of the name whose port-caused replace this node is, D-L36) and `configuredTold` (row 11
-below). `wanted` is `disabled` when `disabled`, else `stopped` when `stopHeld`, else `running`.
+serial of an older `Node` of the name whose port-caused replace this node is, D-L36; cleared once that node closed
+and its block was destroyed, in either order, so the successor goes from row 3 to `configuring` and never shows
+`added`) and `configuredTold` (row 10 below). `wanted` is `disabled` when `disabled`, else `stopped` when `stopHeld`,
+else `running`. A block's loss clears `failure`, `retryAsked` and `heldFault` (4.4's "reason replaced": row 4 then
+shows the loss).
 
 The phase is derived, first match wins:
 
@@ -203,11 +207,11 @@ The phase is derived, first match wins:
 | 3 | `predecessor` set (the older node of a port-caused replace still tears down) | `stopping` | `restarting` (`settings` with the changed keys; D-L36) |
 | 4 | `failure` set, or the block `lost` and not `disabled` | `failed`, `reason` the failure's, else `engine-refused` with the block's loss detail (the teardown behind it is invisible, R20) | — |
 | 5 | configuration `none`, `disabled` | `disabled` (`blockLost` when the block is lost) | — |
-| 6 | configuration `fading`, `silencing` or `tearing`; or `none` with intent `restart` (the teardown ended and `configure` follows in this turn) | `stopping` | by intent: `stop`, `restarting` (with its own kind: `settings` with keys, `action`), `disabling` |
+| 6 | configuration `fading`, `silencing` or `tearing`; or `arming` with `stopAsked` (a drive in flight that its completion fades and silences, so a restart or disable in `starting` shows `stopping` as D-L2 and 4.4 say); or `none` with intent `restart` (the teardown ended and `configure` follows in this turn) | `stopping` | by intent: `stop`, `restarting` (with its own kind: `settings` with keys, `action`), `disabling` |
 | 7 | configuration `none`, not disabled (waiting for an older node) | `added` | — |
 | 8 | `readying` | `configuring` | after a restart, a retry or an enable: `settings`, `action`, `retry`, `enabling` |
 | 9 | `prepared`, `stopHeld` | `stopped` | — |
-| 10 | `prepared`, not `stopHeld`, not `configuredTold` | `configured`; `NodeHost` sets `configuredTold` once it told it, and derives again | — |
+| 10 | `prepared`, not `stopHeld`, not `configuredTold`, not `rested` (a configuration that rested never shows `configured` again: a start after a stop tells `starting`, `running`, T8) | `configured`; `NodeHost` sets `configuredTold` once it told it, and derives again | — |
 | 11 | `prepared`, not `stopHeld` (the block not `ready`, or a change pending) | `starting` (`waitingFor` `block` while the block is not `ready`) | — |
 | 12 | `arming` | `starting` | — |
 | 13 | `driving` | `running` | — |
@@ -224,8 +228,12 @@ its own name (control-plane.md 4.8). Two enums carry them (D-L22): `NodePhase` (
 1. **Converge.** After every event the aggregate compares what is with what is wanted, in this order:
    - configuration `none`, not disabled, no `failure` unless `retryAsked` is set, block not lost, no older node of the
      name left and no `predecessor`, intent not `remove`, the data loop not wedged → configure with `queued`, clearing
-     `failure`, `retryAsked` and `heldFault`; an intent `restart` ends here (its `cause` stays for `configuring`);
-   - `prepared` with `heldFault` → T14 (intent `fail`, `failure` from the held fault);
+     `failure`, `retryAsked` and `heldFault`; an intent `restart` ends here (its `cause` stays for `configuring`); the
+     same with the data loop wedged → `failure` `engine-refused: the data loop is wedged` instead, as D-L10 for a new
+     node (and a stop's or restart's silence overdue, whose configuration is leaked, fails the node so, since neither can
+     end; a disable or removal goes on to its end);
+   - `prepared` with `heldFault` → T14 (intent `fail`, `failure` from the held fault), applied at the rest itself, before
+     health is told, so no `stopped` is told for a configuration with a fault against it;
    - `prepared` with `changePending` → restart (intent `restart`, cause `settings` with the changed keys), before any
      drive, so a change committed during a stop's teardown and a `start` after it restart first and drive the new
      settings (D-L41);
@@ -257,7 +265,9 @@ The replies are control-plane.md 4.2 and 7.6's; this table is how 3a's machines 
 `configure` from empty with `queued`. A request naming a node being removed by an edit reaches the wanted node of that
 name, if any (a successor of a port-caused replace is in the `stopping` (restarting) row), else it is `unknown-node`:
 the node left the graph at the commit (control-plane.md 4.8). While `stopAll` runs, every operation is refused
-`stopping`, whatever the phase.
+`stopping`, whatever the phase. Two cells cannot arrive: `added` lasts only while an older block of the name exists, so
+it has no block to lose; and `configured` lasts no input (row 10 is told and derived again at once), so its cells are
+`configuring`'s.
 
 | Phase | Restart-only change | `stop` | `start` | `restart` | `disable` | `enable` | removal | block lost | fault |
 |---|---|---|---|---|---|---|---|---|---|
@@ -761,7 +771,7 @@ a node; empty means "between calls".
 
 | File | Change | Step (12) |
 |---|---|---|
-| `src/core/include/ear/core/node_lifecycle.hpp`, `node_lifecycle.cpp` | replaced: `BlockMachine`, `ConfigurationMachine`, the aggregate's `derivePhase`, `NodePhase`, `NodeState`, `NodeCause`, names; erratum in `batch2.md` section 11 | L-1 |
+| `src/core/include/ear/core/node_lifecycle.hpp`, `node_lifecycle.cpp` | replaced: `BlockMachine`, `ConfigurationMachine`, the aggregate (`NodeAggregate`, its `derive`), `NodePhase`, `NodeState`, `NodeCause`, names; erratum in `batch2.md` section 11. L-1 adds them beside it, in `node_machines.hpp` and `.cpp` (namespace `ear::lifecycle`, since today's `NodeState` keeps its name while `NodeHealth` carries it), tested by `node_machines_test.cpp`; L-3d, which changes `NodeHealth`, removes `NodeLifecycle`, today's `NodeState` and `node_lifecycle_test.cpp`, and moves these into `ear` | L-1, L-3d |
 | `src/core/include/ear/core/node_host.hpp` | `PortBlock` as 5.3 (L-2); `PortBlockEvents::ready(std::uint32_t blockId)`, `OutsideTarget::blockId` (L-3b); `EngineDiagnosticListener`, `leakedRuns` becomes `leaked` (L-3c); `NodeHealth` gains `phase`, `wanted`, `cause`, `waitingFor`, `NodeOperations` with `LifecycleApplied` and `LifecycleRefusal` (L-3d); `SinkAdapter`, `SinkTap`, `Sink`, `ResourceRegistry` takes the sink adapter (L-4b); header note re-cut | L-2 to L-4b |
 | `src/core/node_host.cpp` | rewritten (5): the aggregate and the machines' actions with async drive (L-3a); the flush, T1's wait, deferred inputs (L-3b); fades, the three bounds, `settle()`, the wedge (L-3c); health members, `waitingFor` pacing, `NodeOperations`, port-caused replace (L-3d); `CreateContext` and `StartContext` on one set of internals, hooks timed (L-4a); sinks (L-4b) | L-3a to L-4b |
 | `src/core/include/ear/core/main_loop_activity.hpp` (new) | `MainLoopActivity` (5.12) | L-3b |
@@ -1111,8 +1121,9 @@ built group's fate; this section names the cases.
 
 ### 11.1 `ear_core_tests`
 
-- `node_lifecycle_test.cpp` (7, rewritten): "Every event in every block state moves the block machine as its table
-  says" (4.1, one table row per case row); "Every event in every configuration state ... as its table says" (4.2);
+- `node_lifecycle_test.cpp` (7, rewritten; in L-1 the new cases are `node_machines_test.cpp`, renamed at L-3d, 6):
+  "Every event in every block state moves the block machine as its table says" (4.1, one table row per case row);
+  "Every event in every configuration state ... as its table says" (4.2);
   "The phase, state, wanted and cause derived for every combination of the machines and facts" (4.3); "Every
   operation in every phase answers and moves as section 4.4 says"; "The newest intent wins: remove over disable over
   fail over restart over stop, only while one is in flight"; "A stop after a completed restart is a plain stop"; "A
@@ -1437,3 +1448,29 @@ destructor's flush of a queued invoke. 16's two [U] for L-2 are verified.
 invoke queue is never refused in PipeWire 1.4.2; "returns before its function ran" is ill-posed; an unbounded producer
 of invokes wedges the data loop, which makes D-L38 a requirement; a cycle cut short by an xrun is run by an upstream
 prefix only, an open item for 3b's sources; `pw_filter`s name no loop. 16 updated. 3a's gates (S1, S3) pass.
+
+### Revision 2.2 (2026-11-08, found building L-1)
+
+Step L-1 built 4.1 to 4.4 as `NodeAggregate` over the two machines (`src/core/include/ear/core/node_machines.hpp`) and
+tested every cell by table. Writing the tables found these gaps, each fixed by a minimal edit; none disagrees with
+node-framework.md 6.2 or 6.3, which needed no change:
+
+- 4.3's row 6 showed a restart or disable in `starting` with a drive in flight as `starting` (the configuration stays
+  `arming` until the completion), against D-L2 and 4.4's `starting` row: `arming` with `stopAsked` is now `stopping`.
+- Row 10 showed `configured` again whenever a rested configuration was `prepared` without the stop, so a start after a
+  stop would tell `configured`: it now needs "not `rested`".
+- 4.4's "reason replaced" on a block lost after a failure against row 4's "the failure's, else the block's": the loss
+  clears `failure`.
+- Rule 1 had no outcome for a node that would configure on a wedged loop (a restart's teardown ending after the wedge,
+  a retry), nor 4.2 for a stop's silence overdue (its configuration leaked, the stop never ending): both fail the node
+  `engine-refused: the data loop is wedged`, as D-L10 does a new node.
+- A held fault applied "once the node rests" would tell `stopped` for a moment: it is applied at the rest, before
+  health is told.
+- `predecessor`'s end: the older node's configuration closing and its block's destruction can land in either order;
+  the successor waits for both, so it never shows `added`.
+- 4.2: a `start()` that threw undoes `rested` as well as `started` (so its code is `start-failed`); the composite
+  "configure answered failed" row is the `configure` row then a fault in `readying`.
+- 4.4: two cells cannot arrive (`added`'s block lost; `configured`'s, which lasts no input).
+- 6 and 11.1: L-1 cannot replace `node_lifecycle.hpp` while `NodeHost` and `NodeHealth` still use it, so the machines
+  are in `node_machines.hpp` under `ear::lifecycle` until L-3d.
+
