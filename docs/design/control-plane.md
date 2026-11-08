@@ -1,6 +1,6 @@
 # The control plane and parameters: one schema, one write path, one wire
 
-Status: proposal, revision 6.1, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
+Status: proposal, revision 6.2, 2026-11-08. Revision 1 went to three independent reviews and revision 2 answered them
 (section 16). Revision 3 rebased the page onto `docs/design/node-framework.md` revision 5 and was reconciled with that
 page's review round 3. Revision 4 rebases it onto node-framework.md revision 6, which took the owner's answers of
 2026-11-08 (its R19 to R24): **there is no run**. The graph always runs; operations on a node (add, configure, start,
@@ -1225,7 +1225,11 @@ members its phase gives below; a member not given is absent now (4.4 replaces ev
   client never tells ear its protocol, so ear cannot send the old name to old clients alone (round 4's M8).
   `node.stopped` is deprecated and goes at protocol 2. A node removed by an edit is `node.removed` at the commit and
   leaves the graph at once, as today; its `stopping`, `node.stopped` and `node.gone` then name a node the client no
-  longer holds, and are ignored (4.4), as `graph.ts:77` ignores `node.stopped` today [V]. At ear's stop every node shows `stopping` before the socket closes with 1001.
+  longer holds, and are ignored (4.4), as `graph.ts:77` ignores `node.stopped` today [V]. When the same commit adds a
+  node of that name back (a replace, a remove and add in one plan), ear sends none of the old node's `node.state`,
+  `node.stopped` or `node.gone`, since the client holds the new node of that name; a replace caused only by changed
+  ports carries the node's stop and shows one health stream, `stopping` (`restarting`) first (node-lifecycle.md 5.7).
+  At ear's stop every node shows `stopping` before the socket closes with 1001.
 - **One notification whenever any health member changes**, never coalesced (W1, decided; round 4's M4): a phase, but
   also `wanted` alone (`node.stop` on a failed node), `cause`, `waitingFor`, `keys`, `next` or `reason`. A normal start
   is `node.added` and three or four `node.state`s (`configuring`, `configured`, `starting`, `running`) within
@@ -2134,7 +2138,8 @@ answers, and the keeper drops it, so the working copy, the disk and every client
   | `recovering` (slice 8) | T15 at once, skipping the wait | `retry`, after `configuring` |
   | `stopping` for a restart | nothing more: a restart is already under way | `unchanged`, at once |
   | `added` | refused `not-restartable` (`not-started`): the node is configured by itself once the older node of its name is gone | the refusal |
-  | `stopping` for a removal | refused `stopping` | the refusal |
+  | `stopping` for a removal by an edit | refused `unknown-node`: the node left the graph at the commit (4.8), unless a node of the name was added back (then that node's phase decides) | the refusal |
+  | any phase, during ear's own stop | refused `stopping`, as every `node.start`, `node.stop` and `node.restart` then | the refusal |
   | `disabled`, or `stopping` for a disable | refused `node-disabled`: there is nothing configured to restart; `node.enable` configures it afresh (node-framework.md D-F2) | the refusal |
 
   A node whose block is lost cannot restart (`restartRequested` does nothing then, `node_lifecycle.hpp:29-31` [V]): it
@@ -3211,3 +3216,15 @@ One row follows node-framework.md revision 8.1 (its finding 134, found while wri
 10.3's `desired_graph.hpp` row says the plan's outcome and `nodeChanged` land in slice 3a with 3a's outcomes
 (`restart`, `disable`, `enable`, `stored`), completed in 3d, instead of "slice 3d's". Nothing else changes; step L1's
 wire is unchanged, and node-lifecycle.md section 9 says where 3a builds it.
+
+### Revision 6.2 (2026-11-08, not reviewed)
+
+Two edits follow `docs/design/node-lifecycle.md`'s review round 1 (its revision 2, section 17), so that the pages do
+not disagree:
+
+| Finding there | Outcome here |
+|---|---|
+| m4: an operation on a node being removed by an edit, and during ear's stop | 7.6's restart table: a removal by an edit is `unknown-node` (the node left the graph at the commit); every lifecycle request during ear's own stop is `stopping` |
+| M6: a change of ports in 3a is a replace that dropped the node's stop; two health streams for one name | 4.8's "Removed is not a state": when the commit adds the name back, none of the old node's `node.state`, `node.stopped` or `node.gone` is sent; a port-caused replace keeps the stop and shows one stream (node-lifecycle.md 5.7, D-L36) |
+
+No member, method, code or fixture changes; `lifecycle.json`'s list (4.7) already holds a restart and a removal.
