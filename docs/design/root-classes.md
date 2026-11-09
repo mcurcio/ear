@@ -448,7 +448,7 @@ No header is landed with this page: `Latency`'s new home and the boundary's regi
 
 Only class 2 changes what anyone sees, and only when ear or a type has a bug. That is the one question.
 
-**Q-RC1. When ear's own code or a sink consumer throws inside a callback, what happens?**
+**Q-RC1 (answered: C). When ear's own code or a sink consumer throws inside a callback, what happens?**
 
 *Background.* Code ear runs from PipeWire's callbacks (a block's events, an engine companion's, a link's, the main
 loop's posted work and timers, a sink's thread) can throw only through a bug. Today that ends the process
@@ -476,3 +476,6 @@ treated as its hooks already are. NodeHost's invariants cannot be trusted after 
 process stays the safe answer there; the new record makes it diagnosable. Under C, `ear.internal-error` (fields
 `callback`, `node`?, `detail`) is added to `docs/output-records.md` and `output-records.json`, and
 `docs/writing-a-node-type.md#sinks` says a consumer that throws fails its node.
+
+*The owner's answer (2026-11-09):* "Split by owner (Recommended)", option C. Step R4b builds C.
+
