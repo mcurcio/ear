@@ -1,6 +1,6 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
-Status: designed, not built; no header landed (below). Its steps are taken between slice 3b.4 and slice 3c
+Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it); the rest designed, not built. Its steps are taken between slice 3b.4 and slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
 
@@ -152,6 +152,39 @@ spa_latency_info toSpa(Latency latency, spa_direction direction) noexcept; // ra
   the rule's home.
 - **R3**: `handoffs.cpp`'s `framesNs`, `source_ring.cpp:235`, `sendspin_code.cpp:39-42` call `FrameClock`; `ToServer`
   takes its upstream with 3c's sink (3c's design gains the line).
+
+### 3.5 Found building R1
+
+What R1 built differs from 3.3 where 3.3 could not work as declared; the library page that describes it is
+`docs/engine.md#latency-per-bank-pair`.
+
+- **`Delay`.** With `beyond` holding a `Latency`, a beyond entry added as a peer compiles, so 3.2's type error could
+  not hold. What lies in series on every path is now `Delay` (made only explicitly from a `Latency`, converting to
+  nothing; `Latency + Delay` is a `Latency`), and `Paths::add` refuses one with a `static_assert`. `onPair`, `onBank`
+  and `beyond` hold `Delay`. The compile-fail cases are `src/core/tests/compile_fail/latency_bad.cpp`.
+- **`BankPair` moved with `Latency`.** The plan needs it complete and `node_type.hpp` includes `latency.hpp`, so it
+  cannot be included back; `Ports` is forward-declared. No caller changed.
+- **Beside today's plan.** `node_host.hpp`'s `ear::LatencyPlan` (with `internal`) stays until R2, so the plan by role,
+  `LatencyFacts` and `workOut` are in `ear::latency_model`. R2 deletes `node_host.hpp`'s `LatencyPlan` and moves the
+  three into `ear`.
+- **`latency_spa.hpp` landed in R1** (pure addition, used only by its tests), so `ear_pipewire_tests` checks the
+  model's combine against `spa_latency_info_combine` and `_finish` now. `fromSpa`'s none is an unfinished empty
+  combination (`spa_latency_info_combine_start`'s sentinels); both directions saturate.
+- **The roles' rule, fixed.** `onPair` counts on its own pair's path, both ways; `onBank` on what its bank tells and
+  nothing else; a paired bank with no peer is a zero path through its pair (as today: an empty combination finishes
+  at zero). `workOut` throws `std::logic_error` for a plan that does not fit the ports (a bank they lack, a pair
+  backwards, a pair delay off the plan's pairs, an entry twice) or peers of the wrong count, so R2 calls it once at
+  `carryLatency` (on the main loop, before any `param_changed`) and never first meets a bad plan inside a C callback.
+- **R2's mapping keeps behaviour.** Today `internal` is keyed by bank: one entry on an output bank `B` is added to all
+  of `B`'s told and counted through on every input paired with `B`; one on an input bank only to its own told. So R2
+  fills: a declaration on an output bank that some pair ends at becomes `onPair` on every pair into it; one on an
+  output bank in no pair, or on an input bank, becomes `onBank`. Today's only declaring type, `sendspin` (its feed on
+  the unpaired `from`), is `onBank`. Counting a typed `declareLatency(from, to)` on its own pair only is a behaviour
+  change for a bank with two pairs; R2 makes it only by saying so.
+- **Told's order** is as 3.3 declared, one vector: the input side's ports (inputs then insideInputs), then the
+  output side's.
+- **`FrameClock`** divides the whole frame count once, truncating toward zero (`enteredRawNs` is
+  `startRawNs + ns(offset - upstream.max)`), which is what each of today's four sites computes, so R3 changes no date.
 
 ## 4. Class 2: exceptions at the C boundary
 
@@ -441,8 +474,8 @@ makes stale.
 All before 3c, whose sink-based `sendspin` takes `enteredRawNs` for its upstream dating (3.1) and whose loops are born
 behind the boundary. 3b.5 to 3b.8 touch none of these files' rules and may interleave.
 
-No header is landed with this page: `Latency`'s new home and the boundary's registrations touch `node_type.hpp`,
-`node_host.hpp` and the files 3b.4's review is editing, so each lands with its step.
+Each header lands with its step: R1 landed `latency.hpp` and `latency_spa.hpp`; the boundary's registrations touch
+`node_host.hpp` and the files 3b.4's review is editing.
 
 ## 9. What an operator or a type author sees
 

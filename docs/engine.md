@@ -325,6 +325,37 @@ its teardown):
   what was declared on the input bank itself. A source on the bank dates its `Played` with the most
   of it ([sources](#sources)).
 
+These rules are written once, as a pure model in `ear_core` (`ear/core/latency.hpp`), in frames at
+the graph's rate:
+
+- **Series and parallel are different types.** `Latency` adds only in series (`+`, saturating).
+  Side by side, paths combine only through `Paths`, PipeWire's rule (`spa_latency_info_combine`:
+  the least of the leasts, the most of the mosts); an empty `Paths` is **no path**, which is not
+  zero, and only `orZero()` (what `spa_latency_info_combine_finish` does) makes it zero. What lies
+  in series on every path (a `beyond` entry, a code's delay) is a `Delay`, which `Paths` refuses at
+  compile time, so a buffer combined as one more peer does not compile.
+- **The plan by role.** `latency_model::LatencyPlan` names `pairs`, `onPair` (a code's delay on a
+  pair's path, counted both ways on it), `onBank` (declared on one bank, counted on what that bank
+  tells and nothing else) and `beyond`; `latency_model::workOut` takes the ports, the plan and each
+  port's peer (none where no peer reported) and returns every port's told latency and every output
+  port's downstream, by the rules above. A paired bank with no peer is a zero path through its pair
+  (an empty combination finishes at zero), so it lowers the least of what the pair's other side
+  tells.
+- **One unit.** A peer's `{quantum, rate, ns}` converts to frames at the port, once, in
+  `ear_pipewire`'s private `latency_spa.hpp` (`fromSpa`: a quantum is the block size, ns are at the
+  graph frequency, rounded to the nearest frame; an unfinished empty combination is no path), and
+  what a block tells goes back in rate units (`toSpa`). Combined in frames, peers in mixed units
+  give the exact least and most, inside PipeWire's per-unit bound; in one unit the two agree, which
+  `ear_pipewire_tests` checks against PipeWire's own functions.
+- **Dating.** `FrameClock` turns frames into ns at the graph's rate, by one division of the whole
+  count, truncated toward zero; `heardRawNs` (a frame heard once its downstream's most has played)
+  and `enteredRawNs` (a frame entered its upstream's most before) are the two dating rules.
+
+The port block (`FilterPortBlock::retell`), the type harness (`toldUpstream`, `toldDownstream`) and
+the four dating sites (a sink chunk's split, `SourceRing`'s `Played`, `sendspin`'s progress) still
+carry their own copies of these rules, which the model's tests pin; they move onto it next
+([root-classes.md](design/root-classes.md), steps R2 and R3).
+
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. An RTP receiver's
 `latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's ports report zero, not the buffer),

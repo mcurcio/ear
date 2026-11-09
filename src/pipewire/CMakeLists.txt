@@ -1,7 +1,7 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
-# engine_names.hpp, link_proxy.hpp and engine_companions.hpp are private to this package: its
+# engine_names.hpp, link_proxy.hpp, engine_companions.hpp and latency_spa.hpp are private to this package: its
 # sources include them by path.
 add_library(ear_pipewire STATIC
 	engine.cpp
@@ -43,6 +43,7 @@ if(BUILD_TESTS)
 		tests/engine_log_test.cpp
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
+		tests/latency_spa_test.cpp
 		tests/main_loop_executor_test.cpp
 		tests/port_block_test.cpp
 		tests/rtp_receiver_test.cpp

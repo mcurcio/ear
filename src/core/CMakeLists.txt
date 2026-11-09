@@ -8,6 +8,7 @@ add_library(ear_core STATIC
 	companions.cpp
 	desired_graph.cpp
 	graph_status.cpp
+	latency.cpp
 	legacy_instance.cpp
 	levels.cpp
 	log.cpp
@@ -34,6 +35,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/frame_ring.hpp
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
+	include/ear/core/latency.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/lifecycle.hpp
 	include/ear/core/log.hpp
@@ -73,6 +75,7 @@ if(BUILD_TESTS)
 		tests/frame_ring_test.cpp
 		tests/graph_spec_test.cpp
 		tests/graph_status_test.cpp
+		tests/latency_test.cpp
 		tests/levels_test.cpp
 		tests/main_loop_activity_test.cpp
 		tests/node_host_test.cpp
@@ -134,6 +137,19 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(only-without-on-required "a required row cannot be onlyWithout")
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
 	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
+
+	# What must not compile about the latency model (docs/engine.md#latency-per-bank-pair): a delay is in series, never
+	# a path of its own; tests/compile_fail/latency_bad.cpp says what each case is.
+	set(bad_latency "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/latency_bad.cpp")
+	ear_compile_check(ear_latency_compile_fail_control "${bad_latency}")
+	function(ear_latency_compile_fail case regex)
+		ear_compile_fail(ear_latency_compile_fail_${case} "${bad_latency}" ${case} "${regex}")
+	endfunction()
+	ear_latency_compile_fail(beyond-as-peer "a Delay lies in series")
+	ear_latency_compile_fail(delay-as-path "a Delay lies in series")
+	ear_latency_compile_fail(delay-as-latency "conversion from 'ear::Delay'")
+	ear_latency_compile_fail(delay-as-optional-peer "no matching function for call to 'std::optional<ear::Latency>")
+	ear_latency_compile_fail(paths-in-series "no match for 'operator\\+'")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):

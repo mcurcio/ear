@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/command_error.hpp"
+#include "ear/core/latency.hpp" // Latency, BankPair
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
 /// public: routes name them. An inside bank's ports belong to the port block only: nothing reaches them but the node's
@@ -77,14 +78,6 @@ struct AudioFormat {
 	std::uint32_t rate;
 	std::uint32_t maxBlock;
 }; // fixed at boot in M1
-
-/// A latency in frames at the graph frequency: the least and the most it can be over the paths it combines
-/// (docs/engine.md#latency-per-bank-pair).
-struct Latency {
-	std::uint32_t minFrames = 0;
-	std::uint32_t maxFrames = 0;
-	friend bool operator==(const Latency&, const Latency&) = default;
-};
 
 /// This cycle of the graph, on the driver's clock: ear's internal clock, the dummy driver, which always drives
 /// (docs/engine.md#graphcycle). Made once a cycle by the framework, so no type reads a clock.
@@ -228,13 +221,6 @@ public:
 	/// thread; one without calls it at once. A run that has not called it within the close deadline is leaked, never
 	/// destroyed.
 	virtual void close(std::move_only_function<void()> closed) { closed(); }
-};
-/// One pair of a pass-through: each port of `from` (an input bank, routable or inside) copied to the port of `to` (an
-/// output bank) at the same member index. The banks have as many ports as each other.
-struct BankPair {
-	std::string from;
-	std::string to;
-	friend bool operator==(const BankPair&, const BankPair&) = default;
 };
 /// A type's code written against its spec (type_spec.hpp: `void process(Io<spec>, const GraphCycle&) noexcept`), not
 /// an AudioCode: erased once, by eraseSpecCode, which type_spec.hpp defines (a type that names its code includes it).
