@@ -20,6 +20,7 @@ The R numbers are the register the node framework's design used (kept so commits
 | R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's realtime code reads `Io` inputs and writes `Io` outputs, nothing else; every crossing to or from non-realtime code is the framework's |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | A companion's failure fails only its node; its barrier is its own |
 | R18 | "crossing to a non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing graph" | 2026-11-08 | Companions: hidden helpers on a node's inside banks, owned by the framework. Cards and RTP receivers are hidden engine nodes; a sink or a source is served by the node's own block in its cycle (3.4 says why) |
+| Q-3b1 | Asked whether a sink or source should be its own hidden PipeWire node, as first designed, or a hidden helper its node's block serves in its own cycle: "Served by the node (Recommended)" | 2026-11-09 | 3.4 and D-3b1: the reading of R18 below is the owner's |
 | Q28 (gate C2) | Asked what the editor shows of a node's hidden helpers: "(a)", as recommended: small badges in the node's box, one per helper, its kind and a dot for ready, its drop count on hover | 2026-11-08 | 3.7 |
 
 ## 2. What slice 3a left
@@ -789,7 +790,6 @@ makes stale (the rule in `AGENTS.md`).
 
 ### 8.12 Questions for the owner
 
-None. The open point (3.4) is settled without changing what a type author writes or what an operator sees: the same
-calls, the same wire entries and names, the same badges. R18's "hidden node" is read as the framework's hidden helper:
-cards and receivers stay hidden engine nodes, and a sink or a source is served by the node's own block, which keeps
-the processing graph whole (R18's aim) without the cost and the unproven timing of an engine node per crossing.
+None open. The one this design raised, the reading of R18, was put to the owner on 2026-11-09: a sink or a source as
+its own hidden PipeWire node, or a hidden helper served by the node's own block. The answer, "Served by the node
+(Recommended)", is Q-3b1 in section 1 and confirms D-3b1. Cards and receivers stay hidden engine nodes.
