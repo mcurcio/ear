@@ -1,6 +1,7 @@
 // ear's one latency model (ear/core/latency.hpp, docs/engine.md#latency-per-bank-pair), by table: the algebra (series
-// apart from parallel, no path apart from zero), then one row per bank shape and per past regression through
-// workOut (the table, test/support/latency_table.hpp, which ear_pipewire_tests runs through a real block too), then FrameClock's units and its two dating rules. What must not compile is in compile_fail/latency_bad.cpp.
+// apart from parallel, no path apart from zero), then one row per bank shape and per past regression through workOut
+// (the table, test/support/latency_table.hpp, which ear_pipewire_tests runs through a real block too), then
+// FrameClock's units and its two dating rules. What must not compile is in compile_fail/latency_bad.cpp.
 #include <cstdint>
 #include <optional>
 #include <stdexcept>

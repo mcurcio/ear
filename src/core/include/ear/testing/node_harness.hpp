@@ -7,11 +7,11 @@
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
 // build them (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's
 // readiness deadline included (docs/engine.md#readiness-deadlines). The sink fake runs a consumer on the test's
-// thread: begin at configure's return (or, with holdSinks, at ready(bank)), each
-// chunk at once from the tap written after the fade in process(), stamped with the upstream latency workOut gives its
-// bank under the latency plan (ear/core/latency.hpp; the harness has no peers), finish at the close. The source fake is core's own SourceRing (every
-// source rule), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the code,
-// and the test reads what it played (played, shortfall).
+// thread: begin at configure's return (or, with holdSinks, at ready(bank)), each chunk at once from the tap written
+// after the fade in process(), stamped with the upstream latency workOut gives its bank under the latency plan
+// (ear/core/latency.hpp; the harness has no peers), finish at the close. The source fake is core's own SourceRing
+// (every source rule), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the
+// code, and the test reads what it played (played, shortfall).
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -124,9 +124,9 @@ public:
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances, each bound source first played into its bank's input buffers (its
 	/// SourceCycle's downstream the playback latency workOut gives its bank under the plan, with no peers); then the
-	/// fade's gain on the faded outputs, as a real block applies it (a 5 ms ramp from each drive, and to zero before each
-	/// silence); then each bound sink's tap, its stamp's upstreamFrames the most capture latency workOut gives its bank,
-	/// as a real block with no peers tells (docs/engine.md#latency-per-bank-pair).
+	/// fade's gain on the faded outputs, as a real block applies it (a 5 ms ramp from each drive, and to zero before
+	/// each silence); then each bound sink's tap, its stamp's upstreamFrames the most capture latency workOut gives its
+	/// bank, as a real block with no peers tells (docs/engine.md#latency-per-bank-pair).
 	void process(std::uint32_t frames = 0);
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.

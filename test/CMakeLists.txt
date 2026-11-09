@@ -107,8 +107,9 @@ target_link_libraries(ear_inducers INTERFACE ear_core)
 add_library(ear_statistics INTERFACE)
 target_include_directories(ear_statistics INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 
-# ear_latency_table: the latency model's table of bank shapes (test/support/latency_table.hpp, header-only), run through
-# workOut by ear_core_tests and through a real port block by ear_pipewire_tests (docs/testing.md#what-each-test-program-proves).
+# ear_latency_table: the latency model's table of bank shapes (test/support/latency_table.hpp, header-only), run
+# through workOut by ear_core_tests and through a real port block by ear_pipewire_tests
+# (docs/testing.md#what-each-test-program-proves).
 add_library(ear_latency_table INTERFACE)
 target_include_directories(ear_latency_table INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_latency_table INTERFACE ear_core)

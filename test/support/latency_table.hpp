@@ -28,12 +28,12 @@ inline std::vector<LatencyRow> latencyRows() {
 	using R = PortBank::Reach;
 	const std::optional<Latency> none;
 	return {
-		{"an input bank in no pair tells zero, whatever its peers",
+		{"an input bank in no pair tells its own delay alone, whatever its peers",
 	     {{Direction::input, "in", numbered(2)}},
-	     {},
+	     {.onBank = {{"in", Delay{{7, 9}}}}},
 	     {Latency{10, 20}, Latency{30, 40}},
 	     {},
-	     {{0, 0}, {0, 0}},
+	     {{7, 9}, {7, 9}},
 	     {}},
 		{"an output bank in no pair tells zero; its downstream is its peers side by side",
 	     {{Direction::output, "out", numbered(2)}},
@@ -42,12 +42,12 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {Latency{5, 7}, Latency{3, 9}},
 	     {{0, 0}, {0, 0}},
 	     {{3, 9}, {3, 9}}},
-		{"an output bank with no peer has zero downstream",
+		{"an output bank with no peer has zero downstream, and tells its own delay",
 	     {{Direction::output, "out", numbered(1)}},
-	     {},
+	     {.onBank = {{"out", Delay{{32, 32}}}}},
 	     {},
 	     {none},
-	     {{0, 0}},
+	     {{32, 32}},
 	     {{0, 0}}},
 		{"a pair carries each side's beyond to the other",
 	     {{Direction::input, "in", numbered(2)}, {Direction::output, "out", numbered(2)}},
@@ -100,6 +100,16 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {none},
 	     {Latency{256, 256}},
 	     {{256, 320}, {0, 1088}},
+	     {{256, 256}}},
+		// Regression (the class of 3b.2): a type's own code declares its delay from `in` to `out` and names no
+		// pass-through; NodeHost carries the declared path as a pair, so the delay reaches `in`'s told playback
+		// latency.
+		{"a type's own code's declared path carries its delay both ways",
+	     {{Direction::input, "in", numbered(1)}, {Direction::output, "out", numbered(1)}},
+	     {.pairs = {{"in", "out"}}, .onPair = {{{"in", "out"}, Delay{{0, 480}}}}},
+	     {Latency{10, 10}},
+	     {Latency{256, 256}},
+	     {{256, 736}, {10, 490}},
 	     {{256, 256}}},
 		{"a pair's delay is on its path only, not on another pair's into the same output",
 	     {{Direction::input, "a", numbered(1)},

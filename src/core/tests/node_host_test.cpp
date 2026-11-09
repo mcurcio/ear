@@ -3951,6 +3951,44 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	}
 }
 
+// Regression (the class of 3b.2, 6c1299b556): a type's own code declares its delay from `record` to `pb`; with no
+// pass-through to name the pair, the delay must still lie on that path, so it reaches what `record` tells upstream
+// (and a source there dates Played late enough), not only what `pb` tells.
+TEST_CASE("A typed declareLatency is a latency path: carried as a pair with its delay on it, for a code of the type's "
+          "own as for a pass-through",
+          "[node_host][latency][class]") {
+	Log codes;
+	const BankPair path{"record", "pb"};
+	for (const bool own : {true, false}) {
+		INFO((own ? "the type's own code" : "a pass-through of the same pair"));
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = [&](InstanceContexts& cx) {
+			cx.create.declareLatency("record", "pb", Latency{3, 5});
+			if (own) cx.create.use(std::make_unique<TestAudioCode>(codes));
+			else cx.create.use(passThrough({{"record", "pb"}}));
+			return Configured::applied();
+		};
+		f.add("probe", config);
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		REQUIRE(f.host.health()[0].state == NodeState::running);
+		REQUIRE_FALSE(f.blocks.plans.at(0).empty());
+		const LatencyPlan& plan = f.blocks.plans.at(0).back();
+		CHECK(plan.pairs == std::vector<BankPair>{path});
+		REQUIRE(plan.onPair.size() == 1);
+		CHECK(plan.onPair[0].first == path);
+		CHECK(plan.onPair[0].second == Delay{{3, 5}});
+		CHECK(plan.onBank.empty());
+		// What the block works out from it with no peers: the delay in both banks' told latency.
+		const LatencyFacts facts = workOut(config->ports(), plan, std::vector<std::optional<Latency>>(3),
+		                                   std::vector<std::optional<Latency>>(2));
+		CHECK(facts.told == std::vector<Latency>{{3, 5}, {3, 5}, {0, 0}, {3, 5}, {3, 5}});
+		f.stopAll();
+		f.settle();
+	}
+}
+
 TEST_CASE("A context kept past its configure is refused at the call: from start() the node fails",
           "[node_host][class]") {
 	Fixture f;

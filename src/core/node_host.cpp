@@ -539,7 +539,7 @@ struct NodeHost::Impl {
 				const Ports::Bank& output = ports_.bank(to);
 				if (input.direction != Direction::input || output.direction != Direction::output)
 					throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
-				recordLatency(output.name, latency);
+				recordLatency(output.name, latency, input.name);
 			});
 		}
 		void declareLatency(const std::string& bank, Latency internal) override {
@@ -764,6 +764,14 @@ struct NodeHost::Impl {
 			std::string bank;
 		};
 
+		/// One declareLatency: the bank it is declared on and, for a typed declaration, the input bank its path
+		/// starts at.
+		struct DeclaredLatency {
+			std::optional<std::string> from;
+			std::string bank;
+			Latency latency;
+		};
+
 		/// One configuration (docs/architecture.md#the-node-lifecycle,
 		/// docs/writing-a-node-type.md#configure-and-createof), from configure to the end of its close. Members in
 		/// reverse teardown order.
@@ -794,9 +802,10 @@ struct NodeHost::Impl {
 			// faded but a sink's bank. Read by the block until the drive's invoke ran.
 			std::unique_ptr<bool[]> faded;
 			std::size_t fadedCount = 0;
-			std::vector<BankPair> pairs;                          // the pass-through's pairs, for the latency plan
-			std::vector<std::pair<std::string, Latency>> latency; // what configure declared, by bank
-			bool codeGiven = false;                               // use() was called
+			std::vector<BankPair> pairs;          // the pass-through's pairs, for the latency plan
+			std::vector<DeclaredLatency> latency; // what configure declared, one per bank
+			LatencyPlan plan;                     // worked out at configure's return; carried with each drive
+			bool codeGiven = false;               // use() was called
 			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
 			bool companionsAsked = false; // its engine companions' making is queued
 			bool recipeRan = false;       // T3 ran (or there was no recipe)
@@ -1104,11 +1113,46 @@ struct NodeHost::Impl {
 			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
 		}
 
-		/// At most one declaration per bank.
-		void recordLatency(const std::string& bank, Latency latency) {
-			if (std::ranges::any_of(config_->latency, [&](const auto& declared) { return declared.first == bank; }))
+		/// At most one declaration per bank. `from`: the input bank a typed declaration names, its path's start.
+		void recordLatency(const std::string& bank, Latency latency, std::optional<std::string> from = std::nullopt) {
+			if (std::ranges::any_of(config_->latency,
+			                        [&](const DeclaredLatency& declared) { return declared.bank == bank; }))
 				throw std::logic_error("latency declared twice for bank " + bank);
-			config_->latency.emplace_back(bank, latency);
+			config_->latency.push_back(DeclaredLatency{std::move(from), bank, latency});
+		}
+
+		/// The configuration's latency plan, by role (docs/engine.md#latency-per-bank-pair). What each source's ring
+		/// may hold is latency beyond its bank: the most its frames wait before they play; and an RTP receiver's
+		/// buffer, which its ports report as zero. A typed declaration (from, to) is a path of its own: its pair is carried
+		/// (added when the pass-through has none such) with the delay on it, both ways, so a code of the type's own
+		/// carries it as a pass-through's pair would. A legacy declaration on one bank is the delay on the
+		/// pass-through's pair that ends at the bank, or, on a bank no pair ends at, that bank's alone.
+		LatencyPlan latencyPlan(const Configuration& c) const {
+			LatencyPlan plan{.pairs = c.pairs};
+			for (const SourceSlot& slot : c.sources)
+				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
+			for (const EngineAsk& asked : c.engineAsks)
+				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
+					const auto buffered =
+						static_cast<std::uint32_t>(std::uint64_t{receiver->latencyMs} * host_.format.rate / 1000);
+					plan.beyond.emplace_back(asked.bank, Delay{Latency{buffered, buffered}});
+				}
+			for (const DeclaredLatency& declared : c.latency) {
+				if (declared.from) {
+					const BankPair pair{*declared.from, declared.bank};
+					if (std::ranges::find(plan.pairs, pair) == plan.pairs.end()) plan.pairs.push_back(pair);
+					plan.onPair.emplace_back(pair, Delay{declared.latency});
+					continue;
+				}
+				bool paired = false;
+				for (const BankPair& pair : c.pairs)
+					if (pair.to == declared.bank) {
+						plan.onPair.emplace_back(pair, Delay{declared.latency});
+						paired = true;
+					}
+				if (!paired) plan.onBank.emplace_back(declared.bank, Delay{declared.latency});
+			}
+			return plan;
 		}
 
 		/// Every context call is valid only inside its configure.
@@ -1195,6 +1239,18 @@ struct NodeHost::Impl {
 				if (!slot->given)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave sink " + slot->bank + " no consumer");
+			// The latency plan fits the ports, worked out here as the block will (with no peer yet), so a misfit fails
+			// the node now with its reason and every drive carries a plan that fits.
+			try {
+				c.plan = latencyPlan(c);
+				const std::vector<std::optional<Latency>> inputs(ports_.inputs().size() + ports_.insideInputs().size());
+				const std::vector<std::optional<Latency>> outputs(ports_.outputs().size() +
+				                                                  ports_.insideOutputs().size());
+				static_cast<void>(workOut(ports_, c.plan, inputs, outputs));
+			} catch (const std::logic_error& error) {
+				return failConfigure(lc::Fact::configureFailed,
+				                     std::string("configure gave a latency plan that does not fit: ") + error.what());
+			}
 			c.startFailed = false;
 			// Every drive of this configuration binds these taps; then each consumer begins on its sink's thread.
 			c.bindings.reserve(c.sinks.size());
@@ -1428,29 +1484,8 @@ struct NodeHost::Impl {
 		void drive(std::uint64_t barrier) {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
-			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play;
-			// and an RTP receiver's buffer, which its ports report as zero (docs/engine.md#latency-per-bank-pair).
-			LatencyPlan plan{.pairs = c.pairs};
-			for (const SourceSlot& slot : c.sources)
-				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
-			for (const EngineAsk& asked : c.engineAsks)
-				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
-					const auto buffered =
-						static_cast<std::uint32_t>(std::uint64_t{receiver->latencyMs} * host_.format.rate / 1000);
-					plan.beyond.emplace_back(asked.bank, Delay{Latency{buffered, buffered}});
-				}
-			// What configure declared, by role: on an output bank a pair ends at, the code's delay on that pair's path
-			// (counted both ways on it); on a bank in no pair's end, that bank's alone.
-			for (const auto& [bank, latency] : c.latency) {
-				bool paired = false;
-				for (const BankPair& pair : c.pairs)
-					if (pair.to == bank) {
-						plan.onPair.emplace_back(pair, Delay{latency});
-						paired = true;
-					}
-				if (!paired) plan.onBank.emplace_back(bank, Delay{latency});
-			}
-			block_->carryLatency(plan);
+			// The plan configure's return checked against the ports (latencyPlan), so carrying it cannot throw.
+			block_->carryLatency(c.plan);
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
 			                           c.sourceBindings},
 			              completion(barrier, &lc::NodeAggregate::driven));

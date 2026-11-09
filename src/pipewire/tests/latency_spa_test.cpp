@@ -12,6 +12,7 @@
 #include "../latency_spa.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/latency.hpp"
+#include "ear/core/node_type.hpp"
 
 using namespace ear;
 using ear::pipewire::fromSpa;
@@ -168,4 +169,23 @@ TEST_CASE("Peers in mixed units: frames first is exact, inside PipeWire's per-un
 		CHECK(exact.minFrames >= outer.minFrames);
 		CHECK(exact.maxFrames <= outer.maxFrames);
 	}
+}
+
+// A negative peer is clamped at the port, to no latency, before anything is added in series beyond the bank: a
+// receiver's 480 frames behind a peer reporting -100 tell 480. Summed in PipeWire's units first (the block before
+// ear's latency model), the same peer told 380 (docs/engine.md#latency-per-bank-pair).
+TEST_CASE("A peer's negative latency is clamped at the port, before a companion's beyond is added in series",
+          "[latency]") {
+	spa_latency_info negative{};
+	negative.direction = SPA_DIRECTION_OUTPUT;
+	negative.min_rate = -100;
+	negative.max_rate = -100;
+	const std::optional<Latency> peer = fromSpa(negative, kQuantum, kRate);
+	CHECK(peer == Latency{0, 0});
+	const Ports ports({{Direction::output, "stream", numbered(1)},
+	                   {Direction::input, "from_rtp", numbered(1), PortBank::Reach::inside}});
+	const LatencyPlan plan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{480, 480}}}}};
+	const std::vector<std::optional<Latency>> inputs{peer};
+	const std::vector<std::optional<Latency>> outputs{std::nullopt};
+	CHECK(workOut(ports, plan, inputs, outputs).told == std::vector<Latency>{{0, 0}, {480, 480}});
 }

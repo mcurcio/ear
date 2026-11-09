@@ -197,26 +197,39 @@ What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pa
 - **One namespace, one signature.** `LatencyPlan`, `LatencyFacts` and `workOut` are in `ear` (`ear::latency_model` is
   gone, and so is `node_host.hpp`'s plan with `internal`); `node_host.hpp` includes `latency.hpp`. `workOut` keeps
   3.3's one signature: the harness passes none for every port rather than gain an overload.
-- **NodeHost keeps declarations by bank and maps them at each drive.** What configure declared stays one entry per
-  bank (a second still fails the node), and `drive()` makes the plan by 3.5's mapping: `onPair` on the pair that ends
-  at the bank, `onBank` otherwise. A pass-through writes each output bank once, so at most one pair ends at a bank and
-  the mapping is exact; a typed `declareLatency(from, to)` counts on the pair into `to`, whatever `from` it names (a
-  literal `onPair{from, to}` naming no pair would be `workOut`'s error). No behaviour changes.
+- **A typed declaration is a path (review).** What configure declared stays one entry per bank (a second still fails
+  the node), now with the input bank a typed `declareLatency(from, to)` names. Its pair is carried (added to `pairs`
+  when the pass-through has none such) with the delay as its `onPair`. 3.5's mapping by bank alone dropped `from` for
+  a code of the type's own (no pass-through, so no pair): its delay reached `to` only, never `from`'s told playback
+  latency, so a source on `from` would date `Played` early, the class of the 3b.2 regression. No shipped type declares
+  that way (`sendspin`'s legacy declaration is on one bank and keeps 3.5's mapping), so nothing shipped changes; for a
+  pass-through whose pair into `to` starts elsewhere, the delay now lies on the declared path, not that pair.
+- **A misfit plan fails configure (review).** NodeHost builds the plan at configure's return and works it out with no
+  peers there, so a plan that does not fit fails the node `start-failed` with its reason; `drive()` carries the plan
+  it checked. (First built, `carryLatency`'s throw came in `drive()` before the barrier's bound was armed, so a
+  framework bug would have left the node starting with no bound.) Only a framework bug makes such a plan: each
+  declaration is checked at its call, and no test can reach the check through a type.
 - **The block works out first, then keeps.** `carryLatency` calls `workOut` before it stores the plan, so a plan that
-  does not fit throws to `NodeHost` on the main loop and is never kept; `param_changed` only changes a peer. Today's
-  block silently ignored a `beyond` naming no bank; it now throws there (only a framework bug can make one). The
-  block keeps peers as `std::optional<Latency>` (converted by `fromSpa` as heard) and what each port last told in
-  frames; it tells a port only when that changes, so a port that tells zero still sends nothing, as before.
+  does not fit throws and is never kept; `param_changed` only changes a peer. The block before ignored a `beyond`
+  naming no bank. It keeps peers as `std::optional<Latency>` (converted by `fromSpa` as heard) and what each port last
+  told in frames; it tells a port only when that changes, so a port that tells zero still sends nothing, as before.
+- **A negative peer is clamped before the series add.** `fromSpa` makes a negative total zero at the port, before a
+  `beyond` or a delay is added; the block before summed in PipeWire's units first, so a peer reporting -100 frames
+  behind a receiver's 480 told 380 and now tells 480. A behaviour change beside 8's, for peers no shipped node
+  reports; `latency_spa_test.cpp` and the conformance test pin it.
 - **Peers told in rate units** (the one change 8 allows): the block told its peers' units through, combined field by
   field; now `toSpa`'s rate units only, and a bank's paths combined in frames, so a sink's `upstreamFrames` is the
   exact most where peers mixed units (`docs/engine.md#sinks` says so).
 - **The table is shared.** The rows moved from `latency_test.cpp` to `test/support/latency_table.hpp`
   (`ear_latency_table`), which `ear_core_tests` runs through `workOut` and `ear_pipewire_tests` through a real block.
-  The conformance test's peers are bare `pw_filter`s, one port each, telling in mixed units (the least in ns, the most
-  in quanta and frames) and recording what PipeWire sets on their port, so it reads both bounds of every told latency
-  on the wire and that it is in rate units only; a port the row gives no peer stays unlinked, so its told latency is
-  read only through the model (and, for outputs, the code's downstream). Every row runs, "two pairs into one output"
-  included, though a pass-through refuses that shape: the block's rule holds for any plan.
+  The conformance test links every port to a bare `pw_filter` that records what PipeWire sets on its port: a peer
+  telling in mixed units (the least in ns, the most in quanta and frames) where the row gives one, else a listener
+  with `port.ignore-latency`, which `pw_impl_port_recalc_latency` skips, so the port has no path but its told
+  latency is still heard. It reads both bounds of every port's told latency on the wire (in rate units only), each
+  output's downstream in the code, and each inside bank's published latency through a source (`SourceCycle`) or a
+  sink's stamp (`upstreamFrames`). Each row expects some latency that is not zero (two rows gained a bank's own delay
+  for it), so no row passes for a block that tells nothing. Every row runs, "two pairs into one output" included,
+  though a pass-through refuses that shape: the block's rule holds for any plan.
 - **The harness's side of section 7's comparison** is by construction now (it calls `workOut`); R7 keeps the sink
   delivery and companion-bank rules.
 - **No other hand combine was found.** Outside the model, latency is only converted: `NodeHost`'s RTP receiver

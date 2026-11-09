@@ -197,24 +197,11 @@ meet (a card's playback and capture; sendspin's `to` and `from`). What 1.4.2 doe
   while nothing hears what goes there, and a card made again reports afresh. "A following card's
   latency reaches its block's inside bank" checks this trap, so a PipeWire that fixes it fails.
 
-The block's rule is the latency model's, `workOut` in `ear/core/latency.hpp`
-(`docs/engine.md#latency-per-bank-pair` is its home): the block keeps each port's peer as a
-`std::optional<Latency>` in frames (`fromSpa` in `latency_spa.hpp`, as it hears it; none: no peer,
-so an unrouted port does not pull the least to 0), and at `carryLatency` and at each peer's report
-hands the run's `LatencyPlan` and those peers to `workOut`. It publishes each output's downstream
-(`GraphCycle::downstream`) and each port's told latency to the realtime side, and tells the peers in
-rate units only (`toSpa`). Never combine latency by hand in the block, the harness or a type: change
-the model, whose table the conformance test (`port_block_test.cpp`) runs through a real block, so a
-block that drifts from it fails there. The plan names roles:
-`pairs` (the pass-through's, so a card block forwards the card's playback latency from `to_card` to
-`play` and its capture from `from_card` to `capture`), `onPair` (a code's delay on a pair's path,
-both ways), `onBank` (one bank's own, `sendspin`'s feed on `from`) and `beyond` (an RTP receiver's
-`latencyMs` on `from_rtp`, since rtp-source's ports report zero, not the buffer; a source's ring),
-which lies in series with the bank's peers, never as one more peer (a `Delay`, which `Paths`
-refuses at compile time). A plan that does not fit the ports throws at `carryLatency`, on the main
-loop, never later inside `param_changed`. Frames: a quantum is the block size and nanoseconds are at
-the graph frequency. ALSA's playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`,
-`alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
+The block's rule is the latency model's, `workOut` in `ear/core/latency.hpp`; the rule, the plan's
+roles and the units are in `docs/engine.md#latency-per-bank-pair`. The block hands the plan and each
+port's peer (in frames, as heard) to `workOut` at `carryLatency` and at each peer's report, and tells
+its peers what comes back. Never combine latency by hand in the block, the harness or a type: change
+the model, whose table the conformance test in `port_block_test.cpp` runs through a real block.
 
 ## Sound cards and the clock
 
