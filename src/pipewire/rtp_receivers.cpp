@@ -20,7 +20,7 @@
 
 #include "callback_boundary.hpp"
 #include "engine_companions.hpp"
-#include "engine_properties.hpp"
+#include "engine_property_set.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -32,33 +32,32 @@ constexpr char kind[] = "RTP receiver"; // names it in failure details
 /// "receive_<position>" (impl-port.c), and its positions are AUX0...
 std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_string(channel); }
 
-/// " <key> = <value>", one argument of the module's object.
-std::string argument(const char* key, const std::string& value) { return std::string(" ") + key + " = " + value; }
-
 /// The module's arguments, each key from the property table (docs/engine.md#properties-ear-sets says why each): the one
 /// home of this form. Every value is a number, a closed enum, an RtpAddress or the engine node's name
 /// ([A-Za-z0-9_.-]), so no user text reaches PipeWire's parsers.
-std::string moduleArguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
+ModuleArguments moduleArguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
 	const std::string name = "\"" + engineNode + "\"";
-	const std::string stream = "{" + argument(property(Home::rtpStream, "node.always-process"), "true") +
-	                           argument(property(Home::rtpStream, "adapter.auto-port-config"),
-	                                    "{ mode = dsp monitor = false control = false position = preserve }") +
-	                           " }";
-	return "{" + argument(property(Home::rtpReceiver, "remote.name"), "\"internal\"") +
-	       argument(property(Home::rtpReceiver, "source.ip"), "\"" + shape.address.text() + "\"") +
-	       argument(property(Home::rtpReceiver, "source.port"), std::to_string(shape.port)) +
-	       argument(property(Home::rtpReceiver, "sess.media"), "\"audio\"") +
-	       argument(property(Home::rtpReceiver, "sess.latency.msec"), std::to_string(shape.latencyMs)) +
-	       argument(property(Home::rtpReceiver, "sess.ignore-ssrc"), "true") +
-	       argument(property(Home::rtpReceiver, "audio.format"),
-	                shape.encoding == RtpEncoding::l24 ? "\"S24BE\"" : "\"S16BE\"") +
-	       argument(property(Home::rtpReceiver, "audio.rate"), std::to_string(shape.rate)) +
-	       argument(property(Home::rtpReceiver, "audio.channels"), std::to_string(channels)) +
-	       argument(property(Home::rtpReceiver, "audio.position"), auxPositions(channels)) +
-	       argument(property(Home::rtpReceiver, "node.name"), name) +
-	       argument(property(Home::rtpReceiver, "node.description"), name) +
-	       argument(property(Home::rtpReceiver, "media.name"), name) +
-	       argument(property(Home::rtpReceiver, "stream.props"), stream) + " }";
+	ModuleArguments stream;
+	stream.add(property(Home::rtpStream, "node.always-process"), "true")
+		.add(property(Home::rtpStream, "adapter.auto-port-config"),
+	         "{ mode = dsp monitor = false control = false position = preserve }");
+	ModuleArguments arguments;
+	arguments.add(property(Home::rtpReceiver, "remote.name"), "\"internal\"")
+		.add(property(Home::rtpReceiver, "source.ip"), "\"" + shape.address.text() + "\"")
+		.add(property(Home::rtpReceiver, "source.port"), std::to_string(shape.port))
+		.add(property(Home::rtpReceiver, "sess.media"), "\"audio\"")
+		.add(property(Home::rtpReceiver, "sess.latency.msec"), std::to_string(shape.latencyMs))
+		.add(property(Home::rtpReceiver, "sess.ignore-ssrc"), "true")
+		.add(property(Home::rtpReceiver, "audio.format"),
+	         shape.encoding == RtpEncoding::l24 ? "\"S24BE\"" : "\"S16BE\"")
+		.add(property(Home::rtpReceiver, "audio.rate"), std::to_string(shape.rate))
+		.add(property(Home::rtpReceiver, "audio.channels"), std::to_string(channels))
+		.add(property(Home::rtpReceiver, "audio.position"), auxPositions(channels))
+		.add(property(Home::rtpReceiver, "node.name"), name)
+		.add(property(Home::rtpReceiver, "node.description"), name)
+		.add(property(Home::rtpReceiver, "media.name"), name)
+		.add(property(Home::rtpReceiver, "stream.props"), stream);
+	return arguments;
 }
 
 /// One receiver's engine node: the rtp-source module loaded into the engine's context, its
@@ -71,7 +70,7 @@ std::string moduleArguments(const NodeName& engineNode, const RtpReceiverShape& 
 ///   3. Its info RUNNING (its socket is bound, docs/engine.md#rtp-receivers, finding g): running.
 class RtpReceiverBody final : public CompanionBody {
 public:
-	RtpReceiverBody(Engine& engine, NodeName engineNode, std::string arguments, CompanionBodyEvents& events)
+	RtpReceiverBody(Engine& engine, NodeName engineNode, ModuleArguments arguments, CompanionBodyEvents& events)
 		: engine_(engine), engineNode_(std::move(engineNode)), arguments_(std::move(arguments)), events_(events) {
 		registry_ = pw_core_get_registry(engine_.core(), PW_VERSION_REGISTRY, 0);
 		if (registry_ == nullptr) {
@@ -114,7 +113,7 @@ private:
 
 	void load() {
 		loading_ = true;
-		module_ = pw_context_load_module(engine_.context(), moduleName, arguments_.c_str(), nullptr);
+		module_ = loadModule(engine_.context(), moduleName, arguments_);
 		if (module_ == nullptr) {
 			events_.failed(std::string("cannot load PipeWire's rtp-source module: ") + std::strerror(errno));
 			return;
@@ -173,7 +172,7 @@ private:
 
 	Engine& engine_;
 	NodeName engineNode_;
-	std::string arguments_;
+	ModuleArguments arguments_;
 	CompanionBodyEvents& events_;
 	pw_registry* registry_ = nullptr;
 	spa_hook registryHook_{};

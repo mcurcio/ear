@@ -2,13 +2,15 @@
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
 # engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp, engine_properties.hpp (every PipeWire
-# property ear sets, docs/engine.md#properties-ear-sets) and callback_boundary.hpp (every C callback ear gives PipeWire,
-# docs/architecture.md#the-callback-boundary) are private to this package: its sources include them by path.
+# property ear sets, docs/engine.md#properties-ear-sets), engine_property_set.hpp (the only writer of them) and
+# callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary) are private to
+# this package: its sources include them by path.
 add_library(ear_pipewire STATIC
 	callback_boundary.cpp
 	engine.cpp
 	engine_companions.cpp
 	engine_log.cpp
+	engine_property_set.cpp
 	handoffs.cpp
 	links.cpp
 	live_graph.cpp
@@ -118,6 +120,8 @@ if(BUILD_TESTS)
 	ear_engine_properties_compile_fail(unlisted-key "notInThePropertyTable")
 	ear_engine_properties_compile_fail(other-home "notInThePropertyTable")
 	ear_engine_properties_compile_fail(forbidden-key "forbiddenOnThisHome")
+	ear_engine_properties_compile_fail(string-key "could not convert '[^']*\"node.latency\"' from 'const char\\*' to '[^']*PropertyKey'")
+	ear_engine_properties_compile_fail(pointer-key "PropertyKey\\(const char\\*\\)' is private")
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")
 endif()

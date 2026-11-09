@@ -47,31 +47,41 @@ add_test(NAME ear_callback_guard_refuses_checking_only_skipped_files
 set_tests_properties(ear_callback_guard_refuses_checking_only_skipped_files PROPERTIES
 	PASS_REGULAR_EXPRESSION "the guard would check nothing")
 
-# Every PipeWire property ear sets takes its key from the property table (docs/engine.md#properties-ear-sets): the
-# guard over src/, and the guard itself refusing each way to set one around the table that it knows
-# (property_guard/<spelling>.snippet), letting through property(), bound names, reads and look-alikes (allowed.snippet),
-# skipping tests (tests/excluded.snippet), and refusing to check nothing.
+# Only src/pipewire/engine_property_set.{hpp,cpp}, whose functions take keys only from the property table, writes
+# PipeWire properties (docs/engine.md#properties-ear-sets): the guard over src/, and the guard itself refusing each
+# writer it knows (property_guard/<spelling>.snippet, a "//" inside a string and a call split across lines among them),
+# letting through the table's functions, reads and look-alikes in strings and comments (allowed.snippet), skipping
+# exactly the exempt path and tests but not a namesake elsewhere, and refusing to check nothing.
 set(ear_property_guard "${CMAKE_CURRENT_SOURCE_DIR}/property_guard.cmake")
 set(ear_property_snippets "${CMAKE_CURRENT_SOURCE_DIR}/property_guard")
+set(ear_property_exempt "-DEXEMPT=exempt/engine_property_set.cpp")
 add_test(NAME ear_properties_from_the_table
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_property_guard}")
-foreach(spelling pw_properties_new pw_properties_new_later pw_properties_set pw_properties_setf spa_dict_item_init
-		spa_dict_item pw_properties_new_string pw_properties_update_string pw_context_load_module)
+foreach(spelling pw_properties_new pw_properties_new_string_checked pw_properties_new_dict pw_properties_set
+		pw_properties_setf pw_properties_setva pw_properties_update pw_properties_update_string pw_properties_add
+		pw_filter_update_properties pw_context_load_module pw_impl_module_load spa_dict_item_init spa_dict_item_macro
+		spa_dict_init spa_dict_item comment_in_string call_split)
 	add_test(NAME ear_property_guard_refuses_${spelling}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=${spelling}.snippet"
 			-P "${ear_property_guard}")
 	set_tests_properties(ear_property_guard_refuses_${spelling} PROPERTIES
-		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: sets a property outside the table")
+		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: writes a PipeWire property outside engine_property_set")
 endforeach()
 add_test(NAME ear_property_guard_allows_the_table_and_reads
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=allowed.snippet" -P "${ear_property_guard}")
 set_tests_properties(ear_property_guard_allows_the_table_and_reads PROPERTIES
-	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, every property set from the table")
-add_test(NAME ear_property_guard_skips_tests
-	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=allowed.snippet\;tests/excluded.snippet"
+	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, none writes a property outside engine_property_set")
+add_test(NAME ear_property_guard_skips_the_writer_and_tests
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}"
+		"-DGLOB=allowed.snippet\;exempt/engine_property_set.cpp\;tests/excluded.snippet" "${ear_property_exempt}"
 		-P "${ear_property_guard}")
-set_tests_properties(ear_property_guard_skips_tests PROPERTIES
-	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, every property set from the table")
+set_tests_properties(ear_property_guard_skips_the_writer_and_tests PROPERTIES
+	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, none writes a property outside engine_property_set")
+add_test(NAME ear_property_guard_refuses_a_namesake_of_the_writer
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=elsewhere/engine_property_set.cpp"
+		"${ear_property_exempt}" -P "${ear_property_guard}")
+set_tests_properties(ear_property_guard_refuses_a_namesake_of_the_writer PROPERTIES
+	PASS_REGULAR_EXPRESSION "elsewhere/engine_property_set\\.cpp:2: writes a PipeWire property outside")
 add_test(NAME ear_property_guard_refuses_checking_nothing
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=no-such-file.snippet"
 		-P "${ear_property_guard}")

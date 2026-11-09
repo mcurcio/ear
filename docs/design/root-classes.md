@@ -589,7 +589,7 @@ struct PropertyRow {
 inline constexpr std::array<PropertyRow, /*N*/> engineProperties{/* one row per key */};
 inline constexpr std::array<std::pair<Home, std::string_view>, /*M*/> forbidden{/* home, key or key prefix */};
 /// The key, if the table lists it for `home`; does not compile otherwise.
-consteval const char* property(Home home, std::string_view key);
+consteval const char* property(Home home, std::string_view key); // built: returns a PropertyKey (6.5)
 } // namespace ear::pipewire
 ```
 
@@ -646,6 +646,16 @@ The table is `src/pipewire/engine_properties.hpp`; how it is checked and why eac
   forbidden key fails `property()` by its own function (`forbiddenOnThisHome`). `couplesTo` left the code: what
   a key couples to lives in `docs/engine.md`'s table alone, beside its reason, since no check reads it. The block's
   `media.name`, which `pw_filter_new` derived from its name, is set from the table.
+- **A key is a type, not a string a text guard follows (re-review).** Scanning text to prove where a key came from
+  had holes of one class: a `//` inside a string hid the rest of its line, the `_checked`, `va`, `update` and `add`
+  writers and `spa_dict_item` aggregates slipped by, and any plain name passed. So 6.3's `property()` returns a
+  `PropertyKey` (a `const char*` only the table, and `PropertyKey::seamChecked` for the card seam's keys after the
+  refusal, can make), and `engine_property_set.{hpp,cpp}` (`newProperties`, `setProperty`, `ModuleArguments`,
+  `loadModule`) is the only code that writes properties or loads a module with arguments, taking keys only as
+  `PropertyKey`s. The guard shrank to "no PipeWire property writer outside that file", matching whole identifiers by
+  prefix, with literals emptied before comments are cut. The live check also requires the RTP module's arguments to
+  be exactly the table's receiver keys, the card's own `node.driver = true`, and each companion's links to leave from
+  every one of its ports.
 
 ## 7. Class 5: the harness re-implements the engine
 

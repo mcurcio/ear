@@ -13,7 +13,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
-#include "engine_properties.hpp"
+#include "engine_property_set.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -96,9 +96,8 @@ void Links::createLink(LinkId link, EnginePortId output, EnginePortId input) {
 		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);
 		return;
 	}
-	pw_properties* props = pw_properties_new(nullptr, nullptr);
-	pw_properties_setf(props, property(Home::link, "link.output.port"), "%u", output);
-	pw_properties_setf(props, property(Home::link, "link.input.port"), "%u", input);
+	pw_properties* props = newProperties({{property(Home::link, "link.output.port"), std::to_string(output)},
+	                                      {property(Home::link, "link.input.port"), std::to_string(input)}});
 	auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
 		impl_->engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
 	pw_properties_free(props);

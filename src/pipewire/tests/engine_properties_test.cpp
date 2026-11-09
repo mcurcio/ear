@@ -420,6 +420,15 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	REQUIRE(routeLinks.size() == 1);
 	REQUIRE(cardLinks.size() == 2);
 	REQUIRE(receiverLinks.size() == 2);
+	// Each companion links every channel, each from its own port.
+	auto outputPorts = [](const std::vector<Held>& found) {
+		std::set<std::string> names;
+		for (const Held& link : found)
+			names.insert(link.contains("link.output.port") ? link.at("link.output.port") : "");
+		return names;
+	};
+	CHECK(outputPorts(cardLinks) == std::set<std::string>{"to_card.1", "to_card.2"});
+	CHECK(outputPorts(receiverLinks) == std::set<std::string>{"receive_AUX0", "receive_AUX1"});
 	// adapter.auto-port-config's effect: the receiver's ports are exactly one per channel, no monitor or control port.
 	CHECK(portNamesOf(*engine, receiverNodeId) == std::set<std::string>{"receive_AUX0", "receive_AUX1"});
 	const auto rtpArguments = moduleArgumentsHeld(*engine, "libpipewire-module-rtp-source");
@@ -456,7 +465,8 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	                        {"api.alsa.period-num", number(cardPeriods(kBlock))}};
 	// The ALSA node publishes node.driver = true itself (docs/engine.md#properties-ear-never-sets).
 	instances[Home::card].push_back({"card.playback", *cardNode, cardExpected, {}, {}, {"node.driver"}});
-	instances[Home::cardSeam].push_back({"card.playback", *cardNode, {}, {}, {}, {"node.driver"}});
+	instances[Home::cardSeam].push_back({"card.playback", *cardNode, {}});
+	CHECK((cardNode->contains("node.driver") && cardNode->at("node.driver") == "true"));
 	Held streamRows;
 	for (const PropertyRow& row : engineProperties)
 		if (row.home == Home::rtpStream) streamRows[std::string(row.key)] = row.value;
@@ -478,6 +488,8 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	                                        {"remote.name", "stream.props"},
 	                                        {{"source.ip", "rtp.source.ip"}, {"source.port", "rtp.source.port"}}});
 	instances[Home::rtpReceiver].push_back({"rtp-source's arguments", *rtpArguments, receiverExpected});
+	// The module gets the table's receiver arguments and nothing else.
+	CHECK(keysOf(*rtpArguments) == tableKeys(Home::rtpReceiver));
 	// The stream's own adapter, on the module's connection, consumes adapter.auto-port-config: the engine's node never
 	// holds it, and its effect is the receiver's port set checked above. The argument holds it.
 	instances[Home::rtpStream].push_back(

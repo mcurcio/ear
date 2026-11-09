@@ -24,7 +24,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
-#include "engine_properties.hpp"
+#include "engine_property_set.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -136,17 +136,15 @@ bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 pw_properties* contextProperties(const EngineSettings& settings) {
 	const auto rate = std::to_string(settings.graphFrequency);
 	const auto block = std::to_string(settings.blockSize);
-	pw_properties* props = pw_properties_new(property(Home::context, "config.name"), settings.configFile.c_str(),
-	                                         property(Home::context, "default.clock.rate"), rate.c_str(), nullptr);
-	pw_properties_setf(props, property(Home::context, "default.clock.allowed-rates"), "[ %u ]",
-	                   settings.graphFrequency);
-	for (const char* key :
-	     {property(Home::context, "default.clock.quantum"), property(Home::context, "default.clock.min-quantum"),
-	      property(Home::context, "default.clock.max-quantum"), property(Home::context, "default.clock.quantum-floor"),
-	      property(Home::context, "default.clock.quantum-limit")})
-		pw_properties_set(props, key, block.c_str());
-	pw_properties_set(props, property(Home::context, "clock.power-of-two-quantum"), "false");
-	return props;
+	return newProperties({{property(Home::context, "config.name"), settings.configFile.string()},
+	                      {property(Home::context, "default.clock.rate"), rate},
+	                      {property(Home::context, "default.clock.allowed-rates"), "[ " + rate + " ]"},
+	                      {property(Home::context, "default.clock.quantum"), block},
+	                      {property(Home::context, "default.clock.min-quantum"), block},
+	                      {property(Home::context, "default.clock.max-quantum"), block},
+	                      {property(Home::context, "default.clock.quantum-floor"), block},
+	                      {property(Home::context, "default.clock.quantum-limit"), block},
+	                      {property(Home::context, "clock.power-of-two-quantum"), "false"}});
 }
 
 } // namespace

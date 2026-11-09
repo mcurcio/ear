@@ -1,18 +1,19 @@
-# cmake -DROOT=<folder> [-DGLOB=<pattern>] -P property_guard.cmake
+# cmake -DROOT=<folder> [-DGLOB=<pattern>] [-DEXEMPT=<paths>] -P property_guard.cmake
 #
-# The property guard of docs/engine.md#properties-ear-sets: every PipeWire property ear sets takes its key from the
-# property table (src/pipewire/engine_properties.hpp), through property() or a name bound from it. Every file under
-# ROOT matching GLOB (default: C and C++ sources and headers), except anything under a folder named tests (which drive
-# PipeWire themselves), is read with its // comments removed, and each call that sets a property has its key arguments
-# checked:
-#   pw_properties_new(key, value, ..., nullptr)   every key, up to the nullptr that ends the list
-#   pw_properties_set(props, key, ...), pw_properties_setf(props, key, ...)
-#   SPA_DICT_ITEM_INIT(key, value), SPA_DICT_ITEM(key, value)
-# A key is allowed when it is property(...), or a plain name (or name.c_str()) bound elsewhere; a string literal, a
-# PW_KEY_ or SPA_KEY_ macro, or any other expression is refused. pw_properties_new_string and
-# pw_properties_update_string are refused outright (their keys are inside a string), and so is a string literal as
-# pw_context_load_module's arguments. Reads (pw_properties_get, spa_dict_lookup) are not checked. A refused call is
-# printed with its place and the script fails, as it does when ROOT and GLOB leave it no file to check.
+# The property guard of docs/engine.md#properties-ear-sets. A key ear sets is a PropertyKey, which only the property
+# table makes (src/pipewire/engine_properties.hpp), and the only code that hands keys to PipeWire's property writers is
+# src/pipewire/engine_property_set.{hpp,cpp}, whose functions take only PropertyKeys. This guard keeps it the only code:
+# every file under ROOT matching GLOB (default: C and C++ sources and headers), except the paths EXEMPT names relative
+# to ROOT (default: those two files, exactly) and tests (anything under a folder named tests, which drive PipeWire
+# themselves), is read a line at a time with its character and string literals emptied first and then its comments
+# removed (so a "//" inside a string hides nothing), and a line that calls or builds any of these is printed with its
+# place and fails the script:
+#   any pw_properties_new*, pw_properties_set*, pw_properties_update*, pw_properties_add* (the _checked, _string,
+#     _dict, f and va variants included); any pw_<object>_update_properties; pw_context_load_module and any
+#     pw_impl_module_load*; any SPA_DICT_ITEM* or SPA_DICT_INIT*; a spa_dict_item declared with an initializer or as an
+#     array.
+# A name counts as called when "(" follows it on its line or it ends the line. It fails, too, when ROOT and GLOB leave
+# it no file to check. Raw string literals are not emptied (src/ has none).
 cmake_policy(VERSION 3.28) # while() and if() under today's rules
 if(NOT DEFINED ROOT)
 	message(FATAL_ERROR "property_guard: ROOT is not set")
@@ -20,6 +21,18 @@ endif()
 if(NOT DEFINED GLOB)
 	set(GLOB "*.cpp;*.hpp;*.c;*.h")
 endif()
+if(NOT DEFINED EXEMPT)
+	set(EXEMPT "pipewire/engine_property_set.hpp;pipewire/engine_property_set.cpp")
+endif()
+
+set(before "(^|[^A-Za-z0-9_])")
+set(called "[A-Za-z0-9_]*[ \t]*(\\(|$)")
+set(rules
+	"${before}pw_properties_(new|set|update|add)${called}"
+	"${before}pw_[a-z_]+_update_properties${called}"
+	"${before}(pw_context_load_module|pw_impl_module_load)${called}"
+	"${before}SPA_DICT_(ITEM|INIT)${called}"
+	"${before}spa_dict_item[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(\\[|\\{|=)")
 
 set(patterns)
 foreach(pattern IN LISTS GLOB)
@@ -29,151 +42,57 @@ file(GLOB_RECURSE found LIST_DIRECTORIES false ${patterns})
 set(files)
 foreach(file IN LISTS found)
 	file(RELATIVE_PATH shown "${ROOT}" "${file}")
-	if(shown MATCHES "(^|/)tests/")
+	list(FIND EXEMPT "${shown}" exempt)
+	if(NOT exempt EQUAL -1 OR shown MATCHES "(^|/)tests/")
 		continue()
 	endif()
 	list(APPEND files "${file}")
 endforeach()
 list(SORT files)
 
-# property_guard_arguments(<code> <start> <out>): the top-level arguments of the call whose '(' is just before
-# <start>, each trimmed, as <out>_0.. and their number as <out>_count (code holds ';' and brackets, so no CMake list).
-function(property_guard_arguments code start out)
-	string(LENGTH "${code}" length)
-	set(depth 1)
-	set(quote "")
-	set(escaped FALSE)
-	set(argument "")
-	set(count 0)
-	set(at ${start})
-	while(at LESS length)
-		string(SUBSTRING "${code}" ${at} 1 c)
-		math(EXPR at "${at} + 1")
-		if(NOT quote STREQUAL "")
-			string(APPEND argument "${c}")
-			if(escaped)
-				set(escaped FALSE)
-			elseif(c STREQUAL "\\")
-				set(escaped TRUE)
-			elseif(c STREQUAL quote)
-				set(quote "")
-			endif()
-			continue()
-		endif()
-		if(c STREQUAL "\"" OR c STREQUAL "'")
-			set(quote "${c}")
-		elseif(c STREQUAL "(" OR c STREQUAL "{" OR c STREQUAL "[")
-			math(EXPR depth "${depth} + 1")
-		elseif(c STREQUAL ")" OR c STREQUAL "}" OR c STREQUAL "]")
-			math(EXPR depth "${depth} - 1")
-			if(depth EQUAL 0)
-				string(STRIP "${argument}" argument)
-				set(${out}_${count} "${argument}" PARENT_SCOPE)
-				math(EXPR count "${count} + 1")
-				set(${out}_count ${count} PARENT_SCOPE)
-				return()
-			endif()
-		elseif(c STREQUAL "," AND depth EQUAL 1)
-			string(STRIP "${argument}" argument)
-			set(${out}_${count} "${argument}" PARENT_SCOPE)
-			math(EXPR count "${count} + 1")
-			set(argument "")
-			continue()
-		endif()
-		string(APPEND argument "${c}")
-	endwhile()
-	set(${out}_count ${count} PARENT_SCOPE)
-endfunction()
-
-# property_guard_allowed(<key> <out>)
-function(property_guard_allowed key out)
-	if(key MATCHES "^(PW_KEY_|SPA_KEY_)")
-		set(${out} FALSE PARENT_SCOPE)
-	elseif(key MATCHES "^property\\(" OR key MATCHES "^[A-Za-z_][A-Za-z0-9_]*(\\.c_str\\(\\))?$")
-		set(${out} TRUE PARENT_SCOPE)
-	else()
-		set(${out} FALSE PARENT_SCOPE)
-	endif()
-endfunction()
-
-set(calls pw_properties_new pw_properties_set pw_properties_setf SPA_DICT_ITEM_INIT SPA_DICT_ITEM
-	pw_properties_new_string pw_properties_update_string pw_context_load_module)
 set(offences 0)
 foreach(file IN LISTS files)
-	file(READ "${file}" content)
-	string(REGEX REPLACE "//[^\n]*" "" code "${content}")
+	file(STRINGS "${file}" lines)
 	file(RELATIVE_PATH shown "${ROOT}" "${file}")
-	foreach(call IN LISTS calls)
-		set(from 0)
-		while(TRUE)
-			string(SUBSTRING "${code}" ${from} -1 rest)
-			string(FIND "${rest}" "${call}(" offset)
-			if(offset EQUAL -1)
+	set(number 0)
+	set(inBlock FALSE)
+	foreach(line IN LISTS lines)
+		math(EXPR number "${number} + 1")
+		# Literals first, so neither a quote nor a comment marker inside one counts; then comments.
+		string(REGEX REPLACE [=['([^'\]|\\.)*']=] "''" code "${line}")
+		string(REGEX REPLACE [=["([^"\]|\\.)*"]=] [=[""]=] code "${code}")
+		if(inBlock)
+			if(code MATCHES [=[\*/]=])
+				string(REGEX REPLACE [=[^.*\*/]=] "" code "${code}")
+				set(inBlock FALSE)
+			else()
+				continue()
+			endif()
+		endif()
+		string(REGEX REPLACE [=[/\*.*\*/]=] "" code "${code}")
+		string(REGEX REPLACE "//.*$" "" code "${code}")
+		if(code MATCHES [=[/\*]=])
+			string(REGEX REPLACE [=[/\*.*$]=] "" code "${code}")
+			set(inBlock TRUE)
+		endif()
+		foreach(rule IN LISTS rules)
+			if(code MATCHES "${rule}")
+				message(STATUS "${shown}:${number}: writes a PipeWire property outside engine_property_set: ${line}")
+				math(EXPR offences "${offences} + 1")
 				break()
 			endif()
-			math(EXPR at "${from} + ${offset}")
-			string(LENGTH "${call}(" callLength)
-			math(EXPR from "${at} + ${callLength}")
-			if(at GREATER 0) # a whole name: not the end of a longer identifier
-				math(EXPR previous "${at} - 1")
-				string(SUBSTRING "${code}" ${previous} 1 before)
-				if(before MATCHES "[A-Za-z0-9_]")
-					continue()
-				endif()
-			endif()
-			string(SUBSTRING "${code}" 0 ${at} head)
-			string(REGEX MATCHALL "\n" newlines "${head}")
-			list(LENGTH newlines line)
-			math(EXPR line "${line} + 1")
-			foreach(index RANGE 0 64)
-				unset(argument_${index})
-			endforeach()
-			property_guard_arguments("${code}" ${from} argument)
-			set(keyIndexes "")
-			set(refused "")
-			if(call STREQUAL "pw_properties_new")
-				set(index 0)
-				while(index LESS argument_count)
-					if(argument_${index} STREQUAL "nullptr" OR argument_${index} STREQUAL "NULL")
-						break()
-					endif()
-					list(APPEND keyIndexes ${index})
-					math(EXPR index "${index} + 2")
-				endwhile()
-			elseif(call STREQUAL "pw_properties_set" OR call STREQUAL "pw_properties_setf")
-				list(APPEND keyIndexes 1)
-			elseif(call MATCHES "^SPA_DICT_ITEM")
-				list(APPEND keyIndexes 0)
-			elseif(call STREQUAL "pw_context_load_module")
-				if("${argument_2}" MATCHES "^\"")
-					set(refused "its arguments are a string literal")
-				endif()
-			else()
-				set(refused "it parses keys from a string")
-			endif()
-			foreach(index IN LISTS keyIndexes)
-				property_guard_allowed("${argument_${index}}" allowed)
-				if(NOT allowed)
-					set(refused "key ${argument_${index}}")
-					break()
-				endif()
-			endforeach()
-			if(NOT refused STREQUAL "")
-				message(STATUS "${shown}:${line}: sets a property outside the table: ${call}, ${refused}")
-				math(EXPR offences "${offences} + 1")
-			endif()
-		endwhile()
+		endforeach()
 	endforeach()
 endforeach()
 
 list(LENGTH files count)
 if(count EQUAL 0)
 	message(FATAL_ERROR "property_guard: the guard would check nothing: no file under ${ROOT} matches ${GLOB} "
-		"outside tests")
+		"outside engine_property_set and tests")
 endif()
 if(offences GREATER 0)
-	message(FATAL_ERROR "property_guard: ${offences} calls under ${ROOT} set a PipeWire property whose key is not "
-		"the property table's; take it from property() (src/pipewire/engine_properties.hpp, "
-		"docs/engine.md#properties-ear-sets)")
+	message(FATAL_ERROR "property_guard: ${offences} lines under ${ROOT} write PipeWire properties themselves; write "
+		"them through src/pipewire/engine_property_set.hpp with keys from the property table "
+		"(docs/engine.md#properties-ear-sets)")
 endif()
-message(STATUS "property_guard: ${count} files under ${ROOT}, every property set from the table")
+message(STATUS "property_guard: ${count} files under ${ROOT}, none writes a property outside engine_property_set")

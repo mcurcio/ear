@@ -4,14 +4,17 @@
 // Private to ear_pipewire: its sources and tests include it by this path; no public header does.
 //
 // The table is checked four ways: here at compile time (a builder takes each key from property(), which does not
-// compile for a key the table does not list for that home, and the static_asserts below), with the property guard
-// (test/pipewire/property_guard.cmake) refusing a key set any other way; against the live engine and engine.conf
+// compile for a key the table does not list for that home, and the static_asserts below), and a key is a PropertyKey,
+// which only property() makes and only engine_property_set.hpp's setters take, the property guard
+// (test/pipewire/property_guard.cmake) refusing any other call to PipeWire's property setters; against the live engine and engine.conf
 // (engine_properties_test.cpp); each row's pinnedBy against the tests that exist; and against docs/engine.md's tables,
 // which must list the same rows.
 #pragma once
 
 #include <array>
 #include <cstddef>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -234,6 +237,30 @@ constexpr bool refusedOnCardSeam(std::string_view key) noexcept {
 	return isForbidden(Home::card, key) || listed(Home::card, key);
 }
 
+/// A key ear may set: only property() makes one (from a table row, at compile time), and seamChecked() for the card
+/// seam's runtime keys. Nothing converts a string to one, so engine_property_set.hpp's setters, which take only these,
+/// set no key the table has not passed.
+class PropertyKey {
+public:
+	constexpr const char* c_str() const noexcept { return key_; }
+	constexpr std::string_view view() const noexcept { return key_; }
+	/// The one escape for a key not known at compile time: AlsaSoundCards' test seam's. std::invalid_argument for a key
+	/// refusedOnCardSeam refuses; `key` must outlive the result.
+	static PropertyKey seamChecked(const std::string& key);
+
+private:
+	constexpr explicit PropertyKey(const char* key) noexcept : key_(key) {}
+	const char* key_;
+	friend consteval PropertyKey property(Home home, std::string_view key);
+};
+
+inline PropertyKey PropertyKey::seamChecked(const std::string& key) {
+	if (refusedOnCardSeam(key))
+		throw std::invalid_argument("a sound card's test seam may not set " + key +
+		                            ": ear sets it on every card or forbids it there");
+	return PropertyKey(key.c_str());
+}
+
 namespace detail {
 // Each is called only where property() refuses a key: not a constant expression, so the call does not compile, and the
 // compiler's error names the function, which says why.
@@ -243,11 +270,11 @@ inline const char* notInThePropertyTable() { return nullptr; }
 
 /// The key, if the table lists it for `home`; does not compile otherwise, naming forbiddenOnThisHome for a key
 /// `forbidden` refuses there and notInThePropertyTable for any other.
-consteval const char* property(Home home, std::string_view key) {
-	if (isForbidden(home, key)) return detail::forbiddenOnThisHome();
+consteval PropertyKey property(Home home, std::string_view key) {
+	if (isForbidden(home, key)) return PropertyKey(detail::forbiddenOnThisHome());
 	for (const PropertyRow& row : engineProperties)
-		if (row.home == home && row.key == key) return row.key.data();
-	return detail::notInThePropertyTable();
+		if (row.home == home && row.key == key) return PropertyKey(row.key.data());
+	return PropertyKey(detail::notInThePropertyTable());
 }
 
 namespace detail {

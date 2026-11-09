@@ -33,7 +33,7 @@
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
-#include "engine_properties.hpp"
+#include "engine_property_set.hpp"
 #include "latency_spa.hpp"
 #include "level_mailbox.hpp"
 
@@ -115,11 +115,11 @@ public:
 		completion_ = addEvent(loop_, guarded<&FilterPortBlock::onCompletion>, this);
 		// Every key from the property table (docs/engine.md#properties-ear-sets says why each).
 		filter_ = pw_filter_new(engine.core(), node.c_str(),
-		                        pw_properties_new(property(Home::block, "node.name"), node.c_str(),
-		                                          property(Home::block, "media.name"), node.c_str(),
-		                                          property(Home::block, "media.type"), "Audio",
-		                                          property(Home::block, "node.group"), graphGroup,
-		                                          property(Home::block, "node.always-process"), "true", nullptr));
+		                        newProperties({{property(Home::block, "node.name"), node},
+		                                       {property(Home::block, "media.name"), node},
+		                                       {property(Home::block, "media.type"), "Audio"},
+		                                       {property(Home::block, "node.group"), graphGroup},
+		                                       {property(Home::block, "node.always-process"), "true"}}));
 		if (filter_ == nullptr) {
 			fail(std::string("cannot make the engine node: ") + spa_strerror(-errno));
 			return;
@@ -234,8 +234,8 @@ private:
 		for (const PortName& name : names) {
 			handles.push_back(
 				pw_filter_add_port(filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
-			                       pw_properties_new(property(Home::blockPort, "format.dsp"), "32 bit float mono audio",
-			                                         property(Home::blockPort, "port.name"), name.c_str(), nullptr),
+			                       newProperties({{property(Home::blockPort, "format.dsp"), "32 bit float mono audio"},
+			                                      {property(Home::blockPort, "port.name"), name}}),
 			                       nullptr, 0));
 		}
 	}

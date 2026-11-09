@@ -1,12 +1,12 @@
-// What only looks like a property set outside the table: pw_properties_set(props, "node.name", name) in a comment.
-pw_properties* props = pw_properties_new(property(Home::block, "node.name"), node.c_str(),
-                                         property(Home::block, "media.type"), "Audio", nullptr);
-pw_properties_set(props, property(Home::card, "audio.rate"), rate.c_str());
-pw_properties_setf(props, property(Home::link, "link.output.port"), "%u", output);
-for (const char* key : keys) pw_properties_set(props, key, value);
-for (const auto& [key, value] : extra) pw_properties_set(props, key.c_str(), value.c_str());
-pw_properties* empty = pw_properties_new(nullptr, nullptr);
-const char* name = spa_dict_lookup(dict, PW_KEY_NODE_NAME);
-const char* group = pw_properties_get(props, PW_KEY_NODE_GROUP);
-module = pw_context_load_module(context, moduleName, arguments.c_str(), nullptr);
+// Look-alikes: pw_properties_set(props, key, name) in a comment, and in a string below.
+pw_properties* props = newProperties({{property(Home::block, "node.name"), node}});
+setProperty(props, property(Home::card, "audio.rate"), rate);
+const char* text = "pw_properties_new(\"node.name\", name) // not code";
+const char quote = '"'; const char* name = pw_properties_get(props, PW_KEY_NODE_NAME);
+const char* group = spa_dict_lookup(dict, PW_KEY_NODE_GROUP);
+const spa_dict_item* item = nullptr;
+/* pw_properties_new(
+   pw_properties_set(props, key, value); */
+module = loadModule(context, moduleName, arguments);
 my_pw_properties_new("node.name", name);
+pw_properties_free(props);
