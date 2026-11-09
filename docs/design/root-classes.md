@@ -475,10 +475,13 @@ in `docs/testing.md#making-the-rare-event`.
   leaned on them (`took >= 40ms`, `>= 150ms`).
 - **More than the table named.** `port_block_test.cpp`'s first fade-in read `*frameAt(...)` for a position a jump can
   skip (undefined behaviour, not a failure); it is judged as the second is.
-- **Left for later.** `source_test.cpp`'s "S5 part A on the real block" holds the same root class at a larger size:
-  `largestJump <= 8192` and no drift fail when a host stalls past its 8,192-frame ring (170 ms), and its
-  `shortfallFrames() == 0` and listener need the writer thread to keep up. It was not seen failing here; it takes the
-  same re-anchoring and a writer judged by its own progress, and is R5c's or a follow-up's.
+- **S5 part A on the real block had the same root class.** `source_test.cpp`'s part A required no jump past its
+  8,192-frame ring, no drift and no shortfall, whatever the host did. It is now judged cycle by cycle by the source
+  rule: Played's count moves by each cycle's jump and frames; a jump past the capacity is a new clock (recorded, never
+  required; every such jump, and nothing else, a new clock); and a cycle short of frames is excused only when the
+  writer had not written them by the cycle before, by its own count of frames written, which the block's code logs.
+  The listener is judged on the cycles the source played whole and unfaded, against the stream frames its count says
+  it played, to a planned 1,000 of them. No item of the audit is left unowned.
 
 ## 6. Class 4: PipeWire properties
 
