@@ -1,3 +1,73 @@
+## [3.0.0](https://github.com/mcurcio/ear/compare/v2.0.0...v3.0.0) (2026-11-09)
+
+### ⚠ BREAKING CHANGES
+
+* **core:** standard output's node records change. A removal's
+line is `node <n> removed dropped=<frames>` ("state":"stopping",
+"phase":"removed") in place of `node <n> stopped dropped=<frames>`.
+Every node record carries "phase". New lines:
+`node <n> stopping: <cause>` (stop, disabling, removing, or
+`restarting (settings changed: <keys>)` / `restarting (restart
+invoked)`, with a "cause" object), `node <n> starting: <cause>` for a
+node configuring after a restart, retry or enable, `node <n> stopped`,
+`node <n> disabled` and `node <n> still <phase> after <s>s: waiting for
+<what>` (with "waitingFor"). A restart now says stopping, not starting.
+A node that fails after it ran says `failed lost: <detail>`, not
+start-failed. The log record's never-emitted "run" field is gone. The
+wire's node.state can now carry the states stopped and disabled, and
+stopping for a restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MtEdSSMnWMDCszQdw5TZut
+* **pipewire:** a sound card no longer drives the graph's clock. ear's internal clock always does,
+and every linked card follows it, resampled to it, so no card output is bit-perfect; a card's loss
+no longer moves the clock.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MtEdSSMnWMDCszQdw5TZut
+* **output:** standard output is one JSON record a line instead of plain
+status lines; a reader matching lines matches each record's msg.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01MtEdSSMnWMDCszQdw5TZut
+
+### Features
+
+* **config:** disabled true; as a reserved node setting (slice 3a L-5) ([f3ff27a](https://github.com/mcurcio/ear/commit/f3ff27aa570ad75415873aaf26ead58f29fdef0b))
+* **control:** the lifecycle on the wire: node.start/stop/restart/disable/enable, health on every node.state, protocol 1 (slice 3a L-6) ([1757efa](https://github.com/mcurcio/ear/commit/1757efa6a0af73a56135c5404efa95c761998025))
+* **core:** acquire resources through a registry, start runs in two phases, tear them down by dependency ([acd8873](https://github.com/mcurcio/ear/commit/acd88731e0619573f1c511cf8e8393070f537332))
+* **core:** fades, bounds and the wedged data loop (slice 3a L-3c) ([4050e76](https://github.com/mcurcio/ear/commit/4050e768eb737b8f82a782c27eb386b740745c67))
+* **core:** node lifecycle machines for slice 3a, pure and tested by table ([454cee2](https://github.com/mcurcio/ear/commit/454cee2ecdef447fab096e25fa234d521e1d55df))
+* **core:** NodeHost honours disabled, tells every lifecycle phase, and stdout gets its new node records (slice 3a L-3d) ([4417171](https://github.com/mcurcio/ear/commit/44171712707123a64f5f57bad53bd544a63e9971))
+* **core:** the interim sink and file on the node's class (slice 3a L-4b) ([fea3700](https://github.com/mcurcio/ear/commit/fea37002878a719e19bab51cca60ed7374d8cede))
+* **core:** the node type's class, configure and its contexts (slice 3a L-4a) ([a0194f6](https://github.com/mcurcio/ear/commit/a0194f60c324172f8b4801e7400fef48602a3d36))
+* **core:** write node types as a spec and a behaviour, with Io by bank and a harness ([eb661cf](https://github.com/mcurcio/ear/commit/eb661cf1bc47fddfdd37931e84eaa9128703859c))
+* **output:** a main-loop stall watchdog (slice 3a L-7) ([7037dde](https://github.com/mcurcio/ear/commit/7037ddee03a028b9742435401fbaf9caf2c2bbb8))
+* **output:** add the output thread, descriptor capture and ear's own pw_log ([42d05a2](https://github.com/mcurcio/ear/commit/42d05a27b38113f0e3b6e88b97fb674ee238ff47))
+* **output:** write every standard output line as one JSON record ([fb91f20](https://github.com/mcurcio/ear/commit/fb91f2001f2e486ae40f32af0afe4ef64b559636))
+* **pipewire:** asynchronous drive and fade on port blocks for slice 3a ([571cebf](https://github.com/mcurcio/ear/commit/571cebf247a54fd93c7dc7a2fa8ce53557e337df))
+* **pipewire:** ear's internal clock always drives, cards follow, with latency per bank pair ([da0ef2e](https://github.com/mcurcio/ear/commit/da0ef2e4360defcaeee68d2bd010c9c3abe1913f))
+
+### Bug Fixes
+
+* **control:** pace log records per node or source, so a flooding library cannot push out states and notes ([179bff3](https://github.com/mcurcio/ear/commit/179bff3b90cf005280b580158b04dcf973df50f7))
+* **control:** snapshots stamped at the read, a disabled add's first node.state, the editor's own clock (slice 3a L-6 review) ([04afc31](https://github.com/mcurcio/ear/commit/04afc314047f0f9e3415079df3672c9671da1874))
+* **core:** a port-caused replace is gone only after its older node, and stdout keeps superseded nodes apart (slice 3a L-3d review) ([bc87a66](https://github.com/mcurcio/ear/commit/bc87a66e3d1e1de585098cbfb6578dba6d0dea2d))
+* **core:** close the lifetime gaps around a run's teardown and leak ([c75bd3e](https://github.com/mcurcio/ear/commit/c75bd3efcc00f3571d3023b6b4ea79b85214d6e2))
+* **core:** faults during a restart's drive, input queue, record order and driveNow (slice 3a L-3a review) ([6871832](https://github.com/mcurcio/ear/commit/6871832c597f3ff38d540be2aae6ce42f7110421))
+* **core:** key node types on named namespaces, and test real types through TypeHarness ([54b20c2](https://github.com/mcurcio/ear/commit/54b20c2bed2c11f26613035ff31621e078f400d7))
+* **core:** members found by name, broken rules recorded, nothing a type does thrown out (slice 3a L-4a review) ([07929a1](https://github.com/mcurcio/ear/commit/07929a184d1316f94cf98348047597087b4a24c4))
+* **core:** the sink ramp held exact, no throw on the drive path, file's open guarded (slice 3a L-4b review) ([0c8a0ae](https://github.com/mcurcio/ear/commit/0c8a0aecd396566a84b1686981cf93f7d6f72350))
+* **core:** the wedge reaches the engine's adapters, bounds get a grace (slice 3a L-3c review) ([db6dd28](https://github.com/mcurcio/ear/commit/db6dd280e78dfbdbd7d8745966216175027af628))
+* **output:** keep a crash's last words, and end the capture past a surviving duplicate ([0d25b28](https://github.com/mcurcio/ear/commit/0d25b28a62201dcdacb71cd3dcdf61173c13a24a))
+* **output:** the stall's length measured by the beat, honest bounds (slice 3a L-7 review) ([3013d9f](https://github.com/mcurcio/ear/commit/3013d9fa789e5b2a1ae8572ce39df48958c1e3fa))
+* **pipewire:** a data-thread stall never resets the internal clock off the raw clock ([c1bb9d2](https://github.com/mcurcio/ear/commit/c1bb9d246b2f83c1858f5f487e47e09938695bf2))
+* **pipewire:** flush denormals only on the data thread, and combine only routed ports' latency ([442dad9](https://github.com/mcurcio/ear/commit/442dad96e5510acebb850b70e51cb46d7cfacc4e))
+* **pipewire:** reset the engine log's bell with an exchange, so no wakeup is lost ([5506d0b](https://github.com/mcurcio/ear/commit/5506d0bf01fbd386abe77a98b63596b0b8663d90))
+* **sendspin:** an address's share at the transport counts only sockets its peer has not closed ([43266e9](https://github.com/mcurcio/ear/commit/43266e921640c5b75bb7f8e1d7c214f8ddd02f63))
+* **sendspin:** poll each transport socket once an admission, and pin the share and the clock's limits ([f1d6eec](https://github.com/mcurcio/ear/commit/f1d6eecf30e1ba9e28e065512f43f47ec95f0366))
+* **sendspin:** require the boot log, so a key file it cannot narrow is never dropped ([be66fd3](https://github.com/mcurcio/ear/commit/be66fd391b7b4ec4458c6e1519cf08c95cc31fac))
+
 ## [2.0.0](https://github.com/mcurcio/ear/compare/v1.0.0...v2.0.0) (2026-11-06)
 
 ### ⚠ BREAKING CHANGES
