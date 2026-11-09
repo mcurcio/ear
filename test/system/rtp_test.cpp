@@ -113,7 +113,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(exitStatus == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");
 	REQUIRE(wav.info.channels == 2);

@@ -57,8 +57,12 @@ public:
 	void nodeRemoved(const NodeName& node) override;
 	void routeAdded(const Route& route) override;
 	void routeRemoved(const Route& route) override;
+	/// Posted as node.state when its state or reason differs from the node's last one sent: until step L-6 puts the
+	/// lifecycle's members on the wire (docs/design/node-lifecycle.md 9), a change of the others sends nothing.
 	void nodeChanged(const NodeHealth& health) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
+	/// The wire keys health by name and holds the newer node of a name (node-lifecycle.md 5.7, D-L36).
+	bool hearsSuperseded() const noexcept override { return false; }
 	void routeChanged(const RouteStatus& status) override;
 
 private:

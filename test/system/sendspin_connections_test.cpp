@@ -178,7 +178,7 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
@@ -331,7 +331,7 @@ TEST_CASE("A node removed and added back while a server is connected takes its p
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma running", 1, deadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 	const std::string printed = ear.output();
-	CHECK(printed.find("node ma stopped") < printed.rfind(saying)); // the old one was gone first
+	CHECK(printed.find("node ma removed") < printed.rfind(saying)); // the old one was gone first
 	server.send("dial " + url);
 	REQUIRE_SEEN(ear, waitForNthLine(ear, "node ma says connected ", 1, playDeadline));
 	ear.signal(SIGTERM);

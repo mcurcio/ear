@@ -18,10 +18,14 @@ struct WantedNode {
 /// Decided by `disabled` alone, before and after: false to true `disable`, true to false `enable`, true to true
 /// `stored`, false to false `restart` (3a has no in-place rows).
 enum class NodeOutcome { restart, disable, enable, stored };
-/// A node kept with the same type and ports, told by nodeChanged.
+/// A node kept with the same type and ports, told by nodeChanged; or a replaced node (another type or other ports),
+/// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's (D-R23, D-L5, D-L46).
 struct NodeChange {
 	NodeOutcome outcome;
 	std::vector<std::string> keys; // the settings' keys whose values differ, added and removed ones included; key order
+	/// A replace whose type is unchanged (only its ports changed): the node framework carries the node's stop and one
+	/// health stream into the new node (node-lifecycle.md 5.7 and 8.4, D-L36). False for a node told by nodeChanged.
+	bool portCaused = false;
 };
 class DesiredNodeListener {
 public:
@@ -38,6 +42,18 @@ public:
 	}
 	/// After routeRemoved for each of its routes.
 	virtual void nodeRemoved(const NodeName& node) = 0;
+	/// A replaced node's removal (another type or other ports), told in nodeRemoved's place and order; nodeReplaced
+	/// follows in nodeAdded's. The defaults tell nodeRemoved and nodeAdded, so a listener that tells a replace from a
+	/// removal and an addition by nothing needs nothing (only the node framework does: node-lifecycle.md 8.4).
+	virtual void nodeReplacing(const NodeName& node, const NodeChange& change) {
+		static_cast<void>(change);
+		nodeRemoved(node);
+	}
+	virtual void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
+	                          const NodeChange& change) {
+		static_cast<void>(change);
+		nodeAdded(node, std::move(config));
+	}
 
 protected:
 	~DesiredNodeListener() = default;
@@ -101,7 +117,8 @@ public:
 	std::expected<Plan, CommandError> plan(std::span<const NodeSpec> nodes, std::span<const Route> routes) const;
 	/// Main thread. Applies `plan` in one go, each event to observers then subscribers, in this order:
 	/// routeRemoved (Route order), nodeRemoved (name order), nodeChanged (name order), nodeAdded (name
-	/// order), routeAdded (Route order). A replaced node appears in nodeRemoved and in nodeAdded. After close():
+	/// order), routeAdded (Route order). A replaced node appears in nodeRemoved's order as nodeReplacing and in
+	/// nodeAdded's as nodeReplaced, both with its NodeChange. After close():
 	/// Stopping, and nothing changes. std::logic_error when `plan` came from another graph, or when the graph changed
 	/// since the plan was made (a wiring bug).
 	std::expected<void, CommandError> commit(Plan plan);

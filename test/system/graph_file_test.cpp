@@ -100,7 +100,7 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	// The recording window: the noise check needs at least half of it.
 	std::this_thread::sleep_for(1s);
 	CHECK(ear.stop(rpc) == 0);
-	CHECK(process.hasLine("node rec stopped dropped=0"));
+	CHECK(process.hasLine("node rec removed dropped=0"));
 	checkNoiseOnOneChannel(directory.recordings() / "take1.wav", 0, 44100);
 
 	// A card that cannot open makes alsa-lib and PipeWire say so: through ear's handler and pw_log, both are records

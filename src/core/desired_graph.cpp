@@ -102,10 +102,11 @@ void DesiredGraph::subscribe(DesiredNodeListener& listener) { impl_->nodeSubscri
 void DesiredGraph::subscribe(DesiredRouteListener& listener) { impl_->routeSubscribers.push_back(&listener); }
 
 struct Plan::Impl {
-	const void* graph;                  // the graph it was made on (its Impl)
-	std::uint64_t generation;           // that graph's generation then
-	std::vector<Route> routesRemoved;   // Route order
-	std::vector<NodeName> nodesRemoved; // name order; replaced nodes included
+	const void* graph;                                           // the graph it was made on (its Impl)
+	std::uint64_t generation;                                    // that graph's generation then
+	std::vector<Route> routesRemoved;                            // Route order
+	std::vector<NodeName> nodesRemoved;                          // name order; replaced nodes included
+	std::map<NodeName, NodeChange, std::less<>> replacedChanges; // each replaced node's change
 	struct Changed {
 		NodeSpec spec;
 		std::shared_ptr<const NodeConfig> config;
@@ -193,6 +194,9 @@ std::expected<Plan, CommandError> DesiredGraph::plan(std::span<const NodeSpec> n
 		} else {
 			changes->nodesRemoved.push_back(name);
 			replaced.insert(name);
+			changes->replacedChanges.emplace(name,
+			                                 NodeChange{outcome, changedKeys(held.spec.settings, next.spec.settings),
+			                                            next.spec.type == held.spec.type});
 		}
 	}
 	for (const auto& [name, next] : wanted)
@@ -227,7 +231,10 @@ std::expected<void, CommandError> DesiredGraph::commit(Plan plan) {
 	}
 	for (const auto& name : changes.nodesRemoved) {
 		impl_->nodes.erase(name);
-		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeRemoved(name); });
+		const auto replace = changes.replacedChanges.find(name);
+		if (replace == changes.replacedChanges.end())
+			impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeRemoved(name); });
+		else impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeReplacing(name, replace->second); });
 	}
 	for (auto& [spec, config, change] : changes.nodesChanged) {
 		auto& held = impl_->nodes.at(spec.name);
@@ -238,7 +245,13 @@ std::expected<void, CommandError> DesiredGraph::commit(Plan plan) {
 	for (auto& [spec, config] : changes.nodesAdded) {
 		const auto name = spec.name;
 		const auto& added = impl_->nodes.emplace(name, Impl::Wanted{std::move(spec), std::move(config)}).first->second;
-		impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeAdded(added.spec, added.config); });
+		const auto replace = changes.replacedChanges.find(name);
+		if (replace == changes.replacedChanges.end())
+			impl_->tellNodes([&](DesiredNodeListener& listener) { listener.nodeAdded(added.spec, added.config); });
+		else
+			impl_->tellNodes([&](DesiredNodeListener& listener) {
+				listener.nodeReplaced(added.spec, added.config, replace->second);
+			});
 	}
 	for (const auto& route : changes.routesAdded) {
 		impl_->routes.insert(route);

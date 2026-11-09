@@ -1528,6 +1528,14 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **The node lifecycle, 2026-11-09 (slice 3a step L-3d, `docs/design/node-lifecycle.md` 4 and 5.2, its revision 2.8):**
+  `node_lifecycle.hpp`'s `NodeLifecycle` and its four-state `NodeState` are replaced by node-lifecycle.md's two machines
+  and their aggregate (moved there from `node_machines.hpp`), with `NodePhase`, a six-state `NodeState` (`starting`,
+  `running`, `stopping`, `stopped`, `disabled`, `failed`), `Wanted` and `NodeCause`. `NodeHealth` gains `phase`,
+  `wanted`, `cause`, `waitingFor` and `blockLost`; `NodeHealthListener` gains `hearsSuperseded()` (default true);
+  `node_host.hpp` gains `NodeOperations`, which `NodeHost` implements; `FailureReason::Code` gains `lost`.
+  `DesiredNodeListener` gains `nodeReplacing` and `nodeReplaced`, through which `commit` tells a replaced node in
+  `nodeRemoved`'s and `nodeAdded`'s places, defaulting to them, and `NodeChange` gains `portCaused`.
 - **The plan's outcomes, 2026-11-08 (slice 3a step L-5, `docs/design/node-lifecycle.md` 8.4):** `desired_graph.hpp`
   gains `NodeOutcome` (`restart`, `disable`, `enable`, `stored`), `NodeChange {outcome, keys}`,
   `DesiredNodeListener::nodeChanged`, whose default tells `nodeUpdated` (so every listener written before it is

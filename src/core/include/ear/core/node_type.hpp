@@ -73,12 +73,15 @@ private:
 	std::vector<Bank> banks_;
 };
 /// Why a node is failed. Part of health; never returned by a control call.
+/// The codes are docs/design/node-framework.md 6.2's: `lost` is a node that had reached running or stopped and said it
+/// cannot go on (its handle's lost(detail), or a hook that threw once it rested).
 struct FailureReason {
-	enum class Code { engineRefused, startFailed };
+	enum class Code { engineRefused, startFailed, lost };
 	Code code;
 	std::string detail;
+	friend bool operator==(const FailureReason&, const FailureReason&) = default;
 };
-std::string_view failureCode(FailureReason::Code code) noexcept; // "engine-refused" | "start-failed"
+std::string_view failureCode(FailureReason::Code code) noexcept; // "engine-refused" | "start-failed" | "lost"
 struct AudioFormat {
 	std::uint32_t rate;
 	std::uint32_t maxBlock;

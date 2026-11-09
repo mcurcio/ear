@@ -1,8 +1,8 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.8, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
+Status: proposal, revision 2.9, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
 file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6: building L-3b; 2.7: building L-3c; 2.8: building L-7;
-section 17). Revision 1 went to one
+2.9: building L-3d; section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -608,7 +608,7 @@ is unchanged as port-caused (`NodeChange` carries it, 8.4), and `NodeHost`, told
 - tells the old `Node`'s teardown to nobody: no health, no `node` record and no `nodeGone`; its `stop()`, fade, silence
   and teardown run as a removal's, and its `dropped` frames are added to the new node's. So the wire sees
   `node.removed`, `node.added` (at the commit, from the gateway) and then one health stream for the name, and standard
-  output sees `node <n> stopping: restarting: settings changed: <keys>`, then `starting`, `running` or `stopped`, as for
+  output sees `node <n> stopping: restarting (settings changed: <keys>)` (control-plane.md 9.1's form), then `starting`, `running` or `stopped`, as for
   any restart.
 
 Any other name added back while an older `Node` of the name still tears down (a type changed, a remove and add of
@@ -1001,8 +1001,9 @@ a replace (as today; on a disabled node, D-R23: told as `node.removed` then `nod
 `nodeChanged(spec, config, {outcome, keys})`; its default calls `nodeUpdated`, so `StatusLog` and every test listener
 keep working; `NodeHost` and the gateway override it.
 
-A replace whose type is unchanged (only the ports changed) is marked `portCaused` on the `nodeRemoved` and `nodeAdded`
-it tells (`NodeChange::portCaused`, read by `NodeHost` alone, 5.7; D-L36). An edit that changes the ports and
+A replace whose type is unchanged (only the ports changed) is marked `portCaused` on the removal and addition it tells
+(as built, revision 2.8: `nodeReplacing` and `nodeReplaced`, which every replace is told through, defaulting to
+`nodeRemoved` and `nodeAdded`) (`NodeChange::portCaused`, read by `NodeHost` alone, 5.7; D-L36). An edit that changes the ports and
 `disabled` at once (D-L46) is still a replace, the new node added with the new `disabled`, and the reply carries the
 `disabled` change's outcome, since that is what the operator asked: ports changed with false to true → `applied:
 "disable"` (the new node is added disabled and never configured; its stop, if any, is dropped as a disable drops it);
@@ -1771,3 +1772,54 @@ or recorded here:
   SIGFPE, SIGILL) unblocked on ear_output's threads, since one blocked when its thread faults is delivered with its
   default action and skips the crash handler's last words (F6); the judge test where the beat moves twice between looks,
   and the thread test bounding the resumed `ms` from both sides.
+### Revision 2.9 (2026-11-09, found building L-3d)
+
+Step L-3d built 12's L-3d row: `node_machines.hpp` and `.cpp` became `node_lifecycle.hpp` and `.cpp` in `ear` (6's
+plan), replacing `NodeLifecycle` and today's `NodeState`; `node_machines_test.cpp` became `node_lifecycle_test.cpp`.
+`FailureReason` gained the code `lost` and `operator==`; the machines' `FailureCode` and `Failure` are its aliases.
+`NodeHealth` carries `phase`, `wanted`, `cause`, `waitingFor` (`WaitingFor {kind, name}`) and `blockLost`, told after
+every transition that changes any of them; `NodeHost` implements `NodeOperations` and overrides `nodeChanged`;
+`StatusLog` writes 9.1's sentences; `LogEntry::run` and `output-records.json`'s `"run": 2` are gone; the seven removal
+lines and `sendspin_connections_test.cpp`'s search wait for `removed`. `node_host_test.cpp` has 86 cases: the 72 kept
+(their logs now say `stopping` for a restart, D-L2, and show each health after its transition's actions, as 5.2's
+steps 2 then 4 order them) and fourteen new (a normal start's five phases, a stop kept and started, the card's bank
+faded at a stop and a disable, disable and enable with a change stored between, a node added disabled, a restart of a
+stopped node, start and stop on a failed node, `lost` after rest, operations refused unknown-node and stopping,
+`waitingFor`'s delay and pace, an older node waited for, a change of ports keeping the stop, a hand edit keeping the
+stop and a rename dropping it, a replace of another type heard by standard output alone). What building it settled,
+each a minimal edit or recorded here:
+
+- 4.5 and 5.2 against today's records: health is told after the transition's actions, so a restart's `stopping` follows
+  its fade's post and a restart's `starting: <cause>` follows `configure`. Revision 2.5's open question is decided:
+  every removal says `stopping` (cause `removing`) before anything it does, and before `removed` when it ends in its
+  own input, since 4.8 says every node shows `stopping` at ear's stop.
+- 5.7 and 9.1 disagreed on the restart's sentence (`stopping: restarting: settings changed: <keys>` against
+  `stopping: restarting (settings changed: <keys>)`); 9.1 is the records' home (this page's header says so), so 5.7
+  follows it. Keys are joined with `, `; a restart by settings with no keys says `settings changed`; a configuring cause
+  says `settings changed: <keys>`, `restart invoked`, `retry` or `enabling`. The `removed` record's `state` is
+  `stopping`, as 9.1's example has it.
+- 4.5's records: one when the state (the colour) changes, and also when a `failed` node's reason changes (a block's
+  loss replacing a failure: today's record, kept). `starting` is written for the `added` phase and `starting: <cause>`
+  for `configuring` with a cause; a start from `stopped` (T8, the `starting` phase, no cause) writes none, then
+  `running`. `still`'s `<s>` and its 10 s pace are counted on `StatusLog`'s steady pace clock, not the records' `t`.
+- 8.4's `portCaused` "on the `nodeRemoved` and `nodeAdded`": those calls carry no change, so `DesiredNodeListener`
+  gains `nodeReplacing(name, change)` and `nodeReplaced(spec, config, change)`, through which `commit` tells every
+  replace (`NodeChange::portCaused` true when the type is unchanged), defaulting to `nodeRemoved` and `nodeAdded`, so
+  the gateway and `StatusLog` change nothing (batch2.md's frozen header, through this page).
+- D-L36's "health goes to `StatusLog` only, never to the gateway": `NodeHealthListener::hearsSuperseded()` (default
+  true; the gateway's false). A node is superseded from the commit that replaces it (another type) or adds its name
+  back; the older node of a port-caused replace tells nobody, and its successor takes its dropped frames.
+- D-L46's corners: a port-caused replace whose new node is disabled is not given `predecessor` (it shows `disabled` at
+  once, its block waiting for the older one's, which tells nothing); one whose old node was disabled and new node is
+  enabled is given `predecessor`, so it shows `stopping` (`restarting`, `settings`) and `configuring` (`settings`), not
+  `enabling`, though the reply says `enable`.
+- 4.5's `waitingFor`, as built: `older-node` (its own name) in `added`; in `configuring`, `block` while the block is not
+  ready and outside nodes are asked, then each outside node not yet ready (`companion`, `<node>.<suffix>`); `block` in
+  `starting`; none in `arming`. The 2 s timer is armed on every phase told, the 1 s pace on every list shown.
+- 5.2's `LifecycleApplied` and `LifecycleRefusal` stay in `node_lifecycle.hpp`, which `node_host.hpp` includes, since
+  the aggregate returns them; they are still core's own and named by no wire code.
+- Until L-6 the gateway sends `node.state` only when a node's `state` or `reason` changes (the wire has neither `phase`
+  nor the other members yet), so a normal start is still `starting` then `running` on the wire; `stopped`, `disabled`
+  and a restart's `stopping` are its new values. `NodeOperations` reaches nothing on the wire yet.
+- `sendspin_streams_test.cpp`'s `CHECK_FALSE(ear.hasLine("node ma stopping"))` matched the whole line, so the new
+  `stopping: <cause>` would pass it vacuously; it checks the prefix now.

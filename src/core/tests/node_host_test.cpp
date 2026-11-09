@@ -16,6 +16,7 @@
 #include <deque>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -346,16 +347,36 @@ struct TestReceivers final : RtpReceiverAdapter {
 	}
 };
 
+/// The node's state (the phase's colour) and failure, logged when either changes, as standard output's records are
+/// written (control-plane.md 9.1); every health told is kept whole in `told`.
 struct TestListener final : NodeHealthListener {
 	Log& log;
+	std::vector<NodeHealth> told;
+	std::map<NodeName, std::string> last;
 	explicit TestListener(Log& l) : log(l) {}
 	void nodeChanged(const NodeHealth& health) override {
+		told.push_back(health);
 		std::string line = "node " + health.name + " " + std::string(stateName(health.state));
 		if (health.reason) line += " " + std::string(failureCode(health.reason->code)) + ": " + health.reason->detail;
-		log.push_back(line);
+		if (std::exchange(last[health.name], line) != line) log.push_back(line);
 	}
 	void nodeGone(const NodeName& node, std::uint64_t dropped) override {
 		log.push_back("node " + node + " gone dropped=" + std::to_string(dropped));
+	}
+	/// Every phase told for `node`, with its cause, in order: "added", "stopping (restarting settings)".
+	std::vector<std::string> phases(const NodeName& node) const {
+		std::vector<std::string> out;
+		for (const NodeHealth& health : told) {
+			if (health.name != node) continue;
+			std::string line(phaseName(health.phase));
+			if (health.cause) {
+				line += " (" + std::string(causeName(health.cause->kind));
+				if (health.cause->restart) line += " " + std::string(causeName(*health.cause->restart));
+				line += ")";
+			}
+			out.push_back(line);
+		}
+		return out;
 	}
 };
 
@@ -660,8 +681,9 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	b->handoffs = 1;
 	f.update("rec", std::move(b));
 
-	// The block fades and stops running the old code before release(); the handoff then closes.
-	CHECK(f.log == Log{"node rec starting", "fade"});
+	// The block fades and stops running the old code before release(); the handoff then closes. Health is told after
+	// the transition's actions (5.2): stopping (restarting), D-L2.
+	CHECK(f.log == Log{"fade", "node rec stopping"});
 	f.log.clear();
 	f.settle();
 	CHECK(f.log == Log{"drive nothing", "release", "handoff close"});
@@ -670,7 +692,8 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	SECTION("the old configuration goes, then its config, then the new config starts") {
 		f.handoffs.finishOne(0);
 		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 B",
-		                   "handoff rec 2 channels", "run built", "prepare 44100/256", "drive code"});
+		                   "handoff rec 2 channels", "node rec starting", "run built", "prepare 44100/256",
+		                   "drive code"});
 		f.log.clear();
 		f.settle();
 		CHECK(f.log == Log{"node rec running"});
@@ -682,15 +705,15 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 		f.log.clear();
 		f.handoffs.finishOne(0);
 		f.settle();
-		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 C", "run built",
-		                   "prepare 44100/256", "drive code", "node rec running"});
+		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 C",
+		                   "node rec starting", "run built", "prepare 44100/256", "drive code", "node rec running"});
 	}
 	SECTION("a removal during a restart stops the node and starts nothing") {
 		f.host.nodeRemoved("rec");
-		// Silenced already, so the block goes in this turn's flush.
-		CHECK(f.log == Log{"config B destroyed", "node rec stopping"});
+		// Silenced already, so the block goes in this turn's flush; stopping already (restarting, now removing).
+		CHECK(f.log == Log{"config B destroyed"});
 		f.settle();
-		CHECK(f.log == Log{"config B destroyed", "node rec stopping", "block destroyed"});
+		CHECK(f.log == Log{"config B destroyed", "block destroyed"});
 		f.log.clear();
 		f.handoffs.finishOne(2);
 		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "node rec gone dropped=2"});
@@ -721,7 +744,7 @@ TEST_CASE("An update of a node whose start failed configures the new config", "[
 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
 
-	CHECK(f.log == Log{"config A destroyed", "node rec starting", "start 44100 B", "run built", "prepare 44100/256",
+	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "node rec starting", "run built", "prepare 44100/256",
 	                   "drive code"});
 	f.log.clear();
 	f.settle();
@@ -771,8 +794,8 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 	SECTION("a restart remakes the cards at once, the block being ready, in the flush that destroys the old ones") {
 		f.update("motu", withCards(f.log, "B"));
 		f.settle();
-		CHECK(f.log == Log{"node motu starting", "fade", "drive nothing", "release", "start 44100 B",
-		                   "card motu.playback destroyed", "card motu.capture destroyed",
+		CHECK(f.log == Log{"fade", "node motu stopping", "drive nothing", "release", "start 44100 B",
+		                   "node motu starting", "card motu.playback destroyed", "card motu.capture destroyed",
 		                   "card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
 		                   "card motu.capture of motu Pro24 cap.1 at 44100"});
 		REQUIRE(f.cards.events.size() == 4);
@@ -1039,7 +1062,7 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 
 	f.update("fpp", withReceiver(f.log, "B"));
 	f.endTurn();
-	CHECK(f.log == Log{"config A destroyed", "node fpp starting", "start 44100 B", "receiver fpp.rtp of fpp"});
+	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "node fpp starting", "receiver fpp.rtp of fpp"});
 	REQUIRE(f.receivers.events.size() == 2); // made once more, not twice
 	CHECK(f.blocks.events.size() == 1);      // the block stayed
 	f.log.clear();
@@ -1359,14 +1382,15 @@ TEST_CASE("A restart while the drive is in flight silences it at its completion 
 	f.log.clear();
 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
-	CHECK(f.log.empty()); // nothing to silence until the drive is applied (6.3's "stop in starting")
+	// Nothing to silence until the drive is applied (6.3's "stop in starting"); stopping (restarting) at once (4.3 row 6).
+	CHECK(f.log == Log{"node rec stopping"});
 	f.blocks.complete(0);
-	CHECK(f.log == Log{"fade"});
+	CHECK(f.log == Log{"node rec stopping", "fade"});
 	f.blocks.complete(0);
-	CHECK(f.log == Log{"fade", "drive nothing"});
+	CHECK(f.log == Log{"node rec stopping", "fade", "drive nothing"});
 	f.blocks.complete(0);
-	CHECK(f.log == Log{"fade", "drive nothing", "release", "run destroyed", "config A destroyed", "start 44100 B",
-	                   "run built", "prepare 44100/256", "drive code"});
+	CHECK(f.log == Log{"node rec stopping", "fade", "drive nothing", "release", "run destroyed", "config A destroyed",
+	                   "start 44100 B", "node rec starting", "run built", "prepare 44100/256", "drive code"});
 	f.blocks.complete(0);
 	CHECK(f.log.back() == "node rec running");
 	CHECK(std::ranges::count(f.log, std::string("node rec running")) == 1);
@@ -1538,14 +1562,14 @@ TEST_CASE("A restart waits for the old configuration to close before it configur
 	auto next = std::make_shared<TestConfig>(f.log, "next");
 	f.update("net", next);
 	f.settle();
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close"});
 	f.log.clear();
 
 	std::thread([&] { old->run->closed(); }).join();
 	CHECK(f.log.empty());
 	f.settle();
-	CHECK(f.log ==
-	      Log{"run destroyed", "start 44100 next", "run built", "prepare 44100/256", "drive code", "node net running"});
+	CHECK(f.log == Log{"run destroyed", "start 44100 next", "node net starting", "run built", "prepare 44100/256",
+	                   "drive code", "node net running"});
 	f.stopAll();
 	f.settle();
 }
@@ -1705,7 +1729,7 @@ TEST_CASE("A note still queued when its node has gone reaches nothing", "[node_h
 	f.stopAll();
 }
 
-TEST_CASE("A run lost from its own thread fails a running node with start-failed and tears its configuration down, "
+TEST_CASE("A run lost from its own thread fails a running node with lost and tears its configuration down, "
           "and its block and routes stay",
           "[node_host]") {
 	Fixture f;
@@ -1718,7 +1742,7 @@ TEST_CASE("A run lost from its own thread fails a running node with start-failed
 	std::thread([&] { config->events->lost("the client died"); }).join();
 	CHECK(f.log.empty());
 	f.mainLoop.runPosted();
-	CHECK(f.log == Log{"drive nothing", "node net failed start-failed: the client died"});
+	CHECK(f.log == Log{"drive nothing", "node net failed lost: the client died"}); // it had rested (D-L23)
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::failed);
 	f.log.clear();
@@ -1747,7 +1771,7 @@ TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
 	config->events->lost("late");
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
 	f.settle();
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close"});
 	f.log.clear();
 	config->run->closed();
 	f.settle();
@@ -1812,8 +1836,8 @@ TEST_CASE("Start only acquires, the recipe runs once every resource is ready and
 		f.settle();
 		CHECK(f.log.empty());
 		f.update("net", std::make_shared<TestConfig>(f.log, "B"));
-		CHECK(f.log.at(0) == "node net starting"); // at once, as before the teardown
-		CHECK(f.log.at(1) == "start 44100 B");
+		CHECK(f.log.at(0) == "start 44100 B"); // failed until its configure runs (4.3, rule 3)
+		CHECK(f.log.at(1) == "node net starting");
 	}
 	f.log.clear();
 	f.stopAll();
@@ -2000,14 +2024,14 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
 	f.settle();
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close"});
 	f.log.clear();
 	CHECK(f.timers.live() == 1);
 
 	f.timers.advance(closeDeadline);
 	// The old run is leaked (never destroyed: its threads may still touch it); the next configuration begins.
-	CHECK(f.log ==
-	      Log{"diagnostic net ear.close-overdue", "start 44100 next", "run built", "prepare 44100/256", "drive code"});
+	CHECK(f.log == Log{"diagnostic net ear.close-overdue", "start 44100 next", "node net starting", "run built",
+	                   "prepare 44100/256", "drive code"});
 	CHECK(std::ranges::count(f.log, std::string("run destroyed")) == 0);
 	CHECK(f.host.leaked() == 1);
 	f.settle();
@@ -2086,8 +2110,8 @@ TEST_CASE("Nothing from an old run lands on a new one, even when it closed at on
 		oldEvents->lost("old run failed");
 	}).join();
 	f.blocks.complete(0); // the silence
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close", "run destroyed",
-	                   "prepare 44100/256", "drive code"});
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close", "run destroyed",
+	                   "node net starting", "prepare 44100/256", "drive code"});
 	f.log.clear();
 
 	f.mainLoop.runPosted();
@@ -2125,8 +2149,8 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 	f.update("rec", withCards(f.log, "B"));
 	f.settle();
 	f.handoffs.finishOne(0);
-	CHECK(f.log.at(0) == "node rec starting");
-	CHECK(f.log.at(1) == "fade"); // the barrier comes after the fade of what the code wrote
+	CHECK(f.log.at(0) == "fade");              // the barrier comes after the fade of what the code wrote
+	CHECK(f.log.at(1) == "node rec stopping"); // told after the transition's actions (5.2)
 	CHECK(f.log.at(2) == "drive nothing");
 	CHECK(f.log.at(3) == "release");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card rec.playback destroyed"));
@@ -2619,7 +2643,7 @@ TEST_CASE("Every output the code writes is faded in at its drive and out before 
 	f.log.clear();
 
 	f.update("amp", std::make_shared<OutputConfig>(f.log));
-	CHECK(f.log == Log{"node amp starting", "fade"}); // the barrier waits for the fade's acknowledgement
+	CHECK(f.log == Log{"fade", "node amp stopping"}); // the barrier waits for the fade's acknowledgement
 	f.log.clear();
 	f.settle();
 	CHECK(f.log.at(0) == "drive nothing");
@@ -2971,7 +2995,7 @@ TEST_CASE("A card's playback bank, an inside output, fades in at every drive and
 	CHECK(f.blocks.modes.faded[0] == std::vector<bool>{true, true}); // pb.1 and pb.2, which feed desk.playback
 	f.log.clear();
 	f.update("desk", withPlayback(f.log, "B"));
-	CHECK(f.log.at(1) == "fade");
+	CHECK(f.log.at(0) == "fade");
 	f.settle();
 	CHECK(indexOf(f.log, "fade") < indexOf(f.log, "drive nothing"));
 	f.cards.events.back()->ready();
@@ -2985,5 +3009,372 @@ TEST_CASE("A card's playback bank, an inside output, fades in at every drive and
 	CHECK(f.log.at(2) == "drive nothing");
 	CHECK(f.log.back() == "node desk gone dropped=0");
 	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+// ---- Step L-3d (docs/design/node-lifecycle.md 4.3 to 4.5, 5.2, 5.7, 8.4): the wanted state, health per transition,
+// waitingFor's pacing, the operations and the port-caused replace.
+
+namespace {
+
+using Phases = std::vector<std::string>;
+
+NodeChange outcome(NodeOutcome what, std::vector<std::string> keys = {}) { return NodeChange{what, std::move(keys)}; }
+
+void change(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConfig> config, NodeOutcome what,
+            bool disabled) {
+	f.host.nodeChanged(NodeSpec{name, "test", {{"new", true}}, disabled}, std::move(config), outcome(what, {"new"}));
+}
+
+std::string replyText(const LifecycleReply& reply) {
+	if (reply) return std::string(appliedName(*reply));
+	switch (reply.error().code) {
+	case LifecycleRefusal::Code::unknownNode:
+		return "unknown-node";
+	case LifecycleRefusal::Code::nodeDisabled:
+		return "node-disabled";
+	case LifecycleRefusal::Code::notRestartable:
+		return reply.error().reason == LifecycleRefusal::Reason::blockLost ? "not-restartable block-lost"
+		                                                                   : "not-restartable not-started";
+	case LifecycleRefusal::Code::stopping:
+		return "stopping";
+	}
+	return "?";
+}
+
+} // namespace
+
+TEST_CASE("A health notification for every change of any member, in order: a normal start is added, configuring, "
+          "configured, starting, running",
+          "[node_host][health]") {
+	Fixture f;
+	addRunning(f, "noise", std::make_shared<OutputConfig>(f.log));
+	CHECK(f.listener.phases("noise") == Phases{"added", "configuring", "configured", "starting", "running"});
+	for (const NodeHealth& told : f.listener.told) {
+		CHECK(told.wanted == Wanted::running);
+		CHECK(told.waitingFor.empty());
+		CHECK(told.state == stateOf(told.phase));
+	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.listener.phases("noise").back() == "stopping (removing)");
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A stop keeps the configuration: no resource released, and start drives it again",
+          "[node_host][operations]") {
+	Fixture f;
+	addRunning(f, "desk", withPlayback(f.log));
+	f.log.clear();
+	f.listener.told.clear();
+
+	CHECK(replyText(f.host.stop("desk")) == "stop");
+	CHECK(f.log == Log{"fade", "node desk stopping"});
+	f.settle();
+	// Silenced, released and prepared afresh (D-L33); the card stays.
+	CHECK(f.log ==
+	      Log{"fade", "node desk stopping", "drive nothing", "release", "prepare 44100/256", "node desk stopped"});
+	CHECK(f.listener.phases("desk") == Phases{"stopping (stop)", "stopped"});
+	CHECK(f.host.health()[0].wanted == Wanted::stopped);
+	CHECK(replyText(f.host.stop("desk")) == "unchanged");
+	f.log.clear();
+	f.listener.told.clear();
+
+	CHECK(replyText(f.host.start("desk")) == "start");
+	f.settle();
+	CHECK(f.log == Log{"drive code", "node desk starting", "node desk running"});
+	CHECK(f.listener.phases("desk") == Phases{"starting", "running"});
+	REQUIRE(f.blocks.modes.faded.size() == 2);
+	CHECK(f.blocks.modes.faded[1] == std::vector<bool>{true, true}); // the card's bank fades in again
+	CHECK(replyText(f.host.start("desk")) == "unchanged");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A card's playback bank fades out before a stop's and a disable's silence too", "[node_host][fade]") {
+	Fixture f;
+	addRunning(f, "desk", withPlayback(f.log, "A"));
+	f.log.clear();
+	REQUIRE(replyText(f.host.stop("desk")) == "stop");
+	f.settle();
+	CHECK(indexOf(f.log, "fade") < indexOf(f.log, "drive nothing"));
+	REQUIRE(replyText(f.host.start("desk")) == "start");
+	f.settle();
+	f.log.clear();
+	change(f, "desk", withPlayback(f.log, "A"), NodeOutcome::disable, true);
+	CHECK(f.log.at(0) == "fade");
+	f.settle();
+	CHECK(indexOf(f.log, "fade") < indexOf(f.log, "drive nothing"));
+	CHECK(indexOf(f.log, "drive nothing") < indexOf(f.log, "node desk disabled"));
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE(
+	"disable tears the whole configuration down, keeps the block and drops the stop, and enable configures afresh",
+	"[node_host][disabled]") {
+	Fixture f;
+	addRunning(f, "desk", withPlayback(f.log, "A"));
+	REQUIRE(replyText(f.host.stop("desk")) == "stop");
+	f.settle();
+	f.log.clear();
+	f.listener.told.clear();
+
+	change(f, "desk", withPlayback(f.log, "B"), NodeOutcome::disable, true);
+	f.settle();
+	// Stopped already, so no fade or barrier (T20); the configuration goes, its card in the turn's flush; the block stays.
+	CHECK(f.log == Log{"release", "node desk stopping", "config A destroyed", "node desk disabled",
+	                   "card desk.playback destroyed"});
+	CHECK(f.listener.phases("desk") == Phases{"stopping (disabling)", "disabled"});
+	CHECK(f.host.health()[0].wanted == Wanted::disabled);
+	CHECK(replyText(f.host.stop("desk")) == "node-disabled");
+	CHECK(replyText(f.host.start("desk")) == "node-disabled");
+	CHECK(replyText(f.host.restart("desk")) == "node-disabled");
+	f.log.clear();
+	f.listener.told.clear();
+
+	// A change while disabled is stored; the enable takes the newest, and the stop was dropped: it runs.
+	change(f, "desk", withPlayback(f.log, "C"), NodeOutcome::stored, true);
+	CHECK(f.log == Log{"config B destroyed"});
+	f.log.clear();
+	change(f, "desk", withPlayback(f.log, "D"), NodeOutcome::enable, false);
+	f.endTurn();
+	f.cards.events.back()->ready();
+	f.settle();
+	CHECK(f.log == Log{"config C destroyed", "start 44100 D", "node desk starting",
+	                   "card desk.playback of desk Pro24 pb.1,pb.2 at 44100", "prepare 44100/256", "drive code",
+	                   "node desk running"});
+	CHECK(f.listener.phases("desk") == Phases{"configuring (enabling)", "configured", "starting", "running"});
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A node added disabled is never configured, and its removal needs no barrier", "[node_host][disabled]") {
+	Fixture f;
+	f.host.nodeAdded(NodeSpec{"porch", "test", {}, true}, std::make_shared<TestConfig>(f.log, "P"));
+	f.endTurn();
+	CHECK(f.log == Log{"node porch disabled", "make porch 2 inputs"}); // only disabled told (T19), the block made
+	CHECK(f.listener.phases("porch") == Phases{"disabled"});
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(f.log.size() == 2);
+	f.log.clear();
+	f.host.nodeRemoved("porch");
+	f.endTurn();
+	CHECK(f.log == Log{"config P destroyed", "node porch stopping", "block destroyed", "node porch gone dropped=0"});
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Every phase a turn passes is told, in order: a restart of a stopped node tells stopping, configuring and "
+          "stopped",
+          "[node_host][health]") {
+	Fixture f;
+	addRunning(f, "noise", std::make_shared<OutputConfig>(f.log));
+	REQUIRE(replyText(f.host.stop("noise")) == "stop");
+	f.settle();
+	f.listener.told.clear();
+	CHECK(replyText(f.host.restart("noise")) == "restart");
+	f.settle();
+	CHECK(f.listener.phases("noise") == Phases{"stopping (restarting action)", "configuring (action)", "stopped"});
+	CHECK(f.host.health()[0].phase == NodePhase::stopped);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("start on a failed node retries and clears the stop, and stop on a failed node changes only wanted",
+          "[node_host][operations]") {
+	Fixture f;
+	auto bad = std::make_shared<TestConfig>(f.log, "bad");
+	bad->fail = true;
+	f.add("rec", bad);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.host.health()[0].phase == NodePhase::failed);
+	f.listener.told.clear();
+	CHECK(replyText(f.host.stop("rec")) == "stop");
+	REQUIRE(f.listener.told.size() == 1); // wanted alone changed: one notification
+	CHECK(f.listener.told[0].phase == NodePhase::failed);
+	CHECK(f.listener.told[0].wanted == Wanted::stopped);
+	bad->fail = false;
+	CHECK(replyText(f.host.start("rec")) == "retry");
+	f.settle();
+	CHECK(f.listener.phases("rec") == Phases{"failed", "configuring (retry)", "configured", "starting", "running"});
+	CHECK(f.host.health()[0].wanted == Wanted::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("lost(detail) is start-failed before the node rested and lost after", "[node_host][health]") {
+	Fixture f;
+	auto config = std::make_shared<ThreadedConfig>(f.log);
+	config->closeAtOnce = true;
+	f.add("net", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.host.health()[0].state == NodeState::running);
+	config->events->lost("the library died");
+	f.settle();
+	REQUIRE(f.host.health()[0].reason.has_value());
+	CHECK(f.host.health()[0].reason->code == FailureReason::Code::lost);
+	CHECK(std::ranges::count(f.log, std::string("node net failed lost: the library died")) == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A node removed by an edit refuses start, stop and restart unknown-node, and during stopAll every operation "
+          "is stopping",
+          "[node_host][operations]") {
+	Fixture f;
+	addRunning(f, "noise", std::make_shared<OutputConfig>(f.log));
+	addRunning(f, "rec", std::make_shared<TestConfig>(f.log));
+	f.host.nodeRemoved("noise"); // still stopping: its fade is posted
+	CHECK(replyText(f.host.start("noise")) == "unknown-node");
+	CHECK(replyText(f.host.stop("noise")) == "unknown-node");
+	CHECK(replyText(f.host.restart("noise")) == "unknown-node");
+	CHECK(replyText(f.host.stop("nobody")) == "unknown-node");
+	f.stopAll();
+	CHECK(replyText(f.host.stop("rec")) == "stopping");
+	CHECK(replyText(f.host.start("rec")) == "stopping");
+	CHECK(replyText(f.host.restart("rec")) == "stopping");
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("waitingFor reaches health only after 2 s in the phase, then changes at most once a second",
+          "[node_host][health]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	config->cards = {motuOut, motuIn};
+	f.add("desk", config);
+	f.blocks.events.at(0)->ready();
+	f.endTurn(); // both cards made, neither ready: configuring
+	REQUIRE(f.host.health()[0].phase == NodePhase::configuring);
+	CHECK(f.host.health()[0].waitingFor.empty());
+	f.listener.told.clear();
+
+	f.timers.advance(std::chrono::milliseconds(1'999));
+	CHECK(f.listener.told.empty());
+	f.timers.advance(std::chrono::milliseconds(1));
+	REQUIRE(f.listener.told.size() == 1);
+	CHECK(f.listener.told[0].waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::companion, "desk.playback"},
+	                                                               {WaitingFor::Kind::companion, "desk.capture"}});
+
+	// A change within the second waits for it; then the newest list is told.
+	f.cards.events[0]->ready();
+	f.settle();
+	CHECK(f.listener.told.size() == 1);
+	f.timers.advance(std::chrono::milliseconds(1'000));
+	REQUIRE(f.listener.told.size() == 2);
+	CHECK(f.listener.told[1].waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::companion, "desk.capture"}});
+
+	// The phase ends: the list goes with it.
+	f.cards.events[1]->ready();
+	f.settle();
+	CHECK(f.host.health()[0].phase == NodePhase::running);
+	CHECK(f.host.health()[0].waitingFor.empty());
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A name added back says it waits for the older node after 2 s", "[node_host][health]") {
+	Fixture f;
+	addRunning(f, "rec", std::make_shared<TestConfig>(f.log, "old"));
+	f.blocks.hold = true;
+	f.host.nodeRemoved("rec");
+	f.add("rec", std::make_shared<TestConfig>(f.log, "new"));
+	REQUIRE(f.host.health().back().phase == NodePhase::added);
+	f.timers.advance(waitingForDelay);
+	CHECK(f.host.health().back().waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::olderNode, "rec"}});
+	f.blocks.hold = false;
+	while (!f.blocks.held.empty()) {
+		f.blocks.complete(0);
+		f.settle();
+	}
+	f.settle();
+	CHECK(f.host.health().back().waitingFor.empty());
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A change of ports keeps the node's stop and one health stream for the name, the old node telling nothing",
+          "[node_host][replace]") {
+	Fixture f;
+	addRunning(f, "desk", std::make_shared<TestConfig>(f.log, "two"));
+	REQUIRE(replyText(f.host.stop("desk")) == "stop");
+	f.settle();
+	f.log.clear();
+	f.listener.told.clear();
+
+	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
+	f.host.nodeReplacing("desk", ports);
+	f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
+	                    ports);
+	f.settle();
+	CHECK(f.listener.phases("desk") == Phases{"stopping (restarting settings)", "configuring (settings)", "stopped"});
+	CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=0")) == 0); // the old one told nothing
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].wanted == Wanted::stopped);
+	CHECK(f.host.health()[0].phase == NodePhase::stopped);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A hand edit that keeps a node keeps its stop, and one that renames it drops it", "[node_host][replace]") {
+	Fixture f;
+	addRunning(f, "a", std::make_shared<TestConfig>(f.log, "a"));
+	REQUIRE(replyText(f.host.stop("a")) == "stop");
+	f.settle();
+	change(f, "a", std::make_shared<TestConfig>(f.log, "a2"), NodeOutcome::restart, false);
+	f.settle();
+	CHECK(f.host.health()[0].phase == NodePhase::stopped);
+	f.host.nodeRemoved("a");
+	f.add("b", std::make_shared<TestConfig>(f.log, "b"));
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(f.host.health().back().name == "b");
+	CHECK(f.host.health().back().phase == NodePhase::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A replace of another type sends the older node's health to standard output alone", "[node_host][replace]") {
+	struct WireListener final : NodeHealthListener {
+		Log& log;
+		explicit WireListener(Log& l) : log(l) {}
+		void nodeChanged(const NodeHealth& health) override {
+			log.push_back("wire " + health.name + " " + std::string(phaseName(health.phase)));
+		}
+		void nodeGone(const NodeName& node, std::uint64_t) override { log.push_back("wire " + node + " gone"); }
+		bool hearsSuperseded() const noexcept override { return false; }
+	};
+	Fixture f;
+	WireListener wire{f.log};
+	f.host.subscribe(wire);
+	addRunning(f, "x", std::make_shared<TestConfig>(f.log, "old"));
+	f.log.clear();
+	const NodeChange type{NodeOutcome::restart, {}, false};
+	f.host.nodeReplacing("x", type);
+	f.host.nodeReplaced(NodeSpec{"x", "other", {}}, std::make_shared<TestConfig>(f.log, "new"), type);
+	f.settle();
+	f.blocks.events.back()->ready();
+	f.settle();
+	// Standard output hears the older node stopping and gone; the wire hears only the newer node.
+	CHECK(indexOf(f.log, "node x stopping") < indexOf(f.log, "node x gone dropped=0"));
+	CHECK(indexOf(f.log, "wire x stopping") == static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(indexOf(f.log, "wire x gone") == static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(indexOf(f.log, "wire x added") < indexOf(f.log, "wire x running"));
+	f.stopAll();
+	f.settle();
 	CHECK(f.allGone == 1);
 }

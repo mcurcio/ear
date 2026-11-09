@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -34,8 +35,14 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 /// msg is today's plain line, so `jq -r .msg` reads as ear always did:
 ///   engine              engine: realtime <detail> | engine: not realtime (<detail>)
 ///   control             control listening on <address>:<port>
-///   node                node <n> starting|running|stopping | node <n> failed <code>: <detail>
-///                       | node <n> stopped dropped=<frames>
+///   node                node <n> starting | node <n> starting: <cause> | node <n> running | node <n> stopping[: <cause>]
+///                       | node <n> stopped | node <n> disabled | node <n> failed <code>: <detail>
+///                       | node <n> still <phase> after <s>s: waiting for <what> | node <n> removed dropped=<frames>
+///                       (control-plane.md 9.1: a record when the state, the phase's colour, changes, or a failure's
+///                       reason does; `starting` for the added phase alone, `starting: <cause>` for configuring after
+///                       a restart, a retry or an enable; `still` when what a node waits for first reaches its health,
+///                       then at most once per 10 s while it changes; each with "phase", and "cause", "failure",
+///                       "waitingFor" or "droppedFrames" as it has them)
 ///   note                node <n> says <text>
 ///   route               route <a>:<p> -> <b>:<q> pending|linked|refused[: <detail>]
 ///   graph-file          one record per change, every diagnostic in it; msg is its lines, joined by newlines:
@@ -69,6 +76,8 @@ class StatusLog final : public NodeHealthListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
+	/// How often a node's still record may follow its last while what it waits for changes (control-plane.md 9.1).
+	static constexpr std::chrono::seconds stillPace{10};
 	explicit StatusLog(OutputLines& out, WallClock clock = &std::chrono::system_clock::now,
 	                   PaceClock pace = &std::chrono::steady_clock::now);
 	void nodeChanged(const NodeHealth& health) override;
@@ -98,6 +107,12 @@ private:
 	/// The record's envelope around `fields`, offered under the lock.
 	void emit(std::string_view kind, Fields fields, std::string msg);
 
+	/// A node's health as last told, when its phase began and its last still record, on the pace clock.
+	struct Seen {
+		NodeHealth health;
+		std::chrono::steady_clock::time_point since;
+		std::optional<std::chrono::steady_clock::time_point> still{};
+	};
 	/// One node's or source's pace: tokens up to logBurst, one more a second.
 	struct Pace {
 		double tokens;
@@ -109,6 +124,7 @@ private:
 	WallClock clock_;
 	PaceClock pace_;
 	std::map<std::string, Pace, std::less<>> paces_; // under mutex_
+	std::map<NodeName, Seen, std::less<>> nodes_;    // under mutex_
 	std::mutex mutex_;
 	std::uint64_t seq_ = 0;
 	std::uint64_t dropped_ = 0;

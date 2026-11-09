@@ -72,7 +72,7 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 
 	ear.signal(SIGTERM);
 	CHECK(ear.waitForExit(deadline) == 0);
-	CHECK(ear.hasLine("node ma stopped dropped=0"));
+	CHECK(ear.hasLine("node ma removed dropped=0"));
 }
 
 TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it "
@@ -117,7 +117,7 @@ TEST_CASE("A server lost mid-stream leaves the node running, and restarted with 
 	}
 	REQUIRE_SEEN(ear, ear.waitForLine("node ma says disconnected", playDeadline));
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
-	CHECK_FALSE(ear.hasLine("node ma stopping"));
+	CHECK_FALSE(ear.lineStartingWith("node ma stopping"));
 	CHECK(heard("other", "record.left"));
 
 	const std::size_t connectsBefore = countLines(ear, "node ma says connected ");

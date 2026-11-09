@@ -8,6 +8,8 @@
 // gateway), never the gateway itself, except watch(), which runs before any command.
 #include "ear/control/gateway.hpp"
 
+#include <map>
+#include <optional>
 #include <utility>
 
 namespace ear::control {
@@ -17,6 +19,8 @@ struct MainLoopGateway::Impl {
 	Executor& control;
 	GraphRequests& requests;
 	EventSink* sink = nullptr; // main loop only
+	/// Each node's state and reason as last sent (main loop only), forgotten when the node leaves the graph.
+	std::map<NodeName, std::pair<NodeState, std::optional<FailureReason>>, std::less<>> sent;
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
 	template <class Call> void toSink(Call call) {
@@ -29,7 +33,7 @@ struct MainLoopGateway::Impl {
 };
 
 MainLoopGateway::MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests)
-	: impl_(std::make_unique<Impl>(Impl{mainLoop, control, requests})) {}
+	: impl_(std::make_unique<Impl>(Impl{mainLoop, control, requests, nullptr, {}})) {}
 
 MainLoopGateway::~MainLoopGateway() = default;
 
@@ -61,15 +65,25 @@ void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const No
 	impl_->post(NodeUpdated{node.name, node.settings});
 }
 
-void MainLoopGateway::nodeRemoved(const NodeName& node) { impl_->post(NodeRemoved{node}); }
+void MainLoopGateway::nodeRemoved(const NodeName& node) {
+	impl_->sent.erase(node);
+	impl_->post(NodeRemoved{node});
+}
 
 void MainLoopGateway::routeAdded(const Route& route) { impl_->post(RouteAdded{route}); }
 
 void MainLoopGateway::routeRemoved(const Route& route) { impl_->post(RouteRemoved{route}); }
 
-void MainLoopGateway::nodeChanged(const NodeHealth& health) { impl_->post(NodeChanged{health}); }
+void MainLoopGateway::nodeChanged(const NodeHealth& health) {
+	auto now = std::pair{health.state, health.reason};
+	const auto known = impl_->sent.find(health.name);
+	if (known != impl_->sent.end() && known->second == now) return;
+	impl_->sent.insert_or_assign(health.name, std::move(now));
+	impl_->post(NodeChanged{health});
+}
 
 void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames) {
+	impl_->sent.erase(node);
 	impl_->post(NodeStopped{node, droppedFrames});
 }
 

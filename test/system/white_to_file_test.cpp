@@ -49,7 +49,7 @@ void recordNoise(const std::string& to, int noisy) {
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(exitStatus == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 	checkAllRecords(ear);
 	checkNoiseOnOneChannel(directory.recordings() / "rec.wav", noisy, 48000);
 }

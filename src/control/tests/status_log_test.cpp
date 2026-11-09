@@ -103,6 +103,23 @@ std::vector<std::vector<std::string>> keyOrders(const std::string& text, bool re
 	return order.lists;
 }
 
+/// A node's health in one phase, as NodeHost tells it.
+ear::NodeHealth health(const std::string& node, ear::NodePhase phase, std::optional<ear::NodeCause> cause = {},
+                       std::optional<ear::FailureReason> reason = {}, std::vector<ear::WaitingFor> waits = {}) {
+	ear::NodeHealth told{node, ear::stateOf(phase), std::move(reason), phase};
+	told.cause = std::move(cause);
+	told.waitingFor = std::move(waits);
+	return told;
+}
+
+ear::NodeCause cause(ear::NodeCause::Kind kind, std::vector<std::string> keys = {}) {
+	return {kind, std::nullopt, keys};
+}
+
+ear::NodeCause restarting(ear::NodeCause::Kind kind, std::vector<std::string> keys = {}) {
+	return {ear::NodeCause::Kind::restarting, kind, std::move(keys)};
+}
+
 GraphFile file(std::string version, std::optional<std::string> running) {
 	return GraphFile{std::move(version), "text", {}, std::move(running), std::nullopt, {}, std::nullopt};
 }
@@ -110,8 +127,9 @@ GraphFile file(std::string version, std::optional<std::string> running) {
 /// The fixture's records, made in its order.
 std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 	using ear::FailureReason;
-	using ear::NodeState;
+	using ear::NodePhase;
 	using ear::RouteMatch;
+	using Kind = ear::NodeCause::Kind;
 	GraphFile everything = file("v9", std::nullopt);
 	everything.diagnostics = {
 		Diagnostic{Severity::error, "E2001", "unexpected token: \"}\"", TextPlace{9, 34}},
@@ -126,10 +144,10 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.engineScheduling(true, "SCHED_FIFO 88"); },
 		[](StatusLog& log, Lines&) { log.engineScheduling(false, "SCHED_OTHER"); },
 		[](StatusLog& log, Lines&) { log.controlListening("127.0.0.1", 7777); },
-		[](StatusLog& log, Lines&) { log.nodeChanged({"desk", NodeState::starting, std::nullopt}); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("desk", NodePhase::added)); },
 		[](StatusLog& log, Lines&) {
 			log.nodeChanged(
-				{"desk", NodeState::failed, FailureReason{FailureReason::Code::engineRefused, "card lost"}});
+				health("desk", NodePhase::failed, {}, FailureReason{FailureReason::Code::engineRefused, "card lost"}));
 		},
 		[](StatusLog& log, Lines&) { log.nodeGone("rec", 0); },
 		[](StatusLog& log, Lines&) { log.nodeSays("kitchen", "connected \"Music Assistant\" unpaired"); },
@@ -155,14 +173,13 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		             .source = "sendspin",
 		             .text = "key file narrowed",
 		             .node = "kitchen",
-		             .run = 2,
 		             .cut = true});
 		},
 		[](StatusLog& log, Lines&) { log.exiting(1, "control port: cannot bind 0.0.0.0:7777: Address in use"); },
 		[](StatusLog& log, Lines& lines) {
 			lines.refuseNext = 1;
-			log.nodeChanged({"desk", NodeState::stopping, std::nullopt}); // dropped: seq 18 never appears
-			log.nodeChanged({"desk", NodeState::running, std::nullopt});
+			log.nodeChanged(health("desk", NodePhase::stopping, cause(Kind::stop))); // dropped: seq 18 never appears
+			log.nodeChanged(health("desk", NodePhase::running));
 		},
 		[](StatusLog& log, Lines& lines) {
 			// A flood from one source: StatusLog::logBurst pass (seq 20 to 51, not the fixture's, so set aside), the
@@ -204,6 +221,53 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.mainLoopStalled(612, "pw_filter_destroy desk"); },
 		[](StatusLog& log, Lines&) { log.mainLoopStalled(503, ""); },
 		[](StatusLog& log, Lines&) { log.mainLoopResumed(1840); },
+		// The lifecycle's records (control-plane.md 9.1), one per row 3a has and per cause.kind: a record when the
+		// state changes, `starting: <cause>` for configuring after a restart, a retry or an enable, and none for the
+		// colour's other phases (configured, starting) or a change of the other members alone.
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("porch", NodePhase::configuring)); // no record: configuring with no cause
+			log.nodeChanged(health("porch", NodePhase::configured));
+			log.nodeChanged(health("porch", NodePhase::starting));
+			log.nodeChanged(health("porch", NodePhase::running));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("porch", NodePhase::stopping, cause(Kind::stop))); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("porch", NodePhase::stopped)); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("porch", NodePhase::stopping, cause(Kind::disabling))); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("porch", NodePhase::disabled)); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("porch", NodePhase::configuring, cause(Kind::enabling))); },
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("rec", NodePhase::stopping, restarting(Kind::settings, {"path"})));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("rec", NodePhase::configuring, cause(Kind::settings, {"path"})));
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(health("rec", NodePhase::starting));
+			log.nodeChanged(health("rec", NodePhase::running));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("rec", NodePhase::stopping, restarting(Kind::action))); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("rec", NodePhase::configuring, cause(Kind::action))); },
+		[](StatusLog& log, Lines&) {
+			log.nodeChanged(
+				health("kitchen", NodePhase::failed, {}, FailureReason{FailureReason::Code::lost, "the library died"}));
+		},
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("kitchen", NodePhase::configuring, cause(Kind::retry))); },
+		[](StatusLog& log, Lines&) { log.nodeChanged(health("kitchen", NodePhase::stopping, cause(Kind::removing))); },
+		[](StatusLog& log, Lines&) {
+			// Its phase began 2 s ago: NodeHost adds what it waits for only then, and the record says how long.
+			log.nodeChanged(health("fpp", NodePhase::configuring));
+			paceNow += std::chrono::seconds(2);
+			log.nodeChanged(
+				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::companion, "fpp.rtp"}}));
+		},
+		[](StatusLog& log, Lines&) {
+			// A change within 10 s of the last still record writes none; one after writes the newest.
+			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {},
+		                           {{ear::WaitingFor::Kind::block}, {ear::WaitingFor::Kind::companion, "fpp.rtp"}}));
+			paceNow += std::chrono::seconds(10);
+			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {},
+		                           {{ear::WaitingFor::Kind::olderNode, "fpp"}, {ear::WaitingFor::Kind::consumer}}));
+		},
 	};
 }
 
@@ -325,7 +389,7 @@ TEST_CASE("A source that floods its log is paced: node states, routes and notes 
 	}
 	log.log({.level = ear::LogLevel::info, .source = "sendspin", .text = "a node's own", .node = "kitchen"});
 	log.nodeSays("kitchen", "pairing-code 123-456");
-	log.nodeChanged({"desk", ear::NodeState::running, std::nullopt});
+	log.nodeChanged({"desk", ear::NodeState::running, std::nullopt, ear::NodePhase::running});
 	REQUIRE(lines.kept.size() == 2 * StatusLog::logBurst + 3);
 	CHECK(Json::parse(lines.kept[lines.kept.size() - 3])["node"] == "kitchen");
 	const Json note = Json::parse(lines.kept[lines.kept.size() - 2]);

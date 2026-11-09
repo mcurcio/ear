@@ -49,6 +49,87 @@ std::string timestamp(std::chrono::system_clock::time_point at) {
 
 std::string portText(const PortRef& port) { return std::format("{}:{}", port.node, port.port); }
 
+std::string strings(const std::vector<std::string>& values) {
+	std::vector<std::string> quoted;
+	for (const std::string& value : values) quoted.push_back(json(value));
+	return array(quoted);
+}
+
+std::string joinedKeys(const std::vector<std::string>& keys) {
+	std::string text;
+	for (const std::string& key : keys) text += (text.empty() ? "" : ", ") + key;
+	return text;
+}
+
+/// A cause as the record carries it (control-plane.md 9.1): {"kind"}, with the restart's own kind under "restart" and
+/// a settings change's keys.
+std::string causeJson(const NodeCause& cause) {
+	Fields fields{{"kind", json(causeName(cause.kind))}};
+	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
+		Fields restart{{"kind", json(causeName(*cause.restart))}};
+		if (*cause.restart == NodeCause::Kind::settings) restart.emplace_back("keys", strings(cause.keys));
+		fields.emplace_back("restart", object(restart));
+	} else if (cause.kind == NodeCause::Kind::settings) {
+		fields.emplace_back("keys", strings(cause.keys));
+	}
+	return object(fields);
+}
+
+/// A restart's own kind, or a configuring cause, in words (control-plane.md 9.1).
+std::string restartText(NodeCause::Kind kind, const std::vector<std::string>& keys) {
+	switch (kind) {
+	case NodeCause::Kind::settings:
+		return keys.empty() ? std::string("settings changed") : "settings changed: " + joinedKeys(keys);
+	case NodeCause::Kind::action:
+		return "restart invoked";
+	default:
+		return std::string(causeName(kind));
+	}
+}
+
+/// The cause after `stopping: ` or `starting: `: `stop`, `disabling`, `removing`, `restarting (<restart>)`, or a
+/// configuring cause's words.
+std::string causeText(const NodeCause& cause) {
+	if (cause.kind == NodeCause::Kind::restarting)
+		return cause.restart ? std::format("restarting ({})", restartText(*cause.restart, cause.keys))
+		                     : std::string("restarting");
+	return restartText(cause.kind, cause.keys);
+}
+
+std::string waitingJson(const std::vector<WaitingFor>& waits) {
+	std::vector<std::string> items;
+	for (const WaitingFor& wait : waits) {
+		Fields fields{{"kind", json(waitingKindName(wait.kind))}};
+		if (!wait.name.empty()) fields.emplace_back("name", json(wait.name));
+		items.push_back(object(fields));
+	}
+	return array(items);
+}
+
+/// What a still record says the node waits for (control-plane.md 9.1).
+std::string waitingText(const std::vector<WaitingFor>& waits) {
+	std::string text;
+	for (const WaitingFor& wait : waits) {
+		std::string one;
+		switch (wait.kind) {
+		case WaitingFor::Kind::olderNode:
+			one = "the previous " + wait.name;
+			break;
+		case WaitingFor::Kind::block:
+			one = "the engine";
+			break;
+		case WaitingFor::Kind::companion:
+			one = wait.name;
+			break;
+		case WaitingFor::Kind::consumer:
+			one = "its consumer";
+			break;
+		}
+		text += (text.empty() ? "" : ", ") + one;
+	}
+	return text;
+}
+
 /// The plain lines a graph file change printed before records, in order: the first always, then each that applies.
 std::vector<std::string> graphFileLines(const GraphFileChanged& change) {
 	const GraphFile& file = change.file;
@@ -95,19 +176,86 @@ void StatusLog::emit(std::string_view kind, Fields fields, std::string msg) {
 }
 
 void StatusLog::nodeChanged(const NodeHealth& health) {
-	Fields fields{{"node", json(health.name)}, {"state", json(stateName(health.state))}};
-	if (health.state == NodeState::failed && health.reason) {
-		const std::string_view code = failureCode(health.reason->code);
-		fields.emplace_back("failure", object({{"code", json(code)}, {"detail", json(health.reason->detail)}}));
-		emit("node", std::move(fields), std::format("node {} failed {}: {}", health.name, code, health.reason->detail));
+	enum class Write { none, state, still };
+	Write write = Write::none;
+	std::int64_t seconds = 0;
+	{
+		const std::scoped_lock lock(mutex_);
+		const auto now = pace_();
+		const auto known = nodes_.find(health.name);
+		const bool first = known == nodes_.end();
+		Seen& seen = first ? nodes_.emplace(health.name, Seen{health, now}).first->second : known->second;
+		if (!first && seen.health.phase != health.phase) {
+			seen.since = now;
+			seen.still.reset();
+		}
+		const bool colour = first || seen.health.state != health.state;
+		const bool reason = health.state == NodeState::failed && !first && seen.health.reason != health.reason;
+		if (colour || reason) {
+			write = Write::state;
+		} else if (!health.waitingFor.empty() && health.waitingFor != seen.health.waitingFor &&
+		           (!seen.still || now - *seen.still >= stillPace)) {
+			write = Write::still;
+			seen.still = now;
+			seconds = std::chrono::duration_cast<std::chrono::seconds>(now - seen.since).count();
+		}
+		seen.health = health;
+	}
+	Fields fields{{"node", json(health.name)},
+	              {"state", json(stateName(health.state))},
+	              {"phase", json(phaseName(health.phase))}};
+	if (write == Write::still) {
+		fields.emplace_back("waitingFor", waitingJson(health.waitingFor));
+		emit("node", std::move(fields),
+		     std::format("node {} still {} after {}s: waiting for {}", health.name, phaseName(health.phase), seconds,
+		                 waitingText(health.waitingFor)));
 		return;
 	}
-	emit("node", std::move(fields), std::format("node {} {}", health.name, stateName(health.state)));
+	if (write == Write::none) return;
+	std::string msg = std::format("node {} {}", health.name, stateName(health.state));
+	switch (health.state) {
+	case NodeState::starting:
+		// added: `starting`; configuring after a restart, a retry or an enable: `starting: <cause>`; none else (the
+		// colour's other phases, W4).
+		if (health.phase == NodePhase::configuring && health.cause) {
+			fields.emplace_back("cause", causeJson(*health.cause));
+			msg += ": " + causeText(*health.cause);
+		} else if (health.phase != NodePhase::added) {
+			return;
+		}
+		break;
+	case NodeState::stopping:
+		if (health.cause) {
+			fields.emplace_back("cause", causeJson(*health.cause));
+			msg += ": " + causeText(*health.cause);
+		}
+		break;
+	case NodeState::failed:
+		if (health.reason) {
+			const std::string_view code = failureCode(health.reason->code);
+			fields.emplace_back("failure", object({{"code", json(code)}, {"detail", json(health.reason->detail)}}));
+			msg = std::format("node {} failed {}: {}", health.name, code, health.reason->detail);
+		}
+		break;
+	case NodeState::running:
+	case NodeState::stopped:
+	case NodeState::disabled:
+		break;
+	}
+	emit("node", std::move(fields), std::move(msg));
 }
 
 void StatusLog::nodeGone(const NodeName& node, std::uint64_t droppedFrames) {
-	emit("node", {{"node", json(node)}, {"state", json("stopped")}, {"droppedFrames", json(droppedFrames)}},
-	     std::format("node {} stopped dropped={}", node, droppedFrames));
+	{
+		const std::scoped_lock lock(mutex_);
+		nodes_.erase(node);
+	}
+	emit("node",
+	     {{"node", json(node)},
+	      {"state", json(stateName(NodeState::stopping))},
+	      {"phase", json("removed")},
+	      {"droppedFrames", json(droppedFrames)}},
+	     std::format("node {} removed dropped={}", node, droppedFrames));
 }
 
 void StatusLog::nodeSays(const NodeName& node, const std::string& text) {
@@ -224,7 +372,6 @@ void StatusLog::log(const LogEntry& entry) {
 	Fields fields;
 	if (entry.node) fields.emplace_back("node", json(*entry.node));
 	else fields.emplace_back("unattributed", "true");
-	if (entry.run) fields.emplace_back("run", json(*entry.run));
 	fields.emplace_back("level", json(logLevelName(entry.level)));
 	fields.emplace_back("source", json(entry.source));
 	if (!entry.topic.empty()) fields.emplace_back("topic", json(entry.topic));

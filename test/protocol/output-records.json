@@ -1,5 +1,5 @@
 {
-  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last log record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted. A diagnostic record carries its structured fields (such as ms) between code and detail, and one that names no node (ear.data-loop-wedged) has no node field.",
+  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last log record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted. A node record carries its phase beside its state (the phase's colour), and is written when the state changes (or a failure's reason does): starting for a node added, starting: <cause> for one configuring after a restart, a retry or an enable, none for the colour's other phases; still when what a node waits for first appears after 2 s in its phase, then at most once per 10 s while it changes; removed dropped=<frames> once everything it made is gone (no record carries a run). A diagnostic record carries its structured fields (such as ms) between code and detail, and one that names no node (ear.data-loop-wedged) has no node field.",
   "records": [
     {
       "case": "the engine's audio thread is realtime",
@@ -38,7 +38,7 @@
       }
     },
     {
-      "case": "a node starts",
+      "case": "a node is added: its first record (phase added) says starting",
       "record": {
         "v": 1,
         "seq": 4,
@@ -46,6 +46,7 @@
         "kind": "node",
         "node": "desk",
         "state": "starting",
+        "phase": "added",
         "msg": "node desk starting"
       }
     },
@@ -58,6 +59,7 @@
         "kind": "node",
         "node": "desk",
         "state": "failed",
+        "phase": "failed",
         "failure": {
           "code": "engine-refused",
           "detail": "card lost"
@@ -66,16 +68,17 @@
       }
     },
     {
-      "case": "a node is gone",
+      "case": "a node is removed: everything it made is gone (no longer \"stopped\", which names a resting node)",
       "record": {
         "v": 1,
         "seq": 6,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "node",
         "node": "rec",
-        "state": "stopped",
+        "state": "stopping",
+        "phase": "removed",
         "droppedFrames": 0,
-        "msg": "node rec stopped dropped=0"
+        "msg": "node rec removed dropped=0"
       }
     },
     {
@@ -232,7 +235,6 @@
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "log",
         "node": "kitchen",
-        "run": 2,
         "level": "info",
         "source": "sendspin",
         "text": "key file narrowed",
@@ -261,6 +263,7 @@
         "kind": "node",
         "node": "desk",
         "state": "running",
+        "phase": "running",
         "dropped": 1,
         "msg": "node desk running (1 records dropped before this)"
       }
@@ -372,6 +375,272 @@
         "ms": 1840,
         "detail": "the main-loop heartbeat came back after a gap of 1840 ms",
         "msg": "ear.main-loop-resumed: the main-loop heartbeat came back after a gap of 1840 ms"
+      }
+    },
+    {
+      "case": "a node runs: configuring, configured and starting, the colour's other phases, write none",
+      "record": {
+        "v": 1,
+        "seq": 60,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "running",
+        "phase": "running",
+        "msg": "node porch running"
+      }
+    },
+    {
+      "case": "a node stops (node.stop): cause stop",
+      "record": {
+        "v": 1,
+        "seq": 61,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "stop"
+        },
+        "msg": "node porch stopping: stop"
+      }
+    },
+    {
+      "case": "a node rests stopped, keeping its configuration",
+      "record": {
+        "v": 1,
+        "seq": 62,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopped",
+        "phase": "stopped",
+        "msg": "node porch stopped"
+      }
+    },
+    {
+      "case": "a node is disabled: cause disabling",
+      "record": {
+        "v": 1,
+        "seq": 63,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "disabling"
+        },
+        "msg": "node porch stopping: disabling"
+      }
+    },
+    {
+      "case": "a node is disabled: its configuration gone, its block and wires kept",
+      "record": {
+        "v": 1,
+        "seq": 64,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "disabled",
+        "phase": "disabled",
+        "msg": "node porch disabled"
+      }
+    },
+    {
+      "case": "a node is enabled: configuring, cause enabling",
+      "record": {
+        "v": 1,
+        "seq": 65,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "enabling"
+        },
+        "msg": "node porch starting: enabling"
+      }
+    },
+    {
+      "case": "a restart-only change: stopping, cause restarting by settings, with the keys",
+      "record": {
+        "v": 1,
+        "seq": 66,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "settings",
+            "keys": [
+              "path"
+            ]
+          }
+        },
+        "msg": "node rec stopping: restarting (settings changed: path)"
+      }
+    },
+    {
+      "case": "configuring again after a restart-only change: cause settings, with the keys",
+      "record": {
+        "v": 1,
+        "seq": 67,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "settings",
+          "keys": [
+            "path"
+          ]
+        },
+        "msg": "node rec starting: settings changed: path"
+      }
+    },
+    {
+      "case": "running again after a restart",
+      "record": {
+        "v": 1,
+        "seq": 68,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "running",
+        "phase": "running",
+        "msg": "node rec running"
+      }
+    },
+    {
+      "case": "a restart asked (node.restart): cause restarting by action",
+      "record": {
+        "v": 1,
+        "seq": 69,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        },
+        "msg": "node rec stopping: restarting (restart invoked)"
+      }
+    },
+    {
+      "case": "configuring again after node.restart: cause action",
+      "record": {
+        "v": 1,
+        "seq": 70,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "action"
+        },
+        "msg": "node rec starting: restart invoked"
+      }
+    },
+    {
+      "case": "a node that had rested says it cannot go on: failure code lost",
+      "record": {
+        "v": 1,
+        "seq": 71,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "failed",
+        "phase": "failed",
+        "failure": {
+          "code": "lost",
+          "detail": "the library died"
+        },
+        "msg": "node kitchen failed lost: the library died"
+      }
+    },
+    {
+      "case": "a failed node retried (node.start): configuring, cause retry",
+      "record": {
+        "v": 1,
+        "seq": 72,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "retry"
+        },
+        "msg": "node kitchen starting: retry"
+      }
+    },
+    {
+      "case": "a node removed: cause removing",
+      "record": {
+        "v": 1,
+        "seq": 73,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "removing"
+        },
+        "msg": "node kitchen stopping: removing"
+      }
+    },
+    {
+      "case": "a node still configuring after 2 s says what it waits for",
+      "record": {
+        "v": 1,
+        "seq": 74,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "companion",
+            "name": "fpp.rtp"
+          }
+        ],
+        "msg": "node fpp still configuring after 2s: waiting for fpp.rtp"
+      }
+    },
+    {
+      "case": "then at most once per 10 s while what it waits for changes, the newest each time",
+      "record": {
+        "v": 1,
+        "seq": 75,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "older-node",
+            "name": "fpp"
+          },
+          {
+            "kind": "consumer"
+          }
+        ],
+        "msg": "node fpp still configuring after 12s: waiting for the previous fpp, its consumer"
       }
     }
   ]

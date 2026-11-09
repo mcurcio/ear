@@ -177,7 +177,7 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	CHECK(server.count("disconnected ") == 0);
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(stopBound) == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);

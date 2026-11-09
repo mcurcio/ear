@@ -36,8 +36,15 @@
 // leaked; a node added afterwards fails engine-refused "the data loop is wedged" before T1. So every removal still ends,
 // stopAll's allGone still runs, and main.cpp leaves through std::_Exit (leaked() is above 0).
 //
-// The old NodeHealth stays until L-3d: the aggregate's health is told mapped onto it, only when that changed, so
-// standard output and the wire see what they saw before.
+// Health (step L-3d, 4.3 to 4.5): after every machine transition that changes a member of the derived health, every
+// listener is told, in subscribe order (D-L34), with what the node still waits for added once its phase has lasted
+// 2 s, then changed at most once a second (D-L42). The plan's outcomes are honoured (nodeChanged, 8.4): a disable tears
+// the configuration down (its stop, if held, dropped) and keeps the block and wires, an enable configures afresh, a
+// change on a disabled node is stored, and a node added disabled is never configured. A replace whose type is
+// unchanged (only its ports changed) carries the node's stop, its dropped frames and one health stream into its
+// successor, the older node telling nobody (5.7, D-L36); the older node of any other name added back tells only the
+// listeners that hear a superseded node (standard output, not the wire). NodeOperations' stop, start and restart are
+// operations of their own (5.2), answered in the call.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
@@ -51,14 +58,14 @@
 #include <variant>
 
 #include "ear/core/main_loop_activity.hpp"
-#include "ear/core/node_machines.hpp"
+#include "ear/core/node_lifecycle.hpp"
 #include "ear/core/pass_through.hpp"
 #include "ear/core/run_requests.hpp"
 
 namespace ear {
 namespace {
 
-namespace lc = ear::lifecycle;
+namespace lc = ::ear; // the lifecycle's machines (node_lifecycle.hpp)
 
 /// One outside node a configuration asked for, of any kind.
 using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
@@ -97,12 +104,27 @@ std::int64_t millisecondsBetween(std::chrono::steady_clock::time_point from, std
 	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
 }
 
-bool sameHealth(const NodeHealth& a, const NodeHealth& b) {
-	if (a.state != b.state || a.reason.has_value() != b.reason.has_value()) return false;
-	return !a.reason || (a.reason->code == b.reason->code && a.reason->detail == b.reason->detail);
+/// The phases whose waits reach health once they lasted 2 s (control-plane.md 4.8).
+bool waitingPhase(NodePhase phase) noexcept {
+	return phase == NodePhase::added || phase == NodePhase::configuring || phase == NodePhase::configured ||
+	       phase == NodePhase::starting;
 }
 
 } // namespace
+
+std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
+	switch (kind) {
+	case WaitingFor::Kind::olderNode:
+		return "older-node";
+	case WaitingFor::Kind::block:
+		return "block";
+	case WaitingFor::Kind::companion:
+		return "companion";
+	case WaitingFor::Kind::consumer:
+		return "consumer";
+	}
+	return "unknown";
+}
 
 ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers,
                                    HandoffAdapter& handoffs) noexcept
@@ -148,39 +170,99 @@ struct NodeHost::Impl {
 		bool blockWaiting() const noexcept { return aggregate_.block().state() == lc::BlockState::waiting; }
 		/// No longer wanted: removed by an edit or by stopAll, still stopping or gone.
 		bool removing() const noexcept { return aggregate_.intent() == lc::Intent::remove; }
-		NodeHealth health() const { return mapped(aggregate_.health()); }
+		NodeHealth health() const { return composed(aggregate_.health()); }
+		/// The older node of a port-caused replace: it tells nobody (5.7, D-L36).
+		bool silent() const noexcept { return silent_; }
+		/// The serial of the older node this one is the port-caused replace of, while that one is not gone; else 0.
+		std::uint64_t predecessor() const noexcept { return predecessor_; }
+		/// A newer node of this name was added while this one closes: only standard output hears it (D-L36).
+		void supersede() noexcept { superseded_ = true; }
+		bool superseded() const noexcept { return superseded_; }
+		/// The stop held, for a port-caused replace to carry (D-L36).
+		bool stopHeld() const noexcept { return aggregate_.stopHeld(); }
+		bool disabled() const noexcept { return aggregate_.wanted() == lc::Wanted::disabled; }
+		std::uint64_t dropped() const noexcept { return dropped_; }
+
+		/// What a port-caused replace carries from its older node (5.7, D-L36), or nothing.
+		struct Carried {
+			std::uint64_t predecessor = 0; // its serial
+			bool stopHeld = false;
+			std::vector<std::string> keys;
+		};
 
 		/// The port block once no older block of this name exists (T1, I9: two blocks never share a node.name), and a
 		/// configuration once no older node of this name is left (rule 1), so an old and a new configuration never share
-		/// what the name owns (a listening port, a key file).
-		void add(std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
+		/// what the name owns (a listening port, a key file). A node added disabled keeps its block and is never
+		/// configured (T19).
+		void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode,
+		         Carried carried) {
 			ports_ = config->ports();
 			queued_ = std::move(config);
+			predecessor_ = carried.predecessor;
 			// A node added on a wedged loop fails before T1, with no block (4.1, D-L10).
-			feed(aggregate_.add(lc::AddFacts{
-				.olderBlock = olderBlock, .olderNode = olderNode, .wedged = host_.wedged, .queued = queued()}));
+			feed(aggregate_.add(lc::AddFacts{.disabled = spec.disabled,
+			                                 .stopHeld = carried.stopHeld,
+			                                 .olderBlock = olderBlock,
+			                                 .predecessor = carried.predecessor != 0,
+			                                 .olderNode = olderNode,
+			                                 .keys = std::move(carried.keys),
+			                                 .wedged = host_.wedged,
+			                                 .queued = queued()}));
 		}
 
-		/// A new configuration from `config` behind the same port block. One that arrives while the configuration is
-		/// still going replaces the config the next one takes (4.3, rule 2). A lost block is final: nothing is kept.
-		void update(std::shared_ptr<const NodeConfig> config) {
+		/// The plan's outcome for a node kept by name (8.4, D-L4). Its newest config is kept for the next configure
+		/// (a lost block is final: nothing is kept). restart: a configuration settled restarts at once, one still going
+		/// takes it next (4.3, rule 2), a failed node retries; disable: the configuration torn down (T20, T21), its
+		/// stop dropped, its block and wires kept; enable: configured afresh (T22); stored: kept for the enable.
+		void change(std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
 			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
 			queued_ = lost ? nullptr : std::move(config);
 			++version_;
-			// Today's records: an update of a node whose block stands says starting at once, before its teardown, a
-			// failed node's included (whose retry waits for its failed configuration to go, mapped() shows it).
-			if (!lost) tell(NodeHealth{name_, NodeState::starting, std::nullopt});
-			feed(aggregate_.change(queued(), {}));
+			switch (change.outcome) {
+			case NodeOutcome::restart:
+			case NodeOutcome::stored:
+				feed(aggregate_.change(queued(), change.keys));
+				break;
+			case NodeOutcome::disable:
+				feed(aggregate_.disable());
+				feed(aggregate_.change(queued(), change.keys)); // stored for the enable
+				break;
+			case NodeOutcome::enable:
+				feed(aggregate_.change(queued(), change.keys)); // stored, then configured by the enable
+				feed(aggregate_.enable());
+				break;
+			}
 		}
 
-		void remove() {
+		/// How a removal relates to a node of the same name added in the same commit (a replace).
+		enum class Replaced { no, superseded, portCaused };
+
+		/// No longer wanted. A replaced node's newer node of the name comes in the same commit: from here on the older
+		/// node of a port-caused replace tells nobody, any other only standard output (5.7, D-L36).
+		void remove(Replaced replaced = Replaced::no) {
 			queued_.reset(); // never configured again
-			stopping();      // today's records: stopping before anything the removal does
+			silent_ = silent_ || replaced == Replaced::portCaused;
+			superseded_ = superseded_ || replaced == Replaced::superseded;
+			stopping(); // stopping (removing) before anything the removal does
 			feed(aggregate_.remove());
+		}
+
+		/// An operation (4.4): the aggregate answers, and what it caused is carried out and told before the reply.
+		lc::LifecycleReply operate(lc::Operated (lc::NodeAggregate::*operation)()) {
+			lc::Operated operated = (aggregate_.*operation)();
+			feed(std::move(operated.actions));
+			return operated.reply;
 		}
 
 		/// Every older node of this name is gone.
 		void olderGone() { feed(aggregate_.olderNodeGone()); }
+		/// The older node of this port-caused replace is gone (its configuration none, its block destroyed): its frames
+		/// dropped are this node's (5.7).
+		void predecessorGone(std::uint64_t droppedFrames) {
+			predecessor_ = 0;
+			dropped_ += droppedFrames;
+			feed(aggregate_.predecessorGone());
+		}
 		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
 		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
 
@@ -323,6 +405,7 @@ struct NodeHost::Impl {
 						return;
 					node.config_->outside[index]->isReady = true;
 					node.checkReady(generation);
+					node.refreshWaiting();
 				});
 			}
 			void lost(std::string detail) override {
@@ -455,33 +538,89 @@ struct NodeHost::Impl {
 			return config_ != nullptr && config_->generation == generation;
 		}
 
-		/// Today's health from the aggregate's (step L-3a keeps NodeHealth as it is until L-3d): stopping only while
-		/// removed, failed with the failure's reason or the block's loss, running, and starting for everything else
-		/// (a restart's stopping, configuring, configured and starting all were starting).
-		NodeHealth mapped(const lc::Health& health) const {
-			if (health.phase == lc::NodePhase::stopping && health.cause &&
-			    health.cause->kind == lc::NodeCause::Kind::removing)
-				return {name_, NodeState::stopping, std::nullopt};
-			if (health.phase == lc::NodePhase::failed && health.reason && aggregate_.retryAsked())
-				return {name_, NodeState::starting, std::nullopt}; // a retry asked, its configure still to come
-			if (health.phase == lc::NodePhase::failed && health.reason) {
-				const auto code = health.reason->code == lc::FailureCode::engineRefused
-				                      ? FailureReason::Code::engineRefused
-				                      : FailureReason::Code::startFailed; // lost is L-3d's: start-failed until then
-				return {name_, NodeState::failed, FailureReason{code, health.reason->detail}};
+		/// The health the aggregate derived, with what the node waits for as last shown (4.5).
+		NodeHealth composed(const lc::Health& health) const {
+			return NodeHealth{name_,
+			                  health.state,
+			                  health.reason,
+			                  health.phase,
+			                  health.wanted,
+			                  health.cause,
+			                  health.phase == wantedPhase_ ? waitingShown_ : std::vector<WaitingFor>{},
+			                  health.blockLost};
+		}
+
+		/// What the node waits for now, unpaced (4.5; 3a's kinds, D-L28): an older node of its name; its outside nodes
+		/// while configuring (the block first, since they are made only once it is ready); the block while starting.
+		std::vector<WaitingFor> waitingNow() const {
+			std::vector<WaitingFor> waits;
+			switch (aggregate_.health().phase) {
+			case lc::NodePhase::added:
+				if (aggregate_.waitingForOlder()) waits.push_back({WaitingFor::Kind::olderNode, name_});
+				break;
+			case lc::NodePhase::configuring:
+				if (!config_ || config_->startFailed || config_->outsideRequests.empty()) break;
+				if (aggregate_.block().state() != lc::BlockState::ready) {
+					waits.push_back({WaitingFor::Kind::block});
+					break;
+				}
+				for (std::size_t i = 0; i < config_->outsideRequests.size(); ++i)
+					if (i >= config_->outside.size() || !config_->outside[i]->isReady)
+						waits.push_back({WaitingFor::Kind::companion, config_->outsideRequests[i].second.engineNode});
+				break;
+			case lc::NodePhase::starting:
+				if (aggregate_.block().state() != lc::BlockState::ready) waits.push_back({WaitingFor::Kind::block});
+				break;
+			default:
+				break;
 			}
-			if (health.blockLost) // a name added back whose block was lost while it waited (I1)
-				return {name_, NodeState::failed,
-				        FailureReason{FailureReason::Code::engineRefused, aggregate_.block().lossDetail()}};
-			if (health.phase == lc::NodePhase::running) return {name_, NodeState::running, std::nullopt};
-			return {name_, NodeState::starting, std::nullopt};
+			return waits;
+		}
+
+		/// After an input: once the phase has lasted 2 s and no 1 s pace runs, a changed list is shown at once and the
+		/// pace begins; while it runs, the newest list waits for it (D-L42).
+		void refreshWaiting() {
+			if (!waitingAllowed_ || paceTimer_ || removed()) return;
+			std::vector<WaitingFor> now = waitingNow();
+			if (now == waitingShown_) return;
+			waitingShown_ = std::move(now);
+			pace();
+			tell(aggregate_.health());
+		}
+
+		/// The 1 s pace: when it ends the newest list is shown if it changed, and the pace begins again.
+		void pace() {
+			paceTimer_ = host_.timers.after(waitingForPace, [&host = host_, serial = serial_] {
+				host.inputFor(serial, [](Node& node) {
+					node.paceTimer_.reset();
+					node.refreshWaiting();
+				});
+			});
+		}
+
+		/// A phase began (or the node was first told): its waits are hidden for 2 s (4.5).
+		void phaseBegan(NodePhase phase) {
+			wantedPhase_ = phase;
+			waitingShown_.clear();
+			waitingAllowed_ = false;
+			paceTimer_.reset();
+			phaseTimer_.reset();
+			if (!waitingPhase(phase) || host_.wedged) return;
+			phaseTimer_ = host_.timers.after(waitingForDelay, [&host = host_, serial = serial_, phase] {
+				host.inputFor(serial, [phase](Node& node) {
+					node.phaseTimer_.reset();
+					if (node.wantedPhase_ != phase) return;
+					node.waitingAllowed_ = true;
+					node.refreshWaiting();
+				});
+			});
 		}
 
 		/// Carries out what the aggregate returned, in order (5.2's steps 2 and 4). An input an action causes (a
 		/// resource ready at once, a run object closed inside close()) is queued behind them, never handled inside.
 		void feed(lc::Actions actions) {
 			// A removal that ends in its own input (nothing was configured, or its configuration was already gone) is
-			// told gone without a stopping before it; today's records say stopping first, so it is told here.
+			// told gone without a stopping before it (4.3's row 1); every removal says stopping first (revision 2.8).
 			if (std::ranges::any_of(actions,
 			                        [](const auto& action) { return std::holds_alternative<lc::Gone>(action); }))
 				stopping();
@@ -504,17 +643,29 @@ struct NodeHost::Impl {
 			    aggregate_.configuration().stopAsked() && aggregate_.intent() != lc::Intent::stop &&
 			    aggregate_.intent() != lc::Intent::none)
 				config_->channel->closing();
+			refreshWaiting();
 		}
 
-		void tell(const lc::Health& health) { tell(mapped(health)); }
+		void tell(const lc::Health& health) {
+			if (health.phase != wantedPhase_ || !told_) phaseBegan(health.phase);
+			tell(composed(health));
+		}
 
 		void tell(NodeHealth now) {
-			if (told_ && sameHealth(*told_, now)) return;
+			if (told_ && *told_ == now) return;
 			told_ = now;
-			host_.changed(*told_);
+			if (!silent_) host_.changed(*told_, superseded_);
 		}
 
-		void stopping() { tell(NodeHealth{name_, NodeState::stopping, std::nullopt}); }
+		/// A removal's stopping (removing), told before anything it does.
+		void stopping() {
+			lc::Health health = aggregate_.health();
+			health.phase = NodePhase::stopping;
+			health.state = NodeState::stopping;
+			health.cause = lc::NodeCause{lc::NodeCause::Kind::removing, std::nullopt, {}};
+			health.reason.reset();
+			tell(health);
+		}
 
 		void act(lc::BlockAction action) {
 			switch (action) {
@@ -934,7 +1085,7 @@ struct NodeHost::Impl {
 			});
 		}
 
-		/// The run's own threads say it is dead: the node fails (start-failed; lost once rested is L-3d's code).
+		/// The run's own threads say it is dead: the node fails (start-failed before it rested, lost after, D-L23).
 		void insidesLost(std::string detail) {
 			host_.inputFor(serial_, [generation = config_->generation, detail = std::move(detail)](Node& node) mutable {
 				if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::nodeLost, std::move(detail)));
@@ -988,6 +1139,14 @@ struct NodeHost::Impl {
 		std::shared_ptr<const NodeConfig> queued_; // the newest committed config, the next configure's
 		std::uint64_t version_ = 0;                // queued_'s, as the aggregate compares it
 		std::optional<NodeHealth> told_;           // the health last told
+		NodePhase wantedPhase_ = NodePhase::added; // the phase last told, whose waits are shown (4.5)
+		std::vector<WaitingFor> waitingShown_;     // what it waits for, as health shows it
+		bool waitingAllowed_ = false;              // the phase has lasted 2 s
+		std::unique_ptr<Timer> phaseTimer_;        // the phase's 2 s
+		std::unique_ptr<Timer> paceTimer_;         // the 1 s pace of a changed list
+		std::uint64_t predecessor_ = 0;            // the port-caused replace's older node, while not gone
+		bool silent_ = false;                      // the older node of a port-caused replace: tells nobody
+		bool superseded_ = false;                  // a newer node of its name was added: standard output alone
 		std::unique_ptr<Configuration> config_;    // the current configuration (I7: at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool starting_ = false;
@@ -1147,13 +1306,68 @@ struct NodeHost::Impl {
 
 	/// The wanted node of this name: the newest one not removing.
 	Node& wanted(const NodeName& name) {
-		for (auto it = nodes.rbegin(); it != nodes.rend(); ++it)
-			if ((*it)->name() == name && !(*it)->removing()) return **it;
+		if (Node* node = wantedOrNull(name)) return *node;
 		throw std::logic_error("node " + name + " is not a wanted node: a wiring bug");
 	}
+	Node* wantedOrNull(const NodeName& name) {
+		for (auto it = nodes.rbegin(); it != nodes.rend(); ++it)
+			if ((*it)->name() == name && !(*it)->removing() && !(*it)->removed()) return it->get();
+		return nullptr;
+	}
 
-	void changed(const NodeHealth& health) {
-		for (auto* listener : listeners) listener->nodeChanged(health);
+	/// A node added (a replace's new node when `change` is given): it waits for older nodes of its name (T1, rule 1),
+	/// which are superseded from now on; a port-caused replace carries its older node's stop when both are enabled,
+	/// and its one health stream (5.7, 8.4, D-L36, D-L46).
+	void add(const NodeSpec& spec, std::shared_ptr<const NodeConfig> config, const NodeChange* change) {
+		requireOpen("nodeAdded", spec.name);
+		std::erase_if(nodes, [](auto& known) {
+			if (!known->removed()) return false;
+			if (known->blockLeaked()) static_cast<void>(known.release()); // its leaked block may still tell it (5.4)
+			return true;
+		});
+		const std::uint64_t serial = ++serials;
+		nodes.emplace_back(std::make_unique<Node>(*this, spec.name, serial));
+		inputFor(serial, [this, spec, config = std::move(config),
+		                  change = change ? std::optional<NodeChange>(*change) : std::nullopt](Node& added) mutable {
+			// Older nodes of the name, as they stand when this input is handled (T1, rule 1).
+			bool olderBlock = false;
+			bool olderNode = false;
+			Node* older = nullptr;
+			for (const auto& known : nodes) {
+				if (known.get() == &added) break;
+				if (known->name() != added.name() || known->removed()) continue;
+				olderNode = true;
+				olderBlock = olderBlock || known->holdsBlock();
+				if (!known->silent()) known->supersede();
+				older = known.get();
+			}
+			Node::Carried carried;
+			if (change && change->portCaused && older != nullptr && older->silent() && !spec.disabled) {
+				carried.predecessor = older->serial();
+				carried.stopHeld = older->stopHeld() && !older->disabled();
+				carried.keys = change->keys;
+			}
+			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
+		});
+	}
+
+	void changed(const NodeHealth& health, bool superseded) {
+		for (auto* listener : listeners)
+			if (!superseded || listener->hearsSuperseded()) listener->nodeChanged(health);
+	}
+
+	/// An operation (5.2): refused stopping during stopAll and unknown-node for a name no wanted node has; else the
+	/// wanted node's aggregate answers, in an input of its own, before the call returns.
+	LifecycleReply operate(const NodeName& name, Operated (NodeAggregate::*operation)()) {
+		if (handling || inItem || flushing)
+			throw std::logic_error("an operation on node " + name + " inside NodeHost's own input: a wiring bug");
+		if (stopRequested) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::stopping});
+		Node* node = wantedOrNull(name);
+		if (node == nullptr) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::unknownNode});
+		std::optional<LifecycleReply> reply;
+		inputFor(node->serial(), [&](Node& wanted) { reply = wanted.operate(operation); });
+		if (!reply) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::unknownNode});
+		return *reply;
 	}
 
 	void noted(const NodeName& node, const std::string& text) {
@@ -1180,10 +1394,17 @@ struct NodeHost::Impl {
 			if (!known->removed()) inputFor(known->serial(), [](Node& each) { each.dataLoopWedged(); });
 	}
 
-	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure.
+	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure. The older
+	/// node of a port-caused replace tells nobody, and its successor takes its dropped frames (5.7, D-L36).
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
-		for (auto* listener : listeners) listener->nodeGone(node.name(), droppedFrames);
+		if (!node.silent())
+			for (auto* listener : listeners)
+				if (!node.superseded() || listener->hearsSuperseded()) listener->nodeGone(node.name(), droppedFrames);
+		const auto successor = std::ranges::find_if(
+			nodes, [&](const auto& known) { return known->predecessor() == node.serial() && !known->removed(); });
+		if (successor != nodes.end())
+			inputFor((*successor)->serial(), [droppedFrames](Node& next) { next.predecessorGone(droppedFrames); });
 		const auto next = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->name() == node.name() && !known->removed(); });
 		if (next != nodes.end()) inputFor((*next)->serial(), [](Node& waiting) { waiting.olderGone(); });
@@ -1231,38 +1452,41 @@ void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 }
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
-	impl_->requireOpen("nodeAdded", node.name);
-	std::erase_if(impl_->nodes, [](auto& known) {
-		if (!known->removed()) return false;
-		if (known->blockLeaked()) static_cast<void>(known.release()); // its leaked block may still tell it (5.4)
-		return true;
-	});
-	const std::uint64_t serial = ++impl_->serials;
-	impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name, serial));
-	impl_->inputFor(serial, [impl = impl_.get(), config = std::move(config)](Impl::Node& added) mutable {
-		// Older nodes of the name, as they stand when this input is handled (T1, rule 1).
-		bool olderBlock = false;
-		bool olderNode = false;
-		for (const auto& known : impl->nodes) {
-			if (known.get() == &added) break;
-			if (known->name() != added.name() || known->removed()) continue;
-			olderNode = true;
-			olderBlock = olderBlock || known->holdsBlock();
-		}
-		added.add(std::move(config), olderBlock, olderNode);
-	});
+	impl_->add(node, std::move(config), nullptr);
+}
+
+void NodeHost::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
+	impl_->add(node, std::move(config), &change);
 }
 
 void NodeHost::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
-	impl_->requireOpen("nodeUpdated", node.name);
-	impl_->inputFor(impl_->wanted(node.name).serial(),
-	                [config = std::move(config)](Impl::Node& wanted) mutable { wanted.update(std::move(config)); });
+	nodeChanged(node, std::move(config), NodeChange{NodeOutcome::restart, {}});
+}
+
+void NodeHost::nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) {
+	impl_->requireOpen("nodeChanged", node.name);
+	impl_->inputFor(
+		impl_->wanted(node.name).serial(),
+		[config = std::move(config), change](Impl::Node& wanted) mutable { wanted.change(std::move(config), change); });
 }
 
 void NodeHost::nodeRemoved(const NodeName& node) {
 	impl_->requireOpen("nodeRemoved", node);
 	impl_->inputFor(impl_->wanted(node).serial(), [](Impl::Node& wanted) { wanted.remove(); });
 }
+
+void NodeHost::nodeReplacing(const NodeName& node, const NodeChange& change) {
+	impl_->requireOpen("nodeReplacing", node);
+	impl_->inputFor(impl_->wanted(node).serial(), [portCaused = change.portCaused](Impl::Node& wanted) {
+		wanted.remove(portCaused ? Impl::Node::Replaced::portCaused : Impl::Node::Replaced::superseded);
+	});
+}
+
+LifecycleReply NodeHost::start(const NodeName& node) { return impl_->operate(node, &NodeAggregate::start); }
+
+LifecycleReply NodeHost::stop(const NodeName& node) { return impl_->operate(node, &NodeAggregate::stop); }
+
+LifecycleReply NodeHost::restart(const NodeName& node) { return impl_->operate(node, &NodeAggregate::restart); }
 
 void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	if (impl_->stopRequested) throw std::logic_error("stopAll() was called twice");

@@ -7,7 +7,8 @@
 // blocking drive removed and NodeHost on the lifecycle machines by its step L-3a; PipeWire's object changes batched per
 // turn, T1's wait for an older block and OutsideTarget::blockId by its step L-3b; the fade before every planned silence,
 // the fade's and the barrier's bounds, the wedged data loop, EngineDiagnosticListener, structured diagnostic fields and
-// leaked() by its step L-3c). Change it only through a design page and a re-cut, never a local edit.
+// leaked() by its step L-3c; NodeHealth's lifecycle members, NodeOperations, the superseded node's listeners and the
+// plan's outcomes honoured by its step L-3d). Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -24,21 +25,60 @@
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
-/// A node's health: its state and why it failed, the framework's judgement alone (docs/design/node-framework.md
-/// section 4).
+/// What a node still waits for, once its phase has lasted 2 s (control-plane.md 4.8; 3a's four kinds, D-L28):
+/// an older node of its name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an
+/// outside node's engine name, `<node>.<suffix>`), a sink's consumer (`consumer`, from step L-4b).
+struct WaitingFor {
+	enum class Kind { olderNode, block, companion, consumer };
+	Kind kind;
+	std::string name{}; // olderNode and companion only
+	friend bool operator==(const WaitingFor&, const WaitingFor&) = default;
+};
+std::string_view waitingKindName(WaitingFor::Kind kind) noexcept; // "older-node" | "block" | "companion" | "consumer"
+/// A node's health, the framework's judgement alone (docs/design/node-framework.md sections 4 and 6.2;
+/// docs/design/node-lifecycle.md 4.3 derives it, control-plane.md 4.8 puts it on the wire): its state (the phase's
+/// colour), why it failed (while failed), its exact phase, what the graph wants of it, why it is stopping or
+/// configuring again, what it still waits for (absent until its phase has lasted 2 s, then changed at most once a
+/// second, D-L42), and whether its block is lost. `since` is each listener's, stamped when it is told (D-L22).
 struct NodeHealth {
 	NodeName name;
-	NodeState state;
-	std::optional<FailureReason> reason;
+	NodeState state = NodeState::starting;
+	std::optional<FailureReason> reason{};
+	NodePhase phase = NodePhase::added;
+	Wanted wanted = Wanted::running;
+	std::optional<NodeCause> cause{};
+	std::vector<WaitingFor> waitingFor{};
+	bool blockLost = false;
+	friend bool operator==(const NodeHealth&, const NodeHealth&) = default;
 };
+/// Told after every machine transition that changes any member of a node's health (node-lifecycle.md 5.2, D-L34), so
+/// a turn that walks several phases tells each, in order.
 class NodeHealthListener {
 public:
 	virtual void nodeChanged(const NodeHealth& health) = 0;
-	/// Everything the node made is gone. droppedFrames: frames its handoffs refused (ring full).
+	/// Everything the node made is gone (its `removed`). droppedFrames: frames its handoffs refused (ring full).
 	virtual void nodeGone(const NodeName& node, std::uint64_t droppedFrames) = 0;
+	/// Whether this listener hears a superseded node: an older node of a name still closing once a newer node of that
+	/// name was added (another type, or a name added back by a later commit). The wire keys health by name and holds
+	/// the newer node, so the gateway does not; standard output does (node-lifecycle.md 5.7, D-L36). The older node of
+	/// a port-caused replace tells nobody: its successor carries one health stream for the name.
+	virtual bool hearsSuperseded() const noexcept { return true; }
 
 protected:
 	~NodeHealthListener() = default;
+};
+/// The operator's requests that edit nothing: a node's stop (held in memory, never written), its start, and a restart
+/// (docs/design/node-lifecycle.md 5.2 and 4.4; control-plane.md 4.2 and 7.6). Main thread, never inside another of
+/// NodeHost's calls. Each reply comes in the call, after every health change it caused was told; core names no wire
+/// code (D-L35).
+class NodeOperations {
+public:
+	virtual LifecycleReply start(const NodeName& node) = 0;
+	virtual LifecycleReply stop(const NodeName& node) = 0;
+	virtual LifecycleReply restart(const NodeName& node) = 0;
+
+protected:
+	~NodeOperations() = default;
 };
 /// What a node's run says: a sentence, never a state (InsidesEvents::say).
 class NodeNoteListener {
@@ -265,7 +305,11 @@ inline constexpr std::chrono::milliseconds fadeAcknowledgeBound{100};
 /// How long a barrier (a drive or a silence, applied inside its invoke) may go uncompleted before the data loop is
 /// judged wedged (5.4, D-L30; ear.barrier-overdue, ear.data-loop-wedged).
 inline constexpr std::chrono::milliseconds barrierCompletionBound{5'000};
-class NodeHost final : public DesiredNodeListener {
+/// How long a phase lasts before its waitingFor reaches health, and how often it may change after (control-plane.md
+/// 4.8, node-lifecycle.md 4.5, D-L42).
+inline constexpr std::chrono::milliseconds waitingForDelay{2'000};
+inline constexpr std::chrono::milliseconds waitingForPace{1'000};
+class NodeHost final : public DesiredNodeListener, public NodeOperations {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
 	/// events, its handoffs' and run object's `closed`). `timers` run there too.
@@ -291,6 +335,10 @@ public:
 	/// loop has not yet dispatched is never judged late. A failure fails the node
 	/// and tears its configuration down; its port block stays. A name added back gets its block in the flush that
 	/// destroys the older block of the name (T1), and its configuration once the older node of the name is gone.
+	///
+	/// Health is told after every transition that changes any of its members (D-L34), what the node waits for once its
+	/// phase has lasted 2 s and then at most once a second (D-L42). A node added disabled keeps its block, silent, and is
+	/// never configured (T19).
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	/// Restart (I5, I7): the barrier (a drive with no code, once it completed), release(); outside nodes destroyed;
 	/// handoffs closed; the run object closed; then, on the main loop, the code destroyed, then the run object, the
@@ -298,9 +346,27 @@ public:
 	/// routes stay. An update arriving during a restart replaces the config to start; one on a failed node configures it
 	/// again once its failed configuration is gone. If the block was lost: nothing starts, the node stays failed.
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+	/// The plan's outcome (docs/design/node-lifecycle.md 8.4): restart as nodeUpdated (a stopped node rests stopped
+	/// again); disable tears the configuration down (stop() and the fade if it runs), drops the node's stop and keeps
+	/// its block and routes (T20, T21); enable configures it afresh (T22); stored keeps the config for the enable.
+	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
 	/// stopping; the barrier, then the port block's destruction queued into the turn's flush and the configuration torn
 	/// down as the restart's; nodeGone once both are gone (the flush ran the destruction). Others untouched.
 	void nodeRemoved(const NodeName& node) override;
+	/// A replace (another type or other ports) is a removal and an addition of the name (D-R23, D-L5); when only the
+	/// ports changed (change.portCaused), the new node carries the older one's stop (both enabled), its dropped frames
+	/// and one health stream, stopping (restarting) until the older node is gone, the older node telling nobody; any
+	/// other older node tells only the listeners that hear a superseded node (5.7, D-L36, D-L46).
+	void nodeReplacing(const NodeName& node, const NodeChange& change) override;
+	void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
+	                  const NodeChange& change) override;
+	/// NodeOperations (4.4): stop holds the node's stop (a running node fades, is silenced and rests stopped keeping its
+	/// configuration), start clears it (a failed node retries), restart tears the configuration down and configures it
+	/// again. Refused: stopping during stopAll, unknown-node for a name no wanted node has, node-disabled, and
+	/// not-restartable as 4.4 says.
+	LifecycleReply start(const NodeName& node) override;
+	LifecycleReply stop(const NodeName& node) override;
+	LifecycleReply restart(const NodeName& node) override;
 	/// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
 	/// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn
 	/// down; gone. `allGone` runs once on the main thread after the last (at once if none).

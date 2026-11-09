@@ -618,3 +618,39 @@ TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no 
 	REQUIRE(f.recorder.updates.size() == 1);
 	CHECK(f.recorder.updates[0].first.disabled);
 }
+
+TEST_CASE("A replace is told through nodeReplacing and nodeReplaced, port-caused when only the ports changed",
+          "[desired_graph]") {
+	struct ReplaceRecorder final : DesiredNodeListener {
+		Log log;
+		void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+			log.push_back("nodeAdded " + node.name);
+		}
+		void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+			log.push_back("nodeUpdated " + node.name);
+		}
+		void nodeRemoved(const NodeName& node) override { log.push_back("nodeRemoved " + node); }
+		void nodeReplacing(const NodeName& node, const NodeChange& change) override {
+			log.push_back("nodeReplacing " + node + text(change));
+		}
+		void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
+			log.push_back("nodeReplaced " + node.name + text(change));
+		}
+		static std::string text(const NodeChange& change) {
+			std::string line = change.portCaused ? " ports" : " type";
+			for (const auto& key : change.keys) line += " " + key;
+			return line;
+		}
+	};
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ReplaceRecorder recorder;
+	graph.subscribe(recorder);
+	apply(graph, {deskSpec(2)}, {});
+	recorder.log.clear();
+	apply(graph, {deskSpec(4)}, {});
+	CHECK(recorder.log == Log{"nodeReplacing desk ports playback", "nodeReplaced desk ports playback"});
+	recorder.log.clear();
+	apply(graph, {NodeSpec{"desk", "source", json::object()}}, {});
+	CHECK(recorder.log == Log{"nodeReplacing desk type card playback", "nodeReplaced desk type card playback"});
+}

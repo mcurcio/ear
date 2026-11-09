@@ -123,9 +123,13 @@ record for every change. By kind, with its `msg`:
 ```
 engine                   engine: realtime SCHED_FIFO <n> | engine: not realtime (SCHED_OTHER)
 control                  control listening on <address>:<port>
-node                     node <name> starting|running|stopping
-                         node <name> failed <engine-refused|start-failed>: <detail>
-                         node <name> stopped dropped=<frames>
+node                     node <name> starting                       (added)
+                         node <name> starting: <cause>              (configuring after a restart, retry or enable)
+                         node <name> running|stopped|disabled
+                         node <name> stopping[: <cause>]            (stop, disabling, removing, restarting (<why>))
+                         node <name> failed <engine-refused|start-failed|lost>: <detail>
+                         node <name> still <phase> after <s>s: waiting for <what>
+                         node <name> removed dropped=<frames>
 note                     node <name> says <text>
 route                    route <node>:<port> -> <node>:<port> pending|linked|refused[: <detail>]
 graph-file               graph-file <edit|disk|write> <version> running=<version|none>

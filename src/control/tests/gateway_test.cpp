@@ -235,3 +235,27 @@ TEST_CASE("Events and file changes from before watch are not sent", "[gateway]")
 	CHECK(method(f.sink.seen[0]) == "node.removed");
 	CHECK(f.sink.seen[1] == "reply");
 }
+
+TEST_CASE("node.state is sent when a node's state or reason changes, not for the lifecycle's other members until "
+          "they reach the wire, and never for a superseded node",
+          "[gateway]") {
+	Fixture f;
+	f.gateway.watch(f.sink);
+	f.loops.main.runAll();
+	using ear::NodePhase;
+	using ear::NodeState;
+	f.gateway.nodeChanged({"n", NodeState::starting, std::nullopt, NodePhase::added});
+	f.gateway.nodeChanged({"n", NodeState::starting, std::nullopt, NodePhase::configuring});
+	f.gateway.nodeChanged({"n", NodeState::starting, std::nullopt, NodePhase::starting});
+	f.gateway.nodeChanged({"n", NodeState::running, std::nullopt, NodePhase::running});
+	f.gateway.nodeChanged({"n", NodeState::stopping, std::nullopt, NodePhase::stopping});
+	f.gateway.nodeChanged({"n", NodeState::stopped, std::nullopt, NodePhase::stopped});
+	f.gateway.nodeRemoved("n"); // forgotten: a node added back by the same name is sent from its first state
+	f.gateway.nodeChanged({"n", NodeState::stopped, std::nullopt, NodePhase::stopped});
+	f.loops.control.runAll();
+	std::vector<std::string> states;
+	for (const auto& text : f.sink.seen)
+		if (method(text) == "node.state") states.push_back(json::parse(text)["params"]["state"]);
+	CHECK(states == std::vector<std::string>{"starting", "running", "stopping", "stopped", "stopped"});
+	CHECK_FALSE(f.gateway.hearsSuperseded());
+}
