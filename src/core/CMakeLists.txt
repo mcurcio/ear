@@ -33,6 +33,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
+	include/ear/core/lifecycle.hpp
 	include/ear/core/log.hpp
 	include/ear/core/main_loop_activity.hpp
 	include/ear/core/node_catalogue.hpp
@@ -46,6 +47,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/run_requests.hpp
 	include/ear/core/settings_table.hpp
+	include/ear/core/sink.hpp
 	include/ear/core/sound_card.hpp
 	include/ear/core/timers.hpp
 	include/ear/core/type_spec.hpp)
@@ -59,6 +61,7 @@ if(BUILD_TESTS)
 	add_library(ear_type_harness STATIC testing/node_harness.cpp)
 	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 		include/ear/testing/drive_now.hpp
+		include/ear/testing/lifecycle_harness.hpp
 		include/ear/testing/node_harness.hpp
 		include/ear/testing/type_harness.hpp)
 	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)

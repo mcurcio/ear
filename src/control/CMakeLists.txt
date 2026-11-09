@@ -22,6 +22,7 @@ target_sources(ear_control PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/control/gateway.hpp
 	include/ear/control/graph_file_state.hpp
 	include/ear/control/graph_json.hpp
+	include/ear/control/lifecycle_wire.hpp
 	include/ear/control/requests.hpp
 	include/ear/control/rpc.hpp
 	include/ear/control/session.hpp
