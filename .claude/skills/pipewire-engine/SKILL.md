@@ -309,13 +309,17 @@ CI's tests use a sender thread on 127.0.0.1 (`test/support/rtp_tone.hpp`), never
 
 ## drive(): swapping a block's code
 
-`PortBlock::drive(code)` stores the new `AudioCode*` on the block's own data loop with a
-blocking `pw_loop_invoke`, between two cycles: when it returns, no `process()` of the old code
-is running or will run, so the node framework can release the old insides. `drive(nullptr)`
-makes every output silent; the block keeps processing. A block with no data loop (refused,
-never connected, or its local node destroyed: `filter.c` clears the pointer) is not processing,
-so storing the pointer is enough. A block whose engine node was destroyed through the registry
-keeps its data loop (E1 found this), so the invoke runs there as usual.
+`PortBlock::drive(request, done)` (`docs/design/node-lifecycle.md` section 5.3) returns at once:
+the request goes into the block's ring of eight, one non-blocking `pw_loop_invoke` per block in
+flight applies it on the block's own data loop between two cycles, and `done(P)` runs later on the
+main loop, from the block's completion event (or `settle()`), never inside the call. Once `done`
+ran, no `process()` of the old code is running or will run, so the node framework can release the
+old insides. A request with no code makes every output silent; the block keeps processing. A
+block with no data loop (refused, never connected, or its local node destroyed: `filter.c` clears
+the pointer) applies it on the main thread and still completes by signal. A block whose engine
+node was destroyed through the registry keeps its data loop (E1 found this), so the invoke runs
+there as usual. The blocking `drive(code)` went with step L-3a; an engine test that needs a code
+running before it goes on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 
 ## Levels
 
@@ -379,8 +383,9 @@ Nothing like WirePlumber runs. Two things make that work:
 - **No buffer this cycle.** `pw_filter_get_dsp_buffer` returns null when a port has no buffer:
   an input then reads zeros, an output writes to scratch (`port_blocks.cpp`).
 - **Destroying a filter is a barrier.** `pw_filter_destroy` removes the node from the data loop
-  with a blocking invoke, so `process` is never called after it returns; the node framework
-  relies on that before `AudioCode::release`.
+  with a blocking invoke, so `process` is never called after it returns. The node framework no
+  longer relies on it (since step L-3a a node is silenced by an asynchronous drive before its block
+  is destroyed), but a block destroyed with a code still driven is safe.
 - **Link lifetime.** A link made through `link-factory` belongs to the connection that asked for
   it (no `object.linger`), so destroying its proxy removes it. The factory destroys a link that
   goes to ERROR. A proxy removed before ACTIVE is a failure; after ACTIVE it is gone. Never

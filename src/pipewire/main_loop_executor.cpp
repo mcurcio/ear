@@ -90,6 +90,10 @@ std::unique_ptr<Timer> MainLoopExecutor::after(std::chrono::milliseconds delay, 
 	return std::make_unique<LoopTimer>(impl_->loop, delay, std::move(due));
 }
 
+std::chrono::steady_clock::time_point MainLoopExecutor::now() const {
+	return std::chrono::steady_clock::now(); // CLOCK_MONOTONIC on Linux, as the loop's timerfds
+}
+
 MainLoopExecutor::~MainLoopExecutor() = default;
 
 void MainLoopExecutor::post(std::move_only_function<void()> work) {

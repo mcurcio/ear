@@ -49,6 +49,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "probes.hpp"
 #include "rtp_tone.hpp"
@@ -730,8 +731,8 @@ TEST_CASE(
 	auto a = blocks.make("a", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, eventsA);
 	auto b =
 		blocks.make("b", Ports{{{Direction::input, "in", {"1"}}, {Direction::output, "out", {"1"}}}}, kFormat, eventsB);
-	a->drive(&codeA);
-	b->drive(&codeB);
+	ear::testing::driveNow(*a, &codeA);
+	ear::testing::driveNow(*b, &codeB);
 	Probe probe(*engine, waiter, "probe", 0, 1, probeCode);
 	REQUIRE(waiter.until([&] {
 		return eventsA.isReady && eventsB.isReady && probe.streaming() &&
@@ -776,8 +777,8 @@ TEST_CASE(
 	const std::size_t ranDuringStall = record.ran.load() - ranBeforeStall;
 	REQUIRE(waiter.until([&] { return record.seen >= InvokeRecord::kCount; }, 10s));
 	CHECK(codeB.stalled.load());
-	a->drive(nullptr);
-	b->drive(nullptr);
+	ear::testing::driveNow(*a, nullptr);
+	ear::testing::driveNow(*b, nullptr);
 
 	const std::size_t ran = record.ran.load();
 	const auto results = poster.results();
@@ -1089,8 +1090,8 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 	                            Ports{{{Direction::output, "stream", {"1", "2"}},
 	                                   {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
 	                            kFormat, fppBlockEvents);
-	cardBlock->drive(&cardCode);
-	fppBlock->drive(&fppCode);
+	ear::testing::driveNow(*cardBlock, &cardCode);
+	ear::testing::driveNow(*fppBlock, &fppCode);
 	Counting probeCode;
 	Probe probe(*engine, waiter, "probe", 0, 1, probeCode);
 	REQUIRE(waiter.until([&] { return cardBlockEvents.isReady && fppBlockEvents.isReady && probe.streaming(); }));

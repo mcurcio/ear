@@ -1,6 +1,8 @@
-// Frozen interface (docs/design/batch2.md section 4; Timers by docs/design/node-framework.md section 6, I5a, slice 1).
+// Frozen interface (docs/design/batch2.md section 4; Timers by docs/design/node-framework.md section 6, I5a, slice 1;
+// Timers::now by docs/design/node-lifecycle.md D-L12).
 // Change it only through a design page and a re-cut, never a local edit.
 #pragma once
+#include <chrono>
 #include <functional>
 #include <memory>
 #include "ear/core/executor.hpp"
@@ -16,6 +18,8 @@ public:
 	void post(std::move_only_function<void()> work) override; // any thread
 	/// Main thread; the timer must be destroyed before the executor.
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override;
+	/// CLOCK_MONOTONIC, the clock the loop's timers run on.
+	std::chrono::steady_clock::time_point now() const override;
 
 private:
 	struct Impl;

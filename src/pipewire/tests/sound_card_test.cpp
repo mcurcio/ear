@@ -33,6 +33,7 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "temp_folder.hpp"
 
@@ -137,9 +138,9 @@ struct Graph {
 		                        Ports{{{Direction::input, "play", {"1", "2"}},
 		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
 		                        kFormat, cardBlockEvents);
-		cardBlock->drive(&cardCode);
+		ear::testing::driveNow(*cardBlock, &cardCode);
 		otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
-		otherBlock->drive(&otherCode);
+		ear::testing::driveNow(*otherBlock, &otherCode);
 		REQUIRE(waiter.until([&] {
 			return cardBlockEvents.isReady && otherBlockEvents.isReady && registry.id("Dummy-Driver") &&
 			       registry.props("card") && registry.props("other");
@@ -148,8 +149,8 @@ struct Graph {
 		REQUIRE(blocksDrivenBy(dummy));
 	}
 	~Graph() {
-		cardBlock->drive(nullptr);
-		otherBlock->drive(nullptr);
+		ear::testing::driveNow(*cardBlock, nullptr);
+		ear::testing::driveNow(*otherBlock, nullptr);
 	}
 
 	std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
@@ -409,16 +410,16 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	RecordingPassThrough pass(cardPorts, pairs, graph.waiter);
 	pass.prepare(kFormat);
 	graph.cardBlock->carryLatency(LatencyPlan{pairs, {}});
-	graph.cardBlock->drive(&pass);
+	ear::testing::driveNow(*graph.cardBlock, &pass);
 	struct Silenced { // before `pass` goes, however the test ends
 		PortBlock& block;
-		~Silenced() { block.drive(nullptr); }
+		~Silenced() { ear::testing::driveNow(block, nullptr); }
 	} silenced{*graph.cardBlock};
 
 	Code sourceCode(graph.waiter);
 	BlockEvents sourceEvents(graph.waiter);
 	auto source = graph.blocks.make("source", Ports{{{Direction::output, "out", {"1", "2"}}}}, kFormat, sourceEvents);
-	source->drive(&sourceCode);
+	ear::testing::driveNow(*source, &sourceCode);
 	REQUIRE(graph.waiter.until([&] { return sourceEvents.isReady; }));
 	std::vector<pw_proxy*> links{linkByName(*graph.engine, "source", "out.1", "card", "play.1"),
 	                             linkByName(*graph.engine, "source", "out.2", "card", "play.2")};
@@ -458,5 +459,5 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	CHECK(graph.waiter.until([&] { return pass.downstream() == reported && sourceCode.downstream() == reported; }));
 
 	for (pw_proxy* link : links) pw_proxy_destroy(link);
-	source->drive(nullptr);
+	ear::testing::driveNow(*source, nullptr);
 }

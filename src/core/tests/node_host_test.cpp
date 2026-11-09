@@ -1,10 +1,14 @@
 // The node framework driven through fake engine adapters: how a node starts, what makes it running or failed, and the
-// order a run is torn down in (docs/design/m1-white-to-file.md section 3, S2 criterion 5; docs/design/batch2.md section
-// 4.1: the port block is made first and the run drives it; C1 criteria 7-11: restart, sound cards, a lost block,
-// removal; docs/design/rtp.md R1a criteria 3-8: RTP receivers on the same outside-node path; docs/design/node-framework.md
-// slice 1: the resource registry, named inside banks, the framework's pass-through, the two-phase start, and the
-// invariants I4 to I7 and I5a). Every step a fake engine would take later (ready, lost, a handoff closing, a card or
-// receiver ready or lost, a close deadline passing) is an event the test sends.
+// order a configuration is torn down in (docs/design/m1-white-to-file.md section 3, S2 criterion 5;
+// docs/design/batch2.md section 4.1: the port block is made first; C1 criteria 7-11: restart, sound cards, a lost
+// block, removal; docs/design/rtp.md R1a criteria 3-8: RTP receivers on the same outside-node path;
+// docs/design/node-framework.md slice 1: the resource registry, named inside banks, the framework's pass-through, the
+// two-phase start, and the invariants I4 to I7 and I5a). Step L-3a of docs/design/node-lifecycle.md rewrote it for
+// NodeHost on the lifecycle machines (its section 11.1): every drive and silence is asynchronous, its completion
+// posted to the main loop by the fake block (or held for the test to run), every type goes through the legacy adapter
+// (a recipe beside an outside node is a type bug, D-L40), and a failed node's configuration is torn down at once.
+// Every step a fake engine would take later (ready, lost, a completion, a handoff closing, a card or receiver ready or
+// lost, a close deadline passing) is an event the test sends.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -14,6 +18,7 @@
 #include <future>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -69,7 +74,10 @@ Ports testPorts() {
 }
 
 /// A node config whose start asks for `handoffs` handoffs, `cards` sound cards and `receivers` RTP receivers, then
-/// succeeds or fails. A config with a tag logs its start and its destruction with that tag.
+/// succeeds or fails. A config with a tag logs its start and its destruction with that tag. Its start returns a recipe
+/// handing over a TestRun only when it asks for no outside node, as the legacy adapter requires (node-lifecycle.md
+/// 5.10, D-L40), unless `recipe` says otherwise; its handoffs' consumer is the config's own, which outlives every
+/// configuration made from it.
 struct TestConfig final : NodeConfig {
 	Log& log;
 	std::string tag;
@@ -78,7 +86,9 @@ struct TestConfig final : NodeConfig {
 	std::vector<SoundCardRequest> cards;
 	std::vector<RtpReceiverRequest> receivers;
 	bool fail = false;
+	std::optional<bool> recipe;              // default: a recipe when no outside node is asked for
 	mutable StartContext* context = nullptr; // the context start() was given, kept to misuse it later
+	mutable TestConsumer consumer;
 	explicit TestConfig(Log& l, std::string t = {}) : log(l), tag(std::move(t)) {}
 	~TestConfig() override {
 		if (!tag.empty()) log.push_back("config " + tag + " destroyed");
@@ -88,12 +98,12 @@ struct TestConfig final : NodeConfig {
 		context = &c;
 		const AudioFormat format = c.format();
 		log.push_back("start " + std::to_string(format.rate) + (tag.empty() ? "" : " " + tag));
-		auto run = std::make_unique<TestRun>(log);
-		for (int i = 0; i < handoffs; ++i) c.acquire(HandoffRequest{"record", 1024, &run->consumer});
+		for (int i = 0; i < handoffs; ++i) c.acquire(HandoffRequest{"record", 1024, &consumer});
 		for (const auto& card : cards) c.acquire(card);
 		for (const auto& receiver : receivers) c.acquire(receiver);
 		if (fail) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open /nope"});
-		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::move(run))};
+		if (!recipe.value_or(cards.empty() && receivers.empty())) return std::make_unique<TestAudioCode>(log);
+		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::make_unique<TestRun>(log))};
 	}
 };
 
@@ -114,36 +124,99 @@ std::shared_ptr<TestConfig> withReceiver(Log& log, std::string tag = {}) {
 	return config;
 }
 
+/// The main loop as a test turns it: work waits here, from any thread, until the test runs it.
+struct QueueExecutor final : Executor {
+	void post(std::move_only_function<void()> work) override {
+		const std::scoped_lock lock(mutex);
+		queue.push_back(std::move(work));
+		changed.notify_all();
+	}
+	/// Runs everything posted so far, in order, on this thread.
+	void runPosted() {
+		std::deque<std::move_only_function<void()>> batch;
+		{
+			const std::scoped_lock lock(mutex);
+			batch.swap(queue);
+		}
+		for (auto& work : batch) work();
+	}
+	/// Runs everything posted, and what that posts, until nothing is left.
+	void settle() {
+		for (;;) {
+			{
+				const std::scoped_lock lock(mutex);
+				if (queue.empty()) return;
+			}
+			runPosted();
+		}
+	}
+	/// Waits for `count` items; the deadline only fails a test.
+	bool waitFor(std::size_t count) {
+		std::unique_lock lock(mutex);
+		return changed.wait_for(lock, std::chrono::seconds(5), [&] { return queue.size() >= count; });
+	}
+	std::mutex mutex;
+	std::condition_variable changed;
+	std::deque<std::move_only_function<void()>> queue;
+};
+
+/// Completions a block holds until the test runs them (TestBlocks::hold).
+using Held = std::vector<std::move_only_function<void()>>;
+
+/// A block as node-lifecycle.md 5.3 has it: a drive is applied at once (the code it runs is recorded) and its `done`
+/// runs later on the main loop, posted there, never inside the call; or, when held, when the test says.
 struct TestBlock final : PortBlock {
 	Log& log;
 	AudioCode** driven;
 	std::vector<LatencyPlan>* plans;
-	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p) : log(l), driven(d), plans(p) {}
+	Executor& mainLoop;
+	const bool& hold;
+	Held& held;
+	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p, Executor& m, const bool& h, Held& hd)
+		: log(l), driven(d), plans(p), mainLoop(m), hold(h), held(hd) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
-	void drive(AudioCode* code) override {
-		*driven = code;
-		log.push_back(code != nullptr ? "drive code" : "drive nothing");
-	}
 	void carryLatency(const LatencyPlan& plan) override { plans->push_back(plan); }
-	// The asynchronous interface (node-lifecycle.md 5.3): NodeHost does not use it before step L-3a.
-	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)>) override {}
-	void fadeOut(std::move_only_function<void()>) override {}
+	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+		*driven = request.code;
+		log.push_back(request.code != nullptr ? "drive code" : "drive nothing");
+		complete([done = std::move(done)]() mutable { done(0); });
+	}
+	void fadeOut(std::move_only_function<void()> done) override {
+		log.push_back("fade");
+		complete(std::move(done));
+	}
 	void settle() override {}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
+
+private:
+	void complete(std::move_only_function<void()> done) {
+		if (hold) held.push_back(std::move(done));
+		else mainLoop.post(std::move(done));
+	}
 };
 
 struct TestBlocks final : PortBlockFactory {
 	Log& log;
+	Executor& mainLoop;
 	std::vector<PortBlockEvents*> events;
 	std::deque<AudioCode*> driven;              // what each block runs now, in make order
 	std::deque<std::vector<LatencyPlan>> plans; // every latency plan each block was given, in make order
-	explicit TestBlocks(Log& l) : log(l) {}
+	bool hold = false;                          // completions wait in `held` instead of being posted
+	Held held;
+	TestBlocks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		events.push_back(&e);
-		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back());
+		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back(), mainLoop, hold,
+		                                   held);
+	}
+	/// Runs the held completion `index`, as the block's event would on the main loop.
+	void complete(std::size_t index) {
+		auto done = std::move(held.at(index));
+		held.erase(held.begin() + static_cast<std::ptrdiff_t>(index));
+		done();
 	}
 };
 
@@ -244,32 +317,6 @@ struct TestListener final : NodeHealthListener {
 	}
 };
 
-/// The main loop as a test turns it: work waits here, from any thread, until the test runs it.
-struct QueueExecutor final : Executor {
-	void post(std::move_only_function<void()> work) override {
-		const std::scoped_lock lock(mutex);
-		queue.push_back(std::move(work));
-		changed.notify_all();
-	}
-	/// Runs everything posted so far, in order, on this thread.
-	void runPosted() {
-		std::deque<std::move_only_function<void()>> batch;
-		{
-			const std::scoped_lock lock(mutex);
-			batch.swap(queue);
-		}
-		for (auto& work : batch) work();
-	}
-	/// Waits for `count` items; the deadline only fails a test.
-	bool waitFor(std::size_t count) {
-		std::unique_lock lock(mutex);
-		return changed.wait_for(lock, std::chrono::seconds(5), [&] { return queue.size() >= count; });
-	}
-	std::mutex mutex;
-	std::condition_variable changed;
-	std::deque<std::move_only_function<void()>> queue;
-};
-
 /// Main-loop timers on a clock the test moves.
 struct FakeTimers final : Timers {
 	struct Armed {
@@ -282,13 +329,14 @@ struct FakeTimers final : Timers {
 		explicit Handle(std::shared_ptr<Armed> a) : armed(std::move(a)) {}
 		~Handle() override { armed->cancelled = true; }
 	};
-	std::chrono::milliseconds now{0};
+	std::chrono::milliseconds clock{0};
 	std::vector<std::shared_ptr<Armed>> armed;
 	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
-		auto timer = std::make_shared<Armed>(Armed{now + delay, std::move(due)});
+		auto timer = std::make_shared<Armed>(Armed{clock + delay, std::move(due)});
 		armed.push_back(timer);
 		return std::make_unique<Handle>(timer);
 	}
+	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{clock}; }
 	/// Timers still armed (not cancelled, not yet due).
 	std::size_t live() const {
 		return static_cast<std::size_t>(
@@ -296,10 +344,10 @@ struct FakeTimers final : Timers {
 	}
 	/// Moves the clock and runs what came due, in arming order.
 	void advance(std::chrono::milliseconds by) {
-		now += by;
+		clock += by;
 		auto due = armed; // a due timer may arm or cancel others
 		for (const auto& timer : due) {
-			if (timer->cancelled || !timer->due || timer->at > now) continue;
+			if (timer->cancelled || !timer->due || timer->at > clock) continue;
 			auto call = std::move(timer->due);
 			timer->due = nullptr;
 			call();
@@ -329,7 +377,8 @@ constexpr std::chrono::milliseconds closeDeadline{10'000};
 
 struct Fixture {
 	Log log;
-	TestBlocks blocks{log};
+	QueueExecutor mainLoop;
+	TestBlocks blocks{log, mainLoop};
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
 	TestReceivers receivers{log};
@@ -337,7 +386,6 @@ struct Fixture {
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
-	QueueExecutor mainLoop;
 	FakeTimers timers;
 	TestNotes notes{log};
 	TestDiagnostics diagnostics{log};
@@ -360,6 +408,8 @@ struct Fixture {
 			log.push_back("all gone");
 		});
 	}
+	/// The main loop turns until nothing is left: every completion the blocks posted, and what follows from it.
+	void settle() { mainLoop.settle(); }
 };
 
 std::ptrdiff_t indexOf(const Log& log, const std::string& line) {
@@ -368,7 +418,8 @@ std::ptrdiff_t indexOf(const Log& log, const std::string& line) {
 
 } // namespace
 
-TEST_CASE("A node gets its port block, then starts, prepares its code, drives the block and builds its run",
+TEST_CASE("A node gets its port block, then starts, builds its run and prepares its code, and drives the block once it "
+          "is ready",
           "[node_host]") {
 	Fixture f;
 	auto rec = std::make_shared<TestConfig>(f.log);
@@ -376,16 +427,25 @@ TEST_CASE("A node gets its port block, then starts, prepares its code, drives th
 
 	f.add("rec", rec);
 
-	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
-	                   "prepare 44100/256", "drive code", "run built"});
+	// T2, then T3 in the same turn (no outside node): nothing drives a block that is not ready.
+	CHECK(f.log == Log{"make rec 2 inputs", "node rec starting", "start 44100", "handoff rec 2 channels", "run built",
+	                   "prepare 44100/256"});
+	CHECK(f.blocks.driven.at(0) == nullptr);
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::starting);
+	f.log.clear();
+
+	f.blocks.events.at(0)->ready();
+	CHECK(f.log == Log{"drive code"});
+	CHECK(f.blocks.driven.at(0) != nullptr);
 
 	f.stopAll();
+	f.settle();
 	f.handoffs.finishOne(0);
+	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A node becomes running when its port block is ready", "[node_host]") {
+TEST_CASE("A drive's completion arrives later than the call, and the node is running only then", "[node_host]") {
 	Fixture f;
 	f.add("rec", std::make_shared<TestConfig>(f.log));
 	f.log.clear();
@@ -393,10 +453,16 @@ TEST_CASE("A node becomes running when its port block is ready", "[node_host]") 
 	f.blocks.events.at(0)->ready();
 	f.blocks.events.at(0)->ready(); // at most once; a repeat changes nothing
 
-	CHECK(f.log == Log{"node rec running"});
+	CHECK(f.log == Log{"drive code"}); // the call returned; its completion waits on the main loop
 	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].state == NodeState::starting);
+	f.log.clear();
+
+	f.settle();
+	CHECK(f.log == Log{"node rec running"});
 	CHECK(f.host.health()[0].state == NodeState::running);
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A node whose start fails is failed with start-failed and keeps its port block", "[node_host]") {
@@ -408,49 +474,60 @@ TEST_CASE("A node whose start fails is failed with start-failed and keeps its po
 	f.add("rec", rec);
 
 	// The handoff it asked for goes at once (nothing ever wrote to it); no prepare, no drive.
-	CHECK(f.log == Log{"node rec starting", "make rec 2 inputs", "start 44100", "handoff rec 2 channels",
-	                   "run destroyed", "handoff destroyed", "node rec failed start-failed: cannot open /nope"});
+	CHECK(f.log == Log{"make rec 2 inputs", "node rec starting", "start 44100", "handoff rec 2 channels",
+	                   "handoff destroyed", "node rec failed start-failed: cannot open /nope"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::failed);
 	REQUIRE(f.host.health()[0].reason.has_value());
 	CHECK(f.host.health()[0].reason->code == FailureReason::Code::startFailed);
 
-	// The block becoming ready leaves the node failed.
+	// The block becoming ready leaves the node failed, and drives nothing.
 	f.log.clear();
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	CHECK(f.log.empty());
 
+	// Nothing was driven, so the removal needs no barrier (D-L7).
 	f.stopAll();
 	CHECK(f.log == Log{"node rec stopping", "block destroyed", "node rec gone dropped=0", "all gone"});
 }
 
-TEST_CASE("A node whose port block is lost is failed with engine-refused", "[node_host]") {
+TEST_CASE("A node whose port block is lost is failed with engine-refused, and its configuration is torn down",
+          "[node_host]") {
 	Fixture f;
 	f.add("rec", std::make_shared<TestConfig>(f.log));
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.blocks.events.at(0)->lost("driver gone");
 
-	CHECK(f.log == Log{"node rec failed engine-refused: driver gone"});
+	// No barrier can wait on a lost block, but the silence completes by signal (T13).
+	CHECK(f.log == Log{"node rec failed engine-refused: driver gone", "drive nothing"});
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"release", "run destroyed"});
 	f.log.clear();
 	f.stopAll();
-	CHECK(f.log == Log{"node rec stopping", "block destroyed", "release", "run destroyed", "node rec gone dropped=0",
-	                   "all gone"});
+	CHECK(f.log == Log{"node rec stopping", "block destroyed", "node rec gone dropped=0", "all gone"});
 }
 
-TEST_CASE("stopAll takes a node down in order: block, release, handoffs, run, gone", "[node_host]") {
+TEST_CASE("stopAll takes a node down in order: the barrier, release, handoffs, block, run, gone", "[node_host]") {
 	Fixture f;
 	auto rec = std::make_shared<TestConfig>(f.log);
 	rec->handoffs = 2;
 	f.add("rec", rec);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.stopAll();
+	CHECK(f.log == Log{"drive nothing", "node rec stopping"});
+	f.log.clear();
+	f.settle();
 
-	// Nothing the consumers live in goes until every handoff has closed.
-	CHECK(f.log == Log{"node rec stopping", "block destroyed", "release", "handoff close", "handoff close"});
+	// Nothing the consumers live in goes until every handoff has closed; the block goes once the silence completed.
+	CHECK(f.log == Log{"release", "handoff close", "handoff close", "block destroyed"});
 	f.log.clear();
 
 	f.handoffs.finishOne(3);
@@ -464,7 +541,7 @@ TEST_CASE("stopAll takes a node down in order: block, release, handoffs, run, go
 	      Log{"handoff destroyed", "handoff destroyed", "run destroyed", "node rec gone dropped=7", "all gone"});
 	CHECK(f.allGone == 1);
 	CHECK(f.host.health().empty());
-	CHECK(f.timers.live() == 0); // the close deadline went with the run
+	CHECK(f.timers.live() == 0); // the close deadline went with the configuration
 }
 
 TEST_CASE("allGone runs once, after the last node is gone", "[node_host]") {
@@ -477,7 +554,7 @@ TEST_CASE("allGone runs once, after the last node is gone", "[node_host]") {
 
 	f.stopAll();
 
-	// noise has no handoff, so it is gone at once; rec waits for its handoff.
+	// Neither was ever driven: noise has no handoff, so it is gone at once; rec waits for its handoff.
 	CHECK(f.allGone == 0);
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].name == "rec");
@@ -494,7 +571,8 @@ TEST_CASE("stopAll with no node runs allGone at once", "[node_host]") {
 	CHECK(f.log == Log{"all gone"});
 }
 
-TEST_CASE("An update restarts the run behind the same port block, letting the old config go last", "[node_host]") {
+TEST_CASE("An update restarts the configuration behind the same port block, letting the old config go last",
+          "[node_host]") {
 	Fixture f;
 	{
 		auto a = std::make_shared<TestConfig>(f.log, "A");
@@ -502,21 +580,27 @@ TEST_CASE("An update restarts the run behind the same port block, letting the ol
 		f.add("rec", std::move(a)); // the host holds the only reference
 	}
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	auto b = std::make_shared<TestConfig>(f.log, "B");
 	b->handoffs = 1;
 	f.update("rec", std::move(b));
 
-	// The block stops running the old code before release(); the handoff is closing.
-	CHECK(f.log == Log{"node rec starting", "drive nothing", "release", "handoff close"});
+	// The block stops running the old code before release(); the handoff then closes.
+	CHECK(f.log == Log{"drive nothing", "node rec starting"});
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"release", "handoff close"});
 	f.log.clear();
 
-	SECTION("the old run goes, then its config, then the new config starts") {
+	SECTION("the old configuration goes, then its config, then the new config starts") {
 		f.handoffs.finishOne(0);
 		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 B",
-		                   "handoff rec 2 channels", "prepare 44100/256", "drive code", "run built",
-		                   "node rec running"});
+		                   "handoff rec 2 channels", "run built", "prepare 44100/256", "drive code"});
+		f.log.clear();
+		f.settle();
+		CHECK(f.log == Log{"node rec running"});
 	}
 	SECTION("two updates during one restart start only the latest config") {
 		auto c = std::make_shared<TestConfig>(f.log, "C");
@@ -524,12 +608,14 @@ TEST_CASE("An update restarts the run behind the same port block, letting the ol
 		CHECK(f.log == Log{"config B destroyed"}); // B never started; nothing else happened
 		f.log.clear();
 		f.handoffs.finishOne(0);
-		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 C",
-		                   "prepare 44100/256", "drive code", "run built", "node rec running"});
+		f.settle();
+		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 C", "run built",
+		                   "prepare 44100/256", "drive code", "node rec running"});
 	}
 	SECTION("a removal during a restart stops the node and starts nothing") {
 		f.host.nodeRemoved("rec");
-		CHECK(f.log == Log{"config B destroyed", "node rec stopping", "block destroyed"});
+		// Silenced already, so the block goes at once.
+		CHECK(f.log == Log{"config B destroyed", "block destroyed", "node rec stopping"});
 		f.log.clear();
 		f.handoffs.finishOne(2);
 		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "node rec gone dropped=2"});
@@ -543,12 +629,13 @@ TEST_CASE("An update restarts the run behind the same port block, letting the ol
 	CHECK(f.blocks.events.size() == 1);
 	f.log.clear();
 	f.stopAll();
-	CHECK(f.log.at(1) == "block destroyed");
+	f.settle();
+	CHECK(f.log.at(0) == "drive nothing");
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("An update of a node whose start failed starts the new config", "[node_host]") {
+TEST_CASE("An update of a node whose start failed configures the new config", "[node_host]") {
 	Fixture f;
 	auto a = std::make_shared<TestConfig>(f.log, "A");
 	a->fail = true;
@@ -558,19 +645,23 @@ TEST_CASE("An update of a node whose start failed starts the new config", "[node
 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
 
-	CHECK(f.log == Log{"node rec starting", "drive nothing", "config A destroyed", "start 44100 B", "prepare 44100/256",
-	                   "drive code", "run built", "node rec running"});
+	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "node rec starting", "run built", "prepare 44100/256",
+	                   "drive code"});
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"node rec running"});
 	f.stopAll();
+	f.settle();
 }
 
-TEST_CASE("A node's sound cards are made once its port block is ready, and its run is built and running when "
-          "every card is ready",
+TEST_CASE("A node's sound cards are made once its port block is ready, and it is driven and running once every card "
+          "is ready",
           "[node_host]") {
 	Fixture f;
 	f.add("motu", withCards(f.log));
 
-	// No card before the block is ready, whatever the run asked for; the code already drives the block.
-	CHECK(f.log == Log{"node motu starting", "make motu 2 inputs", "start 44100", "prepare 44100/256", "drive code"});
+	// No card before the block is ready, whatever the configuration asked for; nothing is prepared or driven yet.
+	CHECK(f.log == Log{"make motu 2 inputs", "node motu starting", "start 44100"});
 	CHECK(f.cards.events.empty());
 	f.log.clear();
 
@@ -583,46 +674,60 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and its r
 	f.log.clear();
 
 	f.cards.events[1]->ready();
-	CHECK(f.log.empty()); // the run object waits for every resource
+	CHECK(f.log.empty()); // T3 waits for every resource
 	f.cards.events[0]->ready();
-	CHECK(f.log == Log{"run built", "node motu running"});
+	CHECK(f.log == Log{"prepare 44100/256", "drive code"});
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"node motu running"});
 	f.log.clear();
 
-	SECTION("a lost card fails the node with the card's detail") {
+	SECTION("a lost card fails the node with the card's detail, and the configuration is torn down") {
 		f.cards.events[0]->lost("unplugged");
-		CHECK(f.log == Log{"node motu failed engine-refused: unplugged"});
+		CHECK(f.log == Log{"drive nothing", "node motu failed engine-refused: unplugged"});
+		f.log.clear();
+		f.settle();
+		CHECK(f.log == Log{"release", "card motu.playback destroyed", "card motu.capture destroyed"});
 		f.log.clear();
 	}
 	SECTION("a restart remakes the cards at once, the block being ready") {
 		f.update("motu", withCards(f.log, "B"));
-		CHECK(f.log == Log{"node motu starting", "drive nothing", "release", "card motu.playback destroyed",
-		                   "card motu.capture destroyed", "run destroyed", "start 44100 B", "prepare 44100/256",
-		                   "drive code", "card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
+		f.settle();
+		CHECK(f.log == Log{"drive nothing", "node motu starting", "release", "card motu.playback destroyed",
+		                   "card motu.capture destroyed", "start 44100 B",
+		                   "card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
 		                   "card motu.capture of motu Pro24 cap.1 at 44100"});
 		REQUIRE(f.cards.events.size() == 4);
 		f.cards.events[2]->ready();
 		f.cards.events[3]->ready();
+		f.settle();
 		CHECK(f.log.back() == "node motu running");
 		f.log.clear();
 	}
 
-	// Teardown takes the cards before the run.
+	// Teardown takes the cards after the barrier and release().
 	f.stopAll();
-	CHECK(f.log.front() == "node motu stopping");
-	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card motu.playback destroyed"));
-	CHECK(indexOf(f.log, "card motu.capture destroyed") < indexOf(f.log, "run destroyed"));
+	f.settle();
 	CHECK(f.log.back() == "all gone");
+	if (f.cards.events.size() == 4) {
+		CHECK(f.log.front() == "drive nothing");
+		CHECK(indexOf(f.log, "release") < indexOf(f.log, "card motu.playback destroyed"));
+		CHECK(indexOf(f.log, "card motu.capture destroyed") < indexOf(f.log, "node motu gone dropped=0"));
+	}
 }
 
-TEST_CASE("Cards that say ready inside make() build the run only once every card is made (7.2)", "[node_host]") {
+TEST_CASE("Cards that say ready inside make() let T3 run only once every card is made (7.2)", "[node_host]") {
 	Fixture f;
 	f.cards.readyInMake = true;
 	f.add("motu", withCards(f.log));
 	f.log.clear();
 	f.blocks.events.at(0)->ready();
 	CHECK(f.log == Log{"card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
-	                   "card motu.capture of motu Pro24 cap.1 at 44100", "run built", "node motu running"});
+	                   "card motu.capture of motu Pro24 cap.1 at 44100", "prepare 44100/256", "drive code"});
+	f.settle();
+	CHECK(f.log.back() == "node motu running");
 	f.stopAll();
+	f.settle();
 	CHECK(f.log.back() == "all gone");
 }
 
@@ -640,6 +745,7 @@ TEST_CASE("A node acquires resources and its events only inside start", "[node_h
 	CHECK(f.cards.events.empty());
 	CHECK(f.receivers.events.empty());
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A node whose start fails makes none of the cards it asked for", "[node_host]") {
@@ -663,23 +769,27 @@ TEST_CASE("A lost port block is final: the node stays failed through updates and
 	f.blocks.events.at(0)->ready();
 	f.cards.events.at(0)->ready();
 	f.cards.events.at(1)->ready();
+	f.settle();
 	REQUIRE(f.host.health().at(0).state == NodeState::running);
 	f.log.clear();
 
 	f.blocks.events.at(0)->lost("driver gone");
-	CHECK(f.log == Log{"node motu failed engine-refused: driver gone"});
+	CHECK(f.log == Log{"node motu failed engine-refused: driver gone", "drive nothing"});
 	f.log.clear();
 
-	// A card failing afterwards changes nothing: the block's reason stands.
+	// A card failing afterwards, during the silence, changes nothing: the block's reason stands.
 	f.cards.events.at(0)->lost("unplugged");
 	CHECK(f.log.empty());
-
-	// An update tears the old run down and starts nothing; no starting health.
-	f.update("motu", withCards(f.log, "B"));
+	f.settle();
 	f.handoffs.finishOne(0);
-	CHECK(f.log == Log{"drive nothing", "release", "card motu.playback destroyed", "card motu.capture destroyed",
-	                   "handoff close", "config B destroyed", "handoff destroyed", "run destroyed",
-	                   "config A destroyed"});
+	CHECK(f.log == Log{"release", "card motu.playback destroyed", "card motu.capture destroyed", "handoff close",
+	                   "handoff destroyed", "config A destroyed"});
+	f.log.clear();
+
+	// An update starts nothing; no starting health.
+	f.update("motu", withCards(f.log, "B"));
+	f.settle();
+	CHECK(f.log == Log{"config B destroyed"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::failed);
 	REQUIRE(f.host.health()[0].reason.has_value());
@@ -702,11 +812,13 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 	f.add("noise", std::make_shared<TestConfig>(f.log));
 	f.blocks.events.at(0)->ready();
 	f.blocks.events.at(1)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.host.nodeRemoved("noise");
-	CHECK(f.log ==
-	      Log{"node noise stopping", "block destroyed", "release", "run destroyed", "node noise gone dropped=0"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node noise stopping", "release", "block destroyed", "run destroyed",
+	                   "node noise gone dropped=0"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].name == "rec");
 	CHECK(f.host.health()[0].state == NodeState::running);
@@ -721,21 +833,24 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 		CHECK(health[1].state == NodeState::starting);
 		// An update names the newer one.
 		f.update("rec", std::make_shared<TestConfig>(f.log));
+		f.settle();
 		f.handoffs.finishOne(5);
 		CHECK(std::ranges::find(f.log, "node rec gone dropped=5") != f.log.end());
-		CHECK(f.log.back() == "run built"); // the newer one waited for it
+		CHECK(f.log.back() == "prepare 44100/256"); // the newer one waited for it; its block is not ready
 		REQUIRE(f.host.health().size() == 1);
 		CHECK(f.host.health()[0].state == NodeState::starting);
 	}
 	SECTION("stopAll after a removal still waits for it") {
 		f.host.nodeRemoved("rec");
 		f.stopAll();
+		f.settle();
 		CHECK(f.allGone == 0);
 		f.handoffs.finishOne(0);
 		CHECK(f.allGone == 1);
 		return;
 	}
 	f.stopAll();
+	f.settle();
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
 }
@@ -773,8 +888,10 @@ TEST_CASE("A node's RTP receiver is made once its port block is ready, named <no
 	f.log.clear();
 
 	f.receivers.events[0]->ready();
-	CHECK(f.log == Log{"run built", "node fpp running"});
+	f.settle();
+	CHECK(f.log == Log{"prepare 44100/256", "drive code", "node fpp running"});
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A node with a card and a receiver runs only once both are ready, in either order", "[node_host][rtp]") {
@@ -801,8 +918,10 @@ TEST_CASE("A node with a card and a receiver runs only once both are ready, in e
 		CHECK(f.log.empty());
 		f.receivers.events[0]->ready();
 	}
-	CHECK(f.log == Log{"run built", "node mix running"});
+	f.settle();
+	CHECK(f.log == Log{"prepare 44100/256", "drive code", "node mix running"});
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A receiver lost after the node ran fails it, and an update makes a new receiver behind the "
@@ -816,29 +935,34 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	}
 	f.blocks.events.at(0)->ready();
 	f.receivers.events.at(0)->ready();
+	f.settle();
 	REQUIRE(f.host.health().at(0).state == NodeState::running);
 	f.log.clear();
 
 	f.receivers.events[0]->lost("the engine removed the RTP receiver");
-	CHECK(f.log == Log{"node fpp failed engine-refused: the engine removed the RTP receiver"});
+	CHECK(f.log == Log{"drive nothing", "node fpp failed engine-refused: the engine removed the RTP receiver"});
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"release", "receiver fpp.rtp destroyed", "handoff close"});
+	f.log.clear();
+	f.handoffs.finishOne(0);
+	CHECK(f.log == Log{"handoff destroyed"}); // A stays the node's newest config until B replaces it
 	f.log.clear();
 
 	f.update("fpp", withReceiver(f.log, "B"));
-	CHECK(f.log == Log{"node fpp starting", "drive nothing", "release", "receiver fpp.rtp destroyed", "handoff close"});
-	f.log.clear();
-	f.handoffs.finishOne(0);
-	CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "start 44100 B", "prepare 44100/256",
-	                   "drive code", "receiver fpp.rtp of fpp"});
+	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "receiver fpp.rtp of fpp", "node fpp starting"});
 	REQUIRE(f.receivers.events.size() == 2); // made once more, not twice
 	CHECK(f.blocks.events.size() == 1);      // the block stayed
 	f.log.clear();
 	f.receivers.events[1]->ready();
-	CHECK(f.log == Log{"run built", "node fpp running"});
+	f.settle();
+	CHECK(f.log == Log{"prepare 44100/256", "drive code", "node fpp running"});
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("An outside node lost before the node ran fails it with engine-refused and the outside "
-          "node's detail, and its run is never built",
+          "node's detail, and its code is never prepared or driven",
           "[node_host][rtp]") {
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
@@ -850,27 +974,32 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 	REQUIRE(f.receivers.events.size() == 1);
 	f.log.clear();
 
+	// Never driven: torn down at once, with no barrier.
 	SECTION("the receiver, with the card ready") {
 		f.cards.events[0]->ready();
 		f.receivers.events[0]->lost("cannot load PipeWire's rtp-source module: No such file or directory");
-		CHECK(f.log == Log{"node mix failed engine-refused: cannot load PipeWire's rtp-source module: "
+		CHECK(f.log == Log{"card mix.playback destroyed", "receiver mix.rtp destroyed",
+		                   "node mix failed engine-refused: cannot load PipeWire's rtp-source module: "
 		                   "No such file or directory"});
 	}
 	SECTION("the card, with the receiver ready") {
 		f.receivers.events[0]->ready();
 		f.cards.events[0]->lost("the card failed: busy");
-		CHECK(f.log == Log{"node mix failed engine-refused: the card failed: busy"});
+		CHECK(f.log == Log{"card mix.playback destroyed", "receiver mix.rtp destroyed",
+		                   "node mix failed engine-refused: the card failed: busy"});
 	}
 	SECTION("the receiver, nothing ready") {
 		f.receivers.events[0]->lost("the engine removed the RTP receiver's module");
-		CHECK(f.log == Log{"node mix failed engine-refused: the engine removed the RTP receiver's module"});
+		CHECK(f.log == Log{"card mix.playback destroyed", "receiver mix.rtp destroyed",
+		                   "node mix failed engine-refused: the engine removed the RTP receiver's module"});
 	}
 	CHECK(f.host.health().at(0).state == NodeState::failed);
-	f.log.clear();
+	f.settle();
 	f.stopAll();
-	// The run object was never built, but it goes with the run, after the outside nodes.
-	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
-	CHECK(indexOf(f.log, "receiver mix.rtp destroyed") < indexOf(f.log, "run destroyed"));
+	CHECK(std::ranges::count(f.log, std::string("prepare 44100/256")) == 0);
+	CHECK(std::ranges::count(f.log, std::string("drive code")) == 0);
+	CHECK(std::ranges::count(f.log, std::string("drive nothing")) == 0);
+	CHECK(f.allGone == 1);
 }
 
 TEST_CASE("One run names each engine object once: a second of a name, or a bank of the wrong kind, is a type bug "
@@ -897,36 +1026,66 @@ TEST_CASE("One run names each engine object once: a second of a name, or a bank 
 	missing->cards = {SoundCardRequest{*CardId::parse("Pro24"), CardDirection::capture, "nope"}};
 	CHECK_THROWS_AS(f.add("missing", missing), std::logic_error);
 
+	// A configuration a type bug was thrown out of asks for nothing more.
 	for (auto* events : f.blocks.events) events->ready();
 	CHECK(f.receivers.events.empty());
 	CHECK(f.cards.events.empty());
 }
 
-TEST_CASE("Restart and removal destroy the receiver before the handoffs close and the run goes", "[node_host][rtp]") {
+TEST_CASE("A legacy type with a recipe that asks for an outside node is a std::logic_error at T2",
+          "[node_host][legacy]") {
+	Fixture f;
+	auto config = withCards(f.log);
+	config->recipe = true;
+	CHECK_THROWS_WITH(
+		f.add("motu", config),
+		Catch::Contains("a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10"));
+	f.blocks.events.at(0)->ready();
+	CHECK(f.cards.events.empty());
+	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
+
+	// A recipe alone, or outside nodes alone, is fine.
+	Fixture g;
+	g.add("rec", std::make_shared<TestConfig>(g.log));
+	g.add("motu", withCards(g.log));
+	CHECK(g.host.health().at(0).state == NodeState::starting);
+	CHECK(g.host.health().at(1).state == NodeState::starting);
+	g.stopAll();
+	g.settle();
+	CHECK(g.allGone == 1);
+}
+
+TEST_CASE("Restart and removal destroy the receiver after the barrier, before the handoffs close and the config goes",
+          "[node_host][rtp]") {
 	Fixture f;
 	auto a = withReceiver(f.log, "A");
 	a->handoffs = 1;
 	f.add("fpp", std::move(a));
 	f.blocks.events.at(0)->ready();
 	f.receivers.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	SECTION("restart") {
 		f.update("fpp", withReceiver(f.log, "B"));
+		f.settle();
 		f.handoffs.finishOne(0);
 	}
 	SECTION("removal") {
 		f.host.nodeRemoved("fpp");
+		f.settle();
 		f.handoffs.finishOne(0);
 		CHECK(f.log.back() == "node fpp gone dropped=0");
 	}
 	const auto destroyed = indexOf(f.log, "receiver fpp.rtp destroyed");
 	CHECK(destroyed < static_cast<std::ptrdiff_t>(f.log.size()));
+	CHECK(indexOf(f.log, "drive nothing") < indexOf(f.log, "release"));
 	CHECK(indexOf(f.log, "release") < destroyed);
 	CHECK(destroyed < indexOf(f.log, "handoff close"));
-	CHECK(destroyed < indexOf(f.log, "run destroyed"));
+	CHECK(indexOf(f.log, "handoff destroyed") < indexOf(f.log, "config A destroyed"));
 	f.log.clear();
 	f.stopAll();
+	f.settle();
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
 }
@@ -953,7 +1112,8 @@ TEST_CASE("The framework's pass-through copies each bank to its pair and silence
 	Fixture f;
 	f.add("card", std::make_shared<PassConfig>());
 	f.blocks.events.at(0)->ready();
-	CHECK(f.host.health().at(0).state == NodeState::running); // no recipe: ready once the code drives the block
+	f.settle();
+	CHECK(f.host.health().at(0).state == NodeState::running); // no recipe: running once its drive completed
 	AudioCode* code = f.blocks.driven.at(0);
 	REQUIRE(code != nullptr);
 
@@ -972,6 +1132,7 @@ TEST_CASE("The framework's pass-through copies each bank to its pair and silence
 	CHECK(out[2] == in[0]);                                 // play.1 -> out.1
 	CHECK(out[3] == in[1]);                                 // play.2 -> out.2
 	f.stopAll();
+	f.settle();
 }
 
 namespace {
@@ -991,26 +1152,31 @@ struct LatencyConfig final : NodeConfig {
 };
 } // namespace
 
-TEST_CASE("A run's latency plan reaches its block before its code: the pass-through's pairs and what start declared, "
-          "cleared at the run's teardown",
+TEST_CASE("A configuration's latency plan reaches its block with its drive: the pass-through's pairs and what start "
+          "declared, cleared at its teardown",
           "[node_host][latency]") {
 	Fixture f;
 	auto config = std::make_shared<LatencyConfig>();
 	f.add("card", config);
+	CHECK(f.blocks.plans.at(0).empty()); // nothing is carried before the drive
+	CHECK_THROWS_AS(config->context->declareLatency("spare", Latency{1, 1}), std::logic_error); // outside start()
+	f.blocks.events.at(0)->ready();
 	REQUIRE(f.blocks.plans.at(0).size() == 1);
 	const LatencyPlan& plan = f.blocks.plans.at(0).at(0);
 	CHECK(plan.pairs == config->pass.pairs);
 	REQUIRE(plan.internal.size() == 1);
 	CHECK(plan.internal[0].first == "capture");
 	CHECK(plan.internal[0].second == Latency{100, 200});
-	CHECK_THROWS_AS(config->context->declareLatency("spare", Latency{1, 1}), std::logic_error); // outside start()
+	f.settle();
 
 	f.update("card", std::make_shared<LatencyConfig>());
-	REQUIRE(f.blocks.plans.at(0).size() == 3); // cleared by the teardown, then the new run's
+	f.settle();
+	REQUIRE(f.blocks.plans.at(0).size() == 3); // cleared by the teardown, then the new configuration's
 	CHECK(f.blocks.plans.at(0).at(1).pairs.empty());
 	CHECK(f.blocks.plans.at(0).at(1).internal.empty());
 	CHECK(f.blocks.plans.at(0).at(2).internal.size() == 1);
 	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("Latency declared twice for a bank, or for a bank the node lacks, is a type bug", "[node_host][latency]") {
@@ -1036,6 +1202,98 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 	auto config = std::make_shared<PassConfig>();
 	config->pairs = bad.at(static_cast<std::size_t>(which));
 	CHECK_THROWS_AS(f.add("card", config), std::logic_error);
+}
+
+// The asynchronous barrier (docs/design/node-lifecycle.md sections 4.2, 5.3 and 5.6).
+
+TEST_CASE("A stale completion (an older barrier, a removed node) changes nothing", "[node_host][async]") {
+	Fixture f;
+	f.blocks.hold = true;
+	f.add("rec", std::make_shared<TestConfig>(f.log));
+	f.blocks.events.at(0)->ready();
+	REQUIRE(f.blocks.held.size() == 1); // the drive's completion
+	f.log.clear();
+
+	// The block is lost with the drive in flight: a silence is asked for behind it.
+	f.blocks.events.at(0)->lost("driver gone");
+	REQUIRE(f.blocks.held.size() == 2);
+	f.log.clear();
+
+	// The drive's completion, heard after the silence was asked for, is an older barrier's: no running, nothing.
+	f.blocks.complete(0);
+	CHECK(f.log.empty());
+	CHECK(f.host.health().at(0).state == NodeState::failed);
+
+	// The silence's is current: the configuration is torn down.
+	f.blocks.complete(0);
+	CHECK(f.log == Log{"release", "run destroyed"});
+	f.log.clear();
+
+	// A completion that outlives its node finds nothing: a new node of the name never hears it.
+	f.blocks.hold = true;
+	f.host.nodeRemoved("rec");
+	f.add("other", std::make_shared<TestConfig>(f.log));
+	f.blocks.events.at(1)->ready();
+	REQUIRE(f.blocks.held.size() == 1);
+	f.host.nodeRemoved("other"); // its drive in flight: the silence waits for its completion
+	CHECK(f.blocks.held.size() == 1);
+	f.add("other", std::make_shared<TestConfig>(f.log));
+	f.log.clear();
+	f.blocks.complete(0); // the old node's drive: it silences that node, never the new one
+	CHECK(f.log == Log{"drive nothing"});
+	CHECK(f.host.health().back().state == NodeState::starting);
+	f.blocks.hold = false;
+	f.blocks.complete(0);
+	f.settle();
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A restart while the drive is in flight silences it at its completion and never reports running",
+          "[node_host][async]") {
+	Fixture f;
+	f.blocks.hold = true;
+	f.add("rec", std::make_shared<TestConfig>(f.log, "A"));
+	f.blocks.events.at(0)->ready();
+	f.log.clear();
+
+	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
+	CHECK(f.log.empty()); // nothing to silence until the drive is applied (6.3's "stop in starting")
+	f.blocks.complete(0);
+	CHECK(f.log == Log{"drive nothing"});
+	f.blocks.complete(0);
+	CHECK(f.log == Log{"drive nothing", "release", "run destroyed", "config A destroyed", "start 44100 B", "run built",
+	                   "prepare 44100/256", "drive code"});
+	f.blocks.complete(0);
+	CHECK(f.log.back() == "node rec running");
+	CHECK(std::ranges::count(f.log, std::string("node rec running")) == 1);
+	f.blocks.hold = false;
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("Removal silences before it destroys the block, and a node never driven is destroyed at once",
+          "[node_host][async]") {
+	Fixture f;
+	f.add("noise", std::make_shared<TestConfig>(f.log));
+	f.add("idle", std::make_shared<TestConfig>(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.log.clear();
+
+	f.host.nodeRemoved("noise");
+	CHECK(f.log == Log{"drive nothing", "node noise stopping"}); // the block stays until the silence completed
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"release", "block destroyed", "run destroyed", "node noise gone dropped=0"});
+	f.log.clear();
+
+	f.host.nodeRemoved("idle"); // no code was driven since its last silence (D-L7)
+	CHECK(f.log ==
+	      Log{"release", "block destroyed", "node idle stopping", "run destroyed", "node idle gone dropped=0"});
+	f.stopAll();
+	CHECK(f.allGone == 1);
 }
 
 namespace {
@@ -1089,10 +1347,12 @@ TEST_CASE("A run object closes after every handoff has closed, and goes only aft
 	config->handoffs = 1;
 	f.add("net", config);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.stopAll();
-	CHECK(f.log == Log{"node net stopping", "block destroyed", "release", "handoff close"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "handoff close", "block destroyed"});
 	f.log.clear();
 
 	f.handoffs.finishOne(7);
@@ -1109,119 +1369,130 @@ TEST_CASE("A run object closes after every handoff has closed, and goes only aft
 	CHECK(f.log == Log{"run destroyed", "node net gone dropped=7", "all gone"});
 }
 
-TEST_CASE("A restart waits for the old run to close before it starts the new one (I7)", "[node_host]") {
+TEST_CASE("A restart waits for the old configuration to close before it configures the new one (I7)", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	auto next = std::make_shared<TestConfig>(f.log, "next");
 	f.update("net", next);
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
 	f.log.clear();
 
 	std::thread([&] { old->run->closed(); }).join();
 	CHECK(f.log.empty());
-	f.mainLoop.runPosted();
+	f.settle();
 	CHECK(f.log ==
-	      Log{"run destroyed", "start 44100 next", "prepare 44100/256", "drive code", "run built", "node net running"});
+	      Log{"run destroyed", "start 44100 next", "run built", "prepare 44100/256", "drive code", "node net running"});
 	f.stopAll();
+	f.settle();
 }
 
-TEST_CASE("A name added back while its old run is closing starts only once it is gone", "[node_host]") {
+TEST_CASE("A name added back while its old configuration is closing configures only once it is gone", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.host.nodeRemoved("net");
+	f.settle();
 	f.log.clear();
 
 	auto next = std::make_shared<TestConfig>(f.log, "next");
 	f.add("net", next);
-	// Its block comes at once; its run waits.
-	CHECK(f.log == Log{"node net starting", "make net 2 inputs"});
+	// Its block comes at once (until step L-3b's wait for the older block); its configuration waits.
+	CHECK(f.log == Log{"make net 2 inputs", "node net starting"});
 	f.log.clear();
 
-	SECTION("then it starts, after the old node is gone") {
+	SECTION("then it configures, after the old node is gone") {
 		std::thread([&] { old->run->closed(); }).join();
-		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "start 44100 next", "prepare 44100/256",
-		                   "drive code", "run built"});
+		f.settle();
+		CHECK(f.log ==
+		      Log{"run destroyed", "node net gone dropped=0", "start 44100 next", "run built", "prepare 44100/256"});
 	}
-	SECTION("an update while it waits replaces what will start, and nothing starts yet") {
+	SECTION("an update while it waits replaces what will configure, and nothing configures yet") {
 		auto newer = std::make_shared<TestConfig>(f.log, "newer");
 		f.update("net", newer);
 		CHECK(f.log.empty());
 		std::thread([&] { old->run->closed(); }).join();
-		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "start 44100 newer", "prepare 44100/256",
-		                   "drive code", "run built"});
+		f.settle();
+		CHECK(f.log ==
+		      Log{"run destroyed", "node net gone dropped=0", "start 44100 newer", "run built", "prepare 44100/256"});
 	}
-	SECTION("removed again while it waits, it never starts") {
+	SECTION("removed again while it waits, it never configures") {
 		f.host.nodeRemoved("net");
 		CHECK(f.log == Log{"node net stopping", "block destroyed", "node net gone dropped=0"});
 		f.log.clear();
 		std::thread([&] { old->run->closed(); }).join();
-		f.mainLoop.runPosted();
+		f.settle();
 		CHECK(f.log == Log{"run destroyed", "node net gone dropped=0"});
 	}
-	SECTION("removed and added back while it waits, only the newest starts") {
+	SECTION("removed and added back while it waits, only the newest configures") {
 		f.host.nodeRemoved("net");
 		f.log.clear();
 		auto newest = std::make_shared<TestConfig>(f.log, "newest");
 		f.add("net", newest);
 		f.log.clear();
 		std::thread([&] { old->run->closed(); }).join();
-		f.mainLoop.runPosted();
-		CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "start 44100 newest", "prepare 44100/256",
-		                   "drive code", "run built"});
+		f.settle();
+		CHECK(f.log ==
+		      Log{"run destroyed", "node net gone dropped=0", "start 44100 newest", "run built", "prepare 44100/256"});
 	}
 	f.stopAll();
+	f.settle();
 }
 
-TEST_CASE("A name added back whose block is lost while it waits never starts a run (I1)", "[node_host]") {
+TEST_CASE("A name added back whose block is lost while it waits never configures (I1)", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.host.nodeRemoved("net");
+	f.settle();
 	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
+	f.log.clear();
 	f.blocks.events.at(1)->lost("the engine refused the block");
+	CHECK(f.log == Log{"node net failed engine-refused: the engine refused the block", "config next destroyed"});
 	f.log.clear();
 
 	std::thread([&] { old->run->closed(); }).join();
-	f.mainLoop.runPosted();
-	CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "config next destroyed"});
+	f.settle();
+	CHECK(f.log == Log{"run destroyed", "node net gone dropped=0"});
 	CHECK(f.host.health().at(0).state == NodeState::failed);
 	f.log.clear();
 	f.stopAll();
 	CHECK(f.log == Log{"node net stopping", "block destroyed", "node net gone dropped=0", "all gone"});
 }
 
-TEST_CASE("A name added back after its old node has gone starts at once", "[node_host]") {
+TEST_CASE("A name added back after its old node has gone configures at once", "[node_host]") {
 	Fixture f;
 	f.add("net", std::make_shared<TestConfig>(f.log));
 	f.host.nodeRemoved("net");
 	f.log.clear();
 	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
-	CHECK(f.log == Log{"node net starting", "make net 2 inputs", "start 44100 next", "prepare 44100/256", "drive code",
-	                   "run built"});
+	CHECK(f.log == Log{"make net 2 inputs", "node net starting", "start 44100 next", "run built", "prepare 44100/256"});
 	f.stopAll();
 }
 
-TEST_CASE("Stopping while a name waits for its old run stops both, in order", "[node_host]") {
+TEST_CASE("Stopping while a name waits for its old configuration stops both, in order", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.host.nodeRemoved("net");
+	f.settle();
 	f.add("net", std::make_shared<TestConfig>(f.log, "next"));
 	f.log.clear();
 	f.stopAll();
 	CHECK(f.allGone == 0);
 	std::thread([&] { old->run->closed(); }).join();
-	f.mainLoop.runPosted();
+	f.settle();
 	CHECK(f.allGone == 1);
 	CHECK(std::ranges::count(f.log, std::string("start 44100 next")) == 0);
 }
@@ -1232,6 +1503,7 @@ TEST_CASE("What a run says reaches the note listeners on the main loop, in order
 	auto config = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", config);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	constexpr int notes = 200;
@@ -1246,6 +1518,7 @@ TEST_CASE("What a run says reaches the note listeners on the main loop, in order
 	f.log.clear();
 
 	f.stopAll();
+	f.settle(); // the run is told to close
 	f.log.clear();
 	// Still heard while closing; a note posted after `closed` was never told.
 	InsidesEvents* events = config->events;
@@ -1271,27 +1544,33 @@ TEST_CASE("A note still queued when its node has gone reaches nothing", "[node_h
 	f.stopAll();
 }
 
-TEST_CASE("A run lost from its own thread fails a running node with start-failed, and its block "
-          "and routes stay",
+TEST_CASE("A run lost from its own thread fails a running node with start-failed and tears its configuration down, "
+          "and its block and routes stay",
           "[node_host]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", config);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	std::thread([&] { config->events->lost("the client died"); }).join();
 	CHECK(f.log.empty());
 	f.mainLoop.runPosted();
-	CHECK(f.log == Log{"node net failed start-failed: the client died"});
+	CHECK(f.log == Log{"drive nothing", "node net failed start-failed: the client died"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::failed);
+	f.log.clear();
+	f.settle();
+	CHECK(f.log == Log{"release", "run close"});
 
 	f.log.clear();
 	f.stopAll();
-	CHECK(f.log == Log{"node net stopping", "block destroyed", "release", "run close"});
+	CHECK(f.log == Log{"block destroyed", "node net stopping"});
+	f.log.clear();
 	config->run->closed();
 	f.mainLoop.runPosted();
+	CHECK(f.log == Log{"run destroyed", "node net gone dropped=0", "all gone"});
 }
 
 TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
@@ -1299,34 +1578,37 @@ TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
 	auto config = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", config);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 
 	// Told before the restart, heard after it began: the node must not fail behind the restart.
 	config->events->lost("late");
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
 	f.log.clear();
-	f.mainLoop.runPosted();
-	CHECK(f.log.empty());
 	config->run->closed();
-	f.mainLoop.runPosted();
+	f.settle();
 	CHECK(std::ranges::find(f.log, std::string("node net running")) != f.log.end());
+	CHECK(f.host.health().at(0).state == NodeState::running);
 	f.stopAll();
+	f.settle();
 }
 
-// The two-phase start (docs/design/node-framework.md section 7.2).
+// The two-phase start (docs/design/node-framework.md section 7.2), through the legacy adapter
+// (docs/design/node-lifecycle.md section 5.10).
 
 namespace {
 
-/// A config whose recipe fails, or logs what Ready hands it.
+/// A config whose recipe fails, or logs what Ready hands it. It asks for no outside node (D-L40).
 struct RecipeConfig final : NodeConfig {
 	Log& log;
 	bool fail = false;
 	Ports ports_ = testPorts();
 	explicit RecipeConfig(Log& l) : log(l) {}
 	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext& context) const override {
+	StartResult start(StartContext&) const override {
 		log.push_back("start acquires");
-		context.acquire(motuOut);
 		return StartResult{std::make_unique<TestAudioCode>(log),
 		                   [this](Ready& ready) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
 							   log.push_back("recipe at " + std::to_string(ready.format().rate));
@@ -1341,35 +1623,38 @@ struct RecipeConfig final : NodeConfig {
 
 } // namespace
 
-TEST_CASE("Start only acquires: the code drives the block at once, and the recipe runs once every resource is ready",
+TEST_CASE("Start only acquires, the recipe runs once every resource is ready and before the code is prepared, and the "
+          "code drives the block only after it",
           "[node_host][two_phase]") {
 	Fixture f;
 	auto config = std::make_shared<RecipeConfig>(f.log);
-	f.add("motu", config);
-	CHECK(f.log ==
-	      Log{"node motu starting", "make motu 2 inputs", "start acquires", "prepare 44100/256", "drive code"});
-	f.log.clear();
-	f.blocks.events.at(0)->ready();
-	CHECK(f.log == Log{"card motu.playback of motu Pro24 pb.1,pb.2 at 44100"});
-	f.log.clear();
 
-	SECTION("a recipe that builds its run object makes the node running; what it says is heard") {
-		f.cards.events.at(0)->ready();
-		CHECK(f.log == Log{"recipe at 44100", "node motu running"});
-		f.mainLoop.runPosted();
-		CHECK(f.log.back() == "note motu built");
-	}
-	SECTION("a recipe that fails fails the node with start-failed; the block and the card stay until a restart") {
-		config->fail = true;
-		f.cards.events.at(0)->ready();
-		CHECK(f.log == Log{"recipe at 44100", "node motu failed start-failed: cannot read the key file"});
+	SECTION("a recipe that builds its run object makes the node running once driven; what it says is heard") {
+		f.add("net", config);
+		CHECK(f.log ==
+		      Log{"make net 2 inputs", "node net starting", "start acquires", "recipe at 44100", "prepare 44100/256"});
+		CHECK(f.blocks.driven.at(0) == nullptr);
 		f.log.clear();
-		f.update("motu", std::make_shared<TestConfig>(f.log, "B"));
-		CHECK(f.log.at(0) == "node motu starting");
-		CHECK(std::ranges::find(f.log, "card motu.playback destroyed") != f.log.end());
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.log == Log{"drive code", "note net built", "node net running"});
+	}
+	SECTION("a recipe that fails fails the node with start-failed; its code is never prepared or driven") {
+		config->fail = true;
+		f.add("net", config);
+		CHECK(f.log == Log{"make net 2 inputs", "node net starting", "start acquires", "recipe at 44100",
+		                   "node net failed start-failed: cannot read the key file"});
+		f.log.clear();
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.log.empty());
+		f.update("net", std::make_shared<TestConfig>(f.log, "B"));
+		CHECK(f.log.at(0) == "start 44100 B");
+		CHECK(f.log.at(1) == "node net starting");
 	}
 	f.log.clear();
 	f.stopAll();
+	f.settle();
 	CHECK(f.log.back() == "all gone");
 }
 
@@ -1447,8 +1732,8 @@ struct BlockedConfig final : NodeConfig {
 /// The fixture with handoffs that run real threads.
 struct ThreadedFixture {
 	Log log;
-	TestBlocks blocks{log};
 	QueueExecutor mainLoop;
+	TestBlocks blocks{log, mainLoop};
 	BlockingHandoffs handoffs{mainLoop};
 	TestCards cards{log};
 	TestReceivers receivers{log};
@@ -1476,15 +1761,18 @@ TEST_CASE("A handoff consumer blocked at teardown blocks no main-loop turn, and 
 	f.host.nodeAdded(NodeSpec{"noise", "test", {}}, std::make_shared<TestConfig>(f.log));
 	f.blocks.events.at(0)->ready();
 	f.blocks.events.at(1)->ready();
+	f.mainLoop.settle();
 	f.log.clear();
 
-	f.host.nodeRemoved("rec"); // returns although the consumer is stuck
+	f.host.nodeRemoved("rec");
+	f.mainLoop.settle(); // returns although the consumer is stuck
 	config->run->consumer.entered.get_future().wait();
-	CHECK(f.log == Log{"node rec stopping", "block destroyed", "release"});
+	CHECK(f.log == Log{"drive nothing", "node rec stopping", "release", "block destroyed"});
 	f.log.clear();
 
 	// The main loop keeps serving other nodes meanwhile.
 	f.host.nodeRemoved("noise");
+	f.mainLoop.settle();
 	CHECK(f.log.back() == "node noise gone dropped=0");
 	f.log.clear();
 	f.mainLoop.runPosted();
@@ -1505,10 +1793,12 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	auto config = std::make_shared<BlockedConfig>(f.log, letGo.get_future().share());
 	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, config);
 	f.blocks.events.at(0)->ready();
+	f.mainLoop.settle();
 	f.log.clear();
 
 	int allGone = 0;
 	f.host.stopAll(f.graph.close(), [&] { ++allGone; });
+	f.mainLoop.settle();
 	config->run->consumer.entered.get_future().wait();
 	f.timers.advance(closeDeadline - std::chrono::milliseconds(1));
 	CHECK(allGone == 0);
@@ -1518,8 +1808,8 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	// Stop proceeds past the bound: the node is gone, the run object was never closed nor destroyed.
 	CHECK(allGone == 1);
 	CHECK(f.host.leakedRuns() == 1); // main.cpp then ends without destroying the main loop under the leaked run
-	CHECK(f.log == Log{"node rec stopping", "block destroyed", "release", "diagnostic rec ear.close-overdue",
-	                   "node rec gone dropped=0"});
+	CHECK(f.log == Log{"drive nothing", "node rec stopping", "release", "block destroyed",
+	                   "diagnostic rec ear.close-overdue", "node rec gone dropped=0"});
 	REQUIRE(f.diagnostics.details.size() == 1);
 	CHECK(f.diagnostics.details[0].find("1 handoffs open") != std::string::npos);
 	f.log.clear();
@@ -1531,30 +1821,35 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	CHECK(f.log.empty());
 }
 
-TEST_CASE("A run never closing past the deadline is leaked, and a restart then starts the next run (I5a, I7)",
+TEST_CASE("A run never closing past the deadline is leaked, and a restart then configures the next one (I5a, I7)",
           "[node_host][teardown]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	InsidesEvents* oldEvents = old->events;
 	ThreadedRun* oldRun = old->run;
 	f.log.clear();
 
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
 	f.log.clear();
 	CHECK(f.timers.live() == 1);
 
 	f.timers.advance(closeDeadline);
-	// The old run is leaked (never destroyed: its threads may still touch it); the next run starts.
-	CHECK(f.log == Log{"diagnostic net ear.close-overdue", "start 44100 next", "prepare 44100/256", "drive code",
-	                   "run built", "node net running"});
+	// The old run is leaked (never destroyed: its threads may still touch it); the next configuration begins.
+	CHECK(f.log ==
+	      Log{"diagnostic net ear.close-overdue", "start 44100 next", "run built", "prepare 44100/256", "drive code"});
 	CHECK(std::ranges::count(f.log, std::string("run destroyed")) == 0);
 	CHECK(f.host.leakedRuns() == 1);
+	f.settle();
+	CHECK(f.log.back() == "node net running");
 	f.log.clear();
 
-	// What the leaked run tells late lands nowhere: not on the new run (I6), and without touching freed memory.
+	// What the leaked run tells late lands nowhere: not on the new configuration (I6), and without touching freed
+	// memory.
 	oldEvents->say("still here");
 	oldEvents->lost("the client died");
 	oldRun->closed();
@@ -1562,6 +1857,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then s
 	CHECK(f.log.empty());
 	CHECK(f.host.health().at(0).state == NodeState::running);
 	f.stopAll();
+	f.settle();
 	CHECK(f.allGone == 1);
 }
 
@@ -1572,6 +1868,7 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 	auto config = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", config);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	ThreadedRun* run = config->run;
 	f.log.clear();
 
@@ -1587,7 +1884,8 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 	inHandler.get_future().wait();
 
 	f.host.nodeRemoved("net");
-	CHECK(f.log == Log{"node net stopping", "block destroyed", "release", "run close"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close", "block destroyed"});
 	CHECK(f.host.health().at(0).state == NodeState::stopping);
 	f.log.clear();
 
@@ -1600,44 +1898,52 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 	f.stopAll();
 }
 
-TEST_CASE("Nothing from an old run lands on a new one, even when it closed at once and the next run started in the "
-          "same turn (I6)",
+TEST_CASE("Nothing from an old run lands on a new one, even when it closed at once and the next configuration began "
+          "in the same turn (I6)",
           "[node_host][teardown]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	old->closeAtOnce = true;
 	f.add("net", old);
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	InsidesEvents* oldEvents = old->events;
 	f.log.clear();
 
-	// Written by the old run's thread just before its close; heard on the main loop only after the next run started.
+	// Written by the old run's thread just before its close; heard on the main loop only after the next configuration
+	// began, its silence's completion having come first.
+	f.blocks.hold = true;
+	auto next = std::make_shared<ThreadedConfig>(f.log);
+	f.update("net", next);
 	std::thread([&] {
 		oldEvents->say("from the old run");
 		oldEvents->lost("old run failed");
 	}).join();
-	auto next = std::make_shared<ThreadedConfig>(f.log);
-	f.update("net", next);
-	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close", "run destroyed",
-	                   "prepare 44100/256", "drive code", "node net running"});
+	f.blocks.complete(0); // the silence
+	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close", "run destroyed",
+	                   "prepare 44100/256", "drive code"});
 	f.log.clear();
 
 	f.mainLoop.runPosted();
 	CHECK(f.log.empty());
-	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.blocks.complete(0); // the new drive
+	CHECK(f.log == Log{"node net running"});
+	f.log.clear();
+	f.blocks.hold = false;
 
 	// The new run's own writes land.
 	next->events->say("from the new run");
 	f.mainLoop.runPosted();
 	CHECK(f.log == Log{"note net from the new run"});
 	f.stopAll();
+	f.settle();
 	next->run->closed();
 	f.mainLoop.runPosted();
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("Every teardown starts with the barrier: drive(nullptr) for a restart, the block's destruction for a "
-          "removal, before release and before anything is freed (I4)",
+TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a restart and a removal: before release, "
+          "before anything is freed and before the block is destroyed (I4)",
           "[node_host][teardown]") {
 	Fixture f;
 	auto rec = withCards(f.log);
@@ -1646,20 +1952,27 @@ TEST_CASE("Every teardown starts with the barrier: drive(nullptr) for a restart,
 	f.blocks.events.at(0)->ready();
 	f.cards.events.at(0)->ready();
 	f.cards.events.at(1)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.update("rec", withCards(f.log, "B"));
+	f.settle();
 	f.handoffs.finishOne(0);
-	CHECK(f.log.at(1) == "drive nothing");
+	CHECK(f.log.at(0) == "drive nothing");
 	CHECK(f.log.at(2) == "release");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card rec.playback destroyed"));
 	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "handoff close"));
-	CHECK(indexOf(f.log, "handoff destroyed") < indexOf(f.log, "run destroyed"));
+	CHECK(indexOf(f.log, "handoff destroyed") < indexOf(f.log, "start 44100 B"));
+	f.cards.events.at(2)->ready();
+	f.cards.events.at(3)->ready();
+	f.settle();
 	f.log.clear();
 
 	f.host.nodeRemoved("rec");
-	CHECK(f.log.at(1) == "block destroyed");
-	CHECK(f.log.at(2) == "release");
+	CHECK(f.log.at(0) == "drive nothing");
+	f.settle();
+	CHECK(indexOf(f.log, "release") < indexOf(f.log, "block destroyed"));
+	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "block destroyed"));
 	f.stopAll();
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
@@ -1695,10 +2008,12 @@ TEST_CASE("Step 5 frees the code before the run object it reads, and the config 
 	Fixture f;
 	f.add("net", std::make_shared<ReadingConfig>(f.log));
 	f.blocks.events.at(0)->ready();
+	f.settle();
 	f.log.clear();
 	f.host.nodeRemoved("net");
-	CHECK(f.log == Log{"node net stopping", "block destroyed", "code destroyed", "run destroyed", "config destroyed",
-	                   "node net gone dropped=0"});
+	f.settle();
+	CHECK(f.log == Log{"drive nothing", "node net stopping", "block destroyed", "code destroyed", "run destroyed",
+	                   "config destroyed", "node net gone dropped=0"});
 	f.stopAll();
 }
 
@@ -1742,7 +2057,8 @@ struct RecordingConfig final : NodeConfig {
 
 struct RecordingFixture {
 	Log log;
-	TestBlocks blocks{log};
+	QueueExecutor mainLoop;
+	TestBlocks blocks{log, mainLoop};
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
 	TestReceivers receivers{log};
@@ -1750,7 +2066,6 @@ struct RecordingFixture {
 	ResourceRegistry resources{cards, receivers, handoffs, recordings};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
-	QueueExecutor mainLoop;
 	FakeTimers timers;
 	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
 };
@@ -1763,8 +2078,10 @@ TEST_CASE("A recording is opened at start and closed with the run, after its han
 	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
 	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "descriptor 42"));
 	f.blocks.events.at(0)->ready();
+	f.mainLoop.settle();
 	f.log.clear();
 	f.host.stopAll(f.graph.close(), [] {});
+	f.mainLoop.settle();
 	f.handoffs.finishOne(0);
 	const auto handoffGone = indexOf(f.log, "handoff destroyed");
 	const auto runGone = indexOf(f.log, "run destroyed");
@@ -1793,15 +2110,18 @@ TEST_CASE("A recording the folder refuses fails the start, and a registry with n
 
 TEST_CASE("A host destroyed with a recording node still running frees its run object and recipe before the recording",
           "[node_host][recording]") {
-	for (const bool built : {true, false}) {
-		INFO((built ? "run object built" : "recipe still holding the run"));
+	for (const bool driven : {true, false}) {
+		INFO((driven ? "driven" : "never driven"));
 		RecordingFixture f;
 		auto host = std::make_unique<NodeHost>(AudioFormat{44100, 256}, f.blocks, f.resources, f.mainLoop, f.timers,
 		                                       closeDeadline);
 		host->nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
-		if (built) f.blocks.events.at(0)->ready();
+		if (driven) {
+			f.blocks.events.at(0)->ready();
+			f.mainLoop.settle();
+		}
 		f.log.clear();
-		host.reset(); // no stopAll: the run goes by its own destruction, as when a test throws or a boot fails
+		host.reset(); // no stopAll: the configuration goes by its own destruction, as when a test throws or a boot fails
 		const Log& log = f.log;
 		const auto runGone = indexOf(log, "run destroyed");
 		const auto closed = indexOf(log, "recording closed");

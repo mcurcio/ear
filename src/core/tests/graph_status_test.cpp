@@ -81,11 +81,17 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 	return all;
 }
 
+/// Completions wait in the factory until the test runs them, as the engine runs them on the main loop later
+/// (node-lifecycle.md 5.3).
+using Completions = std::vector<std::move_only_function<void()>>;
+
 struct Block final : PortBlock {
-	void drive(AudioCode*) override {}
-	// The asynchronous interface (node-lifecycle.md 5.3): NodeHost does not use it before step L-3a.
-	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)>) override {}
-	void fadeOut(std::move_only_function<void()>) override {}
+	Completions& completions;
+	explicit Block(Completions& c) : completions(c) {}
+	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)> done) override {
+		completions.push_back([done = std::move(done)]() mutable { done(0); });
+	}
+	void fadeOut(std::move_only_function<void()> done) override { completions.push_back(std::move(done)); }
 	void settle() override {}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
@@ -93,10 +99,19 @@ struct Block final : PortBlock {
 
 struct Blocks final : PortBlockFactory {
 	std::map<NodeName, PortBlockEvents*> events; // the latest block of each name
+	Completions completions;
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports&, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		events[node] = &e;
-		return std::make_unique<Block>();
+		return std::make_unique<Block>(completions);
+	}
+	/// Runs every completion, and those they cause, in order.
+	void complete() {
+		while (!completions.empty()) {
+			auto now = std::move(completions);
+			completions.clear();
+			for (auto& done : now) done();
+		}
 	}
 };
 
@@ -150,6 +165,7 @@ struct NoTimers final : Timers {
 	std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
 		return std::make_unique<Never>();
 	}
+	std::chrono::steady_clock::time_point now() const override { return {}; }
 };
 
 struct Links final : LinkMaker {
@@ -178,6 +194,7 @@ struct Fixture {
 	}
 	~Fixture() {
 		nodes.stopAll(graph.close(), [] {});
+		blocks.complete();
 		handoffs.closeAll();
 	}
 };
@@ -202,6 +219,7 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	      {noiseToFl, noiseToFr});
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
+	f.blocks.complete(); // noise's drive
 	f.routes.portAppeared({{"noise", "noise.mono"}, Direction::output, 1});
 	f.routes.portAppeared({{"rec", "record.left"}, Direction::input, 2});
 	REQUIRE(f.links.made.size() == 1);
@@ -242,10 +260,12 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {noiseToFl});
 	f.blocks.events.at("rec")->ready();
+	f.blocks.complete();
 	REQUIRE(f.nodes.health().at(1).name == "rec"); // a commit adds in name order
 	REQUIRE(f.nodes.health().at(1).state == NodeState::running);
 
 	apply(f.graph, {{"noise", "source", noSettings}}, {});
+	f.blocks.complete();                   // rec's silence
 	REQUIRE(f.nodes.health().size() == 2); // rec waits for its handoff to close
 	CHECK(f.nodes.health().at(1).state == NodeState::stopping);
 
@@ -266,6 +286,7 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
+	f.blocks.complete(); // the new rec's drive
 	REQUIRE(f.nodes.health().size() == 2);
 	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::running);

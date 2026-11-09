@@ -33,6 +33,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "probes.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
@@ -416,10 +417,10 @@ TEST_CASE("A linked output and input carry the source's level and an unlinked in
 	Constant half(waiter, 0.5F);
 	BlockEvents srcEvents(waiter), dstEvents(waiter);
 	auto src = blocks.make("src", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
-	src->drive(&quarter);
+	ear::testing::driveNow(*src, &quarter);
 	auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"a", "b"}}, {Direction::output, "thru", {"a"}}}},
 	                       kFormat, dstEvents);
-	dst->drive(&half);
+	ear::testing::driveNow(*dst, &half);
 	REQUIRE(wiring.link(waiter, {"src", "out.a"}, {"dst", "in.a"}));
 
 	// Two whole windows after the first window published once the link was active.
@@ -459,13 +460,13 @@ TEST_CASE("Blocks made in different cycles publish the same windows of the graph
 	Constant a(waiter, 0.0F), b(waiter, 0.0F), c(waiter, 0.0F);
 	BlockEvents aEvents(waiter), bEvents(waiter), cEvents(waiter);
 	auto blockA = blocks.make("a", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, aEvents);
-	blockA->drive(&a);
+	ear::testing::driveNow(*blockA, &a);
 	REQUIRE(waiter.until([&] { return a.calls() >= 3; }));
 	auto blockB = blocks.make("b", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, bEvents);
-	blockB->drive(&b);
+	ear::testing::driveNow(*blockB, &b);
 	REQUIRE(waiter.until([&] { return b.calls() >= 5; }));
 	auto blockC = blocks.make("c", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, cEvents);
-	blockC->drive(&c);
+	ear::testing::driveNow(*blockC, &c);
 	// Each started in its own cycle: a ran before b existed, b before c.
 	CHECK(a.calls() > b.calls());
 
@@ -547,7 +548,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 	Constant source(waiter, 0.5F);
 	BlockEvents srcEvents(waiter), dstEvents(waiter);
 	auto src = blocks.make("src", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
-	src->drive(&source);
+	ear::testing::driveNow(*src, &source);
 	auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"a", "b"}}}}, kFormat, dstEvents);
 	REQUIRE(wiring.link(waiter, {"src", "out.a"}, {"dst", "in.a"}));
 	REQUIRE(waiter.until([&] { return blocks.latestLevels().size() == 2; }));
@@ -570,69 +571,34 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 	CHECK(ear::pipewire::testing::countedAllocations() - before == 0);
 }
 
-TEST_CASE("drive returns only when the old code can no longer run, and nullptr silences", "[blocks][drive]") {
+// Step L-3a removed the blocking drive; its two cases ("drive returns only when the old code can no longer run" and
+// "drive on a block whose engine node is gone returns") are the asynchronous drive's: "drive returns at once and its
+// completion arrives on the main loop" and "drive and fadeOut on a block whose engine node is gone complete by signal",
+// below. What the first also showed of a silence stays here.
+TEST_CASE("A drive of no code leaves the linked sink exact zeros", "[blocks][drive]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
-
-	SECTION("a stops when drive(&b) returns") {
-		Constant a(waiter, 0.0F), b(waiter, 0.0F);
-		BlockEvents events(waiter);
-		auto block = blocks.make("switch", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-		block->drive(&a);
-		REQUIRE(waiter.until([&] { return a.calls() >= 3; }));
-		block->drive(&b);
-		const std::uint64_t aCalls = a.calls();
-		REQUIRE(waiter.until([&] { return b.calls() >= 3; }));
-		CHECK(a.calls() == aCalls);
-	}
-
-	SECTION("drive(nullptr) leaves the linked sink exact zeros") {
-		Wiring wiring(*engine, waiter);
-		Ramp ramp;
-		Recorder recorder(waiter);
-		BlockEvents srcEvents(waiter), recEvents(waiter);
-		auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
-		src->drive(&ramp);
-		auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
-		rec->drive(&recorder);
-		REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"rec", "record.left"}));
-		REQUIRE(waiter.until([&] {
-			const auto samples = recorder.samples();
-			return firstSound(samples) + 4 * kBlock <= samples.size();
-		}));
-		src->drive(nullptr);
-		// The sink may still run once in the cycle the barrier landed in.
-		const std::size_t from = recorder.samples().size() + kBlock;
-		REQUIRE(waiter.until([&] { return recorder.samples().size() >= from + 8 * kBlock; }));
-		const auto samples = recorder.samples().subspan(from);
-		CHECK(firstSound(samples) == samples.size());
-	}
-}
-
-TEST_CASE("drive on a block whose engine node is gone returns, and its code never runs", "[blocks][drive]") {
-	auto engine = makeEngine();
-	Waiter waiter(*engine);
-	Bell bell(waiter);
-	FilterPortBlocks blocks(*engine, bell);
-	EngineNodes nodes(*engine, waiter);
-	Constant alive(waiter, 0.0F), before(waiter, 0.0F), after(waiter, 0.0F);
-	BlockEvents aliveEvents(waiter), goneEvents(waiter);
-	auto keep = blocks.make("alive", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, aliveEvents);
-	keep->drive(&alive);
-	auto gone = blocks.make("gone", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, goneEvents);
-	gone->drive(&before);
-	REQUIRE(waiter.until([&] { return before.calls() > 0 && nodes.props("gone") != nullptr; }));
-
-	REQUIRE(nodes.destroy("gone"));
-	REQUIRE(waiter.until([&] { return goneEvents.lostDetail.has_value(); }));
-	gone->drive(&after);
-	gone->drive(nullptr);
-	gone->drive(&after);
-	const std::uint64_t aliveCalls = alive.calls();
-	REQUIRE(waiter.until([&] { return alive.calls() >= aliveCalls + 8; }));
-	CHECK(after.calls() == 0);
+	Wiring wiring(*engine, waiter);
+	Ramp ramp;
+	Recorder recorder(waiter);
+	BlockEvents srcEvents(waiter), recEvents(waiter);
+	auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
+	REQUIRE(ear::testing::driveNow(*src, &ramp));
+	auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
+	REQUIRE(ear::testing::driveNow(*rec, &recorder));
+	REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"rec", "record.left"}));
+	REQUIRE(waiter.until([&] {
+		const auto samples = recorder.samples();
+		return firstSound(samples) + 4 * kBlock <= samples.size();
+	}));
+	REQUIRE(ear::testing::driveNow(*src, nullptr));
+	// The sink may still run once in the cycle the barrier landed in.
+	const std::size_t from = recorder.samples().size() + kBlock;
+	REQUIRE(waiter.until([&] { return recorder.samples().size() >= from + 8 * kBlock; }));
+	const auto samples = recorder.samples().subspan(from);
+	CHECK(firstSound(samples) == samples.size());
 }
 
 TEST_CASE("A block with inside ports: the inside output is live and routable, levels list "
@@ -648,14 +614,14 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	Recorder recorder(waiter);
 	BlockEvents srcEvents(waiter), cardEvents(waiter), recEvents(waiter);
 	auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
-	src->drive(&ramp);
+	ear::testing::driveNow(*src, &ramp);
 	auto card = blocks.make(
 		"card",
 		Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}},
 		kFormat, cardEvents);
-	card->drive(&through);
+	ear::testing::driveNow(*card, &through);
 	auto rec = blocks.make("rec", Ports{{{Direction::input, "record", {"left"}}}}, kFormat, recEvents);
-	rec->drive(&recorder);
+	ear::testing::driveNow(*rec, &recorder);
 
 	REQUIRE(wiring.link(waiter, {"ramp", "out.a"}, {"card", "in.a"}));
 	REQUIRE(wiring.link(waiter, {"card", "to_card.1"}, {"rec", "record.left"}));
@@ -694,9 +660,9 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
 	Constant one(waiter, 0.0F), two(waiter, 0.0F);
 	BlockEvents oneEvents(waiter), twoEvents(waiter);
 	auto first = blocks.make("one", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, oneEvents);
-	first->drive(&one);
+	ear::testing::driveNow(*first, &one);
 	auto second = blocks.make("two", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, twoEvents);
-	second->drive(&two);
+	ear::testing::driveNow(*second, &two);
 
 	REQUIRE(
 		waiter.until([&] { return nodes.props("one") && nodes.props("two") && one.calls() >= 8 && two.calls() >= 8; }));
@@ -765,9 +731,9 @@ TEST_CASE("Each cycle's position advances by its frames and its start is no late
 	CycleLog log(waiter);
 	BlockEvents events(waiter);
 	auto block = blocks.make("timed", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	block->drive(&log);
+	ear::testing::driveNow(*block, &log);
 	REQUIRE(waiter.until([&] { return log.count() == CycleLog::kCapacity; }));
-	block->drive(nullptr);
+	ear::testing::driveNow(*block, nullptr);
 
 	std::size_t advancedByFrames = 0;
 	for (std::size_t i = 1; i < CycleLog::kCapacity; ++i) {
@@ -799,9 +765,9 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	BlockEvents events(waiter);
 	auto block = blocks.make("timed", Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "out", {"a", "b"}}}},
 	                         kFormat, events);
-	block->drive(&log);
+	ear::testing::driveNow(*block, &log);
 	REQUIRE(waiter.until([&] { return log.count() == CycleLog::kCapacity && nodes.props("Dummy-Driver"); }));
-	block->drive(nullptr);
+	ear::testing::driveNow(*block, nullptr);
 	const auto dummy = static_cast<std::uint32_t>(std::stoul(nodes.props("Dummy-Driver")->at(PW_KEY_OBJECT_ID)));
 
 	const std::int64_t cycleNs = std::int64_t{kBlock} * 1000000000 / kRate;
@@ -828,9 +794,9 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 
 	// A new code's first cycle is a discontinuity to it, though the clock ran on.
 	CycleLog next(waiter);
-	block->drive(&next);
+	ear::testing::driveNow(*block, &next);
 	REQUIRE(waiter.until([&] { return next.count() >= 4; }));
-	block->drive(nullptr);
+	ear::testing::driveNow(*block, nullptr);
 	CHECK(next.at(0).cycle.discontinuity);
 }
 
@@ -878,20 +844,20 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	BlockEvents sourceEvents(waiter), midEvents(waiter), sinkEvents(waiter), otherEvents(waiter);
 	auto source = blocks.make("source", Ports{{{Direction::output, "out", {"1"}}, {Direction::output, "spare", {"1"}}}},
 	                          kFormat, sourceEvents);
-	source->drive(&sourceProbe);
+	ear::testing::driveNow(*source, &sourceProbe);
 	auto mid = blocks.make("mid",
 	                       Ports{{{Direction::input, "in", {"1"}},
 	                              {Direction::output, "thru", {"1", "2"}},
 	                              {Direction::output, "side", {"1"}}}},
 	                       kFormat, midEvents);
 	mid->carryLatency(LatencyPlan{{{"in", "thru"}}, {{"in", Latency{10, 20}}}});
-	mid->drive(&midProbe);
+	ear::testing::driveNow(*mid, &midProbe);
 	auto sink = blocks.make("sink", Ports{{{Direction::input, "in", {"1", "2"}}}}, kFormat, sinkEvents);
 	sink->carryLatency(LatencyPlan{{}, {{"in", Latency{300, 300}}}});
-	sink->drive(&sinkProbe);
+	ear::testing::driveNow(*sink, &sinkProbe);
 	auto other = blocks.make("other", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, otherEvents);
 	other->carryLatency(LatencyPlan{{}, {{"in", Latency{900, 900}}}});
-	other->drive(&otherProbe);
+	ear::testing::driveNow(*other, &otherProbe);
 	// side is linked first, so whatever source hears after thru is linked already holds side's 900 if it leaked.
 	REQUIRE(wiring.link(waiter, {"source", "out.1"}, {"mid", "in.1"}));
 	REQUIRE(wiring.link(waiter, {"mid", "side.1"}, {"other", "in.1"}));
@@ -913,10 +879,10 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	mid->carryLatency({});
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{}; }));
 
-	source->drive(nullptr);
-	mid->drive(nullptr);
-	sink->drive(nullptr);
-	other->drive(nullptr);
+	ear::testing::driveNow(*source, nullptr);
+	ear::testing::driveNow(*mid, nullptr);
+	ear::testing::driveNow(*sink, nullptr);
+	ear::testing::driveNow(*other, nullptr);
 }
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -953,9 +919,9 @@ TEST_CASE("process() runs with denormals flushed to zero (FTZ and DAZ), and the 
 	Mxcsr probe(waiter);
 	BlockEvents events(waiter);
 	auto block = blocks.make("csr", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	block->drive(&probe);
+	ear::testing::driveNow(*block, &probe);
 	REQUIRE(waiter.until([&] { return probe.value() != 0; }));
-	block->drive(nullptr);
+	ear::testing::driveNow(*block, nullptr);
 	CHECK((probe.value() & 0x8000U) != 0); // FTZ
 	CHECK((probe.value() & 0x0040U) != 0); // DAZ
 	CHECK(_mm_getcsr() == mainBefore);

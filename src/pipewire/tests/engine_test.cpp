@@ -25,6 +25,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/testing/drive_now.hpp"
 
 namespace {
 using namespace ear;
@@ -57,7 +58,7 @@ public:
 std::unique_ptr<PortBlock> makeDriven(FilterPortBlocks& blocks, const NodeName& node, const Ports& ports,
                                       AudioCode& code, PortBlockEvents& events) {
 	auto block = blocks.make(node, ports, kFormat, events);
-	block->drive(&code);
+	ear::testing::driveNow(*block, &code);
 	return block;
 }
 

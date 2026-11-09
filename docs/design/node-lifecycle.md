@@ -1,7 +1,7 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.4, 2026-11-09 (2.2: gaps found building step L-1; 2.3: building L-5's graph file and
-desired graph; 2.4: S2 on CI; section 17). Revision 1 went to one
+Status: proposal, revision 2.5, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
+file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -696,7 +696,7 @@ unchanged:
 | Machine step | `LegacyInstance` |
 |---|---|
 | T2, `configure` | calls `config.start(cx.legacy)`, where `cx.legacy` is today's `StartContext`, implemented by `NodeHost` on the same internals as `CreateContext` and handed in `InstanceContexts` (5.9) (outside requests, handoffs, recordings, latency); a failed `StartResult` is `Configured::failed`; else it keeps the code (unprepared, undriven) and the recipe |
-| T3, every resource ready | runs the recipe (`Ready&`) and keeps the run object; a failed recipe is a fault (`start-failed`); then the code is prepared, as for any type |
+| T3, every resource ready | runs the recipe (`Ready&`) and keeps the run object; a failed recipe is a fault (`start-failed`); then the code is prepared, as for any type. As built (L-3a): `NodeHost` runs the recipe when it finds every resource ready, *before* it tells the machine, and tells `resourcesReady` only if the recipe succeeded, else the fault in `readying`; the machine's `runRecipe` action is then a marker. Told after, a failed recipe would meet a configuration already `prepared` (and `arming`, its drive asked in the same converge) with no drive to complete |
 | T5 | the code is driven, after the recipe, never before (today it drove at once, `node_host.cpp:305-306` [V]) |
 | `start()`, `stop()` | none: a legacy type has no hooks; a stopped legacy node keeps its run object, connection included (13.1, D-L27) |
 | I5 step 3 | its handoffs close on their threads, as today (`node_host.cpp:399-402` [V]) |
@@ -1301,9 +1301,9 @@ step's `ctest` and `make web-test` pass on their own.
 | L-0 | S1, S2, S3 (10.1 to 10.3) as tests; `context.num-data-loops = 1` | S1 fails: the fallback is designed (D-L26) and changes 5.3's posting and 5.4's bound before L-2 starts. S2 fails: 3b's design changes (D-L25), 3a does not |
 | L-1 | The pure machines and the aggregate's derivation in `ear_core`, tested by table; `NodeLifecycle` still used by `NodeHost` | Low: no wiring; a table found wrong against node-framework.md 6.3 is fixed there first |
 | L-2 | `PortBlock`'s asynchronous `drive` applied in its invoke, `fadeOut`, `settle()`, one invoke in flight per block, completions, `takenAt`, `blockId`, in `FilterPortBlock`; today's blocking `drive(AudioCode*)` kept beside them, used by the old `NodeHost` | The fade's ramp and acknowledgement on the data loop, and a fade on a block leaving STREAMING; `port_block_test.cpp`'s new cases, with S2's probes reused |
-| L-3a | `NodeHost` on the machines with the asynchronous drive, every type on the old SPI through the legacy adapter (5.10, its recipe check included); `Timers::now()`; no fades, no flush, no wedge, the old `NodeHealth` and records: behaviour identical to today's, the blocking `drive` removed | Every node's start and teardown now waits for a completion; a missed one hangs a node (no bound yet). Mitigated: L-1's tables and the rewritten `node_host_test` cases; every system test unchanged and green |
+| L-3a | `NodeHost` on the machines with the asynchronous drive, every type on the old SPI through the legacy adapter (5.10, its recipe check included); `Timers::now()`; a failed node torn down at once (the machines' T14 does it, so it lands here, not in L-3c); no fades, no flush, no wedge, the old `NodeHealth` and records: behaviour identical to today's, the blocking `drive` removed | Every node's start and teardown now waits for a completion; a missed one hangs a node (no bound yet). Mitigated: L-1's tables and the rewritten `node_host_test` cases; every system test unchanged and green |
 | L-3b | The per-turn flush (destroys first, re-entrancy, deferred inputs), T1's wait for an older block, the join by `blockId`, `MainLoopActivity` written | A name added back and a ready told inside a make (m6); the flush's cases in `node_host_test`, `sound_card_test` and `rtp_receiver_test` linking by id |
-| L-3c | Fades before every planned silence and the fade-in, the three bounds with `settle()`, the wedge and `EngineDiagnosticListener`, a failed node torn down at once; `leaked()`; `StatusLog`'s three new diagnostics with their `output-records.json` cases | A bound tuned too tight for CI (11.6's 16-node test measures it); a fade on a block that stops processing (B1's cases) |
+| L-3c | Fades before every planned silence and the fade-in, the three bounds with `settle()`, the wedge and `EngineDiagnosticListener`; `leaked()`; `StatusLog`'s three new diagnostics with their `output-records.json` cases | A bound tuned too tight for CI (11.6's 16-node test measures it); a fade on a block that stops processing (B1's cases) |
 | L-3d | `NodeHost` honours `disabled` (from L-5: `nodeChanged` overridden for `disable`, `enable`, `stored`; a node added disabled is never configured); `NodeHealth`'s members, health told per transition, `waitingFor` pacing, `NodeOperations` (core's types, not yet on the wire), the port-caused replace's continuity (with `NodeChange::portCaused` from the plan), the failure code `lost`; `StatusLog`'s new sentences (`removed dropped=`, `stopping: <cause>`, `stopped`, `disabled`, `still`); `LogEntry::run` removed; `output-records.json`'s `node` cases and `"run": 2`; the seven system-test removal lines | The records every script reads change; the fixtures and system lines change in this same step |
 | L-4a | The new SPI: `lifecycle.hpp`, `InstanceContexts`, `CreateContext`, `SpecInstance`, hooks timed (`ear.hook-slow` and its fixture case), the harness over `NodeHost`; `white`, `card`, `rtp` moved; the compile-fail cases; `run_requests.hpp` removed | The harness and `NodeHost` must agree (they are one); `card`'s system test on the test card is the gate |
 | L-4b | The interim sink: `SinkAdapter`, `SinkTap`, `ThreadSinks`, `Chunk`, `SinkConsumer`, the harness's sink fake; `file` moved | `file`'s recording path is the first audio path through new code: its system test (exact samples) and `sink_test.cpp`'s ramp are the gate |
@@ -1546,3 +1546,38 @@ positions again, so S2's model of D, which compared swaps by position, was wrong
 near a jump B saw kept only B's first 256 jumps. S2 now tells cycles apart by the order they ran in, asserts the
 corrected criterion exactly, and runs alone (`RUN_SERIAL`). 5.3's `takenAt` and 16's open item for 3b name the step
 back.
+
+### Revision 2.5 (2026-11-09, found building L-3a)
+
+Step L-3a built `NodeHost` on `NodeAggregate` with the asynchronous drive (`node_host.cpp`), every type through the
+legacy adapter, `Timers::now()`, and the blocking `PortBlock::drive(AudioCode*)` removed (engine tests use
+`ear::testing::driveNow`, `ear/testing/drive_now.hpp`: the asynchronous drive, then `settle()` until it completed).
+`node_host_test.cpp` has 51 cases: the 47 rewritten (the slice 2 cases that paired a recipe with a card now give the
+card no recipe) and four new (a drive's completion later than the call, a stale completion, a restart with a drive in
+flight, removal silencing before the block goes). What building it settled, each a minimal edit or recorded here:
+
+- 12: a failed node is torn down at once in L-3a, not L-3c: the machines' fault rows (4.2, T14) tear the
+  configuration down, and L-3a runs on them. Externally a failed node's code is silenced and its outside nodes, handoffs
+  and run object go at the failure, where before they ran on until an update or removal; no record changes.
+- 5.10's T3: the recipe runs before the machine hears `resourcesReady` (the row says why).
+- 4.5's records against the aggregate: a removal that ends in its own input (no configuration, or one already gone)
+  derives `removed` at once, so the aggregate's `tell` emits `Gone` with no `stopping` before it. Today's records (and
+  L-3a's) say `stopping` first, so `NodeHost` tells it before a `Gone`. L-3d, which changes the records, decides
+  whether 4.5's `removed` alone is meant there.
+- T1 (5.7) is L-3b's, but a name added back must still wait for its older node: L-3a makes its block at once, as
+  today, and adds the node with the aggregate's `predecessor` set, so rule 1 configures it only once the older node is
+  gone (`predecessorGone`, then the block being already made). Row 3 derives `stopping` (`restarting`) for it, which
+  L-3a's old health shows as `starting`, as today.
+- The old health from the derived one (until L-3d): `stopping` only with cause `removing`; `failed` with the failure's
+  reason, the code `lost` shown as `start-failed`, or with the block's loss; `running`; `starting` for everything else
+  (a restart's `stopping` included, as today's restart said `starting`). A listener is told only when that changes.
+- 5.1's `queued`: `NodeHost` keeps the newest committed config beside its version for the next `configure`, and drops
+  it at removal and at a block's loss, which never configure again, so a config goes with its configuration's step 5
+  as before.
+- 5.2's inputs: `NodeHost` queues an input that arrives while another is handled (a resource ready at once, a run
+  object closed inside `close()`, an outside node ready inside its making) and handles it after, in arrival order,
+  before the call returns; nothing is handled inside an action. Every input names its node by serial.
+- A configuration whose `start` threw (a type bug) asks for nothing more: no outside node is made for it once its block
+  is ready, as before.
+- `Timers::now()` is `std::chrono::steady_clock::time_point` (CLOCK_MONOTONIC, the clock the main loop's timers count
+  on).

@@ -1,5 +1,6 @@
-// Main-loop timers (docs/design/node-framework.md section 6, I5a; slice 1): the node framework's close deadline. The
-// engine's main loop implements them (ear_pipewire's MainLoopExecutor); tests turn a fake clock.
+// Main-loop timers (docs/design/node-framework.md section 6, I5a; slice 1): the node framework's close deadline; and
+// their clock, now() (docs/design/node-lifecycle.md D-L12, step L-3a), so core reads no clock of its own. The engine's
+// main loop implements them (ear_pipewire's MainLoopExecutor); tests turn a fake clock.
 #pragma once
 #include <chrono>
 #include <functional>
@@ -16,6 +17,8 @@ public:
 	/// first. Never runs it inside this call. `due` is moved out of the timer before it runs, so destroying the timer
 	/// inside `due` is allowed.
 	virtual std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) = 0;
+	/// Main thread. The clock `after` counts on: monotonic, never stepped.
+	virtual std::chrono::steady_clock::time_point now() const = 0;
 
 protected:
 	~Timers() = default;

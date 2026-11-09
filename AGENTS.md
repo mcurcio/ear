@@ -519,12 +519,14 @@ How audio moves:
    (sound cards, RTP receivers, handoffs, recording files: a closed list, one adapter each in the
    `ResourceRegistry`) and returns the run's code (its own, against `Io<spec>`, erased once into an
    `AudioCode`, or the framework's `passThrough` between banks) and optionally the recipe of its
-   run object; `AudioCode::prepare` runs and the block is driven with the code at once; the
-   framework readies every resource, then calls the recipe (`Ready&`), which builds the run
-   object with its threads. New settings restart the run behind the same block, one run at a
-   time. The node is `running` once the block is ready (its first STREAMING state) and the run is
-   ready, every resource it acquired and its recipe included (`NodeLifecycle`). Every block
-   processes whether routed or not; an unlinked input reads zeros.
+   run object; the framework readies every resource, then calls the recipe (`Ready&`), which
+   builds the run object with its threads, then `AudioCode::prepare` runs; once the block is ready
+   (its first STREAMING state) the code drives it by an asynchronous drive, applied between two
+   cycles on the data loop and completed on the main loop. New settings restart the run behind
+   the same block, one run at a time. The node is `running` once that drive completed (the
+   lifecycle machines, `node_machines.hpp`, `docs/design/node-lifecycle.md`; step L-3a runs every
+   type through its legacy adapter). Every block processes whether routed or not; an unlinked
+   input reads zeros.
 3. On PipeWire's realtime thread each cycle the block calls `AudioCode::process` with one span
    per port and the graph cycle (`GraphCycle`, made by the framework: its start on both
    `CLOCK_MONOTONIC` and `CLOCK_MONOTONIC_RAW`, the driver's position, id and rate against the
@@ -574,15 +576,16 @@ How audio moves:
 9. Stopping: `DesiredGraph::close()` refuses every later edit, the keeper is told to stop
    (edits still queued get `stopping`, reads are still answered), then `NodeHost::stopAll` takes
    each node through `stopping` and tears its run down by dependency (`docs/design/node-framework.md`
-   section 6, I4 to I7): port block destroyed (the barrier: no `process` after that), `release`,
-   outside nodes destroyed, handoffs drained and finished on their own threads, the run object
+   section 6, I4 to I7): the barrier, a drive of no code (no `process` of the code once it
+   completed), `release`, outside nodes destroyed and the port block destroyed, handoffs drained
+   and finished on their own threads, the run object
    closed (a `sendspin` node's worker says goodbye, on its own thread, so nothing waits on the
    main loop), then on the main loop the run object, its code and its config freed; then
    `stopped`. Anything a run's threads tell lands only on that run (its generation), never on the
    next. Draining and closing have a deadline (10 s): a run past it is leaked, never freed
    (a `diagnostic` record, `node <n> ear.close-overdue: ...`), and the node moves on. A restart
-   (`node.update`) runs the same teardown but keeps the block, only silencing it
-   (`drive(nullptr)`) first. After the last node, the control port
+   (`node.update`) runs the same teardown but keeps the block. A failed node's run is torn down
+   at once, its block and routes kept. After the last node, the control port
    closes every client (1001), the control thread stops and EAR's main loop quits. Last, the
    main thread joins the keeper's thread, which first writes the last accepted version of
    `ear.conf` if it is not written yet (a hung disk delays exit without limit).

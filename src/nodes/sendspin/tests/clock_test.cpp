@@ -26,6 +26,7 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "feed.hpp"
 #include "sendspin_code.hpp"
@@ -199,11 +200,11 @@ struct Rig {
 			Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}},
 			kFormat, blockEvents);
 		tap.prepare(kFormat);
-		block->drive(&tap);
+		ear::testing::driveNow(*block, &tap);
 		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
 	}
 	~Rig() {
-		block->drive(nullptr);
+		ear::testing::driveNow(*block, nullptr);
 		block.reset();
 		tap.release();
 		std::atomic<bool> stopped{false};
@@ -315,7 +316,7 @@ struct TestCard {
 		passThrough->prepare(kFormat);
 		block = rig.blocks.make("card", ports, kFormat, blockEvents);
 		block->carryLatency(LatencyPlan{pairs, {}});
-		block->drive(passThrough.get());
+		ear::testing::driveNow(*block, passThrough.get());
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
 		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
 		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
@@ -330,7 +331,7 @@ struct TestCard {
 	}
 	~TestCard() {
 		for (pw_proxy* made : links) pw_proxy_destroy(made);
-		block->drive(nullptr);
+		ear::testing::driveNow(*block, nullptr);
 	}
 	/// A route's link, by node and port name, as the reconciler would make by port id.
 	void link(const std::string& from, const std::string& to) {

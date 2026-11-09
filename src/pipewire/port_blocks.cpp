@@ -1,11 +1,11 @@
 // Port blocks as pw_filter nodes (docs/design/batch2.md section 4.3, port_blocks.hpp): every
-// block in EAR's graph group, drive() as a barrier with the block's data loop, and level
+// block in EAR's graph group, an asynchronous drive applied on the block's data loop, and level
 // metering of the public ports in windows aligned on the graph clock. Each cycle's GraphCycle is
 // made here, both clock domains sampled once (docs/design/node-framework.md section 9.3), and
 // latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4). Slice 3a's
 // asynchronous drive and fade (docs/design/node-lifecycle.md section 5.3, step L-2): requests in a
 // ring of eight, one invoke in flight per block, applied inside it, completed through the block's
-// own event source.
+// own event source; the blocking drive went with step L-3a.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -165,21 +165,6 @@ public:
 
 	FilterPortBlock(const FilterPortBlock&) = delete;
 	FilterPortBlock& operator=(const FilterPortBlock&) = delete;
-
-	/// The new code is stored on the block's data loop, between two cycles, and the call waits
-	/// for that: when it returns, no process() of the old code is running or will run. A block
-	/// with no data loop (refused, never connected, or its local node destroyed: filter.c clears
-	/// the pointer) is not processing, so storing the pointer is enough. A block whose engine
-	/// node was destroyed through the registry keeps its data loop (E1's test found this), so
-	/// the invoke runs there and returns as usual.
-	void drive(AudioCode* code) override {
-		pw_loop* dataLoop = filter_ != nullptr ? pw_filter_get_data_loop(filter_) : nullptr;
-		if (dataLoop == nullptr) {
-			code_.store(code, std::memory_order_release);
-			return;
-		}
-		pw_loop_invoke(dataLoop, &FilterPortBlock::onDrive, 0, &code, sizeof(code), true, this);
-	}
 
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 		pending_.push_back(Pending{Kind::drive, request.code, request.faded, std::move(done), {}});
@@ -516,15 +501,6 @@ private:
 
 	/// Main loop: the data loop completed requests, or an invoke ran.
 	static void onCompletion(void* data, std::uint64_t /*count*/) { static_cast<FilterPortBlock*>(data)->settle(); }
-
-	/// Data loop: drive()'s barrier.
-	static int onDrive(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* data,
-	                   std::size_t /*size*/, void* userData) {
-		auto* self = static_cast<FilterPortBlock*>(userData);
-		self->code_.store(*static_cast<AudioCode* const*>(data), std::memory_order_release);
-		self->fresh_ = true; // the new code's first cycle is a discontinuity to it
-		return 0;
-	}
 
 	/// Realtime thread: run the code (or silence), meter the public ports, and publish the
 	/// window when this cycle crosses a window boundary of the graph clock.

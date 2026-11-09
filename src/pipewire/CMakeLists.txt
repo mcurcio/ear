@@ -46,9 +46,10 @@ if(BUILD_TESTS)
 		tests/sound_card_test.cpp
 		tests/spikes_test.cpp)
 	# PipeWire directly: the tests drive the engine's loops and sync with its core themselves.
-	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders.
+	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders;
+	# ear_type_harness: ear/testing/drive_now.hpp, a block driven and waited for.
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main
-		PkgConfig::PIPEWIRE ear_rtp_tone ear_temp_folder)
+		PkgConfig::PIPEWIRE ear_rtp_tone ear_temp_folder ear_type_harness)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
 	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it).
 	target_compile_definitions(ear_pipewire_tests PRIVATE

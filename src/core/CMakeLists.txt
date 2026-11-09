@@ -56,6 +56,7 @@ if(BUILD_TESTS)
 	# only; like ear_core it starts no thread of its own and touches no file.
 	add_library(ear_type_harness STATIC testing/node_harness.cpp)
 	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+		include/ear/testing/drive_now.hpp
 		include/ear/testing/node_harness.hpp
 		include/ear/testing/type_harness.hpp)
 	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
