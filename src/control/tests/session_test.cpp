@@ -106,6 +106,7 @@ public:
 	ear::GraphView view{};
 	GraphFile file{};
 	const QueueExecutor* const* running = nullptr;
+	const SnapshotStamp* stamp = nullptr; // the gateway: each read's since, filled at the read
 	QueueExecutor* mainLoop = nullptr;
 	int offLoop = 0;
 
@@ -122,7 +123,11 @@ private:
 		std::string call = describe(command);
 		if (*running != mainLoop) ++offLoop;
 		calls.push_back(call);
-		if (std::holds_alternative<GetGraph>(command)) return view;
+		if (std::holds_alternative<GetGraph>(command)) {
+			ear::GraphView read = view;
+			if (stamp != nullptr) stamp->stamp(read);
+			return read;
+		}
 		if (std::holds_alternative<GetGraphFile>(command)) return file;
 		REQUIRE_FALSE(script.empty());
 		Step step = std::move(script.front());
@@ -171,6 +176,7 @@ struct World {
 	World() {
 		graph.running = &running;
 		graph.mainLoop = &main;
+		graph.stamp = &gateway;
 		onControl([&] { hub = std::make_unique<ControlHub>(gateway, levels); });
 		pump();
 	}
@@ -554,7 +560,7 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	w.receive(session, requests[10]);
 	w.onMain([&] { w.told(at("porch", NodePhase::running)); });
 
-	// A node added disabled: node.added says disabled, and nothing follows.
+	// A node added disabled: node.added says disabled, and its first node.state says it again (a protocol 0 client).
 	ear::NodeSpec quiet{"quiet", "white", json::object()};
 	quiet.disabled = true;
 	w.graph.script.push_back({"addNode quiet white {} disabled", [&]() -> CommandResult {
@@ -670,6 +676,31 @@ TEST_CASE("lifecycle.json: a node's whole life, each health change one node.stat
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
 	CHECK(w.graph.offLoop == 0);
+}
+
+TEST_CASE("A snapshot read before a verb in the same batch carries the since of the phase it read",
+          "[session][lifecycle]") {
+	World w;
+	w.graph.view = baseView();
+	w.onMain([&] { w.state("noise", NodeState::running); }); // since: reading 0
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.graph.script.push_back({"stopNode noise", [&]() -> CommandResult {
+								  auto stopping = health("noise", NodeState::stopping);
+								  stopping.cause = ear::NodeCause{ear::NodeCause::Kind::stop, std::nullopt, {}};
+								  stopping.wanted = ear::Wanted::stopped;
+								  w.told(stopping); // since: reading 1
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, R"([{"jsonrpc":"2.0","id":1,"method":"graph.get"},
+	                       {"jsonrpc":"2.0","id":2,"method":"node.stop","params":{"name":"noise"}}])");
+	REQUIRE(out.all.size() == 1);
+	const json batch = json::parse(out.all[0]);
+	REQUIRE(batch.size() == 2);
+	const json& noise = batch[0]["result"]["nodes"][0];
+	CHECK(noise["phase"] == "running");
+	CHECK(noise["since"] == "2026-11-09T10:00:00.000000Z");
+	CHECK(batch[1]["result"] == json{{"applied", "stop"}});
 }
 
 TEST_CASE("levels.json: levels.subscribe, then complete snapshots", "[session][levels][protocol]") {

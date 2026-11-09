@@ -29,6 +29,23 @@ function healthOf(from: Partial<NodeHealth>): NodeHealth {
 /** What a node.added from a protocol 0 ear, which sends no health, is taken to say. */
 const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted: "running", blockLost: false };
 
+/**
+ * A node as this editor keeps it, from a snapshot's node or node.added: its spec members and the health members it
+ * knows (a protocol 0 ear sends no health: such a node is starting), so a member it does not know never goes stale.
+ */
+function nodeOf(from: GraphNode): GraphNode {
+  const { name, type, settings, inputs, outputs, disabled } = from;
+  return {
+    name,
+    type,
+    settings,
+    inputs,
+    outputs,
+    ...healthOf({ ...protocol0Health, ...from }),
+    ...(disabled === true ? { disabled } : {}),
+  };
+}
+
 /** A node without its health members. */
 function withoutHealth(node: GraphNode): Omit<GraphNode, keyof NodeHealth> {
   const { state: _s, phase: _p, since: _t, wanted: _w, blockLost: _b, cause: _c, waitingFor: _f, reason: _r, ...spec } =
@@ -84,19 +101,8 @@ type Event<N extends keyof Notifications> = Notifications[N];
 
 const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) => Graph } = {
   "node.added": (graph, added) => {
-    const { name, type, settings, inputs, outputs, disabled } = added;
-    if (hasNode(graph, name)) return graph;
-    const node: GraphNode = {
-      name,
-      type,
-      settings,
-      inputs,
-      outputs,
-      // A protocol 0 ear sends no health: such a node is starting.
-      ...healthOf({ ...protocol0Health, ...added }),
-      ...(disabled === true ? { disabled } : {}),
-    };
-    const nodes = [...graph.nodes, node].sort((a, b) => compare(a.name, b.name));
+    if (hasNode(graph, added.name)) return graph;
+    const nodes = [...graph.nodes, nodeOf(added)].sort((a, b) => compare(a.name, b.name));
     return { ...graph, nodes };
   },
   "node.updated": (graph, { name, settings, disabled }) =>
@@ -139,7 +145,10 @@ const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) =
 
 /** The graph after one server text. Responses other than a graph, and errors, change nothing. */
 export function reduce(state: GraphState, message: ServerMessage): GraphState {
-  if ("result" in message) return isGraph(message.result) ? message.result : state;
+  if ("result" in message) {
+    const result: unknown = message.result;
+    return isGraph(result) ? { ...result, nodes: result.nodes.map(nodeOf) } : state;
+  }
   if ("error" in message) return state;
   if (state === null) return state;
   const handler = handlers[message.method] as ((graph: Graph, params: unknown) => Graph) | undefined;

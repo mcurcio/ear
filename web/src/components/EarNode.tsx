@@ -8,18 +8,22 @@ import { describeHealth, startingLineDelayMs } from "../health";
 import type { GraphNode } from "../protocol";
 import { Meter } from "./Meter";
 
-/** The time to describe a node at: now, and again once a starting phase's hidden line is due. */
-function useDescribeTime(since: string | undefined): number {
-  const [now, setNow] = useState(() => Date.now());
+/**
+ * How long this box has shown the node in its phase, on the browser's clock from when the phase (or a new since,
+ * a phase entered again) arrived; the box is drawn again once a starting phase's hidden line is due.
+ */
+function usePhaseSeen(phase: string, since: string | undefined): number {
+  const [seen, setSeen] = useState(() => ({ phase, since, at: Date.now() }));
+  const [, redraw] = useState(0);
+  const current = seen.phase === phase && seen.since === since ? seen : { phase, since, at: Date.now() };
   useEffect(() => {
-    const began = since === undefined ? NaN : Date.parse(since);
-    const due = began + startingLineDelayMs - Date.now();
-    setNow(Date.now());
+    if (current !== seen) setSeen(current);
+    const due = current.at + startingLineDelayMs - Date.now();
     if (!(due > 0)) return undefined;
-    const timer = setTimeout(() => setNow(Date.now()), due);
+    const timer = setTimeout(() => redraw((n) => n + 1), due);
     return () => clearTimeout(timer);
-  }, [since]);
-  return now;
+  }, [current, seen]);
+  return Date.now() - current.at;
 }
 
 export type EarNodeData = { node: GraphNode };
@@ -41,7 +45,7 @@ function Port({ node, port, direction }: { node: string; port: string; direction
 }
 
 export function EarNode({ data: { node }, selected }: NodeProps<EarFlowNode>) {
-  const health = describeHealth(node, useDescribeTime(node.since));
+  const health = describeHealth(node, usePhaseSeen(node.phase, node.since));
   return (
     <div className={`ear-node ${health.styleClass} phase-${node.phase}${selected ? " selected" : ""}`}>
       <div className="ear-node-header">

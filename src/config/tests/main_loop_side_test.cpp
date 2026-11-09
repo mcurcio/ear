@@ -188,3 +188,34 @@ TEST_CASE("operate tells the action record before the operation's health, a refu
 	                                            "action porch start node-disabled", "action porch start stopping",
 	                                            "restart desk", "health desk", "action desk restart ok"});
 }
+
+TEST_CASE("Each graph read is stamped at once by every SnapshotStamp", "[main_loop_side][lifecycle]") {
+	class OneNode final : public GraphReader {
+	public:
+		GraphView read() const override {
+			GraphView view{};
+			view.nodes.push_back({{"noise", "white", json::object()}, Ports{}, healthFromSpec({"noise", "white", {}})});
+			return view;
+		}
+	};
+	class Stamp final : public control::SnapshotStamp {
+	public:
+		mutable int stamped = 0;
+		void stamp(GraphView& view) const override {
+			++stamped;
+			view.nodes[0].since = std::chrono::system_clock::time_point{std::chrono::seconds{7}};
+		}
+	};
+	NodeCatalogue catalogue{ear::config::test::testTypes()};
+	DesiredGraph graph{catalogue};
+	OneNode reader;
+	ear::config::test::Log log;
+	ear::config::test::FakeOperations operations{log};
+	MainLoopSide side{graph, reader, operations};
+	Stamp stamp;
+	side.stampSnapshots(stamp);
+	const GraphView view = side.graph();
+	CHECK(stamp.stamped == 1);
+	REQUIRE(view.nodes[0].since.has_value());
+	CHECK(view.nodes[0].since->time_since_epoch() == std::chrono::seconds{7});
+}

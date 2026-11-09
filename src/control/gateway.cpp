@@ -6,11 +6,11 @@
 //
 // Each node's health as last sent and when its phase began live here on the main loop
 // (docs/design/node-lifecycle-modules.md 5.4, D-M11): node.state goes out when any member changes, `since` moves only
-// with the phase, and a snapshot's `since` is filled from the same map in the keeper's reply, before it is posted.
+// with the phase, and a snapshot's `since` is filled from the same map when the graph is read (stamp, called by the
+// keeper's main-loop side at the read), so it is the one the snapshot's phase had.
 //
 // Posted work captures what it needs by value and the executors by reference (they outlive the
-// gateway), never the gateway itself, except watch(), which runs before any command. The reply
-// holds the map by a shared pointer, so a reply the keeper sends late never reaches a gone gateway.
+// gateway), never the gateway itself, except watch(), which runs before any command.
 #include "ear/control/gateway.hpp"
 
 #include <map>
@@ -20,10 +20,13 @@
 namespace ear::control {
 namespace {
 
-/// A node's health as last sent and when its phase began (main loop only).
+/// A node's health as last sent and when its phase began (main loop only). `told`: a node.state was sent for it; false
+/// after node.added of a node added disabled, so NodeHost's first report is sent even though node.added said it (a
+/// protocol 0 client reads a state only from node.state).
 struct Sent {
 	NodeHealth health;
 	std::chrono::system_clock::time_point since;
+	bool told = true;
 };
 using SentMap = std::map<NodeName, Sent, std::less<>>;
 
@@ -42,7 +45,7 @@ struct MainLoopGateway::Impl {
 	WallClock clock;
 	EventSink* sink = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
-	std::shared_ptr<SentMap> sent = std::make_shared<SentMap>();
+	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
 
 	/// Main loop: `call(*sink)` on the control executor; dropped before watch().
 	template <class Call> void toSink(Call call) {
@@ -63,13 +66,8 @@ void MainLoopGateway::run(std::vector<Command> commands,
                           std::move_only_function<void(std::vector<CommandResult>)> done) {
 	// The keeper calls the reply on the main loop after every event the batch caused was told, so
 	// posting `done` from there puts it behind them in the control executor's queue.
-	impl_->requests.submit(std::move(commands), [&control = impl_->control, sent = impl_->sent,
+	impl_->requests.submit(std::move(commands), [&control = impl_->control,
 	                                             done = std::move(done)](std::vector<CommandResult> results) mutable {
-		for (CommandResult& result : results)
-			if (auto* view = std::get_if<GraphView>(&result))
-				for (NodeView& node : view->nodes)
-					if (const auto known = sent->find(node.spec.name); known != sent->end())
-						node.since = known->second.since;
 		control.post([done = std::move(done), results = std::move(results)]() mutable { done(std::move(results)); });
 	});
 }
@@ -87,7 +85,7 @@ void MainLoopGateway::graphFileWritten(const std::string&) {}
 void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
-	impl_->sent->insert_or_assign(node.name, Sent{health, since});
+	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
 	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
 }
 
@@ -111,12 +109,13 @@ void MainLoopGateway::routeRemoved(const Route& route) { impl_->post(RouteRemove
 void MainLoopGateway::nodeChanged(const NodeHealth& told) {
 	NodeHealth health = onWire(told);
 	auto known = impl_->sent->find(health.name);
-	if (known != impl_->sent->end() && known->second.health == health) return;
+	if (known != impl_->sent->end() && known->second.told && known->second.health == health) return;
 	if (known == impl_->sent->end()) {
 		known = impl_->sent->emplace(health.name, Sent{health, impl_->clock()}).first;
 	} else {
 		if (known->second.health.phase != health.phase) known->second.since = impl_->clock();
 		known->second.health = health;
+		known->second.told = true;
 	}
 	impl_->post(NodeChanged{std::move(health), known->second.since});
 }
@@ -128,5 +127,11 @@ void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames
 }
 
 void MainLoopGateway::routeChanged(const RouteStatus& status) { impl_->post(RouteChanged{status}); }
+
+void MainLoopGateway::stamp(GraphView& view) const {
+	for (NodeView& node : view.nodes)
+		if (const auto known = impl_->sent->find(node.spec.name); known != impl_->sent->end())
+			node.since = known->second.since;
+}
 
 } // namespace ear::control

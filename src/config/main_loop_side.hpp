@@ -50,6 +50,8 @@ public:
 	MainLoopSide(DesiredGraph& graph, const GraphReader& reader, NodeOperations& operations); // all outlive it
 	void subscribe(control::GraphFileListener& listener);     // main thread, before the first offer
 	void subscribeActions(control::ActionListener& listener); // main thread, before the first offer
+	/// Main thread, before the first offer: who fills each graph read's `since` (the gateway).
+	void stampSnapshots(const control::SnapshotStamp& stamp);
 	/// A lifecycle verb on the main loop: `stopping` (the keeper stopped) answers CommandError Stopping without asking;
 	/// else NodeOperations' call with a judged callback that tells every ActionListener the record before any health
 	/// change. Returns the reply mapped by node-lifecycle-modules.md 5.8's table (resultOf, recordOf).
@@ -62,7 +64,7 @@ public:
 	void announce(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits);
 	/// `file` plus running and refusal. Refusal is present only when it was recorded for file.version.
 	control::GraphFile graphFile(FileState file) const;
-	GraphView graph() const;                  // reader.read()
+	GraphView graph() const;                  // reader.read(), stamped at once by every SnapshotStamp
 	void written(const std::string& version); // listeners told graphFileWritten
 private:
 	struct Recorded {
@@ -76,6 +78,7 @@ private:
 	NodeOperations& operations_;
 	std::vector<control::GraphFileListener*> listeners_;
 	std::vector<control::ActionListener*> actionListeners_;
+	std::vector<const control::SnapshotStamp*> stamps_;
 	std::optional<std::string> running_;
 	std::optional<Recorded> refusal_;
 };

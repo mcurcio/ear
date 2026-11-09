@@ -129,7 +129,7 @@ export function NodePanel({
   onError: (error: unknown) => void;
 }) {
   const { client } = useEditor();
-  const health = describeHealth(node, Date.now());
+  const health = describeHealth(node);
   const lifecycle = features.includes(lifecycleFeature);
   const shown = JSON.stringify(node.settings, null, 2);
   const [settings, setSettings] = useState(shown);

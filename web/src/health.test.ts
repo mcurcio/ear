@@ -1,12 +1,12 @@
 // health.ts against control-plane.md 8.6: every phase's word, style, line and enabled actions; a
-// starting phase's line hidden for its first 250 ms; an unknown state and phase drawn by their word.
+// starting phase's line hidden for the first 250 ms the editor shows it; an unknown state and phase drawn by their word.
 import { describe, expect, it } from "vitest";
 import { describeHealth, startingLineDelayMs } from "./health";
 import type { GraphNode } from "./protocol";
 
 const since = "2026-11-09T10:00:00.000000Z";
-const at = Date.parse(since);
-const long = at + 10_000;
+const at = 0; // ms the editor has seen the phase
+const long = 10_000;
 
 function node(health: Partial<GraphNode>): GraphNode {
   return {

@@ -284,15 +284,73 @@ TEST_CASE("node.stop and node.start through the control port edit nothing, and w
 	const json ghost = rpc.call("node.restart", {{"name", "ghost"}});
 	CHECK(ghost["error"]["data"]["code"] == "unknown-node");
 
-	REQUIRE(ear.process().waitForLine("node noise running", deadline));
-	CHECK(ear.stop(rpc) == 0);
+	CHECK(ear.stop(rpc) == 0);                        // every record ear queued is written before it exits
 	CHECK(readFile(directory.graphFile()) == before); // a stop and a start are never written
 	const std::string& out = ear.process().output();
+	INFO(out);
 	const std::size_t invoked = out.find("node noise stop invoked\n");
 	REQUIRE(invoked != std::string::npos);
 	CHECK(invoked < out.find("node noise stopping: stop\n"));
-	CHECK(out.find("node noise start invoked\n") != std::string::npos);
+	const std::size_t startInvoked = out.find("node noise start invoked\n", invoked);
+	REQUIRE(startInvoked != std::string::npos);
+	CHECK(out.find("node noise running\n", startInvoked) !=
+	      std::string::npos); // the run after the start, not the boot's
 	CHECK(out.find("node ghost restart refused: unknown-node\n") != std::string::npos);
+}
+
+TEST_CASE("node.disable and node.enable edit the node's own line in ear.conf, and their notifications come in order",
+          "[system][control][lifecycle]") {
+	Running started;
+	Ear& ear = started.ear;
+	const TempDirectory& directory = started.directory;
+	const std::string before = readFile(directory.graphFile());
+	Rpc rpc(ear.port());
+	REQUIRE(rpc.call("graph.subscribe").contains("result"));
+
+	const json disable = rpc.call("node.disable", {{"name", "noise"}});
+	INFO(disable.dump());
+	CHECK(disable["result"] == json{{"applied", "disable"}});
+	const std::size_t replied = rpc.notifications.size(); // what came before the reply
+	rpc.waitFor(
+		[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "noise"}, {"phase", "disabled"}}); });
+	INFO("notifications: " << json(rpc.notifications).dump());
+	const std::size_t updated =
+		rpc.indexOf("node.updated", {{"name", "noise"}, {"applied", "disable"}, {"disabled", true}});
+	const std::size_t stopping =
+		rpc.indexOf("node.state", {{"name", "noise"}, {"phase", "stopping"}, {"cause", {{"kind", "disabling"}}}});
+	const std::size_t disabled =
+		rpc.indexOf("node.state", {{"name", "noise"}, {"phase", "disabled"}, {"wanted", "disabled"}});
+	CHECK(updated < stopping);
+	CHECK(stopping < replied); // the reply after the stopping its commit caused
+	CHECK(replied <= disabled);
+	CHECK(disabled < rpc.notifications.size());
+	const std::string disabledText = [&] {
+		std::string text = before;
+		const std::string line = "node white noise;";
+		text.replace(text.find(line), line.size(), "node white noise { disabled true; }");
+		return text;
+	}();
+	REQUIRE(ear.process().waitForLineStartingWith("graph-file written ", deadline)); // the disable's write-behind
+	CHECK(readFile(directory.graphFile()) == disabledText);
+
+	const json enable = rpc.call("node.enable", {{"name", "noise"}});
+	CHECK(enable["result"] == json{{"applied", "enable"}});
+	const std::size_t enabledAt = rpc.indexOf("node.updated", {{"name", "noise"}, {"applied", "enable"}}, disabled);
+	REQUIRE(enabledAt < rpc.notifications.size());
+	CHECK_FALSE(rpc.notifications[enabledAt]["params"].contains("disabled"));
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "noise"}, {"state", "running"}}); },
+	            enabledAt);
+	CHECK(rpc.indexOf("node.state", {{"name", "noise"}, {"cause", {{"kind", "enabling"}}}}, enabledAt) <
+	      rpc.notifications.size());
+
+	CHECK(ear.stop(rpc) == 0); // the last accepted version is written before ear exits
+	CHECK(readFile(directory.graphFile()) == before);
+	const std::string& out = ear.process().output();
+	INFO(out);
+	CHECK(out.find("node noise stopping: disabling\n") != std::string::npos);
+	CHECK(out.find("node noise disabled\n") != std::string::npos);
+	CHECK(out.find("node noise starting: enabling\n") != std::string::npos);
+	CHECK(out.find(" invoked\n") == std::string::npos); // edits write no action record
 }
 
 TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is "

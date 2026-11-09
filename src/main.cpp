@@ -317,6 +317,8 @@ int main(int argc, char** argv) {
 	keeper.subscribe(log);
 	// Each answered node.start, node.stop and node.restart: an action record, before the node records it causes.
 	keeper.subscribeActions(log);
+	// Each snapshot's since, filled when the graph is read.
+	keeper.stampSnapshots(gateway);
 
 	// Before the control port, so every request finds the keeper's thread; after Engine::create, so
 	// the thread inherits the blocked stop signals. Its first offer waits for the main loop to run.

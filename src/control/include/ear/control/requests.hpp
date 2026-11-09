@@ -33,4 +33,14 @@ public:
 protected:
 	~GraphFileListener() = default;
 };
+/// Who fills in what a graph read cannot know: each node's `since`, when its phase began (the gateway's,
+/// docs/design/node-lifecycle-modules.md D-M11). Main loop, at the read itself, so a snapshot's `since` is the one its
+/// phase had when the graph was read, whatever the batch does after it.
+class SnapshotStamp {
+public:
+	virtual void stamp(GraphView& view) const = 0;
+
+protected:
+	~SnapshotStamp() = default;
+};
 } // namespace ear::control

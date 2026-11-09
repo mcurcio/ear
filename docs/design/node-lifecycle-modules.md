@@ -1290,3 +1290,35 @@ reason. Nothing here changes a rule of a higher page.
     `action` records); `ear_system_tests` (the removal waits for `node.gone`; `node.stop` and `node.start` through the
     port writing nothing, with their `action` records before `stopping: stop`); vitest (`health.ts` for every phase,
     `node.state` replacing every member, `node.updated`'s `disabled`, every fixture through the reducer).
+
+### After review (L-6, 2026-11-09)
+
+An independent review of the L-6 commit asked for these; each is built, and the interface-level ones are named.
+
+1. **A snapshot's `since` is stamped at the read** (supersedes 5.4's "`run`'s reply lambda fills every `GraphView`").
+   The reply runs after the batch's later reads and verbs, so `[graph.get, node.stop]` gave the read's `running` the
+   stopping phase's `since`. **New: `control::SnapshotStamp`** (`requests.hpp`, `stamp(GraphView&) const`), which
+   `MainLoopGateway` implements from its map; **`MainLoopSide::stampSnapshots` and `GraphFileKeeper::stampSnapshots`**
+   take it (main thread, before start; `main.cpp` passes the gateway), and `MainLoopSide::graph()` stamps each read at
+   once. The gateway's map is no longer shared with the reply.
+2. **A node added disabled gets its first `node.state`** (`disabled`) though `node.added` said it (revises "Found
+   building L-6" 5): a protocol 0 client reads a state only from `node.state`, and would show it `starting` for good.
+   One redundant message for a protocol 1 client; `lifecycle.json` has it. Every other first report that repeats
+   `node.added` is still not sent.
+3. **The two changes a protocol 0 client can see** are written into batch2.md's erratum and control-plane.md 4.1's
+   "Today's clients keep working": that one, and `data` (`{"pointer"}`) on every -32602.
+4. **`describeHealth(node, seenMs = Infinity)`** (revises 5.11's `describeHealth(node, now)`): a starting phase's
+   line is hidden while the editor has shown the phase for less than 250 ms, measured on the browser's clock from when
+   the phase arrived (`EarNode.tsx`), never against the server's `since`, which another clock wrote. The node panel
+   passes nothing (the line at once).
+5. **The reducer keeps a snapshot's nodes as it keeps `node.added`'s**: the spec members and the health members it
+   knows, so an unknown member never goes stale (as "Found building L-6" 9 says of `node.state`).
+6. **`rpc-call.mjs`**: the first outcome decides the exit code; usage errors exit 3 (2 stays `--until`'s timeout), no
+   answer in time without `--until` exits 4, and `--timeout` bounds the call with or without `--until` (10 s without);
+   `--until` or `--timeout` with no value is refused.
+7. **A `failed` node's Stop is enabled** whatever `wanted` says, as 8.6's table has it.
+8. **Tests added:** a snapshot read before a verb in one batch keeps its phase's `since` (`session_test.cpp`), the
+   gateway's stamp at the read and a disabled add's first report (`gateway_test.cpp`), `MainLoopSide::graph()` stamped
+   (`main_loop_side_test.cpp`), node.disable and node.enable through the real ear (`ear.conf`'s text, `node.updated`
+   then `stopping` (disabling) before the reply, then `disabled`; the enable back), the stop and start test finding
+   the `running` after the start rather than the boot's, a snapshot node's unknown member dropped (vitest).

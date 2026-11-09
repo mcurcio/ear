@@ -43,14 +43,14 @@ class MainLoopGateway final : public GraphGateway,
 							  public DesiredNodeListener,
 							  public DesiredRouteListener,
 							  public NodeHealthListener,
-							  public RouteStatusListener {
+							  public RouteStatusListener,
+							  public SnapshotStamp {
 public:
 	/// `clock` stamps each node's `since` when its phase changes (D-M11).
 	MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests,
 	                WallClock clock = &std::chrono::system_clock::now); // all outlive it
 	~MainLoopGateway();
-	/// requests.submit(commands, a reply that fills each GraphView's `since` on the main loop and posts done(results) to
-	/// `control`).
+	/// requests.submit(commands, a reply that posts done(results) to `control`).
 	void run(std::vector<Command> commands, std::move_only_function<void(std::vector<CommandResult>)> done) override;
 	void watch(EventSink& sink) override;
 	void graphFileChanged(const GraphFileChanged& change) override; // posted to sink->graphFileChanged
@@ -73,6 +73,8 @@ public:
 	/// The wire keys health by name and holds the newer node of a name (node-lifecycle.md 5.7, D-L36).
 	bool hearsSuperseded() const noexcept override { return false; }
 	void routeChanged(const RouteStatus& status) override;
+	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of.
+	void stamp(GraphView& view) const override;
 
 private:
 	struct Impl;

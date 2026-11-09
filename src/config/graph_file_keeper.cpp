@@ -76,6 +76,8 @@ void GraphFileKeeper::subscribe(control::GraphFileListener& listener) { impl_->s
 
 void GraphFileKeeper::subscribeActions(control::ActionListener& listener) { impl_->side.subscribeActions(listener); }
 
+void GraphFileKeeper::stampSnapshots(const control::SnapshotStamp& stamp) { impl_->side.stampSnapshots(stamp); }
+
 std::expected<void, std::string> GraphFileKeeper::start() {
 	if (impl_->thread) throw std::logic_error("GraphFileKeeper::start called twice");
 	Keeper& keeper = impl_->keeper;

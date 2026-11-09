@@ -44,6 +44,8 @@ public:
 	void subscribe(control::GraphFileListener& listener); // main thread, before start(); told in subscribe order
 	/// Main thread, before start(): who writes each answered node.start, node.stop and node.restart.
 	void subscribeActions(control::ActionListener& listener);
+	/// Main thread, before start(): who fills each snapshot's `since` when the graph is read (the gateway).
+	void stampSnapshots(const control::SnapshotStamp& stamp);
 	/// Main thread, once, after Engine::create and before ControlPort::start (so submit always finds the
 	/// thread). Starts the thread (watch first), and its first work is Keeper::start(). Error: the watch.
 	std::expected<void, std::string> start();

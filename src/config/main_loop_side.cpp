@@ -188,7 +188,13 @@ control::GraphFile MainLoopSide::graphFile(FileState file) const {
 	return out;
 }
 
-GraphView MainLoopSide::graph() const { return reader_.read(); }
+GraphView MainLoopSide::graph() const {
+	GraphView view = reader_.read();
+	for (const auto* stamp : stamps_) stamp->stamp(view);
+	return view;
+}
+
+void MainLoopSide::stampSnapshots(const control::SnapshotStamp& stamp) { stamps_.push_back(&stamp); }
 
 void MainLoopSide::written(const std::string& version) {
 	for (auto* listener : listeners_) listener->graphFileWritten(version);

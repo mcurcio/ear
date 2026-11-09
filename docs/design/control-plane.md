@@ -680,7 +680,10 @@ warning text is a log line.
   live rows no longer restarts the node (7.4), and one that changes only `.inPlace()` rows reconfigures it
   (node-framework.md 6.6). Both are what the operator wanted, and neither is observable as an error. The editor already
   ignores unknown notifications (`web/src/graph.ts:107-108` [V]). `node.update` refused with the new `parameter-held`
-  shows its message as any refusal does (`App.tsx`'s `describe`).
+  shows its message as any refusal does (`App.tsx`'s `describe`). Two more things a protocol 0 client sees from step L1,
+  neither an error nor a change of meaning: every -32602 carries `data` (`{"pointer"}`, the member at fault), where
+  it had none, with the same message; and a node added disabled is followed by one `node.state` `disabled` that
+  repeats its `node.added` (node-lifecycle-modules.md, "After review (L-6)").
 - **Inside a batch**, `gesture.change` and `gesture.cancel` are refused (`not-in-batch`): they skip the keeper, so they
   could not keep a batch's order.
 

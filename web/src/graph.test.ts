@@ -2,7 +2,7 @@
 // naming unknown nodes are ignored; a snapshot replaces the state.
 import { describe, expect, it } from "vitest";
 import { GraphStore, reduce, type GraphState } from "./graph";
-import type { JsonValue, ServerMessage } from "./protocol";
+import type { Graph, JsonValue, ServerMessage } from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
 
 function replay(messages: ServerMessage[], start: GraphState = null): GraphState {
@@ -100,6 +100,15 @@ describe("the graph reducer", () => {
     expect(desk.waitingFor).toBeUndefined();
     expect("attempt" in desk).toBe(false);
     expect(desk.settings).toStrictEqual({ card: "MOTU", playback: 2 });
+  });
+
+  it("keeps a snapshot node's spec and the health members it knows, so an unknown one never goes stale", () => {
+    const snapshot = messagesOf(fixtures.lifecycle.messages)[0] as unknown as { jsonrpc: "2.0"; id: number; result: Graph };
+    const withExtra = structuredClone(snapshot);
+    (withExtra.result.nodes[0] as unknown as Record<string, unknown>).attempt = 3;
+    const desk = replay([withExtra as unknown as ServerMessage])!.nodes[0]!;
+    expect("attempt" in desk).toBe(false);
+    expect(desk).toStrictEqual(snapshot.result.nodes[0]);
   });
 
   it("takes node.updated's disabled, and drops it when an update leaves it out", () => {

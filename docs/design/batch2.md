@@ -1541,6 +1541,9 @@ file capability (section 7).
   never written to `ear.conf`), `node.disable` and `node.enable` (edits at the node's own `disabled` line); `node.add`'s
   optional boolean `disabled`; the refusals `node-disabled` and `not-restartable` (`data.reason` `block-lost` or
   `not-started`); and `data.pointer` on every -32602. Every enum is open (a client draws an unknown value neutrally).
+  Two changes a protocol 0 client can see, neither changing a meaning: every -32602 now carries `data` (`{"pointer"}`),
+  where section 6 sent none (its message is unchanged); and a node added disabled gets a `node.state` `disabled`
+  right after its `node.added`, which repeats it, so a client that reads a state only from `node.state` shows it.
   `commands.hpp` gains the five commands, `Applied`, `ControlRefusal` (`lifecycle_wire.hpp`) and the constants
   `wireProtocol` and `wireFeatures`; `graph_view.hpp`'s `NodeView` holds `NodeHealth health` and `since`;
   `events.hpp`'s `NodeAdded`, `NodeUpdated` and `NodeChanged` gain their members and `GraphEvent` gains `NodeGone`;

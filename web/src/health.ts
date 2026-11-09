@@ -97,15 +97,12 @@ function waitingWords(waits: WaitingFor[]): string {
   return `waiting for ${each.join(", ")}`;
 }
 
-/** How long the phase has lasted at `now`; Infinity when `since` is absent or unreadable (show the line). */
-function lasted(since: string | undefined, now: number): number {
-  if (since === undefined) return Infinity;
-  const began = Date.parse(since);
-  return Number.isNaN(began) ? Infinity : now - began;
-}
-
-/** `now` (ms since the epoch) hides a starting phase's line for its first 250 ms. */
-export function describeHealth(node: GraphNode, now: number): HealthView {
+/**
+ * `seenMs`: how long the editor has seen the node in this phase, measured on the browser's own clock from when the
+ * phase arrived (never against the server's `since`, which another clock wrote); a starting phase's line is hidden
+ * for its first 250 ms. Infinity (the default) shows it at once.
+ */
+export function describeHealth(node: GraphNode, seenMs: number = Infinity): HealthView {
   const known = knownStates.has(node.state);
   const word = known ? node.state : node.phase;
   const styleClass = known ? `state-${node.state}` : "state-unknown";
@@ -137,7 +134,7 @@ export function describeHealth(node: GraphNode, now: number): HealthView {
     case "starting": {
       let line: string;
       if (waits.length > 0) line = waitingWords(waits);
-      else if (lasted(node.since, now) < startingLineDelayMs) line = "";
+      else if (seenMs < startingLineDelayMs) line = "";
       else if (node.phase === "configuring")
         line = node.cause !== undefined ? causeWords(node.cause) : "configuring";
       else line = "waiting for the engine";
@@ -192,7 +189,7 @@ export function describeHealth(node: GraphNode, now: number): HealthView {
         line: node.reason?.detail ?? "failed",
         actions: {
           start: lost ? off(lostWhy) : { enabled: true, why: "try again" },
-          stop: willRest ? off("it will stay failed until Start") : on,
+          stop: on,
           restart: lost ? off(lostWhy) : on,
           disable,
           enable,
