@@ -169,7 +169,7 @@ struct Graph {
 	                                          ReceiverEvents& events) {
 		events.insideMake = true;
 		auto receiver = receivers.make(
-			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat},
+			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
 			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, "from_rtp"}, events);
 		events.insideMake = false;
 		return receiver;
@@ -277,6 +277,36 @@ TEST_CASE("A receiver is ready once, every channel's link active, and it and the
 	CHECK(graph.registry.driverId("fpp") == graph.dummy);
 	CHECK(graph.runs(16));
 	CHECK(events.readyCount == 1);
+}
+
+// docs/design/node-lifecycle.md 5.7 (step L-3b): the join names the block by its global id, so beside an older block of
+// the same name (one still going) it reaches only the block it was given.
+TEST_CASE("A receiver joins its block by the block's id: beside an older block of the same name it reaches only the "
+          "newer",
+          "[rtp][join]") {
+	Graph graph;
+	Recorder newerRecorder(graph.waiter, 2);
+	BlockEvents newerEvents(graph.waiter);
+	auto newer = graph.blocks.make("fpp",
+	                               Ports{{{Direction::output, "stream", {"1", "2"}},
+	                                      {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
+	                               kFormat, newerEvents);
+	REQUIRE(ear::testing::driveNow(*newer, &newerRecorder));
+	REQUIRE(graph.waiter.until([&] { return newerEvents.isReady && graph.registry.ids("fpp").size() == 2; }));
+	const std::uint32_t olderId = graph.block->blockId();
+	const std::uint32_t newerId = newer->blockId();
+	REQUIRE(olderId != newerId);
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const auto receiver =
+		graph.receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
+	                         RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
+	                                            RtpEncoding::l24, kRate, 100, "from_rtp"},
+	                         events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	CHECK(graph.registry.activeLinksOf(newerId) == 2);
+	CHECK(graph.registry.linksOf(olderId).empty());
+	ear::testing::silenceOrAbort(*newer);
 }
 
 TEST_CASE("L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2", "[rtp][channels]") {

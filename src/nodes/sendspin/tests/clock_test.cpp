@@ -318,7 +318,7 @@ struct TestCard {
 		block->carryLatency(LatencyPlan{pairs, {}});
 		REQUIRE(ear::testing::driveNow(*block, passThrough.get()));
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
-		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
+		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, block->blockId()},
 		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
 		REQUIRE(rig.waiter.until([&] { return events.isReady || events.lostDetail.has_value(); }));
 		REQUIRE(events.lostDetail.value_or("") == "");

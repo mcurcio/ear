@@ -14,11 +14,19 @@
 // and the config. Steps 3 and 4 have the close deadline (I5a): past it the configuration is leaked, never freed.
 // Everything a configuration's threads tell crosses to the main loop and lands only on that configuration (I2, I6).
 //
-// Step L-3a builds no fade (no output is faded, so a drive or silence is never faded), no per-turn flush (a block is
-// made and destroyed, and an outside node made, inside the action that asks for it), no wait for an older block (T1: a
-// name added back gets its block at once, and its configuration waits for the older node to be gone, as the
-// aggregate's predecessor), no bound but the close deadline, and the old NodeHealth: the aggregate's health is told
-// mapped onto it, only when that changed, so standard output and the wire see what they saw before.
+// PipeWire's own object changes (a block made or destroyed, an outside node made or destroyed) are never made inside an
+// input: they are queued into the turn's flush (5.5, step L-3b), posted to the main loop once per turn and run there in
+// one go, destroys first (outside nodes, then blocks), then makes (blocks, then outside nodes, which need their block's
+// ports). The flush works on a snapshot: an item an input causes while it runs (a waiting block freed by a destroy)
+// runs behind the snapshot in the same flush, and an event an adapter tells inside an item (an outside node ready
+// inside its making) is an input of its own, handled once that item returned. Each item, and each type's hook, names
+// itself in MainLoopActivity while it runs. A name added back (T1) gets its block once the older block of the name was
+// destroyed, in the flush that destroyed it, and its configuration once the older node is gone; an outside node joins
+// its block by the block's global id (PortBlock::blockId, 5.7).
+//
+// Steps L-3a and L-3b build no fade (no output is faded, so a drive or silence is never faded), no bound but the close
+// deadline, no wedge, and the old NodeHealth: the aggregate's health is told mapped onto it, only when that changed, so
+// standard output and the wire see what they saw before.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
@@ -30,6 +38,7 @@
 #include <utility>
 #include <variant>
 
+#include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_machines.hpp"
 #include "ear/core/pass_through.hpp"
 #include "ear/core/run_requests.hpp"
@@ -73,6 +82,15 @@ ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& 
 	: ResourceRegistry(cards, receivers, handoffs, noRecordings) {}
 
 struct NodeHost::Impl {
+	/// PipeWire's object changes a turn queues (5.5), in the order a flush runs them: destroys (outside nodes, then
+	/// blocks), then makes (blocks, then outside nodes).
+	enum class FlushKind { destroyOutside, destroyBlock, makeBlock, makeOutside };
+	struct FlushItem {
+		FlushKind kind;
+		NodeName node;
+		std::move_only_function<void()> run;
+	};
+
 	/// One wanted node: its aggregate, its port block and its configuration. Members are declared in reverse teardown
 	/// order, so destroying a node that never stopped still removes its port block first.
 	class Node final : public PortBlockEvents, public StartContext, public Ready {
@@ -81,19 +99,26 @@ struct NodeHost::Impl {
 
 		const NodeName& name() const noexcept { return name_; }
 		std::uint64_t serial() const noexcept { return serial_; }
-		/// Gone: its block destroyed and its configuration gone (4.3's row 1).
-		bool removed() const noexcept { return aggregate_.removed(); }
+		/// Gone: its block destroyed (the flush ran its destruction) and its configuration gone (4.3's row 1), and so
+		/// told.
+		bool removed() const noexcept { return gone_; }
+		/// Its block exists in the engine, or its making or destruction is still queued (T1: a newer block of its name
+		/// waits for that).
+		void markGone() noexcept { gone_ = true; }
+		bool holdsBlock() const noexcept { return block_ != nullptr || makePending_ || destroyPending_; }
+		/// Its block waits for an older block of its name (T1).
+		bool blockWaiting() const noexcept { return aggregate_.block().state() == lc::BlockState::waiting; }
 		/// No longer wanted: removed by an edit or by stopAll, still stopping or gone.
 		bool removing() const noexcept { return aggregate_.intent() == lc::Intent::remove; }
 		NodeHealth health() const { return mapped(aggregate_.health()); }
 
-		/// The port block at once; a configuration once no older node of this name is left (the aggregate's
-		/// predecessor), so an old and a new configuration never share what the name owns (a listening port, a key
-		/// file).
-		void add(std::shared_ptr<const NodeConfig> config, bool olderGoing) {
+		/// The port block once no older block of this name exists (T1, I9: two blocks never share a node.name), and a
+		/// configuration once no older node of this name is left (rule 1), so an old and a new configuration never share
+		/// what the name owns (a listening port, a key file).
+		void add(std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
 			ports_ = config->ports();
 			queued_ = std::move(config);
-			feed(aggregate_.add(lc::AddFacts{.predecessor = olderGoing, .queued = queued()}));
+			feed(aggregate_.add(lc::AddFacts{.olderBlock = olderBlock, .olderNode = olderNode, .queued = queued()}));
 		}
 
 		/// A new configuration from `config` behind the same port block. One that arrives while the configuration is
@@ -114,8 +139,45 @@ struct NodeHost::Impl {
 			feed(aggregate_.remove());
 		}
 
-		/// The older node of this name is gone.
-		void olderGone() { feed(aggregate_.predecessorGone()); }
+		/// Every older node of this name is gone.
+		void olderGone() { feed(aggregate_.olderNodeGone()); }
+		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
+		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
+
+		/// Flush items (5.5). The block's making, unless its destruction overtook it in the flush.
+		void makeBlock() {
+			if (!makePending_) return;
+			makePending_ = false;
+			block_ = host_.blocks.make(name_, ports_, host_.format, *this);
+		}
+		/// The block's destruction (after the removal's silence completed, or with no code ever driven, D-L7); a block
+		/// whose making is still queued is never made. Then, as an input of its own: the node is told gone if its
+		/// configuration is, and a waiting block of the name is made.
+		void destroyBlock() {
+			if (!destroyPending_) return;
+			destroyPending_ = false;
+			if (makePending_) makePending_ = false;
+			else block_.reset();
+			host_.inputFor(serial_, [](Node& node) {
+				if (std::exchange(node.goneWaiting_, false)) node.host_.gone(node, node.dropped_);
+				node.host_.blockDestroyed(node.name_);
+			});
+		}
+		/// The outside node `index` of the configuration of `generation`, in request order, once its block is ready;
+		/// nothing for a configuration that moved on (torn down, or another one).
+		void makeOutside(std::uint64_t generation, std::size_t index) {
+			if (!current(generation) || config_->startFailed || config_->tearing || !block_ ||
+			    aggregate_.configuration().state() != lc::ConfigState::readying || index != config_->outside.size() ||
+			    index >= config_->outsideRequests.size())
+				return;
+			Configuration& c = *config_;
+			auto& outside = *c.outside.emplace_back(std::make_unique<Outside>(host_, serial_, c.generation, index));
+			auto& [request, target] = c.outsideRequests[index];
+			target.blockId = block_->blockId(); // ready, so read (5.7)
+			outside.node = std::visit(
+				[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
+				request);
+		}
 
 		// PortBlockEvents: inputs of their own (5.2), whatever calls them.
 		void ready() override {
@@ -181,12 +243,13 @@ struct NodeHost::Impl {
 		/// only on the configuration that made it.
 		class Outside final : public OutsideNodeEvents {
 		public:
-			Outside(Node& node, std::uint64_t generation, std::size_t index)
-				: node_(node), generation_(generation), index_(index) {}
+			Outside(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index)
+				: host_(host), serial_(serial), generation_(generation), index_(index) {}
 			std::unique_ptr<OutsideNode> node;
 			bool isReady = false;
+			// Told inside its making (during the flush) or later: an input of its own either way (D-L39).
 			void ready() override {
-				node_.host_.inputFor(node_.serial_, [generation = generation_, index = index_](Node& node) {
+				host_.inputFor(serial_, [generation = generation_, index = index_](Node& node) {
 					// Still current while it tears down, when its outside nodes are already gone: nothing to ready.
 					if (!node.current(generation) || node.config_->tearing || index >= node.config_->outside.size())
 						return;
@@ -195,15 +258,14 @@ struct NodeHost::Impl {
 				});
 			}
 			void lost(std::string detail) override {
-				node_.host_.inputFor(node_.serial_,
-				                     [generation = generation_, detail = std::move(detail)](Node& node) mutable {
-										 if (node.current(generation))
-											 node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
-									 });
+				host_.inputFor(serial_, [generation = generation_, detail = std::move(detail)](Node& node) mutable {
+					if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
+				});
 			}
 
 		private:
-			Node& node_;
+			Impl& host_; // never the node: a queued destruction may outlive it
+			std::uint64_t serial_;
 			std::uint64_t generation_;
 			std::size_t index_;
 		};
@@ -287,8 +349,9 @@ struct NodeHost::Impl {
 			std::unique_ptr<Timer> deadline;
 			std::vector<BankPair> pairs;                          // the pass-through's pairs, for the latency plan
 			std::vector<std::pair<std::string, Latency>> latency; // what start() declared, by bank
-			bool startFailed = false; // start() failed or threw: nothing to make, prepare, drive or close
-			bool recipeRan = false;   // T3 ran (or there was no recipe)
+			bool startFailed = false;  // start() failed or threw: nothing to make, prepare, drive or close
+			bool outsideAsked = false; // its outside nodes' making is queued
+			bool recipeRan = false;    // T3 ran (or there was no recipe)
 			bool prepared = false;
 			bool tearing = false; // I5 step 3 began
 			std::size_t handoffsClosed = 0;
@@ -348,7 +411,11 @@ struct NodeHost::Impl {
 							   [&](lc::BlockAction block) { act(block); },
 							   [&](const lc::ConfigAction& config) { act(config); },
 							   [&](const lc::Tell& told) { tell(told.health); },
-							   [&](lc::Gone) { host_.gone(*this, dropped_); },
+							   [&](lc::Gone) {
+								   // Gone once its block's destruction ran in the flush (5.7), not when queued.
+								   if (destroyPending_) goneWaiting_ = true;
+								   else host_.gone(*this, dropped_);
+							   },
 						   },
 				           action);
 			}
@@ -373,10 +440,16 @@ struct NodeHost::Impl {
 		void act(lc::BlockAction action) {
 			switch (action) {
 			case lc::BlockAction::make:
-				block_ = host_.blocks.make(name_, ports_, host_.format, *this);
+				makePending_ = true;
+				host_.queue(FlushKind::makeBlock, name_, [&host = host_, serial = serial_] {
+					if (Node* node = host.find(serial)) node->makeBlock();
+				});
 				break;
 			case lc::BlockAction::destroy:
-				block_.reset(); // after the removal's silence completed, or with no code ever driven (D-L7)
+				destroyPending_ = true;
+				host_.queue(FlushKind::destroyBlock, name_, [&host = host_, serial = serial_] {
+					if (Node* node = host.find(serial)) node->destroyBlock();
+				});
 				break;
 			}
 		}
@@ -454,6 +527,7 @@ struct NodeHost::Impl {
 			c.startFailed = true;
 			starting_ = true;
 			StartResult started = [&] {
+				const MainLoopActivity::Scope activity("configure", name_);
 				try {
 					return c.config->start(*this);
 				} catch (...) {
@@ -488,27 +562,27 @@ struct NodeHost::Impl {
 			askResources();
 		}
 
-		/// 5.8's readiness, as far as L-3a has it: the outside nodes, made in request order once the block is ready
-		/// (their ports exist); with none pending, every resource is ready at once (in this turn, as its own input).
+		/// 5.8's readiness, as far as 3a has it: the outside nodes, made in the flush in request order once the block
+		/// is ready (their ports exist; 5.5); with none pending, every resource is ready at once (in this turn, as its
+		/// own input). An adapter that tells ready() inside make() is heard after that item, and every ready is judged
+		/// against every outside node made (7.2).
 		void askResources() {
 			if (!config_ || config_->startFailed || config_->recipeRan ||
 			    aggregate_.configuration().state() != lc::ConfigState::readying)
 				return;
 			Configuration& c = *config_;
-			if (!c.outsideRequests.empty()) {
-				if (aggregate_.block().state() != lc::BlockState::ready || !c.outside.empty()) return;
-				c.outside.reserve(c.outsideRequests.size());
-				for (std::size_t i = 0; i < c.outsideRequests.size(); ++i) {
-					auto& outside = *c.outside.emplace_back(std::make_unique<Outside>(*this, c.generation, i));
-					const auto& [request, target] = c.outsideRequests[i];
-					outside.node = std::visit(
-						[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
-						request);
-				}
+			if (c.outsideRequests.empty()) {
+				host_.inputFor(serial_, [generation = c.generation](Node& node) { node.checkReady(generation); });
+				return;
 			}
-			// An adapter may have told ready() inside make(): that is queued behind this, so it is judged once every
-			// outside node exists (7.2).
-			host_.inputFor(serial_, [generation = c.generation](Node& node) { node.checkReady(generation); });
+			if (aggregate_.block().state() != lc::BlockState::ready || c.outsideAsked) return;
+			c.outsideAsked = true;
+			c.outside.reserve(c.outsideRequests.size());
+			for (std::size_t i = 0; i < c.outsideRequests.size(); ++i)
+				host_.queue(FlushKind::makeOutside, name_,
+				            [&host = host_, serial = serial_, generation = c.generation, i] {
+								if (Node* node = host.find(serial)) node->makeOutside(generation, i);
+							});
 		}
 
 		/// Every resource ready: T3. The recipe builds the run object first (5.10), so a failed recipe is a fault in
@@ -525,6 +599,7 @@ struct NodeHost::Impl {
 			if (c.recipe) {
 				building_ = true;
 				auto made = [&] {
+					const MainLoopActivity::Scope activity("recipe", name_);
 					try {
 						return c.recipe(*this);
 					} catch (...) {
@@ -578,6 +653,9 @@ struct NodeHost::Impl {
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
+			for (auto& outside : c.outside)
+				host_.queue(FlushKind::destroyOutside, name_,
+				            [outside = std::move(outside)]() mutable { outside.reset(); });
 			c.outside.clear();
 			c.outsideRequests.clear();
 			c.deadline =
@@ -681,6 +759,10 @@ struct NodeHost::Impl {
 		bool building_ = false;
 		bool closingHandoffs_ = false;
 		bool runClosing_ = false;
+		bool makePending_ = false;    // the block's making is queued in the flush
+		bool destroyPending_ = false; // the block's destruction is queued in the flush
+		bool goneWaiting_ = false;    // removed, told gone once its block's destruction ran
+		bool gone_ = false;           // told gone
 		std::uint64_t dropped_ = 0;
 	};
 
@@ -701,15 +783,25 @@ struct NodeHost::Impl {
 	std::move_only_function<void()> allGone;
 	std::deque<std::move_only_function<void()>> inputs; // what waits for the input being handled (5.2)
 	bool handling = false;
+	bool inItem = false;          // a flush item runs: an input it causes waits for it to return (D-L39)
+	std::vector<FlushItem> flush; // this turn's queued object changes (5.5)
+	bool flushPosted = false;     // the flush task is posted and has not begun
+	bool flushing = false;        // the flush runs: what is queued now runs behind its snapshot
+	std::shared_ptr<char> alive = std::make_shared<char>(); // a posted flush finds the host gone by it
 
 	/// One input at a time (5.2): one that arrives while another is handled, from an action or a callback inside it,
-	/// is handled after it, in arrival order, before this returns. An input that throws (a type bug: a std::logic_error
-	/// from a type's start or recipe) does not strand the inputs queued behind it, which may be other nodes' (a stop
-	/// whose allGone would then never run): they are handled first, and the first exception is rethrown once the queue
-	/// is empty. The node it was thrown out of is left as the throw left it.
+	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (a type
+	/// bug: a std::logic_error from a type's start or recipe) does not strand the inputs queued behind it, which may be
+	/// other nodes' (a stop whose allGone would then never run): they are handled first, and the first exception is
+	/// rethrown once the queue is empty. The node it was thrown out of is left as the throw left it.
 	void input(std::move_only_function<void()> work) {
 		inputs.push_back(std::move(work));
-		if (handling) return;
+		if (handling || inItem) return;
+		if (std::exception_ptr thrown = drain()) std::rethrow_exception(thrown);
+	}
+
+	/// Handles every queued input, and what they queue; the first exception, if any.
+	std::exception_ptr drain() {
 		handling = true;
 		std::exception_ptr thrown;
 		while (!inputs.empty()) {
@@ -722,18 +814,80 @@ struct NodeHost::Impl {
 			}
 		}
 		handling = false;
+		return thrown;
+	}
+
+	/// The node of this serial, or none once it is gone (nodes are looked up by serial, never by pointer).
+	Node* find(std::uint64_t serial) const noexcept {
+		for (const auto& node : nodes)
+			if (node->serial() == serial) return node.get();
+		return nullptr;
+	}
+
+	/// An input for the node of this serial, dropped if it is gone.
+	void inputFor(std::uint64_t serial, std::move_only_function<void(Node&)> work) {
+		input([this, serial, work = std::move(work)]() mutable {
+			if (Node* node = find(serial)) work(*node);
+		});
+	}
+
+	/// Queues one PipeWire object change into this turn's flush, posting the flush on the turn's first (5.5, D-L8).
+	/// During the flush it runs behind the flush's snapshot, in the same flush.
+	void queue(FlushKind kind, const NodeName& node, std::move_only_function<void()> run) {
+		flush.push_back(FlushItem{kind, node, std::move(run)});
+		if (flushing || flushPosted) return;
+		flushPosted = true;
+		mainLoop.post([this, alive = std::weak_ptr<char>(this->alive)] {
+			if (alive.lock()) runFlush();
+		});
+	}
+
+	/// The turn's flush (5.5, D-L39): the queued changes as a snapshot, destroys first; each item names itself in
+	/// MainLoopActivity while it runs, and the inputs it caused (an adapter's event told inside it) are handled once it
+	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (a type bug)
+	/// strands nothing: the flush ends, then the first exception is rethrown.
+	void runFlush() {
+		flushPosted = false;
+		flushing = true;
+		std::exception_ptr thrown;
+		std::deque<FlushItem> pending;
+		const auto take = [&] {
+			std::vector<FlushItem> batch = std::exchange(flush, {});
+			std::ranges::stable_sort(batch, {}, &FlushItem::kind);
+			for (FlushItem& item : batch) pending.push_back(std::move(item));
+		};
+		take();
+		while (!pending.empty()) {
+			FlushItem item = std::move(pending.front());
+			pending.pop_front();
+			inItem = true;
+			try {
+				const MainLoopActivity::Scope activity(callName(item.kind), item.node);
+				item.run();
+				item.run = nullptr; // a destroy's object goes inside its activity
+			} catch (...) {
+				if (!thrown) thrown = std::current_exception();
+			}
+			inItem = false;
+			if (std::exception_ptr caused = drain(); caused && !thrown) thrown = caused;
+			take();
+		}
+		flushing = false;
 		if (thrown) std::rethrow_exception(thrown);
 	}
 
-	/// An input for the node of this serial, dropped if it is gone (nodes are looked up by serial, never by pointer).
-	void inputFor(std::uint64_t serial, std::move_only_function<void(Node&)> work) {
-		input([this, serial, work = std::move(work)]() mutable {
-			for (const auto& node : nodes)
-				if (node->serial() == serial) {
-					work(*node);
-					return;
-				}
-		});
+	static constexpr std::string_view callName(FlushKind kind) noexcept {
+		switch (kind) {
+		case FlushKind::destroyOutside:
+			return "destroy outside node";
+		case FlushKind::destroyBlock:
+			return "destroy block";
+		case FlushKind::makeBlock:
+			return "make block";
+		case FlushKind::makeOutside:
+			return "make outside node";
+		}
+		return "flush";
 	}
 
 	void requireOpen(const char* event, const NodeName& node) const {
@@ -760,13 +914,24 @@ struct NodeHost::Impl {
 		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail);
 	}
 
-	/// A node is gone; the oldest node left of its name, if one waits for it, may configure now.
-	void gone(const Node& node, std::uint64_t droppedFrames) {
+	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure.
+	void gone(Node& node, std::uint64_t droppedFrames) {
+		node.markGone();
 		for (auto* listener : listeners) listener->nodeGone(node.name(), droppedFrames);
 		const auto next = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->name() == node.name() && !known->removed(); });
 		if (next != nodes.end()) inputFor((*next)->serial(), [](Node& waiting) { waiting.olderGone(); });
 		input([this] { allGoneIfDone(); });
+	}
+
+	/// A block of this name was destroyed: the block waiting for it (at most one: only the wanted node of a name
+	/// waits) is made, in this flush, once no block of the name is left (T1, I9).
+	void blockDestroyed(const NodeName& name) {
+		if (std::ranges::any_of(nodes, [&](const auto& known) { return known->name() == name && known->holdsBlock(); }))
+			return;
+		const auto waiting = std::ranges::find_if(
+			nodes, [&](const auto& known) { return known->name() == name && known->blockWaiting(); });
+		if (waiting != nodes.end()) inputFor((*waiting)->serial(), [](Node& node) { node.olderDestroyed(); });
 	}
 
 	void allGoneIfDone() {
@@ -779,23 +944,8 @@ struct NodeHost::Impl {
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
                    Timers& timers, std::chrono::milliseconds closeDeadline)
-	: impl_(new Impl{format,
-                     blocks,
-                     resources,
-                     mainLoop,
-                     timers,
-                     closeDeadline,
-                     {},
-                     {},
-                     {},
-                     {},
-                     0,
-                     0,
-                     0,
-                     false,
-                     nullptr,
-                     {},
-                     false}) {}
+	: impl_(new Impl{format, blocks, resources, mainLoop, timers, closeDeadline, {},    {}, {},    {},   0,
+                     0,      0,      false,     nullptr,  {},     false,         false, {}, false, false}) {}
 
 NodeHost::~NodeHost() = default;
 
@@ -810,12 +960,19 @@ void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);
 	std::erase_if(impl_->nodes, [](const auto& known) { return known->removed(); });
-	const bool olderGoing =
-		std::ranges::any_of(impl_->nodes, [&](const auto& known) { return known->name() == node.name; });
 	const std::uint64_t serial = ++impl_->serials;
 	impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name, serial));
-	impl_->inputFor(serial, [config = std::move(config), olderGoing](Impl::Node& added) mutable {
-		added.add(std::move(config), olderGoing);
+	impl_->inputFor(serial, [impl = impl_.get(), config = std::move(config)](Impl::Node& added) mutable {
+		// Older nodes of the name, as they stand when this input is handled (T1, rule 1).
+		bool olderBlock = false;
+		bool olderNode = false;
+		for (const auto& known : impl->nodes) {
+			if (known.get() == &added) break;
+			if (known->name() != added.name() || known->removed()) continue;
+			olderNode = true;
+			olderBlock = olderBlock || known->holdsBlock();
+		}
+		added.add(std::move(config), olderBlock, olderNode);
 	});
 }
 

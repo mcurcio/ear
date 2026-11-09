@@ -60,20 +60,26 @@ private:
 	}
 	void failed(std::string detail) override { fail(std::move(detail)); }
 
-	/// One link per channel, the outside node by its global id and the block by its node.name,
+	/// One link per channel, the outside node and the block each by its global id (never the
+	/// block's node.name: an older block of the name may still be going, node-lifecycle.md 5.7),
 	/// each port by name, owned by EAR's connection.
 	void link(std::uint32_t nodeId) {
 		state_ = State::linking;
+		if (join_.blockId == SPA_ID_INVALID) {
+			fail("the " + join_.kind + "'s port block has no engine id");
+			return;
+		}
 		const bool toNode = join_.flow == ChannelFlow::blockToNode;
 		const std::string node = std::to_string(nodeId);
+		const std::string block = std::to_string(join_.blockId);
 		for (std::size_t channel = 0; channel < join_.blockPorts.size(); ++channel) {
 			const std::string& nodePort = join_.nodePorts[channel];
 			const std::string& blockPort = join_.blockPorts[channel];
 			pw_properties* props =
-				pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, toNode ? join_.blockNode.c_str() : node.c_str(),
+				pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, toNode ? block.c_str() : node.c_str(),
 			                      PW_KEY_LINK_OUTPUT_PORT, toNode ? blockPort.c_str() : nodePort.c_str(),
-			                      PW_KEY_LINK_INPUT_NODE, toNode ? node.c_str() : join_.blockNode.c_str(),
-			                      PW_KEY_LINK_INPUT_PORT, toNode ? nodePort.c_str() : blockPort.c_str(), nullptr);
+			                      PW_KEY_LINK_INPUT_NODE, toNode ? node.c_str() : block.c_str(), PW_KEY_LINK_INPUT_PORT,
+			                      toNode ? nodePort.c_str() : blockPort.c_str(), nullptr);
 			auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
 				engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
 			pw_properties_free(props);

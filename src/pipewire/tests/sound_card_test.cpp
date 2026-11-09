@@ -157,8 +157,9 @@ struct Graph {
 
 	std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
 		events.insideMake = true;
-		auto card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
-		                       SoundCardRequest{id, CardDirection::playback, "to_card"}, events);
+		auto card = cards.make(
+			OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
+			SoundCardRequest{id, CardDirection::playback, "to_card"}, events);
 		events.insideMake = false;
 		return card;
 	}
@@ -232,10 +233,37 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	CHECK(graph.cardCode.discontinuities() == 0);  // the card joining moved no clock
 }
 
+// docs/design/node-lifecycle.md 5.7 (step L-3b): the join names the block by its global id, so beside an older block of
+// the same name (one still going) it reaches only the block it was given.
+TEST_CASE("A card joins its block by the block's id: beside an older block of the same name it reaches only the newer",
+          "[cards][join]") {
+	Graph graph;
+	Code newerCode(graph.waiter);
+	BlockEvents newerEvents(graph.waiter);
+	auto newer = graph.blocks.make("card",
+	                               Ports{{{Direction::input, "play", {"1", "2"}},
+	                                      {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
+	                               kFormat, newerEvents);
+	REQUIRE(ear::testing::driveNow(*newer, &newerCode));
+	REQUIRE(graph.waiter.until([&] { return newerEvents.isReady && graph.registry.ids("card").size() == 2; }));
+	const std::uint32_t olderId = graph.cardBlock->blockId();
+	const std::uint32_t newerId = newer->blockId();
+	REQUIRE(olderId != newerId);
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	const auto card =
+		graph.cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, newerId},
+	                     SoundCardRequest{cardId("Test"), CardDirection::playback, "to_card"}, events);
+	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	CHECK(graph.registry.activeLinksOf(newerId) == 2);
+	CHECK(graph.registry.linksOf(olderId).empty());
+	ear::testing::silenceOrAbort(*newer);
+}
+
 TEST_CASE("A card running alone holds no port block: they stay on the dummy until it is ready", "[cards][clock]") {
 	Graph graph;
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
-	// The card links to a block that does not exist, so it runs alone and never becomes ready.
+	// The card's block has no id (none exists), so it runs alone and never becomes ready.
 	// The moment the registry shows it running, the blocks are read afresh: the engine answers
 	// those reads before it hears of the card's failed links.
 	bool sampled = false;

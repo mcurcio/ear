@@ -1,7 +1,7 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.5, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
-file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; section 17). Revision 1 went to one
+Status: proposal, revision 2.6, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
+file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6: building L-3b; section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -128,7 +128,7 @@ the node is not disabled, 4.3), `gone`.
 | `waiting` | removal | `gone` | nothing to destroy | T17 |
 | `made` | `PortBlockEvents::ready` | `ready` | tell the aggregate (T5 may follow) | T5's precondition |
 | `made`, `ready` | `PortBlockEvents::lost` | `lost` | keep the detail; tell the aggregate: T13 | T13 |
-| `made`, `ready`, `lost` | the removal's silence completed, or no code was ever driven since the last silence (D-L7) | `gone` | queue `destroy` in this turn's flush; when it ran, tell every `waiting` block of the name | T17, D-R8 |
+| `made`, `ready`, `lost` | the removal's silence completed, or no code was ever driven since the last silence (D-L7) | `gone` | queue `destroy` in this turn's flush; when it ran, tell every `waiting` block of the name (at most one: only the wanted node of a name waits), and the node is removed (row 1) only then (revision 2.6) | T17, D-R8 |
 | `lost` | any but removal | `lost` | nothing: a lost block is never remade (I1) | T13 |
 
 Destroying a block is PipeWire's blocking call (`pw_filter_destroy`, `port_blocks.cpp:140-148` [V]), so it is always
@@ -195,7 +195,8 @@ configuration's config), `failure` (code and detail), `retryAsked` (a `start`, a
 on a failed node, D-L31), `heldFault` (a fault that arrived during a stop's fade or silence, D-L32), `predecessor` (the
 serial of an older `Node` of the name whose port-caused replace this node is, D-L36; cleared once that node closed
 and its block was destroyed, in either order, so the successor goes from row 3 to `configuring` and never shows
-`added`) and `configuredTold` (row 10 below). `wanted` is `disabled` when `disabled`, else `stopped` when `stopHeld`,
+`added`), `olderNode` (an older `Node` of the name is not yet removed, rule 1's "no older node of the name left";
+cleared when the last one is: revision 2.6) and `configuredTold` (row 10 below). `wanted` is `disabled` when `disabled`, else `stopped` when `stopHeld`,
 else `running`. A block's loss clears `failure`, `retryAsked` and `heldFault` (4.4's "reason replaced": row 4 then
 shows the loss).
 
@@ -477,8 +478,8 @@ How `FilterPortBlock` (`port_blocks.cpp`) does it:
   fade still pending. So a fade completes within one cycle, or at once when no cycle comes, and the 100 ms bound only
   ever fires for a block that is STREAMING and silent, never judged as the loop.
 - **Built in L-2** (revision 2.2): `DriveRequest` has no `sinks` until L-4b, which brings `SinkTap`. `blockId()` is a
-  member of `PortBlock` (main thread, read in `onStateChanged` at the first STREAMING), so L-3b's `ready()` hands what
-  it returns; `pw_filter_get_node_id` is set when the filter's proxy is bound (`filter.c` `proxy_bound_props`), before
+  member of `PortBlock` (main thread, read in `onStateChanged` at the first STREAMING), which `NodeHost` reads once the
+  block is ready (L-3b), so `PortBlockEvents::ready()` keeps no argument; `pw_filter_get_node_id` is set when the filter's proxy is bound (`filter.c` `proxy_bound_props`), before
   STREAMING [V]. A request the ring has no room for waits in a main-thread queue behind it and enters as `done`s run, so
   no request is refused and none waits on the data loop; a ring slot is free once its request's `done` ran (the main
   thread reads the result from it). A fade-out a later drive cancelled has its `done` dropped, never run: running it
@@ -607,8 +608,11 @@ no `node.stopped` or `node.gone` is sent for it: the wire keys health by name, a
 that name (control-plane.md 4.8, revision 6.2).
 
 The join links the block end by global id (I9): `OutsideTarget` gains `blockId`, the block's node id, which
-`FilterPortBlock` reads when STREAMING (`pw_filter_get_node_id`) and hands with `ready()`; `joinOutsideNode` writes it
-in `link.output.node` or `link.input.node` instead of the name (`outside_nodes.cpp:73-76` [V]).
+`FilterPortBlock` reads when STREAMING (`pw_filter_get_node_id`) and `NodeHost` reads from `PortBlock::blockId()` when it
+makes the outside node in the flush, the block being ready; `joinOutsideNode` writes it in `link.output.node` or
+`link.input.node` instead of the name (`outside_nodes.cpp:73-76` [V]). A target with no id (`0xFFFFFFFF`) cannot be
+linked: the outside node runs alone, then is lost ("the `<kind>`'s port block has no engine id"), as a link to a block
+that does not exist was (revision 2.6).
 
 ### 5.8 Readiness in 3a
 
@@ -774,9 +778,10 @@ a node; empty means "between calls".
 | File | Change | Step (12) |
 |---|---|---|
 | `src/core/include/ear/core/node_lifecycle.hpp`, `node_lifecycle.cpp` | replaced: `BlockMachine`, `ConfigurationMachine`, the aggregate (`NodeAggregate`, its `derive`), `NodePhase`, `NodeState`, `NodeCause`, names; erratum in `batch2.md` section 11. L-1 adds them beside it, in `node_machines.hpp` and `.cpp` (namespace `ear::lifecycle`, since today's `NodeState` keeps its name while `NodeHealth` carries it), tested by `node_machines_test.cpp`; L-3d, which changes `NodeHealth`, removes `NodeLifecycle`, today's `NodeState` and `node_lifecycle_test.cpp`, and moves these into `ear` | L-1, L-3d |
-| `src/core/include/ear/core/node_host.hpp` | `PortBlock` as 5.3 (L-2); `PortBlockEvents::ready(std::uint32_t blockId)`, `OutsideTarget::blockId` (L-3b); `EngineDiagnosticListener`, `leakedRuns` becomes `leaked` (L-3c); `NodeHealth` gains `phase`, `wanted`, `cause`, `waitingFor`, `NodeOperations` with `LifecycleApplied` and `LifecycleRefusal` (L-3d); `SinkAdapter`, `SinkTap`, `Sink`, `ResourceRegistry` takes the sink adapter (L-4b); header note re-cut | L-2 to L-4b |
+| `src/core/include/ear/core/node_host.hpp` | `PortBlock` as 5.3 (L-2); `OutsideTarget::blockId`, read from `PortBlock::blockId()` (L-3b); `EngineDiagnosticListener`, `leakedRuns` becomes `leaked` (L-3c); `NodeHealth` gains `phase`, `wanted`, `cause`, `waitingFor`, `NodeOperations` with `LifecycleApplied` and `LifecycleRefusal` (L-3d); `SinkAdapter`, `SinkTap`, `Sink`, `ResourceRegistry` takes the sink adapter (L-4b); header note re-cut | L-2 to L-4b |
 | `src/core/node_host.cpp` | rewritten (5): the aggregate and the machines' actions with async drive (L-3a); the flush, T1's wait, deferred inputs (L-3b); fades, the three bounds, `settle()`, the wedge (L-3c); health members, `waitingFor` pacing, `NodeOperations`, port-caused replace (L-3d); `CreateContext` and `StartContext` on one set of internals, hooks timed (L-4a); sinks (L-4b) | L-3a to L-4b |
-| `src/core/include/ear/core/main_loop_activity.hpp` (new) | `MainLoopActivity` (5.12) | L-3b |
+| `src/core/include/ear/core/main_loop_activity.hpp`, `main_loop_activity.cpp` (new) | `MainLoopActivity` (5.12) | L-3b |
+| `src/core/include/ear/core/node_machines.hpp`, `node_machines.cpp` | `AddFacts::olderNode` and `NodeAggregate::olderNodeGone()` (4.3's `olderNode`, revision 2.6) | L-3b |
 | `src/core/include/ear/core/lifecycle.hpp` (new) | 6.10's 3a classes: `NodeOf`, `CreateOf`, `Configured`, `SinkRequest` (3a members), `SinkShape`, `NodeCode`; `ErasedInstance`, `InstanceContexts`, `CreateContext`, `NodeContext` | L-4a |
 | `src/core/include/ear/core/node_type.hpp` | `FailureReason::Code::lost`, `failureCode` (L-3d); `NodeConfig::make` with the legacy default, `start` with a throwing default, `RunCode` renamed `NodeCode` (an alias kept until 3c for `sendspin`) (L-4a); `Chunk`, `SinkConsumer` (as node-primitives.md 6.6) (L-4b) | L-3d, L-4a, L-4b |
 | `src/core/include/ear/core/type_spec.hpp` | `SpecConfig::make`, `SpecInstance`, the class's static checks (5.9); `StartResult` construction from a spec code kept for `NodeCode` | L-4a |
@@ -1602,3 +1607,44 @@ Then an independent review of the L-3a commit found these, each fixed in a secon
   nothing (the generation, and the outside nodes already cleared).
 - `driveNow` is `[[nodiscard]]` and every engine test REQUIREs it; destructors use `silenceOrAbort`, which waits up to a
   minute and aborts rather than free a code the data loop may still run.
+
+### Revision 2.6 (2026-11-09, found building L-3b)
+
+Step L-3b built 5.5's flush in `node_host.cpp` (one task posted on a turn's first change; a snapshot sorted outside
+destroys, block destroys, block makes, outside makes; an item an input causes runs behind the snapshot in the same flush;
+an input told inside an item, an adapter's `ready` among them, waits for the item to return), T1 (a name added back
+waits `waiting` for the older block's destruction and is made in that flush), outside nodes made and destroyed in the
+flush, the join by the block's id (`outside_nodes.cpp`, `OutsideJoin::blockId` in place of `blockNode`), and
+`MainLoopActivity` (`main_loop_activity.hpp`, written around each flush item and each legacy `start` and recipe:
+`make block`, `destroy block`, `make outside node`, `destroy outside node`, `configure`, `recipe`; one process-wide
+seqlock, since there is one main loop). `node_host_test.cpp` has 59 cases: the 52 kept (their logs now show blocks and
+outside nodes made and destroyed at the turn's end) and seven new (one flush with destroys first, a block removed in the
+turn it was queued never made, a name added back gets its block in the flush that destroyed the older one, a name added
+back three times in one turn, a card ready inside its making with a freed block made in the same flush, the outside
+node made with its block's id, the activity named in each hook). `sound_card_test.cpp` and `rtp_receiver_test.cpp` each
+join a block beside an older block of the same name and reach only the newer. What building it settled, each a minimal
+edit or recorded here:
+
+- 4.3's rule 1 says "no older node of the name left", but L-1's aggregate had only `predecessor` (a port-caused
+  replace, L-3d's) for it, which L-3a borrowed. The aggregate gains the fact `olderNode` (`AddFacts::olderNode`,
+  `olderNodeGone()`): `NodeHost` sets it when an older `Node` of the name is not yet removed and clears it when the last
+  one is. `predecessor` is left to L-3d. Row 7 (`added`) shows such a node, mapped to today's `starting`.
+- 4.1 and 5.7: the block machine is `gone` when its destruction is queued, but the node is removed, told gone
+  (`nodeGone`, the `removed` record) and dropped from `health()` only once the flush ran the destruction, so `stopAll`'s
+  `allGone` follows the last block's destruction. An older block "exists" for T1 while its making or destruction is
+  still queued. A destruction queued while the block's making is still queued (a node added and removed in one turn)
+  cancels the making: the block is never made.
+- 4.1's "tell every `waiting` block of the name": at most one waits (only the wanted node of a name waits, and a waiting
+  node removed is `gone` at once), and it is told only once no block of the name is left.
+- 5.5's "outside nodes, then blocks" orders the flush; the teardown queues the outside nodes' destruction and closes
+  the handoffs in the same action, so a legacy handoff is told to close before its configuration's outside nodes are
+  destroyed (at the turn's end), never after they finished. No record changes.
+- 5.7: `PortBlockEvents::ready()` keeps no argument: `NodeHost` reads `PortBlock::blockId()` when it makes the outside
+  node, the block being ready (6's table said `ready(blockId)`). `OutsideTarget` keeps `blockNode` for its names and
+  details. A target with no id is lost at link time, never linked by name.
+- What a flush item or an input during it throws (a type bug) strands nothing: the flush ends, then the first exception
+  is rethrown out of the main-loop task, as 5.2's inputs do.
+- Externally: a node's block is made at the end of the turn that added it (its `starting` record before it, as before);
+  a name added back gets its block, and so its ports and routes, only once the older block is destroyed, where L-3a made
+  both at once; a removed node's `removed` record follows its block's destruction in the same turn's flush. Every
+  record's text is unchanged.

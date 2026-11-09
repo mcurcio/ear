@@ -161,7 +161,7 @@ std::unique_ptr<OutsideNode> AlsaSoundCards::make(const OutsideTarget& target, c
 	}
 	return joinOutsideNode(engine_,
 	                       OutsideJoin{.kind = kind,
-	                                   .blockNode = target.blockNode,
+	                                   .blockId = target.blockId,
 	                                   .flow = request.direction == CardDirection::playback ? ChannelFlow::blockToNode
 	                                                                                        : ChannelFlow::nodeToBlock,
 	                                   .nodePorts = std::move(cardPorts),

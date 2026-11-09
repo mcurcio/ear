@@ -700,7 +700,7 @@ void NodeAggregate::converge(Actions& out) {
 		const ConfigState state = config_.state();
 		const BlockState block = block_.state();
 		const bool blockUsable = block == BlockState::made || block == BlockState::ready;
-		if (state == none && !disabled_ && (!failure_ || retryAsked_) && blockUsable && !predecessor_ &&
+		if (state == none && !disabled_ && (!failure_ || retryAsked_) && blockUsable && !predecessor_ && !olderNode_ &&
 		    intent_ != Intent::remove) {
 			retryAsked_ = false;
 			heldFault_.reset();
@@ -749,6 +749,7 @@ Actions NodeAggregate::add(const AddFacts& add) {
 	disabled_ = add.disabled;
 	stopHeld_ = add.stopHeld;
 	predecessor_ = add.predecessor;
+	olderNode_ = add.olderNode;
 	wedged_ = add.wedged;
 	queued_ = add.queued;
 	changedKeys_ = add.keys;
@@ -779,6 +780,15 @@ Actions NodeAggregate::predecessorGone() {
 	predecessorClosed_ = true;
 	if (block_.state() == BlockState::waiting) return out;
 	predecessor_ = false;
+	converge(out);
+	tell(out);
+	return out;
+}
+
+Actions NodeAggregate::olderNodeGone() {
+	Actions out;
+	if (goneTold_ || !olderNode_) return out;
+	olderNode_ = false;
 	converge(out);
 	tell(out);
 	return out;

@@ -1097,12 +1097,14 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 	REQUIRE(waiter.until([&] { return cardBlockEvents.isReady && fppBlockEvents.isReady && probe.streaming(); }));
 
 	OutsideEvents cardEvents(waiter), receiverEvents(waiter);
-	auto card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
-	                       SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, cardEvents);
-	auto receiver = receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat},
-	                               RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
-	                                                  RtpEncoding::l24, kRate, 100, "from_rtp"},
-	                               receiverEvents);
+	auto card =
+		cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
+	               SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, cardEvents);
+	auto receiver =
+		receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, fppBlock->blockId()},
+	                   RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24,
+	                                      kRate, 100, "from_rtp"},
+	                   receiverEvents);
 	const std::vector<NodeName> nodes{"Dummy-Driver", "card", "fpp", "probe", "card.playback", "fpp.rtp"};
 	REQUIRE(waiter.until([&] {
 		return (cardEvents.isReady || cardEvents.lostDetail) && (receiverEvents.isReady || receiverEvents.lostDetail) &&

@@ -4,7 +4,8 @@
 // deadline and NodeDiagnosticListener by docs/design/node-framework.md sections 6, 7.2 and 7.3, slice 1; the recording
 // kind by its slice 2; LatencyPlan and PortBlock::carryLatency by its section 9.4, slice 7; DriveRequest and PortBlock's
 // asynchronous drive, fadeOut, settle, takenAt and blockId by docs/design/node-lifecycle.md section 5.3, step L-2; the
-// blocking drive removed and NodeHost on the lifecycle machines by its step L-3a). Change it only through a design page
+// blocking drive removed and NodeHost on the lifecycle machines by its step L-3a; PipeWire's object changes batched per
+// turn, T1's wait for an older block and OutsideTarget::blockId by its step L-3b). Change it only through a design page
 // and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
@@ -163,12 +164,15 @@ protected:
 	~OutsideNodeEvents() = default;
 };
 /// Where an outside node goes, worked out by the framework from the request's bank: the one engine name it is made
-/// with ("<node>.<suffix>", I9), the block it joins, and the block's ports it joins, channel i to blockPorts[i].
+/// with ("<node>.<suffix>", I9), the block it joins (its name, and its engine node's global id, PortBlock::blockId, which
+/// its links name: docs/design/node-lifecycle.md section 5.7), and the block's ports it joins, channel i to
+/// blockPorts[i].
 struct OutsideTarget {
 	NodeName engineNode;
 	NodeName blockNode;
 	std::vector<PortName> blockPorts;
 	AudioFormat format;
+	std::uint32_t blockId = 0xFFFFFFFFU; // no id: the join cannot link and the outside node is lost
 };
 /// One outside kind's adapter.
 ///  - SoundCardRequest: one engine node for request.card with blockPorts.size() channels at format.rate. It joins the
@@ -178,7 +182,9 @@ struct OutsideTarget {
 ///    Packets that stop or never come change nothing: it stays ready and its channels are silent.
 template <typename Request> class OutsideAdapter {
 public:
-	/// Main thread; only once port block `target.blockNode` is ready (its ports exist).
+	/// Main thread; only once port block `target.blockNode` is ready (its ports exist, and target.blockId is its id).
+	/// NodeHost calls it inside its per-turn flush (docs/design/node-lifecycle.md section 5.5): a ready() told inside
+	/// it is heard once it returned.
 	virtual std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
 	                                          OutsideNodeEvents& events) = 0;
 
@@ -237,14 +243,14 @@ public:
 	void subscribe(NodeHealthListener& listener);
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
-	/// starting; port block made; then a configuration (docs/design/node-lifecycle.md section 4; through the legacy
+	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration (docs/design/node-lifecycle.md section 4; through the legacy
 	/// adapter, its section 5.10): config.start(context) acquires only (a recipe beside an outside node is a
 	/// std::logic_error, D-L40); the outside nodes it asked for are made once the block is ready, in request order,
 	/// named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver); once every resource is ready
 	/// the recipe builds the run object and the code is prepared; once the block is ready the code drives it
 	/// (PortBlock's asynchronous drive), and the node is running once that drive completed. A failure fails the node
-	/// and tears its configuration down; its port block stays. A name added back gets its block at once and its
-	/// configuration once the older node of the name is gone.
+	/// and tears its configuration down; its port block stays. A name added back gets its block in the flush that
+	/// destroys the older block of the name (T1), and its configuration once the older node of the name is gone.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	/// Restart (I5, I7): the barrier (a drive with no code, once it completed), release(); outside nodes destroyed;
 	/// handoffs closed; the run object closed; then, on the main loop, the code destroyed, then the run object, the
@@ -252,8 +258,8 @@ public:
 	/// routes stay. An update arriving during a restart replaces the config to start; one on a failed node configures it
 	/// again once its failed configuration is gone. If the block was lost: nothing starts, the node stays failed.
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// stopping; the barrier, then the port block destroyed and the configuration torn down as the restart's;
-	/// nodeGone once both are gone. Others untouched.
+	/// stopping; the barrier, then the port block's destruction queued into the turn's flush and the configuration torn
+	/// down as the restart's; nodeGone once both are gone (the flush ran the destruction). Others untouched.
 	void nodeRemoved(const NodeName& node) override;
 	/// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
 	/// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn

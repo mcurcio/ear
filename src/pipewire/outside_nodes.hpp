@@ -25,8 +25,8 @@ enum class ChannelFlow {
 
 /// How one outside node is joined to its port block, channel for channel.
 struct OutsideJoin {
-	std::string kind;   // "card", "RTP receiver": names it in loss details
-	NodeName blockNode; // its port block's node.name
+	std::string kind;      // "card", "RTP receiver": names it in loss details
+	std::uint32_t blockId; // its port block's engine node's global id (PortBlock::blockId), which its links name
 	ChannelFlow flow;
 	std::vector<PortName> nodePorts;  // channel i's port on the outside node
 	std::vector<PortName> blockPorts; // channel i's inside port on the block; same size
@@ -69,10 +69,12 @@ using OutsideBodyMaker = std::move_only_function<std::unique_ptr<OutsideBody>(Ou
 
 /// The one lifecycle, for every kind (batch2.md section 5's card state machine, generalised):
 ///   opening --body running(id)--> linking: one link per channel through link-factory, the
-///     outside node named by its global id and the block by its node.name, each port by name
+///     outside node and the block each named by its global id (docs/design/node-lifecycle.md
+///     section 5.7: an older block of the same name is never reached), each port by name
 ///     (link.output.node/port, link.input.node/port as `join.flow` says), owned by EAR's
 ///     connection (link_proxy.hpp)
 ///   linking --every link ACTIVE--> ready (events.ready)
+///   linking with no block id (join.blockId is 0xFFFFFFFF) --> failing
 ///   any state --body failed, a link failed or gone--> failing: nothing more is heard; later, on
 ///     the main loop (never inside a proxy's own event, never inside make()), the links and the
 ///     body are destroyed, then a pw_core_sync round trip, and on its done events.lost(detail)

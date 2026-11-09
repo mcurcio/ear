@@ -229,7 +229,7 @@ std::unique_ptr<OutsideNode> RtpReceivers::make(const OutsideTarget& target, con
 	}
 	return joinOutsideNode(engine_,
 	                       OutsideJoin{.kind = kind,
-	                                   .blockNode = target.blockNode,
+	                                   .blockId = target.blockId,
 	                                   .flow = ChannelFlow::nodeToBlock,
 	                                   .nodePorts = std::move(receiverPorts),
 	                                   .blockPorts = target.blockPorts},

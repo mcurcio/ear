@@ -9,6 +9,7 @@ add_library(ear_core STATIC
 	graph_status.cpp
 	levels.cpp
 	log.cpp
+	main_loop_activity.cpp
 	node_catalogue.cpp
 	node_host.cpp
 	node_lifecycle.cpp
@@ -33,6 +34,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/graph_view.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/log.hpp
+	include/ear/core/main_loop_activity.hpp
 	include/ear/core/node_catalogue.hpp
 	include/ear/core/node_folders.hpp
 	include/ear/core/node_host.hpp
@@ -68,6 +70,7 @@ if(BUILD_TESTS)
 		tests/graph_spec_test.cpp
 		tests/graph_status_test.cpp
 		tests/levels_test.cpp
+		tests/main_loop_activity_test.cpp
 		tests/node_host_test.cpp
 		tests/node_lifecycle_test.cpp
 		tests/node_machines_test.cpp

@@ -222,6 +222,7 @@ struct AddFacts {
 	bool stopHeld = false;           // a port-caused replace carries its predecessor's stop (D-L36)
 	bool olderBlock = false;         // an older block of the name still exists (T1)
 	bool predecessor = false;        // this node is a port-caused replace of an older node still tearing down
+	bool olderNode = false;          // an older node of the name is not yet gone: no configure before it is (rule 1)
 	std::vector<std::string> keys{}; // the predecessor's changed keys, for its cause
 	bool wedged = false;             // the data loop was judged wedged
 	Queued queued{};
@@ -259,6 +260,8 @@ public:
 	/// The predecessor of a port-caused replace closed (its configuration none); it is gone once its block, too, is
 	/// destroyed (olderDestroyed), so the successor never shows added.
 	Actions predecessorGone();
+	/// Every older node of the name is gone (its block destroyed and its configuration none): rule 1 may configure.
+	Actions olderNodeGone();
 	Actions blockReady();
 	Actions blockLost(std::string detail);
 	// The plan's outcomes (D-L4): a restart-only change, a change on a disabled node, a disable, an enable, a removal.
@@ -288,7 +291,7 @@ public:
 	Health health() const;
 	bool removed() const noexcept;
 	/// 4.5's waits the aggregate knows: an older node of the name, and the block.
-	bool waitingForOlder() const noexcept { return block_.state() == BlockState::waiting; }
+	bool waitingForOlder() const noexcept { return block_.state() == BlockState::waiting || olderNode_; }
 	bool waitingForBlock() const;
 	const BlockMachine& block() const noexcept { return block_; }
 	const ConfigurationMachine& configuration() const noexcept { return config_; }
@@ -326,6 +329,7 @@ private:
 	std::optional<Failure> heldFault_;
 	bool predecessor_ = false;
 	bool predecessorClosed_ = false;
+	bool olderNode_ = false;
 	bool configuredTold_ = false;
 	bool wedged_ = false;
 	bool goneTold_ = false;

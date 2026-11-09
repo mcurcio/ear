@@ -154,9 +154,10 @@ struct NoReceivers final : RtpReceiverAdapter {
 	}
 };
 
-/// Only runs with threads post, and these have none.
-struct NoExecutor final : Executor {
-	void post(std::move_only_function<void()>) override { throw std::logic_error("nothing here posts"); }
+/// The main loop as the test turns it: NodeHost posts its per-turn flush here (node-lifecycle.md 5.5).
+struct Turns final : Executor {
+	std::vector<std::move_only_function<void()>> posted;
+	void post(std::move_only_function<void()> work) override { posted.push_back(std::move(work)); }
 };
 
 /// Close deadlines that never come due: every run here closes in time.
@@ -182,7 +183,7 @@ struct Fixture {
 	NoCards cards;
 	NoReceivers receivers;
 	Links links;
-	NoExecutor mainLoop;
+	Turns mainLoop;
 	NoTimers timers;
 	ResourceRegistry resources{cards, receivers, handoffs};
 	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
@@ -194,8 +195,18 @@ struct Fixture {
 	}
 	~Fixture() {
 		nodes.stopAll(graph.close(), [] {});
-		blocks.complete();
+		settle();
 		handoffs.closeAll();
+		settle();
+	}
+	/// The main loop turns until nothing is left: the flushes NodeHost posted and every completion, in order.
+	void settle() {
+		while (!mainLoop.posted.empty() || !blocks.completions.empty()) {
+			auto now = std::move(mainLoop.posted);
+			mainLoop.posted.clear();
+			for (auto& work : now) work();
+			blocks.complete();
+		}
 	}
 };
 
@@ -217,9 +228,10 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", {{"seed", 1}}}, {"motu", "card", noSettings}},
 	      {noiseToFl, noiseToFr});
+	f.settle(); // the turn's flush makes the blocks
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
-	f.blocks.complete(); // noise's drive
+	f.settle(); // noise's drive
 	f.routes.portAppeared({{"noise", "noise.mono"}, Direction::output, 1});
 	f.routes.portAppeared({{"rec", "record.left"}, Direction::input, 2});
 	REQUIRE(f.links.made.size() == 1);
@@ -259,13 +271,14 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 TEST_CASE("A removed node still stopping is absent, and a re-added name shows the new node", "[graph_status]") {
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {noiseToFl});
+	f.settle();
 	f.blocks.events.at("rec")->ready();
-	f.blocks.complete();
+	f.settle();
 	REQUIRE(f.nodes.health().at(1).name == "rec"); // a commit adds in name order
 	REQUIRE(f.nodes.health().at(1).state == NodeState::running);
 
 	apply(f.graph, {{"noise", "source", noSettings}}, {});
-	f.blocks.complete();                   // rec's silence
+	f.settle();                            // rec's silence, then its block destroyed
 	REQUIRE(f.nodes.health().size() == 2); // rec waits for its handoff to close
 	CHECK(f.nodes.health().at(1).state == NodeState::stopping);
 
@@ -281,12 +294,13 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.nodes[1].spec.name == "rec");
 	CHECK(view.nodes[1].state == NodeState::starting);
 
+	f.settle(); // the new rec's block
 	f.blocks.events.at("rec")->ready();
 	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
-	f.blocks.complete(); // the new rec's drive
+	f.settle(); // the new rec's drive
 	REQUIRE(f.nodes.health().size() == 2);
 	view = f.status.read();
 	CHECK(view.nodes[1].state == NodeState::running);
