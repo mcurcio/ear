@@ -2,8 +2,8 @@
 // docs/design/node-lifecycle.md 5.11 its rules; docs/design/node-framework.md 9.6 the chunk's contract;
 // docs/design/node-primitives.md 6.6 the consumer's). One home for the sink: what a type writes against (Chunk,
 // SinkConsumer, SinkShape) and what the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter).
-// Step L-4b wires it: NodeHost implements CreateOf::sink on it, ResourceRegistry takes a SinkAdapter, DriveRequest
-// carries SinkBindings, ear_pipewire implements SinkAdapter as ThreadSinks. Until then nothing includes this header.
+// Step L-4b wired it: NodeHost implements CreateOf::sink on it, ResourceRegistry takes a SinkAdapter, DriveRequest
+// carries SinkBindings, ear_pipewire implements SinkAdapter as ThreadSinks, and `file` consumes one.
 // Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <cstddef>

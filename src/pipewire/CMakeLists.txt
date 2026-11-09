@@ -44,6 +44,7 @@ if(BUILD_TESTS)
 		tests/main_loop_executor_test.cpp
 		tests/port_block_test.cpp
 		tests/rtp_receiver_test.cpp
+		tests/sink_test.cpp
 		tests/sound_card_test.cpp
 		tests/spikes_test.cpp)
 	# PipeWire directly: the tests drive the engine's loops and sync with its core themselves.

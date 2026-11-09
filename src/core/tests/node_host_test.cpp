@@ -22,6 +22,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -172,7 +173,8 @@ struct BlockModes {
 	bool hold = false;  // completions wait in TestBlocks::held until the test runs them
 	bool stall = false; // completions wait in the block until its settle()
 	std::size_t settles = 0;
-	std::vector<std::vector<bool>> faded; // each drive's faded flags, in order
+	std::vector<std::vector<bool>> faded;        // each drive's faded flags, in order
+	std::vector<std::vector<SinkBinding>> sinks; // each drive's taps (a silence's none), in order
 };
 
 /// A block as node-lifecycle.md 5.3 has it: a drive is applied at once (the code it runs is recorded) and its `done`
@@ -194,6 +196,7 @@ struct TestBlock final : PortBlock {
 		*driven = request.code;
 		log.push_back(request.code != nullptr ? "drive code" : "drive nothing");
 		if (request.code != nullptr) modes.faded.emplace_back(request.faded.begin(), request.faded.end());
+		modes.sinks.emplace_back(request.sinks.begin(), request.sinks.end());
 		complete([done = std::move(done)]() mutable { done(0); });
 	}
 	void fadeOut(std::move_only_function<void()> done) override {
@@ -290,6 +293,82 @@ struct TestHandoffs final : HandoffAdapter {
 		auto closed = std::move(pendingCloses.front());
 		pendingCloses.erase(pendingCloses.begin());
 		closed(dropped);
+	}
+};
+
+/// A sink's consumer that logs its calls; one given an InsidesEvents says lost in begin, as a WAV it cannot open.
+struct TestSinkConsumer final : SinkConsumer {
+	Log& log;
+	InsidesEvents* loseInBegin = nullptr;
+	explicit TestSinkConsumer(Log& l, InsidesEvents* lose = nullptr) : log(l), loseInBegin(lose) {}
+	~TestSinkConsumer() override { log.push_back("consumer destroyed"); }
+	void begin() override {
+		log.push_back("consumer begin");
+		if (loseInBegin != nullptr) loseInBegin->lost("cannot open take.wav");
+	}
+	void consume(const Chunk& chunk) override { log.push_back("consume " + std::to_string(chunk.frames)); }
+	void finish() override { log.push_back("consumer finish"); }
+};
+
+/// Sinks as node-lifecycle.md 5.11 has them, on the test's thread: begin runs the consumer's begin and posts `begun`
+/// (or, held, waits for the test); close finishes a consumer that began and posts `closed` (or, held, waits).
+struct TestSink final : Sink, SinkTap {
+	Log& log;
+	Executor& mainLoop;
+	std::string name;
+	std::uint64_t dropped;
+	bool holdBegin;
+	bool holdClose;
+	std::unique_ptr<SinkConsumer> consumer;
+	std::move_only_function<void()> begun;
+	std::move_only_function<void(std::uint64_t)> closed;
+	bool began = false;
+	TestSink(Log& l, Executor& m, std::string n, std::uint64_t d, bool hb, bool hc)
+		: log(l), mainLoop(m), name(std::move(n)), dropped(d), holdBegin(hb), holdClose(hc) {}
+	~TestSink() override { log.push_back("sink " + name + " destroyed"); }
+	SinkTap& tap() noexcept override { return *this; }
+	void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> b) override {
+		log.push_back("sink " + name + " begin");
+		consumer = std::move(c);
+		begun = std::move(b);
+		if (!holdBegin) runBegin();
+	}
+	/// The sink's thread runs the consumer's begin, then posts `begun`.
+	void runBegin() {
+		consumer->begin();
+		began = true;
+		mainLoop.post(std::exchange(begun, nullptr));
+	}
+	void close(std::move_only_function<void(std::uint64_t)> c) override {
+		log.push_back("sink " + name + " close");
+		closed = std::move(c);
+		if (!holdClose) runClose();
+	}
+	void runClose() {
+		if (began) consumer->finish();
+		mainLoop.post([closed = std::exchange(closed, nullptr), dropped = dropped]() mutable { closed(dropped); });
+	}
+	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
+};
+
+struct TestSinks final : SinkAdapter {
+	Log& log;
+	Executor& mainLoop;
+	bool throwInMake = false;    // make() throws, as an adapter that cannot start a thread
+	bool holdBegin = false;      // a consumer begins only when the test says (TestSink::runBegin)
+	bool holdClose = false;      // a close reports only when the test says (TestSink::runClose)
+	std::uint64_t dropped = 0;   // what each sink reports refused at its close
+	std::vector<TestSink*> made; // every sink made, in order (a destroyed one dangles: unused)
+	TestSinks(Log& l, Executor& m) : log(l), mainLoop(m) {}
+	std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+	                           std::uint32_t capacityFrames) override {
+		if (throwInMake) throw std::system_error(EAGAIN, std::generic_category(), "no thread for " + node);
+		const std::string name = node + "." + std::string(bank);
+		log.push_back("sink " + name + " " + std::to_string(channels) + " channels " + std::to_string(capacityFrames) +
+		              " frames");
+		auto sink = std::make_unique<TestSink>(log, mainLoop, name, dropped, holdBegin, holdClose);
+		made.push_back(sink.get());
+		return sink;
 	}
 };
 
@@ -457,7 +536,8 @@ struct Fixture {
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
 	TestReceivers receivers{log};
-	ResourceRegistry resources{cards, receivers, handoffs};
+	TestSinks sinks{log, mainLoop};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
@@ -1958,7 +2038,8 @@ struct ThreadedFixture {
 	BlockingHandoffs handoffs{mainLoop};
 	TestCards cards{log};
 	TestReceivers receivers{log};
-	ResourceRegistry resources{cards, receivers, handoffs};
+	TestSinks sinks{log, mainLoop};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
@@ -2296,7 +2377,8 @@ struct RecordingFixture {
 	TestCards cards{log};
 	TestReceivers receivers{log};
 	TestRecordings recordings{log};
-	ResourceRegistry resources{cards, receivers, handoffs, recordings};
+	TestSinks sinks{log, mainLoop};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, recordings};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
@@ -2603,7 +2685,8 @@ TEST_CASE("An outside node is made with its block's id, read once the block is r
 	TestHandoffs handoffs{log};
 	TestCards cards{log};
 	TestReceivers receivers{log};
-	ResourceRegistry resources{cards, receivers, handoffs};
+	TestSinks sinks{log, mainLoop};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
@@ -3953,4 +4036,233 @@ TEST_CASE("A start() that throws on a start after a stop fails the node start-fa
 	CHECK(countOf(f.log, "node probe running") == 0);
 	f.stopAll();
 	f.settle();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Step L-4b: the interim sink (docs/design/node-lifecycle.md 5.11, node-lifecycle-modules.md 4.2): made at configure,
+// its consumer begun before the node is configured, its tap bound by every drive and by no silence, its bank never
+// faded, closed at the teardown (its drops the node's), and every rule about it a failure of the node.
+
+namespace {
+
+/// configure on the probe: a sink on "pb" (two ports, a 1024-frame ring) consumed by a TestSinkConsumer (one that says
+/// lost in begin when asked), and a code.
+std::function<Configured(InstanceContexts&)> withSink(Log& log, bool loseInBegin = false) {
+	return [&log, loseInBegin](InstanceContexts& cx) {
+		cx.create.sink("pb", SinkShape{.frames = 1024})
+			.consumedBy(std::make_unique<TestSinkConsumer>(log, loseInBegin ? &cx.legacy.events() : nullptr));
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+}
+
+} // namespace
+
+TEST_CASE("A sink's consumer begins before the node is configured, its bank is never faded, every drive binds its tap "
+          "and no silence does, and a stop closes nothing",
+          "[node_host][sink]") {
+	Fixture f;
+	f.sinks.holdBegin = true;
+	f.sinks.dropped = 7;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	f.add("rec", config);
+	CHECK(indexOf(f.log, "sink rec.pb 2 channels 1024 frames") < indexOf(f.log, "sink rec.pb begin"));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	// Not begun: the configuration waits (readiness 4'), nothing is driven.
+	CHECK(f.blocks.driven.at(0) == nullptr);
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].phase == NodePhase::configuring);
+	CHECK(countOf(f.log, "consumer begin") == 0);
+
+	f.sinks.made.at(0)->runBegin();
+	f.settle();
+	CHECK(indexOf(f.log, "consumer begin") < indexOf(f.log, "drive code"));
+	CHECK(f.host.health()[0].state == NodeState::running);
+	REQUIRE_FALSE(f.blocks.modes.faded.empty());
+	CHECK(f.blocks.modes.faded.back() == std::vector<bool>{false, false}); // pb is the sink's: never faded
+	REQUIRE(f.blocks.modes.sinks.back().size() == 1);
+	const SinkBinding bound = f.blocks.modes.sinks.back()[0];
+	CHECK(bound.tap == &f.sinks.made.at(0)->tap());
+	CHECK(bound.firstOutput == 0);
+	CHECK(bound.channels == 2);
+
+	// A stop: the silence binds no tap, and the sink is not closed; a start binds the same tap again.
+	REQUIRE(f.host.stop("rec"));
+	f.settle();
+	CHECK(f.blocks.driven.at(0) == nullptr);
+	CHECK(f.blocks.modes.sinks.back().empty());
+	CHECK(countOf(f.log, "sink rec.pb close") == 0);
+	REQUIRE(f.host.start("rec"));
+	f.settle();
+	REQUIRE(f.blocks.modes.sinks.back().size() == 1);
+	CHECK(f.blocks.modes.sinks.back()[0].tap == bound.tap);
+	CHECK(f.sinks.made.size() == 1);
+
+	// The teardown closes it (the consumer finished), then frees the code, the instance and the sink, in that order;
+	// its drops are the node's.
+	f.log.clear();
+	f.stopAll();
+	f.settle();
+	CHECK(indexOf(f.log, "sink rec.pb close") < indexOf(f.log, "consumer finish"));
+	CHECK(indexOf(f.log, "consumer finish") < indexOf(f.log, "instance destroyed"));
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "sink rec.pb destroyed"));
+	CHECK(indexOf(f.log, "sink rec.pb destroyed") < indexOf(f.log, "consumer destroyed"));
+	CHECK(countOf(f.log, "node rec gone dropped=7") == 1);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A lost said in a sink consumer's begin fails the node start-failed before it is configured, and its close "
+          "still finishes the consumer that began",
+          "[node_host][sink]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log, true);
+	f.add("rec", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(failureOf(f, "rec") == "start-failed: cannot open take.wav");
+	CHECK(f.blocks.driven.at(0) == nullptr);
+	CHECK(countOf(f.log, "drive code") == 0);
+	CHECK(indexOf(f.log, "consumer begin") < indexOf(f.log, "sink rec.pb close"));
+	CHECK(indexOf(f.log, "sink rec.pb close") < indexOf(f.log, "consumer finish"));
+	CHECK(countOf(f.log, "sink rec.pb destroyed") == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A sink with no consumer or two, on a bank that is no inside output, beside a resource of its name, or with "
+          "no thread fails the node start-failed, and a sink never begun is freed without a close",
+          "[node_host][sink]") {
+	using Configure = std::function<Configured(InstanceContexts&)>;
+	Log codes;
+	const auto sink = [](InstanceContexts& cx, const char* bank) -> SinkRequest& {
+		return cx.create.sink(bank, SinkShape{.frames = 1024});
+	};
+	struct Case {
+		Configure configure;
+		std::string failure;
+		bool throwInMake = false;
+	};
+	const std::vector<Case> cases{
+		{[&](InstanceContexts& cx) {
+			 sink(cx, "pb");
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure gave sink pb no consumer"},
+		{[&](InstanceContexts& cx) {
+			 SinkRequest& request = sink(cx, "pb");
+			 request.consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 request.consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: consumedBy called twice on sink pb"},
+		{[&](InstanceContexts& cx) {
+			 sink(cx, "pb").consumedBy(nullptr);
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: consumedBy given no consumer on sink pb"},
+		{[&](InstanceContexts& cx) {
+			 sink(cx, "record").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: a sink joins an inside output bank, not \"record\""},
+		{[&](InstanceContexts& cx) {
+			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: a second resource named rec.pb in one configuration"},
+		{[&](InstanceContexts& cx) -> Configured {
+			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 throw std::runtime_error("after the sink");
+		 },
+	     "start-failed: configure threw: after the sink"},
+		{[&](InstanceContexts& cx) {
+			 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: no thread for rec", true},
+		{[&](InstanceContexts& cx) {
+			 try {
+				 sink(cx, "pb").consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 } catch (const std::exception&) {
+				 // swallowed: the type goes on with no sink
+			 }
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: no thread for rec", true},
+	};
+	for (std::size_t which = 0; which < cases.size(); ++which) {
+		INFO("case " << which);
+		Fixture f;
+		f.sinks.throwInMake = cases[which].throwInMake;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = cases[which].configure;
+		f.add("rec", config);
+		CHECK(failureOf(f, "rec").starts_with(cases[which].failure));
+		CHECK(countOf(f.log, "sink rec.pb begin") == 0);
+		CHECK(countOf(f.log, "sink rec.pb close") == 0);
+		CHECK(countOf(f.log, "sink rec.pb destroyed") == f.sinks.made.size());
+		CHECK(countOf(codes, "consumer begin") == 0);
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.blocks.driven.at(0) == nullptr);
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
+TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank playback beside a playback card is "
+          "refused (I9)",
+          "[node_host][sink]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->ports_ = Ports{{{Direction::output, "playback", {"1"}, PortBank::Reach::inside},
+	                        {Direction::output, "pb", {"1"}, PortBank::Reach::inside}}};
+	config->onConfigure = [&](InstanceContexts& cx) {
+		cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+		cx.create.sink("playback", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(f.log));
+		cx.create.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	f.add("rec", config);
+	CHECK(failureOf(f, "rec") == "start-failed: configure threw: a second resource named rec.playback in one "
+	                             "configuration");
+	CHECK(f.sinks.made.empty());
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("A restart waits for its sink's close before it frees the configuration, then makes a new sink",
+          "[node_host][sink]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	addRunning(f, "rec", config);
+	f.sinks.made.at(0)->holdClose = true;
+	f.log.clear();
+	REQUIRE(f.host.restart("rec"));
+	f.settle();
+	CHECK(countOf(f.log, "sink rec.pb close") == 1);
+	CHECK(countOf(f.log, "instance destroyed") == 0); // step 4 waits for every sink (5.11)
+	CHECK(f.sinks.made.size() == 1);
+	f.sinks.made.at(0)->runClose();
+	f.settle();
+	CHECK(indexOf(f.log, "consumer finish") < indexOf(f.log, "instance destroyed"));
+	REQUIRE(f.sinks.made.size() == 2);
+	CHECK(f.host.health()[0].state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }

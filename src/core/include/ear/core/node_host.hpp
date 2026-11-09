@@ -10,8 +10,8 @@
 // leaked() by its step L-3c; NodeHealth's lifecycle members, NodeOperations, the superseded node's listeners and the
 // plan's outcomes honoured by its step L-3d; the type's class, configure and its contexts on one set of internals, hooks
 // timed (hookSlowBound) and a stop() that threw in a teardown logged (subscribeLog) by
-// docs/design/node-lifecycle-modules.md section 3, step L-4a). Change it only through a design page and a re-cut, never
-// a local edit.
+// docs/design/node-lifecycle-modules.md section 3, step L-4a; DriveRequest's sinks and the sink kind's adapter in the
+// registry by its section 4, step L-4b). Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -27,6 +27,7 @@
 #include "ear/core/executor.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_lifecycle.hpp"
+#include "ear/core/sink.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (control-plane.md 4.8; 3a's four kinds, D-L28):
@@ -63,7 +64,8 @@ struct NodeHealth {
 class NodeHealthListener {
 public:
 	virtual void nodeChanged(const NodeHealth& health) = 0;
-	/// Everything the node made is gone (its `removed`). droppedFrames: frames its handoffs refused (ring full).
+	/// Everything the node made is gone (its `removed`). droppedFrames: frames its sinks and legacy handoffs refused
+	/// (ring full).
 	virtual void nodeGone(const NodeName& node, std::uint64_t droppedFrames) = 0;
 	/// Whether this listener hears a superseded node: an older node of a name still closing once a newer node of that
 	/// name was added (another type, or a name added back by a later commit). The wire keys health by name and holds
@@ -142,11 +144,14 @@ struct LatencyPlan {
 };
 /// What an asynchronous drive hands a block (docs/design/node-lifecycle.md section 5.3): the code (null: silence) and
 /// which outputs its fades touch, one flag per output in process()'s order (outputs, then inside outputs; a shorter span
-/// leaves the rest unfaded). The interim sinks join it in step L-4b. All of it outlives the drive's completion or the
-/// block.
+/// leaves the rest unfaded), and the interim sinks (node-lifecycle-modules.md 4.2): the block writes each binding's tap
+/// after the code (and after the fade, which never touches a sink's bank), every cycle it runs that code, and unbinds
+/// them all in the invoke that applies the next request, so a sink takes exactly the cycles its code drove. All of it
+/// outlives the drive's completion or the block.
 struct DriveRequest {
 	AudioCode* code = nullptr;
 	std::span<const bool> faded;
+	std::span<const SinkBinding> sinks{};
 };
 /// Engine side of a port block. Silent until a drive applies a code. Destroying it removes its ports and their links;
 /// after the destructor returns, no process() of any code is running or will run, and no `done` of its requests runs.
@@ -292,20 +297,24 @@ class ResourceRegistry {
 public:
 	/// All outlive the registry.
 	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-	                 RecordingAdapter& recordings) noexcept
-		: cards_(cards), receivers_(receivers), handoffs_(handoffs), recordings_(&recordings) {}
+	                 SinkAdapter& sinks, RecordingAdapter& recordings) noexcept
+		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), recordings_(&recordings) {}
 	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
 	/// node (tests).
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs) noexcept;
+	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
+	                 SinkAdapter& sinks) noexcept;
 	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
 	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
 	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
 	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
+	/// The interim sinks' adapter (CreateOf::sink; node-lifecycle-modules.md 4.2).
+	SinkAdapter& sinks() const noexcept { return sinks_; }
 
 private:
 	SoundCardAdapter& cards_;
 	RtpReceiverAdapter& receivers_;
 	HandoffAdapter& handoffs_;
+	SinkAdapter& sinks_;
 	RecordingAdapter* recordings_;
 };
 /// How long a run's teardown may wait on other threads (I5 steps 3 and 4) before the framework stops waiting (I5a).

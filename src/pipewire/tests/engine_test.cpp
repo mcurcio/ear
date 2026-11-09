@@ -606,8 +606,9 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 	ThreadHandoffs handoffs(engine->mainLoop());
 	AlsaSoundCards cards(*engine);
 	RtpReceivers receivers(*engine);
-	ResourceRegistry resources(cards, receivers, handoffs);
 	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	ResourceRegistry resources(cards, receivers, handoffs, sinks);
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);

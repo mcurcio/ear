@@ -338,8 +338,7 @@ struct SettingDeclaration {
 };
 class AnySettingsTable; // settings_table.hpp
 namespace spec_detail {
-template <const auto& Spec, class Type> class SpecNodeType;            // lifecycle.hpp
-template <const auto& Spec, class Behaviour> class LegacySpecNodeType; // type_spec.hpp, file's until step L-4b
+template <const auto& Spec, class Type> class SpecNodeType; // lifecycle.hpp
 } // namespace spec_detail
 class CheckedSettings; // settings_table.hpp
 /// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
@@ -362,7 +361,6 @@ public:
 private:
 	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
 	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
-	template <const auto& Spec, class Behaviour> friend class spec_detail::LegacySpecNodeType;
 	explicit NodeType(const AnySettingsTable& table) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;

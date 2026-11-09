@@ -158,9 +158,9 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 	return "unknown";
 }
 
-ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers,
-                                   HandoffAdapter& handoffs) noexcept
-	: ResourceRegistry(cards, receivers, handoffs, noRecordings) {}
+ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
+                                   SinkAdapter& sinks) noexcept
+	: ResourceRegistry(cards, receivers, handoffs, sinks, noRecordings) {}
 
 struct NodeHost::Impl {
 	/// PipeWire's object changes a turn queues (5.5), in the order a flush runs them: destroys (outside nodes, then
@@ -430,12 +430,32 @@ struct NodeHost::Impl {
 				return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
 			});
 		}
-		SinkRequest& sink(std::string_view bank, SinkShape) override {
+		/// The interim sink (node-lifecycle-modules.md 4.2): made at once on the inside output bank, its thread started;
+		/// its bank is never faded (5.1). An adapter that cannot make it (no thread) fails the node through configure
+		/// (D-M17), recorded so a type that catches it still fails.
+		SinkRequest& sink(std::string_view bank, SinkShape shape) override {
 			return guarded([&]() -> SinkRequest& {
 				requireConfiguring("sink");
-				// The interim sink is wired in step L-4b (node-lifecycle-modules.md section 4); no type asks for one
-				// before.
-				throw std::logic_error("sink on bank \"" + std::string(bank) + "\" is not built before step L-4b");
+				const Ports::Bank& found = insideBank(ports_, std::string(bank), Direction::output, "a sink");
+				requireOneName(name_ + "." + found.name);
+				Configuration& c = *config_;
+				std::unique_ptr<Sink> made;
+				try {
+					made = host_.resources.sinks().make(name_, found.name,
+					                                    static_cast<std::uint32_t>(found.ports.size()), shape.frames);
+				} catch (const std::logic_error&) {
+					throw;
+				} catch (...) {
+					if (!brokenRule_) brokenRule_ = whatOf(std::current_exception());
+					throw;
+				}
+				if (!made) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
+				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(*this, found.name));
+				slot.sink = std::move(made);
+				slot.binding = SinkBinding{&slot.sink->tap(), found.first, found.ports.size()};
+				for (std::size_t i = found.first; i < found.first + found.ports.size() && i < c.fadedCount; ++i)
+					c.faded[i] = false;
+				return slot;
 			});
 		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
@@ -563,6 +583,19 @@ struct NodeHost::Impl {
 					if (Node* node = self->node()) node->handoffClosed(node->config_->generation, droppedFrames);
 				};
 			}
+			/// The `begun` sink `index` of this configuration gets: on the main thread, later, behind any lost() its
+			/// consumer said inside begin() (the same FIFO, D-L14).
+			std::move_only_function<void()> sinkBegunCall(std::size_t index) {
+				return [self = shared_from_this(), index] {
+					if (Node* node = self->node()) node->sinkBegun(node->config_->generation, index);
+				};
+			}
+			/// The `closed` sink `index` of this configuration gets: on the main thread, later.
+			std::move_only_function<void(std::uint64_t)> sinkClosedCall(std::size_t index) {
+				return [self = shared_from_this(), index](std::uint64_t droppedFrames) {
+					if (Node* node = self->node()) node->sinkClosed(node->config_->generation, index, droppedFrames);
+				};
+			}
 			/// The `closed` the run object gets: from any thread, later or inside close().
 			std::move_only_function<void()> closedCall() {
 				return [self = shared_from_this(), main = std::this_thread::get_id()] {
@@ -617,6 +650,36 @@ struct NodeHost::Impl {
 			Channel& channel_;
 		};
 
+		/// One cx.sink call (node-lifecycle-modules.md 4.2): the sink, its one consumer until Sink::begin takes it, and
+		/// what a drive binds. By pointer in the configuration, so a SinkRequest& the type holds survives a later sink.
+		class SinkSlot final : public SinkRequest {
+		public:
+			SinkSlot(Node& node, std::string name) : bank(std::move(name)), node_(&node) {}
+			/// Once, not null, inside configure (3.2); a broken rule is recorded as every context call's is.
+			void consumedBy(std::unique_ptr<SinkConsumer> consumer) override {
+				node_->guarded([&] {
+					node_->requireConfiguring("consumedBy");
+					if (given) throw std::logic_error("consumedBy called twice on sink " + bank);
+					if (!consumer) throw std::logic_error("consumedBy given no consumer on sink " + bank);
+					given = true;
+					consumer_ = std::move(consumer);
+				});
+			}
+			/// Main thread, at configure's applied return: the consumer handed to the sink.
+			void begin(std::move_only_function<void()> begun) { sink->begin(std::move(consumer_), std::move(begun)); }
+
+			std::string bank;
+			std::unique_ptr<Sink> sink;
+			SinkBinding binding{};
+			bool given = false;  // consumedBy was called
+			bool begun = false;  // its consumer began (readiness 4')
+			bool closed = false; // its close reported
+
+		private:
+			Node* node_;
+			std::unique_ptr<SinkConsumer> consumer_; // until Sink::begin takes it
+		};
+
 		/// One configuration (docs/design/node-lifecycle.md 5.1, node-lifecycle-modules.md 3.3), from configure to the
 		/// end of its close. Members in reverse teardown order.
 		struct Configuration {
@@ -627,6 +690,9 @@ struct NodeHost::Impl {
 			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it open
 			// (file's WavWriter closes its SNDFILE on the descriptor when freed).
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
+			// Each sink's consumer may write a recording above; freed after the code and instance (I5 step 5).
+			std::vector<std::unique_ptr<SinkSlot>> sinks;
+			std::vector<SinkBinding> bindings; // every sink's, built at the return checks; every drive points at it
 			std::unique_ptr<ErasedInstance> instance; // the legacy recipe and run object inside it
 			std::unique_ptr<AudioCode> code;          // may read the instance, so goes first
 			std::vector<std::unique_ptr<Handoff>> handoffs;
@@ -636,7 +702,7 @@ struct NodeHost::Impl {
 			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
 			std::chrono::steady_clock::time_point postedAt; // when that request was posted
 			// One flag per output in process()'s order (outputs, then inside outputs): every one the code writes is
-			// faded (5.1; no sink yet). Read by the block until the drive's invoke ran.
+			// faded but a sink's bank (5.1). Read by the block until the drive's invoke ran.
 			std::unique_ptr<bool[]> faded;
 			std::size_t fadedCount = 0;
 			std::vector<BankPair> pairs;                          // the pass-through's pairs, for the latency plan
@@ -648,6 +714,7 @@ struct NodeHost::Impl {
 			bool prepared = false;
 			bool tearing = false; // I5 step 3 began
 			std::size_t handoffsClosed = 0;
+			std::size_t sinksClosed = 0;
 		};
 
 		/// Everything of a configuration that did not close in time and that its threads can still reach: never freed
@@ -659,6 +726,8 @@ struct NodeHost::Impl {
 			std::unique_ptr<ErasedInstance> instance;
 			std::unique_ptr<AudioCode> code;
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
+			std::vector<std::unique_ptr<SinkSlot>> sinks;
+			std::vector<SinkBinding> bindings;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::unique_ptr<Outside>> outside; // a wedged loop's, never destroyed
 			std::unique_ptr<bool[]> faded;
@@ -696,14 +765,20 @@ struct NodeHost::Impl {
 				if (aggregate_.waitingForOlder()) waits.push_back({WaitingFor::Kind::olderNode, name_});
 				break;
 			case lc::NodePhase::configuring:
-				if (!config_ || config_->startFailed || config_->outsideRequests.empty()) break;
-				if (aggregate_.block().state() != lc::BlockState::ready) {
-					waits.push_back({WaitingFor::Kind::block});
-					break;
+				if (!config_ || config_->startFailed) break;
+				if (!config_->outsideRequests.empty()) {
+					if (aggregate_.block().state() != lc::BlockState::ready) {
+						waits.push_back({WaitingFor::Kind::block});
+					} else {
+						for (std::size_t i = 0; i < config_->outsideRequests.size(); ++i)
+							if (i >= config_->outside.size() || !config_->outside[i]->isReady)
+								waits.push_back(
+									{WaitingFor::Kind::companion, config_->outsideRequests[i].second.engineNode});
+					}
 				}
-				for (std::size_t i = 0; i < config_->outsideRequests.size(); ++i)
-					if (i >= config_->outside.size() || !config_->outside[i]->isReady)
-						waits.push_back({WaitingFor::Kind::companion, config_->outsideRequests[i].second.engineNode});
+				// A sink's consumer that has not begun (readiness 4').
+				if (std::ranges::any_of(config_->sinks, [](const auto& slot) { return !slot->begun; }))
+					waits.push_back({WaitingFor::Kind::consumer});
 				break;
 			case lc::NodePhase::starting:
 				if (aggregate_.block().state() != lc::BlockState::ready) waits.push_back({WaitingFor::Kind::block});
@@ -907,11 +982,20 @@ struct NodeHost::Impl {
 		/// Records an outside node to make once the block is ready, under its one name (I9).
 		void askOutside(OutsideRequest request, const Ports::Bank& bank, std::string_view suffix) {
 			const NodeName engineNode = name_ + "." + std::string(suffix);
-			if (std::ranges::any_of(config_->outsideRequests,
-			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }))
-				throw std::logic_error("a second resource named " + engineNode + " in one configuration");
+			requireOneName(engineNode);
 			config_->outsideRequests.emplace_back(std::move(request),
 			                                      OutsideTarget{engineNode, name_, bank.ports, host_.format});
+		}
+
+		/// One engine name per resource of a configuration (I9): an outside node's "<node>.<suffix>" and a sink's
+		/// "<node>.<bank>" (its thread's name) are never two of one name.
+		void requireOneName(const NodeName& engineNode) const {
+			const bool taken =
+				std::ranges::any_of(config_->outsideRequests,
+			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }) ||
+				std::ranges::any_of(config_->sinks,
+			                        [&](const auto& slot) { return name_ + "." + slot->bank == engineNode; });
+			if (taken) throw std::logic_error("a second resource named " + engineNode + " in one configuration");
 		}
 
 		/// A request's bank, filled from the handle's name: one already given must be that one.
@@ -1008,20 +1092,56 @@ struct NodeHost::Impl {
 					                     std::string("configure gave a pass-through: ") + error.what());
 				}
 			}
+			// Each sink has exactly one consumer (3.2).
+			for (const auto& slot : c.sinks)
+				if (!slot->given)
+					return failConfigure(lc::Fact::configureFailed,
+					                     "configure gave sink " + slot->bank + " no consumer");
 			// D-L40, superseded by D-M3 (L-4a review): a type bug that fails the node, never thrown out of NodeHost.
 			if (c.instance->hasRecipe() && !c.outsideRequests.empty())
 				return failConfigure(lc::Fact::configureFailed,
 				                     "a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10");
 			c.startFailed = false;
+			// Every drive of this configuration binds these taps (4.2); then each consumer begins on its sink's thread.
+			c.bindings.reserve(c.sinks.size());
+			for (const auto& slot : c.sinks) c.bindings.push_back(slot->binding);
+			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel->sinkBegunCall(i));
 			askResources();
 		}
 
+		/// A sink's consumer began (readiness 4'): with every outside node ready too, every resource is.
+		void sinkBegun(std::uint64_t generation, std::size_t index) {
+			host_.inputFor(serial_, [generation, index](Node& node) {
+				if (!node.current(generation) || node.config_->startFailed || node.config_->tearing ||
+				    index >= node.config_->sinks.size())
+					return;
+				node.config_->sinks[index]->begun = true;
+				node.checkReady(generation);
+				node.refreshWaiting();
+			});
+		}
+
+		/// A sink closed (I5 step 3): its drops are the node's.
+		void sinkClosed(std::uint64_t generation, std::size_t index, std::uint64_t droppedFrames) {
+			host_.inputFor(serial_, [generation, index, droppedFrames](Node& node) {
+				if (!node.current(generation) || index >= node.config_->sinks.size() ||
+				    node.config_->sinks[index]->closed)
+					return;
+				node.config_->sinks[index]->closed = true;
+				node.dropped_ += droppedFrames;
+				++node.config_->sinksClosed;
+				node.closeRunObject();
+			});
+		}
+
 		/// configure failed, threw or broke a rule: nothing was driven by its code, so the handoffs may go now (their
-		/// consumers may have gone with a legacy start's result); no outside node was made. The recordings and the
-		/// instance stay until step 5 frees them, the instance first. The fault is an input of its own.
+		/// consumers may have gone with a legacy start's result), and so may the sinks, none begun (a consumer given is
+		/// freed unbegun, with nothing to finish: 5.11); no outside node was made. The recordings and the instance stay
+		/// until step 5 frees them, the instance first. The fault is an input of its own.
 		void failConfigure(lc::Fact fact, std::string detail) {
 			Configuration& c = *config_;
 			c.handoffs.clear();
+			c.sinks.clear();
 			c.outsideRequests.clear();
 			c.channel->detach();
 			host_.inputFor(serial_, [generation = c.generation, fact, detail = std::move(detail)](Node& node) mutable {
@@ -1095,7 +1215,8 @@ struct NodeHost::Impl {
 				return;
 			Configuration& c = *config_;
 			if (c.outside.size() != c.outsideRequests.size() ||
-			    !std::ranges::all_of(c.outside, [](const auto& outside) { return outside->isReady; }))
+			    !std::ranges::all_of(c.outside, [](const auto& outside) { return outside->isReady; }) ||
+			    !std::ranges::all_of(c.sinks, [](const auto& slot) { return slot->begun; }))
 				return;
 			c.recipeRan = true;
 			if (c.instance->hasRecipe()) {
@@ -1126,7 +1247,7 @@ struct NodeHost::Impl {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
 			block_->carryLatency(LatencyPlan{c.pairs, c.latency});
-			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount)},
+			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings},
 			              completion(barrier, &lc::NodeAggregate::driven));
 			arm(barrier, Bound::barrier);
 		}
@@ -1297,7 +1418,10 @@ struct NodeHost::Impl {
 				});
 			c.tearing = true;
 			c.handoffsClosed = 0;
+			c.sinksClosed = 0;
 			closingHandoffs_ = true;
+			// A sink drains what its ring holds and finishes a consumer that began (5.11); a legacy handoff likewise.
+			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->sink->close(c.channel->sinkClosedCall(i));
 			for (auto& handoff : c.handoffs) handoff->close(c.channel->handoffClosedCall());
 			closingHandoffs_ = false;
 			closeRunObject();
@@ -1312,11 +1436,11 @@ struct NodeHost::Impl {
 			});
 		}
 
-		/// I5 step 4, once every handoff reported closed, and never inside a close() call, so no handoff is destroyed
-		/// while that loop is still calling it. The rest goes once the run object says it has closed.
+		/// I5 step 4, once every sink and handoff reported closed, and never inside a close() call, so no handoff is
+		/// destroyed while that loop is still calling it. The rest goes once the run object says it has closed.
 		void closeRunObject() {
 			if (!config_ || !config_->tearing || closingHandoffs_ || runClosing_ ||
-			    config_->handoffsClosed != config_->handoffs.size())
+			    config_->handoffsClosed != config_->handoffs.size() || config_->sinksClosed != config_->sinks.size())
 				return;
 			config_->handoffs.clear();
 			runClosing_ = true;
@@ -1362,6 +1486,7 @@ struct NodeHost::Impl {
 			c.channel->detach();
 			c.code.reset();
 			c.instance.reset();
+			c.sinks.clear(); // each closed (its thread idle) or never begun
 			c.recordings.clear();
 			config_.reset();
 		}
@@ -1370,9 +1495,11 @@ struct NodeHost::Impl {
 		void closeOverdue() {
 			// Once every handoff closed they are cleared and the run object is closing.
 			const std::size_t handoffsOpen = runClosing_ ? 0 : config_->handoffs.size() - config_->handoffsClosed;
+			const std::size_t sinksOpen = runClosing_ ? 0 : config_->sinks.size() - config_->sinksClosed;
 			host_.diagnosed(name_, "ear.close-overdue",
 			                "the run did not close within " + std::to_string(host_.closeDeadline.count()) +
-			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, run " +
+			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, " +
+			                    (sinksOpen > 0 ? std::to_string(sinksOpen) + " sinks open, " : std::string()) + "run " +
 			                    (runClosing_ ? "closing" : "not yet told to close") + ")",
 			                {});
 		}
@@ -1385,7 +1512,8 @@ struct NodeHost::Impl {
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
 			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
-			                             std::move(c.handoffs), std::move(c.outside), std::move(c.faded)});
+			                             std::move(c.sinks), std::move(c.bindings), std::move(c.handoffs),
+			                             std::move(c.outside), std::move(c.faded)});
 			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;

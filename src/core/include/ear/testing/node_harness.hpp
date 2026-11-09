@@ -6,7 +6,8 @@
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with the
 // transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and stop()
 // (D-M14): their pairing is node_host_test.cpp's. Differences from 7.6, each because 3a lacks the thing: no feed, held
-// or runLoops (3b, 3c, 3d); the sink fake arrives with step L-4b.
+// or runLoops (3b, 3c, 3d). The sink fake (step L-4b) runs a consumer on the test's thread: begin at configure's return,
+// each chunk at once from the tap written after the fade in process(), finish at the close.
 #pragma once
 #include <chrono>
 #include <cstddef>

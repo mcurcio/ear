@@ -1176,3 +1176,49 @@ An independent review of the L-4a commit asked for these; each is built, and the
 10. **Tests added:** a rule caught by the type (in configure, and in `start()` through a kept context), `use` with no code
     and an empty failure, a legacy engine refusal, a throwing recipe and close, a `stop()` that throws during a disable
     and during a failure, a `start()` that throws on a start after a stop.
+
+### Found building L-4b (2026-11-09)
+
+What step L-4b had to change or decide beyond section 4's declarations, each the smallest change that works, with its
+reason. Nothing here changes a rule of a higher page. The legacy maker (`makeLegacyNodeType`, `LegacySpecConfig`,
+`LegacySpecNodeType` and their friend declarations) is deleted with `file`'s move, as Found building L-4a's item 2 said;
+`sendspin` alone stays on `LegacyInstance` until 3c.
+
+1. **A configure that failed frees its sinks unbegun, at once** (`failConfigure`), rather than closing them at the
+   teardown. Sink's own contract allows a sink neither begun nor closed to be destroyed, and the configuration's
+   `Channel` is detached there (a `closed` posted through it would never land). So "close works on a sink with no
+   consumer" (5.11) holds trivially: nothing of such a sink is ever closed or finished; a consumer given is freed
+   without `begin`. A failure after the return checks (a lost in `begin`, an outside node lost) closes every sink at
+   I5 step 3 as 4.2 says, `finish` running only on a consumer that began.
+2. **The rules' texts.** `consumedBy` with null: `consumedBy given no consumer on sink <bank>`; a sink on a bank that
+   is no inside output (reachable only through the erased `CreateContext`, since `CreateOf` refuses it at compile time):
+   `a sink joins an inside output bank, not "<bank>"`; a second sink on one bank is I9's
+   `a second resource named <node>.<bank> in one configuration`, the same check an outside node's name goes through, so
+   a sink on a bank named `playback` beside a playback card is refused too (the sink's own I9 check the task asked for).
+3. **D-M17 made robust**: an adapter that throws (no thread) is recorded as the configuration's broken rule as well as
+   thrown, so a type that catches it still fails `configure threw: <what>`, as D-M3 does for every other call.
+4. **`FilterPortBlock::drive` throws `std::logic_error`** for a request that binds more sinks than the block has inside
+   output banks: the taps are copied inside the invoke into storage sized at make (4.4: nothing allocates on the data
+   loop), and a sink reads an inside output bank, so more is a caller's bug.
+5. **`TypeHarness` forwards `health()`, `gone()`, `droppedFrames()`, `unwritten()`, `companions()`, `handoffs()` and
+   `recordingRequests()`** to its `NodeHarness`, so a test that holds the harness by pointer (`file_test.cpp`'s
+   `std::unique_ptr<TypeHarness>`) reads them without `->node()`. The harness's `FakeSinks` keeps `outsideEvents`
+   parallel to `companions()` with a null entry per sink, so `ready(bank)` or `lose(bank)` on a sink's bank says it has
+   no outside node to tell.
+6. **A node whose only outputs are sink banks still fades before a silence** (`file`): `Queued::fades` is decided from
+   the ports before configure knows its sinks, so the stop posts a fade with nothing to ramp, which a real block
+   acknowledges at the next cycle's end. One cycle at a stop; the sink keeps taking the code's cycles until the silence,
+   as it must.
+7. **`waitingFor` `consumer`** is shown while configuring with a sink whose consumer has not begun (beside the block
+   and companions), and `ear.close-overdue`'s detail counts open sinks when there are any (`... 1 sinks open, run ...`).
+8. **`ResourceRegistry`'s three-argument form takes the sink adapter** (4.2), so every host passes one; core tests with
+   no sink pass a refusing one (`graph_status_test.cpp`'s `NoSinks`), and `engine_test.cpp` passes a real `ThreadSinks`.
+9. **The stamp ring's index**: a stamp is released after its chunk was consumed, so a consumer stalled inside one
+   chunk holds that chunk's entry; the ring then takes `entries - 1` more before it drops whole chunks (`sink_test.cpp`
+   counts exactly that).
+10. **A sink's first chunk after a node's first drive is not at that drive's `takenAt`** when the block had run no cycle
+    before it (`PortBlock::takenAt` is 0 until a cycle ran, and `NodeHost` drives at the block's first STREAMING): the
+    chunk carries the clock's real position, so a consumer that dates by `position` is right; only a comparison with the
+    drive's reported position is not. `sink_test.cpp`'s ramp therefore warms the block up with a first code, and judges
+    a start's first frame exact unless the clock jumped (an xrun) at that take-up, as `port_block_test.cpp` does; a
+    stop's last frame is judged exact always.

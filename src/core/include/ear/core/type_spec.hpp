@@ -26,8 +26,6 @@
 // found by its name and must then have exactly that signature. Every spec, row and bank list is declared in a named
 // namespace (see TypeSpec).
 //
-// Interim until step L-4b: makeLegacyNodeType, the slice 2 maker of a spec type whose behaviour has a static start, kept
-// for `file` alone until it moves onto the sink (node-lifecycle-modules.md 4.5); it runs through the legacy adapter.
 // Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <algorithm>
@@ -320,65 +318,6 @@ private:
 	const Ports* ports_ = nullptr; // the config's, which outlives the code (I5 step 5)
 	typename Io<Spec>::Layout layout_;
 };
-
-/// The config makeLegacyNodeType's type makes (interim until step L-4b): slice 2's, whose start is the behaviour's.
-template <const auto& Spec, class Behaviour> class LegacySpecConfig final : public NodeConfig {
-public:
-	explicit LegacySpecConfig(const CheckedOf<Spec>& settings)
-		: settings_(settings), ports_(Behaviour::ports(settings_).ports()) {}
-	const Ports& ports() const override { return ports_; }
-	StartResult start(StartContext& context) const override {
-		StartResult result = Behaviour::start(context, settings_);
-		if (!result.failed())
-			if (auto* bound = dynamic_cast<BankBoundCode*>(result.code().own().get())) {
-				// A code written against another type's spec would read this node's ports by that spec's banks.
-				if (bound->spec() != &Spec)
-					throw std::logic_error("a type's start returned a code written against another type's spec");
-				bound->bindPorts(ports_);
-			}
-		return result;
-	}
-
-private:
-	CheckedOf<Spec> settings_;
-	Ports ports_;
-};
-
-/// The type makeLegacyNodeType makes (interim until step L-4b): slice 2's SpecNodeType over a behaviour with a static
-/// start, run through the legacy adapter. It derives from NodeType itself, as lifecycle.hpp's SpecNodeType does.
-template <const auto& Spec, class Behaviour> class LegacySpecNodeType final : public NodeType {
-	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
-#ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
-	static_assert(Spec.settings.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
-#endif
-	using Checked = CheckedOf<Spec>;
-	static_assert(
-		requires(const Checked& settings) {
-			{ Behaviour::ports(settings) } -> std::same_as<Members<Spec>>;
-		}, "a behaviour has static Members<spec> ports(const CheckedOf<spec>&)");
-	static_assert(
-		requires(StartContext& context, const Checked& settings) {
-			{ Behaviour::start(context, settings) } -> std::same_as<StartResult>;
-		}, "a behaviour has static StartResult start(StartContext&, const CheckedOf<spec>&)");
-
-public:
-	LegacySpecNodeType() noexcept : NodeType(Spec.settings) {}
-
-private:
-	/// The table's walk passed: the behaviour's check, a rule across settings, then the config.
-	MadeConfig makeConfig(const NodeName&, CheckedSettings walked) const override {
-		const Checked settings(std::move(walked));
-		// Found by name, then held to its exact signature, so a check taking its settings by another type is refused
-		// rather than never run.
-		if constexpr (requires { &Behaviour::check; }) {
-			static_assert(
-				std::same_as<decltype(&Behaviour::check), std::expected<void, std::string> (*)(const Checked&)>,
-				"a behaviour's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
-			if (auto checked = Behaviour::check(settings); !checked) return std::unexpected(std::move(checked.error()));
-		}
-		return std::make_unique<const LegacySpecConfig<Spec, Behaviour>>(settings);
-	}
-};
 } // namespace spec_detail
 
 template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code) {
@@ -386,10 +325,4 @@ template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code) {
 	return std::make_unique<spec_detail::ErasedSpecCode<Process::spec, Code>>(std::move(code));
 }
 
-/// Interim until step L-4b (`file` alone): the type a behaviour with a static StartResult start(StartContext&, const
-/// CheckedOf<spec>&) gives `Spec`, run through the legacy adapter (node-lifecycle.md 5.10). lifecycle.hpp's makeNodeType
-/// makes every other spec type, from its class.
-template <const auto& Spec, class Behaviour> std::unique_ptr<const NodeType> makeLegacyNodeType() {
-	return std::make_unique<const spec_detail::LegacySpecNodeType<Spec, Behaviour>>();
-}
 } // namespace ear

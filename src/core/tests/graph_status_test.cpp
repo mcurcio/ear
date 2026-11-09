@@ -175,6 +175,13 @@ struct Links final : LinkMaker {
 	void destroyLink(LinkId) override {}
 };
 
+/// No node here asks for a sink.
+struct NoSinks final : SinkAdapter {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t) override {
+		throw std::logic_error("no sink in these tests");
+	}
+};
+
 struct Fixture {
 	NodeCatalogue catalogue{types()};
 	DesiredGraph graph{catalogue};
@@ -185,7 +192,8 @@ struct Fixture {
 	Links links;
 	Turns mainLoop;
 	NoTimers timers;
-	ResourceRegistry resources{cards, receivers, handoffs};
+	NoSinks sinks;
+	ResourceRegistry resources{cards, receivers, handoffs, sinks};
 	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};

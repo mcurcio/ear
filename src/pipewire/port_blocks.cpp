@@ -5,7 +5,8 @@
 // latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4). Slice 3a's
 // asynchronous drive and fade (docs/design/node-lifecycle.md section 5.3, step L-2): requests in a
 // ring of eight, one invoke in flight per block, applied inside it, completed through the block's
-// own event source; the blocking drive went with step L-3a.
+// own event source; the blocking drive went with step L-3a. The interim sinks' taps (node-lifecycle-modules.md 4.4,
+// step L-4b) ride in each drive and are written after the code and the fade, every cycle that code runs.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,7 +105,8 @@ public:
 		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)), inputHeard_(inputs_.size(), false),
 		  outputHeard_(outputs_.size(), false), inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
 		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
-		  fadeFrames_(std::max(format.rate * 5 / 1000, 1U)), fadeMask_(outputs_.size(), 0) {
+		  fadeFrames_(std::max(format.rate * 5 / 1000, 1U)), fadeMask_(outputs_.size(), 0),
+		  sinks_(insideOutputBanks(ports)), tapSpans_(outputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
 		}
@@ -168,12 +171,16 @@ public:
 	FilterPortBlock& operator=(const FilterPortBlock&) = delete;
 
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
-		pending_.push_back(Pending{Kind::drive, request.code, request.faded, std::move(done), {}});
+		// A sink reads an inside output bank, so a block has at most one tap per such bank (realtime state sized at
+		// make); more is a caller's bug.
+		if (request.sinks.size() > sinks_.size())
+			throw std::logic_error("a drive binds more sinks than the block has inside output banks");
+		pending_.push_back(Pending{Kind::drive, request.code, request.faded, request.sinks, std::move(done), {}});
 		pump();
 	}
 
 	void fadeOut(std::move_only_function<void()> done) override {
-		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, std::move(done)});
+		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, {}, std::move(done)});
 		pump();
 	}
 
@@ -225,6 +232,13 @@ private:
 			return events;
 		}();
 		return table;
+	}
+
+	/// How many inside output banks the ports have: the most taps a drive can bind.
+	static std::size_t insideOutputBanks(const Ports& ports) {
+		return static_cast<std::size_t>(std::ranges::count_if(ports.banks(), [](const Ports::Bank& bank) {
+			return bank.reach == PortBank::Reach::inside && bank.direction == Direction::output;
+		}));
 	}
 
 	void addPorts(pw_direction direction, const std::vector<PortName>& names, std::vector<void*>& handles) {
@@ -403,7 +417,12 @@ private:
 	void pump() {
 		while (pushed_ < finished_ + pending_.size() && pushed_ - finished_ < kRing) {
 			const Pending& next = pending_[pushed_ - finished_];
-			ring_[pushed_ % kRing] = Request{next.kind, next.code, next.mask.data(), next.mask.size(), 0, false};
+			ring_[pushed_ % kRing] = Request{.kind = next.kind,
+			                                 .code = next.code,
+			                                 .faded = next.mask.data(),
+			                                 .fadedCount = next.mask.size(),
+			                                 .sinks = next.sinks.data(),
+			                                 .sinkCount = next.sinks.size()};
 			++pushed_;
 		}
 		published_.store(pushed_, std::memory_order_release);
@@ -454,6 +473,9 @@ private:
 			for (std::uint64_t pending = completed; pending < drained; ++pending)
 				ring_[pending % kRing].cancelled = true;
 			code_.store(request.code, std::memory_order_release);
+			// The taps change with the code, in this invoke (D-L29): copied into storage sized at make.
+			sinkCount_ = std::min(request.sinkCount, sinks_.size());
+			std::copy_n(request.sinks, sinkCount_, sinks_.begin());
 			fresh_ = true; // the new code's first cycle is a discontinuity to it
 			bool anyFaded = false;
 			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
@@ -581,6 +603,15 @@ private:
 			for (const std::span<float> out : outputs_) std::ranges::fill(out, 0.0f);
 		}
 		applyFade(frames); // before metering, so levels show the fade
+		// Each sink's tap, after the code and the fade (a sink's bank is never faded), from its inside output bank's
+		// spans (an unlinked one's scratch included); only while a code runs: a silence binds none.
+		for (std::size_t s = 0; s < sinkCount_; ++s) {
+			const SinkBinding& binding = sinks_[s];
+			if (binding.tap == nullptr || binding.firstOutput + binding.channels > outputs_.size()) continue;
+			for (std::size_t c = 0; c < binding.channels; ++c) tapSpans_[c] = outputs_[binding.firstOutput + c];
+			binding.tap->write(std::span<const std::span<const float>>(tapSpans_.data(), binding.channels), frames,
+			                   ChunkStamp{cycle.position, cycle.startNs, cycle.startRawNs, cycle.discontinuity});
+		}
 		// Public ports only: inputs_ and outputs_ list the public ports before the inside ones.
 		for (std::size_t i = 0; i < publicInputs_; ++i) meters_[i].add(inputs_[i]);
 		for (std::size_t i = 0; i < publicOutputs_; ++i) meters_[publicInputs_ + i].add(outputs_[i]);
@@ -650,6 +681,8 @@ private:
 		AudioCode* code = nullptr;
 		const bool* faded = nullptr;
 		std::size_t fadedCount = 0;
+		const SinkBinding* sinks = nullptr; // a drive: the taps it binds
+		std::size_t sinkCount = 0;
 		std::uint64_t takenAt = 0; // a drive: where it took effect
 		bool cancelled = false;    // a fade-out: a later drive cancelled it
 	};
@@ -658,13 +691,17 @@ private:
 		Kind kind;
 		AudioCode* code;
 		std::span<const bool> mask;
+		std::span<const SinkBinding> sinks;
 		std::move_only_function<void(std::uint64_t)> driven;
 		std::move_only_function<void()> faded;
 	};
 	std::uint32_t fadeFrames_;
-	std::vector<std::uint8_t> fadeMask_; // per output; data loop only
-	Fade fade_ = Fade::none;             // data loop only
-	std::uint32_t fadeAt_ = 0;           // the fade's position, 0 (silent) to fadeFrames_ (full); data loop only
+	std::vector<std::uint8_t> fadeMask_;           // per output; data loop only
+	std::vector<SinkBinding> sinks_;               // the applied drive's taps, sized at make; data loop only
+	std::size_t sinkCount_ = 0;                    // how many of sinks_ are bound; data loop only
+	std::vector<std::span<const float>> tapSpans_; // one tap's bank, built per cycle; data loop only
+	Fade fade_ = Fade::none;                       // data loop only
+	std::uint32_t fadeAt_ = 0; // the fade's position, 0 (silent) to fadeFrames_ (full); data loop only
 	std::array<Request, kRing> ring_{};
 	std::atomic<std::uint64_t> published_{0}; // requests the main thread pushed into the ring
 	std::atomic<std::uint64_t> drained_{0};   // requests the data loop applied

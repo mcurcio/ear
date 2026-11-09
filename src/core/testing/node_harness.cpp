@@ -111,6 +111,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		~FakeBlock() override { harness.block = nullptr; }
 		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 			harness.driven = request.code;
+			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
 			std::ranges::fill(harness.fadeMask, false);
 			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
 				harness.fadeMask[i] = request.faded[i];
@@ -172,6 +173,65 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.companionList.push_back(std::move(fake));
 			harness.outsideEvents.push_back(&events);
 			return std::make_unique<FakeOutsideNode>(harness, harness.companionList.size() - 1);
+		}
+		Impl& harness;
+	};
+
+	/// A sink whose consumer runs on the test's thread (node-lifecycle-modules.md 3.8, L-4b): begin calls the consumer's
+	/// begin at once, then posts `begun`; the tap copies each chunk into its companion and hands it to the consumer at
+	/// once; close finishes a consumer that began, marks the companion destroyed and posts `closed(0)`.
+	struct FakeSink final : Sink, SinkTap {
+		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {}
+		SinkTap& tap() noexcept override { return *this; }
+		void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> begun) override {
+			consumer = std::move(c);
+			consumer->begin();
+			began = true;
+			harness.companionList.at(index).ready = true;
+			harness.executor.post(std::move(begun));
+		}
+		void close(std::move_only_function<void(std::uint64_t)> closed) override {
+			if (began) consumer->finish();
+			harness.companionList.at(index).destroyed = true;
+			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
+		}
+		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
+		           const ChunkStamp& stamp) noexcept override {
+			SeenChunk seen{std::vector<float>(static_cast<std::size_t>(frames) * channels, 0.0F), frames, stamp};
+			for (std::size_t channel = 0; channel < channels && channel < bank.size(); ++channel)
+				for (std::uint32_t frame = 0; frame < frames; ++frame)
+					seen.interleaved[frame * channels + channel] = bank[channel][frame];
+			if (began)
+				consumer->consume(Chunk{.interleaved = seen.interleaved,
+				                        .frames = frames,
+				                        .position = stamp.position,
+				                        .startNs = stamp.startNs,
+				                        .startRawNs = stamp.startRawNs,
+				                        .upstreamFrames = 0,
+				                        .discontinuity = stamp.discontinuity});
+			harness.companionList.at(index).chunks.push_back(std::move(seen));
+		}
+		Impl& harness;
+		std::size_t index;
+		std::size_t channels;
+		std::unique_ptr<SinkConsumer> consumer;
+		bool began = false;
+	};
+	struct FakeSinks final : SinkAdapter {
+		explicit FakeSinks(Impl& h) : harness(h) {}
+		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+		                           std::uint32_t capacityFrames) override {
+			CompanionFake fake{CompanionFake::Kind::sink,
+			                   std::string(bank),
+			                   node + "." + std::string(bank),
+			                   SinkShape{.frames = capacityFrames},
+			                   true,
+			                   false,
+			                   false,
+			                   {}};
+			harness.companionList.push_back(std::move(fake));
+			harness.outsideEvents.push_back(nullptr); // a sink has no outside events
+			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels);
 		}
 		Impl& harness;
 	};
@@ -305,9 +365,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
-		  handoffs(*this),
-		  registry(options.recordings != nullptr ? ResourceRegistry(cards, receivers, handoffs, *options.recordings)
-	                                             : ResourceRegistry(cards, receivers, handoffs)),
+		  handoffs(*this), sinks(*this),
+		  registry(options.recordings != nullptr
+	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, *options.recordings)
+	                   : ResourceRegistry(cards, receivers, handoffs, sinks)),
 		  graph(catalogue), host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
@@ -399,6 +460,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeOutside<SoundCardRequest> cards;
 	FakeOutside<RtpReceiverRequest> receivers;
 	FakeHandoffs handoffs;
+	FakeSinks sinks;
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -413,6 +475,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlock* block = nullptr;
 	PortBlockEvents* blockEvents = nullptr;
 	AudioCode* driven = nullptr;
+	std::vector<SinkBinding> bound; // the taps the last drive bound (none for a silence)
 	LatencyPlan plan;
 	std::deque<PendingRequest> pending;
 	std::vector<bool> fadeMask;
@@ -555,6 +618,15 @@ void NodeHarness::process(std::uint32_t frames) {
 				if (h.fadeMask[o]) h.lastGain[o] = 1.0F;
 		}
 	}
+	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
+	if (h.driven != nullptr)
+		for (const SinkBinding& binding : h.bound) {
+			std::vector<std::span<const float>> bank;
+			for (std::size_t c = 0; c < binding.channels && binding.firstOutput + c < out.size(); ++c)
+				bank.emplace_back(out[binding.firstOutput + c]);
+			binding.tap->write(bank, frames,
+			                   ChunkStamp{cycle.position, cycle.startNs, cycle.startRawNs, cycle.discontinuity});
+		}
 	h.position += frames;
 	h.firstCycle = false;
 	h.lastFrames = frames;

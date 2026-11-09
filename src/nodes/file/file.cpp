@@ -1,14 +1,15 @@
-// The "file" node type: inputs "record.left" and "record.right", recorded into a 32-bit float stereo WAV file at
-// the graph frequency (docs/design/m1-white-to-file.md section 2, ear/nodes/file.hpp; docs/design/node-framework.md
-// sections 7.1 to 7.3). Its start acquires the recording (opened beneath the recordings folder by the framework) and a
-// handoff; the realtime thread only hands frames to the handoff, whose own thread writes them with libsndfile, and the
-// file is complete (header finished) once the handoff has finished.
+// The "file" node type: inputs "record.left" and "record.right", recorded into a 32-bit float stereo WAV file at the
+// graph frequency (docs/design/m1-white-to-file.md section 2, ear/nodes/file.hpp; docs/design/node-lifecycle.md 7.4 and
+// docs/design/node-lifecycle-modules.md 4.5, step L-4b of slice 3a). Its configure opens the recording (beneath the
+// recordings folder, by the framework) and asks for a sink on its inside output bank `writer`; the framework's
+// pass-through copies `record` to `writer` on the realtime thread, the block's tap hands each cycle to the sink, and the
+// sink's own thread runs WavWriter: it opens the WAV in begin (the header written there, never on the main loop), writes
+// each chunk, and finishes the file once the node's configuration is torn down.
 #include <sndfile.h>
 
-#include <cstdint>
 #include <memory>
-#include <span>
 #include <string>
+#include <utility>
 
 #include "ear/nodes/file.hpp"
 #include "file_spec.hpp"
@@ -16,81 +17,62 @@
 namespace ear::nodes::file {
 namespace {
 
-/// Owns the open file (not its descriptor, the framework's recording). The handoff thread writes and finishes it; the
-/// destructor finishes it only if the handoff never did.
-class WavWriter final : public HandoffConsumer {
+/// The sink's consumer: opens the WAV on the sink's thread (D-L18), writes each chunk, finishes the header. Owns the
+/// open file, not its descriptor (the framework's recording, closed after the sink: I5 step 5).
+class WavWriter final : public SinkConsumer {
 public:
-	explicit WavWriter(SNDFILE* file) noexcept : file_(file) {}
+	WavWriter(int descriptor, std::string path, AudioFormat format, InsidesEvents& events)
+		: descriptor_(descriptor), path_(std::move(path)), format_(format), events_(events) {}
 	WavWriter(const WavWriter&) = delete;
 	WavWriter& operator=(const WavWriter&) = delete;
 	~WavWriter() override { close(); }
 
-	void consume(std::span<const float> interleaved, std::uint32_t frames) override {
-		sf_writef_float(file_, interleaved.data(), frames);
+	void begin() override {
+		SF_INFO info{};
+		info.samplerate = static_cast<int>(format_.rate);
+		info.channels = 2;
+		info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
+		file_ = sf_open_fd(descriptor_, SFM_WRITE, &info, SF_FALSE);
+		// Said before the sink posts `begun`, so the node fails start-failed before it is configured.
+		if (file_ == nullptr) events_.lost("cannot open " + path_ + ": " + sf_strerror(nullptr));
+	}
+
+	void consume(const Chunk& chunk) override {
+		if (file_ != nullptr) sf_writef_float(file_, chunk.interleaved.data(), chunk.frames);
 	}
 
 	void finish() override { close(); }
 
 private:
 	void close() noexcept {
-		if (file_ != nullptr) {
-			sf_close(file_);
-			file_ = nullptr;
-		}
+		if (file_ != nullptr) sf_close(file_);
+		file_ = nullptr;
 	}
 
-	SNDFILE* file_;
-};
-
-/// Passes left then right, in declaration order, to the handoff. Frames the ring refuses are dropped and counted by the
-/// framework.
-struct Recorder {
-	RtWriter* writer;
-	void process(Io<spec> io, const GraphCycle&) noexcept { writer->write(io[record], io.frames()); }
-};
-
-/// The run: the open file, the handoff's consumer. It outlives the handoff (the framework closes the handoff first).
-class FileRun final : public RunObject {
-public:
-	explicit FileRun(SNDFILE* file) noexcept : wav_(file) {}
-	HandoffConsumer& consumer() noexcept { return wav_; }
-
-private:
-	WavWriter wav_;
+	int descriptor_;
+	std::string path_;
+	AudioFormat format_;
+	InsidesEvents& events_; // the configuration's channel, which outlives the sink
+	SNDFILE* file_ = nullptr;
 };
 
 } // namespace
 
-StartResult File::start(StartContext& context, const Checked& s) {
+Configured File::configure(CreateOf<spec>& cx, const Checked& s) {
 	const std::string path = s.get<pathRow>();
-	const AudioFormat format = context.format();
 	// The framework creates or truncates the file beneath the recordings folder; libsndfile only writes to it.
-	const auto opened = context.acquire(RecordingRequest{path});
-	if (!opened)
-		return std::unexpected(
-			FailureReason{FailureReason::Code::startFailed, "cannot open " + path + ": " + opened.error()});
-	SF_INFO info{};
-	info.samplerate = static_cast<int>(format.rate);
-	info.channels = static_cast<int>(channelCount);
-	info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
-	SNDFILE* file = sf_open_fd(*opened, SFM_WRITE, &info, SF_FALSE);
-	if (file == nullptr)
-		return std::unexpected(
-			FailureReason{FailureReason::Code::startFailed, "cannot open " + path + ": " + sf_strerror(nullptr)});
-	auto run = std::make_unique<FileRun>(file);
-	RtWriter& writer =
-		context.acquire(HandoffRequest{std::string(record.name), ringSeconds * format.rate, &run->consumer()});
-	return {Recorder{&writer},
-	        [run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
-				return std::move(run);
-			}};
+	const auto descriptor = cx.openRecording(RecordingRequest{path}); // 3a interim: synchronous
+	if (!descriptor) return Configured::failed("cannot open " + path + ": " + descriptor.error());
+	cx.sink(writer, SinkShape{.frames = ringSeconds * cx.format().rate})
+		.consumedBy(std::make_unique<WavWriter>(*descriptor, path, cx.format(), node_.handle()));
+	cx.use(passThrough({bankPair(record, writer)}));
+	return Configured::applied();
 }
 
 } // namespace ear::nodes::file
 
 namespace ear::nodes {
 
-// On the legacy path (a static start, through the legacy adapter) until step L-4b moves it onto the interim sink.
-std::unique_ptr<const NodeType> makeFileNodeType() { return makeLegacyNodeType<file::spec, file::File>(); }
+std::unique_ptr<const NodeType> makeFileNodeType() { return makeNodeType<file::spec, file::File>(); }
 
 } // namespace ear::nodes

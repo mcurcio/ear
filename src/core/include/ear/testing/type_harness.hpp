@@ -9,6 +9,7 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 #include "ear/core/lifecycle.hpp"
 #include "ear/testing/node_harness.hpp"
 namespace ear::testing {
@@ -36,6 +37,13 @@ public:
 	void enable() { node_->enable(); }
 	void remove() { node_->remove(); }
 	std::string_view phase() const { return node_->phase(); }
+	NodeHealth health() const { return node_->health(); }
+	bool gone() const noexcept { return node_->gone(); }
+	std::uint64_t droppedFrames() const { return node_->droppedFrames(); }
+	std::size_t unwritten() const { return node_->unwritten(); }
+	const std::vector<CompanionFake>& companions() const noexcept { return node_->companions(); }
+	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }
+	const std::vector<RecordingRequest>& recordingRequests() const noexcept { return node_->recordingRequests(); }
 
 	template <class Bank> void ready(Bank) {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
