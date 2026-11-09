@@ -306,7 +306,11 @@ loops and I/O executor would otherwise add callbacks outside it.
 What 4.3 declared that could not work as declared, and the least change made (the built boundary is
 `docs/architecture.md#the-callback-boundary`; R4b and R4c build on it as it is):
 
-- **26 registrations, not 21.** Section 4.1's count missed the node and link info listeners
+- **28 registrations, not 21.** Section 4.1's count missed the engine log (`pw_log_set` of a `spa_log_methods` table,
+  and alsa-lib's error handler by `snd_lib_error_set_handler`), called on any thread, the data loop among them, with C
+  varargs no trampoline forwards: they are `realtimeFunction<>` values (the function itself `noexcept`) registered by
+  `installLog<LogCallbacks{...}>` and `setAlsaErrorHandler`, so the boundary has no exception. It also missed the node
+  and link info listeners
   (`pw_proxy_add_object_listener`: `sound_cards.cpp:77`, `rtp_receivers.cpp:177`, `link_proxy.hpp:32`), which
   `_add_listener(` does not match, and `engine.cpp`'s two data-loop invokes (`pw_data_loop_invoke`, the denormal flush
   and the scheduling read). So `listen` has `NodeCallbacks` and `LinkCallbacks` too, both invokes are `realtime<>`, and
@@ -317,26 +321,34 @@ What 4.3 declared that could not work as declared, and the least change made (th
   "MainLoopActivity's node when a scope is open" was always empty for a throw out of NodeHost, and NodeHost rethrows the
   first exception of a drain or flush after the scope it was thrown in has ended. The second parameter is `where`
   (MainLoopActivity's "<call> <node>"): a scope a throw ends keeps its place (`takeThrown`, the innermost scope's;
-  `forgetThrown` when a scope or a main-loop callback begins), NodeHost keeps the place with the exception it rethrows
+  `forgetThrown` when a scope begins or returns or a main-loop callback begins, but never while an exception unwinds,
+  so a callback a destructor makes during the unwinding keeps the place), NodeHost keeps the place with the exception it rethrows
   (`KeptThrow`) and puts it back as it rethrows (`putThrown`), and a callback made inside an open call is placed in that
   call. Off the main thread `where` is empty.
 - **`Faults` is public, the boundary private.** `main.cpp` provides `Faults` but cannot see a private header: `Faults`
   (and `faultLine`, the one wording of the crash's line) is `ear/pipewire/faults.hpp`; `FaultOwner` stays in
   `callback_boundary.hpp`, and its `faulted` takes the detail as `std::string_view`. The engine holds it as
   `EngineSettings::faults`; since a trampoline has only its object's pointer, the boundary keeps the installed one
-  process-wide (one engine per process), and with none it writes the line to standard error and ends the process.
-- **The crash's line goes to the real standard error.** Written to descriptor 2 it would go through the capture's pipe,
-  whose thread could take it and lose it as the process dies; `DescriptorCapture::realError()` was added, and
-  `main.cpp`'s `Faults` writes the line there before `std::terminate()`.
+  process-wide, and `Engine::create` fails while another engine holds it (a second would take the first's reports, or
+  remove them as it went); with none installed it writes the line to standard error and ends the process.
+- **The crash's line goes to the real standard error, in order.** Written to descriptor 2 it would go through the
+  capture's pipe, whose thread could take it and lose it as the process dies; `DescriptorCapture::lastWords(line)`
+  writes out what is queued and what the pipes hold, then the line whole on the real standard error, and `main.cpp`'s
+  `Faults` calls it before `std::terminate()`.
 - **The registration functions** are one template each, constrained to a `Guarded` or `Realtime` of the right signature
   with the object typed as the member's class, rather than an overload per kind; `listen` takes its table as a template
   argument (`listen<FilterCallbacks<C>{.stateChanged = guarded<...>, .process = realtime<...>}>(filter, hook, self)`),
   so each PipeWire table is a constant, and a filter's `process` entry takes only `realtime<>`, every other entry only
-  `guarded<>`. An invoke's member takes nothing and returns `int` or nothing. A `Guarded` holds nothing but its member,
+  `guarded<>`. The loop's kind is a type: event, timer and signal sources and an invoke on a `pw_loop` take only
+  `guarded<>`, and an invoke on the data loop takes a `DataLoop` and only `realtime<>`. An invoke's member takes nothing and returns `int` or nothing. A `Guarded` holds nothing but its member,
   so any one is the boundary's own; what cannot compile is handing a registration anything else. The executor's items
   run through `shield(callback, work)`, the boundary's catch for work that is not a callback of its own.
-- **The guard skips `tests/` folders** as well as `callback_boundary.*`: `src/pipewire/tests` drives PipeWire directly
-  (the spikes, probes and waits).
+- **The guard skips `tests/` folders** as well as exactly `pipewire/callback_boundary.hpp` and `.cpp`:
+  `src/pipewire/tests` drives PipeWire directly (the spikes, probes and waits). Its spellings are every way to hand a
+  library a callback, not only 4.2's four: also `spa_loop_add_source`, `pw_loop_locked`, `spa_loop_locked`,
+  `pw_work_queue_add`, `spa_hook_list_append`, `pw_stream_new_simple`, `pw_filter_new_simple`, `SPA_INTERFACE_INIT`,
+  `SPA_CALLBACKS_INIT`, `spa_callbacks`, any `spa_*_methods` or `pw_*_methods` table, `pw_log_set`,
+  `snd_lib_error_set_handler`, and a listener whose parenthesis is on the next line.
 
 ## 5. Class 3: tests that depend on the host
 

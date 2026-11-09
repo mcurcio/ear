@@ -14,6 +14,7 @@
 namespace ear::pipewire::boundary {
 namespace {
 
+std::atomic<bool> engaged{false}; // an engine (or a test) holds the boundary
 std::atomic<Faults*> installed{nullptr};
 std::atomic<std::thread::id> mainThread{};
 
@@ -45,18 +46,23 @@ std::string detailOfCaught() {
 
 } // namespace
 
-void install(Faults* faults) noexcept {
+bool install(Faults* faults) noexcept {
+	if (engaged.exchange(true, std::memory_order_acq_rel)) return false;
 	mainThread.store(std::this_thread::get_id(), std::memory_order_release);
 	installed.store(faults, std::memory_order_release);
+	return true;
 }
 
 void uninstall() noexcept {
 	installed.store(nullptr, std::memory_order_release);
 	mainThread.store(std::thread::id{}, std::memory_order_release);
+	engaged.store(false, std::memory_order_release);
 }
 
 void entered() noexcept {
-	if (onMainThread()) MainLoopActivity::forgetThrown();
+	// A callback made while an exception unwinds (pw_filter_destroy, in a destructor, telling a state change) must not
+	// forget the place that exception is carrying.
+	if (std::uncaught_exceptions() == 0 && onMainThread()) MainLoopActivity::forgetThrown();
 }
 
 void report(std::string_view callback, FaultOwner* owner) noexcept {

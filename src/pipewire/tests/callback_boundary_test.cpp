@@ -56,7 +56,9 @@ public:
 /// Installs `faults` for one test made without an engine, and takes it away after.
 class Installed {
 public:
-	explicit Installed(Faults& faults) { boundary::install(&faults); }
+	explicit Installed(Faults& faults) {
+		if (!boundary::install(&faults)) FAIL("the boundary is held: an engine or another test did not let go");
+	}
 	~Installed() { boundary::uninstall(); }
 	Installed(const Installed&) = delete;
 	Installed& operator=(const Installed&) = delete;
@@ -77,6 +79,12 @@ struct Thrower {
 		throw std::runtime_error("configure threw");
 	}
 	int ran = 0;
+};
+
+/// A destructor that PipeWire calls back from (as pw_filter_destroy tells a state change), run by an unwinding.
+struct CallsBackWhenDestroyed {
+	~CallsBackWhenDestroyed() { Guarded<&Thrower::onEvent>::call(&thrower, 1); }
+	Thrower thrower;
 };
 
 class OwnedThrower final : public FaultOwner {
@@ -200,6 +208,36 @@ TEST_CASE("A rethrown exception keeps the place it was first thrown from", "[bou
 		REQUIRE(place);
 		CHECK(MainLoopActivity::describe(*place) == "recipe attic");
 	}
+}
+
+TEST_CASE("A callback made while an exception unwinds leaves the place that exception carries", "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	MainLoopActivity::clear();
+	try {
+		const CallsBackWhenDestroyed destroyed;
+		const MainLoopActivity::Scope scope("destroy block", "hall");
+		throw std::runtime_error("destroy threw");
+	} catch (const std::runtime_error&) {
+		const auto at = MainLoopActivity::takeThrown();
+		REQUIRE(at);
+		CHECK(MainLoopActivity::describe(*at) == "destroy block hall");
+	}
+	CHECK(faults.reports.empty());
+}
+
+TEST_CASE("A second holder of the boundary is refused while one holds it", "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	RecordingFaults other;
+	CHECK_FALSE(boundary::install(&other));
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, 48000, 256, &other});
+	REQUIRE_FALSE(engine);
+	CHECK(engine.error().detail == "another engine is running in this process: ear runs one at a time");
+	Thrower thrower;
+	Guarded<&Thrower::onEvent>::call(&thrower, 0); // still reported to the first holder's
+	CHECK(faults.reports.size() == 1);
+	CHECK(other.reports.empty());
 }
 
 TEST_CASE("A FaultOwner's callback that throws is reported, then the owner is told", "[boundary]") {

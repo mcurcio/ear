@@ -541,14 +541,18 @@ Nothing like WirePlumber runs. Two things make that work:
   inline. Work left when the executor goes is destroyed unrun. `pw_loop_invoke` would do the
   same crossing, but the queue owns each function (no leak at stop) and never reports full. Each
   item runs through the callback boundary on its own, so one that throws drops none behind it.
-- **Every callback goes through the boundary.** A new event source, timer, signal, invoke or
-  listener in `src/pipewire/` is registered with `addEvent`, `addTimer`, `addSignal`, `invoke` or
-  `listen` from `callback_boundary.hpp`, on a member function wrapped as `guarded<&C::m>` (caught
-  and reported to the engine's `Faults`, today ending the process with a line naming the callback)
-  or, on the data loop, `realtime<&C::m>` (the member `noexcept`, nothing added). A raw function
-  pointer does not compile, and `ear_callbacks_through_the_boundary` fails on any raw
-  `pw_loop_add_*`, `pw_loop_invoke`, `pw_data_loop_invoke` or `*_add_listener` outside the
-  boundary and tests. A listener table PipeWire has that the boundary lacks (say `pw_stream_events`)
+- **Every callback goes through the boundary.** A new event source, timer, signal, invoke,
+  listener, log method or handler in `src/pipewire/` is registered with `addEvent`, `addTimer`,
+  `addSignal`, `invoke`, `listen`, `installLog` or `setAlsaErrorHandler` from
+  `callback_boundary.hpp`: a member function wrapped as `guarded<&C::m>` (caught and reported to the
+  engine's `Faults`, today ending the process with a line naming the callback) on any loop but the
+  data loop; `realtime<&C::m>` (the member `noexcept`, nothing added) on the data loop, invoked
+  through a `DataLoop`, which takes nothing else; a `noexcept` C function as `realtimeFunction<&f>`
+  for the log and alsa-lib. A raw function pointer, or the wrong kind for the loop, does not
+  compile, and `ear_callbacks_through_the_boundary` fails on any raw `pw_loop_add_*`,
+  `pw_loop_invoke`, `*_add_listener`, `pw_log_set`, interface table and the rest it lists outside
+  the boundary's two files and tests. One engine holds the boundary at a time: a second
+  `Engine::create` fails while another lives. A listener table PipeWire has that the boundary lacks (say `pw_stream_events`)
   is added there as one more `*Callbacks` table and `listen` overload
   (`docs/architecture.md#the-callback-boundary`).
 - **Threads started later inherit the signal mask.** The control port's thread is started after

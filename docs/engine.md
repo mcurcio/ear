@@ -28,10 +28,10 @@ changing this code.
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
 | RTP receivers | `rtp_receivers.cpp` | `libpipewire-module-rtp-source`, one per `rtp` node |
 | Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (interim sinks) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
-| The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)) |
+| The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)), both `noexcept` and registered through the callback boundary as realtime functions |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
-| The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C callback ear gives PipeWire: `guarded<>` (caught, reported to the engine's `Faults`) or, on the data loop, `realtime<>` ([architecture.md](architecture.md#the-callback-boundary)) |
+| The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C function ear gives PipeWire or alsa-lib, with no exception: `guarded<>` (caught, reported to the engine's `Faults`), `realtime<>` on the data loop (a `DataLoop` takes nothing else), `realtimeFunction<>` for the log and alsa-lib's handler ([architecture.md](architecture.md#the-callback-boundary)) |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's name |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's
@@ -574,8 +574,9 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
 
 **Data-loop callbacks never throw.** A filter's `process` and every invoke that runs on the data loop
 (a block's requests and its blocking flush, the denormal flush, the scheduling read) are registered
-through the callback boundary as `realtime<>`, whose member must be `noexcept`, and nothing is added
-around them: nothing on the data loop catches, allocates or formats (the scheduling read takes the
+through the callback boundary as `realtime<>` on a `DataLoop`, which takes nothing else, whose member
+must be `noexcept`, and nothing is added around them; so are the engine log's methods and alsa-lib's
+error handler, which may run there too (`realtimeFunction<>`): nothing on the data loop catches, allocates or formats (the scheduling read takes the
 policy and priority there and says them on the caller's thread). A throw there is `std::terminate`
 ([architecture.md](architecture.md#the-callback-boundary)).
 
@@ -635,9 +636,9 @@ gone (`module-link-factory.c` 1.0.5:263-277,365-400). ear never destroys a proxy
   never drops the items behind it.
 - **An exception through a C callback** unwinds through PipeWire's C frames, which is
   `std::terminate` with no word of where. Every callback is registered through the callback
-  boundary instead (`addEvent`, `addTimer`, `addSignal`, `invoke`, `listen`), never with
-  `pw_loop_add_*`, `pw_loop_invoke` or an `*_add_listener` of its own; a CTest test refuses those
-  outside the boundary ([architecture.md](architecture.md#the-callback-boundary)).
+  boundary instead (`addEvent`, `addTimer`, `addSignal`, `invoke`, `listen`, `installLog`,
+  `setAlsaErrorHandler`), never with `pw_loop_add_*`, `pw_loop_invoke`, an `*_add_listener`,
+  `pw_log_set` or an interface table of its own; a CTest test refuses those outside the boundary ([architecture.md](architecture.md#the-callback-boundary)).
 - **A user node named like another engine node** (only `Dummy-Driver` today) gets engine-companion links
   that fail, since the block side of those links is matched by name.
 

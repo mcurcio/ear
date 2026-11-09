@@ -166,7 +166,7 @@ public:
 			spa_hook_remove(&listener_);
 			pw_filter_destroy(filter_);
 		}
-		if (postedLoop_ != nullptr && invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) {
+		if (postedLoop_ && invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) {
 			invoke(postedLoop_, realtime<&FilterPortBlock::onNothing>, this, true);
 		}
 		if (completion_ != nullptr) pw_loop_destroy_source(loop_, completion_);
@@ -447,8 +447,8 @@ private:
 		if (invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) return; // its completion pumps again
 		if (drained_.load(std::memory_order_acquire) == pushed_ && !kick_) return;
 		kick_ = false;
-		pw_loop* dataLoop = filter_ != nullptr ? pw_filter_get_data_loop(filter_) : nullptr;
-		if (dataLoop == nullptr) {
+		const DataLoop dataLoop = filter_ != nullptr ? DataLoop::of(filter_) : DataLoop();
+		if (!dataLoop) {
 			// Nothing processes: applied here, and still completed by signal.
 			apply();
 			pw_loop_signal_event(loop_, completion_);
@@ -768,7 +768,7 @@ private:
 	std::uint64_t pushed_ = 0;
 	std::uint64_t finished_ = 0;
 	std::uint64_t invokesPosted_ = 0;
-	pw_loop* postedLoop_ = nullptr;
+	DataLoop postedLoop_; // the loop the last invoke was posted to: the block's data loop
 	bool kick_ = false;
 	std::uint32_t blockId_ = SPA_ID_INVALID;
 	spa_source* completion_ = nullptr;

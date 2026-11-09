@@ -155,21 +155,21 @@ private:
 };
 
 /// Where the engine's callback boundary reports a caught exception (docs/architecture.md#the-callback-boundary): today,
-/// as before the boundary, the process ends. The line naming the callback and where the main loop was goes straight
-/// to the real standard error (never through the capture's pipe, whose thread could take it and lose it as the process
-/// dies); then std::terminate writes out what is queued and its own message, naming what was thrown.
+/// as before the boundary, the process ends. The capture writes out what is queued and what its pipes hold, then the
+/// line naming the callback and where the main loop was, straight to the real standard error (never through a pipe
+/// whose thread could take it and lose it as the process dies); then std::terminate adds its own message, naming what
+/// was thrown.
 class EndOnFault final : public ear::pipewire::Faults {
 public:
-	explicit EndOnFault(int realError) : realError_(realError) {}
+	explicit EndOnFault(ear::output::DescriptorCapture& capture) : capture_(capture) {}
 	void caught(std::string_view callback, std::string_view where, std::string_view detail,
 	            bool /*owned*/) noexcept override {
-		const std::string line = ear::pipewire::faultLine(callback, where, detail);
-		static_cast<void>(::write(realError_, line.data(), line.size()));
+		capture_.lastWords(ear::pipewire::faultLine(callback, where, detail));
 		std::terminate();
 	}
 
 private:
-	int realError_;
+	ear::output::DescriptorCapture& capture_;
 };
 
 } // namespace
@@ -276,7 +276,7 @@ int main(int argc, char** argv) {
 
 	// Declaration order is boot order; destruction runs the other way: port, gateway, keeper, core,
 	// adapters, control thread, main-loop executor, engine.
-	EndOnFault faults(capture->realError());
+	EndOnFault faults(*capture);
 	auto created =
 		ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock, &faults});
 	if (!created) {

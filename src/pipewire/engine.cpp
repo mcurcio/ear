@@ -120,7 +120,7 @@ struct DenormalsFlush {
 bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 	DenormalsFlush flush{.caller = pthread_self()};
 	for (int attempt = 0; attempt < 5000 && !flush.done.load(std::memory_order_acquire); ++attempt) {
-		if (invoke(pw_data_loop_get_loop(dataLoop), realtime<&DenormalsFlush::flush>, &flush, true) < 0) return false;
+		if (invoke(DataLoop(dataLoop), realtime<&DenormalsFlush::flush>, &flush, true) < 0) return false;
 		if (!flush.done.load(std::memory_order_acquire)) {
 			const timespec pause{0, 1'000'000};
 			nanosleep(&pause, nullptr);
@@ -152,6 +152,7 @@ pw_properties* contextProperties(const EngineSettings& settings) {
 } // namespace
 
 struct Engine::Impl {
+	bool boundaryInstalled = false;
 	sigset_t previousMask{};
 	bool initialised = false;
 	pw_main_loop* loop = nullptr;
@@ -173,7 +174,7 @@ struct Engine::Impl {
 			pw_deinit();
 			pthread_sigmask(SIG_SETMASK, &previousMask, nullptr);
 		}
-		boundary::uninstall(); // last: the teardown above may still call back
+		if (boundaryInstalled) boundary::uninstall(); // last: the teardown above may still call back
 	}
 
 	void onSignal(int /*signalNumber*/) {
@@ -182,9 +183,14 @@ struct Engine::Impl {
 };
 
 std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineSettings& settings) {
-	// First: every callback from here on reports to the engine's Faults, and this is the main loop's thread.
-	boundary::install(settings.faults);
+	// First: every callback from here on reports to the engine's Faults, and this is the main loop's thread. One engine
+	// at a time: a trampoline carries only its object, so the Faults it reports to is the process's, and a second
+	// engine would take the first's (docs/architecture.md#the-callback-boundary).
 	auto impl = std::make_unique<Impl>();
+	if (!boundary::install(settings.faults)) {
+		return std::unexpected(EngineError{"another engine is running in this process: ear runs one at a time"});
+	}
+	impl->boundaryInstalled = true;
 	// The engine starts its data-loop thread in pw_context_new, and a stop signal sent to the
 	// process goes to any thread that does not block it, where its default action ends the
 	// process. So the stop signals are blocked here, before any engine thread exists, and every
@@ -250,7 +256,7 @@ void Engine::onStopSignal(std::function<void()> handler) {
 Scheduling Engine::dataThreadScheduling() const {
 	SchedulingRead read;
 	pw_data_loop* dataLoop = pw_context_get_data_loop(impl_->context);
-	if (dataLoop != nullptr) invoke(pw_data_loop_get_loop(dataLoop), realtime<&SchedulingRead::read>, &read, true);
+	if (dataLoop != nullptr) invoke(DataLoop(dataLoop), realtime<&SchedulingRead::read>, &read, true);
 	return read.scheduling();
 }
 

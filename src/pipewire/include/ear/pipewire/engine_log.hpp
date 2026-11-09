@@ -9,8 +9,8 @@
 namespace ear::pipewire {
 class EngineLog {
 public:
-	/// Makes ear's log PipeWire's (pw_log_set) and alsa-lib's (snd_lib_error_set_handler, reached by name in
-	/// libasound.so.2, which the image carries without its headers): before Engine::create, whose pw_init keeps a log
+	/// Makes ear's log PipeWire's process-wide log and alsa-lib's error handler (reached by name in libasound.so.2,
+	/// which the image carries without its headers), both through the callback boundary: before Engine::create, whose pw_init keeps a log
 	/// already set; again before each engine, since PipeWire's teardown may put its own back. Main thread. The log
 	/// lives as long as the process.
 	static EngineLog& install();

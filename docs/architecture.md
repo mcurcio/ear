@@ -94,11 +94,12 @@ that thread.
 
 ## The callback boundary
 
-PipeWire calls ear through C function pointers: loop events and timers, the stop signals, invokes,
-and the listeners of filters, proxies, nodes, links, the registry, the core and modules. An
-exception that reached one would unwind through C frames, which is `std::terminate` with no word of
-where. So every callback ear gives PipeWire is registered through one boundary,
-`src/pipewire/callback_boundary.hpp` (private to `ear_pipewire`):
+PipeWire and alsa-lib call ear through C function pointers: loop events and timers, the stop
+signals, invokes, the listeners of filters, proxies, nodes, links, the registry, the core and
+modules, PipeWire's log and alsa-lib's error handler. An exception that reached one would unwind
+through C frames, which is `std::terminate` with no word of where. So every C function ear hands
+either library is registered through one boundary, `src/pipewire/callback_boundary.hpp` (private
+to `ear_pipewire`), with no exception:
 
 - **`guarded<&Class::member>`** is a `noexcept` trampoline that calls the member and catches. What
   it caught goes to the `Faults` the engine was made with (`ear/pipewire/faults.hpp`,
@@ -109,36 +110,60 @@ where. So every callback ear gives PipeWire is registered through one boundary,
   invoke and its blocking flush, and the engine's denormal and scheduling invokes. The member must
   be `noexcept` and nothing is added around it: realtime code never throws, and a throw there is
   `std::terminate` ([engine.md](engine.md#the-one-data-loop-and-invokes)).
-- **Registering** is only through `addEvent`, `addTimer`, `addSignal`, `invoke` and one `listen`
-  per events table (`FilterCallbacks`, `ProxyCallbacks`, `NodeCallbacks`, `LinkCallbacks`,
-  `RegistryCallbacks`, `CoreCallbacks`, `ModuleCallbacks`), which take only those trampolines: a
-  raw function pointer does not compile, a filter's `process` entry takes only `realtime<>` and its
-  others only `guarded<>`, and the object handed over must be of the member's class
-  (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case). The CTest
-  test `ear_callbacks_through_the_boundary` (`test/pipewire/callback_guard.cmake`) fails on any
-  file under `src/` that calls one of PipeWire's registrations itself (`pw_loop_add_*`,
-  `pw_loop_invoke`, `pw_data_loop_invoke`, `spa_loop_invoke`, `spa_loop_utils_add_*`,
-  `*_add_listener`, `*_add_object_listener`), except the boundary's own files and tests, which
-  drive PipeWire directly; the guard is tested on each spelling it refuses and on look-alikes.
+- **`realtimeFunction<&function>`** is for the plain C functions a library calls on any thread, the
+  data loop among them, with C varargs no trampoline can forward: the engine log's methods
+  (`installLog<LogCallbacks{...}>`, PipeWire's process-wide log) and alsa-lib's error handler
+  (`setAlsaErrorHandler`). The function must be `noexcept`; nothing is added.
+- **Registering** is only through `addEvent`, `addTimer`, `addSignal`, `invoke`, one `listen` per
+  events table (`FilterCallbacks`, `ProxyCallbacks`, `NodeCallbacks`, `LinkCallbacks`,
+  `RegistryCallbacks`, `CoreCallbacks`, `ModuleCallbacks`), `installLog` and `setAlsaErrorHandler`,
+  which take only those values, and the loop's kind is a type rule: event, timer and signal sources
+  (on loops that may run anything: the main loop, a sink's or handoff's thread loop) and an invoke
+  on any `pw_loop` take only `guarded<>`; an invoke on the data loop takes a `DataLoop` (made from
+  the context's `pw_data_loop` or a filter's) and only `realtime<>`; a filter's `process` entry
+  takes only `realtime<>` and every other table entry only `guarded<>`. A raw function pointer, a
+  method that can throw, or an object of another class than the member's does not compile
+  (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case).
+- **The guard.** The CTest test `ear_callbacks_through_the_boundary`
+  (`test/pipewire/callback_guard.cmake`) fails on any file under `src/` that names a way to hand a
+  library a callback itself: a loop source, invoke or locked call (`pw_loop_add_*`,
+  `spa_loop_add_source`, `spa_loop_utils_add_*`, `pw_loop_invoke`, `pw_data_loop_invoke`,
+  `spa_loop_invoke`, `pw_loop_locked`, `spa_loop_locked`, `pw_work_queue_add`), a listener (any
+  `*_add_listener` or `*_add_object_listener`, its parenthesis on the same line or not, or
+  `spa_hook_list_append`), a stream or filter made with its events (`pw_stream_new_simple`,
+  `pw_filter_new_simple`), an interface implemented (`SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT`,
+  `spa_callbacks`, a `spa_*_methods` or `pw_*_methods` table), `pw_log_set` or
+  `snd_lib_error_set_handler`. Exempt are exactly `pipewire/callback_boundary.hpp` and `.cpp` and
+  tests, which drive PipeWire directly. The guard is tested on each spelling it refuses, on
+  look-alikes, on a file merely named like the boundary, and on having nothing to check.
 - **The main-loop executor** runs each posted item through the boundary on its own (named
   `MainLoopExecutor's posted work`), and each of its timers is a guarded callback
   (`LoopTimer::onTimeout`), so an item that throws is reported as itself and never drops the items
   posted behind it.
+- **One engine at a time.** A trampoline carries only its object's pointer, so the `Faults` it
+  reports to is the process's: `Engine::create` installs its engine's and fails (`another engine is
+  running in this process`) while another engine holds the boundary, rather than let a second
+  engine take the first's reports or remove them when it goes.
 
 **Where it was thrown.** A fault caught on the main thread names what the main loop was in:
 `MainLoopActivity`'s call and node (`configure hall`). Every scope has unwound by the time the
 boundary catches, so a scope that a throw ends keeps its place (the innermost one's) for the
-boundary to take, and a scope that begins, or a main-loop callback that begins, forgets a place
-left by a throw that was handled. NodeHost, which runs every queued input and flush item before it
-rethrows the first exception, keeps that exception's place and puts it back as it rethrows. A
-callback PipeWire makes inside an open call (a state change inside `destroy block`) is placed in
-that call. Off the main thread (a sink's or legacy handoff's thread) only the callback is named.
+boundary to take. A scope that begins or returns, and a main-loop callback that begins, forget a
+place left by a throw that was handled, but not while an exception is unwinding: a scope or a
+callback that a destructor runs during the unwinding (`pw_filter_destroy` telling a state change)
+leaves the place the exception carries. NodeHost, which runs every queued input and flush item
+before it rethrows the first exception, keeps that exception's place and puts it back as it
+rethrows. A callback PipeWire makes inside an open call (a state change inside `destroy block`) is
+placed in that call. Off the main thread (a sink's or legacy handoff's thread) only the callback
+is named.
 
 **What follows.** The process ends, as it did before the boundary, but saying where:
-`main.cpp`'s `Faults` writes `ear: internal error in <callback>[, during <where>]: <detail>`
-straight to the real standard error, then calls `std::terminate`, whose last words follow
-([output-records.md](output-records.md#how-output-is-written)). An engine made without a `Faults`
-(the tests') writes the same line to standard error and ends the same way. No record is added.
+`main.cpp`'s `Faults` has the capture write out what is queued and what its pipes hold, then
+`ear: internal error in <callback>[, during <where>]: <detail>` whole on the real standard error
+(`DescriptorCapture::lastWords`, never through a pipe), then calls `std::terminate`, whose own
+message follows ([output-records.md](output-records.md#how-output-is-written)). An engine made
+without a `Faults` (the tests') writes the same line to standard error and ends the same way. No
+record is added.
 
 ## How a change moves
 

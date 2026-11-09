@@ -11,3 +11,11 @@
 	std::size_t add_listener_count = 0;
 	reinvoke(loop);
 	listeners.push_back(&listener);
+	installLog<LogCallbacks{.log = realtimeFunction<&logPlain>}>(SPA_LOG_LEVEL_WARN);
+	setAlsaErrorHandler(realtimeFunction<&alsaError>);
+	invoke(DataLoop::of(filter_), realtime<&Thing::onRequests>, this, false);
+	pw_log_set_level(SPA_LOG_LEVEL_WARN);
+	filter_ = pw_filter_new(core, "ear", props);
+	spa_hook_list_clean(&listeners_);
+	pw_loop_invoked_count = 0;
+	std::size_t method_count = 0;

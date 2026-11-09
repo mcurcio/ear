@@ -52,16 +52,20 @@ public:
 
 	/// Sets on construction and, on destruction, gives back what was written before it (main thread), so an inner
 	/// scope ends naming the outer call again, and the outermost ends between calls. One ended by a throw keeps its
-	/// place for takeThrown unless an inner scope the same throw ended already did.
+	/// place for takeThrown unless an inner scope the same throw ended already did. A scope that begins, or ends by
+	/// returning, forgets a place kept before (that throw was handled), unless an exception is unwinding: a scope
+	/// opened and closed inside a destructor that the unwinding runs must leave the place the exception carries.
 	class Scope {
 	public:
 		Scope(std::string_view call, std::string_view node) noexcept
 			: previous_(save()), uncaught_(std::uncaught_exceptions()) {
-			forgetThrown();
+			if (uncaught_ == 0) forgetThrown();
 			set(call, node);
 		}
 		~Scope() {
-			if (std::uncaught_exceptions() > uncaught_) endedByThrow();
+			const int uncaught = std::uncaught_exceptions();
+			if (uncaught > uncaught_) endedByThrow();
+			else if (uncaught == 0) forgetThrown();
 			restore(previous_);
 		}
 		Scope(const Scope&) = delete;

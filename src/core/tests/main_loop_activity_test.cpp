@@ -105,3 +105,36 @@ TEST_CASE("A scope that begins forgets the place a handled throw left, and one t
 	CHECK(MainLoopActivity::describe(*at) == "recipe attic");
 	CHECK(MainLoopActivity::describe(MainLoopActivity::Saved{}).empty());
 }
+
+TEST_CASE("A scope that returns forgets the place a throw handled inside it left", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	{
+		const MainLoopActivity::Scope outer("release", "attic");
+		try {
+			const MainLoopActivity::Scope inner("close run", "attic");
+			throw std::runtime_error("close threw");
+		} catch (const std::runtime_error&) {
+		}
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+}
+
+namespace {
+/// A destructor that opens and closes a scope of its own, run by an exception's unwinding.
+struct ScopeInDestructor {
+	~ScopeInDestructor() { const MainLoopActivity::Scope scope("destroy block", "attic"); }
+};
+} // namespace
+
+TEST_CASE("A scope opened while an exception unwinds leaves the place that exception carries", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	try {
+		const ScopeInDestructor destroyed;
+		const MainLoopActivity::Scope scope("configure", "attic");
+		throw std::runtime_error("configure threw");
+	} catch (const std::runtime_error&) {
+		const auto at = MainLoopActivity::takeThrown();
+		REQUIRE(at);
+		CHECK(MainLoopActivity::describe(*at) == "configure attic");
+	}
+}

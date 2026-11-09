@@ -178,8 +178,9 @@ an engine that does not start, a folder watch it cannot arm, a control port it c
 - **A crash keeps its last words.** On `std::terminate`, SIGABRT, SIGSEGV, SIGBUS, SIGFPE or SIGILL,
   ear writes what is queued and what the pipes hold to the real descriptors and puts them back
   before the process dies, so abort's, terminate's and assert's messages reach `kubectl logs` as
-  plain text. An exception caught at the engine's callback boundary first writes one plain line
-  straight to the real standard error, `ear: internal error in <callback>[, during <where>]:
+  plain text. An exception caught at the engine's callback boundary first has what is queued and
+  what the pipes hold written out, then one plain line written whole straight to the real standard
+  error, just before terminate's own message: `ear: internal error in <callback>[, during <where>]:
   <detail>`, naming the callback that threw and what the main loop was in
   ([architecture.md](architecture.md#the-callback-boundary)); it is no record.
 - **At stop**, every record still queued is written before ear exits.

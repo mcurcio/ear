@@ -40,14 +40,17 @@ public:
 
 	/// The real standard output, for the encoder's writer alone; close-on-exec, owned by this object.
 	int realOutput() const noexcept { return realOutput_; }
-	/// The real standard error, for a crash's own last line written straight to it (no pipe, no thread between), as
-	/// the callback boundary's faults are (docs/architecture.md#the-callback-boundary); owned by this object.
-	int realError() const noexcept { return realError_; }
+	/// A dying process's own last line (the callback boundary's fault, docs/architecture.md#the-callback-boundary),
+	/// just before it calls std::terminate: writes out what onCrash's hook holds and what the pipes hold, as the crash
+	/// path does, then `line` whole on the real standard error, so the crash's last words stay in order and the line is
+	/// never left in a pipe a dying capture thread could take it from. Any thread; never throws.
+	void lastWords(std::string_view line) noexcept;
 	/// Before start: also waits on `descriptor` (not owned) and calls `onReady` on the capture thread whenever it is
 	/// readable, and once more as the capture stops. `onReady` must make it unreadable again (read its eventfd).
 	void watch(int descriptor, std::function<void()> onReady);
 	/// Before start: what std::terminate runs first on the crash path (write out the records still queued). It must not
-	/// wait without bound, since the dying thread may hold any lock.
+	/// wait without bound, since the dying thread may hold any lock, and it may run twice (lastWords, then terminate),
+	/// so a second run writes only what was queued since.
 	void onCrash(std::function<void()> hook);
 	/// The crash path's call of the onCrash hook; never throws. Not for other callers.
 	void beforeCrash() noexcept;

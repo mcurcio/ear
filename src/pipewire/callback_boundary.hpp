@@ -1,14 +1,16 @@
-// The engine's callback boundary (docs/architecture.md#the-callback-boundary): the one way ear gives PipeWire a C
-// callback. PipeWire calls ear through C function pointers, and an exception that reaches one unwinds through C frames,
-// which is std::terminate with no word of where. Here every callback is a member function wrapped in a trampoline:
+// The engine's callback boundary (docs/architecture.md#the-callback-boundary): the one way ear gives PipeWire or
+// alsa-lib a C function to call. An exception that reaches one unwinds through C frames, which is std::terminate with
+// no word of where. Here every callback is one of:
 //   - guarded<&Class::member>: noexcept, calls the member and catches; what it caught goes to the Faults the engine was
 //     made with (faults.hpp), naming the callback and where the main loop was, then to the object when its class is a
-//     FaultOwner;
+//     FaultOwner. For every loop but the data loop;
 //   - realtime<&Class::member>: for the data loop, whose code never throws (docs/engine.md#the-one-data-loop-and-invokes):
-//     the member must be noexcept, and nothing is added around it.
-// The registration functions below (addEvent, addTimer, addSignal, invoke, listen) take only those, so a raw function
-// pointer does not compile; the test ear_callbacks_through_the_boundary refuses any file under src/ but this one that
-// calls PipeWire's registrations itself. Private to ear_pipewire: its sources include it by this path.
+//     the member must be noexcept, and nothing is added around it;
+//   - realtimeFunction<&function>: a noexcept C function a library calls on any thread (the log, alsa-lib's handler).
+// The registration functions below (addEvent, addTimer, addSignal, invoke, listen, installLog, setAlsaErrorHandler)
+// take only those, of the kind their loop allows, so a raw function pointer or the wrong kind does not compile; the
+// test ear_callbacks_through_the_boundary refuses any file under src/ but this one's two and tests that hands a library
+// a callback itself. Private to ear_pipewire: its sources include it by this path.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -18,9 +20,14 @@
 #include <string_view>
 #include <type_traits>
 
+#include <dlfcn.h>
+
+#include <pipewire/data-loop.h>
 #include <pipewire/filter.h>
 #include <pipewire/impl-module.h>
+#include <pipewire/log.h>
 #include <pipewire/pipewire.h>
+#include <spa/support/log.h>
 
 #include "ear/pipewire/faults.hpp"
 
@@ -38,11 +45,14 @@ protected:
 namespace boundary {
 
 /// Main thread (Engine::create): where every caught exception is reported from now on; null reports to the boundary's
-/// own last words (a line on standard error, then std::terminate). The calling thread is the main loop's.
-void install(Faults* faults) noexcept;
-/// Main thread (~Engine): nothing installed.
+/// own last words (a line on standard error, then std::terminate). The calling thread is the main loop's. False, with
+/// nothing changed, while another holds the boundary: one engine at a time, since a trampoline carries only its object
+/// and so reports to the process's one Faults.
+bool install(Faults* faults) noexcept;
+/// Main thread (~Engine), by the one install() let in: nothing installed.
 void uninstall() noexcept;
-/// A callback begins: on the main thread, a throw's place left by a throw handled before it is forgotten.
+/// A callback begins: on the main thread and with no exception unwinding, a throw's place left by a throw handled
+/// before it is forgotten.
 void entered() noexcept;
 /// Inside a catch handler: the exception being handled, reported as thrown out of `callback`, then told to `owner`.
 void report(std::string_view callback, FaultOwner* owner) noexcept;
@@ -178,23 +188,23 @@ concept BoundaryCallback = (isGuarded<B> || isRealtime<B>) && std::same_as<typen
 
 /// One entry of an events table: the trampoline of a Guarded (or, for a data-loop entry, a Realtime) whose member
 /// belongs to C and has this signature. It holds nothing else, and nothing else converts to it.
-template <class C, class Signature, bool RealtimeOnly> class Slot;
-template <class C, class R, class... A, bool RealtimeOnly> class Slot<C, R(A...), RealtimeOnly> {
+template <class C, class Signature, bool RealtimeOnly> class CallbackSlot;
+template <class C, class R, class... A, bool RealtimeOnly> class CallbackSlot<C, R(A...), RealtimeOnly> {
 public:
 	using Function = R (*)(void*, A...);
-	constexpr Slot() = default;
+	constexpr CallbackSlot() = default;
 	template <auto Member>
 		requires(!RealtimeOnly && std::same_as<MemberClass<Member>, C> &&
 	             std::same_as<typename Guarded<Member>::Signature, R(A...)>)
-	constexpr Slot(Guarded<Member>) : function(Guarded<Member>::call) {}
+	constexpr CallbackSlot(Guarded<Member>) : function(Guarded<Member>::call) {}
 	template <auto Member>
 		requires(RealtimeOnly && std::same_as<MemberClass<Member>, C> &&
 	             std::same_as<typename Realtime<Member>::Signature, R(A...)>)
-	constexpr Slot(Realtime<Member>) : function(Realtime<Member>::call) {}
+	constexpr CallbackSlot(Realtime<Member>) : function(Realtime<Member>::call) {}
 	const Function function = nullptr; // public and const: a table is a template argument (a structural type)
 };
-template <class C, class Signature> using GuardedSlot = Slot<C, Signature, false>;
-template <class C, class Signature> using RealtimeSlot = Slot<C, Signature, true>;
+template <class C, class Signature> using GuardedSlot = CallbackSlot<C, Signature, false>;
+template <class C, class Signature> using RealtimeSlot = CallbackSlot<C, Signature, true>;
 
 // The events tables ear listens to, one per PipeWire events struct, with the entries ear uses. Each is a template
 // argument of listen(), so its PipeWire table is a constant of its own.
@@ -234,32 +244,55 @@ template <class C> struct LinkCallbacks {
 template <class T, template <class> class Table> inline constexpr bool isTable = false;
 template <class C, template <class> class Table> inline constexpr bool isTable<Table<C>, Table> = true;
 
-// The only registrations ear makes.
+/// The engine's one data loop, as a type of its own, so what runs on it is chosen by type: only a realtime<> callback
+/// is invoked on it. Made from the context's pw_data_loop, or from a filter (pw_filter_get_data_loop: the loop its
+/// process runs on, null when it has none).
+class DataLoop {
+public:
+	explicit DataLoop(pw_data_loop* loop) noexcept : loop_(loop != nullptr ? pw_data_loop_get_loop(loop) : nullptr) {}
+	static DataLoop of(pw_filter* filter) noexcept { return DataLoop(pw_filter_get_data_loop(filter)); }
+	constexpr DataLoop() = default;
+	pw_loop* loop() const noexcept { return loop_; }
+	explicit operator bool() const noexcept { return loop_ != nullptr; }
+	friend bool operator==(DataLoop, DataLoop) = default;
+
+private:
+	explicit DataLoop(pw_loop* loop) noexcept : loop_(loop) {}
+	pw_loop* loop_ = nullptr;
+};
+
+// The only registrations ear makes. Sources (events, timers, signals) live on loops that may run anything (the main
+// loop, a sink's or handoff's thread loop) and take only guarded<>; the data loop takes only realtime<>.
 
 /// An event source on `loop`: the member takes the count of signals since it last ran.
 template <class B>
-	requires BoundaryCallback<B, void(std::uint64_t)>
+	requires(isGuarded<B> && BoundaryCallback<B, void(std::uint64_t)>)
 spa_source* addEvent(pw_loop* loop, B /*callback*/, typename B::Class* self) {
 	return pw_loop_add_event(loop, B::call, self);
 }
 /// A timer source on `loop` (armed with pw_loop_update_timer): the member takes the expirations.
 template <class B>
-	requires BoundaryCallback<B, void(std::uint64_t)>
+	requires(isGuarded<B> && BoundaryCallback<B, void(std::uint64_t)>)
 spa_source* addTimer(pw_loop* loop, B /*callback*/, typename B::Class* self) {
 	return pw_loop_add_timer(loop, B::call, self);
 }
 /// A signal source on `loop`: the member takes the signal's number.
 template <class B>
-	requires BoundaryCallback<B, void(int)>
+	requires(isGuarded<B> && BoundaryCallback<B, void(int)>)
 spa_source* addSignal(pw_loop* loop, int signal, B /*callback*/, typename B::Class* self) {
 	return pw_loop_add_signal(loop, signal, B::call, self);
 }
-/// An invoke on `loop` (pw_loop_invoke: a data loop's through pw_data_loop_get_loop): the member takes nothing and
-/// returns int or nothing (0).
+/// An invoke on a loop that is not the data loop: guarded. The member takes nothing and returns int or nothing (0).
 template <class B>
-	requires(isGuarded<B> || isRealtime<B>)
+	requires isGuarded<B>
 int invoke(pw_loop* loop, B /*callback*/, typename B::Class* self, bool block) {
 	return pw_loop_invoke(loop, &B::invoked, 0, nullptr, 0, block, self);
+}
+/// An invoke on the data loop: realtime only. The member takes nothing and returns int or nothing (0).
+template <class B>
+	requires isRealtime<B>
+int invoke(DataLoop loop, B /*callback*/, typename B::Class* self, bool block) {
+	return pw_loop_invoke(loop.loop(), &B::invoked, 0, nullptr, 0, block, self);
 }
 
 /// A filter's events.
@@ -349,6 +382,74 @@ void listen(pw_impl_module* module, spa_hook& hook, typename decltype(Table)::Cl
 		return table;
 	}();
 	pw_impl_module_add_listener(module, &hook, &events, self);
+}
+
+// Plain C functions ear hands a library as an interface's methods or a handler: PipeWire's log and alsa-lib's error
+// handler, called on any thread, the data loop among them, with C varargs no trampoline can forward. They are
+// realtime: the function itself must be noexcept, and nothing is added.
+
+template <class T> inline constexpr bool isNoexceptFunction = false;
+template <class R, class... A> inline constexpr bool isNoexceptFunction<R (*)(A...) noexcept> = true;
+template <class R, class... A> inline constexpr bool isNoexceptFunction<R (*)(A..., ...) noexcept> = true;
+
+/// A noexcept function of ours, as a value only realtimeFunction<> makes.
+template <auto Function> class RealtimeFunction {
+	static_assert(isNoexceptFunction<decltype(Function)>,
+	              "a function a library calls on any thread must be noexcept: the data loop never throws");
+
+public:
+	static constexpr auto function = Function;
+};
+template <auto Function> inline constexpr RealtimeFunction<Function> realtimeFunction{};
+
+/// One entry of a methods table: a RealtimeFunction whose type is the entry's, noexcept.
+template <class Pointer> class FunctionSlot {
+public:
+	constexpr FunctionSlot() = default;
+	template <auto Function>
+		requires std::is_convertible_v<decltype(Function), Pointer>
+	constexpr FunctionSlot(RealtimeFunction<Function>) : function(Function) {}
+	const Pointer function = nullptr; // public and const: a table is a template argument (a structural type)
+};
+
+/// PipeWire's log interface (spa_log_methods), every method a realtime function.
+struct LogCallbacks {
+	FunctionSlot<decltype(spa_log_methods::log)> log{};
+	FunctionSlot<decltype(spa_log_methods::logv)> logv{};
+	FunctionSlot<decltype(spa_log_methods::logt)> logt{};
+	FunctionSlot<decltype(spa_log_methods::logtv)> logtv{};
+	FunctionSlot<decltype(spa_log_methods::topic_init)> topicInit{};
+};
+
+/// Makes the table PipeWire's process-wide log, at `level`: one spa_log per table, for the process's life.
+template <LogCallbacks Table> void installLog(spa_log_level level) {
+	static constexpr spa_log_methods methods = [] {
+		spa_log_methods table{};
+		table.version = SPA_VERSION_LOG_METHODS;
+		table.log = Table.log.function;
+		table.logv = Table.logv.function;
+		table.logt = Table.logt.function;
+		table.logtv = Table.logtv.function;
+		table.topic_init = Table.topicInit.function;
+		return table;
+	}();
+	static spa_log log{.iface = SPA_INTERFACE_INIT(SPA_TYPE_INTERFACE_Log, SPA_VERSION_LOG, &methods, nullptr),
+	                   .level = level};
+	pw_log_set(&log);
+}
+
+/// alsa-lib's error handler (snd_lib_error_handler_t).
+using AlsaErrorHandler = void (*)(const char* file, int line, const char* function, int error, const char* format, ...);
+
+/// Points alsa-lib's process-wide error handler at a realtime function. The image carries alsa-lib's run-time library
+/// only (the ALSA plugin links it), so it is reached by name, not linked; where it is missing there is no ALSA to log.
+template <auto Function>
+	requires std::is_convertible_v<decltype(Function), AlsaErrorHandler>
+void setAlsaErrorHandler(RealtimeFunction<Function> /*handler*/) {
+	using SetHandler = int (*)(AlsaErrorHandler);
+	static void* const library = ::dlopen("libasound.so.2", RTLD_NOW | RTLD_GLOBAL);
+	if (library == nullptr) return;
+	if (auto* set = reinterpret_cast<SetHandler>(::dlsym(library, "snd_lib_error_set_handler"))) set(Function);
 }
 
 /// Work the boundary runs that is not a callback of its own (each item the main-loop executor runs): called and
