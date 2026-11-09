@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -215,8 +217,9 @@ struct Rig {
 		CHECK(waiter.until([&] { return stopped.load(); }, 10s));
 	}
 
-	/// Connected and paired, then the server's clock has a play time for the ramp's first frame.
-	std::int64_t play(double seconds) {
+	/// Connected and paired, then the server has committed the ramp's first frames. Their play time is not taken from
+	/// here: a Judge reads each frame's from the chunk that carried it.
+	void play(double seconds) {
 		INFO("the node said:\n" << notes.all());
 		REQUIRE(waiter.until([&] { return notes.heard("connected "); }, 20s));
 		server.send("pair");
@@ -230,9 +233,7 @@ struct Rig {
 		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
 			WARN("the graph did not settle on the raw clock's rate within 20 s");
 		server.send("play " + std::to_string(seconds));
-		const auto start = server.waitForEvent("play-start ", 20s);
-		REQUIRE(start.has_value());
-		return std::stoll(start->substr(11));
+		REQUIRE(server.waitForEvent("play-start ", 20s).has_value());
 	}
 
 	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the last two seconds of cycles. The
@@ -375,10 +376,10 @@ struct Errors {
 };
 
 /// Reads cycles as they arrive and holds each ramp cycle's output time against the time filter's prediction, at that
-/// moment.
+/// moment, for the stamp the server sent its frames with.
 class Judge {
 public:
-	Judge(Rig& rig, std::int64_t playStartUs) : rig_(rig), playStartUs_(playStartUs) {}
+	explicit Judge(Rig& rig) : rig_(rig) {}
 
 	/// Every cycle not read yet.
 	void read() {
@@ -395,14 +396,19 @@ public:
 
 private:
 	void one(const Cycle& cycle) {
+		std::int64_t skipped = 0; // the frames the code skips in this cycle: the graph's forward jump (section 5(f2))
 		if (previous_ && cycle.position != previous_->position + previous_->frames) {
 			const auto gap = static_cast<std::int64_t>(cycle.position) -
 			                 static_cast<std::int64_t>(previous_->position + previous_->frames);
 			if (gap > 0 && gap <= kFeedFrames) {
 				++errors.skips;
 				lastSkipNs_ = cycle.startRawNs;
+				skipped = gap;
 			}
 		}
+		// The ramp ran dry in the last cycle: the feed held less than a skip took, and the library, told nothing played
+		// while it was dry, drops what it holds to catch up with its clock.
+		const bool afterDry = previous_ && previous_->got == 0 && lastIndex_.has_value();
 		if (previous_ && cycle.driverId != previous_->driverId) ++errors.driverChanges;
 		if (previous_ && cycle.position == previous_->position + previous_->frames) {
 			errors.contiguousFrames += previous_->frames;
@@ -413,20 +419,24 @@ private:
 			plusOneRun_ = 0;
 			return;
 		}
-		if (!cycle.ramp) ++errors.badCycles;
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
 		if (lastIndex_) {
 			const auto step = cycle.firstIndex - *lastIndex_;
 			// The library's dropped frame: frame n goes and n+1 is blended, so no ramp frame names n or n+1. Inside a cycle
 			// that is only a bad cycle; when the blend falls on the cycle's edge, the indices either side of it are 3 apart.
 			const bool blendOnEdge = step == 3 && !(cycle.ramp && lastCycleRamp_);
-			if (step != 1 && (step - 1) % kBlock != 0 && !blendOnEdge) errors.badSteps.push_back(step);
+			// A skip moves the ramp on by exactly the frames the graph jumped. A stalled data thread makes the internal
+			// clock jump by the time it lost, any number of frames (1127, 1156, 1189 seen on an idle host), not only
+			// whole cycles. Resuming after the ramp ran dry is the library's own catching up, right after a skip only.
+			const bool skip = skipped > 0 && step == 1 + skipped;
+			const bool caughtUp = afterDry && lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000;
+			if (step != 1 && !skip && !caughtUp && !blendOnEdge) errors.badSteps.push_back(step);
 			plusOneRun_ = step == 1 && cycle.ramp && cycle.got == cycle.frames ? plusOneRun_ + 1 : 0;
 		}
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
 
-		const std::int64_t rampUs = playStartUs_ + static_cast<std::int64_t>(cycle.firstIndex) * 1000000 / kRate;
+		const std::int64_t rampUs = sentUs(cycle.firstIndex);
 		// When the first of them is heard: at the block's port, plus what lies downstream of it (section 7).
 		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
 		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
@@ -437,13 +447,44 @@ private:
 		++errors.afterFirst3s;
 		if (lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000) return;
 		++errors.judged;
+		// Judged as the timing is: not within 1.5 s of a skip, where the internal clock resyncs (its position jumps and
+		// its loop starts again from CLOCK_MONOTONIC's rate) and the library interpolates frames to follow it.
+		if (!cycle.ramp) ++errors.badCycles;
 		if (std::abs(errorUs) < 1000.0) ++errors.within;
 		if (std::abs(errorUs) > std::abs(errors.worstUs)) errors.worstUs = errorUs;
 		errors.sorted.insert(std::ranges::lower_bound(errors.sorted, errorUs), errorUs);
 	}
 
+	/// One chunk of the ramp as the server handed it to the client: its first frame, how many, and the server time the
+	/// first is stamped to play at.
+	struct SentChunk {
+		std::uint32_t first;
+		std::uint32_t frames;
+		std::int64_t us;
+	};
+
+	/// The server time ramp frame `index` was sent to play at, from the stamp of the chunk that carried it: the time the
+	/// client was asked to play it at, which is what the time filter's prediction is of. Not play-start plus the index:
+	/// the server can move its timeline after a commit (on a loaded host, the second commit came late and moved it by
+	/// 7 ms), and the audio its encoder held from before goes out on the moved one (sendspin_server.py, _SentRamp).
+	std::int64_t sentUs(std::uint32_t index) {
+		for (;;) {
+			for (const SentChunk& chunk : sent_) {
+				if (index >= chunk.first && index - chunk.first < chunk.frames)
+					return chunk.us + static_cast<std::int64_t>(index - chunk.first) * 1000000 / kRate;
+			}
+			// Chunks go out hundreds of milliseconds before they play, so this one has been said by now.
+			const auto said = rig_.server.waitForEvent("chunk-sent ", 5s);
+			REQUIRE(said.has_value());
+			SentChunk chunk{};
+			REQUIRE(std::sscanf(said->c_str(), "chunk-sent %u %u %" SCNd64, &chunk.first, &chunk.frames, &chunk.us) ==
+			        3);
+			sent_.push_back(chunk);
+		}
+	}
+
 	Rig& rig_;
-	std::int64_t playStartUs_;
+	std::vector<SentChunk> sent_;
 	std::size_t next_ = 0;
 	std::optional<Cycle> previous_;
 	std::optional<std::uint32_t> lastIndex_;
@@ -471,6 +512,11 @@ void checkSync(const Errors& errors) {
 	REQUIRE(errors.afterFirst3s > 0);
 	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
+	INFO("bad steps: " << [&] {
+		std::string steps;
+		for (const std::uint32_t step : errors.badSteps) steps += std::to_string(step) + " ";
+		return steps;
+	}());
 	CHECK(errors.badSteps.empty());
 	// A frame the library interpolates to correct an error past 100 us (section 7) is no exact ramp frame, and is allowed: CI's
 	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be something else.
@@ -482,8 +528,8 @@ void checkSync(const Errors& errors) {
 TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time filter's prediction",
           "[sendspin][clock]") {
 	Rig rig;
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	const auto finished = [&] {
 		judge.read();
@@ -504,8 +550,8 @@ TEST_CASE("Through a following test card, audio is dated by the card's latency a
           "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	const auto finished = [&] {
 		judge.read();
@@ -523,8 +569,8 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
           "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	// Well into the stream: two seconds of the ramp are out.
 	REQUIRE(rig.waiter.until(

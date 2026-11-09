@@ -10,7 +10,8 @@ Commands: dial <url>, use <client id> (later commands act on that client; each `
 end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
 typed: one per round), source-start, source-stop, quit. --name is what the server calls itself. --hold-activate stops each connection after the hellos, before its first server/activate, until the command activate-release: a server the client has proved or not by its Noise handshake, and not yet admitted.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
-play-start <us>, play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
+play-start <us>, chunk-sent <first frame> <frames> <us> (a chunk of the ramp handed to the client, the first of its frames
+stamped to play at <us>), play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
 pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
 source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk> <first
 chunk's arrival on this server's clock - its stamp, us>, prefer-16 <true|false: whether the player took it>, lead <ms>,
@@ -35,6 +36,7 @@ from aiosendspin.noise.trust_store import FileServerPairingStore, InMemoryServer
 from aiosendspin.server.audio import AudioFormat
 from aiosendspin.server.connection import SendspinConnection
 from aiosendspin.server.push_stream import StreamStoppedError
+from aiosendspin.server.roles.player.v1 import PlayerV1Role
 from aiosendspin.server.roles.source.events import SourceStreamStartedEvent
 from aiosendspin.server.server import (
     ClientConnectedEvent,
@@ -55,6 +57,37 @@ SOURCE_SAMPLE_SCALE = 8388608.0
 
 def emit(event: str) -> None:
     print(event, flush=True)
+
+
+class _SentRamp:
+    """The ramp's frames as the server hands them to the client, chunk by chunk, with the stamps they carry.
+
+    commit_audio() returns where the server's timeline put a commit then, but the stamps a client gets can differ: when a
+    commit comes later than the send-ahead allows (a loaded host), the server moves its whole timeline on, and audio its
+    encoder still held from earlier commits goes out on the moved one (push_stream.py's rebase, measured at +7 ms between
+    the first and second commit). The frames stay contiguous; only their stamps jump. So the clock test dates each ramp
+    frame by the chunk that carried it, as the client did. One stream at a time, delivered live (no catch-up after a
+    join), so the chunks follow one another frame for frame.
+    """
+
+    frames = 0  # ramp frames handed over so far in this stream
+
+    @classmethod
+    def start(cls) -> None:
+        cls.frames = 0
+
+
+_hand_chunk = PlayerV1Role.on_audio_chunk
+
+
+def _hand_and_say(role: PlayerV1Role, chunk) -> None:  # noqa: ANN001: aiosendspin's AudioChunk
+    frames = round(chunk.duration_us * RATE / 1_000_000)
+    emit(f"chunk-sent {_SentRamp.frames} {frames} {chunk.timestamp_us}")
+    _SentRamp.frames += frames
+    _hand_chunk(role, chunk)
+
+
+PlayerV1Role.on_audio_chunk = _hand_and_say
 
 
 def ramp(start: int, frames: int) -> bytes:
@@ -294,6 +327,7 @@ class TestServer:
 
     async def _play_ramp(self, client_id: str, seconds: float) -> None:
         group = (await self._player_active(client_id)).group
+        _SentRamp.start()
         stream = group.start_stream()
         audio_format = AudioFormat(RATE, 16, 2)
         total = int(seconds * RATE)

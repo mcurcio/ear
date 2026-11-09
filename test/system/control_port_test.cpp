@@ -49,10 +49,16 @@ private:
 	}
 };
 
-/// RMS of channel `channel` of a stereo WAV over its nonzero span, past its first 5 ms; 0 if it is all zeros. A node's
-/// drive fades its outputs in over 5 ms (240 frames at 48 kHz; docs/design/node-lifecycle.md 5.3), and a route linked
-/// just after the node runs hears that ramp, which in a recording this short would weigh on the level.
-double channelRms(const std::filesystem::path& path, int channel) {
+/// What channelRms measured: the RMS and how many frames it is over.
+struct Rms {
+	double value = 0.0;
+	std::size_t frames = 0;
+};
+
+/// RMS of channel `channel` of a stereo WAV over its nonzero span, past its first 5 ms; 0 over no frames if it is all
+/// zeros. A node's drive fades its outputs in over 5 ms (240 frames at 48 kHz; docs/design/node-lifecycle.md 5.3), and a
+/// route linked just after the node runs hears that ramp, which would weigh on the level.
+Rms channelRms(const std::filesystem::path& path, int channel) {
 	SF_INFO info{};
 	SNDFILE* file = sf_open(path.c_str(), SFM_READ, &info);
 	REQUIRE(file != nullptr);
@@ -69,14 +75,15 @@ double channelRms(const std::filesystem::path& path, int channel) {
 			last = frame;
 		}
 	}
-	if (first == frames) return 0.0;
+	if (first == frames) return {};
 	constexpr std::size_t fadeFrames = 48000 * 5 / 1000;
 	if (last - first > 2 * fadeFrames) first += fadeFrames;
 	double sumOfSquares = 0.0;
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		sumOfSquares += static_cast<double>(samples[frame * 2 + channel]) * samples[frame * 2 + channel];
 	}
-	return std::sqrt(sumOfSquares / static_cast<double>(last - first + 1));
+	const std::size_t counted = last - first + 1;
+	return {std::sqrt(sumOfSquares / static_cast<double>(counted)), counted};
 }
 
 } // namespace
@@ -146,15 +153,38 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	CHECK(routeAdded < linked);
 	CHECK(linked < rpc.notifications.size());
 
-	// Noise has reached rec:record.right once a level window of it is measured there.
+	// Noise has reached rec:record.right once a level window of it is measured there; then half a second of it is
+	// recorded before ear stops, so the level below is measured over enough noise to be sharp. Levels are a latest-value
+	// snapshot (a window can come in several messages, and windows can be passed over), so new windows are told apart by
+	// their values, and 15 of them mean at least 15 windows went by.
+	constexpr int recordedWindows = 15;
+	constexpr std::size_t windowFrames = 48000 / 30; // the graph file's rate, 30 windows a second
 	CHECK(rpc.call("levels.subscribe").contains("result"));
-	rpc.waitFor([](const json& m) {
-		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("rec") &&
-		       m["params"]["nodes"]["rec"]["record.right"][1].get<double>() > 0.5;
+	std::optional<json> last; // record.right's level in the newest window read, once noise is heard there
+	int newWindows = 0;
+	rpc.waitFor([&](const json& m) {
+		if (m.value("method", "") != "levels" || !m["params"]["nodes"].contains("rec")) return false;
+		const json& now = m["params"]["nodes"]["rec"]["record.right"];
+		if (!last) {
+			if (now[1].get<double>() > 0.5) last = now;
+			return false;
+		}
+		if (now == *last) return false; // the same window again
+		last = now;
+		return ++newWindows == recordedWindows;
 	});
 
 	CHECK(ear.stop(rpc) == 0);
-	CHECK(channelRms(directory.recordings() / "rec.wav", 1) == Approx(0.577).margin(0.02));
+	// Uniform noise in [-1, 1) has a mean square of 1/3 and var(x^2) = 4/45, so the RMS of N samples of it is 0.577 with a
+	// standard deviation of sqrt(4/45) / (2 sqrt(1/3)) / sqrt(N) = 0.258 / sqrt(N). Over the 14 whole windows recorded at
+	// least (22400 frames) that is 0.0017, and the margin is 5 of them for the frames actually measured: a gain off by 2%,
+	// silence or the wrong channel still fails.
+	const Rms right = channelRms(directory.recordings() / "rec.wav", 1);
+	INFO("measured over " << right.frames << " frames");
+	REQUIRE(right.frames >= (recordedWindows - 1) * windowFrames);
+	const double sigma =
+		std::sqrt(4.0 / 45.0) / (2.0 * std::sqrt(1.0 / 3.0)) / std::sqrt(static_cast<double>(right.frames));
+	CHECK(right.value == Approx(std::sqrt(1.0 / 3.0)).margin(5.0 * sigma));
 }
 
 TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
@@ -164,13 +194,30 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 
 	const json reply = rpc.call("levels.subscribe");
 	CHECK(reply["result"]["windowsPerSecond"] == 30);
-	// The second window with the noise: the first may hold the noise's 5 ms fade-in at its drive (node-lifecycle.md 5.3).
-	int seen = 0;
+	// A whole window of the noise. Levels are a latest-value snapshot, sent when any block publishes, so one window can
+	// come in several messages (the noise's first again once the recorder's block has published too). And the noise's
+	// first windows are not all noise: its block processes silence until the asynchronous drive lands, as late as the
+	// main loop gets to it, then fades the noise in over 5 ms (docs/design/node-lifecycle.md 5.3). So the first window
+	// with any noise holds the drive, the next new one may hold the fade's tail (240 frames of a 1600-frame window, when
+	// the drive lands near a window's end), and the new one after that is noise throughout.
+	std::optional<json> last; // the noise's level in the newest window read, once it is heard
+	int newWindows = 0;       // windows after that one
 	const json levels = rpc.waitFor([&](const json& m) {
-		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise") && ++seen == 2;
+		if (m.value("method", "") != "levels" || !m["params"]["nodes"].contains("noise")) return false;
+		const json& now = m["params"]["nodes"]["noise"]["noise.mono"];
+		if (!last) {
+			if (now[0].get<double>() > 0.0) last = now;
+			return false;
+		}
+		if (now == *last) return false; // the same window again
+		last = now;
+		return ++newWindows == 2;
 	});
 	INFO(levels.dump());
 	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
+	// One window is 1600 frames, so its RMS of uniform noise is 0.577 with a standard deviation of 0.258 / sqrt(1600) =
+	// 0.0065 (see the test above): the margin is 7.7 of them, and a window that is partly silent or faded, which this test
+	// read before it waited for a whole one (0.47 to 0.52), still fails.
 	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));
 	CHECK(ear.stop(rpc) == 0);
 }

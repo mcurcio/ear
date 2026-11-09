@@ -488,7 +488,7 @@ public:
 
 Owned files (S1): `CMakeLists.txt`, `cmake/SendspinDeps.cmake`, `docker/Dockerfile`, `scripts/dev.sh`, `.github/workflows/test.yml`, `test/sendspin/requirements.txt`, `src/CMakeLists.txt`, `src/main.cpp`, `src/core/**`, `src/pipewire/{handoffs.cpp,port_blocks.cpp,CMakeLists.txt,tests/**}`, `src/control/{status_log.cpp,include/ear/control/status_log.hpp,tests/**}`, `src/nodes/**`, `src/sendspin/**`, `test/CMakeLists.txt`, `test/support/sendspin_server.{py,hpp}`, `test/system/{sendspin_test.cpp,CMakeLists.txt}`.
 
-The test server, `test/support/sendspin_server.py`, a real `SendspinServer`, a command per stdin line, an event per stdout line: args `--listen 0 [--slow-upgrade <seconds>] | --dial <url> [--state <dir>]`; commands `trust`, `play <seconds>`, `end`, later `pair`, `code <digits>`, `source-start`, `source-stop`, `quit`; events `ready <url>`, `connected <client id>`, `play-start <us>`, `play-finished <frames>`, `disconnected <reason>`. The ramp is section 5's.
+The test server, `test/support/sendspin_server.py`, a real `SendspinServer`, a command per stdin line, an event per stdout line: args `--listen 0 [--slow-upgrade <seconds>] | --dial <url> [--state <dir>]`; commands `trust`, `play <seconds>`, `end`, later `pair`, `code <digits>`, `source-start`, `source-stop`, `quit`; events `ready <url>`, `connected <client id>`, `play-start <us>`, `chunk-sent <first frame> <frames> <us>` (each chunk of the ramp as handed to the client, with the stamp it carries, which the clock test dates frames by: the server can move its timeline after a commit), `play-finished <frames>`, `disconnected <reason>`. The ramp is section 5's.
 
 Acceptance (event-gated; a deadline only fails a test):
 
