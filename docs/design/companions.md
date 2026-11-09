@@ -204,24 +204,34 @@ the block plays each bound source into its inside input bank before the code and
 
 **The spike, S5** (3b's first step, 3b.0; `spikes_test.cpp` on S2's harness, tagged `[s2]` so it runs serial, kept as a
 regression). Its method: S2's three filters U (upstream probe), B and D (downstream probe), linked U → B → D at a
-64-frame block, under S2's invoke storm, once on an idle host and once beside a load of its own (S2 met its loaded
-runs by chance, under ctest's parallel suites; S5 starts one busy thread per core for its loaded run). The loaded run
-goes until at least 500 cycles cut short have been seen (a 60 s deadline fails the test naming how many it saw); the
-idle run takes what 20 s bring, since an idle host cuts few cycles short (S2: 1 to 17 in 25 s). B is a test-only
-filter that plays a position-stamped ramp from a ring of its own (2,048 frames, sendspin's feed at 48 kHz) before its
-code, keeping time as 3.3 says, and counts `totalFrames` as a source would; U writes each cycle's position into every
-frame it outputs.
+64-frame block, under S2's invoke storm and beside one busy thread per core. It makes its own cut-short cycles: U
+sleeps one and a half cycles inside its `process` in every 16th of its cycles, and B in every 16th of its own, half a
+period out of step, 200 times each. The driver's timeout then expires before the sleeper returns, the data loop
+dispatches the timer before the next node's wake (it became ready first), and the driver's next cycle resets that
+node: the cycle is cut short straight after U, or straight after B, on any host. The test requires every overrun to
+have cut its cycle with that shape, so at least 200 of each (about 5 s; a 30 s deadline fails it naming the counts),
+and takes the host's own cut-short cycles, and those the driver cuts catching up after an overrun, as they come.
+Counting on the host to cut cycles short did not hold: a first form waited for 500 beside the busy threads, met in 8
+to 20 s on a workstation, and GitHub's runner cut 9 in 60 s. B is a test-only filter that plays a position-stamped
+ramp from a ring of its own (2,048 frames, sendspin's feed at 48 kHz) before its code, keeping time as 3.3 says, and
+counts `totalFrames` as a source would; U writes each cycle's position into every frame it outputs.
 
-**Result (2026-11-09): A passes, B reads "current".** Ten runs of each: idle, 800 cycles cut short (704
-after U, 96 after B) in 200 s; loaded, 5,032 (3,227 after U, 1,805 after B), the 500 reached in 8 to 20 s. B's
-position jumps (1,308 idle, 4,878 loaded) were all forward, whole cycles, at most 832 frames, so within its capacity:
-no new clock and no drift of `totalFrames - (position - firstPosition)` in 242,228 cycles B ran, and D heard B's ramp
-frame of its position in all 240,327 cycles both ran. In all 3,491 cycles B ran straight after one cut before it, it
-read U's frames of its own cycle. So 3b.2 builds the source as designed, and the counting rule stays a sum.
+**Result (2026-11-09): A passes, B reads "current".** The first form, on cycles the host cut short: ten idle runs,
+800 (704 after U, 96 after B) in 200 s; ten loaded, 5,032 (3,227 after U, 1,805 after B); no drift in 242,228 cycles
+B ran, D exact in all 240,327 both ran, and all 3,491 reads after a cut current. The overrun form, ten runs of 4.8 to
+5.3 s on a 4-core workstation: every one of the 2,000 overruns of U cut its cycle after U and every one of B's 2,000
+after B, with 1,191 and 281 other cycles cut short besides; also with the data loop and the busy threads on one core
+(10.6 and 10.8 s, about 2,000 other cycles cut after U a run) and with no busy threads (4.6 s, the overruns' shapes
+alike). B's 3,605 position jumps were all forward, whole cycles, at most 768 frames (960 on one core), so within its
+capacity: no new clock and no drift of `totalFrames - (position - firstPosition)` in 32,004 cycles B ran, and D
+heard B's ramp frame of its position in all 29,723 cycles both ran. In all 2,833 cycles B ran straight after one cut
+before it (1,909 after an overrun of U, 924 after another cut), it read U's frames of its own cycle. Cycles cut by an
+overrun behaved as the host's own did in every count. So 3b.2 builds the source as designed, and the counting rule
+stays a sum.
 
 - **A, the gate: `Played` keeps to the clock.** Across every cycle B ran, `totalFrames - (position - firstPosition)`
   stays constant (no drift across a cut-short cycle), and every frame D received after a cycle both B and D ran is the
-  ramp frame of that position. Pass: both hold, idle and loaded. On a pass, 3b.2 builds the source as designed and
+  ramp frame of that position. Pass: both hold, across both shapes of cut-short cycle. On a pass, 3b.2 builds the source as designed and
   repeats A on the real block (`port_block_test.cpp`). On a fail (drift: a position jump larger than the capacity, or
   one not a whole number of cycles, after a cut-short cycle), the source re-anchors `totalFrames` at every
   discontinuity instead of summing frames (a change inside `SourceRing` only, written into 3.3's keeping time), and A

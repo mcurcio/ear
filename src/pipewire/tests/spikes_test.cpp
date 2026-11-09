@@ -11,10 +11,11 @@
 //    but cycles are still told apart by the order they ran in, never by position.
 //  - S3: one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
-//  - S5: a source served by its block, as slice 3b designs it (docs/design/companions.md), on S2's harness, idle and
-//    beside a busy thread per core: its played count keeps to the clock across cycles an xrun cuts short, and the node after it hears its
-//    frame of each position. And what a node reads after its upstream ran a cycle it did not: the upstream's frames of
-//    the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
+//  - S5: a source served by its block, as slice 3b designs it (docs/design/companions.md), on S2's harness beside a
+//    busy thread per core, its upstream and itself overrunning chosen cycles so that both shapes of a cut-short cycle
+//    occur on any host: its played count keeps to the clock across cycles an xrun cuts short, and the node after it
+//    hears its frame of each position. And what a node reads after its upstream ran a cycle it did not: the upstream's
+//    frames of the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), S2's
 // take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
 // docs/engine.md#drive-and-fade), and S5's source keeps its ring itself. Every wait is event-gated: the main loop runs
@@ -405,12 +406,36 @@ std::uint64_t rawFramesNow() noexcept {
 	       static_cast<std::uint64_t>(now.tv_nsec) * kRate / 1'000'000'000U;
 }
 
+/// Which recorded cycles a probe overruns (S5): those whose index in its log is `phase` modulo `every`, the first
+/// `limit` of them; none when `every` is 0.
+struct Overruns {
+	std::size_t every = 0;
+	std::size_t phase = 0;
+	std::size_t limit = 0; // overruns at most
+	bool at(std::size_t n) const noexcept { return every != 0 && n % every == phase && n / every < limit; }
+};
+
+/// S5's overrun: sleeps one and a half of the clock's cycles inside a probe's process, so the driver's next timeout
+/// expires before the probe returns. Every node on the one data loop is woken by an eventfd its upstream writes as it
+/// finishes, and the loop dispatches ready sources in the order they became ready (spa's loop_iterate over epoll), so
+/// the timer's is dispatched first: node_ready (impl-node.c) starts the next cycle and resets the node this probe just
+/// triggered, whose wake then finds it no longer triggered. That cycle is cut short straight after this probe, whatever
+/// the host's load. The half cycle beyond the timeout is a margin; the driver may cut a cycle or two more as it catches
+/// up, which S5 counts with the host's own.
+void overrun(const spa_io_clock& clock) noexcept {
+	const std::uint64_t nanoseconds = clock.duration * 3 * 1'000'000'000ULL / (2 * kRate);
+	const timespec pause{static_cast<time_t>(nanoseconds / 1'000'000'000ULL),
+	                     static_cast<long>(nanoseconds % 1'000'000'000ULL)};
+	nanosleep(&pause, nullptr);
+}
+
 /// U: records its cycles, with the raw clock on entry, and stamps every frame it writes with its cycle's position
 /// (rampAt(position)), so a node downstream can tell which of U's cycles it reads (S5's part B; S2's B ignores it).
+/// With `overruns` (S5), it overruns those of its recorded cycles once it has written its output.
 class Upstream final : public ProbeCode {
 public:
-	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity)
-		: shared_(shared), log(capacity), rawAtEntry(capacity) {}
+	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity, Overruns overruns = {})
+		: shared_(shared), overruns_(overruns), log(capacity), rawAtEntry(capacity), overran(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -419,16 +444,25 @@ public:
 		if (!shared_.recording.load(std::memory_order_acquire)) return;
 		if (const auto n = log.add(clock.position, sequence)) {
 			rawAtEntry[*n] = raw;
+			const bool overrunning = overruns_.at(*n);
+			overran[*n] = overrunning ? 1 : 0;
 			log.commit(*n);
+			if (overrunning) {
+				overrun(clock);
+				overrunCount.fetch_add(1, std::memory_order_release);
+			}
 		}
 	}
 
 private:
 	Shared& shared_;
+	Overruns overruns_;
 
 public:
 	CycleLog log;
 	std::vector<std::uint64_t> rawAtEntry;
+	std::vector<std::uint8_t> overran; // per cycle: U overran it
+	std::atomic<std::size_t> overrunCount{0};
 };
 
 /// B: docs/engine.md#drive-and-fade take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives
@@ -601,11 +635,12 @@ struct Timeline {
 	std::uint64_t largestBack = 0; // frames, the largest step back
 	std::size_t tooFarAhead = 0;   // cycles more than 10 ms ahead of the raw clock, where the driver puts none
 	std::string firstTooFarAhead;  // the first of those, described
-	/// Every cycle U ran while recording, in the order they ran: its position and the index of B's and D's entry in
-	/// their logs, kNone where that node did not run it.
+	/// Every cycle U ran while recording, in the order they ran: its position and the index of U's, B's and D's entry
+	/// in their logs, kNone where that node did not run it.
 	struct Run {
 		static constexpr std::size_t kNone = SIZE_MAX;
 		std::uint64_t position;
+		std::size_t u = kNone;
 		std::size_t b = kNone;
 		std::size_t d = kNone;
 	};
@@ -655,7 +690,7 @@ Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
 					std::to_string(e.position) + " with the raw clock at " + std::to_string(u.rawAtEntry[e.index]);
 			closeCycle();
 			++result.cycles;
-			result.runs.push_back(Timeline::Run{e.position});
+			result.runs.push_back(Timeline::Run{e.position, e.index});
 			cycleU = e;
 			cycleB.reset();
 			cycleD = false;
@@ -737,26 +772,30 @@ private:
 /// S5's B keeps time as a source would with sendspin's feed at 48 kHz (feedFramesFor: 40 ms rounded up to a power of
 /// two): a forward jump of at most this many frames is skipped and counted played; a larger one is a new clock.
 constexpr std::uint32_t kS5Capacity = 2048;
-/// Cut-short cycles S5's loaded run waits for, and how long it waits for them. An idle host cuts few cycles short (S2:
-/// 1 to 17 in 25 s; S5 met 187 in 60 s beside a parallel build), so the idle run takes what kS5IdleWindow brings.
-constexpr std::size_t kS5CutShort = 500;
-constexpr std::chrono::seconds kS5Deadline{60};
-constexpr std::chrono::seconds kS5IdleWindow{20};
+/// The cycles S5 cuts short itself, of each shape: U overruns every kS5OverrunEvery-th of its cycles (cut after U), and
+/// B as many of its own, half a period out of step (cut after B), until each has overrun kS5Overruns. A host cuts cycles
+/// short on its own only by chance (S2: 1 to 17 in 25 s idle; one GitHub runner 9 in 60 s beside a busy thread per core,
+/// where a loaded workstation cut 5,000), so S5 never waits for those: they are counted with the rest when they come.
+constexpr std::size_t kS5Overruns = 200;
+constexpr std::size_t kS5OverrunEvery = 16;
+/// About 4.5 s at 750 cycles a second; the deadline only fails the test.
+constexpr std::chrono::seconds kS5Deadline{30};
 /// Cycles a log holds: the driver starts 750 a second at 64 frames, and its catch-up after a stall only makes up the
 /// ones it missed.
-constexpr std::size_t kS5Log = 750 * 80;
+constexpr std::size_t kS5Log = 750 * 40;
 
 /// B: a test-only source served by its block. Before its code (which here does nothing more) it plays a ring of
 /// kS5Capacity frames into its output and keeps time as slice 3b's source will: a cycle whose position
 /// jumped ahead of the last one's end by at most the capacity skips that many frames and counts them played; any other
 /// jump is a new clock, played on from where the ring is. `total` counts frames played and skipped, as a source's
 /// totalFrames. The ring's frame k is rampAt(k), and the writer side is not under test: the ring is kept full, each
-/// frame consumed replaced by the one kS5Capacity later. It also records the stamp of what it read from U.
+/// frame consumed replaced by the one kS5Capacity later. It also records the stamp of what it read from U, and overruns
+/// `overruns` of its recorded cycles once it has played.
 class RingSource final : public ProbeCode {
 public:
-	RingSource(Shared& shared, Waiter& waiter)
-		: shared_(shared), waiter_(waiter), ring_(kS5Capacity), log(kS5Log), totalBefore(kS5Log), stamp(kS5Log),
-		  uniform(kS5Log) {
+	RingSource(Shared& shared, Waiter& waiter, Overruns overruns)
+		: shared_(shared), waiter_(waiter), overruns_(overruns), ring_(kS5Capacity), log(kS5Log), totalBefore(kS5Log),
+		  stamp(kS5Log), uniform(kS5Log), overran(kS5Log) {
 		for (std::uint32_t k = 0; k < kS5Capacity; ++k) ring_[k] = rampAt(k);
 	}
 	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_acquire); }
@@ -792,13 +831,20 @@ public:
 		const float* in = inputs[0];
 		bool same = true;
 		for (std::uint32_t i = 1; i < frames; ++i) same = same && in[i] == in[0];
+		bool overrunning = false;
 		if (recording) {
 			if (const auto n = log.add(at, sequence)) {
 				totalBefore[*n] = before;
 				stamp[*n] = in[0];
 				uniform[*n] = same ? 1 : 0;
+				overrunning = overruns_.at(*n);
+				overran[*n] = overrunning ? 1 : 0;
 				log.commit(*n);
 			}
+		}
+		if (overrunning) {
+			overrun(clock);
+			overrunCount.fetch_add(1, std::memory_order_release);
 		}
 		cycles_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
@@ -813,6 +859,7 @@ private:
 
 	Shared& shared_;
 	Waiter& waiter_;
+	Overruns overruns_;
 	// Data thread only.
 	std::vector<float> ring_;
 	std::uint64_t total_ = 0;
@@ -829,6 +876,8 @@ public:
 	std::vector<std::uint64_t> totalBefore; // per cycle: `total` before it played, the index of its first frame
 	std::vector<float> stamp;               // per cycle: the first frame read from U
 	std::vector<std::uint8_t> uniform;      // per cycle: every frame read from U was that one
+	std::vector<std::uint8_t> overran;      // per cycle: B overran it
+	std::atomic<std::size_t> overrunCount{0};
 };
 
 /// S5's D: per cycle, whether every frame is B's ring frame of that position, rampAt(position - B's first position + i).
@@ -1267,21 +1316,23 @@ TEST_CASE(
 	CHECK(rampCycles > 0);
 }
 
-namespace {
-
-/// S5, on S2's harness: U → B → D at S2's block under its storm, for kS5IdleWindow
-/// idle, or beside a busy thread per core until kS5CutShort cycles have been cut short. Part A, the gate: across every cycle B ran, `total -
-/// (position - first position)` stays what it was (no drift across a cut-short cycle), and in every cycle B and D both
-/// ran D heard B's ring frame of that position, sample for sample. Part B, recorded only: in B's first cycle after one
-/// U ran and B did not, whether B read U's frames of its own cycle ("current") or of the cut one ("stale").
-void spikeS5(bool loaded) {
+TEST_CASE("S5: a source served by its block keeps its played count on the clock across cycles cut short after its "
+          "upstream and after it, overrun on purpose under an invoke storm beside a busy thread per core",
+          "[spike][s2][s5]") {
+	// U → B → D at S2's block under its storm, beside a busy thread per core. U overruns kS5Overruns of its cycles and
+	// B as many of its own, so each of those is cut short straight after the probe that overran it (overrun()), on any
+	// host; the host's own cut-short cycles come with them, as many as it makes. Part A, the gate: across every cycle B
+	// ran, `total - (position - first position)` stays what it was (no drift across a cut-short cycle), and in every
+	// cycle B and D both ran D heard B's ring frame of that position, sample for sample. Part B, recorded only: in B's
+	// first cycle after one U ran and B did not, whether B read U's frames of its own cycle ("current") or of the cut one
+	// ("stale"); counted apart for cycles cut by an overrun and the rest.
 	StormCounts stormCounts; // before the engine, as S2's
 	auto engine = engineAt(kS2Block);
 	Waiter waiter(*engine);
 	Wiring wiring(*engine, waiter);
 	Shared shared;
-	Upstream upCode(shared, kS5Log);
-	RingSource sourceCode(shared, waiter);
+	Upstream upCode(shared, kS5Log, Overruns{kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns});
+	RingSource sourceCode(shared, waiter, Overruns{kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns});
 	RampListener downCode(shared, sourceCode);
 	Probe up(*engine, waiter, "u", 0, 1, upCode);
 	Probe block(*engine, waiter, "b", 1, 1, sourceCode);
@@ -1293,25 +1344,30 @@ void spikeS5(bool loaded) {
 	REQUIRE(block.dataLoop() == dataLoop);
 	InvokeStorm storm(dataLoop, stormCounts);
 	std::optional<BusyCores> busy;
-	if (loaded) busy.emplace();
+	busy.emplace();
 	const std::uint64_t settled = sourceCode.cycles();
 	REQUIRE(waiter.until([&] { return sourceCode.cycles() > settled + 4; }));
 
-	// Recording binds B's source. Every graph cycle has U's entry and the whole ones D's too (S2: only a prefix of the
-	// graph runs a cut-short cycle), so U's count less D's is the cycles cut short so far, give or take the one running.
+	// Recording binds B's source and starts the overruns.
 	shared.recording.store(true);
 	const auto start = std::chrono::steady_clock::now();
-	const auto cutSoFar = [&] { return upCode.log.count.load() - downCode.log.count.load(); };
-	waiter.until([&] { return (loaded && cutSoFar() >= kS5CutShort + 2) || upCode.log.full.load(); },
-	             loaded ? kS5Deadline : kS5IdleWindow);
+	const bool overrunAll = waiter.until(
+		[&] {
+			return (upCode.overrunCount.load() >= kS5Overruns && sourceCode.overrunCount.load() >= kS5Overruns) ||
+		           upCode.log.full.load();
+		},
+		kS5Deadline);
 	const double seconds = millisecondsSince(start) / 1000.0;
-	const std::size_t busyThreads = busy ? busy->count() : 0;
+	const std::size_t busyThreads = busy->count();
 	const std::uint64_t last = sourceCode.cycles();
 	REQUIRE(waiter.until([&] { return sourceCode.cycles() > last + 2; }));
 	shared.recording.store(false);
 	busy.reset();
 	storm.stop();
 	REQUIRE(waiter.until([&] { return stormCounts.drained(); }));
+	INFO("overruns in " << seconds << " s: U " << upCode.overrunCount.load() << ", B "
+	                    << sourceCode.overrunCount.load());
+	REQUIRE(overrunAll);
 	REQUIRE_FALSE(upCode.log.full.load());
 	REQUIRE_FALSE(sourceCode.log.full.load());
 	REQUIRE_FALSE(downCode.log.full.load());
@@ -1320,26 +1376,42 @@ void spikeS5(bool loaded) {
 	INFO("first broken cycle: " << timeline.firstBroken);
 	CHECK(timeline.broken == 0);
 
-	// In the order the cycles ran (never by position: S2).
+	// In the order the cycles ran (never by position: S2). Index 0 of a pair counts the host's own cut-short cycles
+	// (and those the driver cut catching up after an overrun), index 1 the overrun ones.
 	const std::uint64_t first = sourceCode.firstPosition();
+	std::size_t uOverran = 0, uOverranCut = 0, bOverran = 0, bOverranCut = 0, otherAfterU = 0, otherAfterB = 0;
 	std::size_t drifts = 0, bCycles = 0, both = 0, dWrong = 0;
-	std::size_t jumps = 0, notWhole = 0, beyond = 0, back = 0, afterCut = 0, driftsAfterCut = 0;
+	std::size_t jumps = 0, notWhole = 0, beyond = 0, back = 0;
+	std::array<std::size_t, 2> afterCut{}, driftsAfterCut{}, largestJumpAfterCut{};
 	std::uint64_t largestJump = 0;
 	std::string firstDrift, firstWrong;
 	// Part B: what B read in its first cycle after a cut one, and in its cycles after one it ran.
-	std::size_t current = 0, stale = 0, same = 0, none = 0, other = 0, mixed = 0;
+	std::array<std::size_t, 2> current{}, stale{}, none{}, other{};
+	std::size_t same = 0, mixed = 0;
 	std::size_t steadyCurrent = 0, steadyPrevious = 0, steadyOther = 0, nextCurrent = 0, nextOther = 0;
 	std::string firstOther;
 	std::optional<std::int64_t> lastOffset;
 	std::optional<std::uint64_t> lastEnd, previousRun;
 	bool cutSinceB = false, lastWasAfterCut = false;
+	std::size_t cutKind = 0; // of the latest cut-short cycle: 1 if U overran it
 	std::uint64_t cutAt = 0;
 	for (const Timeline::Run& run : timeline.runs) {
+		const bool uOverrun = upCode.overran[run.u] != 0;
+		if (uOverrun) ++uOverran;
 		if (run.b == Timeline::Run::kNone) {
+			if (uOverrun) ++uOverranCut;
+			else ++otherAfterU;
 			cutSinceB = true;
+			cutKind = uOverrun ? 1 : 0;
 			cutAt = run.position;
 			previousRun = run.position;
 			continue;
+		}
+		const bool bOverrun = sourceCode.overran[run.b] != 0;
+		if (bOverrun) ++bOverran;
+		if (run.d == Timeline::Run::kNone) {
+			if (bOverrun) ++bOverranCut;
+			else ++otherAfterB;
 		}
 		++bCycles;
 		const std::uint64_t at = sourceCode.log.position[run.b];
@@ -1349,7 +1421,7 @@ void spikeS5(bool loaded) {
 			if (drifts++ == 0)
 				firstDrift = "B at " + std::to_string(at) + ": offset " + std::to_string(*lastOffset) + " to " +
 				             std::to_string(offset) + (cutSinceB ? ", after a cut-short cycle" : "");
-			if (cutSinceB) ++driftsAfterCut;
+			if (cutSinceB) ++driftsAfterCut[cutKind];
 		}
 		lastOffset = offset;
 		if (lastEnd && at != *lastEnd) {
@@ -1358,6 +1430,8 @@ void spikeS5(bool loaded) {
 				++back;
 			} else {
 				largestJump = std::max(largestJump, at - *lastEnd);
+				if (cutSinceB)
+					largestJumpAfterCut[cutKind] = std::max<std::size_t>(largestJumpAfterCut[cutKind], at - *lastEnd);
 				if ((at - *lastEnd) % kS2Block != 0) ++notWhole;
 				if (at - *lastEnd > kS5Capacity) ++beyond;
 			}
@@ -1366,12 +1440,12 @@ void spikeS5(bool loaded) {
 		const float read = sourceCode.stamp[run.b];
 		if (sourceCode.uniform[run.b] == 0) ++mixed;
 		if (cutSinceB) {
-			++afterCut;
+			++afterCut[cutKind];
 			if (rampAt(cutAt) == rampAt(at)) ++same; // a cut cycle at the position B runs: the two cannot be told apart
-			else if (read == rampAt(at)) ++current;
-			else if (read == rampAt(cutAt)) ++stale;
-			else if (read == 0.0F) ++none;
-			else if (other++ == 0)
+			else if (read == rampAt(at)) ++current[cutKind];
+			else if (read == rampAt(cutAt)) ++stale[cutKind];
+			else if (read == 0.0F) ++none[cutKind];
+			else if (other[cutKind]++ == 0 && firstOther.empty())
 				firstOther = "read " + std::to_string(read) + " at " + std::to_string(at) + " after a cut at " +
 				             std::to_string(cutAt);
 		} else if (read == rampAt(at)) {
@@ -1392,21 +1466,29 @@ void spikeS5(bool loaded) {
 				             std::to_string(downCode.firstWrong[run.d]);
 		}
 	}
-	const std::size_t cutShort = timeline.onlyU + timeline.onlyUB;
 	std::printf(
-		"S5 %s (%zu busy threads): %.1f s, %zu cycles started, %zu run by every node, %zu cut short after U "
-		"and %zu after B; %" PRIu64 " storm invokes. A: B ran %zu cycles, %zu position jumps (largest %" PRIu64
-		" frames, %zu not whole cycles, %zu beyond its capacity of %u, %zu backwards; %" PRIu64
-		" new clocks), %zu drifts of total - (position - first) (%zu after a cut-short cycle); D heard %zu "
-		"cycles B ran too, %zu not B's ramp frame of that position. B: after %zu cut cycles B read current %zu, "
-		"stale %zu, none %zu, other %zu, cut at its own position %zu; in its next cycle current %zu, other %zu; "
-		"after cycles it ran, current %zu, the previous cycle's %zu, other %zu; %zu reads not one stamp\n",
-		loaded ? "loaded" : "idle", busyThreads, seconds, timeline.cycles, timeline.whole, timeline.onlyU,
-		timeline.onlyUB, stormCounts.posts.load(), bCycles, jumps, largestJump, notWhole, beyond, kS5Capacity, back,
-		sourceCode.newClocks(), drifts, driftsAfterCut, both, dWrong, afterCut, current, stale, none, other, same,
-		nextCurrent, nextOther, steadyCurrent, steadyPrevious, steadyOther, mixed);
-	INFO("cut-short cycles seen in " << seconds << " s: " << cutShort);
-	if (loaded) REQUIRE(cutShort >= kS5CutShort);
+		"S5 (%zu busy threads): %.1f s, %zu cycles started, %zu run by every node, %zu cut short after U (%zu of %zu U "
+		"overran, %zu others) and %zu after B (%zu of %zu B overran, %zu others); %" PRIu64
+		" storm invokes. A: B ran %zu cycles, %zu position jumps (largest %" PRIu64
+		" frames: %zu after an overrun, %zu after another cut; %zu not whole cycles, %zu beyond its capacity of %u, "
+		"%zu backwards; %" PRIu64 " new clocks), %zu drifts of total - (position - first) (%zu after an overrun, "
+		"%zu after another cut); D heard %zu cycles B ran too, %zu not B's ramp frame of that position. B: after %zu "
+		"cycles U overran B read current %zu, stale %zu, none %zu, other %zu; after %zu other cut cycles current %zu, "
+		"stale %zu, none %zu, other %zu; cut at its own position %zu; in its next cycle current %zu, other %zu; after "
+		"cycles it ran, current %zu, the previous cycle's %zu, other %zu; %zu reads not one stamp\n",
+		busyThreads, seconds, timeline.cycles, timeline.whole, timeline.onlyU, uOverranCut, uOverran, otherAfterU,
+		timeline.onlyUB, bOverranCut, bOverran, otherAfterB, stormCounts.posts.load(), bCycles, jumps, largestJump,
+		largestJumpAfterCut[1], largestJumpAfterCut[0], notWhole, beyond, kS5Capacity, back, sourceCode.newClocks(),
+		drifts, driftsAfterCut[1], driftsAfterCut[0], both, dWrong, afterCut[1], current[1], stale[1], none[1],
+		other[1], afterCut[0], current[0], stale[0], none[0], other[0], same, nextCurrent, nextOther, steadyCurrent,
+		steadyPrevious, steadyOther, mixed);
+	// Every overrun cut its cycle short straight after the probe that overran it, so each shape was met as planned.
+	CHECK(uOverran == kS5Overruns);
+	CHECK(bOverran == kS5Overruns);
+	CHECK(uOverranCut == uOverran);
+	CHECK(bOverranCut == bOverran);
+	CHECK(timeline.onlyU >= kS5Overruns);
+	CHECK(timeline.onlyUB >= kS5Overruns);
 	// A, the gate.
 	INFO(firstDrift);
 	INFO(firstWrong);
@@ -1419,20 +1501,6 @@ void spikeS5(bool loaded) {
 	CHECK(dWrong == 0);
 	INFO(firstOther);
 	CHECK(mixed == 0);
-}
-
-} // namespace
-
-TEST_CASE("S5: a source served by its block keeps its played count on the clock across cycles an xrun cuts short, "
-          "idle",
-          "[spike][s2][s5]") {
-	spikeS5(false);
-}
-
-TEST_CASE("S5: a source served by its block keeps its played count on the clock across cycles an xrun cuts short, "
-          "beside a busy thread per core",
-          "[spike][s2][s5]") {
-	spikeS5(true);
 }
 
 TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blocks, a sound card and an RTP receiver "

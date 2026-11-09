@@ -18,6 +18,12 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   tests fail without a bug when a heavily loaded host stalls PipeWire's data thread for hundreds of
   milliseconds (graph xruns): rerun such a failure alone before suspecting the code
   ([engine.md](engine.md#xruns-on-a-loaded-host-are-not-bugs)).
+- **A test makes the rare event it needs; it never waits for the host to.** What a host does by
+  chance (a graph xrun, a cut-short cycle) comes at very different rates on different machines, so
+  a test that needs it brings it about itself and requires the count it planned; what the host adds
+  is counted with it, never required. S5 cuts its cycles short by sleeping past the cycle inside a
+  probe's `process` ([engine.md](engine.md#the-one-data-loop-and-invokes)); a load of its own, as
+  S5's busy thread per core, only adds evidence.
 
 ## How the suites are built
 

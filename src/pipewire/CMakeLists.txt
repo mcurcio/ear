@@ -61,8 +61,8 @@ if(BUILD_TESTS)
 		EAR_ALSA_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/alsa")
 	add_dependencies(ear_pipewire_tests ear_pipewire_verify_interface_header_sets)
 	# S2 and S5 (spikes_test.cpp, docs/engine.md#the-one-data-loop-and-invokes, both tagged [s2]) keep the data thread
-	# busy for 20 to 60 s at a 64-frame block under an invoke storm, S5's loaded run beside a busy thread per core; beside
-	# them, the engine, RTP and sendspin clock tests miss their deadlines.
+	# busy at a 64-frame block under an invoke storm (S2 about 25 s; S5 about 5 s, overrunning its own cycles beside a
+	# busy thread per core); beside them, the engine, RTP and sendspin clock tests miss their deadlines.
 	ear_catch_tests(ear_pipewire_tests SERIAL [s2])
 
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files

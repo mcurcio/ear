@@ -411,8 +411,10 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   thread, and a filter's `pw_filter_get_data_loop` is that loop. Adapters and the rtp module name
   `data-loop.0` in their info, while `pw_filter`s name no loop (`node.loop.name` is set only by a
   node's maker).
-- **S5 (slice 3b.0, tag `[s2]`, so serial)**: a source served by its block, on S2's harness, idle
-  for 20 s and beside a busy thread per core until 500 cycles are cut short. Its played count keeps
+- **S5 (slice 3b.0, tag `[s2]`, so serial)**: a source served by its block, on S2's harness
+  beside a busy thread per core, about 5 s. It cuts its own cycles short, 200 after U and 200
+  after B, by sleeping past the cycle inside the probe's `process` (never wait for a host to cut
+  cycles short: a GitHub runner cut 9 in 60 s under the same load). Its played count keeps
   to the clock across cut-short cycles (the skip-up-to-capacity rule absorbs every jump), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).

@@ -406,8 +406,15 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
   upstream ran one it did not, it reads the upstream's frames of the cycle it runs, never those of
   the cut one: no stale buffer, no lasting shift. The cut cycle's frames are lost downstream, and
   a route between blocks keeps in step across an xrun. Measured with the upstream stamping every
-  frame with its cycle's position: 3,491 such cycles over ten idle and ten loaded runs, every
-  one current.
+  frame with its cycle's position: 3,491 such cycles the host cut short over ten idle and ten
+  loaded runs, and 2,833 over ten runs that cut them on purpose, every one current.
+- **A cycle can be cut short on purpose.** A node that sleeps past the cycle inside its `process`
+  cuts that cycle short straight after itself, on any host: the driver's timer became ready
+  during the sleep, before the eventfd the node writes as it finishes, the loop dispatches them
+  in that order, and the next cycle's `node_ready` (`impl-node.c`) resets the woken node, whose
+  wake then finds it no longer triggered. S5 makes both shapes this way (U overruns, and B), since
+  a host cuts cycles short only by chance (a GitHub runner: 9 in 60 s beside a busy thread per
+  core). The driver may cut a cycle or two more catching up.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.
