@@ -305,8 +305,9 @@ instead, or filter both, if that matters. What a peer can and cannot do:
 - A frame or message over 1 MiB, or over 1024 fragments, is refused before it costs anything.
 - **Sockets that prove nothing give way to newcomers**, so holding them keeps no server out: an
   address holds at most 8 sockets still to upgrade and the node at most 32, both counting only
-  sockets whose peer has not closed (a burst of connects closed at once refuses no one after it),
-  and the transport at most 64 threads, closed or not; in the upgraded room, the newcomer's own
+  sockets whose peer has not closed (a burst of connects closed at once refuses no one after it,
+  unless it outruns the 64-thread bound, which every address shares), and the transport at most
+  64 threads, closed or not; in the upgraded room, the newcomer's own
   address's oldest goes first, then one with its Noise handshake unfinished, then the oldest. A
   connection that proved a long-term pairing never gives way.
 - **A sustained flood keeps servers out for as long as it lasts** (measured on loopback: about 16k

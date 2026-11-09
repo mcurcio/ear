@@ -15,6 +15,8 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <ixwebsocket/IXSelectInterrupt.h>
+#include <ixwebsocket/IXSocket.h>
 #include <ixwebsocket/IXSocketFactory.h>
 #include <ixwebsocket/IXSocketTLSOptions.h>
 #include <ixwebsocket/IXWebSocketServer.h>
@@ -82,9 +84,9 @@ void reset(int fd) {
 	::close(fd);
 }
 
-/// Holds `count` upgraded sockets from 127.0.0.1 on a server of `maxConnections`, closes them all with a reset while
-/// their threads cannot see it, then upgrades one more: whether it was answered.
-bool answeredAfterClosing(std::size_t maxConnections, std::size_t count) {
+/// On a server of `maxConnections`, `rounds` times: holds `count` upgraded sockets from 127.0.0.1 and closes them all with
+/// a reset while their threads cannot see it. Then upgrades one more: whether it was answered.
+bool answeredAfterClosing(std::size_t maxConnections, std::size_t count, std::size_t rounds = 1) {
 	const std::uint16_t port = freePort();
 	ix::WebSocketServer server(port, "127.0.0.1", 64, maxConnections);
 
@@ -113,26 +115,29 @@ bool answeredAfterClosing(std::size_t maxConnections, std::size_t count) {
 		changed.notify_all();
 	};
 
-	std::vector<int> held;
-	for (std::size_t i = 0; i < count; ++i) {
-		const int fd = upgrade(port);
-		REQUIRE(fd >= 0);
-		INFO("socket " << i);
-		CHECK(answered(fd));
-		CHECK(sendFrame(fd));
-		held.push_back(fd);
-	}
-	{
-		std::unique_lock lock(mutex);
-		const bool allIn = changed.wait_for(lock, 10s, [&] { return opened == count; });
-		if (!allIn) {
-			lock.unlock();
-			release();
-			server.stop();
-			FAIL("only " << opened << " of " << count << " messages arrived");
+	for (std::size_t round = 0; round < rounds; ++round) {
+		std::vector<int> held;
+		for (std::size_t i = 0; i < count; ++i) {
+			const int fd = upgrade(port);
+			REQUIRE(fd >= 0);
+			INFO("round " << round << ", socket " << i);
+			CHECK(answered(fd));
+			CHECK(sendFrame(fd));
+			held.push_back(fd);
 		}
+		{
+			const std::size_t expected = (round + 1) * count;
+			std::unique_lock lock(mutex);
+			const bool allIn = changed.wait_for(lock, 10s, [&] { return opened == expected; });
+			if (!allIn) {
+				lock.unlock();
+				release();
+				server.stop();
+				FAIL("only " << opened << " of " << expected << " messages arrived");
+			}
+		}
+		for (const int fd : held) reset(fd);
 	}
-	for (const int fd : held) reset(fd);
 
 	// All upgraded, so none can give way, and all still listed: only their being closed lets one more in.
 	const int next = upgrade(port);
@@ -159,42 +164,86 @@ TEST_CASE("Sockets their peers have closed leave the room at once, though their 
 	CHECK(answeredAfterClosing(4, 4));
 }
 
-TEST_CASE("An open connection whose socket is closed under it ends, as one a stop raced to its 101 did not",
-          "[sendspin][transport]") {
-	// A server's stop() closes every listed connection, and one is listed before its handshake ends. A close that lands
-	// after the 101 went out and before the state became OPEN finds it CLOSED and leaves only a close request in the
-	// pipe; the first poll in OPEN closed the socket on that request and changed nothing else, so every later poll failed
-	// at once, without a syscall, and the thread spun and stop() never joined it. That state is made here directly: an
-	// open connection whose socket is then closed.
-	const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-	REQUIRE(listener >= 0);
-	sockaddr_in address{};
-	address.sin_family = AF_INET;
-	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
-	REQUIRE(::listen(listener, 1) == 0);
-	socklen_t length = sizeof address;
-	REQUIRE(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0);
-	const int peer = upgrade(ntohs(address.sin_port)); // the upgrade waits in the socket for the handshake to read
-	REQUIRE(peer >= 0);
-	const int accepted = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
-	REQUIRE(accepted >= 0);
+TEST_CASE("Sockets their peers have closed still count against twice the room in threads", "[sendspin][transport]") {
+	// A room of 2: two rounds of two, each closed before the next, leave four listed and none open, so the room has space
+	// but twice the room is reached, and the fifth is refused. The bound is checked before the room's open count.
+	CHECK_FALSE(answeredAfterClosing(2, 2, 2));
+}
 
-	std::string error;
-	auto socket = ix::createSocket(false, accepted, error, ix::SocketTLSOptions());
-	INFO(error);
-	REQUIRE(socket);
+namespace {
+
+/// A server-side connection, upgraded and open on its own transport, with nothing running it: the test polls it.
+struct OpenConnection {
 	ix::WebSocketTransport transport;
-	REQUIRE(transport.connectToSocket(std::move(socket), 5, false).success);
-	CHECK(answered(peer));
-	REQUIRE(transport.getReadyState() == ix::WebSocketTransport::ReadyState::OPEN);
+	ix::Socket* socket = nullptr; // the transport's own, kept before it moved in
+	int peer = -1;
+	int listener = -1;
 
-	transport.closeSocket();
-	// Each round returns at once either way: the socket is gone, so nothing is waited for.
-	for (int round = 0; round < 4 && transport.getReadyState() != ix::WebSocketTransport::ReadyState::CLOSED; ++round)
+	OpenConnection() {
+		listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		REQUIRE(listener >= 0);
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
+		REQUIRE(::listen(listener, 1) == 0);
+		socklen_t length = sizeof address;
+		REQUIRE(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+		peer = upgrade(ntohs(address.sin_port)); // the upgrade waits in the socket for the handshake to read
+		REQUIRE(peer >= 0);
+		const int accepted = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+		REQUIRE(accepted >= 0);
+
+		std::string error;
+		auto created = ix::createSocket(false, accepted, error, ix::SocketTLSOptions());
+		INFO(error);
+		REQUIRE(created);
+		socket = created.get();
+		REQUIRE(transport.connectToSocket(std::move(created), 5, false).success);
+		CHECK(answered(peer));
+		REQUIRE(transport.getReadyState() == ix::WebSocketTransport::ReadyState::OPEN);
+	}
+	~OpenConnection() {
+		if (peer >= 0) ::close(peer);
+		if (listener >= 0) ::close(listener);
+	}
+	OpenConnection(const OpenConnection&) = delete;
+	OpenConnection& operator=(const OpenConnection&) = delete;
+
+	void pollOnce() {
 		transport.dispatch(transport.poll(),
 		                   [](const std::string&, std::size_t, bool, ix::WebSocketTransport::MessageKind) {});
-	CHECK(transport.getReadyState() == ix::WebSocketTransport::ReadyState::CLOSED);
-	::close(peer);
-	::close(listener);
+	}
+};
+
+} // namespace
+
+// A server's stop() closes every listed connection, and one is listed before its handshake ends. A close that lands
+// after the 101 went out and before the state became OPEN finds it CLOSED and leaves only a close request in the pipe;
+// the first poll in OPEN closed the socket on that request and changed nothing else, so every later poll failed at once,
+// without a syscall, and the thread spun and stop() never joined it.
+
+TEST_CASE("A close request left for an open connection ends it on the poll that reads it", "[sendspin][transport]") {
+	// The race's own path: the request in the pipe, read in OPEN. One poll, so a request handled apart from a failed
+	// poll, closing the socket and nothing else, fails here.
+	OpenConnection connection;
+	int closes = 0;
+	connection.transport.setOnCloseCallback([&](std::uint16_t, const std::string&, std::size_t, bool) { ++closes; });
+	REQUIRE(connection.socket->wakeUpFromPoll(ix::SelectInterrupt::kCloseRequest));
+	connection.pollOnce();
+	CHECK(connection.transport.getReadyState() == ix::WebSocketTransport::ReadyState::CLOSED);
+	connection.pollOnce(); // nothing left to say
+	CHECK(closes == 1);
+}
+
+TEST_CASE("An open connection whose socket is closed under it ends, as one a stop raced to its 101 did not",
+          "[sendspin][transport]") {
+	// The state the race left, made directly: an open connection whose socket is then closed.
+	OpenConnection connection;
+	connection.transport.closeSocket();
+	// Each round returns at once either way: the socket is gone, so nothing is waited for.
+	for (int round = 0; round < 4 && connection.transport.getReadyState() != ix::WebSocketTransport::ReadyState::CLOSED;
+	     ++round)
+		connection.pollOnce();
+	CHECK(connection.transport.getReadyState() == ix::WebSocketTransport::ReadyState::CLOSED);
 }

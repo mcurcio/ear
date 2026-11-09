@@ -130,10 +130,10 @@ index 1070836f..cbf2a481 100644
  
          std::atomic<bool> _stop;
 diff --git a/ixwebsocket/IXWebSocketServer.cpp b/ixwebsocket/IXWebSocketServer.cpp
-index 70f9568f..85440b26 100644
+index 70f9568f..a1eb7148 100644
 --- a/ixwebsocket/IXWebSocketServer.cpp
 +++ b/ixwebsocket/IXWebSocketServer.cpp
-@@ -12,11 +12,112 @@
+@@ -12,11 +12,113 @@
  #include "IXWebSocket.h"
  #include "IXWebSocketTransport.h"
  #include <future>
@@ -158,8 +158,9 @@ index 70f9568f..85440b26 100644
 +        // A socket that has not upgraded proves nothing, so a full room never refuses the newcomer
 +        // while one of those is in it: it gives way, the oldest of the newcomer's own address once
 +        // that address has its share, or else the oldest of the address holding most. So a holder
-+        // of sockets keeps no one out, and one address, however fast, touches no other's. The
-+        // second bound holds the threads if sockets that gave way are slow to go.
++        // of sockets keeps no one out, and one address touches no other's unless it outruns the
++        // second bound, which every address shares. That bound holds the threads if sockets that
++        // gave way, or that their peers closed, are slow to go.
 +        //
 +        // An address, and the room, hold only the sockets their peers have not closed: one closed
 +        // waits for its own thread to see it before it leaves the list, and on a loaded host that
@@ -246,7 +247,7 @@ index 70f9568f..85440b26 100644
      const int WebSocketServer::kDefaultHandShakeTimeoutSecs(3); // 3 seconds
      const bool WebSocketServer::kDefaultEnablePong(true);
      const int WebSocketServer::kPingIntervalSeconds(-1); // disable heartbeat
-@@ -87,6 +188,7 @@ namespace ix
+@@ -87,6 +189,7 @@ namespace ix
      {
          handleUpgrade(std::move(socket), connectionState);
  
@@ -254,7 +255,7 @@ index 70f9568f..85440b26 100644
          connectionState->setTerminated();
      }
  
-@@ -152,6 +254,7 @@ namespace ix
+@@ -152,6 +255,7 @@ namespace ix
                                                   _enablePerMessageDeflate,
                                                   request,
                                                   _sendTimeoutSeconds);
