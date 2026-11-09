@@ -47,6 +47,22 @@ void MainLoopActivity::set(std::string_view call, std::string_view node) noexcep
 
 void MainLoopActivity::clear() noexcept { write(nullptr, 0, {}); }
 
+MainLoopActivity::Saved MainLoopActivity::save() noexcept {
+	// The main thread is the one writer, so it reads its own last write without the sequence.
+	Saved saved;
+	saved.call = shared.call.load(std::memory_order_relaxed);
+	saved.callSize = shared.callSize.load(std::memory_order_relaxed);
+	saved.nameSize = shared.nameSize.load(std::memory_order_relaxed);
+	std::array<std::uint64_t, wordCount> plain{};
+	for (std::size_t i = 0; i < wordCount; ++i) plain[i] = shared.name[i].load(std::memory_order_relaxed);
+	std::memcpy(saved.name.data(), plain.data(), saved.name.size());
+	return saved;
+}
+
+void MainLoopActivity::restore(const Saved& saved) noexcept {
+	write(saved.call, saved.callSize, std::string_view(saved.name.data(), saved.nameSize));
+}
+
 std::string MainLoopActivity::current() {
 	for (;;) {
 		const std::uint64_t before = shared.sequence.load(std::memory_order_acquire);

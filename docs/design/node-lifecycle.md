@@ -143,7 +143,7 @@ the block since the last silence), `rested` (it reached `running` or `stopped`: 
 arrived while the drive was in flight). `n` is the barrier number, raised for every request it posts (5.6).
 
 States: `none`; `readying` (instance made, `configure` answered applied, resources readying); `prepared` (every
-resource ready, code prepared, not driven); `arming` (a drive posted, its completion awaited); `driving` (applied,
+resource ready, code prepared, not driven); `arming` (a drive posted, its completion awaited, at most 5 s: revision 2.7); `driving` (applied,
 `start()` called); `fading` (a fade posted, its acknowledgement awaited, at most 100 ms); `silencing` (a silence
 posted, its completion awaited, at most 5 s); `tearing` (I5 steps 1's rest to 5, at most 10 s).
 
@@ -168,7 +168,7 @@ follows in the same turn, so T3 (a legacy recipe included, 5.10) always runs and
 | `fading`, `silencing`, `tearing` | stop, start or teardown asked | unchanged | nothing here: the aggregate's intent changes (4.3, rule 3), and `silenced` goes by the intent it finds | 6.3 |
 | `silencing` | `silenced(n, P)`, intent `stop` | `prepared` | clear the latency plan; `driven = false`; `release` then `prepare` the code, so the next drive starts it afresh (D-L33) | T7 |
 | `silencing` | `silenced(n, P)`, any other intent | `tearing` | clear the latency plan; `release`; queue the outside nodes' destruction; close the sinks and legacy handoffs; arm the 10 s close timer | T6, T14, T17, T20 then I5 |
-| `silencing` | the 5 s bound, after `settle()` found the invoke had not run (5.4) | `none` (leaked) | `ear.barrier-overdue`; mark the data loop wedged; leak the configuration | I5a |
+| `silencing`, `arming` | the 5 s bound, after `settle()` found the invoke had not run (5.4; a drive's too, revision 2.7) | `none` (leaked) | `ear.barrier-overdue`; mark the data loop wedged; leak the configuration | I5a |
 | `readying`, `prepared` | teardown asked (restart, disable, removal, fault) | `tearing` | no barrier (never driven); `release` if prepared; as above | I5 ("before ready") |
 | `tearing` | every sink and handoff closed, then the legacy run object closed | `none` | on the main loop: the code, the instance, the recordings, in that order (I5 step 5) | I5 |
 | `tearing` | the 10 s bound | `none` (leaked) | `ear.close-overdue`, its detail naming every sink, handoff and run object still open; leak (today's `closeOverdue`, `node_host.cpp:447-464` [V]) | I5a |
@@ -533,7 +533,9 @@ had come first. Only what is still not done is judged.
 
 **Diagnostics with no node** (D-L44). `ear.data-loop-wedged` names no node (control-plane.md 4.6), so it does not go
 through `NodeDiagnosticListener`. `node_host.hpp` gains `EngineDiagnosticListener::engineDiagnostic(EngineDiagnostic)`,
-where `EngineDiagnostic` is `{std::string_view code; std::string detail;}` (the detail names the node whose barrier
+where `EngineDiagnostic` is `{std::string_view code; std::string detail; std::vector<DiagnosticField> fields;}` (revision
+2.7: `DiagnosticField` is `{std::string_view key; std::int64_t value;}`, control-plane.md 4.6's Fields, here `ms`, and
+`NodeDiagnosticListener::nodeDiagnostic` gains the same `fields`; a record carries them between `code` and `detail`) (the detail names the node whose barrier
 tripped it and the time waited); `StatusLog` implements it with a `diagnostic` record without `node`, and
 `ear.main-loop-stalled` and `ear.main-loop-resumed` (5.12) reach the same encoder from `main.cpp`.
 
@@ -1648,3 +1650,48 @@ edit or recorded here:
   a name added back gets its block, and so its ports and routes, only once the older block is destroyed, where L-3a made
   both at once; a removed node's `removed` record follows its block's destruction in the same turn's flush. Every
   record's text is unchanged.
+
+### Revision 2.7 (2026-11-09, found building L-3c)
+
+Step L-3c built 5.3's fades and 5.4's bounds and wedge in `node_host.cpp`: every drive carries one faded flag per output
+the code writes (public outputs, then inside outputs, all true: 3a has no sink), so `Queued.fades` is true for a node
+with any output and a node with none is silenced unfaded; every planned silence fades first; the fade's bound (100 ms),
+the barrier's (5 s) and the close's (10 s, as before) are `Timers`, each judging only after the block's `settle()`;
+`EngineDiagnosticListener`, `leaked()` (renamed from `leakedRuns()`), and `StatusLog`'s `ear.fade-unacknowledged`,
+`ear.barrier-overdue` and node-less `ear.data-loop-wedged` with their `output-records.json` cases. `node_host_test.cpp`
+has 68 cases: the 59 kept (a node with an output now logs its fade before its silence) and nine new (the faded flags, a
+fade unacknowledged, M1's completion settled from a bound after a 6 s stall, B1's block leaving STREAMING, the wedge, a
+node added after it, `stopAll` after it, 16 fades at once, a factory or adapter throwing in the flush).
+`sound_card_test.cpp` follows to_card's fade-in and its last 5 ms to the card's samples. What building it settled, each
+a minimal edit or recorded here:
+
+- 4.2: a drive is a barrier too (5.6 numbers it as one, and it is applied inside its invoke), so `arming` has the 5 s
+  bound and the same row as `silencing`'s: a drive whose invoke never ran is the loop's fact, and without it a node
+  starting when the loop wedged would never end, nor would `stopAll`. L-1's table test gains the cell.
+- 5.4's bound, as built: when its timer fires the block is settled in an input of its own and the request judged in the
+  input behind whatever that settle ran, so a completion the settle found is heard first (M1); the judgement also
+  checks the configuration and the barrier number, since the fade's bound must not judge the silence posted after it.
+- 5.4's wedge, as built: `ear.barrier-overdue` (with `ms`), then `ear.data-loop-wedged` once (with `ms`, its detail
+  naming the node); then every node hears it as an input of its own, and nothing is settled again (`settle()` may post
+  an invoke). A configuration `readying` or `prepared` fails `engine-refused: the data loop is wedged` and tears down
+  with no barrier (its latency is no longer carried); one `arming`, `fading` or `silencing` is leaked at once, its
+  bound's diagnostics unsaid; one `driving` runs on (the loop is wedged anyway) until its stop or removal, whose fade and
+  silence are then judged overdue at once and leak it. Leaked configurations keep their outside nodes, handoffs (never
+  closed: their writer may still run) and faded flags. The flush still runs (it is a main-loop task, not a PipeWire
+  call), but a destruction leaks what it would destroy, a block's making makes nothing (the node is lost "the data loop
+  is wedged") and an outside node's making is skipped, so every removal still ends and `stopAll`'s `allGone` runs.
+  `~NodeHost` releases, never destroys, what a wedged loop may reach. `leaked()` counts configurations (with the outside
+  nodes they hold), and blocks and outside nodes leaked alone.
+- 5.12: `MainLoopActivity::Scope` saves what was written and restores it, so scopes nest (a hook inside a flush item);
+  `prepare`, `release`, `close run` and `free configuration` are named too (L-3b's review, N1 and N2).
+- 5.5: a flush item that throws strands nothing: a block's factory that throws leaves the node's block `lost` ("making
+  the port block threw: <what>"), never `made` with none; an outside adapter that throws drops the half-made entry and
+  fails the node as an outside node refused; the item's object goes inside its activity whether or not it threw; and the
+  flush entered inside an input or another flush (an executor that ran a post inline) is a `std::logic_error` (L-3b's
+  review, N3 to N5).
+- Externally: a node with an output (every type but `file`) fades its outputs over 5 ms at every start and before every
+  restart, removal, failure and ear's stop, its card's playback included, so its block's teardown waits one more
+  completion (about one cycle); no record or wire change but the three new diagnostics. A route linked just after a node
+  runs hears its fade-in: `control_port_test.cpp`'s recording RMS skips its first 5 ms and its levels case reads the
+  second window with noise, since those recordings last only 20 to 60 ms.
+

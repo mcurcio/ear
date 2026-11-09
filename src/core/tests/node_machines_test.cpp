@@ -478,6 +478,8 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	const ConfigCell toTearing{tearing, {K::teardown}};
 	const ConfigCell toTearingReleased{tearing, {K::release, K::teardown}};
 	const ConfigCell lostToSilence{silencing, {K::silence}};
+	// A drive's invoke not run in 5 s is the same fact about the loop as a silence's (revision 2.7).
+	const ConfigCell leakedOverdue{none, {K::barrierOverdue, K::markWedged, K::leak}};
 	const std::vector<std::pair<At, std::vector<ConfigCell>>> table{
 		{At::none,
 	     {{readying, {K::configure}},
@@ -546,7 +548,7 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      same,
-	      same,
+	      leakedOverdue,
 	      same,
 	      same,
 	      lostToSilence,
@@ -564,7 +566,7 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	      same,
 	      same,
 	      same,
-	      same,
+	      leakedOverdue,
 	      same,
 	      same,
 	      lostToSilence,

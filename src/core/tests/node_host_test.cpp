@@ -164,35 +164,52 @@ struct QueueExecutor final : Executor {
 /// Completions a block holds until the test runs them (TestBlocks::hold).
 using Held = std::vector<std::move_only_function<void()>>;
 
+/// How the fake blocks complete what they are asked (TestBlocks): posted to the main loop, held for the test, or
+/// applied with their event not yet dispatched, so only settle() runs them (a main loop that stalled, 5.4's M1).
+struct BlockModes {
+	bool hold = false;  // completions wait in TestBlocks::held until the test runs them
+	bool stall = false; // completions wait in the block until its settle()
+	std::size_t settles = 0;
+	std::vector<std::vector<bool>> faded; // each drive's faded flags, in order
+};
+
 /// A block as node-lifecycle.md 5.3 has it: a drive is applied at once (the code it runs is recorded) and its `done`
-/// runs later on the main loop, posted there, never inside the call; or, when held, when the test says.
+/// runs later on the main loop, posted there, never inside the call; or, when held, when the test says; or, stalled,
+/// when settle() is called.
 struct TestBlock final : PortBlock {
 	Log& log;
 	AudioCode** driven;
 	std::vector<LatencyPlan>* plans;
 	Executor& mainLoop;
-	const bool& hold;
+	BlockModes& modes;
 	Held& held;
-	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p, Executor& m, const bool& h, Held& hd)
-		: log(l), driven(d), plans(p), mainLoop(m), hold(h), held(hd) {}
+	Held applied; // completed, their event not yet dispatched
+	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p, Executor& m, BlockModes& b, Held& hd)
+		: log(l), driven(d), plans(p), mainLoop(m), modes(b), held(hd) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
 	void carryLatency(const LatencyPlan& plan) override { plans->push_back(plan); }
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 		*driven = request.code;
 		log.push_back(request.code != nullptr ? "drive code" : "drive nothing");
+		if (request.code != nullptr) modes.faded.emplace_back(request.faded.begin(), request.faded.end());
 		complete([done = std::move(done)]() mutable { done(0); });
 	}
 	void fadeOut(std::move_only_function<void()> done) override {
 		log.push_back("fade");
 		complete(std::move(done));
 	}
-	void settle() override {}
+	void settle() override {
+		++modes.settles;
+		Held now = std::exchange(applied, {});
+		for (auto& done : now) done();
+	}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
 
 private:
 	void complete(std::move_only_function<void()> done) {
-		if (hold) held.push_back(std::move(done));
+		if (modes.hold) held.push_back(std::move(done));
+		else if (modes.stall) applied.push_back(std::move(done));
 		else mainLoop.post(std::move(done));
 	}
 };
@@ -203,16 +220,19 @@ struct TestBlocks final : PortBlockFactory {
 	std::vector<PortBlockEvents*> events;
 	std::deque<AudioCode*> driven;              // what each block runs now, in make order
 	std::deque<std::vector<LatencyPlan>> plans; // every latency plan each block was given, in make order
-	bool hold = false;                          // completions wait in `held` instead of being posted
+	BlockModes modes;
+	bool& hold = modes.hold; // completions wait in `held` instead of being posted
 	Held held;
 	std::vector<std::string> activities; // MainLoopActivity::current() inside each make
+	bool throwInMake = false;            // make() throws, as a factory with a bug
 	TestBlocks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
+		if (throwInMake) throw std::runtime_error("no memory for " + node);
 		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		activities.push_back(MainLoopActivity::current());
 		events.push_back(&e);
-		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back(), mainLoop, hold,
+		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back(), mainLoop, modes,
 		                                   held);
 	}
 	/// Runs the held completion `index`, as the block's event would on the main loop.
@@ -279,11 +299,13 @@ struct TestCards final : SoundCardAdapter {
 	Log& log;
 	std::vector<OutsideNodeEvents*> events;
 	bool readyInMake = false;            // tells ready() inside make(), as a card already running might
+	bool throwInMake = false;            // make() throws, as an adapter with a bug
 	std::vector<std::string> activities; // MainLoopActivity::current() inside each make
 	std::vector<OutsideTarget> targets;
 	explicit TestCards(Log& l) : log(l) {}
 	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const SoundCardRequest& request,
 	                                  OutsideNodeEvents& e) override {
+		if (throwInMake) throw std::runtime_error("no card " + request.card.text());
 		activities.push_back(MainLoopActivity::current());
 		targets.push_back(target);
 		log.push_back("card " + target.engineNode + " of " + target.blockNode + " " + request.card.text() + " " +
@@ -373,13 +395,24 @@ struct TestNotes final : NodeNoteListener {
 	}
 };
 
-struct TestDiagnostics final : NodeDiagnosticListener {
+struct TestDiagnostics final : NodeDiagnosticListener, EngineDiagnosticListener {
 	Log& log;
 	std::vector<std::string> details;
 	explicit TestDiagnostics(Log& l) : log(l) {}
-	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) override {
-		log.push_back("diagnostic " + node + " " + std::string(code));
+	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
+	                    std::span<const DiagnosticField> fields) override {
+		std::string line = "diagnostic " + node + " " + std::string(code);
+		for (const DiagnosticField& field : fields)
+			line += " " + std::string(field.key) + "=" + std::to_string(field.value);
+		log.push_back(line);
 		details.push_back(detail);
+	}
+	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
+		std::string line = "engine diagnostic " + std::string(diagnostic.code);
+		for (const DiagnosticField& field : diagnostic.fields)
+			line += " " + std::string(field.key) + "=" + std::to_string(field.value);
+		log.push_back(line);
+		details.push_back(diagnostic.detail);
 	}
 };
 
@@ -405,6 +438,7 @@ struct Fixture {
 		host.subscribe(listener);
 		host.subscribeNotes(notes);
 		host.subscribeDiagnostics(diagnostics);
+		host.subscribeEngineDiagnostics(diagnostics);
 	}
 	/// The node added, then the turn ends: what it posted runs (its flush makes its block, 5.5).
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
@@ -549,12 +583,12 @@ TEST_CASE("stopAll takes a node down in order: the barrier, release, handoffs, b
 	f.log.clear();
 
 	f.stopAll();
-	CHECK(f.log == Log{"node rec stopping", "drive nothing"});
+	CHECK(f.log == Log{"node rec stopping", "fade"}); // its inside output pb fades before the silence
 	f.log.clear();
 	f.settle();
 
 	// Nothing the consumers live in goes until every handoff has closed; the block goes once the silence completed.
-	CHECK(f.log == Log{"release", "handoff close", "handoff close", "block destroyed"});
+	CHECK(f.log == Log{"drive nothing", "release", "handoff close", "handoff close", "block destroyed"});
 	f.log.clear();
 
 	f.handoffs.finishOne(3);
@@ -616,11 +650,11 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	b->handoffs = 1;
 	f.update("rec", std::move(b));
 
-	// The block stops running the old code before release(); the handoff then closes.
-	CHECK(f.log == Log{"node rec starting", "drive nothing"});
+	// The block fades and stops running the old code before release(); the handoff then closes.
+	CHECK(f.log == Log{"node rec starting", "fade"});
 	f.log.clear();
 	f.settle();
-	CHECK(f.log == Log{"release", "handoff close"});
+	CHECK(f.log == Log{"drive nothing", "release", "handoff close"});
 	f.log.clear();
 
 	SECTION("the old configuration goes, then its config, then the new config starts") {
@@ -661,7 +695,8 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	f.log.clear();
 	f.stopAll();
 	f.settle();
-	CHECK(f.log.at(1) == "drive nothing");
+	CHECK(f.log.at(1) == "fade");
+	CHECK(f.log.at(2) == "drive nothing");
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
 }
@@ -717,16 +752,16 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 
 	SECTION("a lost card fails the node with the card's detail, and the configuration is torn down") {
 		f.cards.events[0]->lost("unplugged");
-		CHECK(f.log == Log{"drive nothing", "node motu failed engine-refused: unplugged"});
+		CHECK(f.log == Log{"fade", "node motu failed engine-refused: unplugged"}); // to_card's pb fades first
 		f.log.clear();
 		f.settle();
-		CHECK(f.log == Log{"release", "card motu.playback destroyed", "card motu.capture destroyed"});
+		CHECK(f.log == Log{"drive nothing", "release", "card motu.playback destroyed", "card motu.capture destroyed"});
 		f.log.clear();
 	}
 	SECTION("a restart remakes the cards at once, the block being ready, in the flush that destroys the old ones") {
 		f.update("motu", withCards(f.log, "B"));
 		f.settle();
-		CHECK(f.log == Log{"node motu starting", "drive nothing", "release", "start 44100 B",
+		CHECK(f.log == Log{"node motu starting", "fade", "drive nothing", "release", "start 44100 B",
 		                   "card motu.playback destroyed", "card motu.capture destroyed",
 		                   "card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
 		                   "card motu.capture of motu Pro24 cap.1 at 44100"});
@@ -743,7 +778,8 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 	f.settle();
 	CHECK(f.log.back() == "all gone");
 	if (f.cards.events.size() == 4) {
-		CHECK(f.log.at(1) == "drive nothing");
+		CHECK(f.log.at(1) == "fade");
+		CHECK(f.log.at(2) == "drive nothing");
 		CHECK(indexOf(f.log, "release") < indexOf(f.log, "card motu.playback destroyed"));
 		CHECK(indexOf(f.log, "card motu.capture destroyed") < indexOf(f.log, "node motu gone dropped=0"));
 	}
@@ -856,7 +892,7 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 	f.host.nodeRemoved("noise");
 	f.settle();
 	// The block's destruction waits for the turn's flush; the configuration goes meanwhile (5.7).
-	CHECK(f.log == Log{"node noise stopping", "drive nothing", "release", "run destroyed", "block destroyed",
+	CHECK(f.log == Log{"node noise stopping", "fade", "drive nothing", "release", "run destroyed", "block destroyed",
 	                   "node noise gone dropped=0"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].name == "rec");
@@ -982,10 +1018,10 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	f.log.clear();
 
 	f.receivers.events[0]->lost("the engine removed the RTP receiver");
-	CHECK(f.log == Log{"drive nothing", "node fpp failed engine-refused: the engine removed the RTP receiver"});
+	CHECK(f.log == Log{"fade", "node fpp failed engine-refused: the engine removed the RTP receiver"});
 	f.log.clear();
 	f.settle();
-	CHECK(f.log == Log{"release", "handoff close", "receiver fpp.rtp destroyed"});
+	CHECK(f.log == Log{"drive nothing", "release", "handoff close", "receiver fpp.rtp destroyed"});
 	f.log.clear();
 	f.handoffs.finishOne(0);
 	CHECK(f.log == Log{"handoff destroyed"}); // A stays the node's newest config until B replaces it
@@ -1293,8 +1329,8 @@ TEST_CASE("A stale completion (an older barrier, a removed node) changes nothing
 	CHECK(f.blocks.held.size() == 1);
 	f.add("other", std::make_shared<TestConfig>(f.log));
 	f.log.clear();
-	f.blocks.complete(0); // the old node's drive: it silences that node, never the new one
-	CHECK(f.log == Log{"drive nothing"});
+	f.blocks.complete(0); // the old node's drive: it fades and silences that node, never the new one
+	CHECK(f.log == Log{"fade"});
 	CHECK(f.host.health().back().state == NodeState::starting);
 	f.blocks.hold = false;
 	f.blocks.complete(0);
@@ -1315,10 +1351,12 @@ TEST_CASE("A restart while the drive is in flight silences it at its completion 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
 	CHECK(f.log.empty()); // nothing to silence until the drive is applied (6.3's "stop in starting")
 	f.blocks.complete(0);
-	CHECK(f.log == Log{"drive nothing"});
+	CHECK(f.log == Log{"fade"});
 	f.blocks.complete(0);
-	CHECK(f.log == Log{"drive nothing", "release", "run destroyed", "config A destroyed", "start 44100 B", "run built",
-	                   "prepare 44100/256", "drive code"});
+	CHECK(f.log == Log{"fade", "drive nothing"});
+	f.blocks.complete(0);
+	CHECK(f.log == Log{"fade", "drive nothing", "release", "run destroyed", "config A destroyed", "start 44100 B",
+	                   "run built", "prepare 44100/256", "drive code"});
 	f.blocks.complete(0);
 	CHECK(f.log.back() == "node rec running");
 	CHECK(std::ranges::count(f.log, std::string("node rec running")) == 1);
@@ -1337,11 +1375,11 @@ TEST_CASE("Removal silences before it destroys the block, and a node never drive
 	f.log.clear();
 
 	f.host.nodeRemoved("noise");
-	CHECK(f.log == Log{"node noise stopping", "drive nothing"}); // the block stays until the silence completed
+	CHECK(f.log == Log{"node noise stopping", "fade"}); // the block stays until the fade and the silence completed
 	f.log.clear();
 	f.settle();
 	// The block goes in the flush, the configuration meanwhile; the node is gone once both are (5.7).
-	CHECK(f.log == Log{"release", "run destroyed", "block destroyed", "node noise gone dropped=0"});
+	CHECK(f.log == Log{"drive nothing", "release", "run destroyed", "block destroyed", "node noise gone dropped=0"});
 	f.log.clear();
 
 	f.host.nodeRemoved("idle"); // no code was driven since its last silence (D-L7)
@@ -1409,7 +1447,7 @@ TEST_CASE("A fault while a restart's drive is in flight is dropped, and the rest
 		REQUIRE(f.blocks.held.size() == 1);
 		f.update("net", std::make_shared<TestConfig>(f.log, "next"));
 		std::thread([&] { old->events->lost("died"); }).join();
-		f.blocks.complete(0);   // the drive: its completion silences it
+		f.blocks.complete(0);   // the drive: its completion silences it (no output to fade)
 		f.mainLoop.runPosted(); // the loss, told once the restart began
 		f.blocks.complete(0);   // the silence
 		f.blocks.hold = false;
@@ -1433,8 +1471,9 @@ TEST_CASE("A fault while a restart's drive is in flight is dropped, and the rest
 		REQUIRE(f.blocks.held.size() == 1);
 		f.update("motu", withCards(f.log, "B"));
 		f.cards.events.at(0)->lost("unplugged");
-		f.blocks.complete(0);
-		f.blocks.complete(0);
+		f.blocks.complete(0); // the drive
+		f.blocks.complete(0); // the fade
+		f.blocks.complete(0); // the silence
 		f.blocks.hold = false;
 		CHECK(std::ranges::count(f.log, std::string("node motu failed engine-refused: unplugged")) == 0);
 		CHECK(std::ranges::find(f.log, std::string("start 44100 B")) != f.log.end());
@@ -1861,6 +1900,7 @@ struct ThreadedFixture {
 	ThreadedFixture() {
 		host.subscribe(listener);
 		host.subscribeDiagnostics(diagnostics);
+		host.subscribeEngineDiagnostics(diagnostics);
 	}
 };
 
@@ -1919,11 +1959,11 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	f.timers.advance(closeDeadline - std::chrono::milliseconds(1));
 	CHECK(allGone == 0);
 
-	CHECK(f.host.leakedRuns() == 0);
+	CHECK(f.host.leaked() == 0);
 	f.timers.advance(std::chrono::milliseconds(1));
 	// Stop proceeds past the bound: the node is gone, the run object was never closed nor destroyed.
 	CHECK(allGone == 1);
-	CHECK(f.host.leakedRuns() == 1); // main.cpp then ends without destroying the main loop under the leaked run
+	CHECK(f.host.leaked() == 1); // main.cpp then ends without destroying the main loop under the leaked run
 	CHECK(f.log == Log{"node rec stopping", "drive nothing", "release", "block destroyed",
 	                   "diagnostic rec ear.close-overdue", "node rec gone dropped=0"});
 	REQUIRE(f.diagnostics.details.size() == 1);
@@ -1959,7 +1999,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 	CHECK(f.log ==
 	      Log{"diagnostic net ear.close-overdue", "start 44100 next", "run built", "prepare 44100/256", "drive code"});
 	CHECK(std::ranges::count(f.log, std::string("run destroyed")) == 0);
-	CHECK(f.host.leakedRuns() == 1);
+	CHECK(f.host.leaked() == 1);
 	f.settle();
 	CHECK(f.log.back() == "node net running");
 	f.log.clear();
@@ -2076,8 +2116,9 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 	f.settle();
 	f.handoffs.finishOne(0);
 	CHECK(f.log.at(0) == "node rec starting");
-	CHECK(f.log.at(1) == "drive nothing");
-	CHECK(f.log.at(2) == "release");
+	CHECK(f.log.at(1) == "fade"); // the barrier comes after the fade of what the code wrote
+	CHECK(f.log.at(2) == "drive nothing");
+	CHECK(f.log.at(3) == "release");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card rec.playback destroyed"));
 	// The cards go in the turn's flush, after the handoffs were told to close and before they finished (5.5).
 	CHECK(indexOf(f.log, "handoff close") < indexOf(f.log, "card rec.playback destroyed"));
@@ -2091,8 +2132,9 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 
 	f.host.nodeRemoved("rec");
 	CHECK(f.log.at(0) == "node rec stopping");
-	CHECK(f.log.at(1) == "drive nothing");
+	CHECK(f.log.at(1) == "fade");
 	f.settle();
+	CHECK(f.log.at(2) == "drive nothing");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "block destroyed"));
 	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "block destroyed"));
 	f.stopAll();
@@ -2295,8 +2337,10 @@ TEST_CASE("PipeWire's object changes of one turn run together in one flush, dest
 	f.addInTurn("c", std::make_shared<TestConfig>(f.log, "c"));
 	f.host.nodeRemoved("a");
 	f.host.nodeRemoved("b");
-	f.blocks.complete(0);
-	f.blocks.complete(0);
+	f.blocks.complete(0);                                                  // a's fade
+	f.blocks.complete(0);                                                  // b's fade
+	f.blocks.complete(0);                                                  // a's silence
+	f.blocks.complete(0);                                                  // b's silence
 	CHECK(std::ranges::count(f.log, std::string("make c 2 inputs")) == 0); // nothing made inside an input
 	CHECK(std::ranges::count(f.log, std::string("block destroyed")) == 0);
 	CHECK(std::ranges::count(f.log, std::string("card a.playback destroyed")) == 0);
@@ -2339,9 +2383,12 @@ TEST_CASE("A name added back gets its block only once the older block is destroy
 
 	f.host.nodeRemoved("rec");
 	f.addInTurn("rec", std::make_shared<TestConfig>(f.log, "next"));
-	CHECK(f.log == Log{"node rec stopping", "drive nothing", "node rec starting"}); // waiting: no block, no start
+	CHECK(f.log == Log{"node rec stopping", "fade", "node rec starting"}); // waiting: no block, no start
 	f.log.clear();
 
+	f.endTurn(); // the fade completes: the silence is posted
+	CHECK(f.log == Log{"drive nothing"});
+	f.log.clear();
 	f.endTurn(); // the silence completes: the old block's destruction is queued
 	CHECK(f.log == Log{"release", "handoff close"});
 	f.log.clear();
@@ -2388,7 +2435,7 @@ TEST_CASE("A name added back three times in one turn has one block at a time, an
 	f.log.clear();
 
 	f.settle();
-	CHECK(f.log == Log{"release", "handoff close", "block destroyed", "make rec 2 inputs"});
+	CHECK(f.log == Log{"drive nothing", "release", "handoff close", "block destroyed", "make rec 2 inputs"});
 	CHECK(f.blocks.events.size() == 2);
 	f.log.clear();
 	f.handoffs.finishOne(0);
@@ -2411,6 +2458,7 @@ TEST_CASE("An outside node ready told inside its making, during the flush, is ha
 	f.add("c", withPlayback(f.log));
 	addRunning(f, "a", std::make_shared<TestConfig>(f.log));
 	f.host.nodeRemoved("a");
+	f.endTurn(); // a's fade completes: its silence is posted
 	f.endTurn(); // a's silence completes: its block's destruction is queued
 	f.log.clear();
 
@@ -2519,4 +2567,309 @@ TEST_CASE("MainLoopActivity names each type hook while it runs, and is empty bet
 	f.stopAll();
 	f.settle();
 	CHECK(MainLoopActivity::current().empty());
+}
+
+// Fades, bounds and the wedged data loop (docs/design/node-lifecycle.md sections 4.2, 5.3 and 5.4; step L-3c).
+
+namespace {
+
+/// The calls into PipeWire a fake block or adapter logs: none may follow a wedge.
+bool isEngineCall(const std::string& line) {
+	return line.starts_with("make ") || line == "fade" || line.starts_with("drive ") || line == "block destroyed" ||
+	       line.starts_with("card ") || line.starts_with("receiver ");
+}
+
+std::size_t engineCalls(const Log& log) { return static_cast<std::size_t>(std::ranges::count_if(log, isEngineCall)); }
+
+/// Routable output bank "out" (two) and the inside output bank "pb" (two), as a card's.
+struct OutputConfig final : NodeConfig {
+	Log& log;
+	Ports ports_{{{Direction::input, "in", {"1"}},
+	              {Direction::output, "out", {"left", "right"}},
+	              {Direction::output, "pb", {"1", "2"}, PortBank::Reach::inside}}};
+	explicit OutputConfig(Log& l) : log(l) {}
+	const Ports& ports() const override { return ports_; }
+	StartResult start(StartContext&) const override { return std::make_unique<TestAudioCode>(log); }
+};
+
+} // namespace
+
+TEST_CASE("Every output the code writes is faded in at its drive and out before a silence, and a node with no output "
+          "is silenced unfaded",
+          "[node_host][fade]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	auto rec = std::make_shared<ThreadedConfig>(f.log); // inputs only
+	rec->closeAtOnce = true;
+	addRunning(f, "rec", rec);
+	// Public outputs, then inside outputs (process()'s order): all four faded; the input-only node has none.
+	REQUIRE(f.blocks.modes.faded.size() == 2);
+	CHECK(f.blocks.modes.faded[0] == std::vector<bool>{true, true, true, true});
+	CHECK(f.blocks.modes.faded[1].empty());
+	f.log.clear();
+
+	f.update("amp", std::make_shared<OutputConfig>(f.log));
+	CHECK(f.log == Log{"node amp starting", "fade"}); // the barrier waits for the fade's acknowledgement
+	f.log.clear();
+	f.settle();
+	CHECK(f.log.at(0) == "drive nothing");
+	CHECK(f.log.back() == "node amp running");
+	CHECK(f.blocks.modes.faded.back() == std::vector<bool>{true, true, true, true}); // the restart fades in again
+	f.log.clear();
+
+	f.host.nodeRemoved("rec");
+	CHECK(f.log == Log{"node rec stopping", "drive nothing"}); // nothing to fade: the silence at once
+	f.settle();
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+	CHECK(f.diagnostics.details.empty());
+}
+
+TEST_CASE("A fade unacknowledged for 100 ms is silenced unfaded, with ear.fade-unacknowledged", "[node_host][fade]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.hold = true;
+	f.log.clear();
+
+	f.host.nodeRemoved("amp");
+	REQUIRE(f.blocks.held.size() == 1); // the fade, never acknowledged (its block is STREAMING and silent)
+	f.timers.advance(std::chrono::milliseconds(99));
+	CHECK(f.log == Log{"node amp stopping", "fade"});
+	f.timers.advance(std::chrono::milliseconds(1));
+	CHECK(f.log == Log{"node amp stopping", "fade", "diagnostic amp ear.fade-unacknowledged ms=100", "drive nothing"});
+	CHECK(f.blocks.modes.settles == 1); // settled before it judged
+	CHECK(f.diagnostics.details.back() ==
+	      "the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded");
+	f.log.clear();
+
+	f.blocks.complete(0); // a late acknowledgement is stale: dropped
+	CHECK(f.log.empty());
+	f.blocks.complete(0); // the silence
+	f.endTurn();
+	CHECK(f.log == Log{"release", "block destroyed", "node amp gone dropped=0"});
+	CHECK(f.host.leaked() == 0);
+	CHECK(f.timers.live() == 0);
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A bound that fires before its completion was dispatched completes it from settle() and judges nothing",
+          "[node_host][fade]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.modes.stall = true; // the data loop completes everything; the main loop stalls before its events
+	f.log.clear();
+
+	f.host.nodeRemoved("amp");
+	// The main loop stalls 6 s: the fade's timer fires first, settles the block and hears the fade done.
+	f.timers.advance(std::chrono::milliseconds(6'000));
+	CHECK(f.log == Log{"node amp stopping", "fade", "drive nothing"});
+	// It stalls again past the barrier's bound: the silence completed meanwhile, so nothing is judged.
+	f.timers.advance(std::chrono::milliseconds(6'000));
+	f.endTurn();
+	CHECK(f.log ==
+	      Log{"node amp stopping", "fade", "drive nothing", "release", "block destroyed", "node amp gone dropped=0"});
+	CHECK(f.diagnostics.details.empty()); // no fade unacknowledged, no barrier overdue, no wedge
+	CHECK(f.host.leaked() == 0);
+
+	// The data loop is not wedged: a node added afterwards gets its block.
+	f.blocks.modes.stall = false;
+	f.add("next", std::make_shared<OutputConfig>(f.log));
+	CHECK(f.log.back() == "make next 1 inputs");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A block that leaves STREAMING with a drive or a fade in flight still completes it, and the loop is not "
+          "judged wedged",
+          "[node_host][fade]") {
+	Fixture f;
+	f.blocks.hold = true;
+	f.add("amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.events.at(0)->ready();
+	REQUIRE(f.blocks.held.size() == 1); // the drive, in flight as the block goes PAUSED
+	f.timers.advance(std::chrono::milliseconds(4'000));
+	f.blocks.complete(0); // completed by signal, applied in its invoke, before the bound
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.host.nodeRemoved("amp");
+	REQUIRE(f.blocks.held.size() == 1); // the fade, acknowledged by signal on a block no longer processing
+	f.timers.advance(std::chrono::milliseconds(50));
+	f.blocks.complete(0);
+	f.timers.advance(std::chrono::milliseconds(4'900));
+	f.blocks.complete(0); // the silence, inside its bound
+	f.timers.advance(std::chrono::milliseconds(10'000));
+	f.endTurn();
+	CHECK(f.diagnostics.details.empty());
+	CHECK(f.host.health().empty());
+	CHECK(f.host.leaked() == 0);
+	f.blocks.hold = false;
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A barrier overdue for 5 s marks the data loop wedged: every later teardown is leaked and no PipeWire call "
+          "is made",
+          "[node_host][wedge]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	addRunning(f, "desk", withPlayback(f.log));
+	addRunning(f, "rec", std::make_shared<ThreadedConfig>(f.log));
+	f.blocks.hold = true; // the data loop runs no invoke from here on
+	f.log.clear();
+
+	f.host.nodeRemoved("amp");
+	f.timers.advance(std::chrono::milliseconds(100)); // the fade unacknowledged: the silence posted unfaded
+	f.timers.advance(std::chrono::milliseconds(4'999));
+	CHECK(std::ranges::count(f.log, std::string("engine diagnostic ear.data-loop-wedged ms=5000")) == 0);
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(1));
+	// The barrier overdue names the node, the wedge is said once with no node, then the removal goes on, leaking.
+	CHECK(f.log == Log{"diagnostic amp ear.barrier-overdue ms=5000", "engine diagnostic ear.data-loop-wedged ms=5000"});
+	CHECK(f.diagnostics.details.back() == "node amp's barrier did not complete within 5000 ms: the data loop runs no "
+	                                      "invoke, so no further engine change is applied");
+	f.log.clear();
+	f.endTurn(); // the flush: amp's block is leaked, not destroyed, and amp is gone
+	CHECK(f.log == Log{"node amp gone dropped=0"});
+	CHECK(f.host.leaked() == 2); // its configuration and its block
+	f.log.clear();
+
+	SECTION("a running node goes on running, and its removal leaks it with no fade, silence or destroy") {
+		REQUIRE(f.host.health().size() == 2);
+		CHECK(f.host.health()[0].state == NodeState::running);
+		f.host.nodeRemoved("desk");
+		f.host.nodeRemoved("rec");
+		f.endTurn();
+		CHECK(engineCalls(f.log) == 0);
+		CHECK(f.host.health().empty());
+		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=0")) == 1);
+		CHECK(std::ranges::count(f.log, std::string("node rec gone dropped=0")) == 1);
+		CHECK(f.host.leaked() ==
+		      6); // and desk's configuration (its card with it) and block; rec's configuration and block
+		CHECK(f.diagnostics.details.size() == 3); // nothing more said: fade, barrier, wedge
+	}
+	SECTION("a restart fails engine-refused: nothing is configured on a wedged loop") {
+		f.update("desk", withPlayback(f.log, "B"));
+		f.endTurn();
+		CHECK(engineCalls(f.log) == 0);
+		CHECK(f.log.back() == "node desk failed engine-refused: the data loop is wedged");
+		CHECK(std::ranges::count(f.log, std::string("start 44100 B")) == 0);
+	}
+	SECTION("a drive whose invoke never runs is a barrier overdue too") {
+		Fixture g;
+		g.blocks.hold = true;
+		g.add("amp", std::make_shared<OutputConfig>(g.log));
+		g.blocks.events.at(0)->ready(); // the drive posted, never completed
+		g.log.clear();
+		g.timers.advance(std::chrono::milliseconds(5'000));
+		CHECK(g.log == Log{"diagnostic amp ear.barrier-overdue ms=5000",
+		                   "engine diagnostic ear.data-loop-wedged ms=5000",
+		                   "node amp failed engine-refused: the data loop is wedged"});
+		g.stopAll();
+		g.endTurn();
+		CHECK(g.allGone == 1);
+		CHECK(engineCalls(g.log) == 0);
+	}
+	f.stopAll();
+	f.endTurn();
+	CHECK(f.allGone == 1);
+	CHECK(engineCalls(f.log) == 0);
+}
+
+TEST_CASE("A node added after the wedge fails engine-refused without a block", "[node_host][wedge]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.hold = true;
+	f.host.nodeRemoved("amp");
+	f.timers.advance(std::chrono::milliseconds(100));
+	f.timers.advance(std::chrono::milliseconds(5'000));
+	f.endTurn();
+	f.log.clear();
+
+	f.add("late", std::make_shared<OutputConfig>(f.log));
+	CHECK(f.log == Log{"node late failed engine-refused: the data loop is wedged"}); // no start, no block
+	CHECK(f.blocks.events.size() == 1);
+	f.host.nodeRemoved("late");
+	f.endTurn();
+	CHECK(f.log.back() == "node late gone dropped=0");
+	CHECK(engineCalls(f.log) == 0);
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("stopAll after the wedge reaches allGone at once and makes no PipeWire call", "[node_host][wedge]") {
+	Fixture f;
+	auto rec = std::make_shared<TestConfig>(f.log); // with handoffs: a legacy teardown closes them on their threads
+	rec->handoffs = 1;
+	addRunning(f, "rec", rec);
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.add("fpp", withReceiver(f.log));
+	f.blocks.events.back()->ready();
+	f.endTurn();
+	f.receivers.events.back()->ready();
+	f.settle();
+	REQUIRE(f.host.health().back().state == NodeState::running);
+	f.blocks.hold = true;
+	f.update("amp", std::make_shared<OutputConfig>(f.log)); // a restart's fade in flight when the loop wedges
+	f.host.nodeRemoved("fpp");
+	f.timers.advance(std::chrono::milliseconds(100));
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(5'000)); // fpp's silence overdue: wedged
+	REQUIRE(std::ranges::count(f.log, std::string("engine diagnostic ear.data-loop-wedged ms=5000")) == 1);
+	f.log.clear();
+
+	f.stopAll();
+	f.endTurn();
+	CHECK(f.allGone == 1);
+	CHECK(engineCalls(f.log) == 0);
+	CHECK(f.host.health().empty());
+	CHECK(f.handoffs.pendingCloses.empty()); // a leaked configuration's handoff is never closed: its writer may run
+	CHECK(f.host.leaked() > 0);              // main.cpp then leaves through std::_Exit
+}
+
+TEST_CASE("Stopping 16 nodes posts every fade at once", "[node_host][fade]") {
+	Fixture f;
+	for (int i = 0; i < 16; ++i) addRunning(f, "n" + std::to_string(i), std::make_shared<OutputConfig>(f.log));
+	f.log.clear();
+	f.stopAll();
+	CHECK(std::ranges::count(f.log, std::string("fade")) == 16);
+	CHECK(std::ranges::count(f.log, std::string("drive nothing")) == 0);
+	f.endTurn(); // one turn: every acknowledgement, then every silence
+	CHECK(std::ranges::count(f.log, std::string("drive nothing")) == 16);
+	f.settle();
+	CHECK(f.allGone == 1);
+	CHECK(std::ranges::count(f.log, std::string("block destroyed")) == 16);
+}
+
+TEST_CASE("A factory or an adapter that throws inside the flush fails its node and strands nothing",
+          "[node_host][flush]") {
+	SECTION("the port block's factory") {
+		Fixture f;
+		f.blocks.throwInMake = true;
+		f.addInTurn("amp", std::make_shared<OutputConfig>(f.log));
+		CHECK_THROWS_WITH(f.endTurn(), "no memory for amp");
+		REQUIRE(f.host.health().size() == 1);
+		CHECK(f.host.health()[0].state == NodeState::failed);
+		REQUIRE(f.host.health()[0].reason.has_value());
+		CHECK(f.host.health()[0].reason->detail == "making the port block threw: no memory for amp");
+		CHECK(MainLoopActivity::current().empty());
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("an outside node's adapter") {
+		Fixture f;
+		f.cards.throwInMake = true;
+		f.add("desk", withPlayback(f.log));
+		f.blocks.events.at(0)->ready();
+		CHECK_THROWS_WITH(f.endTurn(), "no card Pro24");
+		REQUIRE(f.host.health().size() == 1);
+		CHECK(f.host.health()[0].state == NodeState::failed);
+		REQUIRE(f.host.health()[0].reason.has_value());
+		CHECK(f.host.health()[0].reason->detail == "making desk.playback threw: no card Pro24");
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
 }

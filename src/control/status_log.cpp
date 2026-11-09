@@ -114,9 +114,20 @@ void StatusLog::nodeSays(const NodeName& node, const std::string& text) {
 	emit("note", {{"node", json(node)}, {"text", json(text)}}, std::format("node {} says {}", node, text));
 }
 
-void StatusLog::nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) {
-	emit("diagnostic", {{"node", json(node)}, {"code", json(code)}, {"detail", json(detail)}},
-	     std::format("node {} {}: {}", node, code, detail));
+void StatusLog::nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
+                               std::span<const DiagnosticField> fields) {
+	Fields record{{"node", json(node)}, {"code", json(code)}};
+	for (const DiagnosticField& field : fields) record.emplace_back(std::string(field.key), json(field.value));
+	record.emplace_back("detail", json(detail));
+	emit("diagnostic", std::move(record), std::format("node {} {}: {}", node, code, detail));
+}
+
+void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
+	Fields record{{"code", json(diagnostic.code)}};
+	for (const DiagnosticField& field : diagnostic.fields)
+		record.emplace_back(std::string(field.key), json(field.value));
+	record.emplace_back("detail", json(diagnostic.detail));
+	emit("diagnostic", std::move(record), std::format("{}: {}", diagnostic.code, diagnostic.detail));
 }
 
 void StatusLog::routeChanged(const RouteStatus& status) {

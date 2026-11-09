@@ -26,6 +26,24 @@ TEST_CASE("MainLoopActivity names the call and its node while it runs, and nothi
 	CHECK(MainLoopActivity::current().empty());
 }
 
+TEST_CASE("MainLoopActivity scopes nest: the inner one ends naming the outer call again", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	{
+		const MainLoopActivity::Scope outer("make outside node", "desk");
+		{
+			const MainLoopActivity::Scope inner("prepare", "porch");
+			CHECK(MainLoopActivity::current() == "prepare porch");
+		}
+		CHECK(MainLoopActivity::current() == "make outside node desk");
+		{
+			const MainLoopActivity::Scope inner("release", "");
+			CHECK(MainLoopActivity::current() == "release");
+		}
+		CHECK(MainLoopActivity::current() == "make outside node desk");
+	}
+	CHECK(MainLoopActivity::current().empty());
+}
+
 TEST_CASE("MainLoopActivity read from another thread is always one whole write", "[main_loop_activity]") {
 	MainLoopActivity::clear();
 	std::atomic<bool> done{false};

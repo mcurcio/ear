@@ -1,5 +1,5 @@
 {
-  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted.",
+  "description": "Every kind of record ear writes on standard output (docs/design/node-framework.md section 8.8), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last log record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted. A diagnostic record carries its structured fields (such as ms) between code and detail, and one that names no node (ear.data-loop-wedged) has no node field.",
   "records": [
     {
       "case": "the engine's audio thread is realtime",
@@ -291,6 +291,47 @@
         "code": "ear.close-overdue",
         "detail": "its run did not close within 10 s, so it was leaked",
         "msg": "node kitchen ear.close-overdue: its run did not close within 10 s, so it was leaked"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a planned silence's fade not acknowledged within 100 ms, so the silence was taken unfaded",
+      "record": {
+        "v": 1,
+        "seq": 54,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "desk",
+        "code": "ear.fade-unacknowledged",
+        "ms": 100,
+        "detail": "the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded",
+        "msg": "node desk ear.fade-unacknowledged: the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a barrier not completed within 5 s, its configuration and block leaked",
+      "record": {
+        "v": 1,
+        "seq": 55,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "desk",
+        "code": "ear.barrier-overdue",
+        "ms": 5000,
+        "detail": "a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked",
+        "msg": "node desk ear.barrier-overdue: a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked"
+      }
+    },
+    {
+      "case": "the framework's diagnostic that names no node: the data loop judged wedged, once; no engine change follows and ear's stop leaves through _Exit",
+      "record": {
+        "v": 1,
+        "seq": 56,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.data-loop-wedged",
+        "ms": 5000,
+        "detail": "node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied",
+        "msg": "ear.data-loop-wedged: node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied"
       }
     }
   ]

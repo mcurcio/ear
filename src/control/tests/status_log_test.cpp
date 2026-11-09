@@ -1,5 +1,6 @@
 // The one encoder of standard output (docs/design/node-framework.md section 8.8): every kind of record, byte for byte
 // against test/protocol/output-records.json, and what it does with a full queue, bad text and many threads.
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <fstream>
@@ -177,7 +178,28 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		             .text = "pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24"});
 		},
 		[](StatusLog& log, Lines&) {
-			log.nodeDiagnostic("kitchen", "ear.close-overdue", "its run did not close within 10 s, so it was leaked");
+			log.nodeDiagnostic("kitchen", "ear.close-overdue", "its run did not close within 10 s, so it was leaked",
+		                       {});
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 100}};
+			log.nodeDiagnostic("desk", "ear.fade-unacknowledged",
+		                       "the fade before its silence was not acknowledged within 100 ms, so the silence was "
+		                       "taken unfaded",
+		                       fields);
+		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 5000}};
+			log.nodeDiagnostic("desk", "ear.barrier-overdue",
+		                       "a barrier posted to the data loop did not complete within 5000 ms, so its "
+		                       "configuration and block are leaked",
+		                       fields);
+		},
+		[](StatusLog& log, Lines&) {
+			log.engineDiagnostic({"ear.data-loop-wedged",
+		                          "node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, "
+		                          "so no further engine change is applied",
+		                          {ear::DiagnosticField{"ms", 5000}}});
 		},
 	};
 }

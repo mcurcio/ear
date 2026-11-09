@@ -49,7 +49,9 @@ private:
 	}
 };
 
-/// RMS of channel `channel` of a stereo WAV over its nonzero span; 0 if it is all zeros.
+/// RMS of channel `channel` of a stereo WAV over its nonzero span, past its first 5 ms; 0 if it is all zeros. A node's
+/// drive fades its outputs in over 5 ms (240 frames at 48 kHz; docs/design/node-lifecycle.md 5.3), and a route linked
+/// just after the node runs hears that ramp, which in a recording this short would weigh on the level.
 double channelRms(const std::filesystem::path& path, int channel) {
 	SF_INFO info{};
 	SNDFILE* file = sf_open(path.c_str(), SFM_READ, &info);
@@ -68,6 +70,8 @@ double channelRms(const std::filesystem::path& path, int channel) {
 		}
 	}
 	if (first == frames) return 0.0;
+	constexpr std::size_t fadeFrames = 48000 * 5 / 1000;
+	if (last - first > 2 * fadeFrames) first += fadeFrames;
 	double sumOfSquares = 0.0;
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		sumOfSquares += static_cast<double>(samples[frame * 2 + channel]) * samples[frame * 2 + channel];
@@ -160,8 +164,11 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 
 	const json reply = rpc.call("levels.subscribe");
 	CHECK(reply["result"]["windowsPerSecond"] == 30);
-	const json levels = rpc.waitFor(
-		[](const json& m) { return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise"); });
+	// The second window with the noise: the first may hold the noise's 5 ms fade-in at its drive (node-lifecycle.md 5.3).
+	int seen = 0;
+	const json levels = rpc.waitFor([&](const json& m) {
+		return m.value("method", "") == "levels" && m["params"]["nodes"].contains("noise") && ++seen == 2;
+	});
 	INFO(levels.dump());
 	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
 	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));

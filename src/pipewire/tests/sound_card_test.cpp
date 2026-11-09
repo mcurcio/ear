@@ -8,6 +8,7 @@
 // events a test waits for have arrived; the deadline only fails the test. The engine, the Waiter,
 // the block events and the registry come from engine_harness.hpp.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -359,6 +360,90 @@ TEST_CASE("A card that cannot open is lost after make returns, its node already 
 	CHECK_FALSE(events.nodePresentAtLost);
 	CHECK(graph.blocksDrivenBy(graph.dummy));
 	CHECK(graph.bothRun(16));
+}
+
+namespace {
+
+/// Writes one level on every output, every cycle.
+class LevelCode final : public AudioCode {
+public:
+	explicit LevelCode(float level) : level_(level) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, level_);
+	}
+	void release() noexcept override {}
+
+private:
+	float level_;
+};
+
+std::uintmax_t fileSize(const std::filesystem::path& file) {
+	std::error_code error;
+	const auto size = std::filesystem::file_size(file, error);
+	return error ? 0 : size;
+}
+
+} // namespace
+
+// docs/design/node-lifecycle.md 5.3 and 11.6 (step L-3c): NodeHost fades every output a code writes before each planned
+// silence (a stop, a restart, a disable, a removal: node_host_test.cpp shows each asks for the same fadeOut), inside
+// outputs feeding a card included, so the card's speaker never clicks (D-L16). Here the block's fade is followed to the
+// card's own samples.
+TEST_CASE("to_card's last 5 ms before a silence decay to zero, and its drive fades in", "[cards][fade]") {
+	Graph graph;
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	const auto card = graph.makeCard(cardId("Test"), events);
+	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+
+	constexpr float kLevel = 0.5F;
+	LevelCode level(kLevel);
+	const std::array faded{true, true}; // to_card.1 and to_card.2, as NodeHost asks for a card's inside bank
+	bool driven = false;
+	graph.cardBlock->drive(DriveRequest{&level, faded}, [&](std::uint64_t) { driven = true; });
+	REQUIRE(graph.waiter.until([&] { return driven; }));
+	const std::uintmax_t atDrive = fileSize(graph.out); // the level code runs: let 16 blocks of it reach the card
+	REQUIRE(graph.waiter.until([&] { return fileSize(graph.out) >= atDrive + 16 * kBlock * 2 * sizeof(float); }));
+	bool fadedOut = false;
+	graph.cardBlock->fadeOut([&] { fadedOut = true; });
+	REQUIRE(graph.waiter.until([&] { return fadedOut; }));
+	REQUIRE(ear::testing::driveNow(*graph.cardBlock, &graph.cardCode)); // the zeros code again: the silence's place
+	// The card plays behind the graph by its buffer: wait until 32 blocks of zeros follow the fade in its file.
+	REQUIRE(graph.waiter.until(
+		[&] {
+			const auto now = readFrames(graph.out, 2);
+			const auto last = std::find_if(now.rbegin(), now.rend(), [](float sample) { return sample != 0.0F; });
+			return last != now.rend() && static_cast<std::size_t>(last - now.rbegin()) >= 2 * 32 * kBlock;
+		},
+		10s));
+
+	const auto samples = readFrames(graph.out, 2);
+	constexpr std::size_t kFade = kRate * 5 / 1000; // 240 frames
+	for (std::size_t channel = 0; channel < 2; ++channel) {
+		INFO("to_card." << channel + 1);
+		// Every non-zero sample, in order: a whole silent block the card may insert mid-stream changes none of them.
+		std::vector<float> heard;
+		std::size_t lastNonZero = 0;
+		for (std::size_t i = channel; i < samples.size(); i += 2) {
+			if (samples[i] == 0.0F) continue;
+			heard.push_back(samples[i]);
+			lastNonZero = i;
+		}
+		REQUIRE(heard.size() > 2 * kFade + kBlock);
+		// The fade-in: frame k at k / N, from k = 1 (frame 0 is zero), then the level.
+		for (std::size_t k = 1; k < kFade; ++k)
+			CHECK(heard[k - 1] == kLevel * (static_cast<float>(k) / static_cast<float>(kFade)));
+		CHECK(heard[kFade - 1] == kLevel);
+		// The fade-out: its first frame at the level, frame k at (N - k) / N, the last non-zero one at 1 / N.
+		const std::size_t tail = heard.size() - kFade;
+		CHECK(heard[tail] == kLevel);
+		for (std::size_t k = 1; k < kFade; ++k)
+			CHECK(heard[tail + k] == kLevel * (static_cast<float>(kFade - k) / static_cast<float>(kFade)));
+		// Zero from there on: the silence that followed never clicks back.
+		CHECK(lastNonZero + 2 * 32 * kBlock < samples.size());
+	}
 }
 
 // node_host.hpp's contract (docs/design/node-lifecycle.md 4.2's T14): NodeHost tears a failed configuration down inside

@@ -426,6 +426,11 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 			state_ = silencing;
 			return {post(Kind::silence)}; // completes by signal on a block with no data loop
 		}
+		if (event == ConfigEvent::barrierBound) { // the drive's invoke never ran: the loop is wedged (revision 2.7)
+			reset();
+			state_ = none;
+			return {{Kind::barrierOverdue}, {Kind::markWedged}, {Kind::leak}};
+		}
 		return {};
 	case driving:
 		if (event == ConfigEvent::stopAsked || event == ConfigEvent::teardownAsked) return stopDriving();
@@ -1035,7 +1040,7 @@ Actions NodeAggregate::fadeBound() {
 
 Actions NodeAggregate::barrierBound() {
 	Actions out;
-	if (goneTold_ || config_.state() != ConfigState::silencing) return out;
+	if (goneTold_ || (config_.state() != ConfigState::silencing && config_.state() != ConfigState::arming)) return out;
 	wedged_ = true;
 	// The configuration is leaked on a wedged loop: a stop or a restart can never end, so the node fails
 	// engine-refused (the code for a wedged loop, 4.2); a disable or removal goes on to its end.

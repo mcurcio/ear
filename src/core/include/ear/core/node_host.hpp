@@ -5,8 +5,9 @@
 // kind by its slice 2; LatencyPlan and PortBlock::carryLatency by its section 9.4, slice 7; DriveRequest and PortBlock's
 // asynchronous drive, fadeOut, settle, takenAt and blockId by docs/design/node-lifecycle.md section 5.3, step L-2; the
 // blocking drive removed and NodeHost on the lifecycle machines by its step L-3a; PipeWire's object changes batched per
-// turn, T1's wait for an older block and OutsideTarget::blockId by its step L-3b). Change it only through a design page
-// and a re-cut, never a local edit.
+// turn, T1's wait for an older block and OutsideTarget::blockId by its step L-3b; the fade before every planned silence,
+// the fade's and the barrier's bounds, the wedged data loop, EngineDiagnosticListener, structured diagnostic fields and
+// leaked() by its step L-3c). Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -46,13 +47,38 @@ public:
 protected:
 	~NodeNoteListener() = default;
 };
-/// What the framework itself observes about a node (docs/design/node-framework.md section 8.1), by code: today only
-/// "ear.close-overdue", a run that did not close within the close deadline and was leaked (I5a).
+/// One structured field a framework diagnostic carries beside its detail (control-plane.md 4.6's Fields column): a
+/// key (a string literal) and a whole number.
+struct DiagnosticField {
+	std::string_view key;
+	std::int64_t value;
+	friend bool operator==(const DiagnosticField&, const DiagnosticField&) = default;
+};
+/// What the framework itself observes about a node (docs/design/node-framework.md section 8.1; control-plane.md 4.6),
+/// by code: "ear.close-overdue" (a configuration that did not close within the close deadline, leaked: I5a; no
+/// field), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
+/// unfaded; `ms`) and "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block
+/// are leaked; `ms`). `fields` lives only for the call.
 class NodeDiagnosticListener {
 public:
-	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) = 0; // main
+	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
+	                            std::span<const DiagnosticField> fields) = 0; // main thread
 protected:
 	~NodeDiagnosticListener() = default;
+};
+/// A framework diagnostic that names no node (docs/design/node-lifecycle.md 5.4, D-L44; control-plane.md 4.6): in 3a
+/// "ear.data-loop-wedged", once, when a barrier's invoke has not run within 5 s (its detail names the node whose
+/// barrier tripped it; `ms` the time it waited).
+struct EngineDiagnostic {
+	std::string_view code;
+	std::string detail;
+	std::vector<DiagnosticField> fields;
+};
+class EngineDiagnosticListener {
+public:
+	virtual void engineDiagnostic(const EngineDiagnostic& diagnostic) = 0; // main thread
+protected:
+	~EngineDiagnosticListener() = default;
 };
 /// How one run's latency crosses its block (docs/design/node-framework.md section 9.4): the pairs of banks it is
 /// carried between (a pass-through's pairs), and what the run declared it adds on a bank (StartContext::declareLatency).
@@ -233,6 +259,12 @@ private:
 };
 /// How long a run's teardown may wait on other threads (I5 steps 3 and 4) before the framework stops waiting (I5a).
 inline constexpr std::chrono::milliseconds defaultCloseDeadline{10'000};
+/// How long a planned silence's fade-out may go unacknowledged before the barrier is taken unfaded
+/// (docs/design/node-lifecycle.md 5.4; ear.fade-unacknowledged). It judges one block, never the data loop.
+inline constexpr std::chrono::milliseconds fadeAcknowledgeBound{100};
+/// How long a barrier (a drive or a silence, applied inside its invoke) may go uncompleted before the data loop is
+/// judged wedged (5.4, D-L30; ear.barrier-overdue, ear.data-loop-wedged).
+inline constexpr std::chrono::milliseconds barrierCompletionBound{5'000};
 class NodeHost final : public DesiredNodeListener {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
@@ -243,12 +275,20 @@ public:
 	void subscribe(NodeHealthListener& listener);
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
+	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration (docs/design/node-lifecycle.md section 4; through the legacy
 	/// adapter, its section 5.10): config.start(context) acquires only (a recipe beside an outside node is a
 	/// std::logic_error, D-L40); the outside nodes it asked for are made once the block is ready, in request order,
 	/// named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver); once every resource is ready
 	/// the recipe builds the run object and the code is prepared; once the block is ready the code drives it
-	/// (PortBlock's asynchronous drive), and the node is running once that drive completed. A failure fails the node
+	/// (PortBlock's asynchronous drive, fading in every output the code writes: public outputs and inside outputs, which
+	/// feed a card), and the node is running once that drive completed. Every planned silence (a restart, a removal, a
+	/// failure, stopAll) first fades those outputs out over 5 ms (unacknowledged within 100 ms: ear.fade-unacknowledged
+	/// and the silence unfaded); a drive or silence not completed within 5 s marks the data loop wedged
+	/// (ear.barrier-overdue, then ear.data-loop-wedged once): from then on NodeHost makes no PipeWire call, every
+	/// configuration, block and outside node it would end is leaked (leaked()), and a node added fails engine-refused
+	/// "the data loop is wedged" without a block. Every bound first settles the block, so a completion a stalled main
+	/// loop has not yet dispatched is never judged late. A failure fails the node
 	/// and tears its configuration down; its port block stays. A name added back gets its block in the flush that
 	/// destroys the older block of the name (T1), and its configuration once the older node of the name is gone.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
@@ -268,10 +308,11 @@ public:
 	/// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
-	/// Runs left running past the close deadline (I5a). Their threads may still post to `mainLoop` or touch engine
-	/// objects at any time, so once any was leaked the process must end without destroying those (main.cpp ends with
-	/// std::_Exit).
-	std::size_t leakedRuns() const noexcept;
+	/// What was leaked, never freed: configurations left running past the close deadline (I5a) or on a wedged data
+	/// loop, and the blocks and outside nodes a wedged loop kept (5.4). Their threads may still post to `mainLoop` or
+	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp
+	/// ends with std::_Exit).
+	std::size_t leaked() const noexcept;
 
 private:
 	struct Impl;

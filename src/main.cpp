@@ -260,7 +260,8 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
-	nodes.subscribeDiagnostics(log); // ear.close-overdue and later diagnostics, as records
+	nodes.subscribeDiagnostics(log);       // ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue
+	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);
@@ -306,10 +307,12 @@ int main(int argc, char** argv) {
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
 	// A run leaked past its close deadline (I5a) may still post to the main loop or signal an engine source from its
-	// own threads; destroying the executor and the engine under it would be a use after free. ear.conf is written by
-	// now, so end here without running destructors, once the output thread's queue (the ear.close-overdue diagnostic
-	// among it) is written out: standard output is a captured pipe now, so flushing std::cout would write nothing.
-	if (nodes.leakedRuns() > 0) {
+	// own threads, and a wedged data loop's blocks and outside nodes were leaked because destroying them would wait on
+	// it (node-lifecycle.md 5.4); destroying the executor and the engine under them would be a use after free or a hang.
+	// ear.conf is written by now, so end here without running destructors, once the output thread's queue (the
+	// diagnostics among it) is written out: standard output is a captured pipe now, so flushing std::cout would write
+	// nothing.
+	if (nodes.leaked() > 0) {
 		writer.spill();
 		std::_Exit(0);
 	}

@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -48,7 +49,9 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///   graph-file-write-failed  graph-file write-failed <detail>   (the last write's, as ear exits)
 ///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
 ///   exit                ear: <reason>
-///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node, e.g. ear.close-overdue)
+///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
+///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
+///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -60,6 +63,7 @@ class StatusLog final : public NodeHealthListener,
 						public RouteStatusListener,
 						public GraphFileListener,
 						public NodeDiagnosticListener,
+						public EngineDiagnosticListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -68,7 +72,9 @@ public:
 	void nodeChanged(const NodeHealth& health) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
-	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail) override;
+	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
+	                    std::span<const DiagnosticField> fields) override;
+	void engineDiagnostic(const EngineDiagnostic& diagnostic) override;
 	void routeChanged(const RouteStatus& status) override;
 	void graphFileChanged(const GraphFileChanged& change) override;
 	void graphFileWritten(const std::string& version) override;

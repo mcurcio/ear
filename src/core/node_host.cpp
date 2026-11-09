@@ -24,12 +24,24 @@
 // destroyed, in the flush that destroyed it, and its configuration once the older node is gone; an outside node joins
 // its block by the block's global id (PortBlock::blockId, 5.7).
 //
-// Steps L-3a and L-3b build no fade (no output is faded, so a drive or silence is never faded), no bound but the close
-// deadline, no wedge, and the old NodeHealth: the aggregate's health is told mapped onto it, only when that changed, so
+// Fades and bounds (step L-3c, 5.3 and 5.4): every output the code writes (public outputs and inside outputs, which feed
+// a card) fades in with each drive and out before each planned silence; a fade unacknowledged within 100 ms is said
+// (ear.fade-unacknowledged) and the silence posted unfaded, and a drive or silence not completed within 5 s is a data
+// loop that runs no invoke (ear.barrier-overdue, then ear.data-loop-wedged once, through EngineDiagnosticListener).
+// Every bound first settles the block, as an input of its own, and judges in the input behind what that settle ran, so a
+// completion a stalled main loop has not dispatched yet is heard first and nothing is judged. Once wedged, NodeHost makes
+// no PipeWire call again: the flush still runs its items in order, but a destruction leaks what it would destroy (a
+// block, an outside node), a making makes nothing (a block is lost "the data loop is wedged"), latency is no longer
+// carried, and every drive, fade or silence a configuration would post is judged overdue at once, its configuration
+// leaked; a node added afterwards fails engine-refused "the data loop is wedged" before T1. So every removal still ends,
+// stopAll's allGone still runs, and main.cpp leaves through std::_Exit (leaked() is above 0).
+//
+// The old NodeHealth stays until L-3d: the aggregate's health is told mapped onto it, only when that changed, so
 // standard output and the wire see what they saw before.
 #include "ear/core/node_host.hpp"
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <exception>
 #include <stdexcept>
@@ -70,6 +82,21 @@ lc::Fact factOf(const FailureReason& reason, lc::Fact fact) noexcept {
 	return reason.code == FailureReason::Code::engineRefused ? lc::Fact::engine : fact;
 }
 
+/// What a caught exception says, for a detail.
+std::string whatOf(const std::exception_ptr& thrown) {
+	try {
+		std::rethrow_exception(thrown);
+	} catch (const std::exception& error) {
+		return error.what();
+	} catch (...) {
+		return "an exception that is no std::exception";
+	}
+}
+
+std::int64_t millisecondsBetween(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
 bool sameHealth(const NodeHealth& a, const NodeHealth& b) {
 	if (a.state != b.state || a.reason.has_value() != b.reason.has_value()) return false;
 	return !a.reason || (a.reason->code == b.reason->code && a.reason->detail == b.reason->detail);
@@ -96,6 +123,14 @@ struct NodeHost::Impl {
 	class Node final : public PortBlockEvents, public StartContext, public Ready {
 	public:
 		Node(Impl& host, NodeName name, std::uint64_t serial) : host_(host), name_(std::move(name)), serial_(serial) {}
+		/// On a wedged data loop nothing that loop may still reach is destroyed (5.4): destroying a block waits on it.
+		~Node() {
+			if (!host_.wedged) return;
+			static_cast<void>(block_.release());
+			static_cast<void>(config_.release());
+		}
+		Node(const Node&) = delete;
+		Node& operator=(const Node&) = delete;
 
 		const NodeName& name() const noexcept { return name_; }
 		std::uint64_t serial() const noexcept { return serial_; }
@@ -118,7 +153,9 @@ struct NodeHost::Impl {
 		void add(std::shared_ptr<const NodeConfig> config, bool olderBlock, bool olderNode) {
 			ports_ = config->ports();
 			queued_ = std::move(config);
-			feed(aggregate_.add(lc::AddFacts{.olderBlock = olderBlock, .olderNode = olderNode, .queued = queued()}));
+			// A node added on a wedged loop fails before T1, with no block (4.1, D-L10).
+			feed(aggregate_.add(lc::AddFacts{
+				.olderBlock = olderBlock, .olderNode = olderNode, .wedged = host_.wedged, .queued = queued()}));
 		}
 
 		/// A new configuration from `config` behind the same port block. One that arrives while the configuration is
@@ -148,7 +185,17 @@ struct NodeHost::Impl {
 		void makeBlock() {
 			if (!makePending_) return;
 			makePending_ = false;
-			block_ = host_.blocks.make(name_, ports_, host_.format, *this);
+			if (host_.wedged) { // making a block would call into the wedged loop (5.4, D-L10)
+				lost(std::string(lc::wedgedDetail));
+				return;
+			}
+			try {
+				block_ = host_.blocks.make(name_, ports_, host_.format, *this);
+			} catch (...) {
+				// A factory that throws (a bug) leaves no block: the node is lost, never left made with none.
+				lost("making the port block threw: " + whatOf(std::current_exception()));
+				throw;
+			}
 		}
 		/// The block's destruction (after the removal's silence completed, or with no code ever driven, D-L7); a block
 		/// whose making is still queued is never made. Then, as an input of its own: the node is told gone if its
@@ -156,8 +203,14 @@ struct NodeHost::Impl {
 		void destroyBlock() {
 			if (!destroyPending_) return;
 			destroyPending_ = false;
-			if (makePending_) makePending_ = false;
-			else block_.reset();
+			if (makePending_) {
+				makePending_ = false;
+			} else if (host_.wedged && block_) {
+				static_cast<void>(block_.release()); // leaked: destroying it waits on the wedged loop (5.4)
+				++host_.leaked;
+			} else {
+				block_.reset();
+			}
 			host_.inputFor(serial_, [](Node& node) {
 				if (std::exchange(node.goneWaiting_, false)) node.host_.gone(node, node.dropped_);
 				node.host_.blockDestroyed(node.name_);
@@ -166,7 +219,7 @@ struct NodeHost::Impl {
 		/// The outside node `index` of the configuration of `generation`, in request order, once its block is ready;
 		/// nothing for a configuration that moved on (torn down, or another one).
 		void makeOutside(std::uint64_t generation, std::size_t index) {
-			if (!current(generation) || config_->startFailed || config_->tearing || !block_ ||
+			if (host_.wedged || !current(generation) || config_->startFailed || config_->tearing || !block_ ||
 			    aggregate_.configuration().state() != lc::ConfigState::readying || index != config_->outside.size() ||
 			    index >= config_->outsideRequests.size())
 				return;
@@ -174,9 +227,20 @@ struct NodeHost::Impl {
 			auto& outside = *c.outside.emplace_back(std::make_unique<Outside>(host_, serial_, c.generation, index));
 			auto& [request, target] = c.outsideRequests[index];
 			target.blockId = block_->blockId(); // ready, so read (5.7)
-			outside.node = std::visit(
-				[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
-				request);
+			try {
+				outside.node = std::visit(
+					[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
+					request);
+			} catch (...) {
+				// An adapter that throws (a bug) strands nothing: the half-made entry goes, and the node fails as for
+				// an outside node refused.
+				std::string detail = "making " + target.engineNode + " threw: " + whatOf(std::current_exception());
+				c.outside.pop_back();
+				host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
+					if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
+				});
+				throw;
+			}
 		}
 
 		// PortBlockEvents: inputs of their own (5.2), whatever calls them.
@@ -347,6 +411,12 @@ struct NodeHost::Impl {
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
 			std::unique_ptr<Timer> deadline;
+			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
+			std::chrono::steady_clock::time_point postedAt; // when that request was posted
+			// One flag per output in process()'s order (outputs, then inside outputs): every one the code writes is
+			// faded (5.1; no sink yet). Read by the block until the drive's invoke ran.
+			std::unique_ptr<bool[]> faded;
+			std::size_t fadedCount = 0;
 			std::vector<BankPair> pairs;                          // the pass-through's pairs, for the latency plan
 			std::vector<std::pair<std::string, Latency>> latency; // what start() declared, by bank
 			bool startFailed = false;  // start() failed or threw: nothing to make, prepare, drive or close
@@ -367,9 +437,14 @@ struct NodeHost::Impl {
 			std::unique_ptr<RunObject> object;
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
+			std::vector<std::unique_ptr<Outside>> outside; // a wedged loop's, never destroyed
+			std::unique_ptr<bool[]> faded;
 		};
 
-		lc::Queued queued() const noexcept { return {version_, false}; } // L-3a fades nothing
+		/// The newest committed settings, and whether a drive of them fades: some output the code writes exists.
+		lc::Queued queued() const noexcept {
+			return {version_, !ports_.outputs().empty() || !ports_.insideOutputs().empty()};
+		}
 
 		/// The configuration of this generation is the current one.
 		bool current(std::uint64_t generation) const noexcept {
@@ -462,10 +537,12 @@ struct NodeHost::Impl {
 				break;
 			case Kind::runRecipe:
 				break; // ran before every resource was told ready (checkReady), so a failed recipe is a fault in readying
-			case Kind::prepare:
+			case Kind::prepare: {
+				const MainLoopActivity::Scope activity("prepare", name_);
 				config_->code->prepare(host_.format);
 				config_->prepared = true;
 				break;
+			}
 			case Kind::drive:
 				drive(action.barrier);
 				break;
@@ -473,9 +550,7 @@ struct NodeHost::Impl {
 			case Kind::stop:
 				break; // a legacy type has no hooks (5.10)
 			case Kind::fade:
-				// Never posted in L-3a (nothing is faded, so the machine silences at once); its bound is L-3c's.
-				block_->fadeOut(
-					[faded = completion(action.barrier, &lc::NodeAggregate::faded)]() mutable { faded(0); });
+				fade(action.barrier);
 				break;
 			case Kind::silence:
 				silence(action.barrier);
@@ -496,9 +571,26 @@ struct NodeHost::Impl {
 				leak();
 				break;
 			case Kind::fadeUnacknowledged:
+				if (!synthetic_) {
+					const std::array fields{DiagnosticField{"ms", judgedMs_}};
+					host_.diagnosed(name_, "ear.fade-unacknowledged",
+					                "the fade before its silence was not acknowledged within " +
+					                    std::to_string(judgedMs_) + " ms, so the silence was taken unfaded",
+					                fields);
+				}
+				break;
 			case Kind::barrierOverdue:
+				if (!synthetic_) {
+					const std::array fields{DiagnosticField{"ms", judgedMs_}};
+					host_.diagnosed(name_, "ear.barrier-overdue",
+					                "a barrier posted to the data loop did not complete within " +
+					                    std::to_string(judgedMs_) + " ms, so its configuration and block are leaked",
+					                fields);
+				}
+				break;
 			case Kind::markWedged:
-				break; // the fade's and the barrier's bounds are step L-3c's: no timer arms them yet
+				host_.markWedged(name_, judgedMs_);
+				break;
 			}
 		}
 
@@ -522,6 +614,9 @@ struct NodeHost::Impl {
 			c.generation = ++host_.generations;
 			c.config = queued_;
 			c.channel = std::make_shared<Channel>(*this, host_.mainLoop);
+			c.fadedCount = ports_.outputs().size() + ports_.insideOutputs().size();
+			c.faded = std::make_unique<bool[]>(c.fadedCount);
+			std::fill_n(c.faded.get(), c.fadedCount, true);
 			// Until start() returned a code that holds, the configuration asks for nothing more: a type bug thrown out
 			// of here leaves it readying, with no outside node made for it.
 			c.startFailed = true;
@@ -618,33 +713,136 @@ struct NodeHost::Impl {
 			feed(aggregate_.resourcesReady());
 		}
 
-		/// T5: the latency plan first, then the code, by an asynchronous drive (5.3).
+		/// T5: the latency plan first, then the code, by an asynchronous drive (5.3) that fades in every output the code
+		/// writes; the barrier's bound (5 s) armed.
 		void drive(std::uint64_t barrier) {
-			block_->carryLatency(LatencyPlan{config_->pairs, config_->latency});
-			block_->drive(DriveRequest{config_->code.get(), {}}, completion(barrier, &lc::NodeAggregate::driven));
+			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
+			Configuration& c = *config_;
+			block_->carryLatency(LatencyPlan{c.pairs, c.latency});
+			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount)},
+			              completion(barrier, &lc::NodeAggregate::driven));
+			arm(barrier, Bound::barrier);
+		}
+
+		/// Before a planned silence: every faded output ramps to zero over 5 ms (5.3); its acknowledgement's bound
+		/// (100 ms) armed.
+		void fade(std::uint64_t barrier) {
+			if (host_.wedged) return overdueAtOnce(barrier, Bound::fade);
+			block_->fadeOut([faded = completion(barrier, &lc::NodeAggregate::faded)]() mutable { faded(0); });
+			arm(barrier, Bound::fade);
 		}
 
 		/// The barrier on the block's data loop (I4): from its completion no process() of the code runs. A teardown's
-		/// silence ends what the configuration's threads can tell (I6).
+		/// silence ends what the configuration's threads can tell (I6). Its bound (5 s) armed.
 		void silence(std::uint64_t barrier) {
 			if (aggregate_.intent() != lc::Intent::stop) config_->channel->closing();
+			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			block_->drive(DriveRequest{nullptr, {}}, completion(barrier, &lc::NodeAggregate::silenced));
+			arm(barrier, Bound::barrier);
 		}
 
 		/// A completion as the block runs it on the main loop: an input of its own, heard only by the configuration and
-		/// the request it was made for (5.6); the aggregate drops an older barrier's.
+		/// the request it was made for (5.6); the aggregate drops an older barrier's. The request's bound goes with it.
 		std::move_only_function<void(std::uint64_t)>
 		completion(std::uint64_t barrier, lc::Actions (lc::NodeAggregate::*event)(std::uint64_t)) {
 			return [&host = host_, serial = serial_, generation = config_->generation, barrier, event](std::uint64_t) {
 				host.inputFor(serial, [generation, barrier, event](Node& node) {
-					if (node.current(generation)) node.feed((node.aggregate_.*event)(barrier));
+					if (!node.current(generation)) return;
+					if (node.aggregate_.configuration().barrier() == barrier) node.config_->bound.reset();
+					node.feed((node.aggregate_.*event)(barrier));
 				});
 			};
 		}
 
+		/// Which bound a request has (5.4): the fade's acknowledgement, or the barrier's completion.
+		enum class Bound { fade, barrier };
+
+		/// Arms the bound of the request just posted. When it fires the block is settled first, as an input of its own,
+		/// and the request judged in the input behind whatever that settle ran (D-L30): a completion a stalled main loop
+		/// had not dispatched yet is heard first, and then nothing is judged.
+		void arm(std::uint64_t barrier, Bound bound) {
+			Configuration& c = *config_;
+			c.postedAt = host_.timers.now();
+			c.bound =
+				host_.timers.after(bound == Bound::fade ? fadeAcknowledgeBound : barrierCompletionBound,
+			                       [&host = host_, serial = serial_, generation = c.generation, barrier, bound] {
+									   host.inputFor(serial, [generation, barrier, bound](Node& node) {
+										   if (!node.current(generation) || node.host_.wedged) return;
+										   if (node.block_) node.block_->settle();
+										   node.host_.inputFor(node.serial_, [generation, barrier, bound](Node& later) {
+											   later.judge(generation, barrier, bound);
+										   });
+									   });
+								   });
+		}
+
+		/// The bound of request `barrier` passed and its completion was not heard after the block settled.
+		void judge(std::uint64_t generation, std::uint64_t barrier, Bound bound) {
+			if (!current(generation) || aggregate_.configuration().barrier() != barrier) return;
+			const lc::ConfigState state = aggregate_.configuration().state();
+			judgedMs_ = millisecondsBetween(config_->postedAt, host_.timers.now());
+			if (bound == Bound::fade && state == lc::ConfigState::fading) feed(aggregate_.fadeBound());
+			else if (bound == Bound::barrier &&
+			         (state == lc::ConfigState::silencing || state == lc::ConfigState::arming))
+				feed(aggregate_.barrierBound());
+		}
+
+		/// On a wedged loop a request is never posted (5.4): it is judged overdue at once, as an input of its own, saying
+		/// nothing (the wedge was said once), so its configuration is leaked and the node moves on.
+		void overdueAtOnce(std::uint64_t barrier, Bound bound) {
+			host_.inputFor(serial_, [generation = config_->generation, barrier, bound](Node& node) {
+				if (!node.current(generation) || node.aggregate_.configuration().barrier() != barrier) return;
+				node.feedSilently(bound);
+			});
+		}
+
+		/// The bound's event, with its diagnostics left unsaid (the wedge already was).
+		void feedSilently(Bound bound) {
+			synthetic_ = true;
+			judgedMs_ = 0;
+			try {
+				feed(bound == Bound::fade ? aggregate_.fadeBound() : aggregate_.barrierBound());
+			} catch (...) {
+				synthetic_ = false;
+				throw;
+			}
+			synthetic_ = false;
+		}
+
+	public:
+		/// Another node's barrier found the data loop wedged (5.4): this node is never configured again; a
+		/// configuration not yet driven fails engine-refused and tears down with no barrier; one whose request is in
+		/// flight (it can never complete) is leaked now. A driving one runs on until its stop or removal, whose fade and
+		/// silence are then judged overdue at once. Nothing is settled: settling may post to the wedged loop.
+		void dataLoopWedged() {
+			feed(aggregate_.dataLoopWedged());
+			switch (aggregate_.configuration().state()) {
+			case lc::ConfigState::readying:
+			case lc::ConfigState::prepared:
+				feed(aggregate_.fault(lc::Fact::engine, std::string(lc::wedgedDetail)));
+				break;
+			case lc::ConfigState::arming:
+			case lc::ConfigState::silencing:
+				feedSilently(Bound::barrier);
+				break;
+			case lc::ConfigState::fading:
+				feedSilently(Bound::fade);
+				break;
+			case lc::ConfigState::none:
+			case lc::ConfigState::driving:
+			case lc::ConfigState::tearing:
+				break;
+			}
+		}
+
+	private:
 		void release() {
-			if (block_) block_->carryLatency({}); // a silent block carries nothing through and adds nothing
-			if (config_->prepared) config_->code->release();
+			// A silent block carries nothing through and adds nothing; on a wedged loop no PipeWire call is made.
+			if (block_ && !host_.wedged) block_->carryLatency({});
+			if (config_->prepared) {
+				const MainLoopActivity::Scope activity("release", name_);
+				config_->code->release();
+			}
 			config_->prepared = false;
 		}
 
@@ -654,8 +852,14 @@ struct NodeHost::Impl {
 			Configuration& c = *config_;
 			c.channel->closing();
 			for (auto& outside : c.outside)
-				host_.queue(FlushKind::destroyOutside, name_,
-				            [outside = std::move(outside)]() mutable { outside.reset(); });
+				host_.queue(FlushKind::destroyOutside, name_, [&host = host_, outside = std::move(outside)]() mutable {
+					if (!host.wedged) {
+						outside.reset();
+						return;
+					}
+					static_cast<void>(outside.release()); // leaked: destroying it calls into the wedged loop (5.4)
+					++host.leaked;
+				});
 			c.outside.clear();
 			c.outsideRequests.clear();
 			c.deadline =
@@ -689,7 +893,12 @@ struct NodeHost::Impl {
 				return;
 			config_->handoffs.clear();
 			runClosing_ = true;
-			if (!config_->object || config_->channel->close(*config_->object)) runClosed();
+			const bool closedInside = [&] {
+				if (!config_->object) return true;
+				const MainLoopActivity::Scope activity("close run", name_);
+				return config_->channel->close(*config_->object);
+			}();
+			if (closedInside) runClosed();
 		}
 
 		/// The run object's threads are gone: every sink and handoff closed, then the run object (the machine's closed).
@@ -711,6 +920,7 @@ struct NodeHost::Impl {
 		/// I5 step 5, on the main loop: the code (released and unreachable since the barrier; it may hold references
 		/// into the run object, never the reverse), then the run object, its recipe, the recordings and last its config.
 		void freeConfiguration() {
+			const MainLoopActivity::Scope activity("free configuration", name_);
 			Configuration& c = *config_;
 			c.deadline.reset();
 			c.channel->detach();
@@ -728,7 +938,8 @@ struct NodeHost::Impl {
 			host_.diagnosed(name_, "ear.close-overdue",
 			                "the run did not close within " + std::to_string(host_.closeDeadline.count()) +
 			                    " ms and is left running (" + std::to_string(handoffsOpen) + " handoffs open, run " +
-			                    (runClosing_ ? "closing" : "not yet told to close") + ")");
+			                    (runClosing_ ? "closing" : "not yet told to close") + ")",
+			                {});
 		}
 
 		/// The configuration is detached, so nothing it tells lands; what its threads can reach is leaked, never freed;
@@ -739,8 +950,8 @@ struct NodeHost::Impl {
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.recipe),
 			                             std::move(c.code), std::move(c.object), std::move(c.recordings),
-			                             std::move(c.handoffs)});
-			++host_.leakedRuns;
+			                             std::move(c.handoffs), std::move(c.outside), std::move(c.faded)});
+			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;
 		}
@@ -763,8 +974,15 @@ struct NodeHost::Impl {
 		bool destroyPending_ = false; // the block's destruction is queued in the flush
 		bool goneWaiting_ = false;    // removed, told gone once its block's destruction ran
 		bool gone_ = false;           // told gone
+		bool synthetic_ = false;      // a bound judged at once on a wedged loop: its diagnostics are not said
+		std::int64_t judgedMs_ = 0;   // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
 	};
+
+	Impl(AudioFormat format_, PortBlockFactory& blocks_, ResourceRegistry& resources_, Executor& mainLoop_,
+	     Timers& timers_, std::chrono::milliseconds closeDeadline_)
+		: format(format_), blocks(blocks_), resources(resources_), mainLoop(mainLoop_), timers(timers_),
+		  closeDeadline(closeDeadline_) {}
 
 	AudioFormat format;
 	PortBlockFactory& blocks;
@@ -775,10 +993,12 @@ struct NodeHost::Impl {
 	std::vector<NodeHealthListener*> listeners;
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
+	std::vector<EngineDiagnosticListener*> engineListeners;
+	bool wedged = false;                      // the data loop was judged wedged (5.4): no PipeWire call is made again
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; removed ones are pruned on add
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
 	std::uint64_t serials = 0;                // every node's serial, so a completion never finds a newer node (5.6)
-	std::size_t leakedRuns = 0;               // configurations left running past the close deadline (I5a)
+	std::size_t leaked = 0;                   // configurations, blocks and outside nodes never freed (I5a, 5.4)
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 	std::deque<std::move_only_function<void()>> inputs; // what waits for the input being handled (5.2)
@@ -847,6 +1067,8 @@ struct NodeHost::Impl {
 	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (a type bug)
 	/// strands nothing: the flush ends, then the first exception is rethrown.
 	void runFlush() {
+		if (handling || inItem || flushing)
+			throw std::logic_error("the flush ran inside an input or another flush: the executor ran a post inline");
 		flushPosted = false;
 		flushing = true;
 		std::exception_ptr thrown;
@@ -861,12 +1083,18 @@ struct NodeHost::Impl {
 			FlushItem item = std::move(pending.front());
 			pending.pop_front();
 			inItem = true;
-			try {
+			{
 				const MainLoopActivity::Scope activity(callName(item.kind), item.node);
-				item.run();
-				item.run = nullptr; // a destroy's object goes inside its activity
-			} catch (...) {
-				if (!thrown) thrown = std::current_exception();
+				try {
+					item.run();
+				} catch (...) {
+					if (!thrown) thrown = std::current_exception();
+				}
+				try {
+					item.run = nullptr; // a destroy's object goes inside its activity, whether or not the item threw
+				} catch (...) {
+					if (!thrown) thrown = std::current_exception();
+				}
 			}
 			inItem = false;
 			if (std::exception_ptr caused = drain(); caused && !thrown) thrown = caused;
@@ -910,8 +1138,24 @@ struct NodeHost::Impl {
 		for (auto* listener : noteListeners) listener->nodeSays(node, text);
 	}
 
-	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail) {
-		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail);
+	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail,
+	               std::span<const DiagnosticField> fields) {
+		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail, fields);
+	}
+
+	/// A barrier of `node` did not complete within `ms` (5.4): the data loop runs no invoke. Said once; then every node
+	/// hears it, each as an input of its own after this one.
+	void markWedged(const NodeName& node, std::int64_t ms) {
+		if (wedged) return;
+		wedged = true;
+		const EngineDiagnostic diagnostic{
+			"ear.data-loop-wedged",
+			"node " + node + "'s barrier did not complete within " + std::to_string(ms) +
+				" ms: the data loop runs no invoke, so no further engine change is applied",
+			{DiagnosticField{"ms", ms}}};
+		for (auto* listener : engineListeners) listener->engineDiagnostic(diagnostic);
+		for (const auto& known : nodes)
+			if (!known->removed()) inputFor(known->serial(), [](Node& each) { each.dataLoopWedged(); });
 	}
 
 	/// A node is gone; the oldest node left of its name, which no older node holds back now, may configure.
@@ -944,8 +1188,7 @@ struct NodeHost::Impl {
 
 NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistry& resources, Executor& mainLoop,
                    Timers& timers, std::chrono::milliseconds closeDeadline)
-	: impl_(new Impl{format, blocks, resources, mainLoop, timers, closeDeadline, {},    {}, {},    {},   0,
-                     0,      0,      false,     nullptr,  {},     false,         false, {}, false, false}) {}
+	: impl_(std::make_unique<Impl>(format, blocks, resources, mainLoop, timers, closeDeadline)) {}
 
 NodeHost::~NodeHost() = default;
 
@@ -955,6 +1198,10 @@ void NodeHost::subscribeNotes(NodeNoteListener& listener) { impl_->noteListeners
 
 void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 	impl_->diagnosticListeners.push_back(&listener);
+}
+
+void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
+	impl_->engineListeners.push_back(&listener);
 }
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
@@ -998,7 +1245,7 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	});
 }
 
-std::size_t NodeHost::leakedRuns() const noexcept { return impl_->leakedRuns; }
+std::size_t NodeHost::leaked() const noexcept { return impl_->leaked; }
 
 std::vector<NodeHealth> NodeHost::health() const {
 	std::vector<NodeHealth> result;
