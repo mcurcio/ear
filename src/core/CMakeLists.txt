@@ -167,6 +167,13 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(legacy-start-on-spec-type "writes configure, not a static start")
 	# The change version compiles in 3a (D-M2, the owner's answer to Q1: the control writes one); of the wrong shape, not.
 	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
+	ear_type_spec_compile_fail(change-version-wrong-context "a type's change version is Changed configure")
+	# A member found by name whatever its access or overloads (L-4a review): refused, never silently not called.
+	ear_type_spec_compile_fail(private-start "a type's start is public and not overloaded")
+	ear_type_spec_compile_fail(private-stop "a type's stop is public and not overloaded")
+	ear_type_spec_compile_fail(private-check "a type's check is public and not overloaded")
+	ear_type_spec_compile_fail(overloaded-start "a type's start is public and not overloaded")
+	ear_type_spec_compile_fail(class-final "a type's class is a class, not final")
 	ear_type_spec_compile_fail(create-has-no-hold "has no member named 'hold'")
 	ear_type_spec_compile_fail(create-has-no-when-ready "has no member named 'whenReady'")
 	ear_type_spec_compile_fail(create-has-no-unclaim "has no member named 'unclaim'")

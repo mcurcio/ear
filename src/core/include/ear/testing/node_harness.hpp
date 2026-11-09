@@ -52,6 +52,13 @@ struct SeenDiagnostic {
 	std::vector<std::pair<std::string, std::int64_t>> fields;
 };
 
+/// One legacy handoff a configuration made (its request's bank and capacity, the channels the framework gave it).
+struct SeenHandoff {
+	std::string bank;
+	std::uint32_t channels;
+	std::uint32_t capacityFrames;
+};
+
 /// How a harness runs (outside the class, so a default argument can use its member initializers).
 struct HarnessOptions {
 	AudioFormat format = {.rate = 48000, .maxBlock = 256};
@@ -140,6 +147,10 @@ public:
 	/// Legacy only: frames handed through handoff `index` to its consumer, and the run object its recipe built.
 	std::uint64_t handoffFrames(std::size_t index) const;
 	RunObject* runObject() const noexcept;
+	/// Every legacy handoff made, in order, over every configuration; and every recording asked for (CreateOf's
+	/// openRecording or a legacy acquire), in order, whether or not the folder opened it.
+	const std::vector<SeenHandoff>& handoffs() const noexcept;
+	const std::vector<RecordingRequest>& recordingRequests() const noexcept;
 
 private:
 	struct Impl;

@@ -55,7 +55,11 @@ struct Copy {
 };
 
 // The control's class: every member it may have, each of its one shape.
+#ifdef EAR_CASE_class_final
+class Good final {
+#else
 class Good {
+#endif
 public:
 #ifdef EAR_CASE_constructor_neither
 	explicit Good(int) {}
@@ -68,18 +72,20 @@ public:
 #elif defined(EAR_CASE_ports_bank_left_out)
 		return {in(members(1)), out(members(1)), insideOut(members(1))};
 #elif defined(EAR_CASE_ports_bank_twice)
-		return {in(members(1)), out(members(1)), insideOut(members(1)), in(members(1))};
+	return {in(members(1)), out(members(1)), insideOut(members(1)), in(members(1))};
 #else
-		return {in(members(1)), out(members(1)), insideOut(members(1)), insideIn(members(1))};
+	return {in(members(1)), out(members(1)), insideOut(members(1)), insideIn(members(1))};
 #endif
 	}
+#ifndef EAR_CASE_private_check
 	static std::expected<void, std::string> check(const Checked&) { return {}; }
+#endif
 #ifdef EAR_CASE_configure_wrong_signature
 	Configured configure(CreateOf<spec>& cx, Checked) {
 #elif defined(EAR_CASE_configure_not_a_member)
 	static Configured configure(CreateOf<spec>& cx, const Checked&) {
 #else
-	Configured configure(CreateOf<spec>& cx, const Checked&) {
+Configured configure(CreateOf<spec>& cx, const Checked&) {
 #endif
 #ifdef EAR_CASE_create_has_no_hold
 		cx.hold(out);
@@ -125,17 +131,22 @@ public:
 	// The change version: optional, never called in 3a (node-lifecycle-modules.md D-M2); of exactly its shape when given.
 #ifdef EAR_CASE_change_version_wrong_signature
 	Changed configure(ChangeOf<spec>&, Checked, Checked) { return Changed::applied(); }
+#elif defined(EAR_CASE_change_version_wrong_context)
+	Changed configure(CreateOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 #else
-	Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
+Changed configure(ChangeOf<spec>&, const Checked&, const Checked&) { return Changed::applied(); }
 #endif
 #ifdef EAR_CASE_start_wrong_signature
 	int start() { return 0; }
-#else
+#elif defined(EAR_CASE_overloaded_start)
 	void start() {}
+	void start(int) {}
+#elif !defined(EAR_CASE_private_start)
+void start() {}
 #endif
 #ifdef EAR_CASE_stop_wrong_signature
 	void stop(int) {}
-#else
+#elif !defined(EAR_CASE_private_stop)
 	void stop() noexcept {}
 #endif
 #ifdef EAR_CASE_legacy_start_on_spec_type
@@ -143,6 +154,15 @@ public:
 #endif
 
 private:
+#ifdef EAR_CASE_private_start
+	void start() {}
+#endif
+#ifdef EAR_CASE_private_stop
+	void stop() {}
+#endif
+#ifdef EAR_CASE_private_check
+	static std::expected<void, std::string> check(const Checked&) { return {}; }
+#endif
 	NodeOf<spec>* node_ = nullptr;
 };
 

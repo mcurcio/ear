@@ -238,7 +238,8 @@ The `configure` step (Create 4 and 5 of section 2), as `NodeHost` carries out th
    throw from either (`std::exception`: its `what()`; anything else: `unknown exception`) is the fault
    `<hook> threw: <what>` with `hook` = `configure`, by 4.2's code by fact.
 3. `answer.isFailed()`: the fault `start-failed: answer.detail()`. Else the return checks of 3.2.
-4. Legacy (`instance->hasRecipe()` with an outside node asked): `std::logic_error` out of `NodeHost`, as built (D-L40).
+4. Legacy (`instance->hasRecipe()` with an outside node asked): the fault `start-failed` with D-L40's text (D-L40 as
+   built threw out of `NodeHost`; superseded by D-M3 in L-4a's review).
 5. Each sink with a consumer: `sink.sink->begin(std::move(sink.consumer), begunCall(generation, index))`.
 6. The machine hears its answer (`resourcesReady` in the same turn when nothing is pending).
 
@@ -1036,7 +1037,7 @@ Each is technical or internal; the owner can overturn any. Section 10 asks what 
 |---|---|---|
 | D-M1 | `lifecycle.hpp` is the type author's API and, from L-4a, the home of `SpecConfig`, `SpecNodeType` and `makeNodeType`; `type_spec.hpp` keeps the spec vocabulary | They now make an instance, which needs the contexts; `type_spec.hpp` including `lifecycle.hpp` would be a cycle, since `CreateOf` needs bank handles and `CheckedOf` |
 | D-M2 | The owner's answer to Q1 (2026-11-09: "Accept, ignore until 3d"): a class that writes the change version compiles, and 3a never calls it: every change restarts the node. `SpecInstance` checks only its signature (a change version of the wrong shape still does not compile), `ChangeOf<Spec>` is declared so the signature can name it, and AGENTS.md's "Adding a node type" says the change version is ignored until slice 3d. L-4a builds this; no type is given one before 3d | The owner chose it over this page's recommendation (refuse until 3d) |
-| D-M3 | Every rule a type breaks inside or at the return of `configure` fails the node `start-failed` with the rule's text; none escapes `NodeHost` (D-L40, as built, excepted) | node-framework.md 6.10 says each is a `std::logic_error`; 6.4 says a hook that throws is caught and "one type's bug never takes ear down". A `logic_error` thrown at the call escapes `configure` and is caught as its throw; the return checks make the same failure, so both readings hold |
+| D-M3 | Every rule a type breaks inside or at the return of `configure` fails the node `start-failed` with the rule's text; none escapes `NodeHost`, D-L40's check included since L-4a's review (it supersedes D-L40's throw) | node-framework.md 6.10 says each is a `std::logic_error`; 6.4 says a hook that throws is caught and "one type's bug never takes ear down". A `logic_error` thrown at the call escapes `configure` and is caught as its throw; the return checks make the same failure, so both readings hold |
 | D-M4 | The sink's declarations have one header, `sink.hpp`, not `node_type.hpp` and `node_host.hpp` as node-lifecycle.md 6's table placed them | One home for the sink; `lifecycle.hpp` needs `SinkConsumer` without `node_host.hpp`; it lands without touching two frozen headers L-3d is editing |
 | D-M5 | `SinkConsumer` has a public virtual destructor | node-primitives.md 6.6 gives it a protected non-virtual one, but `consumedBy(std::unique_ptr<SinkConsumer>)` deletes it through the base, which does not compile with that destructor |
 | D-M6 | `ErasedInstance::ready` returns `std::expected<void, FailureReason>`; `hasRecipe()` is added | 5.10 makes a failed legacy recipe a fault, which a `void` cannot report; D-L40's check needs to know a recipe exists |
@@ -1127,9 +1128,51 @@ reason. Nothing here changes a rule of a higher page.
 10. **Behaviour that changed, by D-M3.** A legacy type's bug at configure (a second engine object of a name, a bank of
     the wrong kind, latency twice for a bank, a pass-through the ports refuse) was a `std::logic_error` thrown out of
     `NodeHost`; it now fails the node `start-failed` (`configure threw: ...`, or `configure gave a pass-through: ...`),
-    and `node_host_test.cpp`'s cases say so. D-L40 (a legacy recipe beside an outside node) still throws, as built.
+    and `node_host_test.cpp`'s cases say so. (D-L40, a legacy recipe beside an outside node, still threw at this
+    commit; the review below made it a failure too.)
 11. **A configure that failed or threw keeps its recordings until step 5**, freed after its instance (5.9's edge), where
     the slice 2 path closed them at once; its handoffs still go at once (their consumers may have gone with a legacy
     start's result).
 12. **A `start()` that threw** is a fault carried out once its batch was: the `Tell` of `running` that batch held is
     not told (4.2: it never reached running), so the node never shows `running` before `failed`.
+
+### After review (L-4a, 2026-11-09)
+
+An independent review of the L-4a commit asked for these; each is built, and the interface-level ones are named.
+
+1. **Members found by name, whatever their access or overloads** (`lifecycle.hpp`). `requires { &Type::start; }` is false
+   for a private, overloaded or template member, so such a `start`, `stop` or `check` was silently never called (a
+   private `check` let invalid settings through, inherited from slice 2). `spec_detail::NameProbe` (a probe deriving from
+   the class and from a struct declaring the name: the lookup is ambiguous only when the class declares it too) finds the
+   name, then `static_assert`s it is public and single ("a type's start is public and not overloaded", likewise stop
+   and check) and of its exact shape. **New rule:** a type's class is a class and not final ("a type's class is a class,
+   not final"), which the probe needs. The change version is now found by any three-parameter `configure`
+   (`spec_detail::AnyContext`), so one taking `CreateOf&` is refused too. Compile-fail cases: `private-start`,
+   `private-stop`, `private-check`, `overloaded-start`, `change-version-wrong-context`, `class-final` (82 cases now).
+2. **`Changed::applied()` and `restart(reason)` have trivial inline bodies** in 3a, so a change version defined in
+   `<type>.cpp` links.
+3. **A broken rule is recorded, not only thrown** (D-M3 made robust). **New: `CreateContext::refuse(std::string rule)`**,
+   `[[noreturn]]`, which `CreateOf::use` calls for a code of another spec. Every context call runs guarded: the first
+   rule it finds broken is recorded on the node for the hook running, and after `configure` (whatever it answered),
+   `start()` or `stop()` returns the node fails with it (`configure threw: <rule>`), so a type that catches
+   `std::exception` cannot swallow a rule and run half-acquired.
+4. **D-L40 superseded by D-M3**: a legacy recipe beside an outside node fails the node `start-failed` with D-L40's text
+   (node-lifecycle.md's D-L40 row says so); a legacy recipe that throws is the fault `recipe threw: <what>`
+   (recipeFailed); a `RunObject::close` that throws is a `log` record (`close threw: <what>`, source `ear`) and the
+   configuration is taken as closed. Nothing a type does throws out of `NodeHost` now.
+5. **A legacy start's `engineRefused` keeps its fact.** **New: `ErasedInstance::engineRefused()`** (default false;
+   `LegacyInstance` answers from its failed `StartResult`), so the node fails `engine-refused`, not `start-failed`.
+6. **The harness shows legacy handoffs and recordings.** **New: `NodeHarness::handoffs()`** (`SeenHandoff`: bank,
+   channels, capacity) **and `recordingRequests()`**, through a forwarding pair of contexts the harness hands each
+   configure. `file_test.cpp`'s capacity (2 s) and path checks are back.
+7. **`NodeConfig::start` is a throwing default, not pure** (node_type.hpp): an interim deviation from the frozen header's
+   pure virtual, so `SpecConfig` need not define it; a legacy config that forgets to override it fails its node at
+   configure (`configure threw: a type on the new SPI has no start`) instead of not compiling. It goes with the old SPI
+   in 3c.
+8. **A `start()` that threw** drops only the `Tell` of `running` from its batch, not every `Tell`.
+9. **`cx.use` with no code** (a null code or a pass-through of no pair) is refused at the call (`use given no code: a null
+   code or a pass-through of no pair`), and **`Configured::failed("")`** fails the node `start-failed: configure answered
+   failed with no detail`.
+10. **Tests added:** a rule caught by the type (in configure, and in `start()` through a kept context), `use` with no code
+    and an empty failure, a legacy engine refusal, a throwing recipe and close, a `stop()` that throws during a disable
+    and during a failure, a `start()` that throws on a start after a stop.

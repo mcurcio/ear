@@ -61,6 +61,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
@@ -383,84 +384,121 @@ struct NodeHost::Impl {
 
 		// The contexts (node-lifecycle-modules.md 3.3): CreateContext for the class, StartContext for the legacy start,
 		// Ready for its recipe, on one set of internals. Each call is valid only inside its configure (else a
-		// std::logic_error naming the call, which a hook that made it turns into its failure: D-M3).
+		// std::logic_error naming the call). Every rule a call finds broken is also recorded (guarded), so the node
+		// fails with it even when the type catches the throw (D-M3).
 		AudioFormat format() const override { return host_.format; }
 		const NodeName& node() const override { return name_; }
 		const Ports& ports() const override { return ports_; }
 		InsidesEvents& events() override {
-			if (!configuring_ && !building_) throw std::logic_error("events outside configure and its recipe");
-			return *config_->channel;
+			return guarded([&]() -> InsidesEvents& {
+				if (!configuring_ && !building_) throw std::logic_error("events outside configure and its recipe");
+				return *config_->channel;
+			});
 		}
 		void use(NodeCode code) override {
-			requireConfiguring("use");
-			Configuration& c = *config_;
-			if (c.codeGiven) throw std::logic_error("use called twice");
-			c.codeGiven = true;
-			c.pairs = code.pairs();
-			c.code = std::move(code.own());
+			guarded([&] {
+				requireConfiguring("use");
+				Configuration& c = *config_;
+				if (c.codeGiven) throw std::logic_error("use called twice");
+				if (!code.own() && code.pairs().empty())
+					throw std::logic_error("use given no code: a null code or a pass-through of no pair");
+				c.codeGiven = true;
+				c.pairs = code.pairs();
+				c.code = std::move(code.own());
+			});
 		}
 		void soundCard(std::string_view bank, SoundCardRequest request) override {
-			requireConfiguring("soundCard");
-			named(request.bank, bank, "a sound card");
-			askOutside(request, cardBank(ports_, request), outsideSuffix(request));
+			guarded([&] {
+				requireConfiguring("soundCard");
+				named(request.bank, bank, "a sound card");
+				askOutside(request, cardBank(ports_, request), outsideSuffix(request));
+			});
 		}
 		void rtpReceiver(std::string_view bank, RtpReceiverRequest request) override {
-			requireConfiguring("rtpReceiver");
-			named(request.bank, bank, "an RTP receiver");
-			askOutside(request, insideBank(ports_, request.bank, Direction::input, "an RTP receiver"),
-			           outsideSuffix(request));
+			guarded([&] {
+				requireConfiguring("rtpReceiver");
+				named(request.bank, bank, "an RTP receiver");
+				askOutside(request, insideBank(ports_, request.bank, Direction::input, "an RTP receiver"),
+				           outsideSuffix(request));
+			});
 		}
 		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
-			requireConfiguring("openRecording");
-			auto opened = host_.resources.adapterFor(request).open(name_, request.path);
-			if (!opened) return std::unexpected(std::move(opened.error()));
-			return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
+			return guarded([&]() -> std::expected<int, std::string> {
+				requireConfiguring("openRecording");
+				auto opened = host_.resources.adapterFor(request).open(name_, request.path);
+				if (!opened) return std::unexpected(std::move(opened.error()));
+				return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
+			});
 		}
 		SinkRequest& sink(std::string_view bank, SinkShape) override {
-			requireConfiguring("sink");
-			// The interim sink is wired in step L-4b (node-lifecycle-modules.md section 4); no type asks for one before.
-			throw std::logic_error("sink on bank \"" + std::string(bank) + "\" is not built before step L-4b");
+			return guarded([&]() -> SinkRequest& {
+				requireConfiguring("sink");
+				// The interim sink is wired in step L-4b (node-lifecycle-modules.md section 4); no type asks for one
+				// before.
+				throw std::logic_error("sink on bank \"" + std::string(bank) + "\" is not built before step L-4b");
+			});
 		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
-			requireConfiguring("declareLatency");
-			const Ports::Bank& input = ports_.bank(from);
-			const Ports::Bank& output = ports_.bank(to);
-			if (input.direction != Direction::input || output.direction != Direction::output)
-				throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
-			recordLatency(output.name, latency);
+			guarded([&] {
+				requireConfiguring("declareLatency");
+				const Ports::Bank& input = ports_.bank(from);
+				const Ports::Bank& output = ports_.bank(to);
+				if (input.direction != Direction::input || output.direction != Direction::output)
+					throw std::logic_error("declareLatency names a pair: an input bank, then an output bank");
+				recordLatency(output.name, latency);
+			});
 		}
 		void declareLatency(const std::string& bank, Latency internal) override {
-			requireConfiguring("declareLatency");
-			recordLatency(ports_.bank(bank).name, internal); // throws for a bank the node lacks
+			guarded([&] {
+				requireConfiguring("declareLatency");
+				recordLatency(ports_.bank(bank).name, internal); // throws for a bank the node lacks
+			});
+		}
+		[[noreturn]] void refuse(std::string rule) override {
+			if (!brokenRule_) brokenRule_ = rule;
+			throw std::logic_error(rule);
 		}
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
-			requireConfiguring("acquire");
-			return std::visit(
-				Overloaded{
-					[&](const SoundCardRequest& card) -> Acquired {
-						askOutside(card, cardBank(ports_, card), outsideSuffix(card));
-						return std::monostate{};
+			return guarded([&]() -> Acquired {
+				requireConfiguring("acquire");
+				return std::visit(
+					Overloaded{
+						[&](const SoundCardRequest& card) -> Acquired {
+							askOutside(card, cardBank(ports_, card), outsideSuffix(card));
+							return std::monostate{};
+						},
+						[&](const RtpReceiverRequest& receiver) -> Acquired {
+							askOutside(receiver, insideBank(ports_, receiver.bank, Direction::input, "an RTP receiver"),
+					                   outsideSuffix(receiver));
+							return std::monostate{};
+						},
+						[&](const RecordingRequest& recording) -> Acquired { return openRecording(recording); },
+						[&](const HandoffRequest& handoff) -> Acquired {
+							const Ports::Bank& bank = ports_.bank(handoff.bank);
+							if (bank.direction != Direction::input || handoff.consumer == nullptr)
+								throw std::logic_error("a handoff takes an input bank and a consumer, not \"" +
+						                               handoff.bank + "\"");
+							auto& made = config_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
+								name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
+								*handoff.consumer));
+							return &made->writer();
+						},
 					},
-					[&](const RtpReceiverRequest& receiver) -> Acquired {
-						askOutside(receiver, insideBank(ports_, receiver.bank, Direction::input, "an RTP receiver"),
-				                   outsideSuffix(receiver));
-						return std::monostate{};
-					},
-					[&](const RecordingRequest& recording) -> Acquired { return openRecording(recording); },
-					[&](const HandoffRequest& handoff) -> Acquired {
-						const Ports::Bank& bank = ports_.bank(handoff.bank);
-						if (bank.direction != Direction::input || handoff.consumer == nullptr)
-							throw std::logic_error("a handoff takes an input bank and a consumer, not \"" +
-					                               handoff.bank + "\"");
-						auto& made = config_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
-							name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
-							*handoff.consumer));
-						return &made->writer();
-					},
-				},
-				request);
+					request);
+			});
+		}
+
+		/// Runs a context call; a rule it finds broken (a std::logic_error) is recorded, the first one only, before it is
+		/// thrown on to the type.
+		template <typename Call> std::invoke_result_t<Call> guarded(Call&& call) {
+			try {
+				return std::forward<Call>(call)();
+			} catch (const std::logic_error& broken) {
+				if (!brokenRule_) brokenRule_ = broken.what();
+				throw;
+			}
 		}
 
 	private:
@@ -725,7 +763,9 @@ struct NodeHost::Impl {
 				stopping();
 			for (const lc::NodeAction& action : actions) {
 				// A start() that threw never reached running (4.2): the running its batch would tell is not told.
-				if (startThrew_ && std::holds_alternative<lc::Tell>(action)) continue;
+				if (startThrew_ && std::holds_alternative<lc::Tell>(action) &&
+				    std::get<lc::Tell>(action).health.phase == NodePhase::running)
+					continue;
 				std::visit(Overloaded{
 							   [&](lc::BlockAction block) { act(block); },
 							   [&](const lc::ConfigAction& config) { act(config); },
@@ -916,8 +956,8 @@ struct NodeHost::Impl {
 
 		/// T2 (node-lifecycle-modules.md 3.3): a new generation and its context; the instance made and its configure
 		/// called, timed together as the hook `configure`; then its answer and the return checks. A throw, a failed
-		/// answer or a broken rule is a fault in readying (start-failed); a legacy recipe beside an outside node is a
-		/// type bug thrown out of NodeHost (D-L40); else the code is kept, unprepared, and the resources are asked for.
+		/// answer or a broken rule (a legacy recipe beside an outside node among them, D-L40 superseded by D-M3) is a
+		/// fault in readying (start-failed); else the code is kept, unprepared, and the resources are asked for.
 		void configure() {
 			if (config_) throw std::logic_error("node " + name_ + ": a configuration began while another had not gone");
 			config_ = std::make_unique<Configuration>();
@@ -936,6 +976,7 @@ struct NodeHost::Impl {
 			{
 				const MainLoopActivity::Scope activity("configure", name_);
 				configuring_ = true;
+				brokenRule_.reset();
 				try {
 					timed("configure", [&] {
 						c.instance = c.config->make(*c.context);
@@ -947,8 +988,16 @@ struct NodeHost::Impl {
 				}
 				configuring_ = false;
 			}
+			// A rule a call found broken fails the node whatever configure did next: caught, answered or thrown (D-M3).
+			if (auto broken = std::exchange(brokenRule_, std::nullopt))
+				return failConfigure(lc::Fact::hookThrew, "configure threw: " + *broken);
 			if (!answer) return failConfigure(lc::Fact::hookThrew, std::move(threw));
-			if (answer->isFailed()) return failConfigure(lc::Fact::configureFailed, answer->detail());
+			if (answer->isFailed()) {
+				if (answer->detail().empty())
+					return failConfigure(lc::Fact::configureFailed, "configure answered failed with no detail");
+				return failConfigure(c.instance->engineRefused() ? lc::Fact::engine : lc::Fact::configureFailed,
+				                     answer->detail());
+			}
 			// The return checks (3.2), on an applied answer only.
 			if (!c.codeGiven) return failConfigure(lc::Fact::configureFailed, "configure gave no code");
 			if (!c.code) {
@@ -959,10 +1008,10 @@ struct NodeHost::Impl {
 					                     std::string("configure gave a pass-through: ") + error.what());
 				}
 			}
+			// D-L40, superseded by D-M3 (L-4a review): a type bug that fails the node, never thrown out of NodeHost.
 			if (c.instance->hasRecipe() && !c.outsideRequests.empty())
-				throw std::logic_error(
-					"node " + name_ +
-					": a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10");
+				return failConfigure(lc::Fact::configureFailed,
+				                     "a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10");
 			c.startFailed = false;
 			askResources();
 		}
@@ -986,11 +1035,14 @@ struct NodeHost::Impl {
 		void startHook() {
 			if (!config_ || !config_->instance) return;
 			const MainLoopActivity::Scope activity("start", name_);
+			brokenRule_.reset();
 			try {
 				timed("start", [&] { config_->instance->start(); });
 			} catch (...) {
 				startThrew_ = "start threw: " + whatOf(std::current_exception());
 			}
+			// A context call it made and caught (a context kept past configure) still fails it (D-M3).
+			if (auto broken = std::exchange(brokenRule_, std::nullopt)) startThrew_ = "start threw: " + *broken;
 		}
 
 		/// Before a silence that follows a start() that returned: the instance's stop(), timed. One that threw during a
@@ -999,13 +1051,17 @@ struct NodeHost::Impl {
 		void stopHook() {
 			if (!config_ || !config_->instance) return;
 			const MainLoopActivity::Scope activity("stop", name_);
+			brokenRule_.reset();
+			std::optional<std::string> what;
 			try {
 				timed("stop", [&] { config_->instance->stop(); });
 			} catch (...) {
-				const std::string what = whatOf(std::current_exception());
-				if (aggregate_.intent() == lc::Intent::stop) stopThrew_ = "stop threw: " + what;
-				else host_.logged(LogEntry{LogLevel::error, "ear", "stop() threw: " + what, {}, name_});
+				what = whatOf(std::current_exception());
 			}
+			if (auto broken = std::exchange(brokenRule_, std::nullopt)) what = std::move(broken);
+			if (!what) return;
+			if (aggregate_.intent() == lc::Intent::stop) stopThrew_ = "stop threw: " + *what;
+			else host_.logged(LogEntry{LogLevel::error, "ear", "stop() threw: " + *what, {}, name_});
 		}
 
 		/// 5.8's readiness, as far as 3a has it: the outside nodes, made in the flush in request order once the block
@@ -1044,13 +1100,14 @@ struct NodeHost::Impl {
 			c.recipeRan = true;
 			if (c.instance->hasRecipe()) {
 				building_ = true;
-				auto made = [&] {
+				auto made = [&]() -> std::expected<void, FailureReason> {
 					const MainLoopActivity::Scope activity("recipe", name_);
 					try {
 						return c.instance->ready(*this);
 					} catch (...) {
-						building_ = false;
-						throw;
+						// A recipe that throws is a type bug that fails its node, never thrown out of NodeHost (D-M3).
+						return std::unexpected(FailureReason{FailureReason::Code::startFailed,
+						                                     "recipe threw: " + whatOf(std::current_exception())});
 					}
 				}();
 				building_ = false;
@@ -1266,7 +1323,15 @@ struct NodeHost::Impl {
 			const bool closedInside = [&] {
 				if (!config_->instance) return true;
 				const MainLoopActivity::Scope activity("close run", name_);
-				return config_->channel->close(*config_->instance);
+				try {
+					return config_->channel->close(*config_->instance);
+				} catch (...) {
+					// A legacy RunObject::close that throws: written, and the configuration taken as closed (facts are
+					// dropped once a teardown began, I6), so the teardown goes on.
+					host_.logged(LogEntry{
+						LogLevel::error, "ear", "close threw: " + whatOf(std::current_exception()), {}, name_});
+					return true;
+				}
 			}();
 			if (closedInside) runClosed();
 		}
@@ -1346,8 +1411,9 @@ struct NodeHost::Impl {
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false; // inside the instance's making and configure: the contexts' calls are valid
 		bool building_ = false;    // inside a legacy recipe: events() is valid
-		std::optional<std::string> startThrew_;                     // a start() that threw, a fault after its batch
-		std::optional<std::string> stopThrew_;                      // a stop() that threw during a stop, likewise
+		std::optional<std::string> brokenRule_; // the first rule a context call found broken in the hook running
+		std::optional<std::string> startThrew_; // a start() that threw, a fault after its batch
+		std::optional<std::string> stopThrew_;  // a stop() that threw during a stop, likewise
 		std::set<std::string_view, std::less<>> hooksReportedSlow_; // ear.hook-slow said, for the node's life (D-M7)
 		bool closingHandoffs_ = false;
 		bool runClosing_ = false;

@@ -11,7 +11,6 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
-#include <stdexcept>
 #include <span>
 #include <string>
 #include <variant>
@@ -68,14 +67,7 @@ std::string contents(const std::filesystem::path& path) {
 }
 
 /// Whether the node made a handoff.
-bool madeHandoff(const Harness& harness) {
-	try {
-		static_cast<void>(harness.handoffFrames(0));
-		return true;
-	} catch (const std::out_of_range&) {
-		return false;
-	}
-}
+bool madeHandoff(const Harness& harness) { return !harness.handoffs().empty(); }
 
 } // namespace
 
@@ -158,8 +150,13 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	harness->add();
 	harness->blockReady();
 	CHECK(harness->phase() == "running");
-	CHECK(madeHandoff(*harness));
-	CHECK(harness->runObject() != nullptr); // the open file
+	REQUIRE(harness->recordingRequests().size() == 1);
+	CHECK(harness->recordingRequests()[0].path == "rec.wav");
+	REQUIRE(harness->handoffs().size() == 1);
+	CHECK(harness->handoffs()[0].bank == file::record.name);
+	CHECK(harness->handoffs()[0].channels == 2);
+	CHECK(harness->handoffs()[0].capacityFrames == 2 * format.rate); // 2 s ring
+	CHECK(harness->runObject() != nullptr);                          // the open file
 
 	std::vector<float> left;
 	std::vector<float> right;

@@ -43,6 +43,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
@@ -76,8 +77,12 @@ private:
 /// neither answer type can stand for the other; slice 3d defines the rest (and a later answer, made by whenReady).
 class Changed {
 public:
-	static Changed applied() noexcept;
-	static Changed restart(std::string reason);
+	/// 3a never calls the change version, so these only let one compile and link; slice 3d gives them their meaning.
+	static Changed applied() noexcept { return Changed(); }
+	static Changed restart(std::string reason) {
+		static_cast<void>(reason);
+		return Changed();
+	}
 
 private:
 	Changed() = default;
@@ -141,6 +146,9 @@ public:
 	/// The type's own code's latency (node-framework.md 9.4, D-L17): `latency` on the pair's output bank `to`, in the
 	/// configuration's LatencyPlan::internal. At most once per output bank (a second is a std::logic_error).
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
+	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
+	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
+	[[noreturn]] virtual void refuse(std::string rule) = 0;
 
 protected:
 	~CreateContext() = default;
@@ -190,7 +198,7 @@ public:
 	void use(NodeCode code) {
 		if (auto* bound = dynamic_cast<spec_detail::BankBoundCode*>(code.own().get())) {
 			if (bound->spec() != &Spec)
-				throw std::logic_error("a type's configure gave a code written against another type's spec");
+				context_->refuse("a type's configure gave a code written against another type's spec");
 			bound->bindPorts(context_->ports());
 		}
 		context_->use(std::move(code));
@@ -258,6 +266,9 @@ public:
 	virtual Configured configure(InstanceContexts& cx) = 0;
 	/// Legacy only: whether its start returned a recipe (D-L40's check, with the outside nodes it asked for).
 	virtual bool hasRecipe() const noexcept { return false; }
+	/// Legacy only: configure answered failed because the old SPI's start said engineRefused (its fact is kept: the node
+	/// fails engine-refused, not start-failed).
+	virtual bool engineRefused() const noexcept { return false; }
 	/// Legacy only, T3 (every resource ready, before the machine hears it): the recipe builds the run object; its
 	/// failure is the fault `start-failed`.
 	virtual std::expected<void, FailureReason> ready(Ready& ready) {
@@ -278,12 +289,36 @@ namespace spec_detail {
 template <class Member, class Type> inline constexpr bool exactlyVoid =
 	std::same_as<Member, void (Type::*)()> || std::same_as<Member, void (Type::*)() noexcept>;
 
+/// Whether a class declares a member of a name at all, whatever its access, overloads or templates: a probe deriving from
+/// it and from a struct that declares the name makes the lookup ambiguous only when the class has one too. So a private,
+/// overloaded or template start, stop, check or change version is found, then refused, never silently skipped.
+struct StartName {
+	void start();
+};
+struct StopName {
+	void stop();
+};
+struct CheckName {
+	void check();
+};
+template <class Type, class Name> struct NameProbe : Type, Name {};
+template <class Type> inline constexpr bool declaresStart = !requires { &NameProbe<Type, StartName>::start; };
+template <class Type> inline constexpr bool declaresStop = !requires { &NameProbe<Type, StopName>::stop; };
+template <class Type> inline constexpr bool declaresCheck = !requires { &NameProbe<Type, CheckName>::check; };
+
+/// Converts to any reference: a call with it finds any configure of three parameters, whatever its first.
+struct AnyContext {
+	template <class T> operator T&() const; // NOLINT: implicit on purpose; never defined, only named in requires
+};
+
 /// The instance makeNodeType<Spec, Type>() makes for each configuration (node-lifecycle.md 5.9). It holds NodeOf, then
 /// the type's object (constructed from NodeOf or from nothing), and calls its hooks. `settings` are the config's, which
 /// outlives the instance (I5 step 5).
 template <const auto& Spec, class Type> class SpecInstance final : public ErasedInstance {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using Checked = CheckedOf<Spec>;
+	static_assert(std::is_class_v<Type> && !std::is_final_v<Type>,
+	              "a type's class is a class, not final (the framework finds its members by name)");
 	static_assert(
 		requires(const Checked& settings) {
 			{ Type::ports(settings) } -> std::same_as<Members<Spec>>;
@@ -296,10 +331,11 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	// The change version: optional, never called in 3a (D-M2); once it is callable, its signature is exactly this.
+	// The change version: optional, never called in 3a (D-M2); once any configure of three parameters is callable (with
+	// a ChangeOf, or with any context), its signature is exactly this.
 	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
 		type.configure(change, settings, settings);
-	};
+	} || requires(Type& type, const Checked& settings) { type.configure(AnyContext{}, settings, settings); };
 	static consteval bool changesExactly() {
 		if constexpr (hasChange)
 			return requires {
@@ -309,14 +345,17 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	}
 	static_assert(changesExactly(), "a type's change version is Changed configure(ChangeOf<spec>&, const "
 	                                "CheckedOf<spec>&, const CheckedOf<spec>&)");
-	static constexpr bool hasStart = requires { &Type::start; };
-	static constexpr bool hasStop = requires { &Type::stop; };
+	// start and stop: found by name whatever their access or overloads, then public, single and exactly void().
+	static constexpr bool hasStart = declaresStart<Type>;
+	static constexpr bool hasStop = declaresStop<Type>;
+	static_assert(!hasStart || requires { &Type::start; }, "a type's start is public and not overloaded");
+	static_assert(!hasStop || requires { &Type::stop; }, "a type's stop is public and not overloaded");
 	static consteval bool startsExactly() {
-		if constexpr (hasStart) return exactlyVoid<decltype(&Type::start), Type>;
+		if constexpr (requires { &Type::start; }) return exactlyVoid<decltype(&Type::start), Type>;
 		else return true;
 	}
 	static consteval bool stopsExactly() {
-		if constexpr (hasStop) return exactlyVoid<decltype(&Type::stop), Type>;
+		if constexpr (requires { &Type::stop; }) return exactlyVoid<decltype(&Type::stop), Type>;
 		else return true;
 	}
 	static_assert(startsExactly(), "a type's start is void start()");
@@ -380,12 +419,16 @@ private:
 	/// The table's walk passed: the class's check, a rule across settings, then the config.
 	MadeConfig makeConfig(const NodeName&, CheckedSettings walked) const override {
 		const Checked settings(std::move(walked));
-		// Found by name, then held to its exact signature, so a check taking its settings by another type is refused
-		// rather than never run.
-		if constexpr (requires { &Type::check; }) {
-			static_assert(std::same_as<decltype(&Type::check), std::expected<void, std::string> (*)(const Checked&)>,
-			              "a type's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
-			if (auto checked = Type::check(settings); !checked) return std::unexpected(std::move(checked.error()));
+		// Found by name whatever its access or overloads, then held to public, single and its exact signature, so a
+		// check that is private or takes its settings by another type is refused rather than never run.
+		if constexpr (declaresCheck<Type>) {
+			static_assert(requires { &Type::check; }, "a type's check is public and not overloaded");
+			if constexpr (requires { &Type::check; }) {
+				static_assert(
+					std::same_as<decltype(&Type::check), std::expected<void, std::string> (*)(const Checked&)>,
+					"a type's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
+				if (auto checked = Type::check(settings); !checked) return std::unexpected(std::move(checked.error()));
+			}
 		}
 		return std::make_unique<const SpecConfig<Spec, Type>>(settings);
 	}

@@ -505,6 +505,14 @@ std::ptrdiff_t indexOf(const Log& log, const std::string& line) {
 	return std::find(log.begin(), log.end(), line) - log.begin();
 }
 
+/// The failure a node's configure gave, "<code>: <detail>", or "" while it has none.
+std::string failureOf(const Fixture& f, const NodeName& node) {
+	for (const NodeHealth& health : f.host.health())
+		if (health.name == node && health.reason)
+			return std::string(failureCode(health.reason->code)) + ": " + health.reason->detail;
+	return {};
+}
+
 } // namespace
 
 TEST_CASE("A node gets its port block, then starts, builds its run and prepares its code, and drives the block once it "
@@ -1116,14 +1124,6 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 	CHECK(f.allGone == 1);
 }
 
-/// The failure a node's configure gave, "<code>: <detail>", or "" while it has none.
-std::string failureOf(const Fixture& f, const NodeName& node) {
-	for (const NodeHealth& health : f.host.health())
-		if (health.name == node && health.reason)
-			return std::string(failureCode(health.reason->code)) + ": " + health.reason->detail;
-	return {};
-}
-
 TEST_CASE("One configuration names each engine object once: a second of a name, or a bank of the wrong kind, is a "
           "type bug that fails the node start-failed (I9, D-M3)",
           "[node_host][rtp]") {
@@ -1166,14 +1166,15 @@ TEST_CASE("One configuration names each engine object once: a second of a name, 
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A legacy type with a recipe that asks for an outside node is a std::logic_error at T2",
+TEST_CASE("A legacy type with a recipe that asks for an outside node fails its node start-failed at T2 (D-L40, "
+          "superseded by D-M3)",
           "[node_host][legacy]") {
 	Fixture f;
 	auto config = withCards(f.log);
 	config->recipe = true;
-	CHECK_THROWS_WITH(
-		f.add("motu", config),
-		Catch::Contains("a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10"));
+	f.add("motu", config); // never thrown out of NodeHost
+	CHECK(failureOf(f, "motu") ==
+	      "start-failed: a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10");
 	f.blocks.events.at(0)->ready();
 	CHECK(f.cards.events.empty());
 	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
@@ -1350,7 +1351,9 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 	auto config = std::make_shared<PassConfig>();
 	config->pairs = bad.at(static_cast<std::size_t>(which));
 	f.add("card", config); // checked at configure's return (node-lifecycle-modules.md 3.3), never thrown out
-	CHECK(failureOf(f, "card").starts_with("start-failed: configure gave a pass-through: "));
+	// A pass-through of no pair is refused at use; the rest at the return, against the node's ports.
+	CHECK(failureOf(f, "card").starts_with(which == 3 ? "start-failed: configure threw: use given no code"
+	                                                  : "start-failed: configure gave a pass-through: "));
 	f.blocks.events.at(0)->ready();
 	CHECK(f.blocks.driven.at(0) == nullptr);
 	f.stopAll();
@@ -3785,4 +3788,169 @@ TEST_CASE("A configure that threw after it opened a recording closes the recordi
 	                         std::string("node rec failed start-failed: configure threw: after the recording")) == 1);
 	f.host.stopAll(f.graph.close(), [] {});
 	f.mainLoop.settle();
+}
+
+TEST_CASE("A broken rule the type catches still fails its node with the rule's text (D-M3)", "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) {
+		cx.create.use(std::make_unique<TestAudioCode>(f.log));
+		try {
+			cx.create.soundCard("record", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::capture});
+		} catch (const std::exception&) {
+			// swallowed: the type goes on half-acquired
+		}
+		return Configured::applied();
+	};
+	f.add("probe", config);
+	CHECK(failureOf(f, "probe") ==
+	      "start-failed: configure threw: a capture card joins an inside input bank, not \"record\"");
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(f.blocks.driven.at(0) == nullptr);
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("A context call caught inside start() still fails the node", "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onStart = [&] {
+		try {
+			config->kept->use(std::make_unique<TestAudioCode>(f.log));
+		} catch (const std::logic_error&) {
+		}
+	};
+	f.add("probe", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("use with no code and failed with no detail are refused with rule texts", "[node_host][class]") {
+	for (const bool nullCode : {true, false}) {
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = [&](InstanceContexts& cx) {
+			if (!nullCode) return Configured::failed("");
+			cx.create.use(std::unique_ptr<TestAudioCode>());
+			return Configured::applied();
+		};
+		f.add("probe", config);
+		CHECK(failureOf(f, "probe") ==
+		      (nullCode ? "start-failed: configure threw: use given no code: a null code or a pass-through of no pair"
+		                : "start-failed: configure answered failed with no detail"));
+		f.stopAll();
+		f.settle();
+	}
+}
+
+namespace {
+/// A legacy config whose start fails engine-refused, or whose recipe throws, or whose run object's close throws.
+struct LegacyFaults final : NodeConfig {
+	enum class Fault { engine, recipe, close } fault;
+	Log& log;
+	Ports ports_ = testPorts();
+	LegacyFaults(Fault f, Log& l) : fault(f), log(l) {}
+	const Ports& ports() const override { return ports_; }
+	struct ThrowingClose final : RunObject {
+		void close(std::move_only_function<void()>) override { throw std::runtime_error("cannot join"); }
+	};
+	StartResult start(StartContext&) const override {
+		if (fault == Fault::engine)
+			return std::unexpected(FailureReason{FailureReason::Code::engineRefused, "no such device"});
+		if (fault == Fault::recipe)
+			return StartResult{std::make_unique<TestAudioCode>(log),
+			                   [](Ready&) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+								   throw std::runtime_error("no thread");
+							   }};
+		return StartResult{std::make_unique<TestAudioCode>(log),
+		                   [](Ready&) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+							   return std::make_unique<ThrowingClose>();
+						   }};
+	}
+};
+} // namespace
+
+TEST_CASE("A legacy start's engine refusal keeps its fact, and a recipe or close that throws is contained",
+          "[node_host][legacy]") {
+	SECTION("engine-refused") {
+		Fixture f;
+		f.add("old", std::make_shared<LegacyFaults>(LegacyFaults::Fault::engine, f.log));
+		CHECK(failureOf(f, "old") == "engine-refused: no such device");
+		f.stopAll();
+		f.settle();
+	}
+	SECTION("a recipe that throws") {
+		Fixture f;
+		f.add("old", std::make_shared<LegacyFaults>(LegacyFaults::Fault::recipe, f.log)); // never thrown out
+		CHECK(failureOf(f, "old") == "start-failed: recipe threw: no thread");
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("a close that throws") {
+		Fixture f;
+		TestLog logs;
+		f.host.subscribeLog(logs);
+		addRunning(f, "old", std::make_shared<LegacyFaults>(LegacyFaults::Fault::close, f.log));
+		f.host.nodeRemoved("old");
+		f.settle();
+		CHECK(std::ranges::count(f.log, std::string("node old gone dropped=0")) == 1);
+		REQUIRE(logs.entries.size() == 1);
+		CHECK(logs.entries[0].text == "close threw: cannot join");
+		f.stopAll();
+	}
+}
+
+TEST_CASE("A stop() that throws during a disable or a failure is a log record, and the teardown goes on",
+          "[node_host][class]") {
+	for (const bool disable : {true, false}) {
+		INFO((disable ? "disable" : "failure"));
+		Fixture f;
+		TestLog logs;
+		f.host.subscribeLog(logs);
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onStop = [] { throw std::runtime_error("stuck"); };
+		config->onConfigure = [&](InstanceContexts& cx) {
+			cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			cx.create.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		addRunning(f, "probe", config);
+		if (disable) f.host.nodeChanged(NodeSpec{"probe", "test", {}, true}, config, {NodeOutcome::disable, {}});
+		else f.cards.events.at(0)->lost("unplugged");
+		f.settle();
+		CHECK(f.host.health().at(0).phase == (disable ? NodePhase::disabled : NodePhase::failed));
+		if (!disable) CHECK(failureOf(f, "probe") == "engine-refused: unplugged");
+		REQUIRE(logs.entries.size() == 1);
+		CHECK(logs.entries[0].text == "stop() threw: stuck");
+		CHECK(countOf(f.log, "instance destroyed") == 1);
+		f.stopAll();
+		f.settle();
+	}
+}
+
+TEST_CASE("A start() that throws on a start after a stop fails the node start-failed, with no stop()",
+          "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	bool failing = false;
+	config->onStart = [&] {
+		if (failing) throw std::runtime_error("no device");
+	};
+	addRunning(f, "probe", config);
+	REQUIRE(f.host.stop("probe"));
+	f.settle();
+	f.log.clear();
+	failing = true;
+	REQUIRE(f.host.start("probe"));
+	f.settle();
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: no device");
+	CHECK(countOf(f.log, "stop()") == 0);
+	CHECK(countOf(f.log, "node probe running") == 0);
+	f.stopAll();
+	f.settle();
 }

@@ -340,9 +340,9 @@ public:
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/design/node-lifecycle.md section 4; node-lifecycle-modules.md 3.3): config.make(context) makes its instance
 	/// (the type's class, or the legacy adapter over config.start, 5.10), whose configure acquires only, through
-	/// CreateContext or StartContext on one set of internals, and gives the code (a recipe beside an outside node is a
-	/// std::logic_error, D-L40; every other rule the type breaks, and a configure that throws, fail the node
-	/// start-failed); the outside nodes it asked for are made once the block is ready, in request order,
+	/// CreateContext or StartContext on one set of internals, and gives the code (every rule the type breaks, caught by
+	/// it or not, a legacy recipe beside an outside node, and a configure or recipe that throws, fail the node
+	/// start-failed: D-M3); the outside nodes it asked for are made once the block is ready, in request order,
 	/// named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver); once every resource is ready
 	/// a legacy recipe builds the run object and the code is prepared; once the block is ready the code drives it
 	/// (PortBlock's asynchronous drive, fading in every output the code writes: public outputs and inside outputs, which

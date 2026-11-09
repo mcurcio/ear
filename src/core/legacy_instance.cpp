@@ -16,7 +16,10 @@ namespace detail {
 
 Configured LegacyInstance::configure(InstanceContexts& cx) {
 	StartResult started = config_.start(cx.legacy);
-	if (started.failed()) return Configured::failed(std::move(started.failure().detail));
+	if (started.failed()) {
+		engineRefused_ = started.failure().code == FailureReason::Code::engineRefused; // its fact kept
+		return Configured::failed(std::move(started.failure().detail));
+	}
 	recipe_ = std::move(started.recipe());
 	cx.create.use(std::move(started.code()));
 	return Configured::applied();

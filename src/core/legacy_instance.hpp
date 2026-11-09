@@ -19,6 +19,7 @@ public:
 	/// cx.create.use and the recipe kept for ready().
 	Configured configure(InstanceContexts& cx) override;
 	bool hasRecipe() const noexcept override { return static_cast<bool>(recipe_); }
+	bool engineRefused() const noexcept override { return engineRefused_; }
 	/// Runs the recipe (if any) and keeps the run object; its failure is returned.
 	std::expected<void, FailureReason> ready(Ready& ready) override;
 	/// RunObject::close, or closed() at once with none.
@@ -30,6 +31,7 @@ private:
 	const NodeConfig& config_;
 	RunRecipe recipe_;
 	std::unique_ptr<RunObject> object_; // destroyed with the instance, after the code (I5 step 5)
+	bool engineRefused_ = false;        // its start failed engineRefused
 };
 
 } // namespace ear::detail
