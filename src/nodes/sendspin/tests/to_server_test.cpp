@@ -1,4 +1,4 @@
-// The source role's audio on its way to the library (docs/design/sendspin.md sections 6 and 7): each piece's stamp comes
+// The source role's audio on its way to the library (docs/node-types.md#threads): each piece's stamp comes
 // from the capture anchor, however late the handoff's thread woke.
 #include <array>
 #include <cstdint>

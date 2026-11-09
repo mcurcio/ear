@@ -1,5 +1,4 @@
-// A sendspin node's settings: each refusal's exact text, in order, and the URL's grammar (docs/design/sendspin.md
-// section 4).
+// A sendspin node's settings: each refusal's exact text, in order, and the URL's grammar (docs/node-types.md#sendspin).
 #include <expected>
 #include <memory>
 #include <string>

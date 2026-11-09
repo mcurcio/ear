@@ -1,13 +1,12 @@
-// Running a node type without PipeWire (docs/design/node-framework.md 7.6, the class's home;
-// docs/design/node-lifecycle-modules.md 3.8, the home of these declarations, step L-4a): one real NodeHost over in-memory
-// fakes (D-L11), so a type's tests and NodeHost cannot disagree on any rule. NodeHarness takes any NodeType by names (the
+// Running a node type without PipeWire (docs/writing-a-node-type.md#testing-a-type): one real NodeHost over in-memory
+// fakes, so a type's tests and NodeHost cannot disagree on any rule. NodeHarness takes any NodeType by names (the
 // all-type tests get theirs from the generated list, typeless; the legacy types run through the legacy adapter);
 // TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
-// realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with the
-// transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and stop()
-// (D-M14): their pairing is node_host_test.cpp's. Differences from 7.6, each because 3a lacks the thing: no feed, held
-// or runLoops (3b, 3c, 3d). The sink fake (step L-4b) runs a consumer on the test's thread: begin at configure's return,
-// each chunk at once from the tap written after the fade in process(), finish at the close.
+// realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
+// the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
+// stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
+// build them (docs/design/). The sink fake runs a consumer on the test's thread: begin at configure's return, each
+// chunk at once from the tap written after the fade in process(), finish at the close.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -26,7 +25,7 @@
 #include "ear/core/sink.hpp"
 namespace ear::testing {
 
-/// One chunk a sink's fake handed its consumer (on the test's thread, at once), copied. From step L-4b.
+/// One chunk a sink's fake handed its consumer (on the test's thread, at once), copied.
 struct SeenChunk {
 	std::vector<float> interleaved;
 	std::uint32_t frames;
@@ -90,7 +89,8 @@ public:
 	/// The parsed node's ports, inside banks included; std::logic_error before a parse that passed.
 	const Ports& ports() const;
 
-	// Operations and the lifecycle's steps (node-framework.md 6.3), one call per transition.
+	// Operations and the lifecycle's steps (docs/architecture.md#phases-states-and-what-is-wanted), one call per
+	// transition.
 	using AddOptions = ear::testing::AddOptions;
 	/// T1 and, once the fake block is made, T2: NodeHost::nodeAdded; the instance made, configure called, readiness as
 	/// far as the fakes allow. {.disabled = true}: T19, nothing configured. std::logic_error after no or a refused parse.

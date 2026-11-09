@@ -1,7 +1,7 @@
 // The "card" node type through its type harness, by the banks its spec declares (card_spec.hpp), whose fakes record the
-// sound cards it asks for (docs/design/batch2.md section 4.4, slice E2 criterion 6; docs/design/node-framework.md
-// slices 1 and 2: named inside banks, the framework's pass-through, the type harness; docs/design/node-lifecycle-modules.md
-// 3.8 and 3.9: its class, over a real NodeHost). The engine side of a card (AlsaSoundCards) is tested in
+// sound cards it asks for (docs/node-types.md#card;
+// docs/writing-a-node-type.md#testing-a-type: named inside banks, the framework's pass-through, its class over a real
+// NodeHost). The engine side of a card (AlsaSoundCards) is tested in
 // src/pipewire/tests/sound_card_test.cpp.
 #include <cstdint>
 #include <memory>
@@ -70,7 +70,7 @@ TEST_CASE("Card accepts a card id with playback and capture channel counts", "[c
 	CHECK(captureOnly->ports().outputs().back() == "capture.64");
 }
 
-TEST_CASE("Card rejects settings outside section 4.4's rules", "[card]") {
+TEST_CASE("Card rejects settings outside its rules", "[card]") {
 	const std::vector<ear::NodeSettings> invalid{
 		// A raw ALSA device name: the file plugin's "|command" form, and hw:0 under an unknown key.
 		{{"card", "file:'|touch x'"}, {"playback", 2}},

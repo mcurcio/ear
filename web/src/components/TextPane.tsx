@@ -1,4 +1,4 @@
-// The ear.conf pane (docs/design/knobly-config.md, Contracts: Editor): the file's text, editable,
+// The ear.conf pane (docs/editor.md): the file's text, editable,
 // its diagnostics (a click puts the caret there), Save, and banners for what a person must know:
 // the file changed under the draft, the graph refused the file, a write failed, editor edits were
 // dropped, a setting applies only at restart. The logic is pane.ts; ear judges every text.

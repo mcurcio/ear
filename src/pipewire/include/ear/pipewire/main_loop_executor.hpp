@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4; Timers by docs/design/node-framework.md section 6, I5a, slice 1;
-// Timers::now by docs/design/node-lifecycle.md D-L12).
-// Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <functional>

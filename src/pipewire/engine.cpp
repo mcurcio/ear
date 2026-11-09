@@ -1,6 +1,5 @@
-// PipeWire's engine inside EAR (docs/design/m1-white-to-file.md section 1, "Engine facts";
-// docs/design/batch2.md sections 4.3 and 7: CAP_SYS_NICE and the scheduling report;
-// docs/design/node-framework.md section 10: denormals flushed on the data thread).
+// PipeWire's engine inside EAR (docs/engine.md#engineconf-key-by-key; docs/engine.md#realtime-priority: CAP_SYS_NICE
+// and the scheduling report; docs/engine.md#denormals: denormals flushed on the data thread).
 #include "ear/pipewire/engine.hpp"
 
 #include <algorithm>

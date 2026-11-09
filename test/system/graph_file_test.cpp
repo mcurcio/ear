@@ -1,4 +1,4 @@
-// ear.conf end to end (docs/design/knobly-config.md, "Tracer bullet" and S5 criteria T1-T8): the
+// ear.conf end to end (docs/graph-file.md): the
 // real out/ear boots from a graph file folder; every request goes through the graph file keeper;
 // editor edits are made at the source and written back, and a hand edit wins; a file with errors, or
 // one the graph refuses, runs nothing and ear stays up; the folder's limits hold. Every wait is
@@ -17,7 +17,7 @@ namespace {
 
 using namespace ear::test;
 
-/// The record's example (docs/design/knobly-config.md, "File format") at `rate`: noise -> rec:record.left,
+/// The record's example (docs/graph-file.md#edits-at-the-source) at `rate`: noise -> rec:record.left,
 /// and two cards ear cannot open, desk (with a route) and porch.
 std::string recordExample(std::uint32_t rate = 48000) {
 	return "graph_frequency " + std::to_string(rate) + R"(;
@@ -104,7 +104,7 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	checkNoiseOnOneChannel(directory.recordings() / "take1.wav", 0, 44100);
 
 	// A card that cannot open makes alsa-lib and PipeWire say so: through ear's handler and pw_log, both are records
-	// (node-framework.md section 8.8), and nothing ear printed is anything but a record.
+	// (docs/output-records.md), and nothing ear printed is anything but a record.
 	CHECK(process.plainLines().empty());
 	const auto logged = [&](const std::string& source) {
 		for (const json& record : process.records())

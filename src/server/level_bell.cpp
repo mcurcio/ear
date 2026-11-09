@@ -1,5 +1,5 @@
 // The level bell: the eventfd the realtime thread rings when levels are published
-// (docs/design/batch2.md sections 2 and 4.6, control_port.hpp). The control port waits for it
+// (docs/architecture.md#threads, control_port.hpp). The control port waits for it
 // to be readable on the control thread, reads it (which resets it) and then reads the levels.
 //
 // "Rung at most once until answered" is the eventfd's own counter: every ring until the control

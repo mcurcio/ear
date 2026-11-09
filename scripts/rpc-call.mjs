@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // scripts/rpc-call.mjs <ws-url> [--until '<node> <state>'] [--timeout <s>] <method> [params-json]
 //
-// One JSON-RPC 2.0 call to ear's control port (docs/design/batch2.md section 6; from protocol 1,
-// docs/design/control-plane.md 2.2 and 4), for scripts: connects to <ws-url> (for example
+// One JSON-RPC 2.0 call to ear's control port (docs/control-port.md; from protocol 1,
+// docs/control-port.md#talking-to-it), for scripts: connects to <ws-url> (for example
 // ws://127.0.0.1:7777/rpc), sends <method> with the named params given as JSON and prints the response's
 // result as one line of JSON. Node.js 24's own WebSocket; no packages.
 //

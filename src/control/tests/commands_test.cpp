@@ -1,6 +1,5 @@
-// The control port's commands (docs/design/batch2.md sections 4.5 and 6; docs/design/knobly-config.md,
-// "Wire additions"): decodeCommand for every method and every missing, extra and mistyped key (R1
-// criterion 2); encodeCommandResult and encodeGraph give exactly the fixtures' texts (R1 criterion 3).
+// The control port's commands (docs/control-port.md): decodeCommand for every method and every missing, extra and
+// mistyped key; encodeCommandResult and encodeGraph give exactly the fixtures' texts.
 #include <fstream>
 #include <string>
 #include <vector>

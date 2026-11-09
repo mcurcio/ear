@@ -1,5 +1,5 @@
-// Live audio levels, kept outside React state (docs/design/batch2.md section 8). Each `levels`
-// notification is a complete snapshot (section 6), so it replaces the store: a node missing from
+// Live audio levels, kept outside React state (docs/editor.md). Each `levels`
+// notification is a complete snapshot, so it replaces the store: a node missing from
 // it has no level and reads silent. Listeners are per port, so at 30 messages a second only the
 // meters and wires whose port changed re-render, never the whole canvas.
 import type { Level, Notifications, PortRef } from "./protocol";
@@ -22,7 +22,7 @@ export function meterFraction(linear: number): number {
 
 const silent: Level = [0, 0];
 
-/** A route carries one channel: a wire's level is its from port's (section 6). */
+/** A route carries one channel: a wire's level is its from port's. */
 export function wirePort(route: { from: PortRef }): PortRef {
   return route.from;
 }

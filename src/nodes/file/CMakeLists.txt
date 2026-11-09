@@ -1,6 +1,6 @@
-# ear_node_file: the "file" node type (docs/design/m1-white-to-file.md section 2), which writes WAV files with
-# libsndfile into a recording the framework opens beneath the recordings folder (docs/design/node-framework.md section
-# 7.3). The only package that links libsndfile, privately.
+# ear_node_file: the "file" node type (docs/node-types.md#file), which writes WAV files with libsndfile into a recording
+# the framework opens beneath the recordings folder (docs/writing-a-node-type.md#configure-and-createof). The only
+# package that links libsndfile, privately.
 ear_node_type(SOURCES file.cpp TESTS tests/file_test.cpp)
 target_link_libraries(ear_node_file PRIVATE PkgConfig::SNDFILE)
 

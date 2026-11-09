@@ -1,6 +1,6 @@
-// The type SPI (docs/design/node-framework.md sections 6.4, 6.10, 7.1, 7.6 and 9.2; docs/design/node-lifecycle-modules.md
-// section 3, step L-4a): a spec, a class with configure and its hooks, makeNodeType, Io by bank and the harness that
-// runs a type over a real NodeHost without PipeWire. What must not compile is compile_fail/type_spec_bad.cpp's.
+// The type SPI (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md): a spec, a class with configure and
+// its hooks, makeNodeType, Io by bank and the harness that runs a type over a real NodeHost without PipeWire. What must
+// not compile is compile_fail/type_spec_bad.cpp's.
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -110,7 +110,7 @@ struct Mixed {
 	}
 };
 
-/// A class that writes the change version: it compiles, and 3a never calls it (D-M2, the owner's answer to Q1).
+/// A class that writes the change version: it compiles, and 3a never calls it.
 struct Changing {
 	static Members<spec> ports(const Checked&) {
 		return {in(members(1)), out(members(1)), toDevice(members(1)), fromDevice(members(1))};

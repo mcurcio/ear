@@ -1,4 +1,4 @@
-// The RTP address's closed grammar (docs/design/rtp.md section 3; R1a criteria 1 and 2): "0.0.0.0"
+// The RTP address's closed grammar (docs/node-types.md#rtp): "0.0.0.0"
 // or an IPv4 multicast group as a plain dotted quad, nothing else.
 #include <string>
 #include <vector>

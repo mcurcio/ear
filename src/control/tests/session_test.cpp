@@ -1,5 +1,4 @@
-// ControlSession and ControlHub (docs/design/batch2.md sections 4.5 and 6, R1 criteria 1, 3, 5,
-// 6 and 7; docs/design/knobly-config.md, S5 criterion T10), through the real MainLoopGateway on two
+// ControlSession and ControlHub (docs/control-port.md), through the real MainLoopGateway on two
 // queue executors the test runs by hand, with a scripted graph file keeper that answers each batch
 // on the main loop and, like the keeper's main-loop side, DesiredGraph, NodeHost and the Reconciler,
 // tells the gateway each file change and graph event first. Every fixture in test/protocol is
@@ -386,7 +385,7 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 	};
 	for (const auto& [call, error] : refusals)
 		w.graph.script.push_back({call, [error] { return Result(std::unexpected(error)); }});
-	// The lifecycle's refusals (control-plane.md 4.5), then one more while stopping.
+	// The lifecycle's refusals (docs/control-port.md#error-codes), then one more while stopping.
 	const auto refused = [](CommandResult result) { return [result] { return result; }; };
 	w.graph.script.push_back({"startNode porch", refused(ControlRefusal{NodeDisabled{"porch"}})});
 	w.graph.script.push_back(

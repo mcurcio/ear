@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/rtp.md section 7.1; the request names an inside bank by docs/design/node-framework.md
-// section 7.3, slice 1). Change it only through an erratum in that
-// page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <optional>
@@ -15,7 +12,7 @@ namespace ear {
 /// address, so no user text reaches PipeWire's address parser (which resolves a host name with
 /// a blocking lookup on the main loop) and no unicast address does: PipeWire 1.4.2 reads one
 /// as "the sender's address and source port", which a sender with its own source port never
-/// matches (docs/design/rtp.md section 4).
+/// matches (docs/engine.md#rtp-receivers).
 class RtpAddress {
 public:
 	static std::optional<RtpAddress> parse(std::string_view text); // nullopt outside the grammar

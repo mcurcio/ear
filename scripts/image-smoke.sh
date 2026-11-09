@@ -19,7 +19,7 @@
 # in a scratch graph file folder made writable for uid 10001 and mounted read-write at
 # /var/lib/ear/config, without and with --cap-add SYS_NICE: once it prints its "control listening on"
 # record and the route's linked one (each line ear prints is one JSON record whose msg is the plain
-# line, docs/design/node-framework.md section 8.8), GET / must return the built editor's index.html, and graph.get and
+# line, docs/output-records.md), GET / must return the built editor's index.html, and graph.get and
 # graphFile.get must answer (scripts/rpc-call.mjs, run with the dev image's Node in a container
 # sharing ear's network): graph.get says protocol 1 with the lifecycle feature, and graphFile.get runs the
 # file's version and holds its text. Without
@@ -141,7 +141,7 @@ run_ear() {
 		echo "image-smoke: graph.get does not say \"realtime\":$realtime" >&2
 		exit 1
 	fi
-	# The wire's frame (docs/design/control-plane.md 4.1): protocol 1 and the lifecycle feature.
+	# The wire's frame (docs/control-port.md#protocol-and-features): protocol 1 and the lifecycle feature.
 	if [[ $graph != *'"protocol":1'* || $graph != *'"features":['*'"lifecycle"'* ]]; then
 		echo "image-smoke: graph.get does not say \"protocol\":1 with the \"lifecycle\" feature" >&2
 		exit 1

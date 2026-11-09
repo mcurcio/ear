@@ -1,5 +1,5 @@
 // The connection rules between the canvas (@xyflow/react) and the wire format
-// (docs/design/batch2.md section 8): a drag from an output port to an input port is route.add's
+// (docs/editor.md): a drag from an output port to an input port is route.add's
 // params; any other drag is refused before it reaches the server. Each port is one React Flow
 // handle whose id says its direction, so the rule needs nothing but the handles.
 import type { PortRef, RouteEnds } from "./protocol";

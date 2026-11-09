@@ -1,4 +1,4 @@
-// The main-loop watchdog (docs/design/node-lifecycle.md section 5.12, D-L9, step L-7; node-framework.md 6.3 and 6.8):
+// The main-loop watchdog (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog):
 // the main loop beats a heartbeat (main.cpp: a 100 ms main-loop timer), and a thread of its own looks at it every
 // 250 ms. A look that finds the heartbeat older than 500 ms reports the stall once, with the heartbeat's age and where
 // the main loop was (a callback main.cpp gives: ear_output sees nothing of EAR's); once the beats return it reports the

@@ -1,4 +1,4 @@
-// The ear.conf pane's logic, pure (docs/design/knobly-config.md, Contracts: Editor). The draft is
+// The ear.conf pane's logic, pure (docs/editor.md). The draft is
 // the person's text; the base is the file it was based on, whose version Save sends, so ear can
 // refuse a Save over a file that changed meanwhile (file-changed). A new file while the draft has
 // unsaved changes never overwrites them: the pane goes stale ("ear.conf changed; reload", VS

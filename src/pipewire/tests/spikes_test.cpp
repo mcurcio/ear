@@ -1,20 +1,21 @@
-// Slice 3a's PipeWire spikes, kept as regressions (docs/design/node-lifecycle.md section 10, step L-0; the [U] items of
-// docs/design/node-framework.md section 15 they settle), on the real in-process engine:
-//  - S1 (10.1): pw_loop_invoke from the main loop without blocking: where, when and in what order the functions run,
+// PipeWire spikes, kept as regressions (docs/engine.md#the-one-data-loop-and-invokes, what they settled), on the real
+// in-process engine:
+//  - S1: pw_loop_invoke from the main loop without blocking: where, when and in what order the functions run,
 //    their completions back through a main-loop event, nothing allocated on the data thread, what a burst costs, and a
 //    stalled data loop (one process() asleep 2 s). PipeWire 1.4.2 (spa/plugins/support/loop.c) never refuses or waits
 //    on a full invoke queue: the posting thread allocates an overflow queue and carries on. A loop with no thread
 //    (not yet entered, or stopped) runs the function inline on the caller. A function may run before its post returns.
-//  - S2 (10.2): take-up by position (node-lifecycle.md 5.3) under an invoke storm: a block and its peers see one
+//  - S2: take-up by position (docs/engine.md#drive-and-fade) under an invoke storm: a block and its peers see one
 //    clock.position per cycle, in link order, and a ramp switched on and off by position arrives sample-exact. An xrun
 //    cuts a cycle short: only a prefix of the graph runs it. Positions can step back (the dummy driver's reset onto the
 //    raw clock), so cycles are told apart by the order they ran in, never by position.
-//  - S3 (10.3): one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
+//  - S3: one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), and S2's
-// take-up block implements 9.6's deferred take-up itself (step L-2 built 5.3's drive, applied in its invoke, into
-// FilterPortBlock). Every wait is event-gated: the main loop runs until the events a test waits for have arrived; a
-// deadline only fails the test. Measurements are printed on standard output (run the binary, or ctest -V, to see them).
+// take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
+// docs/engine.md#drive-and-fade). Every wait is event-gated: the main loop runs until the events a test waits for have
+// arrived; a deadline only fails the test. Measurements are printed on standard output (run the binary, or ctest -V, to
+// see them).
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -424,11 +425,11 @@ public:
 	std::vector<std::uint64_t> rawAtEntry;
 };
 
-/// B: node-lifecycle.md 5.3's take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives by a
-/// non-blocking invoke into `pending`; the next cycle that sees it publishes takenAt = position + duration and runs the
-/// old code once more; the cycle whose position reaches takenAt swaps the code (a cycle that jumped past it, at once;
-/// after a step back, once the position reaches it again) and completes the request: its number into `applied`, then a
-/// main-loop signal.
+/// B: docs/engine.md#drive-and-fade take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives
+/// by a non-blocking invoke into `pending`; the next cycle that sees it publishes takenAt = position + duration and
+/// runs the old code once more; the cycle whose position reaches takenAt swaps the code (a cycle that jumped past it,
+/// at once; after a step back, once the position reaches it again) and completes the request: its number into
+/// `applied`, then a main-loop signal.
 class TakeUp final : public ProbeCode {
 public:
 	struct Request {

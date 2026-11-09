@@ -1,4 +1,4 @@
-# ear_config: the graph file in knobly, mcurcio/knobly (docs/design/knobly-config.md): ear.conf loaded
+# ear_config: the graph file in knobly, mcurcio/knobly (docs/graph-file.md): ear.conf loaded
 # with knobly and read with ear's directives into a wanted graph, with knobly's diagnostics and ear's
 # own, placed in the wire's units; and the graph file keeper, which keeps it on one background thread
 # (the working copy, its judging on the main loop, the folder watch and the writes). knobly is private

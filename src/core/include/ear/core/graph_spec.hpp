@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/m1-white-to-file.md section 2). Change it only through an
-// erratum in that page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <compare>
 #include <cstdint>
@@ -26,14 +24,15 @@ struct NodeSpec {
 	NodeName name;
 	std::string type;
 	NodeSettings settings; // {} when absent
-	/// The framework's reserved key, `disabled true;` in the node's block (node-framework.md 6.3, D-F8, D-F9): beside
-	/// the settings, never in them, so no type's parse, check or setting kinds sees it. False when absent.
+	/// The framework's reserved key, `disabled true;` in the node's block
+	/// (docs/architecture.md#phases-states-and-what-is-wanted): beside the settings, never in them, so no type's parse,
+	/// check or setting kinds sees it. False when absent.
 	bool disabled = false;
 	friend bool operator==(const NodeSpec&, const NodeSpec&) = default;
 };
 struct GraphSpec {
-	std::uint32_t graphFrequency; // Hz, > 0, read at boot (R5)
-	std::uint32_t blockSize;      // samples per cycle, > 0, read at boot (R4)
+	std::uint32_t graphFrequency; // Hz, > 0, read at boot
+	std::uint32_t blockSize;      // samples per cycle, > 0, read at boot
 	std::vector<NodeSpec> nodes;
 	std::vector<Route> routes;
 };

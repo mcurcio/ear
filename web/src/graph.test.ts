@@ -1,4 +1,4 @@
-// W1 criterion (1): the reducer turns every fixture's messages into its graph exactly; events
+// The reducer turns every fixture's messages into its graph exactly; events
 // naming unknown nodes are ignored; a snapshot replaces the state.
 import { describe, expect, it } from "vitest";
 import { GraphStore, reduce, type GraphState } from "./graph";

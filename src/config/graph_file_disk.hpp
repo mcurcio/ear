@@ -1,6 +1,6 @@
-// The graph file keeper's one file (docs/design/knobly-config.md, design rule 1): ear.conf in the
+// The graph file keeper's one file (docs/architecture.md#how-a-change-moves): ear.conf in the
 // graph file folder, read and replaced only if it still holds what the keeper last saw. The seam
-// the keeper's tests may replace (S4).
+// the keeper's tests may replace.
 #pragma once
 #include <expected>
 #include <optional>

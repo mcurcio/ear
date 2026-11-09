@@ -1,6 +1,6 @@
-// A sendspin node's audio code (docs/design/sendspin.md section 7): on each cycle the feed goes to the outputs, and
-// what was played goes, with the time it finishes on the library's clock, to the notifier; the inputs go to the handoff,
-// and when they were captured to its consumer.
+// A sendspin node's audio code (docs/node-types.md#clock): on each cycle the feed goes to the outputs, and what was
+// played goes, with the time it finishes on the library's clock, to the notifier; the inputs go to the handoff, and
+// when they were captured to its consumer.
 #pragma once
 #include <cstdint>
 #include <span>

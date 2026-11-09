@@ -1,6 +1,6 @@
-// The JSON-RPC 2.0 envelope (docs/design/batch2.md section 4.5, rpc.hpp): the specification's
+// The JSON-RPC 2.0 envelope (docs/control-port.md, rpc.hpp): the specification's
 // four shapes (https://www.jsonrpc.org/specification sections 4, 5 and 6), nothing of EAR's
-// methods. Error messages for -32700 and -32600 are the specification's own (section 5.1).
+// methods. Error messages for -32700 and -32600 are the specification's own (its section 5.1).
 #include "ear/control/rpc.hpp"
 
 #include <utility>
@@ -15,7 +15,7 @@ std::string dump(const json& value) { return value.dump(-1, ' ', false, json::er
 
 std::string invalid(const RpcId& id) { return encodeError(id, {invalidRequest, "Invalid Request", nullptr}); }
 
-/// A request (section 4), or the encoded error response for an entry that is not one. The id is
+/// A request (the specification's section 4), or the encoded error response for an entry that is not one. The id is
 /// echoed when it is readable (a string, a number or null), else null.
 std::variant<RpcRequest, std::string> parseEntry(const json& entry) {
 	if (!entry.is_object()) return invalid(nullptr);

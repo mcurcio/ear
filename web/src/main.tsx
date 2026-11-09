@@ -1,4 +1,4 @@
-// The graph editor's entry point (docs/design/batch2.md section 8): one editor session on the
+// The graph editor's entry point (docs/editor.md): one editor session on the
 // page's own host (ear serves the page and its control socket on the same port), then the canvas.
 import "@xyflow/react/dist/style.css";
 import "./editor.css";

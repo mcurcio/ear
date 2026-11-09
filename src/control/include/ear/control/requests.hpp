@@ -1,7 +1,6 @@
-// Interface page: docs/design/knobly-config.md (slice S3), crossings C1 and C4. The two interfaces
-// ear_control declares at its edge: where every request batch goes (the graph file keeper implements
+// The two interfaces ear_control declares at its edge: where every request batch goes (the graph file keeper implements
 // it), and who is told of each change to the graph file (the gateway and the status log). WallClock lives here, the
-// edge both StatusLog and the gateway include (docs/design/node-lifecycle-modules.md 5.2, D-M21).
+// edge both StatusLog and the gateway include (docs/control-port.md#node-health).
 #pragma once
 #include <chrono>
 #include <functional>
@@ -33,8 +32,8 @@ public:
 protected:
 	~GraphFileListener() = default;
 };
-/// Who fills in what a graph read cannot know: each node's `since`, when its phase began (the gateway's,
-/// docs/design/node-lifecycle-modules.md D-M11). Main loop, at the read itself, so a snapshot's `since` is the one its
+/// Who fills in what a graph read cannot know: each node's `since`, when its phase began (the gateway's).
+/// Main loop, at the read itself, so a snapshot's `since` is the one its
 /// phase had when the graph was read, whatever the batch does after it.
 class SnapshotStamp {
 public:

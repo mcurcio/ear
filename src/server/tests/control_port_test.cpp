@@ -1,7 +1,6 @@
-// ControlPort, ControlThread and LevelBell (docs/design/batch2.md sections 4.6 and 6, R2
-// criteria 1-7): real sockets on 127.0.0.1:0, a fake main loop on its own thread and a fake
-// gateway that answers on it. Every step waits for the event it needs (a reply, a notification,
-// a close); the client's deadline only fails a test.
+// ControlPort, ControlThread and LevelBell (docs/control-port.md): real sockets on 127.0.0.1:0, a fake main loop on its
+// own thread and a fake gateway that answers on it. Every step waits for the event it needs (a reply, a notification, a
+// close); the client's deadline only fails a test.
 #include <cerrno>
 #include <chrono>
 #include <cstdint>

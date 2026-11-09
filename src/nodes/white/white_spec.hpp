@@ -1,7 +1,6 @@
-// The "white" node type's spec and class (docs/design/m1-white-to-file.md section 2; docs/design/node-framework.md
-// sections 6.4, 6.10, 7.1 and 7.6; docs/design/node-lifecycle-modules.md 3.9): private to the type, shared by white.cpp
-// and its tests, which run it through ear::testing::TypeHarness<spec, White> by the same bank handles. In the type's
-// own named namespace, never an unnamed one (type_spec.hpp says why).
+// The "white" node type's spec and class (docs/node-types.md#white; docs/writing-a-node-type.md#the-class): private to
+// the type, shared by white.cpp and its tests, which run it through ear::testing::TypeHarness<spec, White> by the same
+// bank handles. In the type's own named namespace, never an unnamed one (type_spec.hpp says why).
 #pragma once
 #include <cstdint>
 #include <random>

@@ -1,8 +1,7 @@
-// A node's health in words, style and enabled buttons (docs/design/control-plane.md 8.6, the home of
-// what each phase shows; docs/design/node-lifecycle-modules.md 5.11): the one place that turns the
-// wire's health members into what the editor draws. Silence the operator asked for (stopped,
+// A node's health in words, style and enabled buttons: the one place that turns the wire's health members into what
+// the editor draws, and the home of what each phase shows (its rules: docs/editor.md#a-nodes-health). Silence the operator asked for (stopped,
 // disabled) is drawn quiet, never as a fault; a value this editor does not know is drawn by its
-// word, neutrally (control-plane.md 4.1).
+// word, neutrally (docs/control-port.md#protocol-and-features).
 import type { CauseKind, GraphNode, NodeCause, WaitingFor } from "./protocol";
 
 export interface ActionAvailability {
@@ -27,7 +26,7 @@ export interface HealthView {
   };
 }
 
-/** A starting phase's line shows only once the phase has lasted this long (8.6: fast phases do not flicker). */
+/** A starting phase's line shows only once the phase has lasted this long (fast phases do not flicker). */
 export const startingLineDelayMs = 250;
 
 const knownStates = new Set(["starting", "running", "stopping", "stopped", "disabled", "failed"]);
@@ -38,7 +37,7 @@ const off = (why: string): ActionAvailability => ({ enabled: false, why });
 const disableWhy = "release the device and keep it off across restarts; adds disabled true; to its block in ear.conf";
 const enableWhy = "removes disabled true; from its block in ear.conf";
 
-/** A restart's own kind in words (control-plane.md 9.1's sentences). */
+/** A restart's own kind in words (docs/output-records.md#node sentences). */
 function restartWords(kind: CauseKind, keys: string[] | undefined): string {
   switch (kind) {
     case "settings":

@@ -1,4 +1,4 @@
-// First placement of nodes on the canvas (docs/design/batch2.md section 8), with
+// First placement of nodes on the canvas (docs/editor.md), with
 // @dagrejs/dagre, the layout React Flow's docs use: sources on the left, sinks on the right,
 // following the routes. Only nodes without a place get one; a place the user dragged a node to
 // is kept (in the browser only, never sent to ear).

@@ -1,9 +1,8 @@
-// The control port's methods as typed commands (docs/design/batch2.md sections 4.5 and 6,
-// commands.hpp): decoded on the control thread with graph_json, run by the graph file keeper
-// (docs/design/knobly-config.md), their results encoded back on the control thread. encodeGraph lives in events.cpp beside the event
-// encoders, so a node's and a route's status JSON has one home; encodeGraphFile lives here beside
-// the file refusals, so a diagnostic's JSON has one home (docs/design/knobly-config.md, "Wire
-// additions").
+// The control port's methods as typed commands (docs/control-port.md, commands.hpp): decoded on the control thread with
+// graph_json, run by the graph file keeper (docs/graph-file.md), their results encoded back on the control thread.
+// encodeGraph lives in events.cpp beside the event encoders, so a node's and a route's status JSON has one home;
+// encodeGraphFile lives here beside the file refusals, so a diagnostic's JSON has one home
+// (docs/control-port.md#the-graph-file-over-the-port).
 #include "ear/control/commands.hpp"
 
 #include <string>
@@ -17,7 +16,7 @@ namespace {
 
 using nlohmann::json;
 
-/// -32602 with the pointer it names in data (control-plane.md 4.1).
+/// -32602 with the pointer it names in data (docs/control-port.md#protocol-and-features).
 std::unexpected<RpcError> refuse(const JsonError& error) {
 	return std::unexpected(RpcError{invalidParams, error.detail, {{"pointer", error.pointer}}});
 }
@@ -122,8 +121,8 @@ struct Method {
 	Decoder decode;
 };
 
-/// The graph and graph file methods of section 6 and docs/design/knobly-config.md (levels.subscribe
-/// is the hub's, not a graph command).
+/// The graph and graph file methods (docs/control-port.md#methods; levels.subscribe is the hub's, not a graph
+/// command).
 constexpr Method methods[] = {
 	{"graph.get", decodeGetGraph},
 	{"graph.subscribe", decodeGetGraph},
@@ -153,7 +152,7 @@ RpcError encodeControlRefusal(const ControlRefusal& refusal) {
 
 std::expected<Command, RpcError> decodeCommand(std::string_view method, const json& params) {
 	const JsonPointer root;
-	// Named params only: positional params are refused whatever the method (section 6).
+	// Named params only: positional params are refused whatever the method.
 	if (params.is_array()) return refuse(requireObject(params, root, {}).error());
 	const json empty = json::object();
 	const json& named = params.is_null() ? empty : params; // null: params absent

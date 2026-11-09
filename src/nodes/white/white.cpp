@@ -1,6 +1,6 @@
 // The "white" node type: one output, "noise.mono", carrying uniform white noise in [-1, 1). It takes
-// no settings (docs/design/m1-white-to-file.md section 2, ear/nodes/white.hpp; written against its spec,
-// white_spec.hpp, docs/design/node-framework.md section 7.1).
+// no settings (docs/node-types.md#white, ear/nodes/white.hpp; written against its spec,
+// white_spec.hpp, docs/writing-a-node-type.md#the-spec).
 #include <memory>
 
 #include "ear/nodes/white.hpp"

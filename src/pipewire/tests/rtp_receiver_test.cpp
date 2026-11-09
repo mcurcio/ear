@@ -1,6 +1,6 @@
-// RtpReceivers on the real in-process engine (docs/design/rtp.md sections 4, 5 and 7.2; R1b
-// criteria 1-6): PipeWire's rtp-source module loaded into EAR's own engine, no daemon, joined to a
-// port block by the one outside-node lifecycle. The sender is the tests' own thread writing RTP to
+// RtpReceivers on the real in-process engine (docs/engine.md#rtp-receivers): PipeWire's rtp-source module loaded into
+// EAR's own engine, no daemon, joined to a port block by the one outside-node lifecycle. The sender is the tests' own
+// thread writing RTP to
 // 127.0.0.1 (test/support/rtp_tone.hpp). Every wait is event-gated: the main loop runs until the
 // events a test waits for have arrived (a receiver event, a registry change, the block's cycles);
 // the deadline only fails the test.
@@ -279,8 +279,8 @@ TEST_CASE("A receiver is ready once, every channel's link active, and it and the
 	CHECK(events.readyCount == 1);
 }
 
-// docs/design/node-lifecycle.md 5.7 (step L-3b): the join names the block by its global id, so beside an older block of
-// the same name (one still going) it reaches only the block it was given.
+// docs/architecture.md#phases-states-and-what-is-wanted: the join names the block by its global id, so beside an older
+// block of the same name (one still going) it reaches only the block it was given.
 TEST_CASE("A receiver joins its block by the block's id: beside an older block of the same name it reaches only the "
           "newer",
           "[rtp][join]") {

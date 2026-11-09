@@ -17,7 +17,7 @@
 
 namespace ear::config::test {
 
-/// The record's file format example (docs/design/knobly-config.md, "File format").
+/// The record's file format example (docs/graph-file.md#edits-at-the-source).
 inline const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;
 @set $ch 2;                      # comments survive every edit

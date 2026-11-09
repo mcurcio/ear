@@ -1,5 +1,5 @@
-// health.ts against control-plane.md 8.6: every phase's word, style, line and enabled actions; a
-// starting phase's line hidden for the first 250 ms the editor shows it; an unknown state and phase drawn by their word.
+// health.ts against docs/editor.md#a-nodes-health: every phase's word, style, line and enabled actions; a starting
+// phase's line hidden for the first 250 ms the editor shows it; an unknown state and phase drawn by their word.
 import { describe, expect, it } from "vitest";
 import { describeHealth, startingLineDelayMs } from "./health";
 import type { GraphNode } from "./protocol";

@@ -106,7 +106,8 @@ private:
 	              std::optional<std::uint32_t> byDefault = std::nullopt)
 		: row_{key, required, rule, byDefault} {
 		if (key.empty()) throw "a setting's key is empty";
-		// The framework's key on every node (node-framework.md D-F9): never a type's, nor an indexed family's base.
+		// The framework's key on every node (docs/architecture.md#the-node-lifecycle): never a type's, nor an indexed
+		// family's base.
 		if (key == "disabled" || key.starts_with("disabled."))
 			throw "disabled is the framework's key: no type may declare it";
 	}
@@ -159,7 +160,7 @@ template <const auto& Table> class NodeTypeOf;
 
 namespace linkage {
 template <const auto& Object> consteval std::string_view spelling() { return __PRETTY_FUNCTION__; }
-/// Whether `Object` is declared outside any unnamed namespace (docs/design/node-framework.md, "Slice 2 as built"). GCC 14
+/// Whether `Object` is declared outside any unnamed namespace (docs/writing-a-node-type.md#the-spec). GCC 14
 /// gives a template specialised on a reference to an object external linkage even when the object is in an unnamed
 /// namespace, so two files' `(anonymous namespace)::pathRow` name one SettingsTable, one Io or one NodeTypeOf, and the
 /// linker keeps one file's instantiation for both, silently. Every object a table, a type or a spec is keyed on is

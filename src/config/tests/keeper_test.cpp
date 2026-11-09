@@ -1,8 +1,7 @@
-// The graph file keeper's sequencer (keeper.hpp; docs/design/knobly-config.md, design rules 1-3; S4
-// criteria 1-15), driven on the test thread with two executors the test pumps: the main loop and the
-// keeper's own. A real DesiredGraph over the test types judges; ear.conf is a real file in a temp
-// folder (FolderGraphFileDisk), so both collisions come from a hand edit made between explicit
-// steps. One fake disk gives the write failures a real folder cannot give cheaply.
+// The graph file keeper's sequencer (keeper.hpp; docs/architecture.md#how-a-change-moves), driven on the test thread
+// with two executors the test pumps: the main loop and the keeper's own. A real DesiredGraph over the test types
+// judges; ear.conf is a real file in a temp folder (FolderGraphFileDisk), so both collisions come from a hand edit made
+// between explicit steps. One fake disk gives the write failures a real folder cannot give cheaply.
 #include <algorithm>
 #include <deque>
 #include <functional>

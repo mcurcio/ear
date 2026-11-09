@@ -1,6 +1,7 @@
-// A node's notes, at a rate no peer can raise (docs/design/sendspin.md section 11): each note goes on the main loop's queue
-// and into the log, and a peer can drive them as fast as it runs pairing attempts. A burst passes, as a whole normal session
-// does; then one a second, and what was held back is counted and said once it can be. A loss is never held back.
+// A node's notes, at a rate no peer can raise (docs/node-types.md#on-an-untrusted-network): each note goes on the main
+// loop's queue and into the log, and a peer can drive them as fast as it runs pairing attempts. A burst passes, as a
+// whole normal session does; then one a second, and what was held back is counted and said once it can be. A loss is
+// never held back.
 #pragma once
 #include <chrono>
 #include <cstdint>

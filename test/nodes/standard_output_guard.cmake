@@ -1,12 +1,13 @@
 # cmake -DROOT=<folder> [-DGLOB=<pattern>] -P standard_output_guard.cmake
 #
-# The guard of docs/design/node-framework.md section 8.8: a node type's own code never writes standard output or
-# standard error. Every file under ROOT matching GLOB (default: C and C++ sources and headers) is read a line at a time,
-# and a line naming std::cout, std::cerr, std::clog, stdout, stderr, STDOUT_FILENO or STDERR_FILENO, calling printf,
-# vprintf, puts, putchar or perror, C++23's print, println, vprint_unicode or vprint_nonunicode (which write standard
-# output without naming it), or writing to descriptor 1 or 2 (write, dprintf) is printed with its place, and the script
-# fails, as it does when ROOT and GLOB match no file at all (a guard over nothing passes nothing). It is a guard, not the enforcement: ear captures descriptors 1 and 2 at boot, which is what makes the
-# rule true for code a grep cannot see (PipeWire, alsa-lib, a library).
+# The guard of docs/output-records.md: a node type's own code never writes standard output or standard error. Every file
+# under ROOT matching GLOB (default: C and C++ sources and headers) is read a line at a time, and a line naming
+# std::cout, std::cerr, std::clog, stdout, stderr, STDOUT_FILENO or STDERR_FILENO, calling printf, vprintf, puts,
+# putchar or perror, C++23's print, println, vprint_unicode or vprint_nonunicode (which write standard output without
+# naming it), or writing to descriptor 1 or 2 (write, dprintf) is printed with its place, and the script fails, as it
+# does when ROOT and GLOB match no file at all (a guard over nothing passes nothing). It is a guard, not the
+# enforcement: ear captures descriptors 1 and 2 at boot, which is what makes the rule true for code a grep cannot see
+# (PipeWire, alsa-lib, a library).
 if(NOT DEFINED ROOT)
 	message(FATAL_ERROR "standard_output_guard: ROOT is not set")
 endif()
@@ -51,6 +52,6 @@ if(count EQUAL 0)
 endif()
 if(offences GREATER 0)
 	message(FATAL_ERROR "standard_output_guard: ${offences} lines under ${ROOT} write standard output or error; "
-		"a node's output goes through the framework (docs/design/node-framework.md section 8.8)")
+		"a node's output goes through the framework (docs/output-records.md)")
 endif()
 message(STATUS "standard_output_guard: ${count} files under ${ROOT}, none writes standard output or error")

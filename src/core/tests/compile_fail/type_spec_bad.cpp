@@ -1,6 +1,6 @@
 // What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
 // (src/core/CMakeLists.txt registers one CTest test per case, each with the reason it must be refused;
-// docs/design/node-framework.md sections 6.10, 7.1, 7.2 and 9.2; docs/design/node-lifecycle-modules.md 3.10). With no
+// docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces). With no
 // case defined this is the control, and it must compile: what the cases break is only what they name.
 #include <cstdint>
 #include <expected>
@@ -128,7 +128,7 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 #endif
 		return Configured::applied();
 	}
-	// The change version: optional, never called in 3a (node-lifecycle-modules.md D-M2); of exactly its shape when given.
+	// The change version: optional, never called in 3a; of exactly its shape when given.
 #ifdef EAR_CASE_change_version_wrong_signature
 	Changed configure(ChangeOf<spec>&, Checked, Checked) { return Changed::applied(); }
 #elif defined(EAR_CASE_change_version_wrong_context)

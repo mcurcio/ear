@@ -1,6 +1,5 @@
 // The "white" node type through its type harness, by the bank its spec declares (white_spec.hpp;
-// docs/design/m1-white-to-file.md section 3, slice S5 criterion 1; docs/design/node-framework.md section 7.6;
-// docs/design/node-lifecycle-modules.md 3.8 and 3.9: its class, run over a real NodeHost). What holds for every type
+// docs/writing-a-node-type.md#testing-a-type: its class, run over a real NodeHost). What holds for every type
 // together is test/nodes/'s.
 #include <algorithm>
 #include <cmath>

@@ -1,6 +1,6 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
-# RTP receivers and the main-loop executor (docs/design/batch2.md section 1, docs/design/rtp.md).
+# RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
 # engine_names.hpp, link_proxy.hpp and outside_nodes.hpp are private to this package: its
 # sources include them by path.
 add_library(ear_pipewire STATIC
@@ -59,8 +59,8 @@ if(BUILD_TESTS)
 		EAR_ENGINE_CONF="${CMAKE_CURRENT_SOURCE_DIR}/engine.conf"
 		EAR_ALSA_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/alsa")
 	add_dependencies(ear_pipewire_tests ear_pipewire_verify_interface_header_sets)
-	# S2 (spikes_test.cpp, docs/design/node-lifecycle.md 10.2) keeps the data thread busy for about 25 s at a 64-frame
-	# block under an invoke storm; beside it, the engine, RTP and sendspin clock tests miss their deadlines.
+	# S2 (spikes_test.cpp, docs/engine.md#the-one-data-loop-and-invokes) keeps the data thread busy for about 25 s at a
+	# 64-frame block under an invoke storm; beside it, the engine, RTP and sendspin clock tests miss their deadlines.
 	ear_catch_tests(ear_pipewire_tests SERIAL [s2])
 
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files

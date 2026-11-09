@@ -1,9 +1,7 @@
 // The "file" node type through TypeHarness (a real NodeHost over fakes), by the banks its spec declares
 // (file_spec.hpp): the harness's sink hands each chunk to the type's WavWriter at once, on the test's thread, and its
-// recordings are made beneath a real recordings folder, as main.cpp's adapter makes them (docs/design/m1-white-to-file.md
-// section 3, slice S5 criteria 2 and 3; docs/design/node-lifecycle.md 7.4 and 11.3; node-lifecycle-modules.md 4.7). The
-// WAV files are read back with libsndfile. Paths are relative to a recordings folder and never lead out of it
-// (docs/design/batch2.md section 4.4).
+// recordings are made beneath a real recordings folder, as main.cpp's adapter makes them (docs/node-types.md#file). The
+// WAV files are read back with libsndfile. Paths are relative to a recordings folder and never lead out of it.
 #include <sndfile.h>
 #include <unistd.h>
 

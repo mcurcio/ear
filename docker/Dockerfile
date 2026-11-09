@@ -1,4 +1,4 @@
-# EAR's images, one file, three targets (docs/design/batch2.md section 7), and a throwaway stage, knobly, that
+# EAR's images, one file, three targets (AGENTS.md#commits-ci-and-releases), and a throwaway stage, knobly, that
 # dev copies knobly's C++ sources from:
 #
 # - dev: the build and test image, for development (scripts/dev.sh) and CI
@@ -76,8 +76,8 @@ RUN apt-get update \
 		xz-utils \
 	&& rm -rf /var/lib/apt/lists/*
 
-# The real Sendspin server (docs/design/sendspin.md section 13), every package pinned by hash for both architectures.
-# The run image gets none of it.
+# The real Sendspin server (docs/node-types.md#library-facts-and-carried-patches), every package pinned by hash for both
+# architectures. The run image gets none of it.
 COPY test/sendspin/requirements.txt /opt/sendspin-server/requirements.txt
 RUN python3 -m venv /opt/sendspin-server \
 	&& /opt/sendspin-server/bin/pip install --quiet --no-cache-dir --no-compile --require-hashes \

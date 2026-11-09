@@ -1,4 +1,4 @@
-// The graph notifications and levels (docs/design/batch2.md section 6, R1 criterion 3): each
+// The graph notifications and levels (docs/control-port.md): each
 // encoder gives exactly the fixtures' texts.
 #include <fstream>
 #include <string>
@@ -77,7 +77,7 @@ TEST_CASE("node.updated says disabled only when true, and each outcome by its na
 TEST_CASE("Every lifecycle.json notification is one of these encoders' and every reply one of encodeCommandResult's",
           "[events][protocol][lifecycle]") {
 	// The session replay (session_test.cpp) makes the fixture through the gateway; here each method it holds is one
-	// ear sends, with the members control-plane.md 4.8 gives it.
+	// ear sends, with the members docs/control-port.md#node-health gives it.
 	const json document = fixture("lifecycle");
 	for (const json& text : document["messages"]) {
 		for (const json& message : text.is_array() ? text : json::array({text})) {

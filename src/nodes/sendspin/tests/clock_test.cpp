@@ -1,4 +1,4 @@
-// A sendspin node's clock (docs/design/sendspin.md section 7, section 14, S1 criterion 9): the real engine, a real port
+// A sendspin node's clock (docs/node-types.md#clock): the real engine, a real port
 // block driven by the real code, the real library behind the real worker, and the real server playing a ramp in which
 // every frame names its place, so output time can be held against the time filter's prediction, cycle by cycle. Every
 // wait is event-gated; a deadline only fails the test.
@@ -228,8 +228,8 @@ struct Rig {
 		std::erase(code, '-');
 		server.send("code " + code);
 		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
-		// Not a check: on a loaded host the data thread's stalls can keep two seconds without a jump from coming, and the
-		// test then judges what it can (the rtp.md erratum 3 trap).
+		// Not a check: on a loaded host the data thread's stalls can keep two seconds without a jump from coming, and
+		// the test then judges what it can (the docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
 		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
 			WARN("the graph did not settle on the raw clock's rate within 20 s");
 		server.send("play " + std::to_string(seconds));
@@ -238,7 +238,7 @@ struct Rig {
 
 	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the last two seconds of cycles. The
 	/// internal clock starts at the rate of CLOCK_MONOTONIC and its loop takes seconds to reach the raw clock's
-	/// (docs/design/node-framework.md, slice 7 as built); until it has, the library sees the graph off by however far
+	/// (docs/engine.md#the-internal-clock); until it has, the library sees the graph off by however far
 	/// NTP slews CLOCK_MONOTONIC on the host (140 ppm seen) and corrects by interpolating frames.
 	bool tracksRawClock() const {
 		constexpr std::size_t window = 2 * kRate / kBlock;
@@ -305,7 +305,7 @@ private:
 /// Card "Test" of the test ALSA configuration behind its own block, as a card node runs: the framework's pass-through
 /// from its public "play" bank to the inside bank the card joins, carrying the card's latency back. The node's "from"
 /// outputs are linked to "play", so the card follows the internal clock and plays what the node plays. The test card
-/// has no clock, so it is made clockless (its rate matching off): docs/design/node-framework.md section 10.
+/// has no clock, so it is made clockless (its rate matching off): docs/engine.md#the-internal-clock.
 struct TestCard {
 	explicit TestCard(Rig& rig)
 		: engine(*rig.engine), cards(*rig.engine, clocklessCardProperties()), blockEvents(rig.waiter),
@@ -396,7 +396,7 @@ public:
 
 private:
 	void one(const Cycle& cycle) {
-		std::int64_t skipped = 0; // the frames the code skips in this cycle: the graph's forward jump (section 5(f2))
+		std::int64_t skipped = 0; // the frames the code skips in this cycle: the graph's forward jump
 		if (previous_ && cycle.position != previous_->position + previous_->frames) {
 			const auto gap = static_cast<std::int64_t>(cycle.position) -
 			                 static_cast<std::int64_t>(previous_->position + previous_->frames);
@@ -437,7 +437,7 @@ private:
 		lastCycleRamp_ = cycle.ramp;
 
 		const std::int64_t rampUs = sentUs(cycle.firstIndex);
-		// When the first of them is heard: at the block's port, plus what lies downstream of it (section 7).
+		// When the first of them is heard: at the block's port, plus what lies downstream of it.
 		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
 		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
@@ -507,8 +507,9 @@ void report(const Errors& errors) {
 
 void checkSync(const Errors& errors) {
 	report(errors);
-	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about half a
-	// second's worth of cycles; a host worse than that fails here, without a bug (the rtp.md erratum 3 trap).
+	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about
+	// half a second's worth of cycles; a host worse than that fails here, without a bug (the
+	// docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
 	INFO("judged " << errors.judged << " of " << errors.afterFirst3s << ", within " << errors.within);
 	REQUIRE(errors.afterFirst3s > 0);
 	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
@@ -519,8 +520,9 @@ void checkSync(const Errors& errors) {
 		return steps;
 	}());
 	CHECK(errors.badSteps.empty());
-	// A frame the library interpolates to correct an error past 100 us (section 7) is no exact ramp frame, and is allowed: CI's
-	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be something else.
+	// A frame the library interpolates to correct an error past 100 us is no exact ramp frame, and is allowed: CI's
+	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be
+	// something else.
 	CHECK(static_cast<double>(errors.badCycles) <= 0.01 * static_cast<double>(errors.judged));
 }
 
@@ -541,11 +543,11 @@ TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time f
 	checkSync(judge.errors);
 }
 
-// The card follows the internal clock (docs/design/node-framework.md section 10), so the graph keeps the dummy's clock
-// and the library's 1 ms holds as on the dummy alone. What changes is when a frame is heard: once the card has played what
-// it holds, which the card reports as its latency and the framework carries back through the card block's pass-through to
-// the node's outputs (section 9.4). The test card is clockless, so it cannot show drift; that is a check on the hardware
-// (the ear-on-talos skill).
+// The card follows the internal clock (docs/engine.md#the-internal-clock), so the graph keeps the dummy's clock and the
+// library's 1 ms holds as on the dummy alone. What changes is when a frame is heard: once the card has played what it
+// holds, which the card reports as its latency and the framework carries back through the card block's pass-through to
+// the node's outputs. The test card is clockless, so it cannot show drift; that is a check on the hardware (the
+// ear-on-talos skill).
 TEST_CASE("Through a following test card, audio is dated by the card's latency and leaves within 1 ms of the time "
           "filter's prediction",
           "[sendspin][clock][cards]") {

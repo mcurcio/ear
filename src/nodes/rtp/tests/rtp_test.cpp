@@ -1,6 +1,6 @@
 // The "rtp" node type through its type harness, by the banks its spec declares (rtp_spec.hpp), whose fakes record the
-// receiver it asks for (docs/design/rtp.md section 3, R1n criteria 1-5; docs/design/node-framework.md section 7.6;
-// docs/design/node-lifecycle-modules.md 3.8 and 3.9: its class, over a real NodeHost). The engine side of a receiver
+// receiver it asks for (docs/node-types.md#rtp;
+// docs/writing-a-node-type.md#testing-a-type: its class, over a real NodeHost). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
 #include <cstdint>
 #include <memory>
@@ -118,7 +118,7 @@ TEST_CASE("Rtp maps L24 to l24 and L16 to l16", "[rtp]") {
 	CHECK(startOk(settingsWith({{"format", "L16"}})).encoding == ear::RtpEncoding::l16);
 }
 
-TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its detail", "[rtp]") {
+TEST_CASE("Rtp refuses each setting outside its grammar with exactly its detail", "[rtp]") {
 	const std::string notObject = R"(settings: must be an object with "address", "port", "format" and "channels")";
 	const std::string badAddress =
 		R"(address: must be "0.0.0.0" or an IPv4 multicast group (224.0.0.0-239.255.255.255), as a dotted quad)";
@@ -174,7 +174,7 @@ TEST_CASE("Rtp refuses each setting outside section 3's grammar with exactly its
 		CHECK(type->parse("fpp", edge).has_value());
 	}
 
-	// Checks run in section 3's order: the first failure is the one told.
+	// Checks run in the table's order: the first failure is the one told.
 	CHECK(type->parse("fpp", settingsWith({{"address", "1.2.3.4"}, {"port", 0}, {"other", 1}})).error().detail ==
 	      "unknown key other");
 	CHECK(type->parse("fpp", settingsWith({{"address", "1.2.3.4"}, {"port", 0}})).error().detail == badAddress);

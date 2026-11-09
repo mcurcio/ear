@@ -1,7 +1,7 @@
 // What the user wants: nodes and routes, checked against the catalogue and each node's declared
-// ports (docs/design/batch2.md section 4.1, desired_graph.hpp). It never knows what exists in
+// ports (docs/architecture.md#packages, desired_graph.hpp). It never knows what exists in
 // the engine. plan() works out the changes to a whole wanted graph and commit() applies them in one
-// fixed order (docs/design/knobly-config.md); every change is told to the observers first, then to
+// fixed order (docs/graph-file.md); every change is told to the observers first, then to
 // the subscribers (rule 4), and close() shuts it to edits before the node framework stops (rule 5).
 #include "ear/core/desired_graph.hpp"
 
@@ -29,7 +29,8 @@ bool validName(const NodeName& name) {
 	});
 }
 
-/// What a change of `disabled` asks (node-framework.md 6.6): 3a's outcomes, decided by it alone.
+/// What a change of `disabled` asks (docs/architecture.md#restarts-and-changes-of-settings): 3a's outcomes, decided by
+/// it alone.
 NodeOutcome outcomeOf(bool wasDisabled, bool isDisabled) {
 	if (wasDisabled) return isDisabled ? NodeOutcome::stored : NodeOutcome::enable;
 	return isDisabled ? NodeOutcome::disable : NodeOutcome::restart;

@@ -1,8 +1,7 @@
-// The owner's end-to-end test (docs/design/m1-white-to-file.md section 3, S6 criteria 1-4; ported to
-// ear.conf by docs/design/knobly-config.md, S5 criterion T9): the real out/ear runs a graph file
+// The owner's end-to-end test: the real out/ear runs a graph file
 // that routes white noise into one channel of a file node, is stopped with SIGTERM and leaves a
 // finished WAV file with the noise on that channel only. Everything it prints is a record
-// (docs/design/node-framework.md section 8.8), seq from 1 with no gap.
+// (docs/output-records.md), seq from 1 with no gap.
 #include <chrono>
 #include <cstdint>
 #include <csignal>
@@ -43,7 +42,7 @@ void recordNoise(const std::string& to, int noisy) {
 	const bool linked = ear.waitForLine(linkedLine("noise:noise.mono", "rec:" + to), deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(linked);
-	// The recording window the criterion asks for; the checks below need at least half of it.
+	// The recording window: one second; the checks below need at least half of it.
 	std::this_thread::sleep_for(1s);
 	ear.signal(SIGTERM);
 	const auto exitStatus = ear.waitForExit(deadline);

@@ -1,4 +1,4 @@
-// Every write to the process's descriptors 1 and 2 captured (docs/design/node-framework.md section 8.8): a grep of
+// Every write to the process's descriptors 1 and 2 captured (docs/output-records.md): a grep of
 // src/nodes/ cannot see what PipeWire, alsa-lib or a library writes inside ear's process, so at boot, before any
 // thread starts, ear keeps a duplicate of the real standard output for its encoder's writer alone and puts a pipe on
 // each of descriptors 1 and 2. One thread reads both pipes, a line at a time, and hands each line on (main makes it an
@@ -10,7 +10,7 @@
 // SIGABRT, SIGSEGV, SIGBUS, SIGFPE and SIGILL writes what the pipes still hold, as raw bytes, to the real descriptors,
 // puts them back on 1 and 2, and lets the crash go on as it would have (the handler and dispositions found at install).
 // std::terminate also runs onCrash's hook first (the output thread's queue). A child process must get its own standard
-// error, never inherit descriptor 2 (node-framework.md section 7.5): an inherited pipe end would outlive the capture.
+// error, never inherit descriptor 2 (docs/design/programs.md): an inherited pipe end would outlive the capture.
 #pragma once
 #include <cstddef>
 #include <expected>

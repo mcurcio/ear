@@ -1,4 +1,4 @@
-// What a level is (docs/design/batch2.md section 4.2, levels.hpp): a port's sample peak and RMS
+// What a level is (docs/architecture.md#packages, levels.hpp): a port's sample peak and RMS
 // over one window, and the window's length on the graph clock.
 #include "ear/core/levels.hpp"
 

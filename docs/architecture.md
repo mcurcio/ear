@@ -11,7 +11,7 @@ This page is the map: what the parts are, which thread runs what, how a change a
 and what a node's life looks like. The details live on their own pages:
 [graph-file.md](graph-file.md), [node-types.md](node-types.md),
 [writing-a-node-type.md](writing-a-node-type.md), [control-port.md](control-port.md),
-[output-records.md](output-records.md) and [engine.md](engine.md).
+[output-records.md](output-records.md), [engine.md](engine.md) and [editor.md](editor.md).
 
 ## The ideas it is built on
 
@@ -51,7 +51,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
 | `ear_server` (`src/server`) | The control thread and port 7777 (Boost.Beast): the editor's files, `/rpc`, Host and Origin checks, per-client queues, the level bell | Graph state; PipeWire |
 | `ear` (`src/main.cpp`) | The composition root: wiring, boot and stop order, and glue between packages that do not see each other | Computing anything |
-| `web/` | The graph editor (React, React Flow, Vite) | Graph rules: it draws only what ear announced and never parses knobly |
+| `web/` | The graph editor (React, React Flow, Vite; [editor.md](editor.md)) | Graph rules: it draws only what ear announced and never parses knobly |
 
 **Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
 `ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below `ear_server`
@@ -285,16 +285,22 @@ own outside nodes' links. What is shared and how it is kept safe:
 Tearing a configuration down (a restart, a failure, a disable, a removal) goes by dependency, and
 the main loop never joins a thread:
 
-1. The type's `stop()` if its `start()` ran; the fade; a drive of no code (after it completes, no
-   `process` of the code runs); the code's `release`.
-2. Outside nodes destroyed (and, for a removal, the block).
-3. Sinks and handoffs drained and finished on their own threads; a legacy run object closed off
-   the main loop.
-4. On the main loop: the instance, its code and its config freed, and recordings closed.
+1. The type's `stop()` if its `start()` ran; the fade; the barrier, a drive of no code (after it
+   completes, no `process` of the code runs, so nothing the realtime thread can reach is freed
+   while it can reach it); the code's `release`.
+2. Outside nodes destroyed (and, for a removal, the block, only after the barrier).
+3. Sinks and handoffs drained and finished, each on its own thread.
+4. A legacy run object closed, off the main loop (a `sendspin` node's worker says goodbye on its
+   own thread).
+5. On the main loop: the code, then the instance (or run object) and its config freed, and
+   recordings closed after them.
 
+Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
+A restart or retry completes the teardown before the
+next `configure`, so a node has one configuration at a time and never waits on its own old one.
 Anything a configuration's threads tell lands only on that configuration (it carries an internal
-generation), never on the next. A stop does only step 1's fade and silence, keeping everything
-else.
+generation), never on the next, and facts are dropped once its teardown began. A stop does only
+step 1's fade and silence, keeping everything else.
 
 ## Boot and stop
 
@@ -318,6 +324,26 @@ else.
 
 The three folders (graph file folder, recordings folder, web root) may not be the same, nor
 inside or around each other. `ear` reads `engine.conf` from beside its own binary.
+
+### The container image
+
+The run image (`docker/Dockerfile`'s `run` target, published as `ghcr.io/mcurcio/ear`, amd64 only
+until the Talos nodes' CPU is known; anonymous pulls work) is `debian:trixie-slim` with only the
+run-time libraries: no compiler and no knobly (it is compiled in). It holds `/opt/ear/ear`,
+`engine.conf`, `web/` and `licenses/` (the licences of what the `sendspin` node compiles in), runs
+as user `ear` (uid 10001), exposes 7777 and 8928 (a listening `sendspin` node's default), and
+defaults to `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`, two
+volumes owned by `ear`. Arguments given to the container replace both, so pass them again.
+
+- **The graph file folder must be writable by uid 10001.** A read-only mount (a ConfigMap) cannot
+  be edited, a `sendspin` node cannot make its key file there and fails, and a first boot
+  without `ear.conf` runs nothing until the editor's pane saves one.
+- **Realtime where allowed.** The binary carries `CAP_SYS_NICE` as a permitted-only file
+  capability that ear makes effective at boot, so the audio thread is realtime where the
+  container is given `SYS_NICE` (`docker run --cap-add SYS_NICE`) and plain elsewhere; ear prints
+  which, and `graph.get` says it ([engine.md](engine.md#realtime-priority)).
+
+Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
 
 ### Boot
 

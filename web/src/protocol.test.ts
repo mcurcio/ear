@@ -1,4 +1,4 @@
-// The conformance fixtures (test/protocol, docs/design/batch2.md section 6) cover the whole wire
+// The conformance fixtures (test/protocol, docs/control-port.md) cover the whole wire
 // format: every method, notification, command and file error code protocol.ts names appears in at least one
 // fixture, so the server's and the UI's tests, which both run on these fixtures, exercise all of
 // it. The reducer's checks against the same fixtures are in graph.test.ts.

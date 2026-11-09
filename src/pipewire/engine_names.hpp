@@ -1,4 +1,4 @@
-// Engine names and numbers EAR's adapters share (docs/design/batch2.md section 4.3). Private to
+// Engine names and numbers EAR's adapters share (docs/engine.md). Private to
 // ear_pipewire: its sources include it by this path; no public header does.
 #pragma once
 
@@ -10,7 +10,7 @@ inline constexpr char graphGroup[] = "ear.graph";
 
 /// priority.driver of a sound card (sound_cards.cpp). It must stay below engine.conf's
 /// Dummy-Driver (200000), so the internal clock always drives and a linked card follows it
-/// (docs/design/node-framework.md section 10).
+/// (docs/engine.md#the-internal-clock).
 inline constexpr int cardPriority = 1;
 
 /// The internal clock's clock.name: support.node.driver names it "clock.system.<clock.id>", and

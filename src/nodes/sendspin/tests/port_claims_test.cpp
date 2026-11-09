@@ -1,4 +1,4 @@
-// Who holds a listening port (docs/design/sendspin.md section 10), and the probe against a real socket.
+// Who holds a listening port (docs/node-types.md#failures), and the probe against a real socket.
 #include <cerrno>
 #include <string>
 

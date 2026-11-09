@@ -1,9 +1,8 @@
-// The "file" node type's spec and class (docs/design/m1-white-to-file.md section 2; docs/design/node-lifecycle.md 7.4
-// and docs/design/node-lifecycle-modules.md 4.5, step L-4b of slice 3a): private to the type, shared by file.cpp and its
+// The "file" node type's spec and class (docs/node-types.md#file): private to the type, shared by file.cpp and its
 // tests, which run it through ear::testing::TypeHarness by the same bank handles. In the type's own named namespace,
 // never an unnamed one (type_spec.hpp says why). Its configure opens the recording and asks for a sink on its inside
-// output bank `writer`, whose consumer (file.cpp's WavWriter, the only code that sees libsndfile) opens and writes the WAV
-// on the sink's own thread; its code is the framework's pass-through from `record` to `writer`.
+// output bank `writer`, whose consumer (file.cpp's WavWriter, the only code that sees libsndfile) opens and writes the
+// WAV on the sink's own thread; its code is the framework's pass-through from `record` to `writer`.
 #pragma once
 #include <cstdint>
 #include <expected>

@@ -227,8 +227,8 @@ further 1 s (D-L30). Every bound still calls `PortBlock::settle()` first. `PortB
 - **Readiness deadlines** (I3, "never ready, never lost" cannot last; D-R12): a sound card 10 s, an RTP receiver 5 s, a
   ring companion 5 s, each from its request. A companion past it is lost with its kind's reason, and the node fails
   `engine-refused`: `the RTP receiver never ran (port 5004 held?)`, `the card never started: <card id>`, `the sink
-  <bank> never became ready`. The `waitingFor` `companion` member (built) shows the wait meanwhile. This turns AGENTS'
-  "an `rtp` node on a held port stays configuring for good" into a failure after 5 s (a better reason for a held port
+  <bank> never became ready`. The `waitingFor` `companion` member (built) shows the wait meanwhile. This turns
+  `docs/node-types.md#rtp`'s "a port another program holds leaves the node configuring for good" into a failure after 5 s (a better reason for a held port
   comes with 3c's UDP claim and probe).
 - **Latency.** Each companion declares its own latency on its link (the receiver its `latencyMs`, a source
   `[0, capacity]`, a card what its adapter reports), and the block's pass-through carries it to the public bank, as a

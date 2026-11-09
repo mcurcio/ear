@@ -1,7 +1,7 @@
-// The typed values behind test/protocol/graph-file.json (docs/design/knobly-config.md, "Wire
-// additions") and snapshot.json: the session's texts, its graph files and its graphs, and a node's health as NodeHost
-// tells it, shared by the encoder tests (graph_file_state_test.cpp, commands_test.cpp) and the session replay
-// (session_test.cpp), so both build the fixture's messages from one set of values.
+// The typed values behind test/protocol/graph-file.json (docs/control-port.md#the-graph-file-over-the-port) and
+// snapshot.json: the session's texts, its graph files and its graphs, and a node's health as NodeHost tells it, shared
+// by the encoder tests (graph_file_state_test.cpp, commands_test.cpp) and the session replay (session_test.cpp), so
+// both build the fixture's messages from one set of values.
 #pragma once
 #include <chrono>
 #include <optional>
@@ -49,7 +49,7 @@ inline ear::NodeHealth health(const std::string& node, ear::NodeState state,
 	return h;
 }
 
-/// The record's file format example (docs/design/knobly-config.md, "File format").
+/// The record's file format example (docs/graph-file.md#edits-at-the-source).
 inline const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;
 @set $ch 2;                      # comments survive every edit

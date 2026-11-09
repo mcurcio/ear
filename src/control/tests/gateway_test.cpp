@@ -1,7 +1,6 @@
-// MainLoopGateway (docs/design/batch2.md sections 2 and 4.5, R1 criterion 4; docs/design/knobly-config.md,
-// crossings C1 and C4, S5 criterion T10), with two queue executors the test runs by hand: a batch goes
-// whole to the graph file keeper (here a fake that answers on the main loop, telling the gateway the
-// file change and graph events its batch causes first, as the keeper's main-loop side does), and the
+// MainLoopGateway (docs/architecture.md#threads; docs/architecture.md#how-a-change-moves), with two queue executors the
+// test runs by hand: a batch goes whole to the graph file keeper (here a fake that answers on the main loop, telling
+// the gateway the file change and graph events its batch causes first, as the keeper's main-loop side does), and the
 // reply, file changes and events come back on the control executor in main-loop order.
 #include <deque>
 #include <functional>

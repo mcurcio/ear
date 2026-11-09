@@ -1,8 +1,9 @@
-// Every node type through the harness (docs/design/node-framework.md section 7.6; docs/design/node-lifecycle-modules.md
-// 3.8: a real NodeHost over fakes), as pluginval and clap-validator run every plugin: each type's valid settings parse,
-// the node is added and configured, every companion it asked for made ready runs it, every output sample of every cycle
-// is written whatever the inputs hold, and it stops, starts, restarts, is disabled, enabled and removed. The types come
-// from the generated list; this file names none (all_types.hpp says which do not run here yet).
+// Every node type through the harness (docs/writing-a-node-type.md#testing-a-type;
+// docs/writing-a-node-type.md#testing-a-type: a real NodeHost over fakes), as pluginval and clap-validator run every
+// plugin: each type's valid settings parse, the node is added and configured, every companion it asked for made ready
+// runs it, every output sample of every cycle is written whatever the inputs hold, and it stops, starts, restarts, is
+// disabled, enabled and removed. The types come from the generated list; this file names none (all_types.hpp says which
+// do not run here yet).
 #include <algorithm>
 #include <cstdint>
 #include <span>

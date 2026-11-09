@@ -1,5 +1,5 @@
 // A node box: its name, type and state word with the line that says why it is silent or what it
-// waits for (health.ts, control-plane.md 8.6), then one row per port, inputs on the left and outputs
+// waits for (health.ts, docs/editor.md#a-nodes-health), then one row per port, inputs on the left and outputs
 // on the right, each with its handle and its level meter, in every phase.
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useEffect, useState } from "react";

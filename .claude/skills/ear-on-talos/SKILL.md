@@ -5,13 +5,13 @@ description: Running EAR's run image on a Talos Linux Kubernetes node with a USB
 
 # EAR on Talos with a MOTU 24Ao
 
-EAR has run on the owner's node (hawking) since 2026-10-31; the rest is what the design (`docs/design/batch2.md`
-sections 5 and 7) and the sources below say the node and pod must give. Each step marked
+EAR has run on the owner's node (hawking) since 2026-10-31; the rest is what the docs (`docs/engine.md#sound-cards`,
+`docs/engine.md#realtime-priority`) and the sources below say the node and pod must give. Each step marked
 **[check]** is still to be confirmed on the cluster; correct this skill when it is.
 
 The owner (2026-10-30): "Motu 24ao. Talos 1.13.x I think maybe 1.14.x". The Talos nodes' CPU is
-not known yet, so the image is published for amd64 only (`ghcr.io/mcurcio/ear`, section 7 of
-the design page). The package is public: anonymous pulls work, so the cluster needs no pull
+not known yet, so the image is published for amd64 only (`ghcr.io/mcurcio/ear`;
+`docs/architecture.md#the-container-image`). The package is public: anonymous pulls work, so the cluster needs no pull
 secret.
 
 ## 1. The node: the USB audio driver
@@ -219,14 +219,14 @@ machine:
    a time without issue"; the next test is the Mac over USB for about an hour. To notice a
    freeze, run a watcher that pings the MOTU and exits after 2 missed pings (EAR does not notice:
    check 2).
-5. Latency (R4, the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
+5. Latency (the owner: "under 10ms is obviously ideal"): one cycle is `block_size /
    graph_frequency` (256 at 48 kHz is 5.3 ms). One way to measure the round trip: a loopback
    cable from a MOTU output to an input it captures (the 24Ao is mostly outputs, so which input
    is **[check]**), a capture card node and a `file` node recording both; EAR has no latency
    tool yet, so the delay is read from the recording **[not designed yet]**.
 
 6. **[check]** A `sendspin` node's sync on the MOTU. Since slice 7 the graph always runs on ear's
-   internal clock and the card follows it (`docs/design/node-framework.md` section 10), so the
+   internal clock and the card follows it (`docs/engine.md#the-internal-clock`), so the
    protocol's 1 ms bound at the block holds as on the dummy driver; CI proves it through a
    following test card, dated by that card's latency (the test card is clockless, so it shows no
    drift). The node dates what it played by the latency downstream of its `from` outputs, which
@@ -264,15 +264,15 @@ machine:
      `node.stop`, `node.restart` or the pod's stop. If ALSA's drop or close blocks, ear's log shows
      `ear.main-loop-stalled ... in destroy outside node motu` (or `make outside node motu`) and no
      `ear.main-loop-resumed`; if the data loop stops answering, `ear.barrier-overdue` and then
-     `ear.data-loop-wedged`. Either answers the open question of `docs/design/node-framework.md`
-     6.8 and 15 (whether a wedged card blocks those calls), which decides the slice that opens
-     cards off the main loop.
+     `ear.data-loop-wedged`. Either answers the open question of `docs/design/cards-and-clock.md`
+     (whether a wedged card blocks those calls), which decides how cards are opened off the main
+     loop.
 
 ## 6. FPP's audio over RTP
 
 The owner runs FPP (Falcon Player) in the same cluster and wants its audio as a source; what FPP
-sends (format, rate, channels, address) is not known yet (`docs/design/rtp.md` section 1), so
-everything here is **[check]**. An `rtp` node (`AGENTS.md`, graph file) receives one stream:
+sends (format, rate, channels, address) is not known yet (`docs/node-types.md#rtp`), so
+everything here is **[check]**. An `rtp` node (`docs/node-types.md#rtp`) receives one stream:
 
 ```conf
 node rtp fpp { address "0.0.0.0"; port 5004; format "L16"; channels 2; }

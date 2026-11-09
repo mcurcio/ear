@@ -1,4 +1,4 @@
-// The protocol per connection, and the hub of sessions (docs/design/batch2.md sections 4.5 and 6,
+// The protocol per connection, and the hub of sessions (docs/control-port.md,
 // session.hpp). Control thread only. A session turns one received text into one gateway run()
 // and its responses; the hub hands each graph event, each graph file change and each levels
 // snapshot, encoded once, to the sessions that subscribed.

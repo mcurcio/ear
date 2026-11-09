@@ -1,11 +1,9 @@
-// FilterPortBlocks on the real in-process engine (docs/design/batch2.md section 4.3; acceptance
-// criteria E1(2)-(8)): levels on the graph clock, complete snapshots, the drive barrier, a lost
-// block, inside ports and the graph group; docs/design/node-framework.md slice 7: each cycle's
-// clock facts, latency carried per bank pair, and denormals flushed on the data thread; docs/design/node-lifecycle.md
-// section 5.3 (step L-2): the asynchronous drive applied in its invoke, the fade, settle(), one invoke in flight per
-// block, takenAt and blockId (section 11.6's cases). Every wait is event-gated: the main loop runs until
-// the events a test waits for have arrived; the deadline only fails the test. The Waiter and
-// makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
+// FilterPortBlocks on the real in-process engine (docs/engine.md#port-blocks): levels on the graph clock, complete
+// snapshots, the drive barrier, a lost block, inside ports and the graph group; each cycle's clock facts, latency
+// carried per bank pair, and denormals flushed on the data thread; docs/engine.md#drive-and-fade: the asynchronous
+// drive applied in its invoke, the fade, settle(), one invoke in flight per block, takenAt and blockId. Every wait is
+// event-gated: the main loop runs until the events a test waits for have arrived; the deadline only fails the test. The
+// Waiter and makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -571,7 +569,7 @@ TEST_CASE("Processing, metering and publishing allocate nothing on the realtime 
 	CHECK(ear::pipewire::testing::countedAllocations() - before == 0);
 }
 
-// Step L-3a removed the blocking drive; its two cases ("drive returns only when the old code can no longer run" and
+// The blocking drive is gone; its two cases ("drive returns only when the old code can no longer run" and
 // "drive on a block whose engine node is gone returns") are the asynchronous drive's: "drive returns at once and its
 // completion arrives on the main loop" and "drive and fadeOut on a block whose engine node is gone complete by signal",
 // below. What the first also showed of a silence stays here.
@@ -673,7 +671,7 @@ TEST_CASE("Every block is in the ear.graph group and processes on the dummy driv
 		CHECK(group->second == "ear.graph");
 	}
 	// The internal clock is in the group too, so it collects the blocks and whatever is linked to them first
-	// (docs/design/node-framework.md section 10), and it tracks the raw clock.
+	// (docs/engine.md#the-internal-clock), and it tracks the raw clock.
 	REQUIRE(waiter.until([&] { return nodes.props("Dummy-Driver") != nullptr; }));
 	const auto* dummy = nodes.props("Dummy-Driver");
 	CHECK(dummy->at(PW_KEY_NODE_GROUP) == "ear.graph");
@@ -929,7 +927,7 @@ TEST_CASE("process() runs with denormals flushed to zero (FTZ and DAZ), and the 
 #endif
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Slice 3a's PortBlock (docs/design/node-lifecycle.md section 5.3, step L-2): the asynchronous drive, applied inside
+// Slice 3a's PortBlock (docs/engine.md#drive-and-fade): the asynchronous drive, applied inside
 // its invoke between two cycles; fadeOut; settle(); one invoke in flight per block; takenAt; blockId.
 
 namespace {
@@ -1164,8 +1162,8 @@ TEST_CASE("drive and fadeOut on a block whose engine node is gone complete by si
 	CHECK(after.calls() == 0);
 }
 
-// node-lifecycle.md 16's [U]: PipeWire runs a loop's invokes while a node on it is not processing, so a request
-// applied in its invoke completes without a cycle (5.3, D-L29).
+// Settled for slice 3b's design (docs/design/companions.md): PipeWire runs a loop's invokes while a node on it is not
+// processing, so a request applied in its invoke completes without a cycle.
 TEST_CASE("A block that is PAUSED takes a drive in its invoke and completes it", "[blocks][drive][async]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -1601,9 +1599,9 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	CHECK(counted == 0);
 }
 
-// node-lifecycle.md 16's [U]: pw_filter_get_node_id gives the block's global id once STREAMING, and an outside node's
-// link made by it (as joinOutsideNode will write link.output.node, 5.7) reaches that block even beside an older block of
-// the same name.
+// Settled for slice 3b's design (docs/design/companions.md): pw_filter_get_node_id gives the block's global id once
+// STREAMING, and an outside node's link made by it (as joinOutsideNode will write link.output.node) reaches that block
+// even beside an older block of the same name.
 TEST_CASE("A block's id is its engine node's global id once STREAMING, and a link made by it reaches that block, not "
           "another of its name",
           "[blocks][drive][async]") {
@@ -1708,13 +1706,12 @@ private:
 } // namespace
 
 // node-driver.c (PipeWire 1.4.2), tracking the raw clock, resets clock.position to raw time past resync.ms, but leaves
-// its CLOCK_MONOTONIC timer where it was: the timeouts it then fires back to back, to catch up, each add a block while raw
-// time barely moves, stepping the position back by the next reset, and leave it up to resync.ms ahead of the raw clock.
-// There its error is clamped to 1 ms a cycle, and the loop slews the whole graph by hundreds of ppm for tens of seconds
-// to work it off (-230 ppm 9 s after one 20 ms stall). engine.conf sets resync.ms beyond any stall, so the driver never
-// resets: it catches up on its own timer, by whole blocks, and after stalls of up to a few seconds the phase it held
-// against the raw clock is kept (docs/design/node-framework.md section 10, "Slice 7 as built"; longer pauses: the next
-// test).
+// its CLOCK_MONOTONIC timer where it was: the timeouts it then fires back to back, to catch up, each add a block while
+// raw time barely moves, stepping the position back by the next reset, and leave it up to resync.ms ahead of the raw
+// clock. There its error is clamped to 1 ms a cycle, and the loop slews the whole graph by hundreds of ppm for tens of
+// seconds to work it off (-230 ppm 9 s after one 20 ms stall). engine.conf sets resync.ms beyond any stall, so the
+// driver never resets: it catches up on its own timer, by whole blocks, and after stalls of up to a few seconds the
+// phase it held against the raw clock is kept (docs/engine.md#the-internal-clock; longer pauses: the next test).
 TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and "
           "keeps its phase to the raw clock",
           "[port_blocks][clock]") {
@@ -1757,9 +1754,9 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in 
 
 // A stall of seconds is caught up the same way, by a burst of about half its timeouts' blocks, but the loop is fed its
 // clamped 1 ms error at every one of the burst's timeouts, so it winds up and slews the graph for a while after (the
-// limit of resync.ms beyond any stall; docs/design/node-framework.md section 10). For a 3 s stall the simulated loop
-// (node-driver.c's DLL, cycle for cycle) is within 80 ppm of the raw clock from 5 s on, and the real one measured 38 to 95
-// ppm in ten runs; 150 ppm bounds it here.
+// limit of resync.ms beyond any stall; docs/engine.md#the-internal-clock). For a 3 s stall the simulated loop
+// (node-driver.c's DLL, cycle for cycle) is within 80 ppm of the raw clock from 5 s on, and the real one measured 38 to
+// 95 ppm in ten runs; 150 ppm bounds it here.
 TEST_CASE(
 	"After a 3 s data-thread stall the internal clock never steps back, and 5 s on runs within 150 ppm of the raw "
 	"clock",

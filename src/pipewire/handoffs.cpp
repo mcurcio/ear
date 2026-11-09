@@ -1,10 +1,8 @@
-// Slice S4: the realtime to ordinary-thread handoff (docs/design/m1-white-to-file.md
-// sections 1 and 2). JACK's disk-writer pattern: the realtime writer interleaves into a
-// FrameRing and wakes the handoff's own pw_thread_loop with pw_loop_signal_event; that
-// thread hands what is in the ring to the consumer. A full ring drops frames and counts them.
-// Step L-4b of slice 3a adds the interim sinks (ThreadSinks; docs/design/node-lifecycle.md 5.11,
-// node-lifecycle-modules.md 4.3): the same ring, wake and thread, with a stamp ring beside the
-// frame ring, a consumer that begins on the sink's thread, and the tap the port block writes.
+// The realtime to ordinary-thread handoff (the legacy handoff `sendspin` still uses). JACK's disk-writer pattern: the
+// realtime writer interleaves into a FrameRing and wakes the handoff's own pw_thread_loop with pw_loop_signal_event;
+// that thread hands what is in the ring to the consumer. A full ring drops frames and counts them. The interim sinks
+// (ThreadSinks; docs/engine.md#sinks) are the same ring, wake and thread, with a stamp ring beside the frame ring, a
+// consumer that begins on the sink's thread, and the tap the port block writes.
 #include "ear/pipewire/handoffs.hpp"
 
 #include <algorithm>
@@ -118,16 +116,16 @@ private:
 };
 
 /// One interim sink: ThreadHandoff's ring and thread, plus a stamp ring, so the sink's thread hands its consumer one
-/// stamped chunk per cycle the tap wrote (node-framework.md 9.6). Every `begun` and `closed` is posted through the
+/// stamped chunk per cycle the tap wrote (docs/engine.md#sinks). Every `begun` and `closed` is posted through the
 /// main-loop Executor, after the consumer's begin or finish returned, so a lost() its consumer said inside begin() (the
-/// node's InsidesEvents, the same FIFO) always lands first (D-L14).
+/// node's InsidesEvents, the same FIFO) always lands first.
 class ThreadSink final : public Sink, public SinkTap {
 public:
 	ThreadSink(Executor& mainLoop, const NodeName& node, std::string_view bank, std::uint32_t channels,
 	           std::uint32_t capacityFrames)
 		: mainLoop_(mainLoop), ring_(channels, capacityFrames),
 		  stamps_(std::bit_ceil(std::max<std::uint32_t>(64, ring_.capacityFrames() / 32))) {
-		const std::string name = node + "." + std::string(bank); // its engine name (I9)
+		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), "sink thread " + name);
 		wake_ = pw_loop_add_event(pw_thread_loop_get_loop(thread_), &ThreadSink::onWake, this);
@@ -163,7 +161,7 @@ public:
 		signal();
 	}
 
-	/// Realtime: the two rings drop together (node-lifecycle.md 5.11). With no free stamp entry nothing is written and
+	/// Realtime: the two rings drop together (docs/engine.md#sinks). With no free stamp entry nothing is written and
 	/// the whole chunk is dropped; else the frames the frame ring has room for are written and stamped.
 	void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 	           const ChunkStamp& stamp) noexcept override {
@@ -202,7 +200,7 @@ private:
 		self->drain();
 		if (closing && !self->finished_) {
 			self->finished_ = true;
-			if (self->began_) self->consumer_->finish(); // only a consumer that began (5.11)
+			if (self->began_) self->consumer_->finish(); // only a consumer that began
 			self->mainLoop_.post(
 				[closed = std::move(self->closed_),
 			     dropped = self->dropped_.load(std::memory_order_relaxed)]() mutable { closed(dropped); });
@@ -222,8 +220,8 @@ private:
 		}
 	}
 
-	/// One chunk, in two calls when its frames wrap the ring's end: the second's position advanced by the first's frames
-	/// and its discontinuity false (node-lifecycle.md 5.11).
+	/// One chunk, in two calls when its frames wrap the ring's end: the second's position advanced by the first's
+	/// frames and its discontinuity false (docs/engine.md#sinks).
 	void consume(const Stamped& stamped) {
 		std::uint32_t done = 0;
 		while (done < stamped.frames) {
@@ -236,7 +234,7 @@ private:
 			                         .position = stamped.stamp.position + done,
 			                         .startNs = stamped.stamp.startNs,
 			                         .startRawNs = stamped.stamp.startRawNs,
-			                         .upstreamFrames = 0, // until slice 3b (D-L15)
+			                         .upstreamFrames = 0, // until slice 3b
 			                         .discontinuity = done == 0 && stamped.stamp.discontinuity});
 			ring_.skip(frames);
 			done += frames;

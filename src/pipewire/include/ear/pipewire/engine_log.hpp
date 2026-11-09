@@ -1,4 +1,4 @@
-// ear's own pw_log and alsa-lib's error handler (docs/design/node-framework.md section 8.8): PipeWire's logging, every
+// ear's own pw_log and alsa-lib's error handler (docs/output-records.md): PipeWire's logging, every
 // SPA plugin's through it, and alsa-lib's errors, as log entries. PipeWire logs from its data loop (xruns among them)
 // and alsa-lib fails on whatever thread called it, so a write here never formats into the heap, takes a lock or blocks:
 // it fills a fixed slot of a lock-free ring and rings a bell (one eventfd write, at most once until the next drain). A

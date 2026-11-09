@@ -1,7 +1,6 @@
-// The framework's reserved key `disabled` in ear.conf (docs/design/node-lifecycle.md section 8; node-framework.md 6.3,
-// D-F8 to D-F12, R29, R34): read beside a node's settings and never in them, every refusal with its code and place,
-// and node.disable and node.enable editing only the node's own line, with knobly's layout pinned first (8.3). Pure:
-// text in, read and candidates out, against the test types.
+// The framework's reserved key `disabled` in ear.conf (docs/graph-file.md#disabled-true): read beside a node's settings
+// and never in them, every refusal with its code and place, and node.disable and node.enable editing only the node's
+// own line, with knobly's layout pinned first. Pure: text in, read and candidates out, against the test types.
 #include <string>
 #include <tuple>
 #include <vector>
@@ -74,7 +73,7 @@ std::string invalidSettingsDetail(const EditOutcome& outcome) {
 
 } // namespace
 
-// 8.3: what knobly's insert_statements gives at index 0 of each kind of block, before anything relies on it.
+// What knobly's insert_statements gives at index 0 of each kind of block, before anything relies on it.
 TEST_CASE("Disable's insert into a one-line block, a block that starts with @use or a comment, and a node with none "
           "keeps every comment",
           "[graph_file_disabled]") {
@@ -220,7 +219,7 @@ TEST_CASE("node.disable edits only the node's own line, or puts disabled true fi
 		CHECK(edited(model.disableNode("noise")) ==
 		      formatLines + "node white noise { disabled true; } # off for now\n");
 	}
-	SECTION("disabled $quiet; becomes disabled true;: the @set and its other users stay as they are (R34)") {
+	SECTION("disabled $quiet; becomes disabled true;: the @set and its other users stay as they are") {
 		const std::string text = formatLines + "@set $quiet false;\n"
 		                                       "node white a { disabled $quiet; }\n"
 		                                       "node white b { disabled $quiet; }\n";

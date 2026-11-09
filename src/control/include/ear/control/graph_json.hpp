@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. JsonError::pointer, node.add's `disabled` and
-// utcMicros are docs/design/node-lifecycle-modules.md 5.1's and 5.2's (slice 3a, step L-6, D-M21).
 #pragma once
 #include <chrono>
 #include <expected>
@@ -15,7 +12,7 @@ namespace ear::control {
 using JsonPointer = nlohmann::json::json_pointer;
 struct JsonError {
 	std::string detail;  // "<JSON pointer>: <problem>"; "the document" at root
-	std::string pointer; // the JSON pointer alone ("" at root): -32602's data.pointer (control-plane.md 4.1)
+	std::string pointer; // the JSON pointer alone ("" at root): -32602's data.pointer
 };
 /// An object whose keys are all in `keys`.
 std::expected<void, JsonError> requireObject(const nlohmann::json& value, const JsonPointer& at,
@@ -31,6 +28,6 @@ std::expected<Route, JsonError> decodeRoute(const nlohmann::json& value, const J
 nlohmann::json encodePortRef(const PortRef& port); // {"node", "port"}
 nlohmann::json encodeRoute(const Route& route);    // {"from", "to"}
 /// An instant as the wire's `since` and the records' `t` write it: UTC to the microsecond,
-/// "2026-11-09T10:05:12.770000Z". The one home of that text (D-M21).
+/// "2026-11-09T10:05:12.770000Z". The one home of that text.
 std::string utcMicros(std::chrono::system_clock::time_point at);
 } // namespace ear::control

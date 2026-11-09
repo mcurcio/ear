@@ -1,10 +1,9 @@
 // The "file" node type: inputs "record.left" and "record.right", recorded into a 32-bit float stereo WAV file at the
-// graph frequency (docs/design/m1-white-to-file.md section 2, ear/nodes/file.hpp; docs/design/node-lifecycle.md 7.4 and
-// docs/design/node-lifecycle-modules.md 4.5, step L-4b of slice 3a). Its configure opens the recording (beneath the
+// graph frequency (ear/nodes/file.hpp; docs/node-types.md#file). Its configure opens the recording (beneath the
 // recordings folder, by the framework) and asks for a sink on its inside output bank `writer`; the framework's
-// pass-through copies `record` to `writer` on the realtime thread, the block's tap hands each cycle to the sink, and the
-// sink's own thread runs WavWriter: it opens the WAV in begin (the header written there, never on the main loop), writes
-// each chunk, and finishes the file once the node's configuration is torn down.
+// pass-through copies `record` to `writer` on the realtime thread, the block's tap hands each cycle to the sink, and
+// the sink's own thread runs WavWriter: it opens the WAV in begin (the header written there, never on the main loop),
+// writes each chunk, and finishes the file once the node's configuration is torn down.
 #include <sndfile.h>
 
 #include <memory>
@@ -18,8 +17,8 @@
 namespace ear::nodes::file {
 namespace {
 
-/// The sink's consumer: opens the WAV on the sink's thread (D-L18), writes each chunk, finishes the header. Owns the
-/// open file, not its descriptor (the framework's recording, closed after the sink: I5 step 5).
+/// The sink's consumer: opens the WAV on the sink's thread, writes each chunk, finishes the header. Owns the
+/// open file, not its descriptor (the framework's recording, closed after the sink: teardown step 5).
 class WavWriter final : public SinkConsumer {
 public:
 	WavWriter(int descriptor, std::string path, AudioFormat format, InsidesEvents& events)

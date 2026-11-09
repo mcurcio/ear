@@ -1,6 +1,5 @@
-// The one encoder of standard output (docs/design/node-framework.md section 8.8, slice 4; it replaces the plain
-// lines of docs/design/m1-white-to-file.md section 2, knobly-config.md and sendspin.md section 9). The records'
-// schema is the fixture test/protocol/output-records.json.
+// The one encoder of standard output (docs/output-records.md): every record ear prints, a node's notes among them. The
+// records' schema is the fixture test/protocol/output-records.json.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -38,8 +37,8 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///   node                node <n> starting | node <n> starting: <cause> | node <n> running | node <n> stopping[: <cause>]
 ///                       | node <n> stopped | node <n> disabled | node <n> failed <code>: <detail>
 ///                       | node <n> still <phase> after <s>s: waiting for <what> | node <n> removed dropped=<frames>
-///                       (control-plane.md 9.1: a record when the state, the phase's colour, changes, or a failure's
-///                       reason does; `starting` for the added phase alone, `starting: <cause>` for configuring after
+///                       (docs/output-records.md#node: a record when the state, the phase's colour,
+///                       changes, or a failure's reason does; `starting` for the added phase alone, `starting: <cause>` for configuring after
 ///                       a restart, a retry or an enable; `still` when what a node waits for first reaches its health,
 ///                       then at most once per 10 s while it changes; each with "phase", and "cause", "failure",
 ///                       "waitingFor" or "droppedFrames" as it has them)
@@ -57,9 +56,9 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
 ///   exit                ear: <reason>
 ///   action              node <n> <action> invoked | node <n> <action> refused: <result>[ (<detail>)]
-///                       (control-plane.md 9: an operator's node.start, node.stop or node.restart, answered; fields
-///                       "node", "action", "result" (ok or the refusal's code), "detail" when set; told before the
-///                       node records the request causes, D-M8, D-M16)
+///                       (docs/output-records.md#action: an operator's node.start, node.stop or node.restart,
+///                       answered; fields "node", "action", "result" (ok or the refusal's code), "detail" when set; told before the
+///                       node records the request causes)
 ///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
 ///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
@@ -81,7 +80,8 @@ class StatusLog final : public NodeHealthListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
-	/// How often a node's still record may follow its last while what it waits for changes (control-plane.md 9.1).
+	/// How often a node's still record may follow its last while what it waits for changes
+	/// (docs/output-records.md#node).
 	static constexpr std::chrono::seconds stillPace{10};
 	explicit StatusLog(OutputLines& out, WallClock clock = &std::chrono::system_clock::now,
 	                   PaceClock pace = &std::chrono::steady_clock::now);
@@ -98,7 +98,8 @@ public:
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
 	void actionAnswered(const ActionRecord& record) override;
-	/// The main-loop watchdog (StallWatch, node-lifecycle.md 5.12), from its own thread: a look found the heartbeat
+	/// The main-loop watchdog (StallWatch, docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog), from its
+	/// own thread: a look found the heartbeat
 	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back
 	/// after a gap of `ms` between the beats either side.
 	void mainLoopStalled(std::int64_t ms, std::string_view in);

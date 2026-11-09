@@ -1,5 +1,5 @@
-// Sockets that prove nothing (docs/design/sendspin.md section 11, item 6): what they can and cannot keep a server out of.
-// (Shared helpers: sendspin_system.hpp.)
+// Sockets that prove nothing (docs/node-types.md#on-an-untrusted-network): what they can and cannot keep a
+// server out of. (Shared helpers: sendspin_system.hpp.)
 
 #include <algorithm>
 #include <array>
@@ -143,7 +143,7 @@ private:
 	std::thread thread_;
 };
 
-/// Two upgraded sockets from `source`, renewed each `every`: the holder of section 11, item 6, with the renewal shortened
+/// Two upgraded sockets from `source`, renewed each `every`: the holder that sockets which prove nothing give way to, with the renewal shortened
 /// from 28 s so a test sees several.
 SilentPeers::Shape holder(const std::string& source, std::chrono::milliseconds every = 1s) {
 	return {{source}, 2, true, every, true};
@@ -206,7 +206,7 @@ bool answersSlowUpgrade(SilentPeers& peers, const std::string& source, std::uint
 
 } // namespace
 
-// Section 11, item 6: what an unproved peer can keep a server out of. Peers on 127.0.0.1 share the server's address, as a
+// What an unproved peer can keep a server out of. Peers on 127.0.0.1 share the server's address, as a
 // peer behind the same NAT or proxy does; a peer on another 127/8 address does not.
 TEST_CASE("A server pairs and plays beside two silent sockets renewed from its own address", "[system][sendspin]") {
 	ListeningEar node;
@@ -437,8 +437,8 @@ TEST_CASE("A slow honest upgrade is answered while bare sockets from many addres
 TEST_CASE("A slow honest upgrade is answered beside two silent sockets renewed from its own address",
           "[system][sendspin]") {
 	ListeningEar node;
-	// Renewed far faster than a holder must, but slower than sockets still closing can fill the address's share on a loaded
-	// host: past that the upgrade does give way (section 11, item 6).
+	// Renewed far faster than a holder must, but slower than sockets still closing can fill the address's share on a
+	// loaded host: past that the upgrade does give way.
 	SilentPeers peers(node.port, holder("127.0.0.1", 500ms));
 	REQUIRE(peers.waitForRounds(1));
 	const bool answered = answersSlowUpgrade(peers, "127.0.0.1", node.port, 3);

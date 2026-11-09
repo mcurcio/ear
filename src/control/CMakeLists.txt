@@ -1,8 +1,8 @@
-# ear_control: the control surface, pure (docs/design/batch2.md section 1): standard output's one encoder (every
-# record, docs/design/node-framework.md section 8.8; its schema test/protocol/output-records.json); the
+# ear_control: the control surface, pure (docs/architecture.md#packages): standard output's one encoder (every
+# record, docs/output-records.md; its schema test/protocol/output-records.json); the
 # plain types of ear.conf's state on the wire (places, diagnostics, the file's state and its
 # refusals) and the interfaces at its edge to the graph file
-# keeper (requests.hpp, docs/design/knobly-config.md); the one decoder and encoder of node and
+# keeper (requests.hpp, docs/graph-file.md); the one decoder and encoder of node and
 # route JSON; the JSON-RPC protocol (envelope, commands, events, sessions, subscriptions); and MainLoopGateway,
 # the one crossing between the main loop and the control thread. No sockets and no threads of
 # its own: ear_server carries its messages.
@@ -41,7 +41,7 @@ if(BUILD_TESTS)
 		tests/session_test.cpp
 		tests/status_log_test.cpp)
 	target_link_libraries(ear_control_tests PRIVATE ear_control ear_catch_main)
-	# The wire format's fixtures, shared with the web UI's tests (docs/design/batch2.md section 6).
+	# The wire format's fixtures, shared with the web UI's tests (docs/control-port.md).
 	target_compile_definitions(ear_control_tests PRIVATE
 		EAR_PROTOCOL_DIR="${PROJECT_SOURCE_DIR}/test/protocol")
 	add_dependencies(ear_control_tests ear_control_verify_interface_header_sets)

@@ -1,5 +1,5 @@
 // Port 7777: HTTP for the UI's files and WebSocket JSON-RPC at /rpc, on the control thread
-// (docs/design/batch2.md sections 2, 4.6 and 6, control_port.hpp). The shape is Beast's
+// (docs/architecture.md#threads, control_port.hpp). The shape is Beast's
 // advanced_server example (HTTP and WebSocket on one port, the upgrade told apart with
 // websocket::is_upgrade) with its websocket-chat-multi example's per-connection queue of shared
 // messages. Everything below runs on the control thread; start() and stop() hand their work to
@@ -122,7 +122,7 @@ namespace {
 
 /// Largest WebSocket message and HTTP request body read (control_port.hpp).
 constexpr std::size_t maxMessageBytes = 64 * 1024;
-/// Responses and notifications a connection may have waiting for its socket (section 6); one
+/// Responses and notifications a connection may have waiting for its socket; one
 /// more closes it with 1008.
 constexpr std::size_t maxQueuedMessages = 256;
 

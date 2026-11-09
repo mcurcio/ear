@@ -1,4 +1,4 @@
-// The engine tests' shared harness (docs/design/rtp.md section 7.4): the in-process engine with no
+// The engine tests' shared harness (docs/engine.md#rtp-receivers): the in-process engine with no
 // daemon, runtime directory or D-Bus; a Waiter that runs its main loop until the events a test
 // waits for have arrived (the deadline only fails the test); port block events; and the
 // registry as a test reads it. Moved unchanged out of sound_card_test.cpp so the card's and the

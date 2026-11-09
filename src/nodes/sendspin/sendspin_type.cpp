@@ -1,4 +1,4 @@
-// The "sendspin" node type (docs/design/sendspin.md sections 3 and 4): a port block with its own audio code and its own
+// The "sendspin" node type (docs/node-types.md#sendspin): a port block with its own audio code and its own
 // threads, not an outside node. Its ports are fixed; the connection is the worker's, so an absent server is no
 // failure: the node runs and its outputs are silent.
 #include "ear/nodes/sendspin.hpp"
@@ -27,7 +27,7 @@
 namespace ear::sendspin {
 namespace {
 
-/// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
+/// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks.
 std::uint32_t feedFramesFor(const AudioFormat& format) {
 	return std::bit_ceil(std::max(format.rate * 40 / 1000, 2 * format.maxBlock));
 }
@@ -46,7 +46,7 @@ private:
 	std::uint16_t port_;
 };
 
-/// The run object: the claim, the feed and the worker with its threads. Until slice 3 of docs/design/node-framework.md
+/// The run object: the claim, the feed and the worker with its threads. Until slice 3c (docs/design/node-primitives.md)
 /// moves sendspin onto the framework's loops, feed, stores and claims, it is built in start (the worker reads the key
 /// file and starts its threads there), and its recipe only hands it over.
 class SendspinRun final : public RunObject {
@@ -98,7 +98,7 @@ public:
 		}
 		const std::uint32_t rate = context.format().rate;
 		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
-		// The feed holds the server's audio up to its size before it leaves (docs/design/node-framework.md 9.4).
+		// The feed holds the server's audio up to its size before it leaves (docs/engine.md#latency-per-bank-pair).
 		context.declareLatency("from", Latency{0, feedFramesFor(context.format())});
 		auto code = run->code(rate, toServer);
 		return StartResult{
@@ -136,7 +136,7 @@ namespace ear::nodes {
 
 std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
 	if (!folders.config) throw std::logic_error("sendspin needs the graph file folder");
-	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
+	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph.
 	if (folders.log == nullptr) throw std::logic_error("sendspin needs the boot log");
 	for (std::string& failure : sendspin::narrowKeyFiles(*folders.config))
 		folders.log->log({.level = LogLevel::warn, .source = "sendspin", .text = std::move(failure)});

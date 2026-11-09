@@ -1,8 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. encodeGraphFileChanged and
-// EventSink::graphFileChanged are docs/design/knobly-config.md's (slices S3 and S5); their erratum
-// to batch2.md lands in S7. Health on node.added and node.state, since, node.updated's `disabled` and `applied`, and
-// node.gone are docs/design/node-lifecycle-modules.md 5.2's (slice 3a, step L-6; batch2.md section 11's erratum).
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -14,12 +9,12 @@
 #include "ear/core/levels.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
-// The graph notifications (docs/design/batch2.md section 6) as typed events.
+// The graph notifications (docs/control-port.md) as typed events.
 namespace ear::control {
 struct NodeAdded {
 	NodeSpec node;
 	Ports ports;       // public ports only
-	NodeHealth health; // from the spec alone (D-M12)
+	NodeHealth health; // from the spec alone
 	std::chrono::system_clock::time_point since;
 };
 struct NodeUpdated {
@@ -33,9 +28,9 @@ struct NodeRemoved {
 };
 struct NodeChanged {
 	NodeHealth health;
-	std::chrono::system_clock::time_point since; // when its phase began (D-M11)
+	std::chrono::system_clock::time_point since; // when its phase began
 };
-/// Deprecated (protocol 1 sends it, then node.gone; it goes at protocol 2: control-plane.md 4.8).
+/// Deprecated (protocol 1 sends it, then node.gone; it goes at protocol 2: docs/control-port.md#notifications).
 struct NodeStopped {
 	NodeName node;
 	std::uint64_t droppedFrames;

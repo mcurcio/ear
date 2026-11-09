@@ -1,6 +1,6 @@
-// The source role's audio (docs/design/sendspin.md sections 6 and 7): the handoff's thread hands it the inputs, and while the
-// server wants them they go on, each piece dated from the newest capture anchor. While nobody does they are dropped here, so
-// a server decides when the source streams and the handoff never fills.
+// The source role's audio (docs/node-types.md#threads): the handoff's thread hands it the inputs, and while the server
+// wants them they go on, each piece dated from the newest capture anchor. While nobody does they are dropped here, so a
+// server decides when the source streams and the handoff never fills.
 #pragma once
 #include <atomic>
 #include <cstddef>
@@ -27,8 +27,8 @@ public:
 	ToServer(std::uint32_t rate, SourceSink& sink, const Mailbox<CaptureAnchor>& anchor);
 	/// The server's commands: whether anyone wants the audio.
 	void streaming(bool wanted) noexcept { streaming_.store(wanted, std::memory_order_release); }
-	/// Pieces of at most 100 ms: one write must fit 5/8 of the 500 ms capture buffer (section 6). When this thread woke does
-	/// not move a stamp (section 7).
+	/// Pieces of at most 100 ms: one write must fit 5/8 of the 500 ms capture buffer. When this thread woke does
+	/// not move a stamp.
 	void consume(std::span<const float> interleaved, std::uint32_t frames) override;
 	void finish() override {}
 

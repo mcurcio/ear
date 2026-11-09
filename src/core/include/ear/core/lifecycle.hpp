@@ -1,6 +1,6 @@
-// What a node type's class is handed and answers (docs/design/node-framework.md 6.4 and 6.10, the type author's API;
-// docs/design/node-lifecycle-modules.md section 3, the home of these declarations, step L-4a of slice 3a), and the
-// erased instance NodeHost drives (docs/design/node-lifecycle.md 5.9 and 5.10).
+// What a node type's class is handed and answers (docs/writing-a-node-type.md#the-class, the type author's API), and
+// the
+// erased instance NodeHost drives (docs/writing-a-node-type.md#rules-the-framework-enforces).
 //
 // A type is one class, made a NodeType by makeNodeType<spec, Type>():
 //
@@ -25,14 +25,14 @@
 //   void start();  void stop();                                                          optional
 //
 // The change version compiles (its signature checked) but slice 3a never calls it: every change of settings restarts
-// the node (node-lifecycle-modules.md D-M2, the owner's answer to Q1).
+// the node.
 //
 // Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
 // returned is a std::logic_error naming the call, "<call> outside configure", thrown by NodeHost); NodeOf is valid for
 // the instance's life. A rule the type breaks at a call or at configure's return fails the node start-failed with the
-// rule's text, never escaping NodeHost (D-M3). The bodies in this header are forwarding and compile-time checks only;
+// rule's text, never escaping NodeHost. The bodies in this header are forwarding and compile-time checks only;
 // NodeHost implements the erased contexts. SpecConfig, SpecNodeType and makeNodeType, at the end, make a type of the
-// class (node-lifecycle-modules.md 3.6, D-M1).
+// class (docs/writing-a-node-type.md#the-class).
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -52,7 +52,8 @@ namespace ear {
 
 // ---- Answers ----
 
-/// What creation's configure answers (node-framework.md 6.4). It has no restart: that is the change version's answer.
+/// What creation's configure answers (docs/writing-a-node-type.md#the-class). It has no restart: that is the change
+/// version's answer.
 class Configured {
 public:
 	/// The framework still waits for every resource the configure asked for (readiness 3' and 4').
@@ -73,8 +74,9 @@ private:
 	std::optional<std::string> failure_;
 };
 
-/// What the change version of configure answers (node-framework.md 6.4 and 6.10; slice 3d). Declared in 3a only so that
-/// neither answer type can stand for the other; slice 3d defines the rest (and a later answer, made by whenReady).
+/// What the change version of configure answers (docs/writing-a-node-type.md#the-class; slice 3d). Declared in 3a only
+/// so that neither answer type can stand for the other; slice 3d defines the rest (and a later answer, made by
+/// whenReady).
 class Changed {
 public:
 	/// 3a never calls the change version, so these only let one compile and link; slice 3d gives them their meaning.
@@ -97,7 +99,7 @@ class NodeContext {
 public:
 	virtual AudioFormat format() const noexcept = 0;
 	virtual const NodeName& node() const noexcept = 0;
-	/// 3a: the configuration's Channel (say, lost; I6); slice 3c makes it NodeHandle&.
+	/// 3a: the configuration's Channel (say, lost); slice 3c makes it NodeHandle&.
 	virtual InsidesEvents& handle() noexcept = 0;
 
 protected:
@@ -109,8 +111,8 @@ class SinkRequest {
 public:
 	/// A consumer of the type's own, given whole and owned by the sink (file's WavWriter). Exactly once per sink, and
 	/// not null: a second call, a null consumer or none by configure's return (when it answered applied) is a
-	/// std::logic_error naming the node and the sink's bank. Slice 3c adds the loop-member forms (node-framework.md
-	/// 6.10) as templates over this.
+	/// std::logic_error naming the node and the sink's bank. Slice 3c adds the loop-member forms
+	/// (docs/writing-a-node-type.md#the-class) as templates over this.
 	virtual void consumedBy(std::unique_ptr<SinkConsumer> consumer) = 0;
 
 protected:
@@ -130,21 +132,22 @@ public:
 	/// The code (prepared at T3, driven at T5). Exactly once: a second call is a std::logic_error at the call; none by an
 	/// applied configure's return, one at the return.
 	virtual void use(NodeCode code) = 0;
-	/// Slice 3a's interim sound card (node-framework.md 6.10, "The 3a interim"): `request.bank` is filled from `bank`
-	/// (a non-empty, different one is a std::logic_error), its direction must agree with the bank's (playback: an
-	/// inside output; capture: an inside input; else std::logic_error); a playback card's bank is faded with the public
-	/// outputs (D-L16). Made once the block is ready, in the turn's flush; `<node>.playback` or `<node>.capture`.
+	/// Slice 3a's interim sound card (docs/writing-a-node-type.md#the-class, "The 3a interim"): `request.bank` is
+	/// filled from `bank` (a non-empty, different one is a std::logic_error), its direction must agree with the bank's
+	/// (playback: an inside output; capture: an inside input; else std::logic_error); a playback card's bank is faded
+	/// with the public outputs. Made once the block is ready, in the turn's flush; `<node>.playback` or
+	/// `<node>.capture`.
 	virtual void soundCard(std::string_view bank, SoundCardRequest request) = 0;
 	/// Slice 3a's interim RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded.
 	virtual void rtpReceiver(std::string_view bank, RtpReceiverRequest request) = 0;
 	/// Slice 3a's interim recording: opened at once, beneath the recordings folder; its descriptor is closed after the
-	/// configuration's code and instance (I5 step 5). The error is why not (it names no path).
+	/// configuration's code and instance (teardown step 5). The error is why not (it names no path).
 	virtual std::expected<int, std::string> openRecording(const RecordingRequest& request) = 0;
-	/// Slice 3a's interim sink on an inside output bank (node-lifecycle.md 5.11): made at once (its thread starts); its
+	/// Slice 3a's interim sink on an inside output bank (docs/engine.md#sinks): made at once (its thread starts); its
 	/// consumer begins once configure answered applied (readiness 4').
 	virtual SinkRequest& sink(std::string_view bank, SinkShape shape) = 0;
-	/// The type's own code's latency (node-framework.md 9.4, D-L17): `latency` on the pair's output bank `to`, in the
-	/// configuration's LatencyPlan::internal. At most once per output bank (a second is a std::logic_error).
+	/// The type's own code's latency (docs/engine.md#latency-per-bank-pair): `latency` on the pair's output bank `to`,
+	/// in the configuration's LatencyPlan::internal. At most once per output bank (a second is a std::logic_error).
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).
@@ -161,7 +164,7 @@ template <const auto& Spec, class Type> class SpecInstance;
 }
 
 /// What the instance keeps: the node's own, for the instance's life, main loop only (handle() excepted, as
-/// NodeContext's). Slice 3c adds post(), slice 5 report() (node-framework.md 6.10).
+/// NodeContext's). Slice 3c adds post(), slice 5 report() (docs/writing-a-node-type.md#the-class).
 template <const auto& Spec> class NodeOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 
@@ -179,9 +182,9 @@ private:
 	NodeContext* context_;
 };
 
-/// configure on creation (T2): acquire and construct (node-framework.md 6.10; slice 3a's members, its interim calls
-/// among them). Only the spec's banks, of the right direction and reach, compile. It has no holds, whenReady or
-/// unclaim (the change version's), so a call the mode does not offer does not compile.
+/// configure on creation (T2): acquire and construct (docs/writing-a-node-type.md#the-class; slice 3a's members, its
+/// interim calls among them). Only the spec's banks, of the right direction and reach, compile. It has no holds,
+/// whenReady or unclaim (the change version's), so a call the mode does not offer does not compile.
 template <const auto& Spec> class CreateOf {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using List = BanksOf<Spec>;
@@ -242,29 +245,29 @@ private:
 	CreateContext* context_;
 };
 
-/// configure for a change (T9; node-framework.md 6.10). Slice 3d defines it. In 3a a class may write the change
-/// version (its signature is checked), and it is never called: every change restarts the node
-/// (node-lifecycle-modules.md D-M2, the owner's answer to Q1).
+/// configure for a change (T9; docs/writing-a-node-type.md#the-class). Slice 3d defines it. In 3a a class may write the
+/// change version (its signature is checked), and it is never called: every change restarts the node.
 template <const auto& Spec> class ChangeOf;
 
 // ---- The erased instance ----
 
-/// Both contexts NodeHost implements on one set of internals, for the one call that needs either (node-lifecycle.md
-/// 5.9). Valid only during configure.
+/// Both contexts NodeHost implements on one set of internals, for the one call that needs either
+/// (docs/writing-a-node-type.md#rules-the-framework-enforces). Valid only during configure.
 struct InstanceContexts {
 	CreateContext& create; // what SpecInstance hands the type, as CreateOf<Spec>
-	StartContext& legacy;  // what LegacyInstance hands NodeConfig::start (5.10); interim until slice 3c
+	StartContext& legacy;  // what LegacyInstance hands NodeConfig::start; interim until slice 3c
 };
 
-/// One configuration's instance, as NodeHost drives it (node-lifecycle.md 5.9): made by NodeConfig::make at T2, freed
-/// at I5 step 5 after the code. Main thread for every call. A type's exception passes through every call: NodeHost
-/// catches it at the call and fails the node (`<hook> threw: <what>`, 4.2's code by fact).
+/// One configuration's instance, as NodeHost drives it (docs/writing-a-node-type.md#rules-the-framework-enforces): made
+/// by NodeConfig::make at T2, freed at teardown step 5 after the code. Main thread for every call. A type's exception
+/// passes through every call: NodeHost catches it at the call and fails the node (`<hook> threw: <what>`, its code by
+/// fact: failureCodeFor).
 class ErasedInstance {
 public:
 	virtual ~ErasedInstance() = default;
 	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
 	virtual Configured configure(InstanceContexts& cx) = 0;
-	/// Legacy only: whether its start returned a recipe (D-L40's check, with the outside nodes it asked for).
+	/// Legacy only: whether its start returned a recipe (with the outside nodes it asked for).
 	virtual bool hasRecipe() const noexcept { return false; }
 	/// Legacy only: configure answered failed because the old SPI's start said engineRefused (its fact is kept: the node
 	/// fails engine-refused, not start-failed).
@@ -277,10 +280,10 @@ public:
 	}
 	/// T5 and T8, once the drive completed; timed as `start`.
 	virtual void start() {}
-	/// Once after every start() that returned (node-framework.md 6.4's pairing); timed as `stop`.
+	/// Once after every start() that returned (docs/writing-a-node-type.md#the-class pairing); timed as `stop`.
 	virtual void stop() {}
-	/// I5 step 4. Legacy only: RunObject::close (off the main loop for a run with threads); the new SPI has nothing to
-	/// close until slice 3c's loops. `closed` from any thread, once.
+	/// teardown step 4. Legacy only: RunObject::close (off the main loop for a run with threads); the new SPI has
+	/// nothing to close until slice 3c's loops. `closed` from any thread, once.
 	virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 
@@ -311,9 +314,10 @@ struct AnyContext {
 	template <class T> operator T&() const; // NOLINT: implicit on purpose; never defined, only named in requires
 };
 
-/// The instance makeNodeType<Spec, Type>() makes for each configuration (node-lifecycle.md 5.9). It holds NodeOf, then
-/// the type's object (constructed from NodeOf or from nothing), and calls its hooks. `settings` are the config's, which
-/// outlives the instance (I5 step 5).
+/// The instance makeNodeType<Spec, Type>() makes for each configuration
+/// (docs/writing-a-node-type.md#rules-the-framework-enforces). It holds NodeOf, then the type's object (constructed
+/// from NodeOf or from nothing), and calls its hooks. `settings` are the config's, which outlives the instance
+/// (teardown step 5).
 template <const auto& Spec, class Type> class SpecInstance final : public ErasedInstance {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 	using Checked = CheckedOf<Spec>;
@@ -325,13 +329,13 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 		}, "a type's class has static Members<spec> ports(const CheckedOf<spec>&)");
 	static_assert(
 		!requires(StartContext& context, const Checked& settings) { Type::start(context, settings); },
-		"a type on makeNodeType writes configure, not a static start (node-lifecycle.md D-L13)");
+		"a type on makeNodeType writes configure, not a static start");
 	static_assert(std::constructible_from<Type, NodeOf<Spec>&> || std::default_initializable<Type>,
 	              "a type's class is constructed from NodeOf<spec>& or from nothing");
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	// The change version: optional, never called in 3a (D-M2); once any configure of three parameters is callable (with
+	// The change version: optional, never called in 3a; once any configure of three parameters is callable (with
 	// a ChangeOf, or with any context), its signature is exactly this.
 	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
 		type.configure(change, settings, settings);
@@ -384,8 +388,9 @@ private:
 	Type type_; // after node_, which it may keep
 };
 
-/// The config makeNodeType's type makes (node-lifecycle-modules.md 3.6): the checked settings and the ports, and an
-/// instance of the class for each configuration. It has no start: NodeConfig's default throws, and nothing calls it.
+/// The config makeNodeType's type makes (docs/writing-a-node-type.md#the-class): the checked settings and the ports,
+/// and an instance of the class for each configuration. It has no start: NodeConfig's default throws, and nothing calls
+/// it.
 template <const auto& Spec, class Type> class SpecConfig final : public NodeConfig {
 public:
 	explicit SpecConfig(const CheckedOf<Spec>& settings)

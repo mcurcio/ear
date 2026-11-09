@@ -65,9 +65,9 @@ inline ConfinedRecordings& recordings() {
 	return adapter;
 }
 
-/// The types the all-type harness test does not run yet (docs/design/node-framework.md section 7.6): every other type
-/// runs, so a new type adds nothing here. sendspin waits for slice 3 (its start still builds its worker, the key file and
-/// its threads, which the harness does not fake). The harness test fails on a name here that is no type.
+/// The types the all-type harness test does not run yet (docs/writing-a-node-type.md#testing-a-type): every other type
+/// runs, so a new type adds nothing here. sendspin waits for slice 3c (its start still builds its worker, the key file
+/// and its threads, which the harness does not fake). The harness test fails on a name here that is no type.
 inline const std::set<std::string, std::less<>>& notYetInHarness() {
 	static const std::set<std::string, std::less<>> types{"sendspin"};
 	return types;

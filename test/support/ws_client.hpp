@@ -1,4 +1,4 @@
-// The tests' client of the control port (docs/design/batch2.md sections 4.6 and 6): one HTTP
+// The tests' client of the control port (docs/control-port.md): one HTTP
 // request on a fresh connection, and a WebSocket client, both on Boost.Beast. Every call waits
 // for its own completion; the deadline only fails the test (it throws), it never paces one.
 #pragma once

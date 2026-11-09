@@ -297,6 +297,11 @@ A sine generator: `frequency` (Hz, default 440) and `channels` (default 1), the 
 channel at half scale. It refuses, at configure, a frequency at or above half the graph frequency,
 which parse cannot judge because it does not know the graph frequency.
 
+The tests compile this example as it stands on this page (`ear_doc_example_type` and
+`ear_doc_example_tests`, after `ear_doc_example_extract` takes each file from a level-3 heading
+naming its path under `src/nodes/tone/` and the one fenced block under it), so it cannot drift from
+the headers. Keep that shape when you edit it.
+
 ### `src/nodes/tone/CMakeLists.txt`
 
 ```cmake
@@ -333,13 +338,12 @@ namespace ear::nodes::tone {
 inline constexpr auto frequencyRow = setting::defaulted("frequency", setting::number(1, 20000, "Hz"), 440);
 inline constexpr auto channelsRow = setting::defaulted("channels", setting::number(1, 8, "channels"), 1);
 inline constexpr auto out = bank::output<"out">;
-inline constexpr TypeSpec spec{.settings = SettingsTable<frequencyRow, channelsRow>{"tone"},
-                               .banks = Banks<out>{}};
+inline constexpr TypeSpec spec{.settings = SettingsTable<frequencyRow, channelsRow>{"tone"}, .banks = Banks<out>{}};
 using Checked = CheckedOf<spec>;
 
 /// Runs on the realtime thread: reads no clock, allocates nothing, writes every output sample.
 struct ToneCode {
-	double step = 0;  // radians a frame
+	double step = 0; // radians a frame
 	double phase = 0;
 
 	void process(Io<spec> io, const GraphCycle&) noexcept {
@@ -435,7 +439,7 @@ TEST_CASE("Tone fails a frequency at or above half the graph frequency", "[tone]
 
 TEST_CASE("Tone stops silent and starts again", "[tone]") {
 	Harness harness;
-	REQUIRE_FALSE(harness.parse({}));
+	REQUIRE_FALSE(harness.parse(ear::NodeSettings::object())); // {} would be JSON null, which tone refuses
 	harness.add();
 	harness.blockReady();
 	harness.stop();

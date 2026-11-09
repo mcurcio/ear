@@ -1,4 +1,4 @@
-// Route links through the engine's link-factory (docs/design/m1-white-to-file.md section 2,
+// Route links through the engine's link-factory (docs/architecture.md#packages,
 // links.hpp).
 #include "ear/pipewire/links.hpp"
 

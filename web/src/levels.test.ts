@@ -1,4 +1,4 @@
-// W1 criterion (4): dBFS conversion and clamp; a wire's level is its from port's; a port update
+// dBFS conversion and clamp; a wire's level is its from port's; a port update
 // notifies only that port's listeners; a node missing from the next message reads silent.
 import { describe, expect, it } from "vitest";
 import { LevelStore, floorDb, meterFraction, toDbfs, wireLevel } from "./levels";

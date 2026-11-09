@@ -1,4 +1,4 @@
-// The graph file keeper's sequencer (keeper.hpp; docs/design/knobly-config.md, design rules 1-3).
+// The graph file keeper's sequencer (keeper.hpp; docs/architecture.md#how-a-change-moves).
 // One input at a time from one FIFO (batches, disk checks, the first offer); while a step awaits its
 // completion nothing more is taken. A step is one main-loop post: the reads gathered so far, then at
 // most one offer, then the reply if it is the batch's last step; its completion comes back to
@@ -35,7 +35,7 @@ bool isRead(const control::Command& command) {
 	return std::holds_alternative<control::GetGraph>(command) || std::holds_alternative<control::GetGraphFile>(command);
 }
 
-/// A lifecycle verb that edits nothing (control-plane.md 7.6): its verb and node.
+/// A lifecycle verb that edits nothing (docs/control-port.md#methods): its verb and node.
 std::optional<std::pair<control::LifecycleVerb, NodeName>> verbOf(const control::Command& command) {
 	if (const auto* c = std::get_if<control::StartNode>(&command))
 		return std::pair{control::LifecycleVerb::start, c->node};
@@ -46,7 +46,7 @@ std::optional<std::pair<control::LifecycleVerb, NodeName>> verbOf(const control:
 	return std::nullopt;
 }
 
-/// An accepted disable's or enable's answer from the plan's outcome for its node (node-lifecycle-modules.md 5.7).
+/// An accepted disable's or enable's answer from the plan's outcome for its node (docs/control-port.md#methods).
 CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeName, NodeOutcome>>& outcomes) {
 	for (const auto& [name, outcome] : outcomes) {
 		if (name != node) continue;

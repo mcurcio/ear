@@ -1,11 +1,10 @@
-# EAR's packages, one directory each with its own CMakeLists.txt (docs/design/batch2.md
-# section 1): ear_core, ear_pipewire, ear_control, ear_config (the knobly graph file and its keeper,
-# docs/design/knobly-config.md) and ear_server, each a library the ear binary links (its composition root,
-# main.cpp); nodes/ holds the node types, each its own library, ear_node_<type>, and all_node_types/ is the
-# list of them configure generates, the one thing of theirs the binary links; ear_folder, the confined folder the
-# recordings and the graph file live beneath, and ear_output, where standard output goes (the output thread and the
-# capture of descriptors 1 and 2), depend on none of them. Added in dependency order: ear_core, ear_folder and
-# ear_output first, the packages that use them after.
+# EAR's packages, one directory each with its own CMakeLists.txt (docs/architecture.md#packages): ear_core,
+# ear_pipewire, ear_control, ear_config (the knobly graph file and its keeper, docs/graph-file.md) and ear_server, each
+# a library the ear binary links (its composition root, main.cpp); nodes/ holds the node types, each its own library,
+# ear_node_<type>, and all_node_types/ is the list of them configure generates, the one thing of theirs the binary
+# links; ear_folder, the confined folder the recordings and the graph file live beneath, and ear_output, where standard
+# output goes (the output thread and the capture of descriptors 1 and 2), depend on none of them. Added in dependency
+# order: ear_core, ear_folder and ear_output first, the packages that use them after.
 add_subdirectory(core)
 add_subdirectory(folder)
 add_subdirectory(output)

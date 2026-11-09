@@ -5,7 +5,7 @@ description: The sendspin node in EAR, Music Assistant's audio in and out over t
 
 # The `sendspin` node
 
-The design and its evidence are `docs/design/sendspin.md`; settings and status lines are in `AGENTS.md`. This is how to
+Its reference (settings, notes, failures, clock, threads, library facts) is `docs/node-types.md#sendspin`. This is how to
 operate it, and what bites.
 
 ## Connecting and pairing
@@ -63,16 +63,16 @@ operate it, and what bites.
 
 `sendspin` is the one type still written on the old type interface (`NodeTypeOf`, a config whose `start` returns a
 `StartResult` with a recipe that builds the `RunObject`, its handoff asked through `StartContext`). Since slice 3a it runs
-under the node lifecycle through the framework's legacy adapter (`src/core/legacy_instance.hpp`, `docs/design/
-node-lifecycle.md` 5.10): its `start` is the configuration's `configure`, its recipe runs once every resource is ready,
+under the node lifecycle through the framework's legacy adapter (`src/core/legacy_instance.hpp`,
+`docs/writing-a-node-type.md#the-old-interface`): its `start` is the configuration's `configure`, its recipe runs once every resource is ready,
 its code is driven and faded like any other, and its `RunObject::close` runs off the main loop at the teardown. What
 that means to an operator:
 
 - **A stop keeps the connection.** `node.stop` fades and silences its code, and nothing else: the worker, the
-  connection, the pairing and the library keep running (there is no `stop()` hook to say goodbye with, D-L27). Its
+  connection, the pairing and the library keep running (there is no `stop()` hook to say goodbye with). Its
   outputs are silent and nothing it is sent is played or reported played. `node.start` drives the code again; the feed
-  is not cleared at a stop, so up to about 43 ms it held from before plays first (node-lifecycle.md 16, accepted until
-  3c). It never reports the stop's gap as played (D-L33: every stop prepares the code afresh).
+  is not cleared at a stop, so up to about 43 ms it held from before plays first (accepted until slice 3c,
+  `docs/design/node-primitives.md`). It never reports the stop's gap as played (every stop prepares the code afresh).
 - **A restart, a disable or a removal drops it.** The run object closes (goodbye `shutdown`, the worker joined) and a
   restart or an enable builds a new client from the key file. A disabled node holds no port and no connection.
 - **Bugs fail, never crash.** A recipe that throws fails the node `start-failed` (`recipe threw: ...`), a `close` that
@@ -107,7 +107,7 @@ that means to an operator:
 - **A skipped cycle counts as played**, or it costs 25 ms: the library sees -5.3 ms, drops a chunk and inserts silence. A
   jump larger than the feed, or backward, is a change of driver (a card joining or lost), not a skip.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
-- **No card moves the clock** (slice 7, `docs/design/node-framework.md` section 10): the internal clock (the dummy driver)
+- **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)
   always drives and tracks the raw clock, and a linked card follows it. Before, a card joining sent the position from 2.3e10 to
   0 and losing it forward by 2.3e10; the code still treats a jump past the feed's capacity, or backward, as no skip, and
   `GraphCycle` now says `discontinuity` and `driverId` for it. 1 ms holds on the dummy alone and through a following test card
@@ -122,7 +122,7 @@ that means to an operator:
 - **One format, FLAC 24.** The library's sync thread gives ear audio with no format beside it, and a `stream/start` reaches the
   worker out of step with it, so a server changing depth mid-stream would turn it to noise if a second depth were listed.
 - **A listening node on an untrusted network:** sockets that prove nothing give way to newcomers, so holding them keeps no server
-  out (`docs/design/sendspin.md` section 11, item 6). What a peer can still do: flood, which keeps servers out for as long as it lasts past
+  out (`docs/node-types.md#on-an-untrusted-network`). What a peer can still do: flood, which keeps servers out for as long as it lasts past
   some rate (measured on loopback: about 16k connects/s from 4 addresses, about 9.6k from the server's own; slower floods cost a server a
   few seconds), and only stopping it lets them in; and, at any rate, knock a server behind its own address off while it is still in its
   handshake, which costs it a reconnect. A
@@ -137,7 +137,7 @@ that means to an operator:
 
 ## What the spike learned
 
-Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the real `aiosendspin`, on the dummy driver.
+Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-patches`, against the real `aiosendspin`, on the dummy driver.
 
 - PCM 16, FLAC 16 and FLAC 24 at the graph frequency arrived exact (ear now lists FLAC 24 alone), and the server resamples other rates. The source role only
   activates once paired, and the server decides when it streams.
@@ -148,8 +148,8 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
 - The library has no log hook: on a host build `SS_LOG*` is a bare `fprintf(stderr, ...)` with one process-wide level
   (`src/platform/logging.h`). Its lines (and IXWebSocket's) reach standard output as unattributed `log` records from
   `stderr` at `warn`, paced with every other line from `stderr`, never as the node's own. Naming the node needs a
-  carried patch that routes `SS_LOG*` through a settable callback carrying the client (`docs/design/node-framework.md`
-  section 8.8's erratum); none is carried yet.
+  carried patch that routes `SS_LOG*` through a settable callback carrying the client (slice 3c,
+  `docs/design/node-primitives.md`); none is carried yet.
 - A correction is one frame per chunk at most, -0.084% over 150 ms against the spec's ±0.5%.
 
 ## The pin and the patch
@@ -161,7 +161,7 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
   (8 an address), since its four sockets closed the surplus at accept, and keeps a close racing a peer's reset from ending the
   process. An address's 8 count only sockets its peer has not closed (a dup of each socket, polled at admission): one closed
   stays on the list until its own thread sees it, which on a loaded host outlasted an honest peer's quick reconnects and
-  refused them (`docs/design/sendspin.md` erratum 43). Rebase it the same way, in `.cache/deps/ixwebsocket-src`; configure
+  refused them (`docs/node-types.md#library-facts-and-carried-patches`). Rebase it the same way, in `.cache/deps/ixwebsocket-src`; configure
   fetches the tree again when the patch changes.
 - `cmake/sendspin-listener.patch` is carried: the spec says a client MUST reject an upgrade carrying `Origin`, and the library's
   host server accepts it. Without it a web page speaking Noise could declare `pairing`, knock an idle server off and burn the
@@ -216,7 +216,7 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **A comma in a Catch filter means OR, and a filter that matches nothing exits 0.** A probe that filters on a name holding a
   comma can stay green having run nothing. CTest takes these names as they are. Keep `;` out of test names.
 - The ramp: left is the low 16 bits of the frame index and right the high 16, so FR's meter is silent for its first 1.4 s.
-- **A clock error past 100 us leaves a fractional frame in the WAV, without a bug.** The library averages two frames, at most once a chunk (4608 frames): `n-1`, the blend of `n-1` and `n`, `n` to add one, and `n-1`, the blend of `n` and `n+1`, `n+2` to drop one, a step of 3. `checkRamp` passes only those, and counts them in `blends`; a red prints them. To force some, add 150 us to the finish `SendspinCode::process` publishes, for instance every other 24000 frames. The averages at the low word's wrap are not `k + 0.5`, because each channel is a signed sample: left -0.5 at both `0x7FFF` and `0xFFFF`, and right `h + 0.5` at `0xFFFF` (`docs/design/sendspin.md` erratum 42).
+- **A clock error past 100 us leaves a fractional frame in the WAV, without a bug.** The library averages two frames, at most once a chunk (4608 frames): `n-1`, the blend of `n-1` and `n`, `n` to add one, and `n-1`, the blend of `n` and `n+1`, `n+2` to drop one, a step of 3. `checkRamp` passes only those, and counts them in `blends`; a red prints them. To force some, add 150 us to the finish `SendspinCode::process` publishes, for instance every other 24000 frames. The averages at the low word's wrap are not `k + 0.5`, because each channel is a signed sample: left -0.5 at both `0x7FFF` and `0xFFFF`, and right `h + 0.5` at `0xFFFF` (`docs/node-types.md#library-facts-and-carried-patches`).
 - `mdns.h` and the library parse what any peer sends, unfuzzed, inside the audio process: a crash silences every node.
 
 ## NOT RUN: the real Music Assistant

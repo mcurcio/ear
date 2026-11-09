@@ -7,8 +7,7 @@ description: How to talk to EAR's control port (7777, HTTP for the graph editor 
 
 `ear` serves one TCP port (7777 by default): the graph editor's files over HTTP and JSON-RPC 2.0
 over WebSocket at `/rpc`. The wire format (every method, notification, error code and the
-Graph object) has one home: `docs/design/batch2.md` section 6, and from protocol 1
-`docs/design/control-plane.md` section 4 (batch2.md section 11's erratum), with the fixtures in
+Graph object) has one home: `docs/control-port.md` (protocol 1), with the fixtures in
 `test/protocol/*.json` that the server's and the editor's tests both check. This skill is how
 to use it and what bites.
 
@@ -78,7 +77,7 @@ use`).
 ## The graph file over the port
 
 Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
-(`docs/design/knobly-config.md`; the wire is `docs/design/batch2.md` section 6):
+(`docs/graph-file.md`; the wire is `docs/control-port.md`):
 
 - `graphFile.get` and `graphFile.subscribe` answer with the GraphFile: `version` (opaque),
   `text`, `diagnostics`, `running` (the version the graph runs), `refusal`, `pendingRestart` and
@@ -186,7 +185,7 @@ printed (`graph-file write-failed <detail>`) and reaches no client.
 - **The level bell and a port with no levels subscriber.** The bell is rung at most once per
   window from the realtime side alone (`port_blocks.cpp`, `rungFor`). An earlier flag cleared by
   the reader went silent for good when the control thread answered a ring without reading levels
-  (nobody subscribed): see `docs/design/batch2.md` section 11.
+  (nobody subscribed), so the flag is gone (`docs/engine.md#levels`).
 - **The editor's dev proxy** sends Host `localhost:7777` (`changeOrigin` in
   `web/vite.config.ts`), which the Host rule accepts.
 - **Including the server headers:** no Boost type is in a public header of `ear_server`; Beast

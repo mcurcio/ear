@@ -1,4 +1,4 @@
-// The wedged data loop on the engine side (docs/design/node-lifecycle.md section 5.4, step L-3c's review). NodeHost
+// The wedged data loop on the engine side (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog). NodeHost
 // judges the data loop wedged when a barrier's invoke has not run in 5 s and stops calling PipeWire itself; but making
 // or destroying a link, an outside node tearing itself down, or a latency update also reach the data loop through a
 // blocking invoke (pw_impl_port's mix release, impl-port.c port_set_io), and the main loop would then wait on it for

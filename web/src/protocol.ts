@@ -1,22 +1,17 @@
-// The control port's wire format: JSON-RPC 2.0 over WebSocket at /rpc, named params only
-// (docs/design/batch2.md section 6; the graph file's methods: docs/design/knobly-config.md,
-// "Wire additions"; from protocol 1, docs/design/control-plane.md section 4 is the wire's home, as
-// batch2.md section 11's erratum says, and slice 3a's lifecycle members and methods are its step L1,
-// docs/design/node-lifecycle-modules.md 5.11). The one home of the wire types on the UI side; the server
-// side is ear_control (src/control). Both are tested against the fixtures in test/protocol.
-// Frozen interface (docs/design/batch2.md section 4; control-plane.md from protocol 1). Change it only
-// through an erratum in batch2.md's Errata section (section 11) or control-plane.md, and a re-cut, never a
-// local edit.
+// The control port's wire format on the editor's side: JSON-RPC 2.0 over WebSocket at /rpc, named params only
+// (docs/control-port.md, the wire's one description). The one home of the wire types on the UI side; the server side is
+// ear_control (src/control). Both are tested against the fixtures in test/protocol, and a change to the wire changes
+// that page, the fixtures and both sides together (docs/control-port.md#changing-the-wire).
 //
-// Every enum ear sends is open from protocol 1 (control-plane.md 4.1): a known union plus (string & {}),
-// so a value this editor does not know types and is drawn neutrally, never a failure.
+// Every enum ear sends is open from protocol 1 (docs/control-port.md#protocol-and-features): a known union plus
+// (string & {}), so a value this editor does not know types and is drawn neutrally, never a failure.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
 // ----- The graph -----
 
-/** The phase's colour (control-plane.md 4.8). */
+/** The phase's colour (docs/control-port.md#node-health). */
 export type NodeState = "starting" | "running" | "stopping" | "stopped" | "disabled" | "failed" | (string & {});
 /** The exact state; a client explains by it and never colours by it. */
 export type NodePhase =
@@ -77,7 +72,7 @@ export interface WaitingFor {
   name?: string;
 }
 
-/** A node's health (control-plane.md 4.8): node.state replaces every member, so an absent one is absent now. */
+/** A node's health (docs/control-port.md#node-health): node.state replaces every member, so an absent one is absent now. */
 export interface NodeHealth {
   state: NodeState;
   phase: NodePhase;
@@ -129,7 +124,7 @@ export interface GraphRoute extends RouteEnds {
 
 /** graph.get's and graph.subscribe's result. Nodes in name order, routes in route order. */
 export interface Graph {
-  /** The wire's protocol (absent: 0, today's wire before step L1). */
+  /** The wire's protocol (absent: 0, the wire before the lifecycle). */
   protocol?: number;
   /** What this ear speaks beyond protocol 0's: a client gates each method and request member on its feature. */
   features?: string[];
@@ -142,7 +137,7 @@ export interface Graph {
   routes: GraphRoute[];
 }
 
-// ----- The graph file (docs/design/knobly-config.md, "Wire additions") -----
+// ----- The graph file (docs/control-port.md#the-graph-file-over-the-port) -----
 
 export type Severity = "error" | "warning";
 
@@ -267,7 +262,7 @@ export type FileErrorCode =
   /** the line also makes other nodes or routes (data.line, data.column). */
   | "shared-definition";
 
-/** data.code of the control plane's own refusals (-32000; control-plane.md 4.5). */
+/** data.code of the control plane's own refusals (-32000; docs/control-port.md#error-codes). */
 export type ControlErrorCode =
   /** node.start, node.stop or node.restart on a node ear.conf disables. */
   | "node-disabled"
@@ -399,7 +394,7 @@ const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable"]: true } 
 };
 export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
 
-/** The features this editor uses when ear says it has them (control-plane.md 4.1). */
+/** The features this editor uses when ear says it has them (docs/control-port.md#protocol-and-features). */
 export const lifecycleFeature = "lifecycle";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----

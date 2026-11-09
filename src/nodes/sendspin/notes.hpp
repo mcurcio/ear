@@ -1,4 +1,4 @@
-// The texts a sendspin node says (docs/design/sendspin.md section 9): each one's one home. status_log.cpp frames them
+// The texts a sendspin node says (docs/node-types.md#notes): each one's one home. status_log.cpp frames them
 // as `node <n> says <text>`.
 #pragma once
 #include <algorithm>

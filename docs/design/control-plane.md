@@ -1227,7 +1227,7 @@ New kinds, each with `v`, `seq`, `t`, `kind`, its fields, `msg`, as built. Every
 - `NodeHandle::say`, core's note pacing and `StatusLog::nodeSays` go once nothing calls them.
 - The system tests that match `says` lines match the new `msg` lines (`node kitchen pairingCode "" -> "123-456"`); the
   pairing test reads the code from the `status` record's `to`.
-- AGENTS.md's `sendspin` notes list becomes its status fields and events; the `sendspin` and `ear-on-talos` skills'
+- `docs/node-types.md#notes`, the `sendspin` notes list, becomes its status fields and events; the `sendspin` and `ear-on-talos` skills'
   "what its notes mean" sections name fields and events (the operator's grep becomes `jq -r 'select(.field=="pairingCode")
   | .to'`).
 

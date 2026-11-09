@@ -1,12 +1,10 @@
-// AlsaSoundCards on the real in-process engine (docs/design/batch2.md sections 4.3 and 5;
-// acceptance criteria E2(1)-(5); docs/design/node-framework.md section 10, slice 7: the internal
-// clock always drives and a linked card follows it). The cards are ALSA PCMs from a test ALSA
-// configuration (tests/alsa/alsa.conf): card "Test" is alsa-lib's file PCM over its null PCM, so
-// what it is sent lands in a file; any other card id cannot open. The test card has no clock, so
-// as a follower its rate match would never settle: it is made with clocklessCardProperties(),
-// which turns matching off (bit-exact). Every wait is event-gated: the main loop runs until the
-// events a test waits for have arrived; the deadline only fails the test. The engine, the Waiter,
-// the block events and the registry come from engine_harness.hpp.
+// AlsaSoundCards on the real in-process engine (docs/engine.md#sound-cards; docs/engine.md#the-internal-clock: the
+// internal clock always drives and a linked card follows it). The cards are ALSA PCMs from a test ALSA configuration
+// (tests/alsa/alsa.conf): card "Test" is alsa-lib's file PCM over its null PCM, so what it is sent lands in a file; any
+// other card id cannot open. The test card has no clock, so as a follower its rate match would never settle: it is made
+// with clocklessCardProperties(), which turns matching off (bit-exact). Every wait is event-gated: the main loop runs
+// until the events a test waits for have arrived; the deadline only fails the test. The engine, the Waiter, the block
+// events and the registry come from engine_harness.hpp.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -234,8 +232,8 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	CHECK(graph.cardCode.discontinuities() == 0);  // the card joining moved no clock
 }
 
-// docs/design/node-lifecycle.md 5.7 (step L-3b): the join names the block by its global id, so beside an older block of
-// the same name (one still going) it reaches only the block it was given.
+// docs/architecture.md#phases-states-and-what-is-wanted: the join names the block by its global id, so beside an older
+// block of the same name (one still going) it reaches only the block it was given.
 TEST_CASE("A card joins its block by the block's id: beside an older block of the same name it reaches only the newer",
           "[cards][join]") {
 	Graph graph;
@@ -387,9 +385,9 @@ std::uintmax_t fileSize(const std::filesystem::path& file) {
 
 } // namespace
 
-// docs/design/node-lifecycle.md 5.3 and 11.6 (step L-3c): NodeHost fades every output a code writes before each planned
+// docs/engine.md#drive-and-fade: NodeHost fades every output a code writes before each planned
 // silence (a stop, a restart, a disable, a removal: node_host_test.cpp shows each asks for the same fadeOut), inside
-// outputs feeding a card included, so the card's speaker never clicks (D-L16). Here the block's fade is followed to the
+// outputs feeding a card included, so the card's speaker never clicks. Here the block's fade is followed to the
 // card's own samples.
 TEST_CASE("to_card's last 5 ms before a silence decay to zero, and its drive fades in", "[cards][fade]") {
 	Graph graph;
@@ -446,7 +444,7 @@ TEST_CASE("to_card's last 5 ms before a silence decay to zero, and its drive fad
 	}
 }
 
-// node_host.hpp's contract (docs/design/node-lifecycle.md 4.2's T14): NodeHost tears a failed configuration down inside
+// node_host.hpp's contract (T14, node_lifecycle.hpp): NodeHost tears a failed configuration down inside
 // the lost() that failed it, so the outside node is destroyed inside its own callback.
 TEST_CASE("A card lost before it was ready may be destroyed inside its own lost(), and the blocks keep running",
           "[cards][lost]") {
@@ -483,8 +481,8 @@ TEST_CASE("A card that loses a link while it follows is lost with its node gone,
 	CHECK(graph.bothRun(16));
 	CHECK(graph.cardCode.driver() == graph.dummy);
 	CHECK(graph.otherCode.driver() == graph.dummy);
-	// A loaded host's stall makes the internal clock skip blocks to catch up, a discontinuity of its own (rtp.md erratum 3);
-	// the card's loss makes none.
+	// A loaded host's stall makes the internal clock skip blocks to catch up, a discontinuity of its own
+	// (docs/engine.md#xruns-on-a-loaded-host-are-not-bugs); the card's loss makes none.
 	CHECK(graph.cardCode.discontinuities() == 0);
 	CHECK(graph.otherCode.discontinuities() == 0);
 	CHECK(card != nullptr); // nobody destroyed it
@@ -570,7 +568,7 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	// latency with a null param, which a filter under custom latency is never told. So the card gone, its block keeps
 	// the latency the card last reported until another peer reports one. Harmless while nothing is linked there (what
 	// the block sends is heard nowhere); a card made again reports afresh. A PipeWire that tells it fails this check:
-	// then the block can forget a lost peer's latency (docs/design/node-framework.md, slice 7 as built).
+	// then the block can forget a lost peer's latency (docs/engine.md#latency-per-bank-pair).
 	const std::uint32_t reported = pass.downstream();
 	CHECK(graph.waiter.until([&] {
 		const auto node = graph.registry.id("card.playback");

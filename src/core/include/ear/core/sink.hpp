@@ -1,10 +1,9 @@
-// The interim sink of slice 3a (docs/design/node-lifecycle-modules.md section 4, the home of these declarations;
-// docs/design/node-lifecycle.md 5.11 its rules; docs/design/node-framework.md 9.6 the chunk's contract;
-// docs/design/node-primitives.md 6.6 the consumer's). One home for the sink: what a type writes against (Chunk,
-// SinkConsumer, SinkShape) and what the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter).
-// Step L-4b wired it: NodeHost implements CreateOf::sink on it, ResourceRegistry takes a SinkAdapter, DriveRequest
-// carries SinkBindings, ear_pipewire implements SinkAdapter as ThreadSinks, and `file` consumes one.
-// Pure: nothing but the standard library and ear_core.
+// The interim sink of slice 3a (docs/writing-a-node-type.md#sinks, the home of these declarations; docs/engine.md#sinks
+// its rules; docs/engine.md#sinks the chunk's contract; docs/design/node-primitives.md#65-a-sinks-consumer the
+// consumer's in slice 3c). One home for the sink: what a type writes against (Chunk, SinkConsumer, SinkShape) and what
+// the framework runs it with (ChunkStamp, SinkTap, SinkBinding, Sink, SinkAdapter). NodeHost implements CreateOf::sink
+// on it, ResourceRegistry takes a SinkAdapter, DriveRequest carries SinkBindings, ear_pipewire implements SinkAdapter
+// as ThreadSinks, and `file` consumes one. Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -17,7 +16,7 @@ namespace ear {
 
 // ---- What a type writes against ----
 
-/// One cycle's frames of a sink's inside output bank, or what the ring held of it (docs/design/node-framework.md 9.6),
+/// One cycle's frames of a sink's inside output bank, or what the ring held of it (docs/engine.md#sinks),
 /// stamped with that cycle's facts. `interleaved.size() == frames * channels`, channels the bank's size. A chunk that
 /// wraps the ring's end is consumed in two calls, the second with `position` advanced by the first's frames and
 /// `discontinuity` false. Valid only during the consume() it is handed to.
@@ -27,17 +26,17 @@ struct Chunk {
 	std::uint64_t position;       // the driver's position of the chunk's first frame
 	std::int64_t startNs;         // its cycle's start, CLOCK_MONOTONIC
 	std::int64_t startRawNs;      // the same on CLOCK_MONOTONIC_RAW
-	std::uint32_t upstreamFrames; // the latency upstream of the bank's paired input: always 0 until slice 3b (D-L15)
+	std::uint32_t upstreamFrames; // the latency upstream of the bank's paired input: always 0 until slice 3b
 	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
 	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
 	/// only in `position`: compare it with the last chunk's end to tell a gap (a stop) from a re-drive.
 	bool discontinuity;
 };
 
-/// A sink's consumer (docs/design/node-primitives.md 6.6 is its home; node-lifecycle-modules.md D-M5 gives it a public
-/// virtual destructor, since a consumer given whole is owned and deleted by the sink). Every call is on the sink's own
-/// thread, never the main loop or the realtime thread, one at a time, in this order: begin once, consume in chunk order,
-/// finish once after the last consume. finish runs only if begin ran (a sink closed before it began calls neither).
+/// A sink's consumer (slice 3c's design: docs/design/node-primitives.md#65-a-sinks-consumer). It has a public virtual
+/// destructor, since a consumer given whole is owned and deleted by the sink). Every call is on the sink's own thread,
+/// never the main loop or the realtime thread, one at a time, in this order: begin once, consume in chunk order, finish
+/// once after the last consume. finish runs only if begin ran (a sink closed before it began calls neither).
 class SinkConsumer {
 public:
 	virtual ~SinkConsumer() = default;
@@ -47,12 +46,12 @@ public:
 	virtual void begin() {}
 	/// In order; may block on I/O. Must not throw.
 	virtual void consume(const Chunk& chunk) = 0;
-	/// Once, after the last consume (I5 step 3). Must not throw.
+	/// Once, after the last consume (teardown step 3). Must not throw.
 	virtual void finish() = 0;
 };
 
-/// How much a sink's ring holds, in frames at the graph frequency (node-framework.md 7.3's default: 2 s). The channel
-/// count is its bank's size.
+/// How much a sink's ring holds, in frames at the graph frequency (docs/writing-a-node-type.md#configure-and-createof
+/// default: 2 s). The channel count is its bank's size.
 struct SinkShape {
 	std::uint32_t frames;
 };
@@ -71,11 +70,11 @@ struct ChunkStamp {
 /// that code, with the sink's inside output bank's spans (an unlinked one's scratch included).
 class SinkTap {
 public:
-	/// Realtime thread only: never blocks, locks, allocates or makes a syscall but the wake. `bank.size()` is the sink's
-	/// channel count, each span at least `frames` long. Interleaves the frames into the ring and pushes one stamp of
-	/// the frames it accepted. The two rings drop together: with no free stamp entry it writes nothing and counts the
-	/// whole chunk dropped; else it writes what the frame ring has room for and counts the rest dropped
-	/// (node-lifecycle.md 5.11). Wakes the sink's thread at most once per call.
+	/// Realtime thread only: never blocks, locks, allocates or makes a syscall but the wake. `bank.size()` is the
+	/// sink's channel count, each span at least `frames` long. Interleaves the frames into the ring and pushes one
+	/// stamp of the frames it accepted. The two rings drop together: with no free stamp entry it writes nothing and
+	/// counts the whole chunk dropped; else it writes what the frame ring has room for and counts the rest dropped
+	/// (docs/engine.md#sinks). Wakes the sink's thread at most once per call.
 	virtual void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 	                   const ChunkStamp& stamp) noexcept = 0;
 
@@ -83,7 +82,7 @@ protected:
 	~SinkTap() = default;
 };
 
-/// What a drive hands the block for one sink (DriveRequest::sinks, from step L-4b): its tap, and where its bank sits in
+/// What a drive hands the block for one sink (DriveRequest::sinks): its tap, and where its bank sits in
 /// process()'s output spans (outputs, then inside outputs). Outlives the drive's completion or the block, as the rest
 /// of a DriveRequest does.
 struct SinkBinding {
@@ -92,10 +91,10 @@ struct SinkBinding {
 	std::size_t channels;    // the bank's size
 };
 
-/// One interim sink: a ring, its stamp ring and its own thread (node-lifecycle.md 5.11). Made inside configure by
+/// One interim sink: a ring, its stamp ring and its own thread (docs/engine.md#sinks). Made inside configure by
 /// CreateOf::sink, for the configuration's life. Main thread for every call; `begun` and `closed` run on the main loop
 /// through the adapter's Executor, the FIFO the node's InsidesEvents post through, so a lost() said inside begin()
-/// always lands before `begun` (D-L14).
+/// always lands before `begun`.
 class Sink {
 public:
 	/// Main thread; only after `closed` ran, or when neither begin() nor close() was ever called.
@@ -113,7 +112,7 @@ public:
 	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
 };
 
-/// The sink kind's adapter (ResourceRegistry's slot, from step L-4b). ear_pipewire's ThreadSinks implements it.
+/// The sink kind's adapter (ResourceRegistry's slot). ear_pipewire's ThreadSinks implements it.
 class SinkAdapter {
 public:
 	/// Main thread. A sink of `channels` channels and `capacityFrames` frames of ring for `node`'s inside output bank

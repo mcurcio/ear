@@ -1,7 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4; split from nodes/builtin.hpp by section 11's erratum of
-// 2026-11-06; no argument since docs/design/node-framework.md slice 2, its recording being a resource; on the interim
-// sink by docs/design/node-lifecycle-modules.md 4.5, step L-4b). Change it only through an erratum and a re-cut, never a
-// local edit.
 #pragma once
 #include <memory>
 #include "ear/core/node_type.hpp"

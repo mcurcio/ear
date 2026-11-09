@@ -1,5 +1,5 @@
 # ear_core: the desired graph and its edits, the node catalogue contract, the node framework, the
-# reconciler, levels, the graph read and the executor contract (docs/design/batch2.md section 1).
+# reconciler, levels, the graph read and the executor contract (docs/architecture.md#packages).
 # It never calls PipeWire, opens a socket, starts a thread or touches a file: nlohmann/json is its
 # only dependency, and the engine and the control port reach it through the interfaces its
 # headers declare.
@@ -52,7 +52,7 @@ set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(BUILD_TESTS)
-	# ear_type_harness: running a node type without PipeWire (ear/testing/, docs/design/node-framework.md section 7.6),
+	# ear_type_harness: running a node type without PipeWire (ear/testing/, docs/writing-a-node-type.md#testing-a-type),
 	# for each type's own tests (ear_node_type() links it) and the all-type tests. Test support, so built with the tests
 	# only; like ear_core it starts no thread of its own and touches no file.
 	add_library(ear_type_harness STATIC testing/node_harness.cpp)
@@ -130,7 +130,7 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
 
 	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
-	# (docs/design/node-framework.md sections 6.10, 7.1 and 9.2; docs/design/node-lifecycle-modules.md 3.10):
+	# (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md#rules-the-framework-enforces):
 	# tests/compile_fail/type_spec_bad.cpp says what each case is.
 	set(bad_spec "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/type_spec_bad.cpp")
 	ear_compile_check(ear_type_spec_compile_fail_control "${bad_spec}")
@@ -157,7 +157,8 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(spec-not-named-for-folder "a type's table is named for its folder")
 	ear_type_spec_compile_fail(harness-bank-the-spec-lacks "the harness takes only its spec's banks")
 	ear_type_spec_compile_fail(harness-output-as-input "input\\(\\) takes an input bank")
-	# The class (node-lifecycle-modules.md 3.10): its members' shapes, then what its configure's context offers.
+	# The class (docs/writing-a-node-type.md#rules-the-framework-enforces): its members' shapes, then what its
+	# configure's context offers.
 	ear_type_spec_compile_fail(class-without-ports "a type's class has static Members<spec> ports")
 	ear_type_spec_compile_fail(configure-wrong-signature "a type's class has Configured configure")
 	ear_type_spec_compile_fail(configure-not-a-member "a type's class has Configured configure")
@@ -165,10 +166,10 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(stop-wrong-signature "a type's stop is void stop\\(\\)")
 	ear_type_spec_compile_fail(constructor-neither "a type's class is constructed from NodeOf<spec>& or from nothing")
 	ear_type_spec_compile_fail(legacy-start-on-spec-type "writes configure, not a static start")
-	# The change version compiles in 3a (D-M2, the owner's answer to Q1: the control writes one); of the wrong shape, not.
+	# The change version compiles in 3a (the owner's answer to Q1: the control writes one); of the wrong shape, not.
 	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
 	ear_type_spec_compile_fail(change-version-wrong-context "a type's change version is Changed configure")
-	# A member found by name whatever its access or overloads (L-4a review): refused, never silently not called.
+	# A member found by name whatever its access or overloads: refused, never silently not called.
 	ear_type_spec_compile_fail(private-start "a type's start is public and not overloaded")
 	ear_type_spec_compile_fail(private-stop "a type's stop is public and not overloaded")
 	ear_type_spec_compile_fail(private-check "a type's check is public and not overloaded")

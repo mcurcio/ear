@@ -2,7 +2,7 @@
 // on one pipe, wait for a line it prints, send it a signal and wait for it to exit. Every wait
 // is for an event (a line, end of output); its deadline only fails the test.
 //
-// ear prints one JSON record a line (docs/design/node-framework.md section 8.8, the schema in
+// ear prints one JSON record a line (docs/output-records.md, the schema in
 // test/protocol/output-records.json), and each record's msg is the plain line ear printed before
 // records (a graph-file record's msg holds its lines, joined by newlines). So the lines the helpers
 // below match, and output(), are the msg lines; a line that is no record (ear's flag errors, printed

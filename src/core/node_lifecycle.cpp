@@ -1,7 +1,7 @@
-// The node lifecycle's two pure machines and the aggregate (docs/design/node-lifecycle.md section 4: 4.1's and 4.2's
-// tables, 4.3's derivation and rules, 4.4's operations). node_lifecycle.hpp says what each part is. failureCode is
-// declared in node_type.hpp, which has no source file of its own; it lives here because a failure is part of a node's
-// health.
+// The node lifecycle's two pure machines and the aggregate (docs/architecture.md#the-node-lifecycle): the block's and
+// the configuration's transitions, the derivation and its rules, the operations. node_lifecycle.hpp says what each part
+// is. failureCode is declared in node_type.hpp, which has no source file of its own; it lives here because a failure is
+// part of a node's health.
 #include "ear/core/node_lifecycle.hpp"
 
 #include <utility>
@@ -292,14 +292,14 @@ std::string_view appliedName(LifecycleApplied applied) noexcept {
 	return "unknown";
 }
 
-// ---- The block machine (4.1) ----
+// ---- The block machine ----
 
 std::vector<BlockAction> BlockMachine::on(BlockEvent event, std::string detail) {
 	using enum BlockState;
 	switch (state_) {
 	case absent:
 		if (event == BlockEvent::addedWedged) {
-			// Making a block would call into the wedged loop (D-L10): nothing is queued.
+			// Making a block would call into the wedged loop: nothing is queued.
 			state_ = lost;
 			lossDetail_ = std::string(wedgedDetail);
 			return {};
@@ -329,7 +329,7 @@ std::vector<BlockAction> BlockMachine::on(BlockEvent event, std::string detail) 
 			return {};
 		}
 		[[fallthrough]];
-	case lost: // a lost block is never remade (I1): only its removal moves it
+	case lost: // a lost block is never remade: only its removal moves it
 		if (event == BlockEvent::removed) {
 			state_ = gone;
 			return {BlockAction::destroy};
@@ -341,7 +341,7 @@ std::vector<BlockAction> BlockMachine::on(BlockEvent event, std::string detail) 
 	return {};
 }
 
-// ---- The configuration machine (4.2) ----
+// ---- The configuration machine ----
 
 void ConfigurationMachine::reset() noexcept {
 	started_ = false;
@@ -369,7 +369,7 @@ ConfigAction ConfigurationMachine::fadeOrSilence() {
 	return post(fades_ ? ConfigAction::Kind::fade : ConfigAction::Kind::silence);
 }
 
-/// readying or prepared, never driven: no barrier; release if prepared; then the teardown (I5, "before ready").
+/// readying or prepared, never driven: no barrier; release if prepared; then the teardown ("before ready").
 std::vector<ConfigAction> ConfigurationMachine::beginTeardown() {
 	std::vector<ConfigAction> actions;
 	if (state_ == ConfigState::prepared) actions.push_back({ConfigAction::Kind::release});
@@ -412,7 +412,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 		return {};
 	case arming:
 		if (event == ConfigEvent::driven && current) {
-			if (stopAsked_) { // 6.3's "stop in starting": no start(); fade what was just driven
+			if (stopAsked_) { // a stop while starting: no start(); fade what was just driven
 				stopAsked_ = false;
 				return {fadeOrSilence()};
 			}
@@ -428,7 +428,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 			state_ = silencing;
 			return {post(Kind::silence)}; // completes by signal on a block with no data loop
 		}
-		if (event == ConfigEvent::barrierBound) { // the drive's invoke never ran: the loop is wedged (revision 2.7)
+		if (event == ConfigEvent::barrierBound) { // the drive's invoke never ran: the loop is wedged
 			reset();
 			state_ = none;
 			return {{Kind::barrierOverdue}, {Kind::markWedged}, {Kind::leak}};
@@ -464,7 +464,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 		if (event == ConfigEvent::silencedForStop && current) {
 			driven_ = false;
 			state_ = prepared;
-			return {{Kind::release}, {Kind::prepare}}; // the next drive starts it afresh (D-L33)
+			return {{Kind::release}, {Kind::prepare}}; // the next drive starts it afresh
 		}
 		if (event == ConfigEvent::silenced && current) {
 			driven_ = false;
@@ -493,7 +493,7 @@ std::vector<ConfigAction> ConfigurationMachine::on(const ConfigInput& input) {
 	return {};
 }
 
-// ---- The failure's code, by fact (4.2) ----
+// ---- The failure's code, by fact ----
 
 FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 	switch (fact) {
@@ -510,7 +510,7 @@ FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 	return FailureCode::startFailed;
 }
 
-// ---- The derivation (4.3) ----
+// ---- The derivation ----
 
 namespace {
 
@@ -590,7 +590,7 @@ Health derive(const DeriveFacts& f) {
 	return h;
 }
 
-// ---- The aggregate (4.3, 4.4) ----
+// ---- The aggregate ----
 
 DeriveFacts NodeAggregate::facts() const {
 	return {block_.state(),
@@ -669,7 +669,7 @@ void NodeAggregate::onConfig(ConfigInput input, Actions& out) {
 		if (before == ConfigState::readying && after == ConfigState::prepared) why_.reset();
 		if (before == ConfigState::silencing && after == ConfigState::prepared && intent_ == Intent::stop) {
 			intent_ = Intent::none; // the stop rested (T7)
-			if (heldFault_) {       // and a fault held during it fails the node before its rest is told (D-L32)
+			if (heldFault_) {       // and a fault held during it fails the node before its rest is told
 				intent_ = Intent::fail;
 				failure_ = std::move(heldFault_);
 				heldFault_.reset();
@@ -682,7 +682,7 @@ void NodeAggregate::onConfig(ConfigInput input, Actions& out) {
 	tell(out);
 }
 
-/// T17: the block is destroyed once the removal's silence completed, or at once when no code was driven (D-L7).
+/// T17: the block is destroyed once the removal's silence completed, or at once when no code was driven.
 void NodeAggregate::destroyIfUndriven(Actions& out) {
 	if (intent_ != Intent::remove || config_.driven()) return;
 	const BlockState state = block_.state();
@@ -713,7 +713,7 @@ void NodeAggregate::converge(Actions& out) {
 			heldFault_.reset();
 			if (intent_ == Intent::restart) intent_ = Intent::none; // its cause stays for configuring
 			if (wedged_) {
-				// Nothing can be driven on a wedged loop (D-L10): the node fails instead of configuring.
+				// Nothing can be driven on a wedged loop: the node fails instead of configuring.
 				failure_ = Failure{FailureCode::engineRefused, std::string(wedgedDetail)};
 				tell(out);
 				return;
@@ -723,11 +723,11 @@ void NodeAggregate::converge(Actions& out) {
 			onConfig({ConfigEvent::configure, 0, queued_.fades}, out);
 			continue;
 		}
-		if (state == prepared && intent_ == Intent::fail) { // T14 for the fault held during the stop (D-L32)
+		if (state == prepared && intent_ == Intent::fail) { // T14 for the fault held during the stop
 			askConfig(ConfigEvent::teardownAsked, out);
 			continue;
 		}
-		if (state == prepared && changePending()) { // before any drive (D-L41)
+		if (state == prepared && changePending()) { // before any drive
 			if (!beginRestart({NodeCause::Kind::settings, std::nullopt, changedKeys_}, out)) return;
 			continue;
 		}
@@ -814,7 +814,7 @@ Actions NodeAggregate::blockLost(std::string detail) {
 	if (goneTold_) return out;
 	const BlockState before = block_.state();
 	if (before != BlockState::made && before != BlockState::ready) return out;
-	// The block's loss replaces any failure (4.4's "reason replaced"), and nothing is configured again (I1).
+	// The block's loss replaces any failure's reason, and nothing is configured again.
 	failure_.reset();
 	heldFault_.reset();
 	retryAsked_ = false;
@@ -832,7 +832,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys) {
 	changedKeys_ = keys;
 	if (disabled_) return out; // stored for the enable
 	if (failed()) {
-		if (block_.state() != BlockState::lost) { // T15 once the failed configuration is gone (D-L31)
+		if (block_.state() != BlockState::lost) { // T15 once the failed configuration is gone
 			retryAsked_ = true;
 			why_ = NodeCause{NodeCause::Kind::settings, std::nullopt, std::move(keys)};
 		}
@@ -842,7 +842,7 @@ Actions NodeAggregate::change(Queued queued, std::vector<std::string> keys) {
 	}
 	const ConfigState state = config_.state();
 	if (state == ConfigState::readying || state == ConfigState::prepared || state == ConfigState::arming ||
-	    state == ConfigState::driving) // rule 2: a settled configuration restarts at once (D-L3)
+	    state == ConfigState::driving) // rule 2: a settled configuration restarts at once
 		beginRestart({NodeCause::Kind::settings, std::nullopt, std::move(keys)}, out);
 	converge(out);
 	return out;
@@ -956,8 +956,8 @@ Actions NodeAggregate::fault(Fact fact, std::string detail) {
 	case ConfigState::none:
 		return out;
 	case ConfigState::arming:
-		// A drive in flight whose completion will fade and silence it (a stop or teardown asked, 4.3's row 6) is a
-		// stop or teardown already begun: as in fading, held during a stop and dropped during a teardown (I6), so a
+		// A drive in flight whose completion will fade and silence it (a stop or teardown asked) is a
+		// stop or teardown already begun: as in fading, held during a stop and dropped during a teardown, so a
 		// fault cannot turn a restart, disable or removal into a failure.
 		if (config_.stopAsked()) {
 			if (intent_ == Intent::stop && !heldFault_) heldFault_ = std::move(failure);
@@ -973,7 +973,7 @@ Actions NodeAggregate::fault(Fact fact, std::string detail) {
 		break;
 	case ConfigState::fading:
 	case ConfigState::silencing:
-		// Held during a stop and applied once rested (D-L32); dropped during a teardown (I6).
+		// Held during a stop and applied once rested; dropped during a teardown.
 		if (intent_ == Intent::stop && !heldFault_) heldFault_ = std::move(failure);
 		return out;
 	case ConfigState::tearing:
@@ -1045,7 +1045,7 @@ Actions NodeAggregate::barrierBound() {
 	if (goneTold_ || (config_.state() != ConfigState::silencing && config_.state() != ConfigState::arming)) return out;
 	wedged_ = true;
 	// The configuration is leaked on a wedged loop: a stop or a restart can never end, so the node fails
-	// engine-refused (the code for a wedged loop, 4.2); a disable or removal goes on to its end.
+	// engine-refused (the code for a wedged loop); a disable or removal goes on to its end.
 	if (raise(Intent::fail)) failure_ = Failure{FailureCode::engineRefused, std::string(wedgedDetail)};
 	askConfig(ConfigEvent::barrierBound, out);
 	converge(out);

@@ -1,4 +1,4 @@
-// The graph file keeper as ear wires it (ear/config/graph_file_keeper.hpp; S4 criterion 17): a real
+// The graph file keeper as ear wires it (ear/config/graph_file_keeper.hpp): a real
 // thread, a real folder, and a main loop that is a blocking queue the test runs. Every wait is for
 // an event; the deadline only fails the test.
 #include <chrono>

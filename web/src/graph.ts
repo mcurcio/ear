@@ -1,10 +1,9 @@
-// The editor's graph: what the server has announced, and nothing else (docs/design/batch2.md
-// section 8). One reducer turns each server text into the next graph; a snapshot (the result of
-// graph.get or graph.subscribe) replaces everything, and an event naming a node or route the
-// client does not know changes nothing. The UI never draws a node or a wire the server has not
-// announced: the server is the one source of truth. node.state replaces every health member (one
-// absent is absent now, control-plane.md 4.4); members and values this editor does not know are
-// taken as they come or ignored, never a failure (4.1).
+// The editor's graph: what the server has announced, and nothing else (docs/editor.md). One reducer turns each server
+// text into the next graph; a snapshot (the result of graph.get or graph.subscribe) replaces everything, and an event
+// naming a node or route the client does not know changes nothing. The UI never draws a node or a wire the server has
+// not announced: the server is the one source of truth. node.state replaces every health member (one absent is absent
+// now, docs/control-port.md#notifications); members and values this editor does not know are taken as they come or
+// ignored, never a failure.
 import type {
   Graph,
   GraphNode,
@@ -16,7 +15,7 @@ import type {
   ServerMessage,
 } from "./protocol";
 
-/** The health members a node.state carries (control-plane.md 4.8), the ones it replaces. */
+/** The health members a node.state carries (docs/control-port.md#node-health), the ones it replaces. */
 const healthKeys = ["state", "phase", "since", "wanted", "blockLost", "cause", "waitingFor", "reason"] as const;
 
 /** The health members `from` has, and only those: a member ear adds later is not this editor's to keep. */

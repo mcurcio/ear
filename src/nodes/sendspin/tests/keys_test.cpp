@@ -1,4 +1,4 @@
-// A sendspin node's key file on a real folder (docs/design/sendspin.md section 8, section 14, S2 criterion 2).
+// A sendspin node's key file on a real folder (docs/node-types.md#the-identity-file).
 #include <cstdint>
 #include <filesystem>
 #include <fstream>

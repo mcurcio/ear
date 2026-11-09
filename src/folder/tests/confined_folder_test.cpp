@@ -1,4 +1,4 @@
-// The confined folder (docs/design/knobly-config.md) on real directories: opened at boot (made if
+// The confined folder (docs/graph-file.md) on real directories: opened at boot (made if
 // missing, never its parents), create() as the recordings folder had it, read() and replaceIf()
 // refusing every symlink, the held path, and the boot check that folders stay apart.
 #include <algorithm>

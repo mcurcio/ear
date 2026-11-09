@@ -120,7 +120,7 @@ body,
   color: #e03131;
 }
 
-/* Silence the operator asked for is quiet, never a fault (control-plane.md 8.6); stopped and disabled apart. */
+/* Silence the operator asked for is quiet, never a fault (docs/editor.md#a-nodes-health); stopped and disabled apart. */
 .state-stopped .ear-node-state {
   color: #5c7cfa;
 }

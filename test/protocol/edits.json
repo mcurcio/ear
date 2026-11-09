@@ -1,5 +1,5 @@
 {
-  "description": "Live edits after graph.subscribe (docs/design/batch2.md section 6): each change's notification comes before the statuses it causes and before the request's response; later statuses follow. Removing a node removes its routes first. A notification naming a node the client does not know (ghost) changes nothing.",
+  "description": "Live edits after graph.subscribe (docs/control-port.md): each change's notification comes before the statuses it causes and before the request's response; later statuses follow. Removing a node removes its routes first. A notification naming a node the client does not know (ghost) changes nothing.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"n2\",\"type\":\"white\"}}",

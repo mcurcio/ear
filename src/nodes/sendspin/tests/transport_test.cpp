@@ -1,5 +1,6 @@
-// The transport's share per address (cmake/ixwebsocket-limits.patch; docs/design/sendspin.md erratum 43): the sockets an
-// address holds are those its peer has not closed, whether or not their own threads have seen the close yet.
+// The transport's share per address (cmake/ixwebsocket-limits.patch;
+// docs/node-types.md#library-facts-and-carried-patches): the sockets an address holds are those its peer has not
+// closed, whether or not their own threads have seen the close yet.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>

@@ -1,4 +1,4 @@
-// One link's proxy and its events (docs/design/batch2.md section 4.3), moved out of links.cpp
+// One link's proxy and its events (docs/engine.md), moved out of links.cpp
 // unchanged so Links (route links) and AlsaSoundCards (a card's own links) share it. Private to
 // ear_pipewire: its sources include it by this path; no public header does.
 #pragma once

@@ -1,4 +1,4 @@
-// The one home of node and route JSON (docs/design/batch2.md section 4.5, graph_json.hpp): the
+// The one home of node and route JSON (docs/control-port.md, graph_json.hpp): the
 // control port's commands (commands.cpp) decode with it. Every error names its JSON pointer.
 #include "ear/control/graph_json.hpp"
 

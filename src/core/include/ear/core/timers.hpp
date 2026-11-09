@@ -1,5 +1,5 @@
-// Main-loop timers (docs/design/node-framework.md section 6, I5a; slice 1): the node framework's close deadline; and
-// their clock, now() (docs/design/node-lifecycle.md D-L12, step L-3a), so core reads no clock of its own. The engine's
+// Main-loop timers (docs/architecture.md#the-node-lifecycle): the node framework's close deadline; and
+// their clock, now(), so core reads no clock of its own. The engine's
 // main loop implements them (ear_pipewire's MainLoopExecutor); tests turn a fake clock.
 #pragma once
 #include <chrono>

@@ -1,6 +1,5 @@
-// Slice S1's tests (docs/design/m1-white-to-file.md section 3, acceptance criteria S1): the
-// real in-process engine, port blocks, live ports and links, no daemon and no hardware. On batch
-// 2's interfaces (docs/design/batch2.md section 4.1) a block is made silent and then driven.
+// The real in-process engine (docs/engine.md): port blocks, live ports and links, no daemon and no hardware. A block
+// is made silent and then driven.
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
@@ -501,9 +500,9 @@ TEST_CASE("The scheduling report is how the thread running process() is schedule
 	CHECK_FALSE(scheduling.realtime);
 }
 
-// docs/design/node-lifecycle.md 5.4 (step L-3c's review): once the data loop is judged wedged, a route's link is neither
-// made nor destroyed, since either reaches the data loop through a blocking invoke (impl-port.c's port_set_io releases
-// a mix with pw_loop_invoke(..., true)), and the main loop would wait on it for good.
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: once the data loop is judged wedged, a route's
+// link is neither made nor destroyed, since either reaches the data loop through a blocking invoke (impl-port.c's
+// port_set_io releases a mix with pw_loop_invoke(..., true)), and the main loop would wait on it for good.
 TEST_CASE("After the data loop is judged wedged a route's link is leaked, not destroyed, and a new one is refused, "
           "and the main loop never waits",
           "[engine][wedge]") {
@@ -595,9 +594,10 @@ private:
 
 } // namespace
 
-// node-lifecycle.md 11.6 (step L-3c): NodeHost over the real engine posts every node's fade at once, then every silence
-// once the fades are acknowledged, then one flush of destroys, so stopping many nodes costs about one fade, one cycle
-// and one batch of destroys, never one per node in turn. Measured and printed; bounded at 2 s.
+// Stopping many nodes at once (docs/architecture.md#teardown-by-dependency): NodeHost over the real engine posts every
+// node's fade at once, then every silence once the fades are acknowledged, then one flush of destroys, so stopping many
+// nodes costs about one fade, one cycle and one batch of destroys, never one per node in turn. Measured and printed;
+// bounded at 2 s.
 TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of destroys", "[engine][fade]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);

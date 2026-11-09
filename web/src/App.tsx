@@ -1,4 +1,4 @@
-// The graph editor (docs/design/batch2.md section 8): a React Flow canvas of ear's graph and the
+// The graph editor (docs/editor.md): a React Flow canvas of ear's graph and the
 // ear.conf pane. Nodes and wires are exactly what ear announced; dragging a wire between ports,
 // the panels, the pane's Save and the delete key send requests, and the canvas changes when ear's
 // events arrive. Node positions

@@ -30,7 +30,7 @@ add_test(NAME ear_node_types_none_refused COMMAND "${CMAKE_COMMAND}" -S "${CMAKE
 	"-DEAR_ALL_NODE_TYPES_DIR=${PROJECT_SOURCE_DIR}/src/all_node_types")
 set_tests_properties(ear_node_types_none_refused PROPERTIES PASS_REGULAR_EXPRESSION "No node types found")
 
-# No node type's own code writes standard output or error (docs/design/node-framework.md section 8.8): the guard over
+# No node type's own code writes standard output or error (docs/output-records.md): the guard over
 # src/nodes/, and the guard itself refusing each spelling it knows (standard_output_guard/<spelling>.snippet) and
 # letting through what only looks like one (allowed.snippet).
 set(ear_guard "${CMAKE_CURRENT_SOURCE_DIR}/standard_output_guard.cmake")

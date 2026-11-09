@@ -1,4 +1,4 @@
-// The output thread (docs/design/node-framework.md section 8.8): lines in order, a full queue refusing at once instead
+// The output thread (docs/output-records.md): lines in order, a full queue refusing at once instead
 // of waiting behind a reader that does not read, everything queued written at stop, and a closed reader survived.
 #include <atomic>
 #include <cerrno>

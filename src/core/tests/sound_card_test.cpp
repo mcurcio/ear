@@ -1,5 +1,5 @@
-// The card id's closed grammar (docs/design/batch2.md section 4.1, sound_card.hpp; C1 criterion
-// 15): only ALSA card ids parse, so no user text reaches alsa-lib's device-name parser.
+// The card id's closed grammar (docs/node-types.md#card, sound_card.hpp): only ALSA card ids parse, so no user text
+// reaches alsa-lib's device-name parser.
 #include <string>
 
 #include "catch2/catch.hpp"

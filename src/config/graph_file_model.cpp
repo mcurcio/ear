@@ -1,5 +1,5 @@
 // The graph file model: ear.conf loaded with knobly and read with ear's directives
-// (docs/design/knobly-config.md, "File format"; graph_file_model.hpp). knobly finds the language's
+// (docs/graph-file.md#edits-at-the-source; graph_file_model.hpp). knobly finds the language's
 // problems; this file finds ear's (unknown and malformed directives, missing settings, @include),
 // and turns knobly's places into the wire's through placeIn. Edits are made at the source on a
 // fresh load of the text, through knobly's written layer, and the result is loaded again.
@@ -34,12 +34,12 @@ constexpr std::string_view nodeName = "node";
 constexpr std::string_view routeName = "route";
 constexpr std::string_view includeWord = "@include";
 constexpr std::string_view includeMessage = "@include is not supported yet: write the whole graph in ear.conf";
-/// The framework's reserved key in a node's block (node-framework.md 6.3, D-F8 to D-F12): read beside the settings,
-/// never one of them.
+/// The framework's reserved key in a node's block (docs/architecture.md#phases-states-and-what-is-wanted): read beside
+/// the settings, never one of them.
 constexpr std::string_view disabledKey = "disabled";
 constexpr std::string_view disabledShape = "disabled takes true or false: write disabled true;";
 constexpr std::string_view disabledHint = "to disable a node, write disabled true; inside its braces";
-/// A `disabled` key given inside a node's settings (control-plane.md 4.2, D-F12's wire text).
+/// A `disabled` key given inside a node's settings (docs/control-port.md#methods).
 constexpr std::string_view disabledNotASetting =
 	"disabled is not a setting: use node.disable and node.enable, or \"disabled\": true on node.add";
 
@@ -201,7 +201,7 @@ private:
 	void readNode(const vr::directive& directive) {
 		const auto values = directive.values();
 		if (values.size() != 2) {
-			// The spelling revision 7 of node-framework.md wrote (`node card porch disabled { ... }`) gets a hint.
+			// The spelling an earlier design wrote (`node card porch disabled { ... }`) gets a hint.
 			bool disabledWord = false;
 			for (const vw::expanded_value& value : values)
 				disabledWord = disabledWord || (value.kind() == vl::value_kind::word && value.text() == disabledKey);
@@ -307,7 +307,7 @@ vw::document_graph loadGraph(const std::string& text) {
 	return processor.load(rootDocument);
 }
 
-// ---- Edits at the source (S3's edit rules) ----
+// ---- Edits at the source ----
 
 /// A text knobly can write as a string: its grammar's STRING has escapes for newline, tab and
 /// carriage return only, so any other control character (U+0000 to U+001F, U+007F) has no written
@@ -520,11 +520,12 @@ NodeText nodeText(const vw::written_directive& node, const std::string& text) {
 	return NodeText{start, end, afterValues, open};
 }
 
-/// Puts `statement` first in a node's block (node-lifecycle.md 8.3, as pinned by graph_file_disabled_test.cpp). When
-/// the block's first statement starts on a line after the `{`, knobly's insert_statements writes it on a line of its
-/// own, indented as that statement. When it starts on the `{`'s line (a one-line block, or an empty one), knobly would
-/// break the line after the new statement and leave the old first statement unindented, so it is written on that line
-/// instead, before the first statement (or before the `}`), the rest of the statement kept as it was.
+/// Puts `statement` first in a node's block (docs/graph-file.md#disabled-true, as pinned by
+/// graph_file_disabled_test.cpp). When the block's first statement starts on a line after the `{`, knobly's
+/// insert_statements writes it on a line of its own, indented as that statement. When it starts on the `{`'s line (a
+/// one-line block, or an empty one), knobly would break the line after the new statement and leave the old first
+/// statement unindented, so it is written on that line instead, before the first statement (or before the `}`), the
+/// rest of the statement kept as it was.
 void insertFirst(const vw::written_directive& node, const vw::written_block& block, const std::string& text,
                  const std::string& statement) {
 	const NodeText at = nodeText(node, text);
@@ -547,7 +548,7 @@ void insertFirst(const vw::written_directive& node, const vw::written_block& blo
 	node.replace_with_text(vl::text(rewritten));
 }
 
-/// addBlock's inverse (node-lifecycle.md D-L21): rewrites a node whose block holds nothing, not even a comment, as one
+/// addBlock's inverse: rewrites a node whose block holds nothing, not even a comment, as one
 /// with no block, the `{ }` replaced by `;`; everything else the statement owns (comments) is kept. False, and nothing
 /// changed, when the block holds anything.
 bool dropBlock(const vw::written_directive& node, const std::string& text) {
@@ -713,7 +714,7 @@ EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings&
 		if (const auto block = node->block())
 			for (const vr::directive& setting : *block) {
 				const std::string key = setting.name();
-				if (key == disabledKey) continue; // never a setting: an update keeps the node's disabled line (D-L20)
+				if (key == disabledKey) continue; // never a setting: an update keeps the node's disabled line
 				present.insert(key);
 				if (!settings.contains(key)) {
 					if (auto shared = editing.shared(setting.written())) return refuse(std::move(*shared));
@@ -757,7 +758,7 @@ EditOutcome GraphFileModel::addNode(const NodeSpec& node) const {
 			return refuse(InvalidSettings{node.name, std::string(disabledNotASetting)});
 		auto settings = settingsText(node.name, impl_->catalogue->find(node.type), node.settings);
 		if (!settings) return refuse(settings.error());
-		if (node.disabled) // the reserved key first, so the state reads before the settings (D-F10)
+		if (node.disabled) // the reserved key first, so the state reads before the settings
 			*settings = settings->empty() ? "disabled true;" : "disabled true; " + *settings;
 		const Editing editing(impl_->text);
 		const std::string head = std::format("node {} {}", wordText(node.type), wordText(node.name));
@@ -792,7 +793,7 @@ EditOutcome GraphFileModel::disableNode(const NodeName& name) const {
 		const auto node = editing.node(name);
 		if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
 		if (const auto own = Editing::disabledOf(*node)) {
-			// Only this node's line (R34): its value becomes true, wherever it came from; a variable it named is left.
+			// Only this node's line: its value becomes true, wherever it came from; a variable it named is left.
 			const vw::written_directive line = own->written();
 			if (auto shared = editing.shared(line)) return refuse(std::move(*shared));
 			line.set(vl::text("true"));

@@ -1,8 +1,8 @@
-// MainLoopExecutor on the real engine's main loop (docs/design/batch2.md section 4.3; acceptance
-// criterion E1(9)): post order per thread, the loop thread, never inline, and work left at
-// destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
-// the deadline only fails the test. Also the main-loop watchdog (node-lifecycle.md 5.12) beaten by its timers, as
-// main.cpp wires it, reporting a real stall of the loop with where it was.
+// MainLoopExecutor on the real engine's main loop (docs/engine.md): post order per thread, the loop thread, never
+// inline, and work left at destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
+// the deadline only fails the test. Also the main-loop watchdog
+// (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog) beaten by its timers, as main.cpp wires it,
+// reporting a real stall of the loop with where it was.
 #include <algorithm>
 #include <array>
 #include <atomic>

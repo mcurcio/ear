@@ -1,5 +1,4 @@
-// A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/design/sendspin.md section 7,
-// section 14, S1 criterion 7).
+// A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/node-types.md#clock).
 #include <algorithm>
 #include <array>
 #include <atomic>

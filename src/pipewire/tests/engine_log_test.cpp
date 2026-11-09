@@ -1,4 +1,4 @@
-// ear's own pw_log (docs/design/node-framework.md section 8.8): PipeWire's messages from the main thread and from the
+// ear's own pw_log (docs/output-records.md): PipeWire's messages from the main thread and from the
 // data loop become unattributed log entries with their level and topic; the context hands ear's log to every plugin;
 // a full ring drops and the drain counts what it dropped. Every wait is for the bell; its deadline only fails a test.
 #include <cstdlib>

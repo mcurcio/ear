@@ -1,21 +1,17 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. graphFile.subscribe and
-// ControlHub::graphFileChanged are docs/design/knobly-config.md's (slice S5); their erratum to
-// batch2.md lands in S7.
 #pragma once
 #include <functional>
 #include <memory>
 #include <string>
 #include "ear/control/gateway.hpp"
 #include "ear/core/levels.hpp"
-// The protocol per connection (control thread only; docs/design/batch2.md sections 4.5 and 6).
+// The protocol per connection (control thread only; docs/control-port.md).
 namespace ear::control {
 using Message = std::shared_ptr<const std::string>; // encoded once, shared by every client
 /// Implemented by the transport.
 class Outbox {
 public:
 	/// A response or a graph notification, in order. The transport closes a connection whose
-	/// queue is full (section 6).
+	/// queue is full.
 	virtual void send(Message message) = 0;
 	/// A complete levels snapshot. Replaces one not yet written (it holds every block, so
 	/// nothing is lost).

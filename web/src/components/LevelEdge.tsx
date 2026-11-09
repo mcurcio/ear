@@ -1,5 +1,5 @@
 // A route's wire: coloured by its status (linked, pending, refused) and drawn by its level, which
-// is its from port's (docs/design/batch2.md section 6): louder is thicker and brighter.
+// is its from port's (docs/control-port.md): louder is thicker and brighter.
 import { BaseEdge, getBezierPath, type Edge, type EdgeProps } from "@xyflow/react";
 import { meterFraction, wirePort } from "../levels";
 import type { GraphRoute } from "../protocol";
@@ -23,7 +23,7 @@ export function LevelEdge(props: EdgeProps<LevelFlowEdge>) {
       path={path}
       interactionWidth={16}
       style={{
-        // A status this editor does not know is drawn as pending: neutral (control-plane.md 4.1).
+        // A status this editor does not know is drawn as pending: neutral (docs/control-port.md#protocol-and-features).
         stroke: statusColour[route.status as keyof typeof statusColour] ?? statusColour.pending,
         strokeWidth: 1.5 + 5 * level + (selected ? 1.5 : 0),
         strokeOpacity: 0.45 + 0.55 * level,

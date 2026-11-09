@@ -1,5 +1,5 @@
-// MainLoopActivity (docs/design/node-lifecycle.md section 5.12): what the main loop is in, read from another thread
-// without a lock, never torn.
+// MainLoopActivity (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): what the main loop is in, read
+// from another thread without a lock, never torn.
 #include <atomic>
 #include <string>
 #include <thread>

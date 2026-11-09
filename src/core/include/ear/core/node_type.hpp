@@ -1,11 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4; GraphCycle and InsidesEvents by docs/design/sendspin.md section 14,
-// S1; delayFrames by its erratum 22; PortBank and Ports' banks by batch2.md section 11's erratum of 2026-11-06; NodeType
-// answering from one table by its erratum "NodeType, 2026-11-06"; StartContext, the closed list of resource requests,
-// named inside banks, the pass-through, the two-phase start and the run object by docs/design/node-framework.md
-// sections 7.2 and 7.3, slice 1; StartResult, the recording file and codes written against a spec by its slice 2;
-// GraphCycle's clock facts and downstream latency, which replace delayFrames, Latency and declareLatency by its
-// sections 9.3 and 9.4, slice 7; NodeCode and NodeConfig::make by docs/design/node-lifecycle-modules.md 3.5, step
-// L-4a). Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -73,9 +65,9 @@ private:
 	std::vector<PortName> insideOutputs_;
 	std::vector<Bank> banks_;
 };
-/// Why a node is failed. Part of health; never returned by a control call.
-/// The codes are docs/design/node-framework.md 6.2's: `lost` is a node that had reached running or stopped and said it
-/// cannot go on (its handle's lost(detail), or a hook that threw once it rested).
+/// Why a node is failed. Part of health; never returned by a control call. The codes are
+/// docs/architecture.md#phases-states-and-what-is-wanted: `lost` is a node that had reached running or stopped and said
+/// it cannot go on (its handle's lost(detail), or a hook that threw once it rested).
 struct FailureReason {
 	enum class Code { engineRefused, startFailed, lost };
 	Code code;
@@ -89,7 +81,7 @@ struct AudioFormat {
 }; // fixed at boot in M1
 
 /// A latency in frames at the graph frequency: the least and the most it can be over the paths it combines
-/// (docs/design/node-framework.md section 9.4).
+/// (docs/engine.md#latency-per-bank-pair).
 struct Latency {
 	std::uint32_t minFrames = 0;
 	std::uint32_t maxFrames = 0;
@@ -97,7 +89,7 @@ struct Latency {
 };
 
 /// This cycle of the graph, on the driver's clock: ear's internal clock, the dummy driver, which always drives
-/// (docs/design/node-framework.md sections 9.3 and 10). Made once a cycle by the framework, so no type reads a clock.
+/// (docs/engine.md#graphcycle). Made once a cycle by the framework, so no type reads a clock.
 struct GraphCycle {
 	std::int64_t startNs;        // its start, CLOCK_MONOTONIC
 	std::uint64_t position;      // the driver's frames at its start
@@ -163,18 +155,18 @@ struct HandoffRequest {
 	std::uint32_t capacityFrames;
 	HandoffConsumer* consumer;
 };
-/// A recording file (docs/design/node-framework.md section 7.3, slice 2): `path`, relative to the recordings folder,
+/// A recording file (docs/writing-a-node-type.md#configure-and-createof): `path`, relative to the recordings folder,
 /// created or truncated beneath it only (no "..", no symlink out, no subfolder made). The run gets its descriptor,
-/// valid until the run is freed (I5 step 5), after its handoffs closed; the framework closes it.
+/// valid until the run is freed (teardown step 5), after its handoffs closed; the framework closes it.
 struct RecordingRequest {
 	std::string path;
 };
 /// Every kind of resource a run can acquire: a closed list, on purpose, since a kind changes what the framework
-/// promises (docs/design/node-framework.md section 7.3). Each kind has one adapter (node_host.hpp).
+/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp).
 using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest, RecordingRequest>;
 /// What a run tells, from any of its threads; never blocks. Told on the main loop in order, and only to the run that
 /// wrote it: nothing after its close's `closed`, and nothing of an older run lands on a newer one
-/// (docs/design/node-framework.md section 6, I6).
+/// (docs/architecture.md#the-node-lifecycle).
 class InsidesEvents {
 public:
 	virtual void say(std::string text) = 0;    // a note: `node <n> says <text>`; never a state
@@ -182,9 +174,9 @@ public:
 protected:
 	~InsidesEvents() = default;
 };
-/// What `start` sees (docs/design/node-framework.md section 7.2): the format, the node's name, and the acquire calls.
-/// Main thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run
-/// and is torn down by the framework by dependency (section 6, I5): outside nodes, then handoffs, then the run object.
+/// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
+/// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
+/// is torn down by the framework by dependency: outside nodes, then handoffs, then the run object.
 class StartContext {
 public:
 	virtual AudioFormat format() const = 0; // the value prepare() will get
@@ -205,12 +197,12 @@ public:
 	/// The run's events, until its close's `closed`; may be kept by the run's threads. (Kept on the start context
 	/// until sendspin builds its run in the recipe, slice 3.)
 	virtual InsidesEvents& events() = 0;
-	/// The run's own latency on `bank`, for the whole run (docs/design/node-framework.md section 9.4): on an output
-	/// bank, how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
-	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the latency
-	/// it carries through the bank, and tells the sum to the ports linked to it. At most once per bank; a bank the node
-	/// lacks, or a second declaration for one, throws std::logic_error (a type bug). Ignored by a context that carries
-	/// no latency (a type's own test's).
+	/// The run's own latency on `bank`, for the whole run (docs/engine.md#latency-per-bank-pair): on an output bank,
+	/// how long its audio was held inside the node before it leaves (rtp's receive buffer, sendspin's feed); on an
+	/// input bank, how long what it takes is held inside before it leaves the node. The framework adds it to the
+	/// latency it carries through the bank, and tells the sum to the ports linked to it. At most once per bank; a bank
+	/// the node lacks, or a second declaration for one, throws std::logic_error (a type bug). Ignored by a context that
+	/// carries no latency (a type's own test's).
 	virtual void declareLatency(const std::string& bank, Latency internal) {
 		static_cast<void>(bank);
 		static_cast<void>(internal);
@@ -222,11 +214,11 @@ protected:
 	using Acquired = std::variant<std::monostate, RtWriter*, std::expected<int, std::string>>;
 	/// Every engine object one run makes is named "<node>.<suffix>"; a second request with a suffix already taken in
 	/// this run, a bank the node does not have or one of the wrong reach or direction throws std::logic_error (a type
-	/// bug): docs/design/node-framework.md section 6, I9.
+	/// bug): one configuration names each engine object once.
 	virtual Acquired acquireResource(const ResourceRequest& request) = 0;
 };
-/// What the run object's recipe is handed once every resource of the run is ready (docs/design/node-framework.md
-/// section 7.2). Main thread, inside the recipe only.
+/// What the run object's recipe is handed once every resource of the run is ready
+/// (docs/writing-a-node-type.md#the-class). Main thread, inside the recipe only.
 class Ready {
 public:
 	virtual AudioFormat format() const = 0;
@@ -235,14 +227,14 @@ protected:
 	~Ready() = default;
 };
 /// The type's own object for one run, with the threads it owns. Built by the recipe on the main loop, closed by the
-/// framework at teardown (section 6, I5 step 4) and destroyed on the main loop after `closed`.
+/// framework at teardown (teardown step 4) and destroyed on the main loop after `closed`.
 class RunObject {
 public:
 	virtual ~RunObject() = default;
 	/// Main thread, once, after every outside node of the run is gone and every handoff closed. A run object with
 	/// threads stops them (off the main loop: the main loop never joins a thread) and calls `closed`, last, from any
 	/// thread; one without calls it at once. A run that has not called it within the close deadline is leaked, never
-	/// destroyed (I5a).
+	/// destroyed.
 	virtual void close(std::move_only_function<void()> closed) { closed(); }
 };
 /// One pair of a pass-through: each port of `from` (an input bank, routable or inside) copied to the port of `to` (an
@@ -257,7 +249,7 @@ struct BankPair {
 template <class Code>
 concept SpecCode = requires { &Code::process; } && !std::derived_from<Code, AudioCode> && std::move_constructible<Code>;
 template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code);
-/// What runs on the realtime thread for one configuration (docs/design/node-lifecycle-modules.md 3.5): a type's own code
+/// What runs on the realtime thread for one configuration (docs/writing-a-node-type.md#the-code): a type's own code
 /// (an AudioCode, or a code written against its spec), or the framework's pass-through between banks (outputs no pair
 /// names are silent). The pass-through is resolved against the node's ports when configure returns; a pair naming a
 /// bank the node lacks, of the wrong direction or of another size fails the node there.
@@ -277,13 +269,13 @@ private:
 	std::unique_ptr<AudioCode> code_;
 	std::vector<BankPair> pairs_;
 };
-/// The old SPI's name for it, kept for sendspin's legacy start until slice 3c (D-L13).
+/// The old SPI's name for it, kept for sendspin's legacy start until slice 3c.
 using RunCode = NodeCode;
 /// The framework's pass-through between banks, one pair or more: `card` and `rtp` write no audio code.
 inline NodeCode passThrough(std::vector<BankPair> pairs) { return NodeCode::passThrough(std::move(pairs)); }
 /// Builds the run object once every resource is ready, or fails the node (startFailed).
 using RunRecipe = std::move_only_function<std::expected<std::unique_ptr<RunObject>, FailureReason>(Ready&)>;
-/// What `start` returns (docs/design/node-framework.md section 7.2): a failure (the node fails startFailed with its
+/// What `start` returns (docs/writing-a-node-type.md#the-class): a failure (the node fails startFailed with its
 /// detail), or the run's code, which drives the block at once, and optionally the recipe of its run object, called once
 /// every resource is ready; the node is running once it returned.
 class StartResult {
@@ -317,13 +309,14 @@ class NodeConfig {
 public:
 	virtual ~NodeConfig() = default;
 	virtual const Ports& ports() const = 0; // pure; the only place this node's ports are declared
-	/// The old SPI (docs/design/node-lifecycle.md 5.10): main thread; acquires only (docs/design/node-framework.md
-	/// section 7.2). Error: the node becomes failed with this reason (startFailed). The default throws
-	/// std::logic_error ("a type on the new SPI has no start"): a type made by makeNodeType writes configure instead.
+	/// The old SPI (docs/writing-a-node-type.md#the-old-interface): main thread; acquires only
+	/// (docs/writing-a-node-type.md#the-class). Error: the node becomes failed with this reason (startFailed). The
+	/// default throws std::logic_error ("a type on the new SPI has no start"): a type made by makeNodeType writes
+	/// configure instead.
 	virtual StartResult start(StartContext& context) const;
 	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it. The
-	/// default is the legacy adapter over start() (node-lifecycle.md 5.10), for sendspin's NodeTypeOf and hand-made
-	/// configs until slice 3c; makeNodeType's config makes the type's class instead.
+	/// default is the legacy adapter over start() (docs/writing-a-node-type.md#the-old-interface), for sendspin's
+	/// NodeTypeOf and hand-made configs until slice 3c; makeNodeType's config makes the type's class instead.
 	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const;
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this

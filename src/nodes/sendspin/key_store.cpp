@@ -71,7 +71,7 @@ NodeKeyStore::open(std::shared_ptr<const folder::ConfinedFolder> folder, const N
 	std::string text;
 	if (*read) {
 		// Every open, because an fsGroup widens the file on every mount, and before its text is judged, because a file
-		// refused for its text may still hold a private key (section 8).
+		// refused for its text may still hold a private key (docs/node-types.md#the-identity-file).
 		if (auto narrowed = folder->restrictMode(file, fileMode); !narrowed)
 			return std::unexpected(narrowed.error().detail);
 		text = std::move(**read);
@@ -130,7 +130,8 @@ bool NodeKeyStore::save_blob(const std::string& key, const std::uint8_t* data, s
 		return false;
 	}
 	if (!std::holds_alternative<folder::Replaced>(*replaced)) {
-		// Someone changed or removed it: theirs stands (section 11: deleting it and restarting wipes the identity).
+		// Someone changed or removed it: theirs stands (deleting it and restarting wipes the identity:
+		// docs/node-types.md#the-identity-file).
 		events_.say(notes::keyWriteFailed(file_ + ": changed by something else"));
 		return false;
 	}

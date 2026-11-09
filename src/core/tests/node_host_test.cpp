@@ -1,12 +1,11 @@
 // The node framework driven through fake engine adapters: how a node starts, what makes it running or failed, and the
-// order a configuration is torn down in (docs/design/m1-white-to-file.md section 3, S2 criterion 5;
-// docs/design/batch2.md section 4.1: the port block is made first; C1 criteria 7-11: restart, sound cards, a lost
-// block, removal; docs/design/rtp.md R1a criteria 3-8: RTP receivers on the same outside-node path;
-// docs/design/node-framework.md slice 1: the resource registry, named inside banks, the framework's pass-through, the
-// two-phase start, and the invariants I4 to I7 and I5a). Step L-3a of docs/design/node-lifecycle.md rewrote it for
-// NodeHost on the lifecycle machines (its section 11.1): every drive and silence is asynchronous, its completion
+// order a configuration is torn down in (docs/architecture.md#the-node-lifecycle): the port block made first; restart,
+// sound cards, a lost block, removal; RTP receivers on the same outside-node path; the resource registry, named inside
+// banks, the framework's pass-through, the two-phase start, and teardown by dependency with its close deadline
+// (docs/architecture.md#teardown-by-dependency). NodeHost runs on the lifecycle machines: every drive and silence is
+// asynchronous, its completion
 // posted to the main loop by the fake block (or held for the test to run), every type goes through the legacy adapter
-// (a recipe beside an outside node is a type bug, D-L40), and a failed node's configuration is torn down at once.
+// (a recipe beside an outside node is a type bug), and a failed node's configuration is torn down at once.
 // Every step a fake engine would take later (ready, lost, a completion, a handoff closing, a card or receiver ready or
 // lost, a close deadline passing) is an event the test sends.
 #include <algorithm>
@@ -79,9 +78,9 @@ Ports testPorts() {
 
 /// A node config whose start asks for `handoffs` handoffs, `cards` sound cards and `receivers` RTP receivers, then
 /// succeeds or fails. A config with a tag logs its start and its destruction with that tag. Its start returns a recipe
-/// handing over a TestRun only when it asks for no outside node, as the legacy adapter requires (node-lifecycle.md
-/// 5.10, D-L40), unless `recipe` says otherwise; its handoffs' consumer is the config's own, which outlives every
-/// configuration made from it.
+/// handing over a TestRun only when it asks for no outside node, as the legacy adapter requires
+/// (docs/writing-a-node-type.md#the-old-interface), unless `recipe` says otherwise; its handoffs' consumer is the
+/// config's own, which outlives every configuration made from it.
 struct TestConfig final : NodeConfig {
 	Log& log;
 	std::string tag;
@@ -168,7 +167,7 @@ struct QueueExecutor final : Executor {
 using Held = std::vector<std::move_only_function<void()>>;
 
 /// How the fake blocks complete what they are asked (TestBlocks): posted to the main loop, held for the test, or
-/// applied with their event not yet dispatched, so only settle() runs them (a main loop that stalled, 5.4's M1).
+/// applied with their event not yet dispatched, so only settle() runs them (a main loop that stalled).
 struct BlockModes {
 	bool hold = false;  // completions wait in TestBlocks::held until the test runs them
 	bool stall = false; // completions wait in the block until its settle()
@@ -177,9 +176,9 @@ struct BlockModes {
 	std::vector<std::vector<SinkBinding>> sinks; // each drive's taps (a silence's none), in order
 };
 
-/// A block as node-lifecycle.md 5.3 has it: a drive is applied at once (the code it runs is recorded) and its `done`
-/// runs later on the main loop, posted there, never inside the call; or, when held, when the test says; or, stalled,
-/// when settle() is called.
+/// A block as docs/engine.md#drive-and-fade has it: a drive is applied at once (the code it runs is recorded) and its
+/// `done` runs later on the main loop, posted there, never inside the call; or, when held, when the test says; or,
+/// stalled, when settle() is called.
 struct TestBlock final : PortBlock {
 	Log& log;
 	AudioCode** driven;
@@ -310,7 +309,7 @@ struct TestSinkConsumer final : SinkConsumer {
 	void finish() override { log.push_back("consumer finish"); }
 };
 
-/// Sinks as node-lifecycle.md 5.11 has them, on the test's thread: begin runs the consumer's begin and posts `begun`
+/// Sinks as docs/engine.md#sinks has them, on the test's thread: begin runs the consumer's begin and posts `begun`
 /// (or, held, waits for the test); close finishes a consumer that began and posts `closed` (or, held, waits).
 struct TestSink final : Sink, SinkTap {
 	Log& log;
@@ -403,7 +402,7 @@ struct TestCards final : SoundCardAdapter {
 		              joined(target.blockPorts) + " at " + std::to_string(target.format.rate));
 		events.push_back(&e);
 		if (readyInMake) {
-			e.ready(); // heard once make() returned (5.5, D-L39)
+			e.ready(); // heard once make() returned
 			log.push_back("card " + target.engineNode + " made");
 		}
 		return std::make_unique<TestOutside>(log, "card " + target.engineNode);
@@ -428,7 +427,7 @@ struct TestReceivers final : RtpReceiverAdapter {
 };
 
 /// The node's state (the phase's colour) and failure, logged when either changes, as standard output's records are
-/// written (control-plane.md 9.1); every health told is kept whole in `told`.
+/// written (docs/output-records.md#node); every health told is kept whole in `told`.
 struct TestListener final : NodeHealthListener {
 	Log& log;
 	std::vector<NodeHealth> told;
@@ -552,7 +551,7 @@ struct Fixture {
 		host.subscribeDiagnostics(diagnostics);
 		host.subscribeEngineDiagnostics(diagnostics);
 	}
-	/// The node added, then the turn ends: what it posted runs (its flush makes its block, 5.5).
+	/// The node added, then the turn ends: what it posted runs (its flush makes its block).
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
 		try {
 			addInTurn(name, std::move(config));
@@ -577,7 +576,7 @@ struct Fixture {
 	}
 	/// The main loop turns until nothing is left: every completion the blocks posted, and what follows from it.
 	void settle() { mainLoop.settle(); }
-	/// The turn ends: what was posted so far runs (the turn's flush among it, 5.5), and nothing it posts.
+	/// The turn ends: what was posted so far runs (the turn's flush among it), and nothing it posts.
 	void endTurn() { mainLoop.runPosted(); }
 };
 
@@ -604,7 +603,7 @@ TEST_CASE("A node gets its port block, then starts, builds its run and prepares 
 
 	f.add("rec", rec);
 
-	// T2, then T3 in the same turn (no outside node); the block is made in the turn's flush (5.5): nothing drives a
+	// T2, then T3 in the same turn (no outside node); the block is made in the turn's flush: nothing drives a
 	// block that is not ready.
 	CHECK(f.log == Log{"node rec starting", "start 44100", "handoff rec 2 channels", "run built", "prepare 44100/256",
 	                   "make rec 2 inputs"});
@@ -665,7 +664,7 @@ TEST_CASE("A node whose start fails is failed with start-failed and keeps its po
 	f.settle();
 	CHECK(f.log.empty());
 
-	// Nothing was driven, so the removal needs no barrier (D-L7); the node is gone once the flush destroyed its block.
+	// Nothing was driven, so the removal needs no barrier; the node is gone once the flush destroyed its block.
 	f.stopAll();
 	CHECK(f.log == Log{"node rec stopping"});
 	f.settle();
@@ -771,7 +770,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	f.update("rec", std::move(b));
 
 	// The block fades and stops running the old code before release(); the handoff then closes. Health is told after
-	// the transition's actions (5.2): stopping (restarting), D-L2.
+	// the transition's actions: stopping (restarting).
 	CHECK(f.log == Log{"fade", "node rec stopping"});
 	f.log.clear();
 	f.settle();
@@ -854,7 +853,7 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 	f.log.clear();
 
 	f.blocks.events.at(0)->ready();
-	CHECK(f.cards.events.empty()); // made in the turn's flush (5.5)
+	CHECK(f.cards.events.empty()); // made in the turn's flush
 	f.endTurn();
 	// Each card joins the ports of the inside bank it named, under its one name.
 	CHECK(f.log ==
@@ -1013,7 +1012,7 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 
 	f.host.nodeRemoved("noise");
 	f.settle();
-	// The block's destruction waits for the turn's flush; the configuration goes meanwhile (5.7).
+	// The block's destruction waits for the turn's flush; the configuration goes meanwhile.
 	CHECK(f.log == Log{"node noise stopping", "fade", "drive nothing", "release", "run destroyed", "block destroyed",
 	                   "node noise gone dropped=0"});
 	REQUIRE(f.host.health().size() == 1);
@@ -1205,12 +1204,12 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 }
 
 TEST_CASE("One configuration names each engine object once: a second of a name, or a bank of the wrong kind, is a "
-          "type bug that fails the node start-failed (I9, D-M3)",
+          "type bug that fails the node start-failed",
           "[node_host][rtp]") {
 	Fixture f;
 	auto twice = std::make_shared<TestConfig>(f.log);
 	twice->receivers = {fppStream, fppStream};
-	f.add("fpp", twice); // never thrown out of NodeHost: one type's bug never takes ear down (node-framework.md 6.4)
+	f.add("fpp", twice); // never thrown out of NodeHost: one type's bug never takes ear down
 	CHECK(failureOf(f, "fpp") == "start-failed: configure threw: a second resource named fpp.rtp in one configuration");
 
 	auto twoPlayback = std::make_shared<TestConfig>(f.log);
@@ -1246,15 +1245,13 @@ TEST_CASE("One configuration names each engine object once: a second of a name, 
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A legacy type with a recipe that asks for an outside node fails its node start-failed at T2 (D-L40, "
-          "superseded by D-M3)",
+TEST_CASE("A legacy type with a recipe that asks for an outside node fails its node start-failed at T2",
           "[node_host][legacy]") {
 	Fixture f;
 	auto config = withCards(f.log);
 	config->recipe = true;
 	f.add("motu", config); // never thrown out of NodeHost
-	CHECK(failureOf(f, "motu") ==
-	      "start-failed: a legacy type with a recipe may ask for no outside node: node-lifecycle.md 5.10");
+	CHECK(failureOf(f, "motu") == "start-failed: a legacy type with a recipe may ask for no outside node");
 	f.blocks.events.at(0)->ready();
 	CHECK(f.cards.events.empty());
 	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
@@ -1301,7 +1298,7 @@ TEST_CASE("Restart and removal destroy the receiver after the barrier, in the tu
 	CHECK(destroyed < static_cast<std::ptrdiff_t>(f.log.size()));
 	CHECK(indexOf(f.log, "drive nothing") < indexOf(f.log, "release"));
 	CHECK(indexOf(f.log, "release") < destroyed);
-	CHECK(indexOf(f.log, "handoff close") < destroyed); // told to close in the teardown, the flush after it (5.5)
+	CHECK(indexOf(f.log, "handoff close") < destroyed); // told to close in the teardown, the flush after it
 	CHECK(destroyed < indexOf(f.log, "handoff destroyed"));
 	CHECK(indexOf(f.log, "handoff destroyed") < indexOf(f.log, "config A destroyed"));
 	f.log.clear();
@@ -1430,7 +1427,7 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 	Fixture f;
 	auto config = std::make_shared<PassConfig>();
 	config->pairs = bad.at(static_cast<std::size_t>(which));
-	f.add("card", config); // checked at configure's return (node-lifecycle-modules.md 3.3), never thrown out
+	f.add("card", config); // checked at configure's return, never thrown out
 	// A pass-through of no pair is refused at use; the rest at the return, against the node's ports.
 	CHECK(failureOf(f, "card").starts_with(which == 3 ? "start-failed: configure threw: use given no code"
 	                                                  : "start-failed: configure gave a pass-through: "));
@@ -1441,7 +1438,7 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 	CHECK(f.allGone == 1);
 }
 
-// The asynchronous barrier (docs/design/node-lifecycle.md sections 4.2, 5.3 and 5.6).
+// The asynchronous barrier (docs/architecture.md#the-node-lifecycle).
 
 TEST_CASE("A stale completion (an older barrier, a removed node) changes nothing", "[node_host][async]") {
 	Fixture f;
@@ -1526,11 +1523,11 @@ TEST_CASE("Removal silences before it destroys the block, and a node never drive
 	CHECK(f.log == Log{"node noise stopping", "fade"}); // the block stays until the fade and the silence completed
 	f.log.clear();
 	f.settle();
-	// The block goes in the flush, the configuration meanwhile; the node is gone once both are (5.7).
+	// The block goes in the flush, the configuration meanwhile; the node is gone once both are.
 	CHECK(f.log == Log{"drive nothing", "release", "run destroyed", "block destroyed", "node noise gone dropped=0"});
 	f.log.clear();
 
-	f.host.nodeRemoved("idle"); // no code was driven since its last silence (D-L7)
+	f.host.nodeRemoved("idle"); // no code was driven since its last silence
 	CHECK(f.log == Log{"node idle stopping", "release", "run destroyed"});
 	f.endTurn();
 	CHECK(f.log ==
@@ -1665,7 +1662,7 @@ TEST_CASE("A run object closes after every handoff has closed, and goes only aft
 	CHECK(f.log == Log{"run destroyed", "node net gone dropped=7", "all gone"});
 }
 
-TEST_CASE("A restart waits for the old configuration to close before it configures the new one (I7)", "[node_host]") {
+TEST_CASE("A restart waits for the old configuration to close before it configures the new one", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
@@ -1743,7 +1740,7 @@ TEST_CASE("A name added back while its old configuration is closing configures o
 	f.settle();
 }
 
-TEST_CASE("A name added back whose block is lost while it waits never configures (I1)", "[node_host]") {
+TEST_CASE("A name added back whose block is lost while it waits never configures", "[node_host]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
 	f.add("net", old);
@@ -1856,7 +1853,7 @@ TEST_CASE("A run lost from its own thread fails a running node with lost and tea
 	std::thread([&] { config->events->lost("the client died"); }).join();
 	CHECK(f.log.empty());
 	f.mainLoop.runPosted();
-	CHECK(f.log == Log{"drive nothing", "node net failed lost: the client died"}); // it had rested (D-L23)
+	CHECK(f.log == Log{"drive nothing", "node net failed lost: the client died"}); // it had rested
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].state == NodeState::failed);
 	f.log.clear();
@@ -1895,12 +1892,12 @@ TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
 	f.settle();
 }
 
-// The two-phase start (docs/design/node-framework.md section 7.2), through the legacy adapter
-// (docs/design/node-lifecycle.md section 5.10).
+// The two-phase start (docs/writing-a-node-type.md#the-class), through the legacy adapter
+// (docs/writing-a-node-type.md#the-old-interface).
 
 namespace {
 
-/// A config whose recipe fails, or logs what Ready hands it. It asks for no outside node (D-L40).
+/// A config whose recipe fails, or logs what Ready hands it. It asks for no outside node.
 struct RecipeConfig final : NodeConfig {
 	Log& log;
 	bool fail = false;
@@ -1950,7 +1947,7 @@ TEST_CASE("Start only acquires, the recipe runs once every resource is ready and
 		f.settle();
 		CHECK(f.log.empty());
 		f.update("net", std::make_shared<TestConfig>(f.log, "B"));
-		CHECK(f.log.at(0) == "start 44100 B"); // failed until its configure runs (4.3, rule 3)
+		CHECK(f.log.at(0) == "start 44100 B"); // failed until its configure runs (rule 3)
 		CHECK(f.log.at(1) == "node net starting");
 	}
 	f.log.clear();
@@ -1959,7 +1956,7 @@ TEST_CASE("Start only acquires, the recipe runs once every resource is ready and
 	CHECK(f.log.back() == "all gone");
 }
 
-// Teardown by dependency, with asynchronous close (docs/design/node-framework.md section 6, I4 to I7 and I5a).
+// Teardown by dependency, with asynchronous close (docs/architecture.md#the-node-lifecycle).
 
 namespace {
 
@@ -2055,7 +2052,7 @@ struct ThreadedFixture {
 
 } // namespace
 
-TEST_CASE("A handoff consumer blocked at teardown blocks no main-loop turn, and the run waits for it, then closes (I5)",
+TEST_CASE("A handoff consumer blocked at teardown blocks no main-loop turn, and the run waits for it, then closes",
           "[node_host][teardown]") {
 	ThreadedFixture f;
 	std::promise<void> letGo;
@@ -2090,7 +2087,7 @@ TEST_CASE("A handoff consumer blocked at teardown blocks no main-loop turn, and 
 	f.host.stopAll(f.graph.close(), [] {});
 }
 
-TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and the node moves on (I5a)",
+TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and the node moves on",
           "[node_host][teardown]") {
 	ThreadedFixture f;
 	std::promise<void> letGo;
@@ -2126,7 +2123,7 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	CHECK(f.log.empty());
 }
 
-TEST_CASE("A run never closing past the deadline is leaked, and a restart then configures the next one (I5a, I7)",
+TEST_CASE("A run never closing past the deadline is leaked, and a restart then configures the next one",
           "[node_host][teardown]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
@@ -2153,7 +2150,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 	CHECK(f.log.back() == "node net running");
 	f.log.clear();
 
-	// What the leaked run tells late lands nowhere: not on the new configuration (I6), and without touching freed
+	// What the leaked run tells late lands nowhere: not on the new configuration, and without touching freed
 	// memory.
 	oldEvents->say("still here");
 	oldEvents->lost("the client died");
@@ -2167,7 +2164,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 }
 
 TEST_CASE("A run mid-handler at teardown finishes off the main loop: close returns at once, a fact it tells is dropped "
-          "and its frees wait for closed (I2, I5, I6)",
+          "and its frees wait for closed",
           "[node_host][teardown]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);
@@ -2196,7 +2193,7 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 
 	finishHandler.set_value();
 	loop.join();
-	CHECK(f.log.empty()); // all of it crosses to the main loop first (I2)
+	CHECK(f.log.empty()); // all of it crosses to the main loop first
 	f.mainLoop.runPosted();
 	// The note is heard (notes last until closed); the loss is not, as the run's close had begun.
 	CHECK(f.log == Log{"note net handler done", "run destroyed", "node net gone dropped=0"});
@@ -2204,7 +2201,7 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 }
 
 TEST_CASE("Nothing from an old run lands on a new one, even when it closed at once and the next configuration began "
-          "in the same turn (I6)",
+          "in the same turn",
           "[node_host][teardown]") {
 	Fixture f;
 	auto old = std::make_shared<ThreadedConfig>(f.log);
@@ -2248,7 +2245,7 @@ TEST_CASE("Nothing from an old run lands on a new one, even when it closed at on
 }
 
 TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a restart and a removal: before release, "
-          "before anything is freed and before the block is destroyed (I4)",
+          "before anything is freed and before the block is destroyed",
           "[node_host][teardown]") {
 	Fixture f;
 	auto rec = withCards(f.log);
@@ -2265,11 +2262,11 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 	f.settle();
 	f.handoffs.finishOne(0);
 	CHECK(f.log.at(0) == "fade");              // the barrier comes after the fade of what the code wrote
-	CHECK(f.log.at(1) == "node rec stopping"); // told after the transition's actions (5.2)
+	CHECK(f.log.at(1) == "node rec stopping"); // told after the transition's actions
 	CHECK(f.log.at(2) == "drive nothing");
 	CHECK(f.log.at(3) == "release");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card rec.playback destroyed"));
-	// The cards go in the turn's flush, after the handoffs were told to close and before they finished (5.5).
+	// The cards go in the turn's flush, after the handoffs were told to close and before they finished.
 	CHECK(indexOf(f.log, "handoff close") < indexOf(f.log, "card rec.playback destroyed"));
 	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "handoff destroyed"));
 	CHECK(indexOf(f.log, "handoff destroyed") < indexOf(f.log, "start 44100 B"));
@@ -2317,7 +2314,7 @@ struct ReadingConfig final : NodeConfig {
 
 } // namespace
 
-TEST_CASE("Step 5 frees the code before the run object it reads, and the config last (I5)", "[node_host][teardown]") {
+TEST_CASE("Step 5 frees the code before the run object it reads, and the config last", "[node_host][teardown]") {
 	Fixture f;
 	f.add("net", std::make_shared<ReadingConfig>(f.log));
 	f.blocks.events.at(0)->ready();
@@ -2325,7 +2322,7 @@ TEST_CASE("Step 5 frees the code before the run object it reads, and the config 
 	f.log.clear();
 	f.host.nodeRemoved("net");
 	f.settle();
-	// The configuration goes in its own input; the block in the turn's flush, after it (5.5).
+	// The configuration goes in its own input; the block in the turn's flush, after it.
 	CHECK(f.log == Log{"node net stopping", "drive nothing", "code destroyed", "run destroyed", "config destroyed",
 	                   "block destroyed", "node net gone dropped=0"});
 	f.stopAll();
@@ -2387,8 +2384,7 @@ struct RecordingFixture {
 
 } // namespace
 
-TEST_CASE("A recording is opened at start and closed with the run, after its handoff (I5 step 5)",
-          "[node_host][recording]") {
+TEST_CASE("A recording is opened at start and closed with the run, after its handoff", "[node_host][recording]") {
 	RecordingFixture f;
 	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, "take.wav"));
 	CHECK(indexOf(f.log, "recording rec take.wav") < indexOf(f.log, "descriptor 42"));
@@ -2448,12 +2444,12 @@ TEST_CASE("A host destroyed with a recording node still running frees its run ob
 	}
 }
 
-// The per-turn flush of PipeWire's object changes (docs/design/node-lifecycle.md section 5.5, D-L8, D-L39), T1's wait
-// for an older block of the name (section 5.7) and MainLoopActivity (section 5.12): step L-3b.
+// The per-turn flush of PipeWire's object changes (docs/architecture.md#isolation), T1's wait
+// for an older block of the name and MainLoopActivity.
 
 namespace {
 
-/// A config asking for the playback card only, with no recipe (D-L40).
+/// A config asking for the playback card only, with no recipe.
 std::shared_ptr<TestConfig> withPlayback(Log& log, std::string tag = {}) {
 	auto config = std::make_shared<TestConfig>(log, std::move(tag));
 	config->cards = {motuOut};
@@ -2510,7 +2506,7 @@ TEST_CASE("PipeWire's object changes of one turn run together in one flush, dest
 TEST_CASE("A block whose removal comes in the turn its making was queued is never made", "[node_host][flush]") {
 	Fixture f;
 	f.addInTurn("x", std::make_shared<TestConfig>(f.log));
-	f.host.nodeRemoved("x");            // never driven: its destruction is queued behind its making (D-L7)
+	f.host.nodeRemoved("x");            // never driven: its destruction is queued behind its making
 	CHECK(f.host.health().size() == 1); // stopping until the flush ran
 	f.log.clear();
 	f.endTurn();
@@ -2720,7 +2716,7 @@ TEST_CASE("MainLoopActivity names each type hook while it runs, and is empty bet
 	CHECK(MainLoopActivity::current().empty());
 }
 
-// Fades, bounds and the wedged data loop (docs/design/node-lifecycle.md sections 4.2, 5.3 and 5.4; step L-3c).
+// Fades, bounds and the wedged data loop (docs/architecture.md#the-node-lifecycle).
 
 namespace {
 
@@ -3129,7 +3125,7 @@ TEST_CASE("A card's playback bank, an inside output, fades in at every drive and
 	CHECK(f.allGone == 1);
 }
 
-// ---- Step L-3d (docs/design/node-lifecycle.md 4.3 to 4.5, 5.2, 5.7, 8.4): the wanted state, health per transition,
+// ---- The node's health (docs/architecture.md#the-node-lifecycle): the wanted state, health per transition,
 // waitingFor's pacing, the operations and the port-caused replace.
 
 namespace {
@@ -3188,7 +3184,7 @@ TEST_CASE("A stop keeps the configuration: no resource released, and start drive
 	CHECK(replyText(f.host.stop("desk")) == "stop");
 	CHECK(f.log == Log{"fade", "node desk stopping"});
 	f.settle();
-	// Silenced, released and prepared afresh (D-L33); the card stays.
+	// Silenced, released and prepared afresh; the card stays.
 	CHECK(f.log ==
 	      Log{"fade", "node desk stopping", "drive nothing", "release", "prepare 44100/256", "node desk stopped"});
 	CHECK(f.listener.phases("desk") == Phases{"stopping (stop)", "stopped"});
@@ -3561,7 +3557,7 @@ TEST_CASE("A port-caused replace's new node reports its older node's dropped fra
 		f.stopAll();
 		CHECK(f.allGone == 1);
 	}
-	SECTION("a new node added disabled (D-L46) still stands for the older node's removal and frames") {
+	SECTION("a new node added disabled still stands for the older node's removal and frames") {
 		f.host.nodeReplacing("desk", ports);
 		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}, true},
 		                    std::make_shared<TestConfig>(f.log, "four"), ports);
@@ -3578,10 +3574,10 @@ TEST_CASE("A port-caused replace's new node reports its older node's dropped fra
 	}
 }
 
-// The type's class, configure and its contexts, and the hooks (docs/design/node-lifecycle-modules.md section 3, step
-// L-4a): an instance a config makes (NodeConfig::make), the rules a type breaks failing its node start-failed (D-M3),
-// start() and stop() paired (node-framework.md 6.4; tested here with a probe, D-M14), and every hook timed
-// (ear.hook-slow, D-M7).
+// The type's class, configure and its contexts, and the hooks (docs/writing-a-node-type.md): an
+// instance a config makes (NodeConfig::make), the rules a type breaks failing its node start-failed,
+// start() and stop() paired (docs/writing-a-node-type.md#the-class; tested here with a probe), and every hook timed
+// (ear.hook-slow).
 
 namespace {
 
@@ -3896,7 +3892,7 @@ TEST_CASE("A configure that threw after it opened a recording closes the recordi
 	f.mainLoop.settle();
 }
 
-TEST_CASE("A broken rule the type catches still fails its node with the rule's text (D-M3)", "[node_host][class]") {
+TEST_CASE("A broken rule the type catches still fails its node with the rule's text", "[node_host][class]") {
 	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = [&](InstanceContexts& cx) {
@@ -4062,7 +4058,7 @@ TEST_CASE("A start() that throws on a start after a stop fails the node start-fa
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Step L-4b: the interim sink (docs/design/node-lifecycle.md 5.11, node-lifecycle-modules.md 4.2): made at configure,
+// The interim sink (docs/engine.md#sinks, docs/writing-a-node-type.md#sinks): made at configure,
 // its consumer begun before the node is configured, its tap bound by every drive and by no silence, its bank never
 // faded, closed at the teardown (its drops the node's), and every rule about it a failure of the node.
 
@@ -4247,7 +4243,7 @@ TEST_CASE("A sink with no consumer or two, on a bank that is no inside output, b
 }
 
 TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank playback beside a playback card is "
-          "refused (I9)",
+          "refused",
           "[node_host][sink]") {
 	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
@@ -4278,7 +4274,7 @@ TEST_CASE("A restart waits for its sink's close before it frees the configuratio
 	REQUIRE(f.host.restart("rec"));
 	f.settle();
 	CHECK(countOf(f.log, "sink rec.pb close") == 1);
-	CHECK(countOf(f.log, "instance destroyed") == 0); // step 4 waits for every sink (5.11)
+	CHECK(countOf(f.log, "instance destroyed") == 0); // step 4 waits for every sink
 	CHECK(f.sinks.made.size() == 1);
 	f.sinks.made.at(0)->runClose();
 	f.settle();

@@ -4,7 +4,7 @@
 owner's words that bind it, the problem, the design, what it changes in the built system, the decisions already taken
 and what is still open. How ear works today is in the library docs (`docs/architecture.md`, `docs/engine.md`,
 `docs/writing-a-node-type.md`, `docs/node-types.md`, `docs/graph-file.md`, `docs/control-port.md`,
-`docs/output-records.md`), which these pages cite rather than repeat. When a slice is built, its page is deleted in
+`docs/output-records.md`, `docs/editor.md`), which these pages cite rather than repeat. When a slice is built, its page is deleted in
 the same change, and whatever of it lasts (how the thing works, why it was built that way) moves into the library docs.
 The owner's words keep the R, Q and G numbers of the register the framework's design used, so commits and code
 comments that cite them still resolve.
@@ -22,9 +22,8 @@ remove primitives slice 3c would otherwise build): 3b, 3c, 3d, then 5, 6, 8, 9.
 | [`programs.md`](programs.md) | 9 | Outside programs joined through a pipe into a paced source, runtime files, the program resource; then the `airplay` type | sketched: the program supervisor and `airplay` need their own design |
 | [`cards-and-clock.md`](cards-and-clock.md) | later | The follower watchdog and a wedged card, sound cards opened off the main loop, a clock anchored to one card, latency reported while running, the hardware checks owed | partly designed |
 
-Not built and not designed anywhere yet (AGENTS.md, "Not built yet", keeps the list): routes naming a whole bank, a
-login on the control port, automatic card retry beyond slice 8 and hotplug, arm64 images, `@include` and undo in the
-graph file, changing the graph frequency or block size while ear runs, the remaining `rtp` items (a "receiving"
-status is slice 8's; multicast tested, `net.mtu`, SAP, IPv6, an RTP sender) and `sendspin` items (volume and mute, line
-sense, the editor showing notes, IPv6, `wss://`, several servers, choosing the advertised interface, RFC 6762 probing,
-more than stereo).
+Not built and not designed anywhere yet: routes naming a whole bank, a login on the control port, automatic card
+retry beyond slice 8 and hotplug, arm64 images, `@include` and undo in the graph file, and changing the graph frequency
+or block size while ear runs ([architecture.md](../architecture.md#not-built-yet) keeps the list); the remaining `rtp`
+items (a "receiving" status is slice 8's) and `sendspin` items are on their types' pages
+([node-types.md](../node-types.md#rtp), [node-types.md](../node-types.md#sendspin)).

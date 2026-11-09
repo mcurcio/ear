@@ -1,11 +1,10 @@
-// The one crossing between the main loop and the control thread (docs/design/batch2.md sections
-// 2 and 4.5, gateway.hpp; docs/design/knobly-config.md, crossings C1 and C4): the Active Object
-// pattern. Commands go whole to the graph file keeper; its reply, every graph file change and
-// every graph event cross back as work posted to the control executor, all from the main loop, so
-// the control thread sees one stream in main-loop order.
+// The one crossing between the main loop and the control thread (docs/architecture.md#threads, gateway.hpp;
+// docs/architecture.md#how-a-change-moves): the Active Object pattern. Commands go whole to the graph file keeper; its
+// reply, every graph file change and every graph event cross back as work posted to the control executor, all from the
+// main loop, so the control thread sees one stream in main-loop order.
 //
 // Each node's health as last sent and when its phase began live here on the main loop
-// (docs/design/node-lifecycle-modules.md 5.4, D-M11): node.state goes out when any member changes, `since` moves only
+// (docs/control-port.md#node-health): node.state goes out when any member changes, `since` moves only
 // with the phase, and a snapshot's `since` is filled from the same map when the graph is read (stamp, called by the
 // keeper's main-loop side at the read), so it is the one the snapshot's phase had.
 //

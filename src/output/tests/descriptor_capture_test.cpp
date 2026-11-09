@@ -1,4 +1,4 @@
-// Descriptors 1 and 2 captured (docs/design/node-framework.md section 8.8), in this test program itself: what C's
+// Descriptors 1 and 2 captured (docs/output-records.md), in this test program itself: what C's
 // streams, iostreams and plain write() put on either becomes lines, in order per descriptor; a line past the bound is
 // cut and marked; a last partial line is kept; a watched descriptor's handler runs on the capture thread; stop puts
 // the real descriptors back, even while a duplicate of descriptor 2 keeps a pipe open. Each check runs after stop,

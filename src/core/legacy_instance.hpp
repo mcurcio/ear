@@ -1,7 +1,7 @@
-// The old SPI under the new machines (docs/design/node-lifecycle.md 5.10; docs/design/node-lifecycle-modules.md 3.5):
-// sendspin's NodeTypeOf, file's makeLegacyNodeType until step L-4b, and hand-made test configs run through this. Private
-// to ear_core: only NodeConfig::make's default makes one, and NodeHost drives it as any ErasedInstance. Goes with the
-// old SPI in slice 3c.
+// The old SPI under the new machines (docs/writing-a-node-type.md#the-old-interface;
+// docs/writing-a-node-type.md#the-code): sendspin's NodeTypeOf and hand-made test configs run through this. Private to
+// ear_core: only NodeConfig::make's default makes one, and NodeHost drives it as any ErasedInstance. Goes with the old
+// SPI in slice 3c.
 #pragma once
 #include <expected>
 #include <functional>
@@ -13,7 +13,7 @@ namespace ear::detail {
 
 class LegacyInstance final : public ErasedInstance {
 public:
-	/// `config` outlives the instance (I5 step 5 frees the config last).
+	/// `config` outlives the instance (teardown step 5 frees the config last).
 	explicit LegacyInstance(const NodeConfig& config) noexcept : config_(config) {}
 	/// config.start(cx.legacy): a failed StartResult is Configured::failed with its detail; else the code is handed to
 	/// cx.create.use and the recipe kept for ready().
@@ -30,7 +30,7 @@ public:
 private:
 	const NodeConfig& config_;
 	RunRecipe recipe_;
-	std::unique_ptr<RunObject> object_; // destroyed with the instance, after the code (I5 step 5)
+	std::unique_ptr<RunObject> object_; // destroyed with the instance, after the code (teardown step 5)
 	bool engineRefused_ = false;        // its start failed engineRefused
 };
 

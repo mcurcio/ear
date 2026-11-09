@@ -1,9 +1,9 @@
-// Step L-4b's interim sinks (docs/design/node-lifecycle.md 5.11 and 11.6; node-lifecycle-modules.md 4.3, 4.4 and 4.7):
-// the real ThreadSinks, first on its own thread with a test's main loop (order, stamps, a chunk wrapping the ring's end,
-// the two rings dropping together, close draining then finishing, begin before the first consume and `begun` behind a
-// lost said inside begin, no allocation on the tap), then through a real block on the in-process engine (a ramp
-// recorded through the sink starts at the first driven sample and ends at the last, across a stop and a start, under
-// an invoke storm). Every wait is event-gated: a test waits for the event it needs; the deadline only fails the test.
+// The interim sinks (docs/engine.md#sinks): the real ThreadSinks, first on its own thread with a test's main loop
+// (order, stamps, a chunk wrapping the ring's end, the two rings dropping together, close draining then finishing,
+// begin before the first consume and `begun` behind a lost said inside begin, no allocation on the tap), then through a
+// real block on the in-process engine (a ramp recorded through the sink starts at the first driven sample and ends at
+// the last, across a stop and a start, under an invoke storm). Every wait is event-gated: a test waits for the event it
+// needs; the deadline only fails the test.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -434,7 +434,7 @@ TEST_CASE("A sink's tap allocates nothing", "[sink]") {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Through a real block on the in-process engine (node-framework.md 9.6's [U]; node-lifecycle.md 11.6).
+// Through a real block on the in-process engine (docs/engine.md#sinks).
 
 namespace {
 
@@ -539,7 +539,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		}
 	};
 	// The position of the code's first cycle after each start, as the code itself saw it. Round 0 is the block's first
-	// drive with no cycle run before it (its takenAt says 0: Found building L-4b's item 10); round 1 follows a stop.
+	// drive with no cycle run before it (its takenAt says 0); round 1 follows a stop.
 	std::array<std::uint64_t, 2> firstRun{};
 	for (int round = 0; round < 2; ++round) {
 		INFO("round " << round);

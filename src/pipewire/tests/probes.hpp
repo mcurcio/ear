@@ -1,6 +1,6 @@
-// Test-only probes (docs/design/node-lifecycle.md sections 10.2 and 11.6): bare pw_filters beside the port blocks, each
+// Test-only probes (docs/engine.md#the-one-data-loop-and-invokes): bare pw_filters beside the port blocks, each
 // running a ProbeCode on the data thread, so a test sees the graph from outside the code under test. Moved out of
-// spikes_test.cpp (step L-0) for port_block_test.cpp (step L-2). A probe takes anything with wake() (either test
+// spikes_test.cpp for port_block_test.cpp. A probe takes anything with wake() (either test
 // file's Waiter), called on the main loop at each of its state changes.
 #pragma once
 

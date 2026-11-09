@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. NodeView's health and since are
-// docs/design/node-lifecycle-modules.md 5.2's (slice 3a, step L-6; batch2.md section 11's erratum).
 #pragma once
 #include <chrono>
 #include <optional>
@@ -16,8 +13,8 @@ struct EngineView {
 	bool realtime;          // the data thread got realtime priority
 	std::string scheduling; // e.g. "SCHED_FIFO 88", "SCHED_OTHER"
 };
-/// A wanted node as a snapshot shows it (docs/design/node-lifecycle-modules.md 5.2, step L-6): its spec (`disabled`
-/// among it), its public ports, its health, and when its phase began, which the gateway fills in (D-M11) and the read
+/// A wanted node as a snapshot shows it (docs/control-port.md#node-health): its spec (`disabled`
+/// among it), its public ports, its health, and when its phase began, which the gateway fills in and the read
 /// leaves empty.
 struct NodeView {
 	NodeSpec spec;
@@ -25,7 +22,7 @@ struct NodeView {
 	NodeHealth health;
 	std::optional<std::chrono::system_clock::time_point> since{};
 };
-/// A wanted node's health before NodeHost told any (D-M12): added and wanted running, or disabled from the spec.
+/// A wanted node's health before NodeHost told any: added and wanted running, or disabled from the spec.
 NodeHealth healthFromSpec(const NodeSpec& spec);
 struct GraphView {
 	EngineView engine;

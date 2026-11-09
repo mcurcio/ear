@@ -1,6 +1,6 @@
-// The node lifecycle's two pure machines and the aggregate, by table (docs/design/node-lifecycle.md sections 4.1 to
-// 4.4 and 11.1; node-framework.md 6.2 and 6.3): every event in every block state and every configuration state, the
-// derivation of phase, state, wanted and cause, every operation in every phase, and the review's cases.
+// The node lifecycle's two pure machines and the aggregate, by table (docs/architecture.md#the-node-lifecycle): every
+// event in every block state and every configuration state, the derivation of phase, state, wanted and cause, every
+// operation in every phase, and the corner cases found reviewing them.
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -240,7 +240,7 @@ std::vector<std::string_view> names(const std::vector<NodePhase>& phases) {
 	return out;
 }
 
-/// Where 4.4's rows start.
+/// Where the operations' rows start.
 enum class Spot {
 	added,
 	configuring,
@@ -478,7 +478,7 @@ TEST_CASE("Every event in every configuration state moves the configuration mach
 	const ConfigCell toTearing{tearing, {K::teardown}};
 	const ConfigCell toTearingReleased{tearing, {K::release, K::teardown}};
 	const ConfigCell lostToSilence{silencing, {K::silence}};
-	// A drive's invoke not run in 5 s is the same fact about the loop as a silence's (revision 2.7).
+	// A drive's invoke not run in 5 s is the same fact about the loop as a silence's.
 	const ConfigCell leakedOverdue{none, {K::barrierOverdue, K::markWedged, K::leak}};
 	const std::vector<std::pair<At, std::vector<ConfigCell>>> table{
 		{At::none,
@@ -804,7 +804,7 @@ TEST_CASE("The phase, state, wanted and cause derived for every combination of t
 		std::optional<NodeCause> cause;
 	};
 	const auto restarting = [](const NodeCause& why) { return NodeCause{CK::restarting, why.kind, why.keys}; };
-	// 4.3's rows in order, each with facts a later row would also match, so first match wins.
+	// The derivation's rows in order, each with facts a later row would also match, so first match wins.
 	const std::vector<Row> rows{
 		{"removing beats a failure",
 	     {.config = ConfigState::fading, .intent = Intent::remove, .failure = failure},
@@ -941,7 +941,7 @@ TEST_CASE("Phases, states, causes and failure codes have their names", "[lifecyc
 	CHECK(appliedName(LifecycleApplied::unchanged) == "unchanged");
 }
 
-TEST_CASE("Every operation in every phase answers and moves as section 4.4 says", "[lifecycle][machines]") {
+TEST_CASE("Every operation in every phase answers and moves as NodeOperations promises", "[lifecycle][machines]") {
 	using P = NodePhase;
 	using CK = NodeCause::Kind;
 	using A = LifecycleApplied;
@@ -957,8 +957,8 @@ TEST_CASE("Every operation in every phase answers and moves as section 4.4 says"
 	};
 	const std::optional<LifecycleReply> none;
 	const std::optional<P> removedAfter;
-	// One row per cell of 4.4. A block lost while waiting for an older node cannot arrive (no block exists): the
-	// added row's block-lost cell checks that it changes nothing. "configured" lasts no input (row 10 is told and
+	// One row per phase and operation. A block lost while waiting for an older node cannot arrive (no block exists):
+	// the added row's block-lost cell checks that it changes nothing. "configured" lasts no input (row 10 is told and
 	// derived again at once), so configuring's row stands for both.
 	const std::vector<Row> rows{
 		{Spot::added, Op::change, none, P::added, {}, P::added},
@@ -1159,7 +1159,7 @@ TEST_CASE("4.4's hooks and barriers: stop() only after a start() that returned, 
 			CHECK_FALSE(p.did(K::silence));
 		}
 	}
-	SECTION("stopped: a removal destroys the block at once (D-L7)") {
+	SECTION("stopped: a removal destroys the block at once") {
 		Probe p = reach(Spot::stopped);
 		p.take(p.node.remove());
 		CHECK(p.didBlock(BlockAction::destroy));
@@ -1224,7 +1224,7 @@ TEST_CASE("A stop and a start tell stopping, stopped, starting, running, with no
 	CHECK(names(p.phases()) == std::vector<std::string_view>{"stopping", "stopped", "starting", "running"});
 	CHECK(p.told[0].wanted == Wanted::stopped);
 	CHECK(p.told[2].wanted == Wanted::running);
-	// Every silence for a stop releases and prepares the code afresh (D-L33).
+	// Every silence for a stop releases and prepares the code afresh.
 	CHECK(p.asked == std::vector<K>{K::stop, K::fade, K::silence, K::release, K::prepare, K::drive, K::start});
 }
 
@@ -1275,8 +1275,8 @@ TEST_CASE("The newest intent wins: remove over disable over fail over restart ov
 		CHECK(q.phase() == NodePhase::stopped);
 		CHECK(q.node.intent() == Intent::none);
 	}
-	// A restart asked while the drive is in flight has begun its teardown (4.3's row 6), so a fault is dropped (I6), as
-	// in fading: it never turns the restart into a failure (revision 2.3, found reviewing L-3a).
+	// A restart asked while the drive is in flight has begun its teardown, so a fault is dropped, as in fading: it
+	// never turns the restart into a failure.
 	SECTION("a fault during a restart's drive in flight is dropped, and the restart goes on") {
 		Probe q = reach(Spot::startingDrive);
 		q.change();
@@ -1332,8 +1332,7 @@ TEST_CASE("A change restarts a settled configuration and waits for an unsettled 
 		CHECK(p.phase() == NodePhase::running);
 		CHECK_FALSE(p.node.changePending());
 	}
-	SECTION("unsettled: a change during a stop's teardown, then a start, restarts first and drives the new settings "
-	        "(D-L41)") {
+	SECTION("unsettled: a change during a stop's teardown, then a start, restarts first and drives the new settings") {
 		Probe p = reach(Spot::stoppingStop);
 		p.change({"path"});
 		p.take(p.node.start());
@@ -1496,7 +1495,7 @@ TEST_CASE("A start() that threw is start-failed and pairs with no stop()", "[lif
 
 TEST_CASE("The data loop wedged: a node added after it fails without a block, and a leaked stop fails the node",
           "[lifecycle][machines]") {
-	SECTION("added after the wedge (D-L10)") {
+	SECTION("added after the wedge") {
 		Probe p;
 		p.add({.wedged = true});
 		CHECK(p.blockAsked.empty());
@@ -1555,7 +1554,7 @@ TEST_CASE("A port-caused replace starts in stopping (restarting) and tells no ad
 	REQUIRE(p.told.size() == 1);
 	CHECK(p.told[0].phase == NodePhase::stopping);
 	CHECK(p.told[0].cause == NodeCause{NodeCause::Kind::restarting, NodeCause::Kind::settings, {"channels"}});
-	CHECK(p.told[0].wanted == Wanted::stopped); // the predecessor's stop carried (D-L36)
+	CHECK(p.told[0].wanted == Wanted::stopped); // the predecessor's stop carried
 	CHECK(p.take(p.node.restart()) == ok(LifecycleApplied::unchanged));
 	p.take(p.node.predecessorGone());
 	p.take(p.node.olderDestroyed());

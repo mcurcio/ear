@@ -25,7 +25,7 @@ describe("the first layout", () => {
   });
 });
 
-// S6 criterion 5: ear replaces a node whose ports change (node.removed, then node.added); the
+// ear replaces a node whose ports change (node.removed, then node.added); the
 // canvas may draw the graph between the two, and the node keeps its place.
 describe("places", () => {
   it("keeps a replaced node's place, drawn after every message of the graph-file fixture", () => {

@@ -144,6 +144,30 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
   pod is the `ear-on-talos` skill's. The PipeWire facts behind all this are in
   [engine.md](engine.md#rtp-receivers).
 
+**On an untrusted network.** The UDP port has no login, as port 7777 has none: anyone who reaches
+it can play audio into the graph. Keep it reachable only from the sender's network.
+
+- The receiver handles packets on the graph's one realtime data loop, and every resync (any
+  sequence mismatch, or an overrun) zeroes its whole 4 MiB ring there. A flood of datagrams with
+  changing sequence numbers (the source address and SSRC do not matter and can be spoofed) stalls
+  every node's processing: cards underrun and `file` nodes drop frames. A `latencyMs` above what
+  the ring holds for the stream does the same with no attacker.
+- With `sess.ignore-ssrc` and `0.0.0.0`, a second sender is not dropped: two overlapping senders
+  (an old FPP still sending while a new one starts) garble the audio for as long as both send.
+- A malformed datagram logs one PipeWire warning on the realtime thread, so a flood of them floods
+  the log; a group in `224.0.0.0/24` (which the grammar allows) brings steady non-RTP traffic.
+- Each receiver costs a fixed 4 MiB ring, a connection and a socket, and the graph has no limit on
+  its nodes: anyone who reaches port 7777 can add receivers until the pod runs out of memory.
+
+**Not built:** a failure for a port that cannot be bound (ear binding the port itself first, or a
+PipeWire that reports it); a "receiving" status from the module's `rtp.receiving`; multicast
+tested, and a multicast-capable pod network; a larger datagram (`net.mtu`) for many channels, and
+a `latencyMs` bound tied to the ring (`latencyMs * rate / 1000 * channels * bytesPerSample` under
+4 MiB); packet handling on a data loop of its own (`context.data-loops` and the module's
+`node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; refusing a second `rtp`
+node on one port; a limit on outside nodes; SAP discovery; IPv6 and a sender-address filter; an
+RTP sender.
+
 ## `sendspin`
 
 Music Assistant's audio in and out, over the Sendspin protocol. Its outputs play what Music
@@ -362,6 +386,19 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
   `aiosendspin`, Music Assistant's pinned server.
 
 Not built: volume and mute, line sense, the editor showing notes and the code, IPv6, `wss://`,
-several servers at once, choosing the advertised interface, RFC 6762 probing, more than stereo.
+several servers at once, choosing the advertised interface, RFC 6762 probing, more than stereo; a
+pairing hold that survives a restart (the 20 rounds are counted in the library's memory, so any
+restart, a crash a peer caused included, gives another 20 guesses at the 6-digit code). Not
+planned: Opus, the protocol's other roles.
+
+Not yet sent upstream: the `Origin` refusal; unproved sockets giving way, in the library and in
+IXWebSocket; IXWebSocket's unbounded frames and fragments and its close racing a reset; connection
+lost and dial failed events (which would retire the connection watch's timers); `on_audio_write`
+carrying the chunk's format; a persisted round count; mjansson/mdns's `mdns_socket_listen` reading
+a question's type and class past the buffer.
+
+Not yet checked: a real Music Assistant (above); real hardware, and so a real card's latency in
+the clock; realtime scheduling; a pod with a CPU limit (the library's unprioritised threads refill
+a 43 ms feed); a real `fsGroup` mount; an off-link mDNS query from a real other subnet.
 Operating it is also the `sendspin` skill's (`.claude/skills/sendspin/SKILL.md`), and running it in
 a pod the `ear-on-talos` skill's.

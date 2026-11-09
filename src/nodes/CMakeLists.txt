@@ -1,6 +1,6 @@
-# The node types, each its own library in its own folder (docs/design/batch2.md section 4, docs/design/rtp.md,
-# docs/design/sendspin.md). A folder here is a type, found at configure and looked for again on every build; its
-# CMakeLists.txt calls ear_node_type(), and src/all_node_types lists what was found. No type links another.
+# The node types, each its own library in its own folder (docs/node-types.md, docs/writing-a-node-type.md). A folder
+# here is a type, found at configure and looked for again on every build; its CMakeLists.txt calls ear_node_type(), and
+# src/all_node_types lists what was found. No type links another.
 include("${PROJECT_SOURCE_DIR}/cmake/NodeType.cmake")
 
 file(GLOB entries CONFIGURE_DEPENDS LIST_DIRECTORIES true RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

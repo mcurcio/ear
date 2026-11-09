@@ -1,7 +1,7 @@
-// The graph as the client sees it (docs/design/batch2.md section 6): the graph notifications
+// The graph as the client sees it (docs/control-port.md): the graph notifications
 // (events.hpp), the levels notification, the Graph that graph.get answers (encodeGraph, declared
-// in commands.hpp), and graphFile.changed (docs/design/knobly-config.md). They share one encoding
-// of a node, its health (docs/design/node-lifecycle-modules.md 5.3) and a route's status, so a snapshot and the events
+// in commands.hpp), and graphFile.changed (docs/graph-file.md). They share one encoding
+// of a node, its health (docs/control-port.md#node-health) and a route's status, so a snapshot and the events
 // after it always agree.
 #include "ear/control/commands.hpp"
 #include "ear/control/events.hpp"
@@ -26,8 +26,8 @@ json encodeNode(const NodeSpec& node, const Ports& ports) {
 	        {"outputs", ports.outputs()}};
 }
 
-/// A cause as the wire carries it (control-plane.md 4.8): {"kind"}, "keys" for a settings change, and a restart's own
-/// kind (with its keys) under "restart".
+/// A cause as the wire carries it (docs/control-port.md#node-health): {"kind"}, "keys" for a settings change, and a
+/// restart's own kind (with its keys) under "restart".
 json encodeCause(const NodeCause& cause) {
 	json out = {{"kind", causeName(cause.kind)}};
 	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
@@ -40,7 +40,7 @@ json encodeCause(const NodeCause& cause) {
 	return out;
 }
 
-/// The health members (node-lifecycle-modules.md 5.3), one encoding for snapshots, node.added and node.state, so the
+/// The health members (docs/control-port.md#node-health), one encoding for snapshots, node.added and node.state, so the
 /// three cannot drift: state, phase, since (when known), wanted and blockLost always; cause, waitingFor and reason when
 /// the health has them.
 void addHealth(json& into, const NodeHealth& h, std::optional<std::chrono::system_clock::time_point> since) {
@@ -79,7 +79,7 @@ json encodeRouteStatus(const RouteStatus& status) {
 	return route;
 }
 
-/// Linear, 4 decimals (section 6).
+/// Linear, 4 decimals.
 double fourDecimals(float value) { return std::round(static_cast<double>(value) * 10000.0) / 10000.0; }
 
 } // namespace

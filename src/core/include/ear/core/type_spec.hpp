@@ -1,7 +1,7 @@
-// What a node type writes, the spec half (docs/design/node-framework.md sections 7.1, 7.2 and 9.2, slice 2): one
+// What a node type writes, the spec half (docs/writing-a-node-type.md#the-spec): one
 // constexpr TypeSpec (its settings table and its banks, each a compile-time constant with its name and direction), the
 // bank handles, Members for a class's ports(), Io for its code and bankPair for the framework's pass-through. The class
-// half (configure, its contexts, makeNodeType) is lifecycle.hpp's (docs/design/node-lifecycle-modules.md 3.6, D-M1),
+// half (configure, its contexts, makeNodeType) is lifecycle.hpp's (docs/writing-a-node-type.md#the-class),
 // which includes this header; a type's private header, src/nodes/<type>/<type>_spec.hpp, includes that one:
 //
 //   namespace ear::nodes::white {
@@ -144,7 +144,7 @@ template <class T> inline constexpr bool isBanks = false;
 template <auto... Handles> inline constexpr bool isBanks<Banks<Handles...>> = true;
 
 /// A type's one declaration: its settings table and its banks. The later tables (status, events, log codes, actions,
-/// stores, latency: docs/design/node-framework.md sections 7.1 and 8) join as members with empty defaults, so a spec
+/// stores, latency: docs/writing-a-node-type.md#the-spec) join as members with empty defaults, so a spec
 /// that gives none stays these two.
 ///
 /// A spec and its rows are declared in a named namespace, the type's own (ear::nodes::<type>, in its private header
@@ -201,8 +201,8 @@ private:
 	std::array<MemberList, List::count> members_;
 };
 
-/// One cycle's audio, by bank (docs/design/node-framework.md section 9.2): io[bank] is the bank's members, each a span
-/// of exactly frames() samples, an output's to write (every sample), an input's to read (an unlinked input reads zeros).
+/// One cycle's audio, by bank (docs/writing-a-node-type.md#the-code): io[bank] is the bank's members, each a span of
+/// exactly frames() samples, an output's to write (every sample), an input's to read (an unlinked input reads zeros).
 /// Only the spec's own banks are taken. The layout is resolved once, before the first cycle, so io[bank] is an index.
 template <const auto& Spec> class Io {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
@@ -315,7 +315,7 @@ public:
 
 private:
 	Code code_;
-	const Ports* ports_ = nullptr; // the config's, which outlives the code (I5 step 5)
+	const Ports* ports_ = nullptr; // the config's, which outlives the code (teardown step 5)
 	typename Io<Spec>::Layout layout_;
 };
 } // namespace spec_detail

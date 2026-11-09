@@ -1,4 +1,4 @@
-// The one encoder of standard output (docs/design/node-framework.md section 8.8): every record ear prints, its
+// The one encoder of standard output (docs/output-records.md): every record ear prints, its
 // fields and its human sentence, have their one home here. The schema is test/protocol/output-records.json.
 #include "ear/control/status_log.hpp"
 
@@ -16,7 +16,7 @@ namespace {
 
 using Fields = std::vector<std::pair<std::string, std::string>>;
 
-constexpr int recordVersion = 1; // the records' "v": additive changes keep it, a breaking one bumps it (8.7)
+constexpr int recordVersion = 1; // the records' "v": additive changes keep it, a breaking one bumps it
 
 /// One value as JSON text. Peers' and libraries' text may not be UTF-8: a bad byte becomes U+FFFD, never an
 /// exception or a broken line; control characters are escaped.
@@ -59,8 +59,8 @@ std::string joinedKeys(const std::vector<std::string>& keys) {
 	return text;
 }
 
-/// A cause as the record carries it (control-plane.md 9.1): {"kind"}, with the restart's own kind under "restart" and
-/// a settings change's keys.
+/// A cause as the record carries it (docs/output-records.md#node): {"kind"}, with the restart's own kind under
+/// "restart" and a settings change's keys.
 std::string causeJson(const NodeCause& cause) {
 	Fields fields{{"kind", json(causeName(cause.kind))}};
 	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
@@ -73,7 +73,7 @@ std::string causeJson(const NodeCause& cause) {
 	return object(fields);
 }
 
-/// A restart's own kind, or a configuring cause, in words (control-plane.md 9.1).
+/// A restart's own kind, or a configuring cause, in words (docs/output-records.md#node).
 std::string restartText(NodeCause::Kind kind, const std::vector<std::string>& keys) {
 	switch (kind) {
 	case NodeCause::Kind::settings:
@@ -104,7 +104,7 @@ std::string waitingJson(const std::vector<WaitingFor>& waits) {
 	return array(items);
 }
 
-/// What a still record says the node waits for (control-plane.md 9.1).
+/// What a still record says the node waits for (docs/output-records.md#node).
 std::string waitingText(const std::vector<WaitingFor>& waits) {
 	std::string text;
 	for (const WaitingFor& wait : waits) {

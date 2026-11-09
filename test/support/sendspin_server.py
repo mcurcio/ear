@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The sendspin node's test server (docs/design/sendspin.md section 14): a real SendspinServer, a command per stdin line,
+"""The sendspin node's test server (docs/node-types.md#sendspin): a real SendspinServer, a command per stdin line,
 an event per stdout line, so a test moves when an event arrives.
 
 Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] [--discover <prefix>] [--name <text>] [--hold-activate]. It always listens

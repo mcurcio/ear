@@ -44,7 +44,7 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_subdirectory(vendor/json SYSTEM)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
-# knobly, the graph file's language (docs/design/knobly-config.md): its C++ release source tree, which the image
+# knobly, the graph file's language (docs/graph-file.md): its C++ release source tree, which the image
 # builds from a pinned commit (docker/Dockerfile, stage knobly) and puts at /opt/knobly, so configure needs no
 # Python and no network. A Linux build outside the image points EAR_KNOBLY_DIR at such a tree. Compiled mode:
 # knobly's definitions are compiled once, in src/config/knobly_implementation.cpp. As a subproject it builds no
@@ -121,8 +121,8 @@ endif()
 # The sendspin node's protocol library and what it needs, at pinned commits.
 include(cmake/SendspinDeps.cmake)
 
-# The real server the sendspin node's tests run against (docs/design/sendspin.md section 13): a venv the image builds
-# from test/sendspin/requirements.txt.
+# The real server the sendspin node's tests run against (docs/node-types.md#library-facts-and-carried-patches): a venv
+# the image builds from test/sendspin/requirements.txt.
 if(BUILD_TESTS)
 	set(EAR_SENDSPIN_SERVER_PYTHON "/opt/sendspin-server/bin/python" CACHE FILEPATH
 		"Python of a venv holding test/sendspin/requirements.txt (docker/Dockerfile, target dev)")

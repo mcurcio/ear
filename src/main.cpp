@@ -1,13 +1,12 @@
-// EAR's composition root (docs/design/batch2.md section 4.7; docs/design/knobly-config.md, "Boot
-// and stop"): opens the graph file folder and the recordings folder (apart from each other and the
-// web root), reads ear.conf, starts the engine at the file's rate and block size (else the flags')
-// and prints how its audio thread is scheduled, wires the packages together, starts the graph file
-// keeper (its first offer runs the file, or nothing runs and the editor shows why), opens the
-// control port and runs until SIGINT or SIGTERM. Once the flags are read, before any thread starts, it
-// captures descriptors 1 and 2 (docs/design/node-framework.md section 8.8): from then on everything on
-// standard output is one JSON record a line, from the one encoder (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the
-// keeper taking edits, stops every node, then closes the control port, stops the control thread
-// and ends the main loop; the keeper's last write runs as its thread is joined.
+// EAR's composition root (docs/architecture.md#boot-and-stop): opens the graph file folder and the recordings folder
+// (apart from each other and the web root), reads ear.conf, starts the engine at the file's rate and block size (else
+// the flags') and prints how its audio thread is scheduled, wires the packages together, starts the graph file keeper
+// (its first offer runs the file, or nothing runs and the editor shows why), opens the control port and runs until
+// SIGINT or SIGTERM. Once the flags are read, before any thread starts, it captures descriptors 1 and 2
+// (docs/output-records.md): from then on everything on standard output is one JSON record a line, from the one encoder
+// (StatusLog), written by the output thread. Stopping closes the graph to edits, stops the keeper taking edits, stops
+// every node, then closes the control port, stops the control thread and ends the main loop; the keeper's last write
+// runs as its thread is joined.
 
 #include <array>
 #include <chrono>
@@ -78,8 +77,8 @@ private:
 	ear::output::OutputWriter& writer_;
 };
 
-/// The recording kind's adapter (docs/design/node-framework.md section 7.3): files made beneath the recordings folder,
-/// which no node type holds. Glue only, as WriterLines is: ear_folder and ear_core do not see each other.
+/// The recording kind's adapter (docs/writing-a-node-type.md#configure-and-createof): files made beneath the recordings
+/// folder, which no node type holds. Glue only, as WriterLines is: ear_folder and ear_core do not see each other.
 class ConfinedRecordings final : public ear::RecordingAdapter {
 public:
 	explicit ConfinedRecordings(ear::folder::ConfinedFolder folder) : folder_(std::move(folder)) {}
@@ -118,9 +117,10 @@ private:
 	ear::output::DescriptorCapture& capture_;
 };
 
-/// The glue between NodeHost's judgement and the engine's adapters (docs/design/node-lifecycle.md 5.4): once
-/// ear.data-loop-wedged is said, the engine is marked, so Links, the outside nodes and the port blocks make no call that
-/// would wait on the wedged data loop (ear/pipewire/data_loop_wedge.hpp). Main thread, before any later input.
+/// The glue between NodeHost's judgement and the engine's adapters
+/// (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): once ear.data-loop-wedged is said, the engine
+/// is marked, so Links, the outside nodes and the port blocks make no call that would wait on the wedged data loop
+/// (ear/pipewire/data_loop_wedge.hpp). Main thread, before any later input.
 class WedgeMarker final : public ear::EngineDiagnosticListener {
 public:
 	explicit WedgeMarker(const ear::pipewire::Engine& engine) : engine_(engine) {}
@@ -132,8 +132,9 @@ private:
 	const ear::pipewire::Engine& engine_;
 };
 
-/// The main loop's heartbeat (docs/design/node-lifecycle.md 5.12): a main-loop timer that beats the watchdog every
-/// 100 ms, armed again each time it runs. Its first beat arms the watchdog, so boot before the loop runs is no stall.
+/// The main loop's heartbeat (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): a main-loop timer
+/// that beats the watchdog every 100 ms, armed again each time it runs. Its first beat arms the watchdog, so boot
+/// before the loop runs is no stall.
 class Heartbeat {
 public:
 	Heartbeat(ear::Timers& timers, ear::output::StallWatch& watch) : timers_(timers), watch_(watch) { arm(); }
@@ -277,7 +278,7 @@ int main(int argc, char** argv) {
 
 	ear::pipewire::FilterPortBlocks blocks(*engine, bell);
 	ear::pipewire::ThreadHandoffs handoffs(engine->mainLoop());
-	ear::pipewire::ThreadSinks sinks(mainLoop); // a sink's begun and closed post where the nodes' events do (D-L14)
+	ear::pipewire::ThreadSinks sinks(mainLoop); // a sink's begun and closed post where the nodes' events do
 	ear::pipewire::AlsaSoundCards cards(*engine);
 	ear::pipewire::RtpReceivers receivers(*engine);
 	ear::pipewire::Links links(*engine);
@@ -358,12 +359,12 @@ int main(int argc, char** argv) {
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);
-	// A run leaked past its close deadline (I5a) may still post to the main loop or signal an engine source from its
-	// own threads, and a wedged data loop's blocks and outside nodes were leaked because destroying them would wait on
-	// it (node-lifecycle.md 5.4); destroying the executor and the engine under them would be a use after free or a hang.
-	// ear.conf is written by now, so end here without running destructors, once the output thread's queue (the
-	// diagnostics among it) is written out: standard output is a captured pipe now, so flushing std::cout would write
-	// nothing.
+	// A run leaked past its close deadline may still post to the main loop or signal an engine source from its own
+	// threads, and a wedged data loop's blocks and outside nodes were leaked because destroying them would wait on it
+	// (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog); destroying the executor and the engine under
+	// them would be a use after free or a hang. ear.conf is written by now, so end here without running destructors,
+	// once the output thread's queue (the diagnostics among it) is written out: standard output is a captured pipe now,
+	// so flushing std::cout would write nothing.
 	if (nodes.leaked() > 0) {
 		writer.spill();
 		std::_Exit(0);

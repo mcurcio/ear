@@ -1,8 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. run() through the graph file
-// keeper and the GraphFileListener side are docs/design/knobly-config.md's (slice S5); their
-// erratum to batch2.md lands in S7. The clock that stamps since, nodeChanged with its outcome, health sent on every
-// change and node.gone are docs/design/node-lifecycle-modules.md 5.4's (slice 3a, step L-6).
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -14,8 +9,8 @@
 #include "ear/control/requests.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
-// The graph as the control thread sees it (docs/design/batch2.md sections 2 and 4.5;
-// docs/design/knobly-config.md, crossings C1 and C4).
+// The graph as the control thread sees it (docs/architecture.md#threads;
+// docs/architecture.md#how-a-change-moves).
 namespace ear::control {
 class GraphGateway {
 public:
@@ -46,7 +41,7 @@ class MainLoopGateway final : public GraphGateway,
 							  public RouteStatusListener,
 							  public SnapshotStamp {
 public:
-	/// `clock` stamps each node's `since` when its phase changes (D-M11).
+	/// `clock` stamps each node's `since` when its phase changes.
 	MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests,
 	                WallClock clock = &std::chrono::system_clock::now); // all outlive it
 	~MainLoopGateway();
@@ -55,7 +50,7 @@ public:
 	void watch(EventSink& sink) override;
 	void graphFileChanged(const GraphFileChanged& change) override; // posted to sink->graphFileChanged
 	void graphFileWritten(const std::string& version) override;     // nothing: a status line only
-	/// node.added with the spec's health (D-M12), `since` stamped.
+	/// node.added with the spec's health, `since` stamped.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
 	/// node.updated with `applied` restart (told only by a listener's default nodeChanged, which this one overrides).
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
@@ -65,12 +60,13 @@ public:
 	void nodeRemoved(const NodeName& node) override;
 	void routeAdded(const Route& route) override;
 	void routeRemoved(const Route& route) override;
-	/// Posted as node.state whenever any health member differs from the node's last one sent (control-plane.md 4.8),
-	/// with `since` re-stamped only when its phase differs.
+	/// Posted as node.state whenever any health member differs from the node's last one sent
+	/// (docs/control-port.md#node-health), with `since` re-stamped only when its phase differs.
 	void nodeChanged(const NodeHealth& health) override;
-	/// Posts node.stopped (deprecated) then node.gone (control-plane.md 4.8).
+	/// Posts node.stopped (deprecated) then node.gone (docs/control-port.md#node-health).
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
-	/// The wire keys health by name and holds the newer node of a name (node-lifecycle.md 5.7, D-L36).
+	/// The wire keys health by name and holds the newer node of a name
+	/// (docs/architecture.md#phases-states-and-what-is-wanted).
 	bool hearsSuperseded() const noexcept override { return false; }
 	void routeChanged(const RouteStatus& status) override;
 	/// SnapshotStamp (main loop): each node's `since` as its last node.state carried it, for a node told of.

@@ -1,4 +1,4 @@
-// ear.conf's state on the wire (docs/design/knobly-config.md, "Wire additions"; S3 criterion 9): the
+// ear.conf's state on the wire (docs/control-port.md#the-graph-file-over-the-port): the
 // names the wire carries, value equality of places and diagnostics, and every message of
 // test/protocol/graph-file.json built here from typed values (graph_file_fixture.hpp) and encoded
 // exactly as the fixture has it.

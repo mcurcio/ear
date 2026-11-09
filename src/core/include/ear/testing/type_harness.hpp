@@ -1,6 +1,6 @@
-// A type's own tests run it through this (docs/design/node-framework.md 7.6; docs/design/node-lifecycle-modules.md
-// 3.8): the NodeHarness of the type makeNodeType<Spec, Type>() makes, over a real NodeHost, with banks named by the
-// spec's handles, so a test names banks as the type does and a bank the spec lacks does not compile.
+// A type's own tests run it through this (docs/writing-a-node-type.md#testing-a-type): the NodeHarness of the type
+// makeNodeType<Spec, Type>() makes, over a real NodeHost, with banks named by the spec's handles, so a test names banks
+// as the type does and a bank the spec lacks does not compile.
 #pragma once
 #include <cstddef>
 #include <cstdint>

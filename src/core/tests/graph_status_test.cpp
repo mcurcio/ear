@@ -1,4 +1,4 @@
-// The graph read (docs/design/batch2.md section 4.2, graph_view.hpp; C1 criterion 14): the join
+// The graph read (docs/architecture.md#packages, graph_view.hpp): the join
 // of the real desired graph, node framework and reconciler, wired as main.cpp wires them, with
 // the engine faked behind their factory interfaces.
 #include <functional>
@@ -82,7 +82,7 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 }
 
 /// Completions wait in the factory until the test runs them, as the engine runs them on the main loop later
-/// (node-lifecycle.md 5.3).
+/// (docs/engine.md#drive-and-fade).
 using Completions = std::vector<std::move_only_function<void()>>;
 
 struct Block final : PortBlock {
@@ -154,7 +154,7 @@ struct NoReceivers final : RtpReceiverAdapter {
 	}
 };
 
-/// The main loop as the test turns it: NodeHost posts its per-turn flush here (node-lifecycle.md 5.5).
+/// The main loop as the test turns it: NodeHost posts its per-turn flush here (docs/architecture.md#isolation).
 struct Turns final : Executor {
 	std::vector<std::move_only_function<void()>> posted;
 	void post(std::move_only_function<void()> work) override { posted.push_back(std::move(work)); }

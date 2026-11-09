@@ -1,12 +1,10 @@
-// Port blocks as pw_filter nodes (docs/design/batch2.md section 4.3, port_blocks.hpp): every
-// block in EAR's graph group, an asynchronous drive applied on the block's data loop, and level
-// metering of the public ports in windows aligned on the graph clock. Each cycle's GraphCycle is
-// made here, both clock domains sampled once (docs/design/node-framework.md section 9.3), and
-// latency is carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY (section 9.4). Slice 3a's
-// asynchronous drive and fade (docs/design/node-lifecycle.md section 5.3, step L-2): requests in a
-// ring of eight, one invoke in flight per block, applied inside it, completed through the block's
-// own event source; the blocking drive went with step L-3a. The interim sinks' taps (node-lifecycle-modules.md 4.4,
-// step L-4b) ride in each drive and are written after the code and the fade, every cycle that code runs.
+// Port blocks as pw_filter nodes (docs/engine.md, port_blocks.hpp): every block in EAR's graph group, an asynchronous
+// drive applied on the block's data loop, and level metering of the public ports in windows aligned on the graph clock.
+// Each cycle's GraphCycle is made here, both clock domains sampled once (docs/engine.md#graphcycle), and latency is
+// carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY. The asynchronous drive and fade
+// (docs/engine.md#drive-and-fade): requests in a ring of eight, one invoke in flight per block, applied inside it,
+// completed through the block's own event source. The interim sinks' taps (docs/engine.md#sinks) ride in each drive and
+// are written after the code and the fade, every cycle that code runs.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -170,7 +168,7 @@ public:
 	FilterPortBlock& operator=(const FilterPortBlock&) = delete;
 
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
-		// A sink reads an inside output bank and NodeHost gives each bank at most one (I9), so a drive binds at most one
+		// A sink reads an inside output bank and NodeHost gives each bank at most one, so a drive binds at most one
 		// tap per such bank: the realtime storage is sized for that at make, and apply() binds no more than it holds.
 		// Nothing is thrown here: this runs on the main loop, inside PipeWire's C callbacks.
 		pending_.push_back(Pending{Kind::drive, request.code, request.faded, request.sinks, std::move(done), {}});
@@ -402,12 +400,13 @@ private:
 	}
 
 	// ---------------------------------------------------------------------------------------------------------------
-	// The asynchronous drive and fade (node-lifecycle.md 5.3). Request n sits in ring_[n % kRing] from its push until
-	// the main thread ran its `done`; the main thread pushes only into a slot whose request it finished, and publishes
-	// what it pushed (published_, release); the data loop drains up to that and writes each request's result into its
-	// slot before it publishes the request completed (completed_, release). Requests complete in order: a drive at
-	// once, in the invoke; a fade-out when a cycle ended at zero, or at once on a block not processing, or (cancelled)
-	// when a later drive is applied. So the requests drained but not completed are always fade-outs, all pending.
+	// The asynchronous drive and fade (docs/engine.md#drive-and-fade). Request n sits in ring_[n % kRing] from its push
+	// until the main thread ran its `done`; the main thread pushes only into a slot whose request it finished, and
+	// publishes what it pushed (published_, release); the data loop drains up to that and writes each request's result
+	// into its slot before it publishes the request completed (completed_, release). Requests complete in order: a
+	// drive at once, in the invoke; a fade-out when a cycle ended at zero, or at once on a block not processing, or
+	// (cancelled) when a later drive is applied. So the requests drained but not completed are always fade-outs, all
+	// pending.
 
 	/// Main thread: moves what waits into the ring while it has room, then posts an invoke if none is in flight and
 	/// the ring holds what the data loop has not drained (or a fade must be acknowledged after leaving STREAMING).
@@ -434,7 +433,7 @@ private:
 			pw_loop_signal_event(loop_, completion_);
 			return;
 		}
-		// One invoke in flight per block (D-L38). A loop whose thread is not running runs it inline: it only sets
+		// One invoke in flight per block. A loop whose thread is not running runs it inline: it only sets
 		// data-loop state and signals, never runs a `done`.
 		postedLoop_ = dataLoop;
 		++invokesPosted_;
@@ -471,7 +470,7 @@ private:
 			for (std::uint64_t pending = completed; pending < drained; ++pending)
 				ring_[pending % kRing].cancelled = true;
 			code_.store(request.code, std::memory_order_release);
-			// The taps change with the code, in this invoke (D-L29): copied into storage sized at make.
+			// The taps change with the code, in this invoke: copied into storage sized at make.
 			sinkCount_ = std::min(request.sinkCount, sinks_.size());
 			std::copy_n(request.sinks, sinkCount_, sinks_.begin());
 			fresh_ = true; // the new code's first cycle is a discontinuity to it
@@ -542,10 +541,10 @@ private:
 		self->lastDriver_ = clock.id;
 		self->nextPosition_ = clock.position + clock.duration;
 		if (frames <= self->maxBlock_) {
-			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock (docs/design/node-framework.md
-			// section 10); both clocks are read together here, so a late wake cancels out. The raw read sits between two
-			// monotonic ones, and the offset is taken from their midpoint, so a preemption between reads skews it by
-			// half at most (node-driver.c, get_nsec_offset).
+			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock
+			// (docs/engine.md#the-internal-clock); both clocks are read together here, so a late wake cancels out. The
+			// raw read sits between two monotonic ones, and the offset is taken from their midpoint, so a preemption
+			// between reads skews it by half at most (node-driver.c, get_nsec_offset).
 			const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
 			const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
 			const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
@@ -672,7 +671,7 @@ private:
 	// The asynchronous drive and fade (see pump()).
 	enum class Kind : std::uint8_t { drive, fade };
 	enum class Fade : std::uint8_t { none, in, out };
-	static constexpr std::size_t kRing = 8; // node-lifecycle.md 16: a first choice
+	static constexpr std::size_t kRing = 8; // docs/design/companions.md: a first choice
 	/// One request in the ring: what the main thread hands, then what the data loop writes back.
 	struct Request {
 		Kind kind = Kind::drive;

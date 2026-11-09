@@ -1,10 +1,9 @@
-// Where the main loop is (docs/design/node-lifecycle.md section 5.12, D-L9; step L-3b): the call NodeHost is in (a
-// flush item, a type's hook) and the node it is for, written before the call and cleared when it returns, so the
-// main-loop watchdog (StallWatch, step L-7) can say where a stall began without a lock and without following a pointer
-// into a node. One writer, the main thread; any thread reads. A seqlock: the writer never waits, a reader retries
-// (bounded).
-// Scopes nest (step L-3c): one inside another (a hook called inside a flush item) names the inner call while it runs and
-// gives the outer one back when it ends.
+// Where the main loop is (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): the call NodeHost is in
+// (a flush item, a type's hook) and the node it is for, written before the call and cleared when it returns, so the
+// main-loop watchdog (StallWatch) can say where a stall began without a lock and without following a pointer into a
+// node. One writer, the main thread; any thread reads. A seqlock: the writer never waits, a reader retries (bounded).
+// Scopes nest: one inside another (a hook called inside a flush item) names the inner call while it runs and gives the
+// outer one back when it ends.
 #pragma once
 #include <array>
 #include <cstddef>

@@ -1,6 +1,6 @@
-// Work posted from any thread, run on the engine's main loop (docs/design/batch2.md sections 2
-// and 4.3, main_loop_executor.hpp): a mutex-guarded queue plus a pw_loop event source. The
-// queue owns each posted function, so work left when the executor goes is destroyed unrun.
+// Work posted from any thread, run on the engine's main loop (docs/architecture.md#threads, main_loop_executor.hpp): a
+// mutex-guarded queue plus a pw_loop event source. The queue owns each posted function, so work left when the executor
+// goes is destroyed unrun.
 #include "ear/pipewire/main_loop_executor.hpp"
 
 #include <algorithm>

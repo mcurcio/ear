@@ -1,9 +1,7 @@
 // The desired graph's plan() and commit(), a whole wanted graph at a time, checked against a
 // catalogue of test node types: the errors a plan returns, the events a commit sends and their
-// order, and the catalogue's own boot-time check (docs/design/m1-white-to-file.md section 3, S2
-// criteria 1-3; docs/design/batch2.md section 4.1, C1 criteria 1-6: adding, removing and updating,
-// the name rule, observers first, close(); docs/design/knobly-config.md, S1 criterion 8). The old
-// control calls' cases are kept as plans (slice S5).
+// order, and the catalogue's own boot-time check (docs/architecture.md#how-a-change-moves: adding, removing and
+// updating, the name rule, observers first, close()). The old control calls' cases are kept as plans.
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -602,10 +600,10 @@ TEST_CASE("A replace keeps its disabled change's outcome: stored on a node stayi
 		REQUIRE(outcomes.size() == 1);
 		return outcomes[0].second;
 	};
-	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // D-R23
-	CHECK(replaceOutcome(false, false) == NodeOutcome::restart); // D-L5
-	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // D-L46
-	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // D-L46
+	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // disabled before and after: kept for the enable
+	CHECK(replaceOutcome(false, false) == NodeOutcome::restart); // enabled before and after: the new node starts
+	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // the replace disables it
+	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // the replace enables it
 }
 
 TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no outcome apart sees an update",

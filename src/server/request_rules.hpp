@@ -1,5 +1,5 @@
-// Private to ear_server: what the control port accepts from a request (docs/design/batch2.md
-// sections 4.6 and 6). Pure functions of the request's text; control_port.cpp applies them.
+// Private to ear_server: what the control port accepts from a request (docs/control-port.md). Pure functions of the
+// request's text; control_port.cpp applies them.
 #pragma once
 #include <filesystem>
 #include <optional>

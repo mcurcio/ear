@@ -1,4 +1,4 @@
-// Live ports from the engine's registry (docs/design/m1-white-to-file.md section 2,
+// Live ports from the engine's registry (docs/architecture.md#packages,
 // live_graph.hpp).
 #include "ear/pipewire/live_graph.hpp"
 

@@ -1,4 +1,4 @@
-// The output thread (docs/design/node-framework.md section 8.8): the one writer of ear's real standard output. The main
+// The output thread (docs/output-records.md): the one writer of ear's real standard output. The main
 // loop never blocks on output: lines reach this thread through a bounded queue, and a full queue refuses a line
 // instead of waiting (the encoder counts what it refused).
 #pragma once

@@ -19,9 +19,11 @@ These pages describe ear as it is built. Building, testing, CI and releases are 
 | Write or edit `ear.conf` | [graph-file.md](graph-file.md), then [node-types.md](node-types.md) |
 | Configure a node: settings, ports, behaviour, failures | [node-types.md](node-types.md) |
 | Drive ear from a script or write a client | [control-port.md](control-port.md) |
+| Use or change the graph editor in the browser | [editor.md](editor.md) |
 | Read or parse ear's log | [output-records.md](output-records.md) |
 | Add a node type | [writing-a-node-type.md](writing-a-node-type.md), after [architecture.md](architecture.md#the-node-lifecycle) |
 | Change the engine side, or understand the clock, latency and PipeWire's behaviour | [engine.md](engine.md) |
+| Know what the tests prove and the rules they follow | [testing.md](testing.md) |
 
 Working guides for specific jobs are the repository's skills in `.claude/skills/`: `pipewire-engine`
 (changing `src/pipewire/`), `control-port` (talking to port 7777), `sendspin` (pairing and operating

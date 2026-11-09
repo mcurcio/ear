@@ -1,6 +1,6 @@
 // Test support: a port block driven and waited for on the calling thread, which must be the block's main thread with
-// its loop not running (an engine test between Waiter::until calls). Step L-3a removed PortBlock's blocking drive
-// (docs/design/node-lifecycle.md section 5.3); engine tests that only need a code running, or silenced, before they go
+// its loop not running (an engine test between Waiter::until calls). PortBlock has no blocking drive
+// (docs/engine.md#drive-and-fade); engine tests that only need a code running, or silenced, before they go
 // on use this instead: the asynchronous drive, then settle() until its completion ran. When it returns true, the data
 // loop applied the request between two cycles, so no process() of the code before it runs again.
 //

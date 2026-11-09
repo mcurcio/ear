@@ -1,9 +1,8 @@
-# ear_output: where ear's standard output goes (docs/design/node-framework.md section 8.8): the output thread, the one
-# writer of the real standard output, behind a bounded queue the main loop never blocks on; and the capture of
-# descriptors 1 and 2, pipes read by a thread of its own, installed at boot before any other thread starts; and the
-# main-loop watchdog (StallWatch, docs/design/node-lifecycle.md 5.12), told where the main loop is by main.cpp. Every
-# record's text is ear_control's (status_log.cpp, the one encoder); main.cpp joins them. It depends on nothing of
-# EAR's.
+# ear_output: where ear's standard output goes (docs/output-records.md): the output thread, the one writer of the real
+# standard output, behind a bounded queue the main loop never blocks on; and the capture of descriptors 1 and 2, pipes
+# read by a thread of its own, installed at boot before any other thread starts; and the main-loop watchdog (StallWatch,
+# docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog), told where the main loop is by main.cpp. Every
+# record's text is ear_control's (status_log.cpp, the one encoder); main.cpp joins them. It depends on nothing of EAR's.
 add_library(ear_output STATIC
 	descriptor_capture.cpp
 	output_writer.cpp

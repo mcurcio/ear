@@ -1,5 +1,5 @@
 {
-  "description": "graph.get and graph.subscribe answer with the whole graph (docs/design/batch2.md section 6): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
+  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}"

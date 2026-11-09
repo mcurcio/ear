@@ -1,13 +1,13 @@
 // The side panel: the engine facts (with the "not realtime" badge), the add-node form (type
 // list, JSON settings) and the selected node's health, its Start, Stop, Restart, Disable and Enable
-// (when ear has the lifecycle feature; each enabled by health.ts, control-plane.md 8.6), its settings
+// (when ear has the lifecycle feature; each enabled by health.ts, docs/editor.md#a-nodes-health), its settings
 // and delete button. Every change is a request to ear; the canvas changes only when ear announces it.
 import { useEffect, useState } from "react";
 import { describeHealth, type ActionAvailability, type HealthView } from "../health";
 import { lifecycleFeature, type Graph, type GraphNode, type JsonObject } from "../protocol";
 import { useEditor } from "./hooks";
 
-/** The newest protocol this editor knows (control-plane.md 4.1): a higher one shows a banner. */
+/** The newest protocol this editor knows (docs/control-port.md#protocol-and-features): a higher one shows a banner. */
 const knownProtocol = 1;
 
 /** Settings typed as JSON text: the object, or the reason it is not one. */

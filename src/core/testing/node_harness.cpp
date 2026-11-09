@@ -1,5 +1,5 @@
 // The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
-// (docs/design/node-lifecycle-modules.md 3.8). Each fake is private to this file.
+// (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file.
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
@@ -177,9 +177,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
-	/// A sink whose consumer runs on the test's thread (node-lifecycle-modules.md 3.8, L-4b): begin calls the consumer's
-	/// begin at once, then posts `begun`; the tap copies each chunk into its companion and hands it to the consumer at
-	/// once; close finishes a consumer that began, marks the companion destroyed and posts `closed(0)`.
+	/// A sink whose consumer runs on the test's thread (docs/writing-a-node-type.md#testing-a-type): begin calls the
+	/// consumer's begin at once, then posts `begun`; the tap copies each chunk into its companion and hands it to the
+	/// consumer at once; close finishes a consumer that began, marks the companion destroyed and posts `closed(0)`.
 	struct FakeSink final : Sink, SinkTap {
 		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {}
 		SinkTap& tap() noexcept override { return *this; }

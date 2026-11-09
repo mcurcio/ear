@@ -1,4 +1,4 @@
-// The control thread: one io_context, one thread (docs/design/batch2.md sections 2 and 4.6,
+// The control thread: one io_context, one thread (docs/architecture.md#threads,
 // control_thread.hpp). Posted work waits in this class's own queue, one Asio handler per item,
 // so that stop() can destroy whatever is left unrun at once (an io_context destroys its queued
 // handlers only when it is itself destroyed).

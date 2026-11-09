@@ -1,8 +1,8 @@
-// Interface page: docs/design/knobly-config.md (slice S4). The graph file keeper as ear wires it:
+// Interface page: docs/graph-file.md. The graph file keeper as ear wires it:
 // ear.conf read once at boot on the main thread, then kept on one background thread that takes every
 // request batch, judges it through the desired graph on the main loop, watches the graph file folder
 // and writes ear.conf when it is free. No knobly type is in this header. NodeOperations and subscribeActions are
-// docs/design/node-lifecycle-modules.md 5.7's (slice 3a, step L-6).
+// docs/control-port.md#methods.
 #pragma once
 #include <expected>
 #include <memory>

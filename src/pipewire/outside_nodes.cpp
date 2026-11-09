@@ -1,5 +1,5 @@
-// The one outside-node lifecycle (docs/design/rtp.md sections 6 and 7.2, outside_nodes.hpp):
-// batch 2's card state machine (docs/design/batch2.md section 5), moved out of the card so every
+// The one outside-node lifecycle (docs/engine.md#outside-nodes, outside_nodes.hpp):
+// the card's state machine (docs/engine.md#sound-cards), moved out of the card so every
 // kind of outside node is joined, made ready, lost and torn down by this code. A kind's body
 // says only how its engine node is made and heard from; this owns "is this outside node in the
 // graph": it runs alone until its body says it runs, then links its channels to its port block,
@@ -62,9 +62,9 @@ private:
 	}
 	void failed(std::string detail) override { fail(std::move(detail)); }
 
-	/// One link per channel, the outside node and the block each by its global id (never the
-	/// block's node.name: an older block of the name may still be going, node-lifecycle.md 5.7),
-	/// each port by name, owned by EAR's connection.
+	/// One link per channel, the outside node and the block each by its global id (never the block's node.name: an
+	/// older block of the name may still be going, docs/architecture.md#phases-states-and-what-is-wanted), each port by
+	/// name, owned by EAR's connection.
 	void link(std::uint32_t nodeId) {
 		if (dataLoopWedged(engine_)) return; // linking would wait on the wedged loop: it stays opening
 		state_ = State::linking;

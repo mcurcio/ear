@@ -1,4 +1,4 @@
-// The connection watch, on fake time (docs/design/sendspin.md section 10, section 14, S1 criterion 8).
+// The connection watch, on fake time (docs/node-types.md#failures).
 #include <chrono>
 
 #include "catch2/catch.hpp"

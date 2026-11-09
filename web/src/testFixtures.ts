@@ -1,4 +1,4 @@
-// The conformance fixtures (test/protocol, docs/design/batch2.md section 6; control-plane.md 4.7
+// The conformance fixtures (test/protocol, docs/control-port.md; docs/control-port.md#fixtures
 // from protocol 1), read as the wire type, for the UI's tests only. The server's tests (ear_control)
 // run on the same files.
 import edits from "../../test/protocol/edits.json";

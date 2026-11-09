@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/knobly-config.md, the confined folder; replaceIf's createMode and
-// restrictMode by docs/design/sendspin.md section 14, S2; fileNames by its erratum 24). Change it only through an erratum and a
-// re-cut, never a local edit.
 #pragma once
 #include <cstddef>
 #include <expected>

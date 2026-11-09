@@ -1,6 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit. plan() and commit() replace
-// GraphControl's five edit calls (docs/design/knobly-config.md, slice S5); the erratum lands in S7.
 #pragma once
 #include <expected>
 #include <memory>
@@ -14,17 +11,18 @@ struct WantedNode {
 	NodeSpec spec;
 	Ports ports;
 };
-/// What an edit asks of a node it keeps by name (node-framework.md 6.6, slice 3a's outcomes; node-lifecycle.md 8.4).
+/// What an edit asks of a node it keeps by name (docs/architecture.md#restarts-and-changes-of-settings).
 /// Decided by `disabled` alone, before and after: false to true `disable`, true to false `enable`, true to true
 /// `stored`, false to false `restart` (3a has no in-place rows).
 enum class NodeOutcome { restart, disable, enable, stored };
 /// A node kept with the same type and ports, told by nodeChanged; or a replaced node (another type or other ports),
-/// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's (D-R23, D-L5, D-L46).
+/// told by nodeReplacing and nodeReplaced, whose outcome is its `disabled` change's.
 struct NodeChange {
 	NodeOutcome outcome;
 	std::vector<std::string> keys; // the settings' keys whose values differ, added and removed ones included; key order
 	/// A replace whose type is unchanged (only its ports changed): the node framework carries the node's stop and one
-	/// health stream into the new node (node-lifecycle.md 5.7 and 8.4, D-L36). False for a node told by nodeChanged.
+	/// health stream into the new node (docs/architecture.md#phases-states-and-what-is-wanted). False for a node told
+	/// by nodeChanged.
 	bool portCaused = false;
 };
 class DesiredNodeListener {
@@ -44,7 +42,8 @@ public:
 	virtual void nodeRemoved(const NodeName& node) = 0;
 	/// A replaced node's removal (another type or other ports), told in nodeRemoved's place and order; nodeReplaced
 	/// follows in nodeAdded's. The defaults tell nodeRemoved and nodeAdded, so a listener that tells a replace from a
-	/// removal and an addition by nothing needs nothing (only the node framework does: node-lifecycle.md 8.4).
+	/// removal and an addition by nothing needs nothing (only the node framework does:
+	/// docs/architecture.md#restarts-and-changes-of-settings).
 	virtual void nodeReplacing(const NodeName& node, const NodeChange& change) {
 		static_cast<void>(change);
 		nodeRemoved(node);
@@ -83,8 +82,9 @@ public:
 	bool empty() const noexcept; // commit() would tell no listener anything
 	/// The outcome for each node kept by name whose spec changes, in name order: a node told by nodeChanged, and a
 	/// replaced one (another type or other ports, told as a removal and an addition), whose outcome is its `disabled`
-	/// change's as well (a replace of a node staying disabled is `stored`, of one staying enabled `restart`). Nodes only
-	/// added or only removed are not in it. What an edit's reply says it applied (node-lifecycle.md 8.4).
+	/// change's as well (a replace of a node staying disabled is `stored`, of one staying enabled `restart`). Nodes
+	/// only added or only removed are not in it. What an edit's reply says it applied
+	/// (docs/architecture.md#restarts-and-changes-of-settings).
 	std::vector<std::pair<NodeName, NodeOutcome>> outcomes() const;
 
 private:

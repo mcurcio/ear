@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
 #pragma once
 #include <memory>
 #include <vector>
@@ -13,7 +11,7 @@ namespace ear::pipewire {
 /// the block's mailbox and rings `wake`. frames > maxBlock: outputs silenced, process() skipped.
 /// First STREAMING -> ready(); ERROR -> lost(). Each cycle's GraphCycle is made here (both clocks
 /// sampled once); the filter carries custom latency, told per bank pair by carryLatency
-/// (docs/design/node-framework.md sections 9.3 and 9.4, slice 7).
+/// (docs/engine.md#graphcycle).
 class FilterPortBlocks final : public PortBlockFactory, public LevelReader {
 public:
 	FilterPortBlocks(Engine& engine, LevelWake& wake); // both outlive it

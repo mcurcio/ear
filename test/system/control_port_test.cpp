@@ -1,5 +1,4 @@
-// The control port end to end (docs/design/batch2.md section 4.7 and slice J's criteria 1-5 and
-// 7; ported to ear.conf by docs/design/knobly-config.md, S5 criterion T9): the real out/ear on a
+// The control port end to end (docs/control-port.md): the real out/ear on a
 // graph file folder, its control port on 127.0.0.1 at a free port, talked to over HTTP and
 // JSON-RPC on WebSocket with ear_ws_client. Every edit is made at the source in ear.conf. Every wait
 // is for an event (a line ear prints, a message, ear's exit); a deadline only fails a test.
@@ -63,7 +62,7 @@ struct Rms {
 };
 
 /// RMS of channel `channel` of a stereo WAV over its nonzero span, past its first 5 ms; 0 over no frames if it is all
-/// zeros. A node's drive fades its outputs in over 5 ms (240 frames at 48 kHz; docs/design/node-lifecycle.md 5.3), and a
+/// zeros. A node's drive fades its outputs in over 5 ms (240 frames at 48 kHz; docs/engine.md#drive-and-fade), and a
 /// route linked just after the node runs hears that ramp, which would weigh on the level.
 Rms channelRms(const std::filesystem::path& path, int channel) {
 	SF_INFO info{};
@@ -204,9 +203,9 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 	// A whole window of the noise. Levels are a latest-value snapshot, sent when any block publishes, so one window can
 	// come in several messages (the noise's first again once the recorder's block has published too). And the noise's
 	// first windows are not all noise: its block processes silence until the asynchronous drive lands, as late as the
-	// main loop gets to it, then fades the noise in over 5 ms (docs/design/node-lifecycle.md 5.3). So the first window
-	// with any noise holds the drive, the next new one may hold the fade's tail (240 frames of a 1600-frame window, when
-	// the drive lands near a window's end), and the new one after that is noise throughout.
+	// main loop gets to it, then fades the noise in over 5 ms (docs/engine.md#drive-and-fade). So the first window with
+	// any noise holds the drive, the next new one may hold the fade's tail (240 frames of a 1600-frame window, when the
+	// drive lands near a window's end), and the new one after that is noise throughout.
 	std::optional<json> last; // the noise's level in the newest window read, once it is heard
 	int newWindows = 0;       // windows after that one
 	const json levels = rpc.waitFor([&](const json& m) {
@@ -224,7 +223,7 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
 	// One window is 1600 frames, so its RMS of uniform noise is 0.577 with a standard deviation of 0.258 / sqrt(1600) =
 	// 0.0065 (see the test above): the margin is 7.7 of them, and a window that is partly silent or faded, which this test
-	// read before it waited for a whole one (0.47 to 0.52), still fails.
+	// read before it waited for a whole one, still fails.
 	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));
 	CHECK(ear.stop(rpc) == 0);
 }
@@ -252,7 +251,7 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	CHECK(routeRemoved < nodeRemoved);
 	CHECK(nodeRemoved < stopping);
 	CHECK(stopping < stopped);
-	CHECK(stopped < gone); // node.stopped (deprecated) first, then node.gone (control-plane.md 4.8)
+	CHECK(stopped < gone); // node.stopped (deprecated) first, then node.gone (docs/control-port.md#node-health)
 	CHECK(gone < rpc.notifications.size());
 	CHECK(ear.stop(rpc) == 0);
 }

@@ -1,4 +1,4 @@
-// A sendspin node's own threads (docs/design/sendspin.md section 6): the worker, the library's "main loop", and the
+// A sendspin node's own threads (docs/node-types.md#threads): the worker, the library's "main loop", and the
 // notifier, telling the library what played. They own the library's client and the node's key file; nothing else
 // touches the client but the handoff's thread, through the consumer here, so it never meets a realtime thread or
 // PipeWire's main loop.

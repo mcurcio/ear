@@ -1,13 +1,7 @@
-// Frozen interface (docs/design/batch2.md section 4; its section 11's erratum: docs/design/node-lifecycle.md section 4
-// replaces batch2.md's NodeLifecycle with these). The node lifecycle's two pure machines and the node they make
-// (node-lifecycle.md section 4, the home of their tables; the system rules are docs/design/node-framework.md sections
-// 6.2 and 6.3). Built pure in step L-1 of slice 3a (as node_machines.hpp, in ear::lifecycle), NodeHost on them since
-// L-3a; L-3d moved them here, into ear, with the health's names (NodePhase, NodeState, Wanted, NodeCause) that
-// NodeHealth carries, and removed NodeLifecycle. Change it only through a design page and a re-cut, never a local edit.
-//
-// Each machine takes an event and returns the actions NodeHost carries out (D-L1): neither calls a hook, PipeWire or a
-// timer. The aggregate (NodeAggregate) holds both and the node's facts, applies the aggregate's three rules (4.3) after
-// every input, and tells its derived health after every machine transition that changes it (D-L34).
+// The node lifecycle's two pure machines and the node they make (docs/architecture.md#the-node-lifecycle). Each
+// machine takes an event and returns the actions NodeHost carries out: neither calls a hook, PipeWire or a timer, so
+// both are tested by table. The aggregate (NodeAggregate) holds both and the node's facts, applies the aggregate's
+// three rules after every input, and tells its derived health after every machine transition that changes it.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -19,19 +13,21 @@
 #include "ear/core/node_type.hpp"
 namespace ear {
 
-// ---- Names on the wire and on standard output (control-plane.md 4.8, node-framework.md 6.2) ----
+// ---- Names on the wire and on standard output (docs/control-port.md#node-health) ----
 
-/// The exact state (D-L22). 3d adds reconfiguring, slice 8 recovering. A removed node has no phase: it is gone
+/// The exact state. 3d adds reconfiguring, slice 8 recovering. A removed node has no phase: it is gone
 /// (NodeAggregate::removed()).
 enum class NodePhase { added, configuring, configured, starting, running, stopping, stopped, disabled, failed };
 /// The phase's colour: added, configuring and configured are starting; every other phase is its own name.
 enum class NodeState { starting, running, stopping, stopped, disabled, failed };
 /// What the graph wants of the node: disabled from ear.conf, else stopped while its stop is held, else running.
 enum class Wanted { running, stopped, disabled };
-/// node-framework.md 6.2's failure codes and a failure: FailureReason's (node_type.hpp), named for the machines.
+/// docs/architecture.md#phases-states-and-what-is-wanted failure codes and a failure: FailureReason's (node_type.hpp),
+/// named for the machines.
 using FailureCode = FailureReason::Code;
 using Failure = FailureReason;
-/// Why a node is stopping, or configuring after a restart, a retry or an enable (control-plane.md 4.8's cause.kind).
+/// Why a node is stopping, or configuring after a restart, a retry or an enable (docs/control-port.md#node-health
+/// cause.kind).
 struct NodeCause {
 	enum class Kind { stop, removing, disabling, restarting, settings, action, retry, enabling };
 	Kind kind;
@@ -49,7 +45,7 @@ std::string_view wantedName(Wanted wanted) noexcept;
 std::string_view causeName(NodeCause::Kind kind) noexcept;
 inline std::string_view failureCodeName(FailureCode code) noexcept { return failureCode(code); }
 
-// ---- The block machine (4.1) ----
+// ---- The block machine ----
 
 /// absent is "—": before the add. lost is final and keeps its detail.
 enum class BlockState { absent, waiting, made, ready, lost, gone };
@@ -60,9 +56,9 @@ enum class BlockEvent {
 	olderDestroyed,   // the older block of the name was destroyed
 	ready,            // PortBlockEvents::ready
 	lost,             // PortBlockEvents::lost, with its detail
-	removed,          // removal: its silence completed, or no code driven since the last silence (D-L7)
+	removed,          // removal: its silence completed, or no code driven since the last silence
 };
-/// make and destroy are queued into the turn's flush, never made inside a handler (5.5).
+/// make and destroy are queued into the turn's flush, never made inside a handler.
 enum class BlockAction { make, destroy };
 std::string_view blockStateName(BlockState state) noexcept;
 std::string_view blockEventName(BlockEvent event) noexcept;
@@ -79,10 +75,10 @@ private:
 	BlockState state_ = BlockState::absent;
 	std::string lossDetail_;
 };
-/// The block's loss when a node is added after the data loop was judged wedged (D-L10).
+/// The block's loss when a node is added after the data loop was judged wedged.
 inline constexpr std::string_view wedgedDetail = "the data loop is wedged";
 
-// ---- The configuration machine (4.2) ----
+// ---- The configuration machine ----
 
 enum class ConfigState { none, readying, prepared, arming, driving, fading, silencing, tearing };
 enum class ConfigEvent {
@@ -107,12 +103,12 @@ enum class ConfigEvent {
 struct ConfigInput {
 	ConfigEvent event;
 	std::uint64_t barrier = 0; // driven, faded, silenced: the request's number
-	bool fades = true;         // configure: some output the code writes is faded (5.1's faded)
+	bool fades = true;         // configure: some output the code writes is faded (fades)
 };
 struct ConfigAction {
 	enum class Kind {
 		configure,          // new generation; make the instance; creation's configure; ask the resources
-		runRecipe,          // legacy only (5.10): run the recipe
+		runRecipe,          // legacy only: run the recipe
 		prepare,            // prepare the code
 		drive,              // carry the latency plan; post drive(code, faded, sinks)
 		start,              // call start()
@@ -125,7 +121,7 @@ struct ConfigAction {
 		free,               // on the main loop: the code, the instance, the recordings, in that order
 		barrierOverdue,     // ear.barrier-overdue
 		markWedged,         // the data loop is wedged
-		leak,               // leak the configuration (I5a)
+		leak,               // leak the configuration
 		closeOverdue,       // ear.close-overdue
 	};
 	Kind kind;
@@ -141,7 +137,7 @@ public:
 	ConfigState state() const noexcept { return state_; }
 	bool started() const noexcept { return started_; } // start() returned and stop() not called since
 	bool driven() const noexcept { return driven_; }   // a code handed to the block since the last silence
-	bool rested() const noexcept { return rested_; }   // reached running or stopped (D-L23)
+	bool rested() const noexcept { return rested_; }   // reached running or stopped
 	bool stopAsked() const noexcept { return stopAsked_; }
 	bool fades() const noexcept { return fades_; }
 	std::uint64_t barrier() const noexcept { return barrier_; } // the newest request's number
@@ -163,7 +159,7 @@ private:
 	std::uint64_t barrier_ = 0;
 };
 
-// ---- The failure's code, by fact (4.2) ----
+// ---- The failure's code, by fact ----
 
 enum class Fact {
 	engine,          // a sound card or RTP receiver refused or lost; the block refused or lost; the loop wedged
@@ -175,13 +171,13 @@ enum class Fact {
 };
 FailureCode failureCodeFor(Fact fact, bool rested) noexcept;
 
-// ---- The aggregate (4.3) ----
+// ---- The aggregate ----
 
 /// What a stop or teardown in flight is for, in rising priority (rule 3): a newer one replaces it only if higher.
 enum class Intent { none, stop, restart, fail, disable, remove };
 std::string_view intentName(Intent intent) noexcept;
 
-/// The health the aggregate derives (4.3's table). waitingFor and since are NodeHost's (4.5).
+/// The health the aggregate derives (derive() below). waitingFor and since are NodeHost's.
 struct Health {
 	NodePhase phase;
 	NodeState state;
@@ -207,7 +203,7 @@ struct DeriveFacts {
 	bool configuredTold = false;
 };
 Health derive(const DeriveFacts& facts);
-/// 4.3's row 1: block gone, configuration none, intent remove.
+/// The derivation's first row: block gone, configuration none, intent remove.
 bool removed(const DeriveFacts& facts) noexcept;
 
 /// The newest committed settings: a version NodeHost names, and whether the code's outputs are faded with them.
@@ -217,7 +213,7 @@ struct Queued {
 };
 struct AddFacts {
 	bool disabled = false;
-	bool stopHeld = false;           // a port-caused replace carries its predecessor's stop (D-L36)
+	bool stopHeld = false;           // a port-caused replace carries its predecessor's stop
 	bool olderBlock = false;         // an older block of the name still exists (T1)
 	bool predecessor = false;        // this node is a port-caused replace of an older node still tearing down
 	bool olderNode = false;          // an older node of the name is not yet gone: no configure before it is (rule 1)
@@ -232,7 +228,7 @@ struct Gone {};
 using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone>;
 using Actions = std::vector<NodeAction>;
 
-/// core's own replies to start, stop and restart (5.2, D-L35), NodeOperations' (node_host.hpp); MainLoopSide maps them
+/// core's own replies to start, stop and restart, NodeOperations' (node_host.hpp); MainLoopSide maps them
 /// to the wire.
 enum class LifecycleApplied { start, stop, restart, retry, unchanged };
 struct LifecycleRefusal {
@@ -247,9 +243,9 @@ struct Operated {
 	Actions actions;
 };
 
-/// One node: the two machines and 4.3's facts. Every input returns the actions it caused, in order, with a Tell after
-/// each machine transition that changed the derived health and a Gone once the node is removed. Inputs after Gone
-/// change nothing.
+/// One node: the two machines and the aggregate's facts. Every input returns the actions it caused, in order, with a
+/// Tell after each machine transition that changed the derived health and a Gone once the node is removed. Inputs after
+/// Gone change nothing.
 class NodeAggregate {
 public:
 	Actions add(const AddFacts& facts);
@@ -262,12 +258,12 @@ public:
 	Actions olderNodeGone();
 	Actions blockReady();
 	Actions blockLost(std::string detail);
-	// The plan's outcomes (D-L4): a restart-only change, a change on a disabled node, a disable, an enable, a removal.
+	// The plan's outcomes: a restart-only change, a change on a disabled node, a disable, an enable, a removal.
 	Actions change(Queued queued, std::vector<std::string> keys);
 	Actions disable();
 	Actions enable();
 	Actions remove();
-	// The operations (4.4); NodeHost refuses every operation stopping during stopAll before asking.
+	// The operations; NodeHost refuses every operation stopping during stopAll before asking.
 	Operated stop();
 	Operated start();
 	Operated restart();
@@ -288,7 +284,7 @@ public:
 
 	Health health() const;
 	bool removed() const noexcept;
-	/// 4.5's waits the aggregate knows: an older node of the name, and the block.
+	/// The waits the aggregate knows: an older node of the name, and the block.
 	bool waitingForOlder() const noexcept { return block_.state() == BlockState::waiting || olderNode_; }
 	bool waitingForBlock() const;
 	const BlockMachine& block() const noexcept { return block_; }

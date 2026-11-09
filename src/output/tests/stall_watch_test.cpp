@@ -1,7 +1,8 @@
-// The main-loop watchdog (docs/design/node-lifecycle.md 5.12, 11.6; step L-7): its judgement on a clock stepped by hand
-// (armed by the first beat, a stall past the bound reported once, its resumption once with the gap the first beat after
-// it measured), and the thread over real short stalls: reported after the bound and resumed once with the real gap,
-// nothing under steady beats, nothing before the first beat, no resumption once stopped, and stop joining at once.
+// The main-loop watchdog (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): its judgement on a clock
+// stepped by hand (armed by the first beat, a stall past the bound reported once, its resumption once with the gap the
+// first beat after it measured), and the thread over real short stalls: reported after the bound and resumed once with
+// the real gap, nothing under steady beats, nothing before the first beat, no resumption once stopped, and stop joining
+// at once.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>

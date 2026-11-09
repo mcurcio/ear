@@ -1,9 +1,8 @@
-// Sound cards as ALSA adapter nodes with their own links (docs/design/batch2.md sections 4.3
-// and 5, sound_cards.hpp). A card is one kind of outside node: its body here makes the ALSA
-// adapter and hears from it through its own proxy; the one outside-node lifecycle
-// (outside_nodes.hpp, docs/design/rtp.md section 6) runs it alone until its PCM runs, then links
-// its channels to its port block, and on any failure destroys its links and its engine node
-// before it reports the loss. Linked, it follows ear's internal clock, never drives the blocks.
+// Sound cards as ALSA adapter nodes with their own links (docs/engine.md, sound_cards.hpp). A card is one kind of
+// outside node: its body here makes the ALSA adapter and hears from it through its own proxy; the one outside-node
+// lifecycle (outside_nodes.hpp, docs/engine.md#outside-nodes) runs it alone until its PCM runs, then links its channels
+// to its port block, and on any failure destroys its links and its engine node before it reports the loss. Linked, it
+// follows ear's internal clock, never drives the blocks.
 #include "ear/pipewire/sound_cards.hpp"
 
 #include <cerrno>
@@ -51,7 +50,7 @@ public:
 		const auto priority = std::to_string(cardPriority);
 		// No node.group: a card in the group would follow from creation and never start before it is linked, which
 		// the lifecycle (link once RUNNING) cannot do. Alone it drives itself until its links join it to the blocks,
-		// where the internal clock outranks it and it follows (docs/design/node-framework.md section 10).
+		// where the internal clock outranks it and it follows (docs/engine.md#the-internal-clock).
 		pw_properties* props = pw_properties_new(
 			SPA_KEY_FACTORY_NAME, direction_ == CardDirection::playback ? "api.alsa.pcm.sink" : "api.alsa.pcm.source",
 			"api.alsa.path", alsaPath(request.card).c_str(), "audio.channels", channels.c_str(), "audio.rate",

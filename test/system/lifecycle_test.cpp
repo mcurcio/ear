@@ -1,8 +1,7 @@
-// Slice 3a's closing system tests (docs/design/node-lifecycle.md section 12's L-8 and 11.7; control-plane.md L1's
-// list): the lifecycle through the real out/ear, across restarts of ear, on a shared `disabled` value, on the test
-// sound card and on a held UDP port. The stop and start and the disable and enable within one run of ear are in
-// control_port_test.cpp. Every wait is for an event (a line ear prints, a message, ear's exit); a deadline only fails a
-// test.
+// The node lifecycle end to end (docs/architecture.md#the-node-lifecycle): the lifecycle through the real out/ear,
+// across restarts of ear, on a shared `disabled` value, on the test sound card and on a held UDP port. The stop and
+// start and the disable and enable within one run of ear are in control_port_test.cpp. Every wait is for an event (a
+// line ear prints, a message, ear's exit); a deadline only fails a test.
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -166,7 +165,7 @@ TEST_CASE("node.disable of one of two nodes sharing disabled $quiet replaces onl
 	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "a"}, {"phase", "disabled"}}); });
 	const std::size_t disabledAt = rpc.indexOf("node.state", {{"name", "a"}, {"phase", "disabled"}});
 	REQUIRE(ear.process().waitForLineStartingWith("graph-file written ", deadline));
-	// Only a's own line: $quiet's @set and b's line are as they were (the owner's R34, "Only this node").
+	// Only a's own line: $quiet's @set and b's line are as they were (the owner's "Only this node").
 	CHECK(readText(directory.graphFile()) ==
 	      replacedOnce(before, "node white a { disabled $quiet; }", "node white a { disabled true; }"));
 

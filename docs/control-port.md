@@ -340,6 +340,15 @@ queue: a subscriber always gets the newest snapshot, replacing one not yet writt
 - **Never wait for a quiet period** after an edit: wait for its reply, a `node.state`, or the
   `graph-file written <version>` record.
 
+## Changing the wire
+
+The wire has two implementations, ear's (`src/control/`: the commands, events and their encoders)
+and the editor's types (`web/src/protocol.ts`), and one description, this page with its fixtures.
+A change to the wire changes all of them in the same commit, never one side alone: this page and
+the fixture that shows it first, then both sides, which their tests hold to the fixtures. A
+breaking change moves `protocol`; anything else is a new feature name
+([above](#protocol-and-features)).
+
 ## Fixtures
 
 | File | Covers |

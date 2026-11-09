@@ -1,5 +1,5 @@
 // The graph read: the join of the desired graph, the node framework and the reconciler
-// (docs/design/batch2.md section 4.2, graph_view.hpp). It holds no state of its own: every read
+// (docs/architecture.md#packages, graph_view.hpp). It holds no state of its own: every read
 // asks the three owners, so it can never disagree with them.
 #include "ear/core/graph_view.hpp"
 

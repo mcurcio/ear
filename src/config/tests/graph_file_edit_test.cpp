@@ -1,4 +1,4 @@
-// The graph edits made at the source (docs/design/knobly-config.md, "File format"; S3 criteria 1-8):
+// The graph edits made at the source (docs/graph-file.md#edits-at-the-source):
 // each edit on the record's example gives a candidate whose text changed only where the rule says and
 // which reads back as the edited graph, or the refusal the rule names; the model it is called on never
 // changes. Pure: text in, candidates out, against the test types.
@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 namespace {
 
-/// The record's file format example (docs/design/knobly-config.md, "File format").
+/// The record's file format example (docs/graph-file.md#edits-at-the-source).
 const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;
 @set $ch 2;                      # comments survive every edit

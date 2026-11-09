@@ -1,7 +1,7 @@
-// The graph file keeper's main-loop side (docs/design/knobly-config.md, "Contracts"; S4): the
+// The graph file keeper's main-loop side (docs/architecture.md#how-a-change-moves): the
 // desired graph's only editor, and the one holder of the running version and the last refusal.
 // Main loop only. It never parses text: what it judges arrives as plain values. operate, the lifecycle verbs' reply
-// mapping and the action records are docs/design/node-lifecycle-modules.md 5.7 and 5.8's (slice 3a, step L-6).
+// mapping and the action records are docs/control-port.md#methods.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -42,7 +42,7 @@ struct Judged {
 /// the route refused; the first node of an unknown type; the second of two nodes sharing a name. Pure.
 std::optional<control::TextPlace> placeOf(const CommandError& error, const GraphSpec& wanted,
                                           const Placements& placements);
-/// node-lifecycle-modules.md 5.8's table, its one home: core's reply as the wire's result, and as the action record.
+/// docs/control-port.md#methods table, its one home: core's reply as the wire's result, and as the action record.
 control::CommandResult resultOf(const NodeName& node, const LifecycleReply& reply);
 control::ActionRecord recordOf(control::LifecycleVerb verb, const NodeName& node, const LifecycleReply& reply);
 class MainLoopSide {
@@ -54,7 +54,7 @@ public:
 	void stampSnapshots(const control::SnapshotStamp& stamp);
 	/// A lifecycle verb on the main loop: `stopping` (the keeper stopped) answers CommandError Stopping without asking;
 	/// else NodeOperations' call with a judged callback that tells every ActionListener the record before any health
-	/// change. Returns the reply mapped by node-lifecycle-modules.md 5.8's table (resultOf, recordOf).
+	/// change. Returns the reply mapped by docs/control-port.md#methods table (resultOf, recordOf).
 	control::CommandResult operate(control::LifecycleVerb verb, const NodeName& node, bool stopping);
 	/// Plan. Accepted: running = offer.file.version, listeners told graphFileChanged, commit. Refused
 	/// with cause disk: the refusal recorded for that version (place from placeOf), listeners told.

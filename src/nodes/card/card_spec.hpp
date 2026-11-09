@@ -1,10 +1,10 @@
-// The "card" node type's spec and class (docs/design/batch2.md section 4.4; docs/design/node-framework.md sections
-// 6.10, 7.1, 7.6 and 11; docs/design/node-lifecycle-modules.md 3.9): private to the type, shared by card.cpp and its tests, which run it through
-// ear::testing::TypeHarness<spec, Card> by the same bank handles. In the type's own named namespace, never an unnamed
-// one (type_spec.hpp says why). Inputs "play.1".."play.N" pass straight through to the inside bank "to_card", which the
-// framework joins to the playback card's channels; the capture card's channels arrive on the inside bank "from_card"
-// and pass straight through to the outputs "capture.1"... The pass-through is the framework's: the type writes no
-// audio code. The card is named only by a CardId, so no user text reaches ALSA.
+// The "card" node type's spec and class (docs/node-types.md#card; docs/writing-a-node-type.md#the-class): private to
+// the type, shared by card.cpp and its tests, which run it through ear::testing::TypeHarness<spec, Card> by the same
+// bank handles. In the type's own named namespace, never an unnamed one (type_spec.hpp says why). Inputs
+// "play.1".."play.N" pass straight through to the inside bank "to_card", which the framework joins to the playback
+// card's channels; the capture card's channels arrive on the inside bank "from_card" and pass straight through to the
+// outputs "capture.1"... The pass-through is the framework's: the type writes no audio code. The card is named only by
+// a CardId, so no user text reaches ALSA.
 #pragma once
 #include <cstdint>
 #include <expected>

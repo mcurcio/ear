@@ -1,4 +1,4 @@
-// The tests' RTP sender and tone check (docs/design/rtp.md section 7.4), shared by the receiver's
+// The tests' RTP sender and tone check (docs/engine.md#rtp-receivers), shared by the receiver's
 // engine tests (src/pipewire/tests/rtp_receiver_test.cpp) and the system test
 // (test/system/rtp_test.cpp). Header-only; the target ear_rtp_tone puts it on the include path.
 #pragma once

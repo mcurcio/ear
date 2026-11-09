@@ -1,9 +1,9 @@
-// The graph file keeper's sequencer (docs/design/knobly-config.md, design rules 1-3; S4): it owns
+// The graph file keeper's sequencer (docs/architecture.md#how-a-change-moves): it owns
 // the working copy, the disk base and the write state, takes requests, verdicts and disk checks one
 // at a time in arrival order, and writes ear.conf only when nothing is waiting. Keeper thread only
 // (every call, including the completions it posts to `self`). Its tests drive it on one thread with
 // two pumped executors. The lifecycle verbs riding with the reads, and node.disable and node.enable as edits answered
-// by their outcome, are docs/design/node-lifecycle-modules.md 5.7's (slice 3a, step L-6, D-M13).
+// by their outcome, are docs/control-port.md#methods.
 #pragma once
 #include <cstdint>
 #include <deque>

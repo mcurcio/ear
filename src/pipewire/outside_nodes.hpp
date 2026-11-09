@@ -1,4 +1,4 @@
-// The one outside-node lifecycle (docs/design/rtp.md section 7.2): how every kind of outside
+// The one outside-node lifecycle (docs/engine.md#outside-nodes): how every kind of outside
 // node (a sound card, an RTP receiver) is joined to its port block, reported and torn down. A
 // kind only says how its PipeWire node is made, how EAR hears from it and which ports it has.
 // Private to ear_pipewire: its sources include it by this path; no public header does.
@@ -67,10 +67,10 @@ public:
 /// Makes a kind's body, which reports to the events it is given (they outlive the body).
 using OutsideBodyMaker = std::move_only_function<std::unique_ptr<OutsideBody>(OutsideBodyEvents&)>;
 
-/// The one lifecycle, for every kind (batch2.md section 5's card state machine, generalised):
+/// The one lifecycle, for every kind (docs/engine.md#sound-cards card state machine, generalised):
 ///   opening --body running(id)--> linking: one link per channel through link-factory, the
-///     outside node and the block each named by its global id (docs/design/node-lifecycle.md
-///     section 5.7: an older block of the same name is never reached), each port by name
+///     outside node and the block each named by its global id (an older block of the same name
+///     is never reached), each port by name
 ///     (link.output.node/port, link.input.node/port as `join.flow` says), owned by EAR's
 ///     connection (link_proxy.hpp)
 ///   linking --every link ACTIVE--> ready (events.ready)

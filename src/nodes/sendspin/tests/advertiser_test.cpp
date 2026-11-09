@@ -1,4 +1,4 @@
-// The name a listening node goes by on the network (docs/design/sendspin.md section 4). Its records and the socket are the
+// The name a listening node goes by on the network (docs/node-types.md#sendspin). Its records and the socket are the
 // system tests', against a real browser.
 #include <string>
 

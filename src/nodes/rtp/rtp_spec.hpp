@@ -1,9 +1,9 @@
-// The "rtp" node type's spec and class (docs/design/rtp.md sections 3 and 7.3; docs/design/node-framework.md
-// sections 6.10, 7.1, 7.6 and 11; docs/design/node-lifecycle-modules.md 3.9): private to the type, shared by rtp.cpp and its tests, which run it through
-// ear::testing::TypeHarness<spec, Rtp> by the same bank handles. In the type's own named namespace, never an unnamed one
-// (type_spec.hpp says why). The framework joins the receiver's channels to the inside bank "from_rtp" and passes them
-// straight through to the outputs "stream.1"..: the type writes no audio code. Every setting is checked by the table,
-// so nothing reaches PipeWire unparsed: the address is an RtpAddress, the format a closed enum, every number ranged.
+// The "rtp" node type's spec and class (docs/node-types.md#rtp; docs/writing-a-node-type.md#the-class): private to the
+// type, shared by rtp.cpp and its tests, which run it through ear::testing::TypeHarness<spec, Rtp> by the same bank
+// handles. In the type's own named namespace, never an unnamed one (type_spec.hpp says why). The framework joins the
+// receiver's channels to the inside bank "from_rtp" and passes them straight through to the outputs "stream.1"..: the
+// type writes no audio code. Every setting is checked by the table, so nothing reaches PipeWire unparsed: the address
+// is an RtpAddress, the format a closed enum, every number ranged.
 #pragma once
 #include <cstdint>
 #include <optional>
@@ -14,7 +14,7 @@
 
 namespace ear::nodes::rtp {
 
-/// The receive buffer when the settings name none: about 100 ms (R2). The one home of this
+/// The receive buffer when the settings name none: about 100 ms. The one home of this
 /// default; the framework always passes the value on.
 inline constexpr std::uint32_t defaultLatencyMs = 100;
 
@@ -54,7 +54,7 @@ struct Rtp {
 		                                           .latencyMs = s.get<latencyRow>()});
 		// The receive buffer holds the stream that long before it leaves; PipeWire's receiver reports none of it.
 		const std::uint32_t buffered = s.get<latencyRow>() * cx.format().rate / 1000;
-		cx.declareLatency(fromRtp, stream, Latency{buffered, buffered}); // on stream, as before (D-L17)
+		cx.declareLatency(fromRtp, stream, Latency{buffered, buffered}); // on stream, as before
 		cx.use(passThrough({bankPair(fromRtp, stream)}));
 		return Configured::applied();
 	}
