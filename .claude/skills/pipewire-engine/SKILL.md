@@ -337,8 +337,9 @@ CI's tests use a sender thread on 127.0.0.1 (`test/support/rtp_tone.hpp`), never
 the request goes into the block's ring of eight, one non-blocking `pw_loop_invoke` per block in
 flight applies it on the block's own data loop between two cycles, and `done(P)` runs later on the
 main loop, from the block's completion event (or `settle()`), never inside the call, with `P` the
-position it takes effect from (`takenAt`: the next cycle's expected position, wrong by up to
-`resync.ms` plus a block across a driver reset, never early). Once `done` ran, no `process()` of the
+position it takes effect from (`takenAt`: the next cycle's expected position; a stall's catch-up
+skips whole blocks forward, so it can be late by a block there, never early; with the driver's
+default `resync.ms` it was up to 10 ms plus a block across a reset). Once `done` ran, no `process()` of the
 old code is running or will run, so the node framework can release the old insides. A request with
 no code makes every output silent; the block keeps processing. A block with no data loop (refused,
 never connected, or its local node destroyed: `filter.c` clears the pointer) applies it on the main
@@ -402,9 +403,10 @@ Recorded in `docs/design/node-lifecycle.md` 10.5 with PipeWire's sources (`loop.
 - **S2: take-up by position, under an invoke storm** (`RUN_SERIAL`, tag `[s2]`, a 64-frame block).
   Every request is taken up once, in order, one cycle after publication, and nodes enter in link
   order in every cycle they all run. But a cycle an xrun cuts short is run by an upstream prefix of
-  the graph only (U, or U and B), never by a downstream node without its upstream; and on a loaded
-  host `clock.position` steps back (section "The clock"), the whole graph running positions again.
-  So cycles are told apart by the order they ran in, never by position. For 3a this changes nothing
+  the graph only (U, or U and B), never by a downstream node without its upstream. On a loaded
+  host `clock.position` stepped back too, the whole graph running positions again, until
+  `engine.conf` set `resync.ms` (section "The clock"); S2 now checks it never does. Cycles are
+  still told apart by the order they ran in, never by position. For 3a this changes nothing
   (the sink is inside the block); 3b's source companions must count a chunk as played only once
   their block took it up, or keep their realtime side inside the block (D-L25).
 - **S3: one data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0`

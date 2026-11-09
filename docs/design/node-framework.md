@@ -2685,9 +2685,10 @@ can overturn any. The pages are written to them.
 - Settled by slice 3a's step L-0 (node-lifecycle.md 10.5, [V]): asynchronous `pw_loop_invoke` from the main loop
   keeps posting order, never waits and never allocates on the data thread; a full queue is never refused (the poster
   allocates); one data-loop thread. Open for 3b: a cycle cut short by an xrun is run by an upstream prefix of the graph
-  only, so a source companion must count a chunk as played only once its block took it up, or 3b takes D-L25; and on
-  a loaded host `clock.position` steps back (the dummy driver's reset after a run of late timeouts), the whole graph
-  running positions again, so nothing may key on a position as unique.
+  only, so a source companion must count a chunk as played only once its block took it up, or 3b takes D-L25. The
+  second fact, `clock.position` stepping back after the dummy driver's reset, is settled: `engine.conf`'s `resync.ms`
+  (2026-11-09, "Slice 7 as built") keeps the driver from resetting, so the position only ever skips whole blocks
+  forward; a pause of tens of seconds or more still slews the graph for minutes.
 - Settled by the slice 7 spike (section 10, [V]): the dummy stays the driver by joining `ear.graph`, not by cards marked
   `node.driver = false`; `clock.id = monotonic-raw` works as a steered `CLOCK_MONOTONIC` timer, with `clock.nsec` in
   `CLOCK_MONOTONIC`; the dummy's delay is always 0; the follower's rate match is private to the adapter (logs only); and

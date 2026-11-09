@@ -490,7 +490,8 @@ How `FilterPortBlock` (`port_blocks.cpp`) does it:
   is still at full gain and frame `N` on is zero. `takenAt` is the *expected* position: when a stall longer than the
   driver's resync bound (480 frames, 10 ms) makes the dummy driver reset, the next cycle carries another position (L-2's
   fade test found it), forward or back (10.5: after a step back the swap waits until the position reaches `takenAt`
-  again, up to `resync.ms` late); nothing in 3a reads it but tests, and 3b's companions must allow for it.
+  again, up to `resync.ms` late); nothing in 3a reads it but tests, and 3b's companions must allow for it. (Since
+  `engine.conf`'s `resync.ms`, 2026-11-09: the dummy driver no longer resets after a stall, so `clock.position` never steps back; `docs/design/node-framework.md`, "Slice 7 as built": a stall's catch-up skips whole blocks forward, so `takenAt` is late by a block there, never early.)
 - **Completing.** The data loop writes the completed request's number into an atomic (`appliedSeq`, `fadedSeq`) and
   calls `pw_loop_signal_event` on an event source the block made on the main loop at construction (as the handoff
   does from `process` today, `handoffs.cpp:54` [V], and as the block already does for refusals, `port_blocks.cpp:106`
@@ -1164,7 +1165,7 @@ What the spikes changed in this page's criteria (the kept tests assert the corre
   take-up published just before a step back waits until the position reaches `takenAt` again (30 to 215 of 1,000 a
   run were swapped after `takenAt`, by a jump forward or back, under that load), so a drive's take-up is late by up
   to `resync.ms` plus a block, never early. For 3b: a companion that keys anything on `clock.position` (a chunk played "at" a position) sees positions
-  repeat, and must key on the cycle instead.
+  repeat, and must key on the cycle instead. (Settled since: `engine.conf`'s `resync.ms`, 2026-11-09: the dummy driver no longer resets after a stall, so `clock.position` never steps back; `docs/design/node-framework.md`, "Slice 7 as built". S2 now checks no step back.)
 - **S3's literal "every node names the loop" fails for `pw_filter`s.** Corrected: the property reads 1; the process has
   one data-loop thread; a block's filter loop is the context's loop; any node that names a loop names that one. The
   fallback (naming the loop on every adapter and module) is not needed.
@@ -1423,7 +1424,7 @@ None. Every choice here is internal or follows an owner's answer already given (
   prefix only, so a source companion can run a cycle its block never runs. 3b's design either counts a source's chunk
   as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block). And
   `clock.position` steps back on a loaded host, the whole graph running positions again, so nothing may key on a
-  position as unique.
+  position as unique (settled since: `engine.conf`'s `resync.ms`, 2026-11-09: the dummy driver no longer resets after a stall, so `clock.position` never steps back; `docs/design/node-framework.md`, "Slice 7 as built").
 - [V] knobly's layout of `insert_statements` into a one-line block (8.3): not acceptable on the `{`'s line, so that
   case is written textually; pinned by L-5's first test.
 - [V] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7): L-2's test finds
@@ -1848,5 +1849,6 @@ card node on the test card, an `rtp` node on a held UDP port saying `still confi
 hand-written `node white noise disabled;` booting nothing with the hint); `AGENTS.md`, the `pipewire-engine`,
 `sendspin` and `ear-on-talos` skills (`control-port` was L-6's); `docs/design/node-framework.md`'s "Slice 3a as built"
 and status; and node-primitives.md 6.6's erratum (D-M5). What L-8 found in the code that no page said is in that
-record. Open items (16) stand as written: 3b's two facts (cut-short cycles, positions stepping back), the bounds against
+record. Open items (16) stand as written: 3b's two facts (cut-short cycles, positions stepping back, the second settled
+since by `engine.conf`'s `resync.ms`, 2026-11-09), the bounds against
 CI's stalls [U], and the legacy `sendspin` feed's leftover after a stop.

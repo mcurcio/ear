@@ -703,8 +703,10 @@ on port 7777, automatic card retry and hotplug, arm64 images; for the node frame
 section 13.1): slice 3b's companions (a sink's realtime side behind an engine node of its own instead of inside the
 block, readiness deadlines for cards and RTP receivers, `companions` on the wire), with two facts open for its design
 (`docs/design/node-lifecycle.md` 10.5 and 16): a cycle an xrun cuts short is run by an upstream prefix of the graph
-only, so a source companion can run a cycle its block never runs, and on a loaded host the dummy driver's reset steps
-`clock.position` back, the whole graph running positions again, so nothing may key on a position as unique; slice
+only, so a source companion can run a cycle its block never runs (the second, `clock.position` stepping back after the
+dummy driver's reset, is settled: `engine.conf`'s `resync.ms` keeps the driver from resetting, so after a stall it
+skips whole blocks forward and never steps back, though a pause of tens of seconds or more still slews the graph for
+minutes, `docs/design/node-framework.md` "Slice 7 as built"); slice
 3c's `sendspin` on the type's class (the legacy adapter, `StartContext`, the run object and the handoffs gone) and a
 recording opened off the main loop; slice 3d's changes in place (the change version of `configure`,
 `PortBlock::reshape`, `node.set`); slice 8's recovery of failed nodes; and sound cards opened off the main loop: ALSA's
@@ -712,7 +714,9 @@ open, drop and close run on ear's main loop inside the engine, so a USB card tha
 node and the control port's graph requests until ear restarts (the main-loop watchdog reports it;
 `docs/design/node-framework.md` 6.8); for the clock (`docs/design/node-framework.md` section 10): an
 internal clock anchored to one card (that card bit-perfect), a follower watchdog for a frozen card, latency a run reports
-while it runs (only declared at start), and the MOTU checked as a follower; for the graph file: `@include` (more files than `ear.conf`), a separate writer thread (so an
+while it runs (only declared at start), the MOTU checked as a follower, and a pause of tens of seconds or more on the
+data thread leaving the graph on the raw clock (PipeWire's `node-driver.c` would have to re-arm its timer and its loop
+on a reset; checked at each bump); for the graph file: `@include` (more files than `ear.conf`), a separate writer thread (so an
 edit never waits behind a write), undo, and changing the graph frequency or block size while
 ear runs. For `rtp` (`docs/design/rtp.md` section 9): a failure for a port that cannot be
 bound, a "receiving" status, multicast tested, a larger datagram size (`net.mtu`) for many
