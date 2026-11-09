@@ -19,7 +19,6 @@
 #include <memory>
 #include <mutex>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -171,10 +170,9 @@ public:
 	FilterPortBlock& operator=(const FilterPortBlock&) = delete;
 
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
-		// A sink reads an inside output bank, so a block has at most one tap per such bank (realtime state sized at
-		// make); more is a caller's bug.
-		if (request.sinks.size() > sinks_.size())
-			throw std::logic_error("a drive binds more sinks than the block has inside output banks");
+		// A sink reads an inside output bank and NodeHost gives each bank at most one (I9), so a drive binds at most one
+		// tap per such bank: the realtime storage is sized for that at make, and apply() binds no more than it holds.
+		// Nothing is thrown here: this runs on the main loop, inside PipeWire's C callbacks.
 		pending_.push_back(Pending{Kind::drive, request.code, request.faded, request.sinks, std::move(done), {}});
 		pump();
 	}

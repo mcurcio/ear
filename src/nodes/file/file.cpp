@@ -8,6 +8,7 @@
 #include <sndfile.h>
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -32,13 +33,27 @@ public:
 		info.samplerate = static_cast<int>(format_.rate);
 		info.channels = 2;
 		info.format = SF_FORMAT_WAV | SF_FORMAT_FLOAT;
-		file_ = sf_open_fd(descriptor_, SFM_WRITE, &info, SF_FALSE);
+		std::string refused;
+		{
+			// sf_strerror(nullptr) reads libsndfile's one process-wide error, and every file node's sink opens on a
+			// thread of its own: the open and its error are read together, under one lock.
+			static std::mutex opening;
+			const std::scoped_lock lock(opening);
+			file_ = sf_open_fd(descriptor_, SFM_WRITE, &info, SF_FALSE);
+			if (file_ == nullptr) refused = sf_strerror(nullptr);
+		}
 		// Said before the sink posts `begun`, so the node fails start-failed before it is configured.
-		if (file_ == nullptr) events_.lost("cannot open " + path_ + ": " + sf_strerror(nullptr));
+		if (file_ == nullptr) events_.lost("cannot open " + path_ + ": " + refused);
 	}
 
 	void consume(const Chunk& chunk) override {
-		if (file_ != nullptr) sf_writef_float(file_, chunk.interleaved.data(), chunk.frames);
+		if (file_ == nullptr) return;
+		const sf_count_t written = sf_writef_float(file_, chunk.interleaved.data(), chunk.frames);
+		// A short write (a full disk) loses frames from the WAV: said once, as a note (3a gives a type no log seam).
+		if (written < static_cast<sf_count_t>(chunk.frames) && !shortSaid_) {
+			shortSaid_ = true;
+			events_.say("write-short " + path_ + ": " + sf_strerror(file_));
+		}
 	}
 
 	void finish() override { close(); }
@@ -54,6 +69,7 @@ private:
 	AudioFormat format_;
 	InsidesEvents& events_; // the configuration's channel, which outlives the sink
 	SNDFILE* file_ = nullptr;
+	bool shortSaid_ = false; // the sink's thread only
 };
 
 } // namespace

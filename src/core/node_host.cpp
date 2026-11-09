@@ -436,7 +436,8 @@ struct NodeHost::Impl {
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override {
 			return guarded([&]() -> SinkRequest& {
 				requireConfiguring("sink");
-				const Ports::Bank& found = insideBank(ports_, std::string(bank), Direction::output, "a sink");
+				const std::string name(bank);
+				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
 				requireOneName(name_ + "." + found.name);
 				Configuration& c = *config_;
 				std::unique_ptr<Sink> made;

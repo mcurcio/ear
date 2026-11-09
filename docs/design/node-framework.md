@@ -1841,6 +1841,12 @@ flowchart LR
                  std::int64_t startNs; std::int64_t startRawNs; std::uint32_t upstreamFrames; bool discontinuity; };
   ```
 
+  `discontinuity` is the cycle's `GraphCycle::discontinuity` (section 9.3's list): it marks the first cycle after any
+  drive, a re-drive of the same code included (slice 3a's interim sink is bound by each drive, and a drive with the
+  same code still starts the code afresh to the block), as well as a new driver, a position jump and the cycle after
+  one too large to run. A consumer that must tell a real gap from a re-drive compares `position` with the last
+  chunk's end (node-lifecycle-modules.md 4.4, L-4b review).
+
   `SinkConsumer` (`begin`, `consume`, `finish`) and `SinkControl` (`pause`, `resume`) are declared whole in
   node-primitives.md 6.6, their one home; this section keeps the sink's realtime contract.
 - **Companions are armed by graph position** (round 4's F3, F7; I4). A cycle is not one dispatch: each client-node

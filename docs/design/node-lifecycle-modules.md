@@ -545,7 +545,8 @@ with frames and calls `consume` with a `Chunk` (wrapping at the ring's end in tw
 invoke that applies the request, so a tap and its code change in one step: D-L29). In `process`, after the code (or the
 silence) and before metering, for each binding it builds the span list from the output spans `[firstOutput,
 firstOutput + channels)` and calls `tap->write(bank, frames, ChunkStamp{cycle.position, cycle.startNs,
-cycle.startRawNs, cycle.discontinuity})`. The span list lives in a per-block scratch array sized at make (the bank's
+cycle.startRawNs, cycle.discontinuity})` (the cycle's flag: true on the first cycle after any drive, a re-drive of the
+same code included, so a consumer tells a stop's gap from a re-drive only by `position`). The span list lives in a per-block scratch array sized at make (the bank's
 spans are already in the block's output list, so nothing allocates on the data loop).
 
 ### 4.5 `file`, written whole
@@ -1197,9 +1198,10 @@ reason. Nothing here changes a rule of a higher page. The legacy maker (`makeLeg
    a sink on a bank named `playback` beside a playback card is refused too (the sink's own I9 check the task asked for).
 3. **D-M17 made robust**: an adapter that throws (no thread) is recorded as the configuration's broken rule as well as
    thrown, so a type that catches it still fails `configure threw: <what>`, as D-M3 does for every other call.
-4. **`FilterPortBlock::drive` throws `std::logic_error`** for a request that binds more sinks than the block has inside
-   output banks: the taps are copied inside the invoke into storage sized at make (4.4: nothing allocates on the data
-   loop), and a sink reads an inside output bank, so more is a caller's bug.
+4. **`FilterPortBlock` binds at most one tap per inside output bank**: the taps are copied inside the invoke into
+   storage sized at make (4.4: nothing allocates on the data loop), and `apply` binds no more than it holds. `NodeHost`
+   gives each bank at most one sink (I9's name check), so nothing is lost; nothing is thrown either, since `drive` runs
+   inside PipeWire's C callbacks (as built a `std::logic_error`; the L-4b review dropped it).
 5. **`TypeHarness` forwards `health()`, `gone()`, `droppedFrames()`, `unwritten()`, `companions()`, `handoffs()` and
    `recordingRequests()`** to its `NodeHarness`, so a test that holds the harness by pointer (`file_test.cpp`'s
    `std::unique_ptr<TypeHarness>`) reads them without `->node()`. The harness's `FakeSinks` keeps `outsideEvents`
@@ -1219,6 +1221,23 @@ reason. Nothing here changes a rule of a higher page. The legacy maker (`makeLeg
 10. **A sink's first chunk after a node's first drive is not at that drive's `takenAt`** when the block had run no cycle
     before it (`PortBlock::takenAt` is 0 until a cycle ran, and `NodeHost` drives at the block's first STREAMING): the
     chunk carries the clock's real position, so a consumer that dates by `position` is right; only a comparison with the
-    drive's reported position is not. `sink_test.cpp`'s ramp therefore warms the block up with a first code, and judges
-    a start's first frame exact unless the clock jumped (an xrun) at that take-up, as `port_block_test.cpp` does; a
-    stop's last frame is judged exact always.
+    drive's reported position is not. `sink_test.cpp`'s ramp checks the sink's first frame against the code's own first
+    cycle after each start, always (a first drive with no cycle before it included), and its last frame against the
+    stop's position, always; only the start's reported position may differ (the block's first drive, or an xrun at the
+    take-up).
+
+### After review (L-4b, 2026-11-09)
+
+An independent review of the L-4b commit asked for these; each is built.
+
+1. **The ramp's exemption narrowed** (`sink_test.cpp`): the code records the position of its first cycle after each
+   start, and the sink's first frame must be exactly that, with no exemption; only `takenAt`'s comparison is excused.
+   Round 0 is now the block's first drive with no warm-up (item 10's case).
+2. **No throw on the main loop's drive path** (item 4, as amended).
+3. **AGENTS.md's `ear_core` and node-type rows** say `sendspin` alone runs the legacy adapter and what `sink.hpp` holds.
+4. **`file`'s `WavWriter`** opens and reads libsndfile's process-wide error under one lock (each sink opens on its own
+   thread), and says once (a note, `write-short <path>: <why>`: 3a gives a type no log seam) when a write is short.
+5. **Tests added** (`node_host_test.cpp`): `waitingFor` `consumer` after 2 s, a sink's dropped frames reaching
+   `nodeGone` through a held close, and `ear.close-overdue` counting an open sink whose close never reports, leaked.
+6. **`Chunk::discontinuity` documented** (`sink.hpp`, node-framework.md 9.6, 4.4 above): it marks the first cycle after
+   any drive, a re-drive of the same code included.

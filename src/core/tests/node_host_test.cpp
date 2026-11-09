@@ -4266,3 +4266,65 @@ TEST_CASE("A restart waits for its sink's close before it frees the configuratio
 	f.settle();
 	CHECK(f.allGone == 1);
 }
+
+TEST_CASE("A node waits for its sink's consumer, says so as waitingFor consumer after 2 s, and a sink's frames dropped "
+          "reach nodeGone once its held close reports",
+          "[node_host][sink]") {
+	Fixture f;
+	f.sinks.holdBegin = true;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	f.add("rec", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(waitingForDelay);
+	f.settle();
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].phase == NodePhase::configuring);
+	CHECK(f.host.health()[0].waitingFor == std::vector<WaitingFor>{{WaitingFor::Kind::consumer}});
+	CHECK(waitingKindName(WaitingFor::Kind::consumer) == "consumer");
+
+	f.sinks.made.at(0)->runBegin();
+	f.settle();
+	CHECK(f.host.health()[0].state == NodeState::running);
+	CHECK(f.host.health()[0].waitingFor.empty());
+
+	// The sink refused 5 frames over its life; its close is held: the node is gone only once it reports.
+	f.sinks.made.at(0)->dropped = 5;
+	f.sinks.made.at(0)->holdClose = true;
+	f.stopAll();
+	f.settle();
+	CHECK(countOf(f.log, "sink rec.pb close") == 1);
+	CHECK(f.allGone == 0);
+	f.sinks.made.at(0)->runClose();
+	f.settle();
+	CHECK(countOf(f.log, "node rec gone dropped=5") == 1);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A sink whose close never reports is said by ear.close-overdue, counted among what is open, and leaked",
+          "[node_host][sink]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	addRunning(f, "rec", config);
+	f.sinks.made.at(0)->holdClose = true; // its consumer's finish hangs
+	f.log.clear();
+	f.stopAll();
+	f.settle();
+	CHECK(countOf(f.log, "sink rec.pb close") == 1);
+	CHECK(f.allGone == 0);
+	f.timers.advance(closeDeadline);
+	f.settle();
+	CHECK(f.allGone == 1);
+	CHECK(f.host.leaked() == 1);
+	CHECK(countOf(f.log, "diagnostic rec ear.close-overdue") == 1);
+	REQUIRE_FALSE(f.diagnostics.details.empty());
+	CHECK(f.diagnostics.details.back().find("0 handoffs open, 1 sinks open") != std::string::npos);
+	CHECK(countOf(f.log, "sink rec.pb destroyed") == 0); // leaked, never freed: its thread may still run
+	CHECK(countOf(f.log, "instance destroyed") == 0);
+	// The close reports at last: it lands nowhere.
+	f.sinks.made.at(0)->runClose();
+	f.settle();
+	CHECK(countOf(f.log, "node rec gone dropped=0") == 1);
+}

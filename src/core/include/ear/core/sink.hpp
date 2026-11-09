@@ -28,7 +28,10 @@ struct Chunk {
 	std::int64_t startNs;         // its cycle's start, CLOCK_MONOTONIC
 	std::int64_t startRawNs;      // the same on CLOCK_MONOTONIC_RAW
 	std::uint32_t upstreamFrames; // the latency upstream of the bank's paired input: always 0 until slice 3b (D-L15)
-	bool discontinuity;           // the cycle's GraphCycle::discontinuity; a stop's gap shows only in `position`
+	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
+	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
+	/// only in `position`: compare it with the last chunk's end to tell a gap (a stop) from a re-drive.
+	bool discontinuity;
 };
 
 /// A sink's consumer (docs/design/node-primitives.md 6.6 is its home; node-lifecycle-modules.md D-M5 gives it a public

@@ -451,24 +451,21 @@ public:
 		for (const std::span<float> out : outputs)
 			for (std::uint32_t i = 0; i < frames; ++i) out[i] = rampAt(cycle.position + i);
 		if (armed_.exchange(false, std::memory_order_acq_rel))
-			firstXruns_.store(cycle.xruns, std::memory_order_relaxed);
-		lastXruns_.store(cycle.xruns, std::memory_order_relaxed);
+			firstPosition_.store(cycle.position, std::memory_order_relaxed);
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
-	/// The next cycle records its xrun count as the first after a take-up.
+	/// The next cycle records its position as the first after a take-up (read once calls() moved past it).
 	void arm() { armed_.store(true, std::memory_order_release); }
-	std::uint64_t firstXruns() const { return firstXruns_.load(std::memory_order_relaxed); }
-	std::uint64_t lastXruns() const { return lastXruns_.load(std::memory_order_relaxed); }
+	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_relaxed); }
 
 private:
 	ear::pipewire::testing::Waiter& waiter_;
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<bool> armed_{false};
-	std::atomic<std::uint64_t> firstXruns_{0};
-	std::atomic<std::uint64_t> lastXruns_{0};
+	std::atomic<std::uint64_t> firstPosition_{0};
 };
 
 /// Records every chunk (on the sink's thread), and wakes the waiter.
@@ -521,15 +518,6 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	REQUIRE(waiter.until([&] { return begun && events.isReady; }));
 	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 2}};
 	PositionRamp ramp(waiter);
-	// A drive's position is the next cycle's expected one, known only once the block has run a cycle (takenAt is 0
-	// before): a first code with no sink runs a few cycles, so every position below is the clock's.
-	PositionRamp warmUp(waiter);
-	bool warm = false;
-	block->drive(DriveRequest{&warmUp, {}}, [&](std::uint64_t) {
-		warm = true;
-		waiter.wake();
-	});
-	REQUIRE(waiter.until([&] { return warm && warmUp.calls() >= 4; }));
 
 	std::vector<std::uint64_t> takens; // start, stop, start, stop
 	std::size_t completed = 0;
@@ -550,19 +538,18 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 			if (i % 20 == 0) block->fadeOut([&] { waiter.wake(); });
 		}
 	};
-	// Whether the clock jumped (an xrun) between the last cycle seen before each start and its first cycle: then that
-	// first cycle is not at the position the start was taken at, through no fault of the sink.
-	std::array<bool, 2> jumped{};
+	// The position of the code's first cycle after each start, as the code itself saw it. Round 0 is the block's first
+	// drive with no cycle run before it (its takenAt says 0: Found building L-4b's item 10); round 1 follows a stop.
+	std::array<std::uint64_t, 2> firstRun{};
 	for (int round = 0; round < 2; ++round) {
 		INFO("round " << round);
-		const std::uint64_t xrunsBefore = round == 0 ? warmUp.lastXruns() : ramp.lastXruns();
 		ramp.arm();
 		block->drive(DriveRequest{&ramp, {}, bindings}, record(true));
 		++asked;
 		REQUIRE(waiter.until([&] { return completed == asked; }));
 		const std::uint64_t calls = ramp.calls();
 		REQUIRE(waiter.until([&] { return ramp.calls() >= calls + 4; }));
-		jumped[static_cast<std::size_t>(round)] = ramp.firstXruns() != xrunsBefore;
+		firstRun[static_cast<std::size_t>(round)] = ramp.firstPosition();
 		storm();
 		REQUIRE(waiter.until([&] { return completed == asked; }, 20s));
 		const std::uint64_t later = ramp.calls();
@@ -600,32 +587,40 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		if (!runs.empty() && runs.back().second == chunk.position) runs.back().second += chunk.frames;
 		else runs.emplace_back(chunk.position, chunk.position + chunk.frames);
 	}
-	INFO("starts and stops taken at " << takens[0] << ", " << takens[1] << ", " << takens[2] << ", " << takens[3]);
+	INFO("starts and stops taken at " << takens[0] << ", " << takens[1] << ", " << takens[2] << ", " << takens[3]
+	                                  << "; the code's first cycles at " << firstRun[0] << ", " << firstRun[1]);
 	if (runs.size() != 2) {
 		// The clock jumped (an xrun) inside a run: say so; the bounds below still hold.
 		WARN("the sink's frames came in " << runs.size() << " stretches: the graph clock jumped while it ran");
 	}
+	// None before the code's first cycle after a start, none after a stop's position.
 	for (const auto& [first, end] : runs) {
-		const bool inFirst = first >= takens[0] && end <= takens[1];
-		const bool inSecond = first >= takens[2] && end <= takens[3];
-		CHECK((inFirst || inSecond)); // none after a stop's position, none before a start's
+		const bool inFirst = first >= firstRun[0] && end <= takens[1];
+		const bool inSecond = first >= firstRun[1] && end <= takens[3];
+		CHECK((inFirst || inSecond));
 	}
 	for (std::size_t round = 0; round < 2; ++round) {
 		INFO("round " << round);
-		const std::uint64_t start = takens[2 * round];
 		const std::uint64_t stop = takens[2 * round + 1];
 		std::optional<std::uint64_t> first;
 		std::uint64_t end = 0;
 		for (const auto& [from, to] : runs)
-			if (from >= start && to <= stop) {
+			if (from >= firstRun[round] && to <= stop) {
 				if (!first) first = from;
 				end = std::max(end, to);
 			}
 		REQUIRE(first.has_value());
-		// The last frame the sink got is the last the code wrote before its silence took effect, always.
+		// The sink's first frame is the code's first cycle after the start, always: the tap is bound in the same
+		// invoke as the code, so no cycle of it is lost or added.
+		CHECK(*first == firstRun[round]);
+		// Its last frame is the last the code wrote before its silence took effect, always.
 		CHECK(end == stop);
-		// The first is the start's position, unless the clock jumped right at the take-up (an xrun under load).
-		if (!jumped[round] || *first == start) CHECK(*first == start);
-		else WARN("an xrun at the take-up: the sink's first frame at " << *first << ", the start taken at " << start);
+		// The start's reported position is that first cycle's, unless the block had run no cycle yet (round 0) or the
+		// clock jumped right at the take-up (an xrun under load): the only excusable comparison.
+		const std::uint64_t start = takens[2 * round];
+		if (round == 1 && start != firstRun[round])
+			WARN("an xrun at the take-up: the start taken at " << start << ", its code's first cycle at "
+			                                                   << firstRun[round]);
+		if (round == 1) CHECK(start <= firstRun[round]);
 	}
 }
