@@ -159,7 +159,10 @@ Thrown away; its numbers are in `docs/design/sendspin.md` section 5, against the
   refuses a frame or a fragmented message over 1 MiB (the library's own limit, reachable only after reassembly) and over 1024
   fragments, and lets one transport log line through every 10 s. It also makes a socket still to upgrade give way to a newcomer
   (8 an address), since its four sockets closed the surplus at accept, and keeps a close racing a peer's reset from ending the
-  process. Rebase it the same way, in `.cache/deps/ixwebsocket-src`.
+  process. An address's 8 count only sockets its peer has not closed (a dup of each socket, polled at admission): one closed
+  stays on the list until its own thread sees it, which on a loaded host outlasted an honest peer's quick reconnects and
+  refused them (`docs/design/sendspin.md` erratum 43). Rebase it the same way, in `.cache/deps/ixwebsocket-src`; configure
+  fetches the tree again when the patch changes.
 - `cmake/sendspin-listener.patch` is carried: the spec says a client MUST reject an upgrade carrying `Origin`, and the library's
   host server accepts it. Without it a web page speaking Noise could declare `pairing`, knock an idle server off and burn the
   20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook. It also makes an unproved connection give way

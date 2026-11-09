@@ -130,12 +130,14 @@ index 1070836f..cbf2a481 100644
  
          std::atomic<bool> _stop;
 diff --git a/ixwebsocket/IXWebSocketServer.cpp b/ixwebsocket/IXWebSocketServer.cpp
-index 70f9568f..873464cd 100644
+index 70f9568f..82a6b742 100644
 --- a/ixwebsocket/IXWebSocketServer.cpp
 +++ b/ixwebsocket/IXWebSocketServer.cpp
-@@ -14,9 +14,79 @@
+@@ -13,10 +13,102 @@
+ #include "IXWebSocketTransport.h"
  #include <future>
  #include <sstream>
++#include <poll.h>
  #include <string.h>
 +#include <sys/socket.h>
 +#include <unistd.h>
@@ -155,14 +157,25 @@ index 70f9568f..873464cd 100644
 +        // that address has its share, or else the oldest of the address holding most. So a holder
 +        // of sockets keeps no one out, and one address, however fast, touches no other's. The
 +        // second bound holds the threads if sockets that gave way are slow to go.
++        //
++        // An address holds only the sockets its peer has not closed: one closed waits for its own
++        // thread to see it before it leaves the list, and on a loaded host that can take longer
++        // than an honest server takes to come back, which its own closed sockets must not refuse.
++        // The kernel knows at once; every socket's thread still counts against the second bound.
 +        std::lock_guard<std::mutex> lock(_clientsMutex);
 +        const std::string& address = connectionState->getRemoteIp();
-+        const auto held = [this](const std::string& ip)
++        const auto open = [](const AdmittedSocket& socket)
++        {
++            pollfd ends {socket.probeFd, POLLRDHUP, 0};
++            return ::poll(&ends, 1, 0) == 0 ||
++                   (ends.revents & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0;
++        };
++        const auto held = [this, &open](const std::string& ip)
 +        {
 +            size_t count = 0;
 +            for (const auto& socket : _admittedSockets)
 +            {
-+                if (socket.state->getRemoteIp() == ip) ++count;
++                if (socket.state->getRemoteIp() == ip && open(socket)) ++count;
 +            }
 +            return count;
 +        };
@@ -192,7 +205,13 @@ index 70f9568f..873464cd 100644
 +        }
 +        const int upgradeFd = ::dup(fd);
 +        if (upgradeFd < 0) return false;
-+        _admittedSockets.push_back({connectionState, upgradeFd});
++        const int probeFd = ::dup(fd);
++        if (probeFd < 0)
++        {
++            ::close(upgradeFd);
++            return false;
++        }
++        _admittedSockets.push_back({connectionState, upgradeFd, probeFd});
 +        return true;
 +    }
 +
@@ -205,7 +224,11 @@ index 70f9568f..873464cd 100644
 +            if (it->state != connectionState) continue;
 +            if (it->upgradeFd >= 0) ::close(it->upgradeFd);
 +            it->upgradeFd = -1;
-+            if (forget) _admittedSockets.erase(it);
++            if (forget)
++            {
++                ::close(it->probeFd);
++                _admittedSockets.erase(it);
++            }
 +            return;
 +        }
 +    }
@@ -213,7 +236,7 @@ index 70f9568f..873464cd 100644
      const int WebSocketServer::kDefaultHandShakeTimeoutSecs(3); // 3 seconds
      const bool WebSocketServer::kDefaultEnablePong(true);
      const int WebSocketServer::kPingIntervalSeconds(-1); // disable heartbeat
-@@ -87,6 +157,7 @@ namespace ix
+@@ -87,6 +179,7 @@ namespace ix
      {
          handleUpgrade(std::move(socket), connectionState);
  
@@ -221,7 +244,7 @@ index 70f9568f..873464cd 100644
          connectionState->setTerminated();
      }
  
-@@ -152,6 +223,7 @@ namespace ix
+@@ -152,6 +245,7 @@ namespace ix
                                                   _enablePerMessageDeflate,
                                                   request,
                                                   _sendTimeoutSeconds);
@@ -230,7 +253,7 @@ index 70f9568f..873464cd 100644
          {
              // Process incoming messages and execute callbacks
 diff --git a/ixwebsocket/IXWebSocketServer.h b/ixwebsocket/IXWebSocketServer.h
-index a4a1d79f..a3654a3c 100644
+index a4a1d79f..8f0bdfba 100644
 --- a/ixwebsocket/IXWebSocketServer.h
 +++ b/ixwebsocket/IXWebSocketServer.h
 @@ -10,6 +10,7 @@
@@ -241,7 +264,7 @@ index a4a1d79f..a3654a3c 100644
  #include <memory>
  #include <mutex>
  #include <set>
-@@ -72,6 +73,14 @@ namespace ix
+@@ -72,6 +73,15 @@ namespace ix
          std::mutex _clientsMutex;
          std::set<std::shared_ptr<WebSocket>> _clients;
  
@@ -250,13 +273,14 @@ index a4a1d79f..a3654a3c 100644
 +        {
 +            std::shared_ptr<ConnectionState> state;
 +            int upgradeFd; // a dup of the socket while it has not finished its upgrade, else -1
++            int probeFd;   // a dup of the socket for its whole stay: whether its peer closed it
 +        };
 +        std::list<AdmittedSocket> _admittedSockets;
 +
          const static bool kDefaultEnablePong;
          const static int kPingIntervalSeconds;
          const static int kSendTimeoutSeconds;
-@@ -80,6 +89,8 @@ namespace ix
+@@ -80,6 +90,8 @@ namespace ix
          virtual void handleConnection(std::unique_ptr<Socket> socket,
                                        std::shared_ptr<ConnectionState> connectionState);
          virtual size_t getConnectedClientsCount() final;
