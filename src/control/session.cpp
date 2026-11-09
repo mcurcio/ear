@@ -128,7 +128,7 @@ void ControlSession::received(std::string text, std::move_only_function<void()> 
 		if (request.method == "levels.subscribe") { // answered here, without the main loop
 			if (!request.params.is_null())
 				if (auto checked = requireObject(request.params, JsonPointer{}, {}); !checked) {
-					refuse({invalidParams, checked.error().detail, nullptr});
+					refuse({invalidParams, checked.error().detail, {{"pointer", checked.error().pointer}}});
 					continue;
 				}
 			slots.push_back({Slot::Kind::levels, request.id, {}});

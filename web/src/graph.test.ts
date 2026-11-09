@@ -65,6 +65,57 @@ describe("the graph reducer", () => {
     );
   });
 
+  it("replaces every health member on node.state: one absent is absent now, one unknown is not kept", () => {
+    const start = replay(messagesOf(fixtures.lifecycle.messages).slice(0, 1));
+    const waiting: ServerMessage = {
+      jsonrpc: "2.0",
+      method: "node.state",
+      params: {
+        name: "desk",
+        state: "starting",
+        phase: "configuring",
+        since: "2026-11-09T10:00:01.000000Z",
+        wanted: "running",
+        blockLost: false,
+        cause: { kind: "action" },
+        waitingFor: [{ kind: "companion", name: "desk.playback" }],
+      },
+    };
+    const running: ServerMessage = {
+      jsonrpc: "2.0",
+      method: "node.state",
+      params: {
+        name: "desk",
+        state: "running",
+        phase: "running",
+        since: "2026-11-09T10:00:02.000000Z",
+        wanted: "running",
+        blockLost: false,
+        attempt: 3,
+      } as unknown as Extract<ServerMessage, { method: "node.state" }>["params"],
+    };
+    const desk = replay([waiting, running], start)!.nodes.find((node) => node.name === "desk")!;
+    expect(desk.phase).toBe("running");
+    expect(desk.cause).toBeUndefined();
+    expect(desk.waitingFor).toBeUndefined();
+    expect("attempt" in desk).toBe(false);
+    expect(desk.settings).toStrictEqual({ card: "MOTU", playback: 2 });
+  });
+
+  it("takes node.updated's disabled, and drops it when an update leaves it out", () => {
+    const start = replay(messagesOf(fixtures.lifecycle.messages).slice(0, 1));
+    const disabled = replay(
+      [{ jsonrpc: "2.0", method: "node.updated", params: { name: "porch", settings: {}, applied: "disable", disabled: true } }],
+      start,
+    );
+    expect(disabled!.nodes.find((node) => node.name === "porch")!.disabled).toBe(true);
+    const enabled = replay(
+      [{ jsonrpc: "2.0", method: "node.updated", params: { name: "porch", settings: {}, applied: "enable" } }],
+      disabled,
+    );
+    expect("disabled" in enabled!.nodes.find((node) => node.name === "porch")!).toBe(false);
+  });
+
   it("tells the store's listeners only when the graph changed", () => {
     const store = new GraphStore();
     let told = 0;

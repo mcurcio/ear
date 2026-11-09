@@ -13,6 +13,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
@@ -27,7 +28,6 @@ public:
 protected:
 	~OutputLines() = default;
 };
-using WallClock = std::function<std::chrono::system_clock::time_point()>;
 /// What paces log records: steady, so a wall clock set back never holds a source's records for good.
 using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 /// Every line ear writes on standard output, one JSON object each:
@@ -56,6 +56,10 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///   graph-file-write-failed  graph-file write-failed <detail>   (the last write's, as ear exits)
 ///   log                 [node <n> ]<source>[ <topic>] <level>: <text>
 ///   exit                ear: <reason>
+///   action              node <n> <action> invoked | node <n> <action> refused: <result>[ (<detail>)]
+///                       (control-plane.md 9: an operator's node.start, node.stop or node.restart, answered; fields
+///                       "node", "action", "result" (ok or the refusal's code), "detail" when set; told before the
+///                       node records the request causes, D-M8, D-M16)
 ///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
 ///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
@@ -73,6 +77,7 @@ class StatusLog final : public NodeHealthListener,
 						public GraphFileListener,
 						public NodeDiagnosticListener,
 						public EngineDiagnosticListener,
+						public ActionListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -92,6 +97,7 @@ public:
 	void graphFileWritten(const std::string& version) override;
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
+	void actionAnswered(const ActionRecord& record) override;
 	/// The main-loop watchdog (StallWatch, node-lifecycle.md 5.12), from its own thread: a look found the heartbeat
 	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back
 	/// after a gap of `ms` between the beats either side.

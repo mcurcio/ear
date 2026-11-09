@@ -3,7 +3,14 @@
 // fixture, so the server's and the UI's tests, which both run on these fixtures, exercise all of
 // it. The reducer's checks against the same fixtures are in graph.test.ts.
 import { describe, expect, it } from "vitest";
-import { commandErrorCodes, fileErrorCodes, methodNames, notificationNames, rpcErrorCodes } from "./protocol";
+import {
+  commandErrorCodes,
+  controlErrorCodes,
+  fileErrorCodes,
+  methodNames,
+  notificationNames,
+  rpcErrorCodes,
+} from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
 
 const all = Object.values(fixtures);
@@ -45,7 +52,7 @@ function errorCodesSeen(): { rpc: Set<number>; command: Set<string> } {
     for (const message of messagesOf(fixture.messages)) {
       if (!("error" in message)) continue;
       rpc.add(message.error.code);
-      if (message.error.data !== undefined) command.add(message.error.data.code);
+      if (message.error.data?.code !== undefined) command.add(message.error.data.code);
     }
   }
   return { rpc, command };
@@ -74,7 +81,8 @@ describe("the protocol fixtures", () => {
 
   it("receive every command error code, every file error code and every JSON-RPC error code", () => {
     const { rpc, command } = errorCodesSeen();
-    for (const code of [...commandErrorCodes, ...fileErrorCodes]) expect(command, code).toContain(code);
+    for (const code of [...commandErrorCodes, ...fileErrorCodes, ...controlErrorCodes])
+      expect(command, code).toContain(code);
     for (const code of Object.values(rpcErrorCodes)) expect(rpc, String(code)).toContain(code);
   });
 });

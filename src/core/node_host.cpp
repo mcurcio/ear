@@ -286,8 +286,11 @@ struct NodeHost::Impl {
 		}
 
 		/// An operation (4.4): the aggregate answers, and what it caused is carried out and told before the reply.
-		lc::LifecycleReply operate(lc::Operated (lc::NodeAggregate::*operation)()) {
+		/// `judged` hears the reply before any of it is carried out (D-M8).
+		lc::LifecycleReply operate(lc::Operated (lc::NodeAggregate::*operation)(),
+		                           NodeOperations::OperationJudged& judged) {
 			lc::Operated operated = (aggregate_.*operation)();
+			if (judged) judged(operated.reply);
 			feed(std::move(operated.actions));
 			return operated.reply;
 		}
@@ -1755,15 +1758,21 @@ struct NodeHost::Impl {
 
 	/// An operation (5.2): refused stopping during stopAll and unknown-node for a name no wanted node has; else the
 	/// wanted node's aggregate answers, in an input of its own, before the call returns.
-	LifecycleReply operate(const NodeName& name, Operated (NodeAggregate::*operation)()) {
+	LifecycleReply operate(const NodeName& name, Operated (NodeAggregate::*operation)(),
+	                       NodeOperations::OperationJudged judged) {
 		if (handling || inItem || flushing)
 			throw std::logic_error("an operation on node " + name + " inside NodeHost's own input: a wiring bug");
-		if (stopRequested) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::stopping});
+		const auto refuse = [&](LifecycleRefusal::Code code) {
+			LifecycleReply reply = std::unexpected(LifecycleRefusal{code});
+			if (judged) judged(reply);
+			return reply;
+		};
+		if (stopRequested) return refuse(LifecycleRefusal::Code::stopping);
 		Node* node = wantedOrNull(name);
-		if (node == nullptr) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::unknownNode});
+		if (node == nullptr) return refuse(LifecycleRefusal::Code::unknownNode);
 		std::optional<LifecycleReply> reply;
-		inputFor(node->serial(), [&](Node& wanted) { reply = wanted.operate(operation); });
-		if (!reply) return std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::unknownNode});
+		inputFor(node->serial(), [&](Node& wanted) { reply = wanted.operate(operation, judged); });
+		if (!reply) return refuse(LifecycleRefusal::Code::unknownNode);
 		return *reply;
 	}
 
@@ -1887,11 +1896,17 @@ void NodeHost::nodeReplacing(const NodeName& node, const NodeChange& change) {
 	});
 }
 
-LifecycleReply NodeHost::start(const NodeName& node) { return impl_->operate(node, &NodeAggregate::start); }
+LifecycleReply NodeHost::start(const NodeName& node, OperationJudged judged) {
+	return impl_->operate(node, &NodeAggregate::start, std::move(judged));
+}
 
-LifecycleReply NodeHost::stop(const NodeName& node) { return impl_->operate(node, &NodeAggregate::stop); }
+LifecycleReply NodeHost::stop(const NodeName& node, OperationJudged judged) {
+	return impl_->operate(node, &NodeAggregate::stop, std::move(judged));
+}
 
-LifecycleReply NodeHost::restart(const NodeName& node) { return impl_->operate(node, &NodeAggregate::restart); }
+LifecycleReply NodeHost::restart(const NodeName& node, OperationJudged judged) {
+	return impl_->operate(node, &NodeAggregate::restart, std::move(judged));
+}
 
 void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 	if (impl_->stopRequested) throw std::logic_error("stopAll() was called twice");

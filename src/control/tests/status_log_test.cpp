@@ -277,6 +277,9 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			const std::array fields{ear::DiagnosticField{"ms", 31}};
 			log.nodeDiagnostic("rec", "ear.hook-slow", "configure ran 31 ms", fields);
 		},
+		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "ok", std::nullopt}); },
+		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "not-restartable", "block-lost"}); },
+		[](StatusLog& log, Lines&) { log.actionAnswered({"porch", "start", "node-disabled", std::nullopt}); },
 	};
 }
 
@@ -304,7 +307,8 @@ TEST_CASE("Every kind the fixture shows is made, and each record is one line", "
 	const Json records = fixture()["records"];
 	for (const Json& entry : records) kinds.insert(entry["record"]["kind"].get<std::string>());
 	CHECK(kinds == std::set<std::string>{"engine", "control", "node", "note", "route", "graph-file",
-	                                     "graph-file-written", "graph-file-write-failed", "log", "exit", "diagnostic"});
+	                                     "graph-file-written", "graph-file-write-failed", "log", "exit", "diagnostic",
+	                                     "action"});
 	Lines lines;
 	StatusLog log(lines, &fixedTime, &pacedTime);
 	for (const auto& call : fixtureCalls()) call(log, lines);

@@ -146,6 +146,8 @@ diagnostic               node <name> <code>: <detail>   (ear.close-overdue, ear.
                                                         ear.main-loop-resumed)
                          ear.main-loop-stalled: no main-loop heartbeat for <ms> ms[, in <call>[ <node>]]
                          ear.main-loop-resumed: the main-loop heartbeat came back after a gap of <ms> ms
+action                   node <name> <start|stop|restart> invoked
+                         node <name> <start|stop|restart> refused: <code>[ (<reason>)]   (before the records it causes)
 exit                     ear: <reason>
 ```
 
@@ -202,8 +204,14 @@ Port 7777 serves the editor at `/` and JSON-RPC 2.0 over WebSocket at `/rpc`: `g
 times a second), `node.add`, `node.update`, `node.remove`, `route.add` and `route.remove`
 (each an edit made at `ear.conf`'s source), and `graphFile.get`, `graphFile.subscribe` (the
 file's text, version, diagnostics and state, then every `graphFile.changed`) and
-`graphFile.set` (a whole new text, based on a version). The wire format's one home is
-`docs/design/batch2.md` section 6 and the fixtures in `test/protocol/`. Every accepted edit is
+`graphFile.set` (a whole new text, based on a version); and, under protocol 1's feature `lifecycle`
+(`graph.get` says `protocol` and `features`), `node.start`, `node.stop` and `node.restart` (edit
+nothing, each an `action` record, work while the file has errors) and `node.disable` and
+`node.enable` (edits of the node's own `disabled` line), with every node's health (`state`,
+`phase`, `since`, `wanted`, `blockLost`, `cause`, `waitingFor`, `reason`) on snapshots, `node.added`
+and each `node.state`, and `node.gone` after `node.stopped`. The wire format's one home is
+`docs/design/batch2.md` section 6, from protocol 1 `docs/design/control-plane.md` section 4, and
+the fixtures in `test/protocol/`. Every accepted edit is
 written back to `ear.conf` once the keeper is free (write-behind), so it survives a restart
 unless a hand edit lands first or ear crashes before the write.
 

@@ -51,8 +51,7 @@ public:
 	GraphView read() const override {
 		log_.push("read graph");
 		GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
-		for (auto& node : graph_.nodes())
-			view.nodes.push_back({node.spec, node.ports, NodeState::starting, std::nullopt});
+		for (auto& node : graph_.nodes()) view.nodes.push_back({node.spec, node.ports, healthFromSpec(node.spec)});
 		return view;
 	}
 
@@ -95,6 +94,7 @@ struct Fixture {
 		graph.subscribe(static_cast<DesiredNodeListener&>(graphLog));
 		graph.subscribe(static_cast<DesiredRouteListener&>(graphLog));
 		side.subscribe(fileLog);
+		side.subscribeActions(actions);
 		GraphFileDisk& disk = fake != nullptr ? static_cast<GraphFileDisk&>(*fake) : realDisk;
 		DiskText base = disk.read();
 		auto first = GraphFileModel::load(base, catalogue);
@@ -168,7 +168,9 @@ struct Fixture {
 	QueueExecutor main{&log};
 	QueueExecutor self;
 	Reader reader{graph, log};
-	MainLoopSide side{graph, reader};
+	FakeOperations operations{log};
+	ActionLog actions{log};
+	MainLoopSide side{graph, reader, operations};
 	std::optional<Keeper> keeper;
 };
 
@@ -183,6 +185,14 @@ std::string code(const CommandResult& result) {
 		return outcome->has_value() ? "" : std::string(errorCode(outcome->error()));
 	if (const auto* refusal = std::get_if<control::FileRefusal>(&result))
 		return std::string(control::fileRefusalCode(*refusal));
+	if (const auto* refusal = std::get_if<control::ControlRefusal>(&result))
+		return std::string(control::controlRefusalCode(*refusal));
+	return "";
+}
+
+/// What a lifecycle request applied ("" when it is not an Applied).
+std::string applied(const CommandResult& result) {
+	if (const auto* done = std::get_if<control::Applied>(&result)) return std::string(control::appliedName(done->kind));
 	return "";
 }
 
@@ -411,6 +421,103 @@ TEST_CASE("A batch's reads come after its edit, in one main-loop turn with the r
 	REQUIRE(std::holds_alternative<control::GraphFile>(results[2]));
 	CHECK(std::get<control::GraphFile>(results[2]).version == f.lastChange().file.version);
 	CHECK(std::get<control::GraphFile>(results[2]).running == f.lastChange().file.version);
+}
+
+TEST_CASE("start, stop and restart reach the main-loop side in order with edits, write nothing, make no version, and "
+          "work while the file has errors",
+          "[keeper][lifecycle]") {
+	Fixture f("verbs");
+	f.start();
+	const auto before = f.graphFile();
+	f.log.clear();
+	f.operations.reply = LifecycleApplied::stop;
+	auto results = f.run(
+		{control::StopNode{"rec"}, control::UpdateNode{"rec", take2}, control::StartNode{"rec"}, control::GetGraph{}});
+	// The stop before the edit goes first, in the edit's step; the start after it waits for the edit's commit.
+	CHECK(f.log.lines == Lines{"stop rec", "action rec stop ok", "health rec", "file edit", "node.updated rec",
+	                           "start rec", "action rec start ok", "health rec", "read graph", "reply"});
+	CHECK(f.log.turnOf("stop rec") == f.log.turnOf("file edit"));
+	CHECK(f.log.turnOf("start rec") == f.log.turnOf("reply"));
+	REQUIRE(results.size() == 4);
+	CHECK(applied(results[0]) == "stop");
+	CHECK(ok(results[1]));
+	CHECK(applied(results[2]) == "stop"); // the fake's one reply
+	f.free();
+	const auto edited = f.graphFile();
+	CHECK(contents(f.file) == edited.text);
+
+	// A verb alone: no version, no write, no announcement.
+	f.log.clear();
+	f.operations.reply = LifecycleApplied::restart;
+	results = f.run({control::RestartNode{"desk"}});
+	CHECK(f.log.lines == Lines{"restart desk", "action desk restart ok", "health desk", "reply"});
+	CHECK(applied(results[0]) == "restart");
+	CHECK(f.graphFile().version == edited.version);
+	f.free();
+	CHECK(f.fileLog.written.size() == 1); // the edit's only
+
+	// While the file has errors, edits are file-invalid but the verbs still work.
+	handEdit(f.file, replaced(edited.text, "node white noise;", "nod white noise;"));
+	f.diskEvent();
+	f.log.clear();
+	f.operations.reply = LifecycleApplied::start;
+	results = f.run({control::StartNode{"rec"}, control::RemoveNode{"rec"}, control::DisableNode{"rec"}});
+	CHECK(applied(results[0]) == "start");
+	CHECK(code(results[1]) == "file-invalid");
+	CHECK(code(results[2]) == "file-invalid");
+	CHECK(f.log.lines == Lines{"start rec", "action rec start ok", "health rec", "reply"});
+	CHECK(before.version != edited.version);
+}
+
+TEST_CASE("Once the keeper stopped, a verb still reaches the main loop and answers stopping with its action record, "
+          "without asking NodeHost",
+          "[keeper][lifecycle]") {
+	Fixture f("verbs_stopped");
+	f.start();
+	f.keeper->stop();
+	f.pump();
+	f.log.clear();
+	const auto results = f.run({control::StopNode{"rec"}, control::DisableNode{"rec"}, control::GetGraph{}});
+	CHECK(f.log.lines == Lines{"action rec stop stopping", "read graph", "reply"});
+	CHECK(code(results[0]) == "stopping");
+	CHECK(code(results[1]) == "stopping");
+	REQUIRE(std::holds_alternative<GraphView>(results[2]));
+}
+
+TEST_CASE("node.disable and node.enable are edits at the node's own line, answered by the plan's outcome",
+          "[keeper][lifecycle]") {
+	Fixture f("disable");
+	f.start();
+	auto results = f.run({control::DisableNode{"rec"}});
+	CHECK(applied(results[0]) == "disable");
+	CHECK(f.log.lines == Lines{"file edit", "node.updated rec", "reply"}); // no action record: an edit says it
+	CHECK(f.lastChange().file.text == replaced(recordExample, R"(node file rec { path "take1.wav"; })",
+	                                           R"(node file rec { disabled true; path "take1.wav"; })"));
+	CHECK(f.graph.nodes()[3].spec.disabled);
+	f.free();
+	CHECK(contents(f.file) == f.lastChange().file.text);
+
+	f.log.clear();
+	const auto version = f.graphFile().version;
+	results = f.run({control::DisableNode{"rec"}}); // already disabled: nothing to edit
+	CHECK(applied(results[0]) == "unchanged");
+	CHECK(f.graphFile().version == version);
+
+	results = f.run({control::UpdateNode{"rec", take2}}); // kept for the enable
+	CHECK(ok(results[0]));
+	results = f.run({control::EnableNode{"rec"}});
+	CHECK(applied(results[0]) == "enable");
+	CHECK(f.lastChange().file.text == replaced(recordExample, "take1.wav", "take2.wav"));
+	CHECK_FALSE(f.graph.nodes()[3].spec.disabled);
+	results = f.run({control::EnableNode{"rec"}});
+	CHECK(applied(results[0]) == "unchanged");
+
+	results = f.run({control::DisableNode{"ghost"}});
+	CHECK(code(results[0]) == "unknown-node");
+	results = f.run({control::DisableNode{"desk"}}); // its line is its own: only desk is disabled
+	CHECK(applied(results[0]) == "disable");
+	CHECK(f.graph.nodes()[0].spec.disabled);
+	CHECK_FALSE(f.graph.nodes()[2].spec.disabled);
 }
 
 TEST_CASE("A disk event while an offer awaits its verdict is handled after the verdict", "[keeper]") {

@@ -7,6 +7,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/control/commands.hpp"
+#include "graph_file_fixture.hpp"
 
 using namespace ear::control;
 using nlohmann::json;
@@ -25,45 +26,19 @@ RpcError refusal(std::string_view method, const std::string& params) {
 	return decoded.error();
 }
 
+/// The message of an invalid params refusal, whose data names the pointer its message starts with.
 std::string invalid(std::string_view method, const std::string& params) {
 	const RpcError error = refusal(method, params);
 	CHECK(error.code == invalidParams);
-	CHECK(error.data.is_null());
+	const std::string pointer =
+		error.message.starts_with("the document") ? "" : error.message.substr(0, error.message.find(':'));
+	CHECK(error.data == json{{"pointer", pointer}});
 	return error.message;
 }
 
 const ear::Route noiseToRecFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
 const std::string noiseToRecFlJson =
 	R"({"from": {"node": "noise", "port": "noise.mono"}, "to": {"node": "rec", "port": "record.left"}})";
-
-/// snapshot.json's graph, as GraphStatus would read it.
-ear::GraphView snapshotView() {
-	using ear::NodeState;
-	using Code = ear::FailureReason::Code;
-	ear::GraphView view{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
-	view.nodes.push_back({{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
-	                      ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
-	                      NodeState::failed,
-	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	view.nodes.push_back({{"noise", "white", json::object()},
-	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
-	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
-	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
-	view.nodes.push_back({{"tape", "file", {{"path", "nope/t.wav"}}},
-	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      NodeState::failed,
-	                      ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
-	view.routes.push_back({{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
-	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
-	view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
-	                       ear::RouteMatch::refused,
-	                       "the engine removed the link before it was active"});
-	return view;
-}
 
 } // namespace
 
@@ -97,6 +72,69 @@ TEST_CASE("Every method decodes into its command", "[commands]") {
 	CHECK(std::get<SetGraphFile>(set.value()).version == "a.3");
 	const auto empty = decodeCommand("graphFile.set", json::parse(R"({"text": "", "version": ""})"));
 	CHECK(std::get<SetGraphFile>(empty.value()).text.empty()); // an empty file is a text
+
+	CHECK(std::get<StartNode>(decodeCommand("node.start", json::parse(R"({"name": "porch"})")).value()).node ==
+	      "porch");
+	CHECK(std::get<StopNode>(decodeCommand("node.stop", json::parse(R"({"name": "porch"})")).value()).node == "porch");
+	CHECK(std::get<RestartNode>(decodeCommand("node.restart", json::parse(R"({"name": "desk"})")).value()).node ==
+	      "desk");
+	CHECK(std::get<DisableNode>(decodeCommand("node.disable", json::parse(R"({"name": "porch"})")).value()).node ==
+	      "porch");
+	CHECK(std::get<EnableNode>(decodeCommand("node.enable", json::parse(R"({"name": "porch"})")).value()).node ==
+	      "porch");
+	const auto disabled = decodeCommand("node.add", json::parse(R"({"name": "q", "type": "white", "disabled": true})"));
+	CHECK(std::get<AddNode>(disabled.value()).node.disabled);
+	const auto enabled = decodeCommand("node.add", json::parse(R"({"name": "q", "type": "white", "disabled": false})"));
+	CHECK_FALSE(std::get<AddNode>(enabled.value()).node.disabled);
+	CHECK_FALSE(std::get<AddNode>(addPlain.value()).node.disabled);
+}
+
+TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.add's disabled is a boolean",
+          "[commands][lifecycle]") {
+	for (const std::string_view method : {"node.start", "node.stop", "node.restart", "node.disable", "node.enable"}) {
+		INFO(method);
+		CHECK(invalid(method, "{}") == "/name: missing");
+		CHECK(invalid(method, "null") == "/name: missing");
+		CHECK(invalid(method, R"({"name": ""})") == "/name: must be a non-empty string");
+		CHECK(invalid(method, R"({"name": "a", "force": true})") == "/force: unknown key");
+	}
+	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "disabled": "yes"})") ==
+	      "/disabled: must be a boolean");
+	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "colour": "red"})") == "/colour: unknown key");
+}
+
+TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle feature", "[commands][lifecycle]") {
+	const json graph = encodeGraph(ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}});
+	CHECK(graph["protocol"] == 1);
+	CHECK(graph["features"] == json::array({"lifecycle"}));
+}
+
+TEST_CASE("Each health member is encoded once for snapshots: state, phase, wanted and blockLost always, since, "
+          "cause, waitingFor, reason and disabled when there",
+          "[commands][lifecycle]") {
+	using ear::NodePhase;
+	using Kind = ear::NodeCause::Kind;
+	ear::NodeHealth health{"desk"};
+	health.phase = NodePhase::stopping;
+	health.state = ear::NodeState::stopping;
+	health.cause = ear::NodeCause{Kind::restarting, Kind::settings, {"card", "playback"}};
+	health.blockLost = true;
+	ear::NodeSpec spec{"desk", "card", json::object()};
+	spec.disabled = true;
+	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}};
+	view.nodes.push_back({spec, ear::Ports{}, health, ear::control::testing::reading(1)});
+	ear::NodeHealth waits{"fpp"};
+	waits.phase = NodePhase::configuring;
+	waits.cause = ear::NodeCause{Kind::settings, std::nullopt, {"port"}};
+	waits.waitingFor = {{ear::WaitingFor::Kind::companion, "fpp.rtp"}, {ear::WaitingFor::Kind::block}};
+	view.nodes.push_back({{"fpp", "rtp", json::object()}, ear::Ports{}, waits});
+	const json nodes = encodeGraph(view)["nodes"];
+	CHECK(nodes[0] == json::parse(R"({"name":"desk","type":"card","settings":{},"inputs":[],"outputs":[],
+		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
+		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true})"));
+	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
+		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
+		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}]})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {
@@ -162,8 +200,50 @@ TEST_CASE("An unknown method is method not found", "[commands]") {
 
 TEST_CASE("encodeGraph gives snapshot.json's graph exactly", "[commands][protocol]") {
 	const json expected = fixture("snapshot");
+	using ear::control::testing::snapshotView;
 	CHECK(encodeGraph(snapshotView()) == expected["graph"]);
 	CHECK(json::parse(encodeResult(1, encodeCommandResult(snapshotView()).value())) == expected["messages"][0]);
+}
+
+TEST_CASE("Applied is {applied} and the lifecycle's refusals are errors.json's", "[commands][protocol][lifecycle]") {
+	CHECK(encodeCommandResult(Applied{AppliedKind::retry}).value() == json{{"applied", "retry"}});
+	const json messages = fixture("errors")["messages"];
+	const std::vector<CommandResult> results{
+		ControlRefusal{NodeDisabled{"porch"}},
+		ControlRefusal{NotRestartable{"desk", NotRestartable::Reason::blockLost}},
+		ControlRefusal{NotRestartable{"fpp", NotRestartable::Reason::notStarted}},
+		std::expected<void, ear::CommandError>(std::unexpected(ear::UnknownNode{"ghost"})),
+	};
+	for (std::size_t i = 0; i < results.size(); ++i) {
+		INFO(i);
+		const auto encoded = encodeCommandResult(results[i]);
+		REQUIRE_FALSE(encoded.has_value());
+		CHECK(json::parse(encodeError(static_cast<int>(i) + 14, encoded.error())) == messages[i + 15]);
+	}
+	for (const std::size_t at : {14U, 19U, 20U}) { // each -32602 names its pointer in data
+		INFO(at);
+		CHECK(messages[at]["error"]["code"] == invalidParams);
+		CHECK(messages[at]["error"]["data"].contains("pointer"));
+	}
+	CHECK(appliedName(AppliedKind::stored) == "stored");
+	CHECK(verbName(LifecycleVerb::restart) == "restart");
+	CHECK(describe(ControlRefusal{NodeDisabled{"porch"}}) == "node-disabled porch");
+}
+
+TEST_CASE("unknown-values.json starts from a snapshot ear makes", "[commands][protocol][lifecycle]") {
+	using ear::NodeState;
+	using ear::control::testing::health;
+	const json document = fixture("unknown-values");
+	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"file", "white"}, {}, {}};
+	view.nodes.push_back({{"noise", "white", json::object()},
+	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                      health("noise", NodeState::running),
+	                      ear::control::testing::reading(0)});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                      health("rec", NodeState::running)});
+	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
+	CHECK(json::parse(encodeResult(1, encodeCommandResult(view).value())) == document["messages"][0]);
 }
 
 TEST_CASE("Success is {} and each refusal is errors.json's -32000 response", "[commands][protocol]") {

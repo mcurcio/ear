@@ -255,19 +255,19 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 
 	REQUIRE(view.nodes.size() == 3);
 	CHECK(view.nodes[0].spec == NodeSpec{"motu", "card", noSettings});
-	CHECK(view.nodes[0].state == NodeState::failed);
-	REQUIRE(view.nodes[0].reason.has_value());
-	CHECK(view.nodes[0].reason->detail == "no driver");
+	CHECK(view.nodes[0].health.state == NodeState::failed);
+	REQUIRE(view.nodes[0].health.reason.has_value());
+	CHECK(view.nodes[0].health.reason->detail == "no driver");
 	// Public ports only: inside ports are the card's own.
 	CHECK(view.nodes[0].ports.inputs() == std::vector<PortName>{"play.1"});
 	CHECK(view.nodes[0].ports.outputs() == std::vector<PortName>{"capture.1"});
 	CHECK(view.nodes[0].ports.insideInputs().empty());
 	CHECK(view.nodes[0].ports.insideOutputs().empty());
 	CHECK(view.nodes[1].spec == NodeSpec{"noise", "source", {{"seed", 1}}});
-	CHECK(view.nodes[1].state == NodeState::running);
-	CHECK_FALSE(view.nodes[1].reason.has_value());
+	CHECK(view.nodes[1].health.state == NodeState::running);
+	CHECK_FALSE(view.nodes[1].health.reason.has_value());
 	CHECK(view.nodes[2].spec.name == "rec");
-	CHECK(view.nodes[2].state == NodeState::starting);
+	CHECK(view.nodes[2].health.state == NodeState::starting);
 
 	REQUIRE(view.routes.size() == 2);
 	CHECK(view.routes[0].route == noiseToFl);
@@ -300,16 +300,46 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);
 	CHECK(view.nodes[1].spec.name == "rec");
-	CHECK(view.nodes[1].state == NodeState::starting);
+	CHECK(view.nodes[1].health.state == NodeState::starting);
 
 	f.settle(); // the new rec's block
 	f.blocks.events.at("rec")->ready();
 	view = f.status.read();
-	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
+	CHECK(view.nodes[1].health.state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
 	f.settle(); // the new rec's drive
 	REQUIRE(f.nodes.health().size() == 2);
 	view = f.status.read();
-	CHECK(view.nodes[1].state == NodeState::running);
+	CHECK(view.nodes[1].health.state == NodeState::running);
+}
+
+TEST_CASE("A node NodeHost has not told yet reads its health from its spec, and a disabled one reads disabled",
+          "[graph_status]") {
+	const NodeHealth added = healthFromSpec(NodeSpec{"noise", "source", noSettings});
+	CHECK(added.name == "noise");
+	CHECK(added.phase == NodePhase::added);
+	CHECK(added.state == NodeState::starting);
+	CHECK(added.wanted == Wanted::running);
+	CHECK_FALSE(added.blockLost);
+	NodeSpec quiet{"quiet", "source", noSettings};
+	quiet.disabled = true;
+	const NodeHealth disabled = healthFromSpec(quiet);
+	CHECK(disabled.phase == NodePhase::disabled);
+	CHECK(disabled.state == NodeState::disabled);
+	CHECK(disabled.wanted == Wanted::disabled);
+
+	Fixture f;
+	apply(f.graph, {{"noise", "source", noSettings}, quiet}, {});
+	f.settle();
+	f.blocks.events.at("noise")->ready();
+	f.settle();
+	const GraphView view = f.status.read();
+	REQUIRE(view.nodes.size() == 2);
+	CHECK(view.nodes[0].health.phase == NodePhase::running);
+	CHECK(view.nodes[0].health.wanted == Wanted::running);
+	CHECK(view.nodes[1].spec.disabled);
+	CHECK(view.nodes[1].health.phase == NodePhase::disabled);
+	CHECK(view.nodes[1].health.wanted == Wanted::disabled);
+	CHECK_FALSE(view.nodes[0].since.has_value()); // the gateway's to fill
 }

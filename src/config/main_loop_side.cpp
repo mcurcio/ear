@@ -69,9 +69,92 @@ std::optional<control::TextPlace> placeOf(const CommandError& error, const Graph
 		error);
 }
 
-MainLoopSide::MainLoopSide(DesiredGraph& graph, const GraphReader& reader) : graph_(graph), reader_(reader) {}
+control::CommandResult resultOf(const NodeName& node, const LifecycleReply& reply) {
+	using control::AppliedKind;
+	if (reply) {
+		switch (*reply) {
+		case LifecycleApplied::start:
+			return control::Applied{AppliedKind::start};
+		case LifecycleApplied::stop:
+			return control::Applied{AppliedKind::stop};
+		case LifecycleApplied::restart:
+			return control::Applied{AppliedKind::restart};
+		case LifecycleApplied::retry:
+			return control::Applied{AppliedKind::retry};
+		case LifecycleApplied::unchanged:
+			return control::Applied{AppliedKind::unchanged};
+		}
+		return control::Applied{AppliedKind::unchanged};
+	}
+	using Code = LifecycleRefusal::Code;
+	using Outcome = std::expected<void, CommandError>;
+	switch (reply.error().code) {
+	case Code::unknownNode:
+		return Outcome{std::unexpected(CommandError{UnknownNode{node}})};
+	case Code::nodeDisabled:
+		return control::ControlRefusal{control::NodeDisabled{node}};
+	case Code::notRestartable:
+		return control::ControlRefusal{
+			control::NotRestartable{node, reply.error().reason == LifecycleRefusal::Reason::blockLost
+		                                      ? control::NotRestartable::Reason::blockLost
+		                                      : control::NotRestartable::Reason::notStarted}};
+	case Code::stopping:
+		break;
+	}
+	return Outcome{std::unexpected(CommandError{Stopping{}})};
+}
+
+control::ActionRecord recordOf(control::LifecycleVerb verb, const NodeName& node, const LifecycleReply& reply) {
+	control::ActionRecord record{node, std::string(control::verbName(verb)), "ok", std::nullopt};
+	if (reply) return record;
+	const control::CommandResult result = resultOf(node, reply);
+	if (const auto* refusal = std::get_if<control::ControlRefusal>(&result)) {
+		record.result = std::string(control::controlRefusalCode(*refusal));
+		if (const auto* lost = std::get_if<control::NotRestartable>(refusal))
+			record.detail = std::string(control::reasonName(lost->reason));
+	} else {
+		record.result = std::string(errorCode(std::get<std::expected<void, CommandError>>(result).error()));
+	}
+	return record;
+}
+
+MainLoopSide::MainLoopSide(DesiredGraph& graph, const GraphReader& reader, NodeOperations& operations)
+	: graph_(graph), reader_(reader), operations_(operations) {}
 
 void MainLoopSide::subscribe(control::GraphFileListener& listener) { listeners_.push_back(&listener); }
+
+void MainLoopSide::subscribeActions(control::ActionListener& listener) { actionListeners_.push_back(&listener); }
+
+void MainLoopSide::tellAction(const control::ActionRecord& record) {
+	for (auto* listener : actionListeners_) listener->actionAnswered(record);
+}
+
+control::CommandResult MainLoopSide::operate(control::LifecycleVerb verb, const NodeName& node, bool stopping) {
+	if (stopping) {
+		const LifecycleReply refused = std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::stopping});
+		tellAction(recordOf(verb, node, refused));
+		return resultOf(node, refused);
+	}
+	bool told = false;
+	auto judged = [&](const LifecycleReply& reply) {
+		told = true;
+		tellAction(recordOf(verb, node, reply));
+	};
+	LifecycleReply reply = std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::unknownNode});
+	switch (verb) {
+	case control::LifecycleVerb::start:
+		reply = operations_.start(node, judged);
+		break;
+	case control::LifecycleVerb::stop:
+		reply = operations_.stop(node, judged);
+		break;
+	case control::LifecycleVerb::restart:
+		reply = operations_.restart(node, judged);
+		break;
+	}
+	if (!told) tellAction(recordOf(verb, node, reply)); // an implementation that never called back
+	return resultOf(node, reply);
+}
 
 Judged MainLoopSide::offer(Offer offer) {
 	auto plan = graph_.plan(offer.wanted.nodes, offer.wanted.routes);
@@ -86,10 +169,11 @@ Judged MainLoopSide::offer(Offer offer) {
 	}
 	running_ = offer.file.version;
 	tell(std::move(offer.file), offer.cause, offer.droppedEdits);
+	auto outcomes = plan->outcomes();
 	// Planned in this turn, so the graph cannot have closed or changed since: commit cannot refuse.
 	auto committed = graph_.commit(std::move(*plan));
 	if (!committed) return {Verdict::stopping, std::unexpected(committed.error())};
-	return {Verdict::accepted, {}};
+	return {Verdict::accepted, {}, std::move(outcomes)};
 }
 
 void MainLoopSide::announce(FileState file, control::FileChangeCause cause, std::uint32_t droppedEdits) {

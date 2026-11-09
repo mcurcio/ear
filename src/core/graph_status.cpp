@@ -8,6 +8,16 @@
 
 namespace ear {
 
+NodeHealth healthFromSpec(const NodeSpec& spec) {
+	NodeHealth health{spec.name};
+	if (spec.disabled) {
+		health.state = NodeState::disabled;
+		health.phase = NodePhase::disabled;
+		health.wanted = Wanted::disabled;
+	}
+	return health;
+}
+
 GraphStatus::GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired,
                          const NodeHost& nodes, const Reconciler& routes)
 	: engine_(std::move(engine)), catalogue_(catalogue), desired_(desired), nodes_(nodes), routes_(routes) {}
@@ -21,11 +31,10 @@ GraphView GraphStatus::read() const {
 	std::map<NodeName, NodeHealth> latest;
 	for (auto& health : nodes_.health()) latest.insert_or_assign(health.name, std::move(health));
 	for (auto& wanted : desired_.nodes()) {
-		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(), NodeState::starting, std::nullopt};
-		if (const auto it = latest.find(node.spec.name); it != latest.end()) {
-			node.state = it->second.state;
-			node.reason = it->second.reason;
-		}
+		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(), {}, std::nullopt};
+		if (const auto it = latest.find(node.spec.name); it != latest.end()) node.health = std::move(it->second);
+		else node.health = healthFromSpec(node.spec);
+		node.health.superseded = false;
 		view.nodes.push_back(std::move(node));
 	}
 

@@ -2,16 +2,39 @@
 // section 8). One reducer turns each server text into the next graph; a snapshot (the result of
 // graph.get or graph.subscribe) replaces everything, and an event naming a node or route the
 // client does not know changes nothing. The UI never draws a node or a wire the server has not
-// announced: the server is the one source of truth.
+// announced: the server is the one source of truth. node.state replaces every health member (one
+// absent is absent now, control-plane.md 4.4); members and values this editor does not know are
+// taken as they come or ignored, never a failure (4.1).
 import type {
   Graph,
   GraphNode,
   GraphRoute,
+  NodeHealth,
   Notifications,
   PortRef,
   RouteEnds,
   ServerMessage,
 } from "./protocol";
+
+/** The health members a node.state carries (control-plane.md 4.8), the ones it replaces. */
+const healthKeys = ["state", "phase", "since", "wanted", "blockLost", "cause", "waitingFor", "reason"] as const;
+
+/** The health members `from` has, and only those: a member ear adds later is not this editor's to keep. */
+function healthOf(from: Partial<NodeHealth>): NodeHealth {
+  const health: Partial<Record<(typeof healthKeys)[number], unknown>> = {};
+  for (const key of healthKeys) if (from[key] !== undefined) health[key] = from[key];
+  return health as unknown as NodeHealth;
+}
+
+/** What a node.added from a protocol 0 ear, which sends no health, is taken to say. */
+const protocol0Health: NodeHealth = { state: "starting", phase: "added", wanted: "running", blockLost: false };
+
+/** A node without its health members. */
+function withoutHealth(node: GraphNode): Omit<GraphNode, keyof NodeHealth> {
+  const { state: _s, phase: _p, since: _t, wanted: _w, blockLost: _b, cause: _c, waitingFor: _f, reason: _r, ...spec } =
+    node;
+  return spec;
+}
 
 /** No graph yet: nothing has been received since the page loaded. */
 export type GraphState = Graph | null;
@@ -60,21 +83,36 @@ function updateNode(graph: Graph, name: string, change: (node: GraphNode) => Gra
 type Event<N extends keyof Notifications> = Notifications[N];
 
 const handlers: { [N in keyof Notifications]: (graph: Graph, params: Event<N>) => Graph } = {
-  "node.added": (graph, { name, type, settings, inputs, outputs }) => {
+  "node.added": (graph, added) => {
+    const { name, type, settings, inputs, outputs, disabled } = added;
     if (hasNode(graph, name)) return graph;
-    const node: GraphNode = { name, type, settings, inputs, outputs, state: "starting" };
+    const node: GraphNode = {
+      name,
+      type,
+      settings,
+      inputs,
+      outputs,
+      // A protocol 0 ear sends no health: such a node is starting.
+      ...healthOf({ ...protocol0Health, ...added }),
+      ...(disabled === true ? { disabled } : {}),
+    };
     const nodes = [...graph.nodes, node].sort((a, b) => compare(a.name, b.name));
     return { ...graph, nodes };
   },
-  "node.updated": (graph, { name, settings }) => updateNode(graph, name, (node) => ({ ...node, settings })),
+  "node.updated": (graph, { name, settings, disabled }) =>
+    updateNode(graph, name, ({ disabled: _old, ...node }) =>
+      disabled === true ? { ...node, settings, disabled } : { ...node, settings },
+    ),
   "node.removed": (graph, { name }) =>
     hasNode(graph, name) ? { ...graph, nodes: graph.nodes.filter((node) => node.name !== name) } : graph,
-  "node.state": (graph, { name, state, reason }) =>
-    updateNode(graph, name, ({ reason: _old, ...node }) =>
-      state === "failed" && reason !== undefined ? { ...node, state, reason } : { ...node, state },
-    ),
+  "node.state": (graph, params) =>
+    updateNode(graph, params.name, (node) => {
+      const spec = withoutHealth(node);
+      return { ...spec, ...healthOf(params) } as GraphNode;
+    }),
   // The node is already gone from the graph (node.removed came first); nothing to draw.
   "node.stopped": (graph) => graph,
+  "node.gone": (graph) => graph,
   "route.added": (graph, { from, to }) => {
     const route: GraphRoute = { from, to, status: "pending" };
     if (!hasNode(graph, from.node) || !hasNode(graph, to.node)) return graph;

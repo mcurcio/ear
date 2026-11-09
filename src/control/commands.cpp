@@ -17,8 +17,9 @@ namespace {
 
 using nlohmann::json;
 
+/// -32602 with the pointer it names in data (control-plane.md 4.1).
 std::unexpected<RpcError> refuse(const JsonError& error) {
-	return std::unexpected(RpcError{invalidParams, error.detail, nullptr});
+	return std::unexpected(RpcError{invalidParams, error.detail, {{"pointer", error.pointer}}});
 }
 
 std::expected<Command, RpcError> decodeGetGraph(const json& params, const JsonPointer& at) {
@@ -69,7 +70,8 @@ std::expected<Command, RpcError> decodeGetGraphFile(const json& params, const Js
 std::expected<std::string, JsonError> requireText(const json& object, const JsonPointer& at, const std::string& key) {
 	auto value = requireMember(object, at, key);
 	if (!value) return std::unexpected(value.error());
-	if (!(*value)->is_string()) return std::unexpected(JsonError{(at / key).to_string() + ": must be a string"});
+	if (!(*value)->is_string())
+		return std::unexpected(JsonError{(at / key).to_string() + ": must be a string", (at / key).to_string()});
 	return (*value)->get<std::string>();
 }
 
@@ -80,6 +82,14 @@ std::expected<Command, RpcError> decodeSetGraphFile(const json& params, const Js
 	auto version = requireText(params, at, "version");
 	if (!version) return refuse(version.error());
 	return SetGraphFile{std::move(*text), std::move(*version)};
+}
+
+/// node.start, node.stop, node.restart, node.disable and node.enable: {"name"}.
+template <class Verb> std::expected<Command, RpcError> decodeNamed(const json& params, const JsonPointer& at) {
+	if (auto checked = requireObject(params, at, {"name"}); !checked) return refuse(checked.error());
+	auto name = requireName(params, at, "name");
+	if (!name) return refuse(name.error());
+	return Verb{std::move(*name)};
 }
 
 /// {"line", "column"} added to `into`.
@@ -125,7 +135,19 @@ constexpr Method methods[] = {
 	{"graphFile.get", decodeGetGraphFile},
 	{"graphFile.subscribe", decodeGetGraphFile},
 	{"graphFile.set", decodeSetGraphFile},
+	{"node.start", decodeNamed<StartNode>},
+	{"node.stop", decodeNamed<StopNode>},
+	{"node.restart", decodeNamed<RestartNode>},
+	{"node.disable", decodeNamed<DisableNode>},
+	{"node.enable", decodeNamed<EnableNode>},
 };
+
+RpcError encodeControlRefusal(const ControlRefusal& refusal) {
+	json data = {{"code", std::string(controlRefusalCode(refusal))}};
+	if (const auto* lost = std::get_if<NotRestartable>(&refusal))
+		data["reason"] = std::string(reasonName(lost->reason));
+	return RpcError{commandRefused, describe(refusal), std::move(data)};
+}
 
 } // namespace
 
@@ -144,6 +166,9 @@ std::expected<json, RpcError> encodeCommandResult(const CommandResult& result) {
 	if (const auto* view = std::get_if<GraphView>(&result)) return encodeGraph(*view);
 	if (const auto* file = std::get_if<GraphFile>(&result)) return encodeGraphFile(*file);
 	if (const auto* refusal = std::get_if<FileRefusal>(&result)) return std::unexpected(encodeFileRefusal(*refusal));
+	if (const auto* applied = std::get_if<Applied>(&result)) return json{{"applied", appliedName(applied->kind)}};
+	if (const auto* refusal = std::get_if<ControlRefusal>(&result))
+		return std::unexpected(encodeControlRefusal(*refusal));
 	const auto& edit = std::get<std::expected<void, CommandError>>(result);
 	if (edit) return json::object();
 	return std::unexpected(
@@ -164,6 +189,57 @@ json encodeGraphFile(const GraphFile& file) {
 	out["pendingRestart"] = std::move(pending);
 	if (file.writeFailed) out["writeFailed"] = *file.writeFailed;
 	return out;
+}
+
+// ---- lifecycle_wire.hpp: the one home of the lifecycle's wire strings ----
+
+std::string_view appliedName(AppliedKind kind) noexcept {
+	switch (kind) {
+	case AppliedKind::start:
+		return "start";
+	case AppliedKind::stop:
+		return "stop";
+	case AppliedKind::restart:
+		return "restart";
+	case AppliedKind::retry:
+		return "retry";
+	case AppliedKind::disable:
+		return "disable";
+	case AppliedKind::enable:
+		return "enable";
+	case AppliedKind::stored:
+		return "stored";
+	case AppliedKind::unchanged:
+		return "unchanged";
+	}
+	return "unchanged";
+}
+
+std::string_view controlRefusalCode(const ControlRefusal& refusal) noexcept {
+	return std::holds_alternative<NodeDisabled>(refusal) ? "node-disabled" : "not-restartable";
+}
+
+std::string_view reasonName(NotRestartable::Reason reason) noexcept {
+	return reason == NotRestartable::Reason::blockLost ? "block-lost" : "not-started";
+}
+
+std::string describe(const ControlRefusal& refusal) {
+	if (const auto* disabled = std::get_if<NodeDisabled>(&refusal))
+		return std::string(controlRefusalCode(refusal)) + " " + disabled->node;
+	const auto& lost = std::get<NotRestartable>(refusal);
+	return std::string(controlRefusalCode(refusal)) + " " + lost.node + ": " + std::string(reasonName(lost.reason));
+}
+
+std::string_view verbName(LifecycleVerb verb) noexcept {
+	switch (verb) {
+	case LifecycleVerb::start:
+		return "start";
+	case LifecycleVerb::stop:
+		return "stop";
+	case LifecycleVerb::restart:
+		return "restart";
+	}
+	return "start";
 }
 
 } // namespace ear::control

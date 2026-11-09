@@ -9,8 +9,10 @@
 #include <string>
 #include <vector>
 
+#include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/node_host.hpp"
 #include "temp_folder.hpp"
 
 namespace ear::config::test {
@@ -117,6 +119,46 @@ public:
 	void graphFileWritten(const std::string& version) override {
 		written.push_back(version);
 		log_.push("written");
+	}
+
+private:
+	Log& log_;
+};
+
+/// NodeHost's operations, faked: each call logs "<verb> <node>", answers `reply` (judged first, so the action record
+/// comes before the "health <node>" line a real NodeHost's tells would make), and counts on the main loop's log.
+class FakeOperations final : public NodeOperations {
+public:
+	explicit FakeOperations(Log& log) : log_(log) {}
+	LifecycleReply reply = LifecycleApplied::start;
+	bool callBack = true; // false: an implementation that never calls `judged`
+	LifecycleReply start(const NodeName& node, OperationJudged judged) override {
+		return operate("start", node, judged);
+	}
+	LifecycleReply stop(const NodeName& node, OperationJudged judged) override { return operate("stop", node, judged); }
+	LifecycleReply restart(const NodeName& node, OperationJudged judged) override {
+		return operate("restart", node, judged);
+	}
+
+private:
+	LifecycleReply operate(const std::string& verb, const NodeName& node, OperationJudged& judged) {
+		log_.push(verb + " " + node);
+		if (callBack && judged) judged(reply);
+		if (reply) log_.push("health " + node);
+		return reply;
+	}
+	Log& log_;
+};
+
+/// Action records as log lines ("action rec stop ok", "action desk restart not-restartable block-lost").
+class ActionLog final : public control::ActionListener {
+public:
+	explicit ActionLog(Log& log) : log_(log) {}
+	std::vector<control::ActionRecord> records;
+	void actionAnswered(const control::ActionRecord& record) override {
+		records.push_back(record);
+		log_.push("action " + record.node + " " + record.action + " " + record.result +
+		          (record.detail ? " " + *record.detail : ""));
 	}
 
 private:

@@ -11,7 +11,8 @@
 // plan's outcomes honoured by its step L-3d; the type's class, configure and its contexts on one set of internals, hooks
 // timed (hookSlowBound) and a stop() that threw in a teardown logged (subscribeLog) by
 // docs/design/node-lifecycle-modules.md section 3, step L-4a; DriveRequest's sinks and the sink kind's adapter in the
-// registry by its section 4, step L-4b). Change it only through a design page and a re-cut, never a local edit.
+// registry by its section 4, step L-4b; NodeOperations' judged callback by its 5.6, step L-6). Change it only through a
+// design page and a re-cut, never a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -81,12 +82,16 @@ protected:
 /// The operator's requests that edit nothing: a node's stop (held in memory, never written), its start, and a restart
 /// (docs/design/node-lifecycle.md 5.2 and 4.4; control-plane.md 4.2 and 7.6). Main thread, never inside another of
 /// NodeHost's calls. Each reply comes in the call, after every health change it caused was told; core names no wire
-/// code (D-L35).
+/// code (D-L35). Each call takes a callback the judged reply reaches before anything it causes, so its `action` record
+/// precedes the `node` records (docs/design/node-lifecycle-modules.md 5.6, D-M8; step L-6).
 class NodeOperations {
 public:
-	virtual LifecycleReply start(const NodeName& node) = 0;
-	virtual LifecycleReply stop(const NodeName& node) = 0;
-	virtual LifecycleReply restart(const NodeName& node) = 0;
+	/// Called once, inside the call, with the reply the aggregate judged, before any hook, barrier or health change it
+	/// causes; null: nobody is told. A refusal calls it too (no health change follows).
+	using OperationJudged = std::move_only_function<void(const LifecycleReply& reply)>;
+	virtual LifecycleReply start(const NodeName& node, OperationJudged judged = {}) = 0;
+	virtual LifecycleReply stop(const NodeName& node, OperationJudged judged = {}) = 0;
+	virtual LifecycleReply restart(const NodeName& node, OperationJudged judged = {}) = 0;
 
 protected:
 	~NodeOperations() = default;
@@ -396,9 +401,10 @@ public:
 	/// configuration), start clears it (a failed node retries), restart tears the configuration down and configures it
 	/// again. Refused: stopping during stopAll, unknown-node for a name no wanted node has, node-disabled, and
 	/// not-restartable as 4.4 says.
-	LifecycleReply start(const NodeName& node) override;
-	LifecycleReply stop(const NodeName& node) override;
-	LifecycleReply restart(const NodeName& node) override;
+	/// `judged` is called right after the aggregate judged, before what it caused is carried out (5.6, D-M8).
+	LifecycleReply start(const NodeName& node, OperationJudged judged = {}) override;
+	LifecycleReply stop(const NodeName& node, OperationJudged judged = {}) override;
+	LifecycleReply restart(const NodeName& node, OperationJudged judged = {}) override;
 	/// `closed` proves the graph takes no more edits, so no nodeAdded, nodeUpdated or nodeRemoved
 	/// can follow (one would throw std::logic_error: a wiring bug). Every node: stopping; torn
 	/// down; gone. `allGone` runs once on the main thread after the last (at once if none).

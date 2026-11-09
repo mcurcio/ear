@@ -1241,3 +1241,52 @@ An independent review of the L-4b commit asked for these; each is built.
    `nodeGone` through a held close, and `ear.close-overdue` counting an open sink whose close never reports, leaked.
 6. **`Chunk::discontinuity` documented** (`sink.hpp`, node-framework.md 9.6, 4.4 above): it marks the first cycle after
    any drive, a re-drive of the same code included.
+
+### Found building L-6 (2026-11-09)
+
+What step L-6 had to change or decide beyond section 5's declarations, each the smallest change that works, with its
+reason. Nothing here changes a rule of a higher page.
+
+1. **`JsonError::pointer`** (`graph_json.hpp`, new member). 5.1 gives every -32602 a `data.pointer`, but `JsonError` held
+   only the message's text; every decoder failure now carries the pointer it names (`""` at the root), and the
+   encoder writes `{"pointer"}` as the error's `data`, the `levels.subscribe` refusal's too.
+2. **`healthFromSpec(const NodeSpec&)`** (`graph_view.hpp`, new). D-M12's health from the spec (`added`, or `disabled`
+   with `wanted` `disabled`) is needed both by `GraphStatus::read` (a wanted node `NodeHost` has not told yet) and by
+   the gateway's `node.added`; one function keeps the two the same.
+3. **`resultOf` and `recordOf` are free functions in `main_loop_side.hpp`**, not private members, so 5.8's table is
+   tested row by row (`main_loop_side_test.cpp`); `operate` is tested through a fake `NodeOperations` as well. A
+   `NodeOperations` that never calls its judged callback still gets its record, after its own tells.
+4. **`outcomeName(NodeOutcome)` is declared in `events.hpp`** beside `encodeEvent` (5.2 defined it there unexported),
+   so its strings are tested.
+5. **The gateway compares the whole health**, minus `superseded`, against the last one it sent for the name, seeded by
+   `node.added` with the spec's health. So `NodeHost`'s first tell (`added`, or `disabled` for a node added disabled),
+   which repeats what `node.added` said, sends nothing; every other change of any member is one `node.state`. This
+   replaces L-3d's state-and-reason dedup and keeps a normal start at `node.added` and four `node.state`s.
+6. **The gateway's map of what it sent is held by a `shared_ptr`**, which `run`'s reply captures to fill each
+   snapshot's `since` (5.4), so a reply the keeper sends after the gateway is gone touches nothing freed.
+7. **`rpc-call.mjs` takes `--until '<node> <state>'` and `--timeout <s>`** (default 60), as control-plane.md 2.2 (the
+   home of the script's shape) writes them, not 5.11's `--until <state>` and `--timeout <ms>`: a state alone names no
+   node. Exit codes are 5.11's (0 reached, 1 failed or refused, 2 timeout).
+8. **An accepted `node.disable` or `node.enable` whose plan has no outcome for the node** answers `unchanged`, and one
+   whose outcome is `restart` (which a change of `disabled` alone cannot make) answers `restart`; a disable or enable
+   whose edit changes nothing answers `unchanged` without an offer (5.7).
+9. **The editor**: `RouteStatusName` is open too (a status it does not know is drawn as pending), a `node.added` from
+   a protocol 0 ear (no health) is taken as `added`, and a graph whose `protocol` is above 1 shows a banner
+   (control-plane.md 4.1). `node.state` replaces only the health members the editor knows; an unknown member is not
+   kept in the graph (`unknown-values.json`).
+10. **Fixtures**: `snapshot.json` gained a node `ear.conf` disables (`quiet`), so `disabled` and the `disabled` phase
+    are in a snapshot; the session replay's gateway clock starts at 2026-11-09T10:00:00Z and moves 10 ms at each
+    reading, so every `since` in a fixture is fixed by the order the gateway stamps them. `errors.json` appends the
+    lifecycle's refusals and ends with a `stopping` one; `output-records.json` appends the three `action` records of
+    5.5 (seq 77 to 79).
+11. **Tests added**: `node_host_test.cpp` (the judged callback before the stop's fade and health, a refusal's too);
+    `graph_status_test.cpp` (a spec's health, disabled read from the spec); `ear_config_tests` (verbs ordered with
+    edits in one batch, writing nothing and making no version, working while the file has errors; a verb once the
+    keeper stopped; disable and enable through the keeper with `applied`; 5.8's table; `operate`'s record before the
+    fake's health; the threaded keeper's stop with its record); `ear_control_tests` (the five commands decoded,
+    `disabled` and `data.pointer`, the frame, the health members encoded once, `Applied` and `ControlRefusal` against
+    `errors.json`, `node.gone` after `node.stopped`, `since` kept while only `wanted` or `waitingFor` changes, a
+    snapshot's `since`, `node.updated`'s `applied` and `disabled`, `lifecycle.json` and `unknown-values.json`, the
+    `action` records); `ear_system_tests` (the removal waits for `node.gone`; `node.stop` and `node.start` through the
+    port writing nothing, with their `action` records before `stopping: stop`); vitest (`health.ts` for every phase,
+    `node.state` replacing every member, `node.updated`'s `disabled`, every fixture through the reducer).

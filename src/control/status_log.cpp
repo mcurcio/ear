@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ear/control/graph_json.hpp"
+
 namespace ear::control {
 
 namespace {
@@ -42,10 +44,6 @@ std::string array(const std::vector<std::string>& values) {
 }
 
 std::string writeFailedText(const std::string& detail) { return std::format("graph-file write-failed {}", detail); }
-
-std::string timestamp(std::chrono::system_clock::time_point at) {
-	return std::format("{:%FT%T}Z", std::chrono::floor<std::chrono::microseconds>(at));
-}
 
 std::string portText(const PortRef& port) { return std::format("{}:{}", port.node, port.port); }
 
@@ -164,7 +162,7 @@ StatusLog::StatusLog(OutputLines& out, WallClock clock, PaceClock pace)
 void StatusLog::emit(std::string_view kind, Fields fields, std::string msg) {
 	const std::scoped_lock lock(mutex_);
 	Fields record{
-		{"v", json(recordVersion)}, {"seq", json(++seq_)}, {"t", json(timestamp(clock_()))}, {"kind", json(kind)}};
+		{"v", json(recordVersion)}, {"seq", json(++seq_)}, {"t", json(utcMicros(clock_()))}, {"kind", json(kind)}};
 	for (auto& field : fields) record.push_back(std::move(field));
 	if (dropped_ > 0) {
 		record.emplace_back("dropped", json(dropped_));
@@ -405,6 +403,16 @@ void StatusLog::log(const LogEntry& entry) {
 	msg += std::format(" {}: {}", logLevelName(entry.level), entry.text);
 	if (heldBack > 0) msg += std::format(" ({} more held back before this: over {} at once)", heldBack, logBurst);
 	emit("log", std::move(fields), std::move(msg));
+}
+
+void StatusLog::actionAnswered(const ActionRecord& record) {
+	Fields fields{{"node", json(record.node)}, {"action", json(record.action)}, {"result", json(record.result)}};
+	if (record.detail) fields.emplace_back("detail", json(*record.detail));
+	std::string msg = record.result == "ok"
+	                      ? std::format("node {} {} invoked", record.node, record.action)
+	                      : std::format("node {} {} refused: {}", record.node, record.action, record.result);
+	if (record.result != "ok" && record.detail) msg += std::format(" ({})", *record.detail);
+	emit("action", std::move(fields), std::move(msg));
 }
 
 void StatusLog::engineScheduling(bool realtime, std::string_view detail) {

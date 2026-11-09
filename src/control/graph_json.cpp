@@ -12,7 +12,7 @@ using nlohmann::json;
 
 std::unexpected<JsonError> fail(const JsonPointer& at, std::string_view problem) {
 	const std::string where = at.empty() ? std::string("the document") : at.to_string();
-	return std::unexpected(JsonError{std::format("{}: {}", where, problem)});
+	return std::unexpected(JsonError{std::format("{}: {}", where, problem), at.to_string()});
 }
 
 std::expected<PortRef, JsonError> decodePortRef(const json& route, const JsonPointer& at, const std::string& key) {
@@ -56,14 +56,19 @@ std::expected<std::string, JsonError> requireName(const json& object, const Json
 }
 
 std::expected<NodeSpec, JsonError> decodeNodeSpec(const json& value, const JsonPointer& at) {
-	if (auto checked = requireObject(value, at, {"name", "type", "settings"}); !checked)
+	if (auto checked = requireObject(value, at, {"name", "type", "settings", "disabled"}); !checked)
 		return std::unexpected(checked.error());
 	auto name = requireName(value, at, "name");
 	if (!name) return std::unexpected(name.error());
 	auto type = requireName(value, at, "type");
 	if (!type) return std::unexpected(type.error());
 	const auto settings = value.find("settings");
-	return NodeSpec{std::move(*name), std::move(*type), settings == value.end() ? json::object() : *settings};
+	bool disabled = false;
+	if (const auto flag = value.find("disabled"); flag != value.end()) {
+		if (!flag->is_boolean()) return fail(at / "disabled", "must be a boolean");
+		disabled = flag->get<bool>();
+	}
+	return NodeSpec{std::move(*name), std::move(*type), settings == value.end() ? json::object() : *settings, disabled};
 }
 
 std::expected<Route, JsonError> decodeRoute(const json& value, const JsonPointer& at) {
@@ -78,5 +83,9 @@ std::expected<Route, JsonError> decodeRoute(const json& value, const JsonPointer
 json encodePortRef(const PortRef& port) { return {{"node", port.node}, {"port", port.port}}; }
 
 json encodeRoute(const Route& route) { return {{"from", encodePortRef(route.from)}, {"to", encodePortRef(route.to)}}; }
+
+std::string utcMicros(std::chrono::system_clock::time_point at) {
+	return std::format("{:%FT%T}Z", std::chrono::floor<std::chrono::microseconds>(at));
+}
 
 } // namespace ear::control

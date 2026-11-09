@@ -291,7 +291,7 @@ int main(int argc, char** argv) {
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
 	                              reconciler);
 
-	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, mainLoop);
+	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, nodes, mainLoop);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
 
 	// Observers hear each change before the subscribers act on it, so a client gets node.added
@@ -315,6 +315,8 @@ int main(int argc, char** argv) {
 	// Each graph file change is told to the gateway, then the status log, before its graph events.
 	keeper.subscribe(gateway);
 	keeper.subscribe(log);
+	// Each answered node.start, node.stop and node.restart: an action record, before the node records it causes.
+	keeper.subscribeActions(log);
 
 	// Before the control port, so every request finds the keeper's thread; after Engine::create, so
 	// the thread inherits the blocked stop signals. Its first offer waits for the main loop to run.

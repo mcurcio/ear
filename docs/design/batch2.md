@@ -1528,6 +1528,25 @@ file capability (section 7).
 
 ## 11. Errata
 
+- **The wire's home from protocol 1, 2026-11-09 (slice 3a step L-6, `docs/design/control-plane.md` 4.1 and 10.3,
+  `docs/design/node-lifecycle-modules.md` section 5):** from protocol 1 on, `docs/design/control-plane.md` section 4 is
+  the home of every addition to section 6's wire (as `knobly-config.md`'s "Wire additions" is for the graph file's
+  methods), and each later step's wire change is made there and re-cut. This step adds, under the feature `lifecycle`:
+  `graph.get`'s `protocol` (1) and `features` (`["lifecycle"]`); on every node of a snapshot and on `node.added` the
+  health members `phase`, `since`, `wanted`, `blockLost` (always), `cause`, `waitingFor` and `reason` (when there),
+  and `disabled` (when true); `node.state` carries the same members and is sent whenever any of them changes (not only
+  `state` and `reason`, as section 6 had it), and replaces them all; `node.updated` gains `applied` (`restart`,
+  `disable`, `enable`, `stored`) and `disabled` (when true); after a removal `node.stopped` (deprecated, gone at protocol
+  2) and then `node.gone`; the requests `node.start`, `node.stop`, `node.restart` (`{"name"}`, replying `{"applied"}`,
+  never written to `ear.conf`), `node.disable` and `node.enable` (edits at the node's own `disabled` line); `node.add`'s
+  optional boolean `disabled`; the refusals `node-disabled` and `not-restartable` (`data.reason` `block-lost` or
+  `not-started`); and `data.pointer` on every -32602. Every enum is open (a client draws an unknown value neutrally).
+  `commands.hpp` gains the five commands, `Applied`, `ControlRefusal` (`lifecycle_wire.hpp`) and the constants
+  `wireProtocol` and `wireFeatures`; `graph_view.hpp`'s `NodeView` holds `NodeHealth health` and `since`;
+  `events.hpp`'s `NodeAdded`, `NodeUpdated` and `NodeChanged` gain their members and `GraphEvent` gains `NodeGone`;
+  `gateway.hpp`'s `MainLoopGateway` takes a `WallClock` (moved to `requests.hpp`) and overrides `nodeChanged` with the
+  outcome; `graph_json.hpp`'s `JsonError` gains `pointer` and the header `utcMicros`; `node_host.hpp`'s
+  `NodeOperations` calls take a defaulted judged callback. `web/src/protocol.ts`'s header names both pages.
 - **The node lifecycle, 2026-11-09 (slice 3a step L-3d, `docs/design/node-lifecycle.md` 4 and 5.2, its revision 2.8):**
   `node_lifecycle.hpp`'s `NodeLifecycle` and its four-state `NodeState` are replaced by node-lifecycle.md's two machines
   and their aggregate (moved there from `node_machines.hpp`), with `NodePhase`, a six-state `NodeState` (`starting`,

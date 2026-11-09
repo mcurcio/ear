@@ -31,6 +31,8 @@ json fixture(const std::string& name) {
 	return json::parse(file);
 }
 
+using ear::control::testing::health;
+
 class QueueExecutor final : public ear::Executor {
 public:
 	explicit QueueExecutor(const QueueExecutor*& running) : running_(running) {}
@@ -71,11 +73,17 @@ std::string describe(const Command& command) {
 			if constexpr (std::is_same_v<C, GetGraph>) return "read";
 			else if constexpr (std::is_same_v<C, GetGraphFile>) return "readFile";
 			else if constexpr (std::is_same_v<C, AddNode>)
-				return "addNode " + c.node.name + " " + c.node.type + " " + c.node.settings.dump();
+				return "addNode " + c.node.name + " " + c.node.type + " " + c.node.settings.dump() +
+			           (c.node.disabled ? " disabled" : "");
 			else if constexpr (std::is_same_v<C, UpdateNode>) return "updateNode " + c.node + " " + c.settings.dump();
 			else if constexpr (std::is_same_v<C, RemoveNode>) return "removeNode " + c.node;
 			else if constexpr (std::is_same_v<C, AddRoute>) return "addRoute " + text(c.route);
 			else if constexpr (std::is_same_v<C, RemoveRoute>) return "removeRoute " + text(c.route);
+			else if constexpr (std::is_same_v<C, StartNode>) return "startNode " + c.node;
+			else if constexpr (std::is_same_v<C, StopNode>) return "stopNode " + c.node;
+			else if constexpr (std::is_same_v<C, RestartNode>) return "restartNode " + c.node;
+			else if constexpr (std::is_same_v<C, DisableNode>) return "disableNode " + c.node;
+			else if constexpr (std::is_same_v<C, EnableNode>) return "enableNode " + c.node;
 			else {
 				static_assert(std::is_same_v<C, SetGraphFile>);
 				return "setGraphFile " + c.version;
@@ -155,7 +163,8 @@ struct World {
 	QueueExecutor main{running};
 	QueueExecutor control{running};
 	ScriptedRequests graph;
-	MainLoopGateway gateway{main, control, graph};
+	int clockReadings = 0; // the gateway's clock: 10 ms on at each reading, so each since is fixed by the order
+	MainLoopGateway gateway{main, control, graph, [this] { return ear::control::testing::reading(clockReadings++); }};
 	FakeLevels levels;
 	std::unique_ptr<ControlHub> hub;
 
@@ -200,9 +209,11 @@ struct World {
 	void nodeAdded(const ear::NodeSpec& node, ear::Ports ports) {
 		gateway.nodeAdded(node, std::make_shared<Config>(std::move(ports)));
 	}
+	/// A health as NodeHost tells it (testing::health: the state's phase, configuring for starting).
 	void state(const std::string& node, ear::NodeState now, std::optional<ear::FailureReason> reason = {}) {
-		gateway.nodeChanged({node, now, std::move(reason)});
+		gateway.nodeChanged(health(node, now, std::move(reason)));
 	}
+	void told(const ear::NodeHealth& health) { gateway.nodeChanged(health); }
 	void route(const ear::Route& route, ear::RouteMatch match, std::string detail = "") {
 		gateway.routeChanged({route, match, std::move(detail)});
 	}
@@ -230,12 +241,10 @@ ear::GraphView baseView() {
 	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	view.nodes.push_back({{"noise", "white", json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
+	                      health("noise", NodeState::running)});
 	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
+	                      health("rec", NodeState::running)});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
 	return view;
 }
@@ -249,25 +258,9 @@ std::vector<std::string> requestsOf(const json& document) {
 TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole graph", "[session][protocol]") {
 	const json document = fixture("snapshot");
 	World w;
-	w.graph.view = baseView();
-	w.graph.view.engine = {{48000, 256}, true, "SCHED_FIFO 88"};
-	w.graph.view.nodes.insert(
-		w.graph.view.nodes.begin(),
-		ear::NodeView{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
-	                  ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
-	                  NodeState::failed,
-	                  ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"}});
-	w.graph.view.nodes.push_back(
-		{{"tape", "file", {{"path", "nope/t.wav"}}},
-	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	     NodeState::failed,
-	     ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"}});
-	w.graph.view.routes.insert(
-		w.graph.view.routes.begin(),
-		ear::RouteStatus{{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
-	w.graph.view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
-	                               ear::RouteMatch::refused,
-	                               "the engine removed the link before it was active"});
+	w.graph.view = ear::control::testing::snapshotView();
+	for (ear::NodeView& node : w.graph.view.nodes) node.since.reset(); // the gateway fills it
+	w.onMain([&] { w.state("noise", NodeState::running); });           // told: the snapshot carries its since
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	for (const auto& request : requestsOf(document)) w.receive(session, request);
@@ -326,10 +319,17 @@ TEST_CASE("edits.json: each change's notification comes before its statuses and 
 		[&] { w.route(n2ToTapeFl, ear::RouteMatch::refused, "the engine removed the link before it was active"); });
 
 	w.graph.script.push_back({R"(updateNode rec {"path":"y.wav"})", [&] {
-								  w.gateway.nodeUpdated({"rec", "file", {{"path", "y.wav"}}},
+								  w.gateway.nodeChanged({"rec", "file", {{"path", "y.wav"}}},
 		                                                std::make_shared<Config>(ear::Ports{
-															{{ear::Direction::input, "record", {"left", "right"}}}}));
-								  w.state("rec", NodeState::starting);
+															{{ear::Direction::input, "record", {"left", "right"}}}}),
+		                                                ear::NodeChange{ear::NodeOutcome::restart, {"path"}});
+								  using Kind = ear::NodeCause::Kind;
+								  auto stopping = health("rec", NodeState::stopping);
+								  stopping.cause = ear::NodeCause{Kind::restarting, Kind::settings, {"path"}};
+								  w.told(stopping);
+								  auto configuring = health("rec", NodeState::starting);
+								  configuring.cause = ear::NodeCause{Kind::settings, std::nullopt, {"path"}};
+								  w.told(configuring);
 								  return Result{};
 							  }});
 	w.receive(session, requests[5]);
@@ -344,7 +344,9 @@ TEST_CASE("edits.json: each change's notification comes before its statuses and 
 	w.graph.script.push_back({"removeNode noise", [&] {
 								  w.gateway.routeRemoved(noiseToRecFl);
 								  w.gateway.nodeRemoved("noise");
-								  w.state("noise", NodeState::stopping);
+								  auto stopping = health("noise", NodeState::stopping);
+								  stopping.cause = ear::NodeCause{ear::NodeCause::Kind::removing, std::nullopt, {}};
+								  w.told(stopping);
 								  return Result{};
 							  }});
 	w.receive(session, requests[7]);
@@ -378,11 +380,296 @@ TEST_CASE("errors.json: refusals, stopping and envelope errors", "[session][prot
 	};
 	for (const auto& [call, error] : refusals)
 		w.graph.script.push_back({call, [error] { return Result(std::unexpected(error)); }});
+	// The lifecycle's refusals (control-plane.md 4.5), then one more while stopping.
+	const auto refused = [](CommandResult result) { return [result] { return result; }; };
+	w.graph.script.push_back({"startNode porch", refused(ControlRefusal{NodeDisabled{"porch"}})});
+	w.graph.script.push_back(
+		{"restartNode desk", refused(ControlRefusal{NotRestartable{"desk", NotRestartable::Reason::blockLost}})});
+	w.graph.script.push_back(
+		{"restartNode fpp", refused(ControlRefusal{NotRestartable{"fpp", NotRestartable::Reason::notStarted}})});
+	w.graph.script.push_back({"stopNode ghost", refused(Result(std::unexpected(ear::UnknownNode{"ghost"})))});
+	w.graph.script.push_back({"startNode noise", refused(Result(std::unexpected(ear::Stopping{})))});
 	RecordingOutbox out;
 	ControlSession session(*w.hub, out);
 	for (const auto& request : requestsOf(document)) w.receive(session, request);
 	checkMessages(out, document["messages"]);
 	CHECK(w.graph.script.empty());
+}
+
+namespace {
+
+/// A health at `phase` (its state the phase's colour), with what is wanted.
+ear::NodeHealth at(const std::string& node, ear::NodePhase phase, ear::Wanted wanted = ear::Wanted::running) {
+	ear::NodeHealth h{node};
+	h.phase = phase;
+	h.state = ear::stateOf(phase);
+	h.wanted = wanted;
+	return h;
+}
+
+ear::NodeHealth because(ear::NodeHealth h, ear::NodeCause::Kind kind,
+                        std::optional<ear::NodeCause::Kind> restart = std::nullopt,
+                        std::vector<std::string> keys = {}) {
+	h.cause = ear::NodeCause{kind, restart, std::move(keys)};
+	return h;
+}
+
+ear::NodeHealth failedWith(ear::NodeHealth h, ear::FailureReason reason) {
+	h.reason = std::move(reason);
+	return h;
+}
+
+ear::NodeHealth waiting(ear::NodeHealth h, ear::WaitingFor::Kind kind, std::string name) {
+	h.waitingFor = {{kind, std::move(name)}};
+	return h;
+}
+
+} // namespace
+
+TEST_CASE("lifecycle.json: a node's whole life, each health change one node.state, every reply after the node.state "
+          "its request caused",
+          "[session][protocol][lifecycle]") {
+	using ear::NodePhase;
+	using ear::Wanted;
+	using Kind = ear::NodeCause::Kind;
+	using Lifecycle = std::expected<void, ear::CommandError>;
+	const json document = fixture("lifecycle");
+	const auto requests = requestsOf(document);
+	REQUIRE(requests.size() == 26);
+	World w;
+	const ear::Ports card2{{{ear::Direction::input, "play", {"1", "2"}}}};
+	const ear::Ports noisePorts{{{ear::Direction::output, "noise", {"mono"}}}};
+	const ear::Ports recPorts{{{ear::Direction::input, "record", {"left", "right"}}}};
+	const ear::Ports rtpPorts{{{ear::Direction::output, "stream", {"1", "2"}}}};
+	const json deskSettings = {{"card", "MOTU"}, {"playback", 2}};
+	const json porchSettings = {{"card", "USB2"}, {"playback", 2}};
+	const ear::FailureReason cannotOpen{Code::startFailed, "cannot open nope/t.wav: No such file or directory"};
+	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "rtp", "white"}, {}, {}};
+	w.graph.view.nodes.push_back({{"desk", "card", deskSettings}, card2, at("desk", NodePhase::running)});
+	w.graph.view.nodes.push_back({{"porch", "card", porchSettings}, card2, at("porch", NodePhase::running)});
+	w.onMain([&] { // both running before the client subscribes: the snapshot carries their since
+		w.told(at("desk", NodePhase::running));
+		w.told(at("porch", NodePhase::running));
+	});
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	const auto applied = [](AppliedKind kind) { return [kind]() -> CommandResult { return Applied{kind}; }; };
+	const auto refused = [](CommandResult result) { return [result] { return result; }; };
+
+	w.receive(session, requests[0]); // graph.subscribe
+
+	// A normal start: added (node.added), configuring, configured, starting, then running after the reply.
+	w.graph.script.push_back({"addNode noise white {}", [&]() -> CommandResult {
+								  w.nodeAdded({"noise", "white", json::object()}, noisePorts);
+								  w.told(at("noise", NodePhase::added)); // what node.added said: nothing sent
+								  w.told(at("noise", NodePhase::configuring));
+								  w.told(at("noise", NodePhase::configured));
+								  w.told(at("noise", NodePhase::starting));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[1]);
+	w.onMain([&] { w.told(at("noise", NodePhase::running)); });
+
+	// A stop and a start: no file, no node.updated.
+	w.graph.script.push_back({"stopNode noise", [&]() -> CommandResult {
+								  w.told(because(at("noise", NodePhase::stopping, Wanted::stopped), Kind::stop));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[2]);
+	w.onMain([&] { w.told(at("noise", NodePhase::stopped, Wanted::stopped)); });
+	w.graph.script.push_back({"startNode noise", [&]() -> CommandResult {
+								  w.told(at("noise", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[3]);
+	w.onMain([&] { w.told(at("noise", NodePhase::running)); });
+
+	// A restart: stopping (restarting, action), the reply, then configuring (action) to running.
+	w.graph.script.push_back({"restartNode desk", [&]() -> CommandResult {
+								  w.told(because(at("desk", NodePhase::stopping), Kind::restarting, Kind::action));
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.receive(session, requests[4]);
+	w.onMain([&] {
+		w.told(because(at("desk", NodePhase::configuring), Kind::action));
+		w.told(at("desk", NodePhase::configured));
+		w.told(at("desk", NodePhase::starting));
+		w.told(at("desk", NodePhase::running));
+	});
+
+	// A disable: node.updated with applied and disabled, stopping (disabling), the reply, then disabled.
+	ear::NodeSpec porchDisabled{"porch", "card", porchSettings};
+	porchDisabled.disabled = true;
+	w.graph.script.push_back({"disableNode porch", [&]() -> CommandResult {
+								  w.gateway.nodeChanged(porchDisabled, std::make_shared<Config>(card2),
+		                                                ear::NodeChange{ear::NodeOutcome::disable, {}});
+								  w.told(because(at("porch", NodePhase::stopping, Wanted::disabled), Kind::disabling));
+								  return Applied{AppliedKind::disable};
+							  }});
+	w.receive(session, requests[5]);
+	w.onMain([&] { w.told(at("porch", NodePhase::disabled, Wanted::disabled)); });
+	w.graph.script.push_back({"startNode porch", refused(ControlRefusal{NodeDisabled{"porch"}})});
+	w.receive(session, requests[6]);
+
+	// An enable: node.updated (no disabled), configuring (enabling), the reply, then to running.
+	w.graph.script.push_back({"enableNode porch", [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"porch", "card", porchSettings},
+		                                                std::make_shared<Config>(card2),
+		                                                ear::NodeChange{ear::NodeOutcome::enable, {}});
+								  w.told(because(at("porch", NodePhase::configuring), Kind::enabling));
+								  return Applied{AppliedKind::enable};
+							  }});
+	w.receive(session, requests[7]);
+	w.onMain([&] {
+		w.told(at("porch", NodePhase::configured));
+		w.told(at("porch", NodePhase::starting));
+		w.told(at("porch", NodePhase::running));
+	});
+
+	// A node configured while stopped rests stopped again; then a start.
+	w.graph.script.push_back({"stopNode porch", [&]() -> CommandResult {
+								  w.told(because(at("porch", NodePhase::stopping, Wanted::stopped), Kind::stop));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[8]);
+	w.onMain([&] { w.told(at("porch", NodePhase::stopped, Wanted::stopped)); });
+	const json usb3 = {{"card", "USB3"}, {"playback", 2}};
+	w.graph.script.push_back({R"(updateNode porch {"card":"USB3","playback":2})", [&]() -> CommandResult {
+								  w.gateway.nodeChanged({"porch", "card", usb3}, std::make_shared<Config>(card2),
+		                                                ear::NodeChange{ear::NodeOutcome::restart, {"card"}});
+								  w.told(because(at("porch", NodePhase::stopping, Wanted::stopped), Kind::restarting,
+		                                         Kind::settings, {"card"}));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[9]);
+	w.onMain([&] {
+		w.told(because(at("porch", NodePhase::configuring, Wanted::stopped), Kind::settings, std::nullopt, {"card"}));
+		w.told(at("porch", NodePhase::configured, Wanted::stopped));
+		w.told(at("porch", NodePhase::stopped, Wanted::stopped));
+	});
+	w.graph.script.push_back({"startNode porch", [&]() -> CommandResult {
+								  w.told(at("porch", NodePhase::starting));
+								  return Applied{AppliedKind::start};
+							  }});
+	w.receive(session, requests[10]);
+	w.onMain([&] { w.told(at("porch", NodePhase::running)); });
+
+	// A node added disabled: node.added says disabled, and nothing follows.
+	ear::NodeSpec quiet{"quiet", "white", json::object()};
+	quiet.disabled = true;
+	w.graph.script.push_back({"addNode quiet white {} disabled", [&]() -> CommandResult {
+								  w.gateway.nodeAdded(quiet, std::make_shared<Config>(noisePorts));
+								  w.told(at("quiet", NodePhase::disabled, Wanted::disabled));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[11]);
+
+	// A failed node: stopped (one node.state, wanted stopped), retried by start and by restart.
+	w.graph.script.push_back({R"(addNode tape file {"path":"nope/t.wav"})", [&]() -> CommandResult {
+								  w.nodeAdded({"tape", "file", {{"path", "nope/t.wav"}}}, recPorts);
+								  w.told(at("tape", NodePhase::configuring));
+								  w.told(failedWith(at("tape", NodePhase::failed), cannotOpen));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[12]);
+	w.graph.script.push_back({"stopNode tape", [&]() -> CommandResult {
+								  w.told(failedWith(at("tape", NodePhase::failed, Wanted::stopped), cannotOpen));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[13]);
+	w.graph.script.push_back({"startNode tape", [&]() -> CommandResult {
+								  w.told(because(at("tape", NodePhase::configuring), Kind::retry));
+								  return Applied{AppliedKind::retry};
+							  }});
+	w.receive(session, requests[14]);
+	w.onMain([&] { w.told(failedWith(at("tape", NodePhase::failed), cannotOpen)); });
+	w.graph.script.push_back({"restartNode tape", [&]() -> CommandResult {
+								  w.told(because(at("tape", NodePhase::configuring), Kind::retry));
+								  return Applied{AppliedKind::retry};
+							  }});
+	w.receive(session, requests[15]);
+	w.onMain([&] { w.told(failedWith(at("tape", NodePhase::failed), cannotOpen)); });
+
+	// A restart during a restart: unchanged.
+	w.graph.script.push_back({"restartNode desk", [&]() -> CommandResult {
+								  w.told(because(at("desk", NodePhase::stopping), Kind::restarting, Kind::action));
+								  return Applied{AppliedKind::restart};
+							  }});
+	w.graph.script.push_back({"restartNode desk", applied(AppliedKind::unchanged)});
+	w.receive(session, requests[16]);
+	// The card's block is lost: failed, blockLost; neither a restart nor a start brings it back.
+	const ear::FailureReason blockGone{Code::engineRefused, "the engine removed the block"};
+	w.onMain([&] {
+		auto lost = failedWith(at("desk", NodePhase::failed), blockGone);
+		lost.blockLost = true;
+		w.told(lost);
+	});
+	w.graph.script.push_back(
+		{"restartNode desk", refused(ControlRefusal{NotRestartable{"desk", NotRestartable::Reason::blockLost}})});
+	w.receive(session, requests[17]);
+	w.graph.script.push_back(
+		{"startNode desk", refused(ControlRefusal{NotRestartable{"desk", NotRestartable::Reason::blockLost}})});
+	w.receive(session, requests[18]);
+
+	// A name added back waits for its older node, and cannot restart before it was started.
+	w.graph.script.push_back({"removeNode tape", [&]() -> CommandResult {
+								  w.gateway.nodeRemoved("tape");
+								  w.told(because(at("tape", NodePhase::stopping), Kind::removing));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[19]);
+	w.graph.script.push_back({R"(addNode tape file {"path":"t.wav"})", [&]() -> CommandResult {
+								  w.nodeAdded({"tape", "file", {{"path", "t.wav"}}}, recPorts); // the older one is
+								  w.told(at("tape", NodePhase::added)); // superseded: the gateway hears none of it
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[20]);
+	w.onMain([&] { w.told(waiting(at("tape", NodePhase::added), ear::WaitingFor::Kind::olderNode, "tape")); });
+	w.graph.script.push_back(
+		{"restartNode tape", refused(ControlRefusal{NotRestartable{"tape", NotRestartable::Reason::notStarted}})});
+	w.receive(session, requests[21]);
+	w.onMain([&] {
+		w.told(at("tape", NodePhase::configuring));
+		w.told(at("tape", NodePhase::configured));
+		w.told(at("tape", NodePhase::starting));
+		w.told(at("tape", NodePhase::running));
+	});
+
+	// A removal: node.removed at the commit, then stopping, node.stopped and node.gone, which the client ignores.
+	w.graph.script.push_back({"removeNode noise", [&]() -> CommandResult {
+								  w.gateway.nodeRemoved("noise");
+								  w.told(because(at("noise", NodePhase::stopping), Kind::removing));
+								  return Lifecycle{};
+							  }});
+	w.receive(session, requests[22]);
+	w.onMain([&] { w.gateway.nodeGone("noise", 0); });
+	w.graph.script.push_back({"restartNode quiet", refused(ControlRefusal{NodeDisabled{"quiet"}})});
+	w.receive(session, requests[23]);
+
+	// A stop while configuring: one node.state, the same phase, wanted stopped; it rests stopped once configured.
+	const json fppSettings = {{"address", "0.0.0.0"}, {"port", 5004}, {"format", "L24"}, {"channels", 2}};
+	w.graph.script.push_back(
+		{R"(addNode fpp rtp {"address":"0.0.0.0","channels":2,"format":"L24","port":5004})", [&]() -> CommandResult {
+			 w.nodeAdded({"fpp", "rtp", fppSettings}, rtpPorts);
+			 w.told(at("fpp", NodePhase::configuring));
+			 return Lifecycle{};
+		 }});
+	w.receive(session, requests[24]);
+	w.onMain([&] { w.told(waiting(at("fpp", NodePhase::configuring), ear::WaitingFor::Kind::companion, "fpp.rtp")); });
+	w.graph.script.push_back({"stopNode fpp", [&]() -> CommandResult {
+								  w.told(waiting(at("fpp", NodePhase::configuring, Wanted::stopped),
+		                                         ear::WaitingFor::Kind::companion, "fpp.rtp"));
+								  return Applied{AppliedKind::stop};
+							  }});
+	w.receive(session, requests[25]);
+	w.onMain([&] {
+		w.told(at("fpp", NodePhase::configured, Wanted::stopped));
+		w.told(at("fpp", NodePhase::stopped, Wanted::stopped));
+	});
+
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+	CHECK(w.graph.offLoop == 0);
 }
 
 TEST_CASE("levels.json: levels.subscribe, then complete snapshots", "[session][levels][protocol]") {
@@ -637,7 +924,7 @@ TEST_CASE("Responses keep request order, notifications get none, and done follow
 	CHECK(w.graph.script.empty()); // the notification node.add ran
 	REQUIRE(out.all.size() == 1);
 	CHECK(json::parse(out.all[0]) == json::parse(R"([
-	  {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"the document: must be an object"}},
+	  {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"the document: must be an object","data":{"pointer":""}}},
 	  {"jsonrpc":"2.0","id":"r","result":{}},
 	  {"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}},
 	  {"jsonrpc":"2.0","id":"5","error":{"code":-32601,"message":"Method not found"}},

@@ -23,7 +23,8 @@ export function LevelEdge(props: EdgeProps<LevelFlowEdge>) {
       path={path}
       interactionWidth={16}
       style={{
-        stroke: statusColour[route.status],
+        // A status this editor does not know is drawn as pending: neutral (control-plane.md 4.1).
+        stroke: statusColour[route.status as keyof typeof statusColour] ?? statusColour.pending,
         strokeWidth: 1.5 + 5 * level + (selected ? 1.5 : 0),
         strokeOpacity: 0.45 + 0.55 * level,
         strokeDasharray: route.status === "linked" ? undefined : "6 4",

@@ -1,0 +1,260 @@
+{
+  "description": "Every enum is open from protocol 1 (docs/design/control-plane.md 4.1 and 4.7): values, members and notifications a client does not know, from a later slice or a newer ear, are taken as they come or ignored, never a failure. After a protocol 1 snapshot: an unknown state and phase (recovering, with an unknown member and an unknown failure code), an unknown cause.kind (fell-back), an unknown waitingFor kind (claim) and phase (reconfiguring, with its keys, not a health member this client keeps), an unknown route status (held), an unknown applied value on node.updated (reshape, with an unknown member ports) and in a reply (retune), and an unknown notification. The graph is what the reducer keeps: health members it knows, replaced whole by each node.state; the route's status as sent.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.update\",\"params\":{\"name\":\"noise\",\"settings\":{\"seed\":2}}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "noise",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "x.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
+          }
+        ],
+        "routes": [
+          {
+            "from": {
+              "node": "noise",
+              "port": "noise.mono"
+            },
+            "to": {
+              "node": "rec",
+              "port": "record.left"
+            },
+            "status": "linked"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "recovering",
+        "phase": "recovering",
+        "since": "2026-11-09T10:00:01.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "run-lost",
+          "detail": "the disk went away"
+        },
+        "attempt": 3,
+        "retryInMs": 4000
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:02.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "reason": "resource-refused",
+            "kind": "fell-back",
+            "detail": "udp:5006 is held by another program"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:03.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "fell-back"
+        },
+        "waitingFor": [
+          {
+            "kind": "claim",
+            "subject": "udp:5006",
+            "holder": "fpp"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "route.status",
+      "params": {
+        "from": {
+          "node": "noise",
+          "port": "noise.mono"
+        },
+        "to": {
+          "node": "rec",
+          "port": "record.left"
+        },
+        "status": "held"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "noise",
+        "settings": {
+          "seed": 2
+        },
+        "applied": "reshape",
+        "ports": {
+          "added": [],
+          "removed": []
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {
+        "applied": "retune"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.statusChanged",
+      "params": {
+        "name": "noise",
+        "status": {
+          "level": 3
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:04.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "keys": [
+          "seed"
+        ]
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "noise",
+        "type": "white",
+        "settings": {
+          "seed": 2
+        },
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "reconfiguring",
+        "phase": "reconfiguring",
+        "since": "2026-11-09T10:00:04.000000Z",
+        "wanted": "running",
+        "blockLost": false
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "x.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "recovering",
+        "phase": "recovering",
+        "since": "2026-11-09T10:00:01.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "run-lost",
+          "detail": "the disk went away"
+        }
+      }
+    ],
+    "routes": [
+      {
+        "from": {
+          "node": "noise",
+          "port": "noise.mono"
+        },
+        "to": {
+          "node": "rec",
+          "port": "record.left"
+        },
+        "status": "held"
+      }
+    ]
+  }
+}

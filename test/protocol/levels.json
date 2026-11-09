@@ -9,6 +9,10 @@
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
         "graphFrequency": 48000,
         "blockSize": 256,
         "realtime": false,
@@ -27,7 +31,10 @@
             "outputs": [
               "noise.mono"
             ],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           },
           {
             "name": "rec",
@@ -40,7 +47,10 @@
               "record.right"
             ],
             "outputs": [],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           }
         ],
         "routes": [
@@ -109,6 +119,10 @@
     }
   ],
   "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
     "graphFrequency": 48000,
     "blockSize": 256,
     "realtime": false,
@@ -127,7 +141,10 @@
         "outputs": [
           "noise.mono"
         ],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false
       },
       {
         "name": "rec",
@@ -140,7 +157,10 @@
           "record.right"
         ],
         "outputs": [],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false
       }
     ],
     "routes": [

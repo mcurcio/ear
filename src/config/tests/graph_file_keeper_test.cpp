@@ -76,8 +76,11 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 	auto first = GraphFileKeeper::load(*folder, catalogue);
 	REQUIRE(first.format().has_value());
 	CHECK(first.format()->rate == 48000);
-	GraphFileKeeper keeper(std::move(first), *folder, {48000, 256}, graph, reader, mainLoop);
+	FakeOperations operations{log};
+	ActionLog actions{log};
+	GraphFileKeeper keeper(std::move(first), *folder, {48000, 256}, graph, reader, operations, mainLoop);
 	keeper.subscribe(fileLog);
+	keeper.subscribeActions(actions);
 	REQUIRE(keeper.start().has_value());
 
 	REQUIRE(mainLoop.runUntil([&] { return !fileLog.changes.empty(); }));
@@ -96,6 +99,16 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 	REQUIRE(mainLoop.runUntil([&] { return !fileLog.written.empty(); }));
 	CHECK(fileLog.written == std::vector<std::string>{edited});
 	CHECK(contents(file) == replaced(recordExample, "take1.wav", "take2.wav"));
+
+	// A stop goes through the keeper's thread to NodeHost's operations, with its action record.
+	reply.reset();
+	operations.reply = LifecycleApplied::stop;
+	keeper.submit({control::StopNode{"rec"}},
+	              [&](std::vector<control::CommandResult> results) { reply = std::move(results); });
+	REQUIRE(mainLoop.runUntil([&] { return reply.has_value(); }));
+	CHECK(std::get<control::Applied>((*reply)[0]).kind == control::AppliedKind::stop);
+	REQUIRE(actions.records.size() == 1);
+	CHECK(actions.records[0] == control::ActionRecord{"rec", "stop", "ok", std::nullopt});
 
 	graph.close();
 	keeper.stop();

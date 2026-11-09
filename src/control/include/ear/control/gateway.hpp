@@ -1,7 +1,8 @@
 // Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
 // page's Errata section (section 11) and a re-cut, never a local edit. run() through the graph file
 // keeper and the GraphFileListener side are docs/design/knobly-config.md's (slice S5); their
-// erratum to batch2.md lands in S7.
+// erratum to batch2.md lands in S7. The clock that stamps since, nodeChanged with its outcome, health sent on every
+// change and node.gone are docs/design/node-lifecycle-modules.md 5.4's (slice 3a, step L-6).
 #pragma once
 #include <cstdint>
 #include <functional>
@@ -44,22 +45,30 @@ class MainLoopGateway final : public GraphGateway,
 							  public NodeHealthListener,
 							  public RouteStatusListener {
 public:
-	MainLoopGateway(Executor& mainLoop, Executor& control,
-	                GraphRequests& requests); // all outlive it
+	/// `clock` stamps each node's `since` when its phase changes (D-M11).
+	MainLoopGateway(Executor& mainLoop, Executor& control, GraphRequests& requests,
+	                WallClock clock = &std::chrono::system_clock::now); // all outlive it
 	~MainLoopGateway();
-	/// requests.submit(commands, a reply that posts done(results) to `control`).
+	/// requests.submit(commands, a reply that fills each GraphView's `since` on the main loop and posts done(results) to
+	/// `control`).
 	void run(std::vector<Command> commands, std::move_only_function<void(std::vector<CommandResult>)> done) override;
 	void watch(EventSink& sink) override;
 	void graphFileChanged(const GraphFileChanged& change) override; // posted to sink->graphFileChanged
 	void graphFileWritten(const std::string& version) override;     // nothing: a status line only
+	/// node.added with the spec's health (D-M12), `since` stamped.
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+	/// node.updated with `applied` restart (told only by a listener's default nodeChanged, which this one overrides).
 	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
+	/// DesiredNodeListener (observer): a node kept by name whose spec changed: node.updated with the outcome and
+	/// `disabled`.
+	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig> config, const NodeChange& change) override;
 	void nodeRemoved(const NodeName& node) override;
 	void routeAdded(const Route& route) override;
 	void routeRemoved(const Route& route) override;
-	/// Posted as node.state when its state or reason differs from the node's last one sent: until step L-6 puts the
-	/// lifecycle's members on the wire (docs/design/node-lifecycle.md 9), a change of the others sends nothing.
+	/// Posted as node.state whenever any health member differs from the node's last one sent (control-plane.md 4.8),
+	/// with `since` re-stamped only when its phase differs.
 	void nodeChanged(const NodeHealth& health) override;
+	/// Posts node.stopped (deprecated) then node.gone (control-plane.md 4.8).
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	/// The wire keys health by name and holds the newer node of a name (node-lifecycle.md 5.7, D-L36).
 	bool hearsSuperseded() const noexcept override { return false; }

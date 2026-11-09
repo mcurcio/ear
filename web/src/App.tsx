@@ -44,7 +44,8 @@ function syncNodes(previous: EarFlowNode[], graph: GraphState, places: Places): 
 }
 
 function describe(error: unknown): string {
-  if (error instanceof RpcError) return error.data !== undefined ? `${error.data.code}: ${error.message}` : error.message;
+  if (error instanceof RpcError)
+    return error.data?.code !== undefined ? `${error.data.code}: ${error.message}` : error.message;
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -158,7 +159,9 @@ export function App() {
         )}
         {graph !== null && <EngineFacts graph={graph} />}
         {graph !== null && <AddNodePanel types={graph.types} onError={showError} />}
-        {selectedNode !== undefined && <NodePanel node={selectedNode} onError={showError} />}
+        {selectedNode !== undefined && (
+          <NodePanel node={selectedNode} features={graph?.features ?? []} onError={showError} />
+        )}
         {file !== null && <TextPane state={file} onError={showError} />}
       </aside>
     </div>

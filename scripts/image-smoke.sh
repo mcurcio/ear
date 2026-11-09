@@ -21,7 +21,8 @@
 # record and the route's linked one (each line ear prints is one JSON record whose msg is the plain
 # line, docs/design/node-framework.md section 8.8), GET / must return the built editor's index.html, and graph.get and
 # graphFile.get must answer (scripts/rpc-call.mjs, run with the dev image's Node in a container
-# sharing ear's network): graphFile.get runs the file's version and holds its text. Without
+# sharing ear's network): graph.get says protocol 1 with the lifecycle feature, and graphFile.get runs the
+# file's version and holds its text. Without
 # SYS_NICE graph.get says "realtime": false and ear still runs; with it, "realtime": true (the
 # binary's permitted capability, made effective by Engine::create). Each run is stopped with
 # SIGTERM and must exit 0 and leave rec.wav in the recordings folder.
@@ -138,6 +139,11 @@ run_ear() {
 	echo "  graph.get: $graph"
 	if [[ $graph != *"\"realtime\":$realtime"* ]]; then
 		echo "image-smoke: graph.get does not say \"realtime\":$realtime" >&2
+		exit 1
+	fi
+	# The wire's frame (docs/design/control-plane.md 4.1): protocol 1 and the lifecycle feature.
+	if [[ $graph != *'"protocol":1'* || $graph != *'"features":['*'"lifecycle"'* ]]; then
+		echo "image-smoke: graph.get does not say \"protocol\":1 with the \"lifecycle\" feature" >&2
 		exit 1
 	fi
 

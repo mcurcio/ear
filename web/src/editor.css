@@ -120,6 +120,51 @@ body,
   color: #e03131;
 }
 
+/* Silence the operator asked for is quiet, never a fault (control-plane.md 8.6); stopped and disabled apart. */
+.state-stopped .ear-node-state {
+  color: #5c7cfa;
+}
+
+.state-disabled {
+  border-style: dashed;
+}
+
+.state-disabled .ear-node-state {
+  color: #868e96;
+}
+
+/* A state this editor does not know: neutral, as starting's. */
+.state-unknown .ear-node-state {
+  color: #e8a317;
+}
+
+.phase-configuring .ear-node-state {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.ear-node-line {
+  font-size: 11px;
+  color: #555;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lifecycle-buttons {
+  margin: 6px 0;
+}
+
+.lifecycle-buttons button {
+  margin-right: 4px;
+}
+
 .ear-node-ports {
   display: flex;
   justify-content: space-between;

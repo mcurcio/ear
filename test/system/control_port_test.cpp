@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,6 +50,11 @@ private:
 		return Ear(directory, {readyLine}, {"--web-root", writeWebRoot(directory).string()});
 	}
 };
+
+std::string readFile(const std::filesystem::path& path) {
+	std::ifstream file(path, std::ios::binary);
+	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
 
 /// What channelRms measured: the RMS and how many frames it is over.
 struct Rms {
@@ -234,18 +241,58 @@ TEST_CASE("Removing a node tells its routes first, and a wrong port is an unknow
 	CHECK(wrong["error"]["data"]["code"] == "unknown-port");
 
 	CHECK(rpc.call("node.remove", {{"name", "noise"}})["result"] == json::object());
-	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.stopped", {{"name", "noise"}}); });
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.gone", {{"name", "noise"}}); });
 	INFO("notifications: " << json(rpc.notifications).dump());
 	const json removed = route("noise", "noise.mono", "rec", "record.left");
 	const std::size_t routeRemoved = rpc.indexOf("route.removed", removed);
 	const std::size_t nodeRemoved = rpc.indexOf("node.removed", {{"name", "noise"}});
 	const std::size_t stopping = rpc.indexOf("node.state", {{"name", "noise"}, {"state", "stopping"}});
 	const std::size_t stopped = rpc.indexOf("node.stopped", {{"name", "noise"}});
+	const std::size_t gone = rpc.indexOf("node.gone", {{"name", "noise"}, {"droppedFrames", 0}});
 	CHECK(routeRemoved < nodeRemoved);
 	CHECK(nodeRemoved < stopping);
 	CHECK(stopping < stopped);
-	CHECK(stopped < rpc.notifications.size());
+	CHECK(stopped < gone); // node.stopped (deprecated) first, then node.gone (control-plane.md 4.8)
+	CHECK(gone < rpc.notifications.size());
 	CHECK(ear.stop(rpc) == 0);
+}
+
+TEST_CASE("node.stop and node.start through the control port edit nothing, and write an action record before the "
+          "node records they cause",
+          "[system][control][lifecycle]") {
+	Running started;
+	Ear& ear = started.ear;
+	const TempDirectory& directory = started.directory;
+	const std::string before = readFile(directory.graphFile());
+	Rpc rpc(ear.port());
+	const json snapshot = rpc.call("graph.subscribe");
+	REQUIRE(snapshot.contains("result"));
+	CHECK(snapshot["result"]["protocol"] == 1);
+	CHECK(snapshot["result"]["features"] == json::array({"lifecycle"}));
+	CHECK(snapshot["result"]["nodes"][0]["phase"] == "running");
+	CHECK(snapshot["result"]["nodes"][0]["wanted"] == "running");
+
+	const json stop = rpc.call("node.stop", {{"name", "noise"}});
+	INFO(stop.dump());
+	CHECK(stop["result"] == json{{"applied", "stop"}});
+	const json stopped = rpc.waitFor(
+		[](const json& m) { return Rpc::matches(m, "node.state", {{"name", "noise"}, {"phase", "stopped"}}); });
+	CHECK(stopped["params"]["wanted"] == "stopped");
+	CHECK(stopped["params"].contains("since"));
+	CHECK(rpc.call("node.start", {{"name", "noise"}})["result"] == json{{"applied", "start"}});
+	rpc.waitFor([](const json& m) { return Rpc::matches(m, "node.state", {{"name", "noise"}, {"state", "running"}}); });
+	const json ghost = rpc.call("node.restart", {{"name", "ghost"}});
+	CHECK(ghost["error"]["data"]["code"] == "unknown-node");
+
+	REQUIRE(ear.process().waitForLine("node noise running", deadline));
+	CHECK(ear.stop(rpc) == 0);
+	CHECK(readFile(directory.graphFile()) == before); // a stop and a start are never written
+	const std::string& out = ear.process().output();
+	const std::size_t invoked = out.find("node noise stop invoked\n");
+	REQUIRE(invoked != std::string::npos);
+	CHECK(invoked < out.find("node noise stopping: stop\n"));
+	CHECK(out.find("node noise start invoked\n") != std::string::npos);
+	CHECK(out.find("node ghost restart refused: unknown-node\n") != std::string::npos);
 }
 
 TEST_CASE("A file path outside the recordings folder is refused as invalid-settings and nothing is "

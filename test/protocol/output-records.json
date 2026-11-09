@@ -656,6 +656,46 @@
         "detail": "configure ran 31 ms",
         "msg": "node rec ear.hook-slow: configure ran 31 ms"
       }
+    },
+    {
+      "case": "an operator's node.restart, answered: an action record, before the node records it causes (control-plane.md 9 and 9.1)",
+      "record": {
+        "v": 1,
+        "seq": 77,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "desk",
+        "action": "restart",
+        "result": "ok",
+        "msg": "node desk restart invoked"
+      }
+    },
+    {
+      "case": "a lifecycle request refused: its code as the result, and not-restartable's reason as the detail",
+      "record": {
+        "v": 1,
+        "seq": 78,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "desk",
+        "action": "restart",
+        "result": "not-restartable",
+        "detail": "block-lost",
+        "msg": "node desk restart refused: not-restartable (block-lost)"
+      }
+    },
+    {
+      "case": "a start on a node ear.conf disables",
+      "record": {
+        "v": 1,
+        "seq": 79,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "porch",
+        "action": "start",
+        "result": "node-disabled",
+        "msg": "node porch start refused: node-disabled"
+      }
     }
   ]
 }

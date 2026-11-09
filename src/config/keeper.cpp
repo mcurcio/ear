@@ -35,6 +35,35 @@ bool isRead(const control::Command& command) {
 	return std::holds_alternative<control::GetGraph>(command) || std::holds_alternative<control::GetGraphFile>(command);
 }
 
+/// A lifecycle verb that edits nothing (control-plane.md 7.6): its verb and node.
+std::optional<std::pair<control::LifecycleVerb, NodeName>> verbOf(const control::Command& command) {
+	if (const auto* c = std::get_if<control::StartNode>(&command))
+		return std::pair{control::LifecycleVerb::start, c->node};
+	if (const auto* c = std::get_if<control::StopNode>(&command))
+		return std::pair{control::LifecycleVerb::stop, c->node};
+	if (const auto* c = std::get_if<control::RestartNode>(&command))
+		return std::pair{control::LifecycleVerb::restart, c->node};
+	return std::nullopt;
+}
+
+/// An accepted disable's or enable's answer from the plan's outcome for its node (node-lifecycle-modules.md 5.7).
+CommandResult appliedOf(const NodeName& node, const std::vector<std::pair<NodeName, NodeOutcome>>& outcomes) {
+	for (const auto& [name, outcome] : outcomes) {
+		if (name != node) continue;
+		switch (outcome) {
+		case NodeOutcome::disable:
+			return control::Applied{control::AppliedKind::disable};
+		case NodeOutcome::enable:
+			return control::Applied{control::AppliedKind::enable};
+		case NodeOutcome::stored:
+			return control::Applied{control::AppliedKind::stored};
+		case NodeOutcome::restart:
+			return control::Applied{control::AppliedKind::restart};
+		}
+	}
+	return control::Applied{control::AppliedKind::unchanged};
+}
+
 } // namespace
 
 Keeper::Keeper(DiskText base, GraphFileModel first, GraphFileDisk& disk, AudioFormat engine, MainLoopSide& side,
@@ -122,7 +151,11 @@ void Keeper::advance(Batch batch) {
 		if (isRead(command)) {
 			if (std::holds_alternative<control::GetGraphFile>(command))
 				reads.push_back({index, fileState(working_, version())});
-			else reads.push_back({index, std::nullopt});
+			else reads.push_back({index, std::monostate{}});
+			continue;
+		}
+		if (auto verb = verbOf(command)) {
+			reads.push_back({index, std::move(*verb)});
 			continue;
 		}
 		if (auto answer = take(command)) {
@@ -133,15 +166,17 @@ void Keeper::advance(Batch batch) {
 		Offer offer{fileState(candidate_->model, candidate_->version), *read.wanted, read.placements,
 		            control::FileChangeCause::edit, 0};
 		const bool last = batch.next == batch.commands.size();
-		postStep(std::move(batch), std::move(reads), std::move(offer), index, last);
+		std::optional<NodeName> appliedFor = candidate_->appliedFor;
+		postStep(std::move(batch), std::move(reads), std::move(offer), index, std::move(appliedFor), last);
 		return;
 	}
-	postStep(std::move(batch), std::move(reads), std::nullopt, 0, true);
+	postStep(std::move(batch), std::move(reads), std::nullopt, 0, std::nullopt, true);
 }
 
 std::optional<CommandResult> Keeper::take(const control::Command& command) {
 	if (stopped_) return refused(Stopping{});
 	std::optional<EditOutcome> edit;
+	std::optional<NodeName> appliedFor;
 	if (const auto* set = std::get_if<control::SetGraphFile>(&command)) {
 		if (set->version != version()) return CommandResult{control::FileRefusal{control::FileChanged{}}};
 		if (workingFromText_ && set->text == working_.text()) return done();
@@ -154,6 +189,14 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 							  [&](const control::RemoveNode& c) { return working_.removeNode(c.node); },
 							  [&](const control::AddRoute& c) { return working_.addRoute(c.route); },
 							  [&](const control::RemoveRoute& c) { return working_.removeRoute(c.route); },
+							  [&](const control::DisableNode& c) {
+								  appliedFor = c.node;
+								  return working_.disableNode(c.node);
+							  },
+							  [&](const control::EnableNode& c) {
+								  appliedFor = c.node;
+								  return working_.enableNode(c.node);
+							  },
 							  [](const auto&) -> EditOutcome { throw std::logic_error("keeper: not an edit"); },
 						  },
 		                  command);
@@ -162,28 +205,38 @@ std::optional<CommandResult> Keeper::take(const control::Command& command) {
 		return std::visit(Overloaded{[](const CommandError& e) { return refused(e); },
 		                             [](const control::FileRefusal& r) { return CommandResult{r}; }},
 		                  edit->error());
-	if (!**edit) return done();
+	if (!**edit) return appliedFor ? CommandResult{control::Applied{control::AppliedKind::unchanged}} : done();
 	GraphFileModel model = std::move(***edit);
 	// An edit's or a set's candidate that does not read cannot be planned: the text's errors answer it.
 	if (model.read().hasErrors())
 		return CommandResult{control::FileRefusal{control::InvalidText{model.read().diagnostics}}};
-	candidate_ = Candidate{std::move(model), nextVersion()};
+	candidate_ = Candidate{std::move(model), nextVersion(), std::move(appliedFor)};
 	return std::nullopt;
 }
 
 void Keeper::postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex,
-                      bool last) {
+                      std::optional<NodeName> appliedFor, bool last) {
 	awaiting_ = true;
 	mainLoop_.post([&side = side_, &self = self_, keeper = this, batch = std::move(batch), reads = std::move(reads),
-	                offer = std::move(offer), offerIndex, last]() mutable {
+	                offer = std::move(offer), offerIndex, appliedFor = std::move(appliedFor), last,
+	                stopped = stopped_]() mutable {
 		for (Read& read : reads)
 			batch.results[read.index] =
-				read.file ? CommandResult{side.graphFile(std::move(*read.file))} : CommandResult{side.graph()};
+				std::visit(Overloaded{
+							   [&](std::monostate) { return CommandResult{side.graph()}; },
+							   [&](FileState& file) { return CommandResult{side.graphFile(std::move(file))}; },
+							   [&](std::pair<control::LifecycleVerb, NodeName>& verb) {
+								   return side.operate(verb.first, verb.second, stopped);
+							   },
+						   },
+			               read.what);
 		std::optional<Verdict> verdict;
 		if (offer) {
 			Judged judged = side.offer(std::move(*offer));
 			verdict = judged.verdict;
-			batch.results[offerIndex] = CommandResult{std::move(judged.result)};
+			if (appliedFor && judged.verdict == Verdict::accepted)
+				batch.results[offerIndex] = appliedOf(*appliedFor, judged.outcomes);
+			else batch.results[offerIndex] = CommandResult{std::move(judged.result)};
 		}
 		std::optional<Batch> rest;
 		if (last) {

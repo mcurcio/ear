@@ -1,13 +1,17 @@
 // Interface page: docs/design/knobly-config.md (slice S3), crossings C1 and C4. The two interfaces
 // ear_control declares at its edge: where every request batch goes (the graph file keeper implements
-// it), and who is told of each change to the graph file (the gateway and the status log).
+// it), and who is told of each change to the graph file (the gateway and the status log). WallClock lives here, the
+// edge both StatusLog and the gateway include (docs/design/node-lifecycle-modules.md 5.2, D-M21).
 #pragma once
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
 #include "ear/control/commands.hpp"
 #include "ear/control/graph_file_state.hpp"
 namespace ear::control {
+/// What stamps an instant on the wire (`since`) and on standard output (`t`): the system clock, or a test's.
+using WallClock = std::function<std::chrono::system_clock::time_point()>;
 using BatchReply = std::move_only_function<void(std::vector<CommandResult>)>; // called once, on the main loop
 /// Where every request batch goes (the graph file keeper implements it).
 class GraphRequests {

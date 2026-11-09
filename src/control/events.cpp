@@ -1,7 +1,8 @@
 // The graph as the client sees it (docs/design/batch2.md section 6): the graph notifications
 // (events.hpp), the levels notification, the Graph that graph.get answers (encodeGraph, declared
 // in commands.hpp), and graphFile.changed (docs/design/knobly-config.md). They share one encoding
-// of a node, its state and a route's status, so a snapshot and the events after it always agree.
+// of a node, its health (docs/design/node-lifecycle-modules.md 5.3) and a route's status, so a snapshot and the events
+// after it always agree.
 #include "ear/control/commands.hpp"
 #include "ear/control/events.hpp"
 
@@ -25,10 +26,49 @@ json encodeNode(const NodeSpec& node, const Ports& ports) {
 	        {"outputs", ports.outputs()}};
 }
 
-/// Adds "state" and, while failed, "reason": {"code", "detail"}.
-void addState(json& into, NodeState state, const std::optional<FailureReason>& reason) {
-	into["state"] = stateName(state);
-	if (reason) into["reason"] = {{"code", failureCode(reason->code)}, {"detail", reason->detail}};
+/// A cause as the wire carries it (control-plane.md 4.8): {"kind"}, "keys" for a settings change, and a restart's own
+/// kind (with its keys) under "restart".
+json encodeCause(const NodeCause& cause) {
+	json out = {{"kind", causeName(cause.kind)}};
+	if (cause.kind == NodeCause::Kind::restarting && cause.restart) {
+		json restart = {{"kind", causeName(*cause.restart)}};
+		if (*cause.restart == NodeCause::Kind::settings) restart["keys"] = cause.keys;
+		out["restart"] = std::move(restart);
+	} else if (cause.kind == NodeCause::Kind::settings) {
+		out["keys"] = cause.keys;
+	}
+	return out;
+}
+
+/// The health members (node-lifecycle-modules.md 5.3), one encoding for snapshots, node.added and node.state, so the
+/// three cannot drift: state, phase, since (when known), wanted and blockLost always; cause, waitingFor and reason when
+/// the health has them.
+void addHealth(json& into, const NodeHealth& h, std::optional<std::chrono::system_clock::time_point> since) {
+	into["state"] = stateName(h.state);
+	into["phase"] = phaseName(h.phase);
+	if (since) into["since"] = utcMicros(*since);
+	into["wanted"] = wantedName(h.wanted);
+	into["blockLost"] = h.blockLost;
+	if (h.cause) into["cause"] = encodeCause(*h.cause);
+	if (!h.waitingFor.empty()) {
+		json waits = json::array();
+		for (const WaitingFor& wait : h.waitingFor) {
+			json one = {{"kind", waitingKindName(wait.kind)}};
+			if (!wait.name.empty()) one["name"] = wait.name;
+			waits.push_back(std::move(one));
+		}
+		into["waitingFor"] = std::move(waits);
+	}
+	if (h.reason) into["reason"] = {{"code", failureCode(h.reason->code)}, {"detail", h.reason->detail}};
+}
+
+/// A node as snapshots and node.added carry it: its spec, its ports, its health and `disabled` when true.
+json encodeNodeWithHealth(const NodeSpec& node, const Ports& ports, const NodeHealth& health,
+                          std::optional<std::chrono::system_clock::time_point> since) {
+	json entry = encodeNode(node, ports);
+	addHealth(entry, health, since);
+	if (node.disabled) entry["disabled"] = true;
+	return entry;
 }
 
 /// {"from", "to", "status", "detail"?}: detail only when refused (as the status log prints it).
@@ -46,14 +86,15 @@ double fourDecimals(float value) { return std::round(static_cast<double>(value) 
 
 json encodeGraph(const GraphView& view) {
 	json nodes = json::array();
-	for (const NodeView& node : view.nodes) {
-		json entry = encodeNode(node.spec, node.ports);
-		addState(entry, node.state, node.reason);
-		nodes.push_back(std::move(entry));
-	}
+	for (const NodeView& node : view.nodes)
+		nodes.push_back(encodeNodeWithHealth(node.spec, node.ports, node.health, node.since));
 	json routes = json::array();
 	for (const RouteStatus& route : view.routes) routes.push_back(encodeRouteStatus(route));
-	return {{"graphFrequency", view.engine.format.rate},
+	json features = json::array();
+	for (const std::string_view feature : wireFeatures) features.push_back(feature);
+	return {{"protocol", wireProtocol},
+	        {"features", std::move(features)},
+	        {"graphFrequency", view.engine.format.rate},
 	        {"blockSize", view.engine.format.maxBlock},
 	        {"realtime", view.engine.realtime},
 	        {"scheduling", view.engine.scheduling},
@@ -67,17 +108,21 @@ std::string encodeEvent(const GraphEvent& event) {
 		[](const auto& e) -> std::string {
 			using E = std::decay_t<decltype(e)>;
 			if constexpr (std::is_same_v<E, NodeAdded>) {
-				return encodeNotification("node.added", encodeNode(e.node, e.ports));
+				return encodeNotification("node.added", encodeNodeWithHealth(e.node, e.ports, e.health, e.since));
 			} else if constexpr (std::is_same_v<E, NodeUpdated>) {
-				return encodeNotification("node.updated", {{"name", e.node}, {"settings", e.settings}});
+				json params = {{"name", e.node}, {"settings", e.settings}, {"applied", outcomeName(e.applied)}};
+				if (e.disabled) params["disabled"] = true;
+				return encodeNotification("node.updated", params);
 			} else if constexpr (std::is_same_v<E, NodeRemoved>) {
 				return encodeNotification("node.removed", {{"name", e.node}});
 			} else if constexpr (std::is_same_v<E, NodeChanged>) {
 				json params = {{"name", e.health.name}};
-				addState(params, e.health.state, e.health.reason);
+				addHealth(params, e.health, e.since);
 				return encodeNotification("node.state", params);
 			} else if constexpr (std::is_same_v<E, NodeStopped>) {
 				return encodeNotification("node.stopped", {{"name", e.node}, {"droppedFrames", e.droppedFrames}});
+			} else if constexpr (std::is_same_v<E, NodeGone>) {
+				return encodeNotification("node.gone", {{"name", e.node}, {"droppedFrames", e.droppedFrames}});
 			} else if constexpr (std::is_same_v<E, RouteAdded>) {
 				return encodeNotification("route.added", encodeRoute(e.route));
 			} else if constexpr (std::is_same_v<E, RouteRemoved>) {
@@ -88,6 +133,20 @@ std::string encodeEvent(const GraphEvent& event) {
 			}
 		},
 		event);
+}
+
+std::string_view outcomeName(NodeOutcome outcome) noexcept {
+	switch (outcome) {
+	case NodeOutcome::restart:
+		return "restart";
+	case NodeOutcome::disable:
+		return "disable";
+	case NodeOutcome::enable:
+		return "enable";
+	case NodeOutcome::stored:
+		return "stored";
+	}
+	return "restart";
 }
 
 std::string encodeLevels(std::span<const NodeLevels> levels) {

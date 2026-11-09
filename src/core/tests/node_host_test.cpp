@@ -3209,6 +3209,29 @@ TEST_CASE("A stop keeps the configuration: no resource released, and start drive
 	CHECK(f.allGone == 1);
 }
 
+TEST_CASE("An operation's judged callback hears the reply before the stop's fade and health, and a refusal's too",
+          "[node_host][operations]") {
+	Fixture f;
+	addRunning(f, "desk", withPlayback(f.log));
+	f.log.clear();
+	f.listener.told.clear();
+	const auto judged = [&f](const LifecycleReply& reply) { f.log.push_back("judged " + replyText(reply)); };
+
+	CHECK(replyText(f.host.stop("desk", judged)) == "stop");
+	CHECK(f.log == Log{"judged stop", "fade", "node desk stopping"});
+	f.settle();
+	f.log.clear();
+	CHECK(replyText(f.host.start("desk", judged)) == "start");
+	CHECK(f.log.front() == "judged start");
+	CHECK(replyText(f.host.restart("ghost", judged)) == "unknown-node");
+	CHECK(f.log.back() == "judged unknown-node");
+	f.stopAll();
+	CHECK(replyText(f.host.stop("desk", judged)) == "stopping");
+	CHECK(f.log.back() == "judged stopping");
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
 TEST_CASE("A card's playback bank fades out before a stop's and a disable's silence too", "[node_host][fade]") {
 	Fixture f;
 	addRunning(f, "desk", withPlayback(f.log, "A"));
