@@ -96,11 +96,10 @@ void Links::createLink(LinkId link, EnginePortId output, EnginePortId input) {
 		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);
 		return;
 	}
-	pw_properties* props = newProperties({{property(Home::link, "link.output.port"), std::to_string(output)},
-	                                      {property(Home::link, "link.input.port"), std::to_string(input)}});
-	auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
-		impl_->engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
-	pw_properties_free(props);
+	const PropertySet<Home::link> props({{property<Home::link>("link.output.port"), std::to_string(output)},
+	                                     {property<Home::link>("link.input.port"), std::to_string(input)}});
+	pw_proxy* proxy =
+		createObject(impl_->engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props);
 	if (proxy == nullptr) {
 		impl_->refused.emplace_back(link, std::string("cannot ask for the link: ") + spa_strerror(-errno));
 		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);

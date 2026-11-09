@@ -10,3 +10,8 @@ const spa_dict_item* item = nullptr;
 module = loadModule(context, moduleName, arguments);
 my_pw_properties_new("node.name", name);
 pw_properties_free(props);
+const spa_dict* dict = info->props;
+const struct spa_dict* other = nullptr;
+const struct spa_dict_item* first = &dict->items[0];
+pw_proxy* proxy = createObject(core, "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props);
+const char* lookedUp = spa_dict_lookup(dict, "node.name");

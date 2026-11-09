@@ -1,38 +1,36 @@
-// The only calls to PipeWire's property writers and module loading with arguments (engine_property_set.hpp,
-// docs/engine.md#properties-ear-sets).
+// The module half of engine_property_set.hpp: a value checked to be one value, and the one module load with arguments
+// (docs/engine.md#properties-ear-sets).
 #include "engine_property_set.hpp"
 
+#include <cctype>
+
 #include <pipewire/impl.h>
-#include <pipewire/pipewire.h>
 
 namespace ear::pipewire {
 
-pw_properties* newProperties(std::initializer_list<PropertyValue> values) {
-	pw_properties* properties = pw_properties_new(nullptr, nullptr);
-	for (const auto& [key, value] : values) setProperty(properties, key, value);
-	return properties;
+void requireOneValue(const std::string& value) {
+	if (value.empty()) throw std::logic_error("a module argument's value is empty");
+	int depth = 0;
+	bool quoted = false;
+	bool escaped = false;
+	for (const char c : value) {
+		if (quoted) {
+			if (escaped) escaped = false;
+			else if (c == '\\') escaped = true;
+			else if (c == '"') quoted = false;
+			continue;
+		}
+		if (c == '"') quoted = true;
+		else if (c == '{' || c == '[') ++depth;
+		else if (c == '}' || c == ']') --depth;
+		else if (depth == 0 && std::isspace(static_cast<unsigned char>(c)) != 0)
+			throw std::logic_error("a module argument's value would open another key: " + value);
+		if (depth < 0) throw std::logic_error("a module argument's value closes what it did not open: " + value);
+	}
+	if (quoted || depth != 0) throw std::logic_error("a module argument's value is left open: " + value);
 }
 
-void setProperty(pw_properties* properties, PropertyKey key, const std::string& value) {
-	pw_properties_set(properties, key.c_str(), value.c_str());
-}
-
-ModuleArguments& ModuleArguments::add(PropertyKey key, std::string value) {
-	values_.emplace_back(key, std::move(value));
-	return *this;
-}
-
-ModuleArguments& ModuleArguments::add(PropertyKey key, const ModuleArguments& object) {
-	return add(key, object.text());
-}
-
-std::string ModuleArguments::text() const {
-	std::string text = "{";
-	for (const auto& [key, value] : values_) text += std::string(" ") + key.c_str() + " = " + value;
-	return text + " }";
-}
-
-pw_impl_module* loadModule(pw_context* context, const char* name, const ModuleArguments& arguments) {
+pw_impl_module* loadModule(pw_context* context, const char* name, const ModuleArguments<Home::rtpReceiver>& arguments) {
 	return pw_context_load_module(context, name, arguments.text().c_str(), nullptr);
 }
 

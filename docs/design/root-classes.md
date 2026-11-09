@@ -589,7 +589,7 @@ struct PropertyRow {
 inline constexpr std::array<PropertyRow, /*N*/> engineProperties{/* one row per key */};
 inline constexpr std::array<std::pair<Home, std::string_view>, /*M*/> forbidden{/* home, key or key prefix */};
 /// The key, if the table lists it for `home`; does not compile otherwise.
-consteval const char* property(Home home, std::string_view key); // built: returns a PropertyKey (6.5)
+consteval const char* property(Home home, std::string_view key); // built: property<H>(key), a PropertyKey<H> (6.5)
 } // namespace ear::pipewire
 ```
 
@@ -656,6 +656,16 @@ The table is `src/pipewire/engine_properties.hpp`; how it is checked and why eac
   prefix, with literals emptied before comments are cut. The live check also requires the RTP module's arguments to
   be exactly the table's receiver keys, the card's own `node.driver = true`, and each companion's links to leave from
   every one of its ports.
+- **The key carries its home (final review).** A `PropertyKey` of one home could still land on another's object, the
+  seam's run-time key on a block, a module argument value open a second key, and `pw_core_create_object` take any
+  properties. So `property<H>(key)` (a template argument, since a function argument cannot choose a return type)
+  returns a `PropertyKey<H>`; an object's properties are a `PropertySet<H>`, set only with keys of its home (a card's
+  also with `PropertyKey<Home::cardSeam>`, which only `seamChecked` makes, from the `AlsaSoundCards`' own key text);
+  `createObject` takes only a `PropertySet`, and the guard refuses `pw_core_create_object` elsewhere, any mention of a
+  writer (a function pointer included) and any `spa_dict` or `spa_dict_item` built outside `engine_property_set`;
+  `ModuleArguments<H>` nests `ModuleArguments<Home::rtpStream>` only under `stream.props` and refuses a value that
+  would open another key. Nine compile-fail cases pin it. What a type cannot check, which row a builder picks for a
+  value, stays the live check's.
 
 ## 7. Class 5: the harness re-implements the engine
 

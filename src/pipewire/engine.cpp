@@ -136,15 +136,16 @@ bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 pw_properties* contextProperties(const EngineSettings& settings) {
 	const auto rate = std::to_string(settings.graphFrequency);
 	const auto block = std::to_string(settings.blockSize);
-	return newProperties({{property(Home::context, "config.name"), settings.configFile.string()},
-	                      {property(Home::context, "default.clock.rate"), rate},
-	                      {property(Home::context, "default.clock.allowed-rates"), "[ " + rate + " ]"},
-	                      {property(Home::context, "default.clock.quantum"), block},
-	                      {property(Home::context, "default.clock.min-quantum"), block},
-	                      {property(Home::context, "default.clock.max-quantum"), block},
-	                      {property(Home::context, "default.clock.quantum-floor"), block},
-	                      {property(Home::context, "default.clock.quantum-limit"), block},
-	                      {property(Home::context, "clock.power-of-two-quantum"), "false"}});
+	return PropertySet<Home::context>({{property<Home::context>("config.name"), settings.configFile.string()},
+	                                   {property<Home::context>("default.clock.rate"), rate},
+	                                   {property<Home::context>("default.clock.allowed-rates"), "[ " + rate + " ]"},
+	                                   {property<Home::context>("default.clock.quantum"), block},
+	                                   {property<Home::context>("default.clock.min-quantum"), block},
+	                                   {property<Home::context>("default.clock.max-quantum"), block},
+	                                   {property<Home::context>("default.clock.quantum-floor"), block},
+	                                   {property<Home::context>("default.clock.quantum-limit"), block},
+	                                   {property<Home::context>("clock.power-of-two-quantum"), "false"}})
+	    .release();
 }
 
 } // namespace

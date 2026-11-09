@@ -57,23 +57,20 @@ public:
 		const auto periods = std::to_string(cardPeriods(format.maxBlock));
 		// Every key from the property table, and none it forbids on a card (no node.group: docs/engine.md#sound-cards;
 		// docs/engine.md#properties-ear-sets says why each).
-		pw_properties* props =
-			newProperties({{property(Home::card, "factory.name"),
-		                    bank_ == Direction::output ? "api.alsa.pcm.sink" : "api.alsa.pcm.source"},
-		                   {property(Home::card, "api.alsa.path"), alsaPath(shape.card)},
-		                   {property(Home::card, "audio.channels"), channels},
-		                   {property(Home::card, "audio.rate"), rate},
-		                   {property(Home::card, "audio.position"), auxPositions(channels_)},
-		                   {property(Home::card, "node.name"), engineNode},
-		                   {property(Home::card, "node.always-process"), "true"},
-		                   {property(Home::card, "priority.driver"), priority},
-		                   {property(Home::card, "api.alsa.period-size"), periodSize},
-		                   {property(Home::card, "api.alsa.period-num"), periods}});
-		// The seam's keys were refused at construction if the table forbids them or sets them on every card.
-		for (const auto& [key, value] : extra) setProperty(props, PropertyKey::seamChecked(key), value);
-		node_ = static_cast<pw_proxy*>(
-			pw_core_create_object(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, &props->dict, 0));
-		pw_properties_free(props);
+		PropertySet<Home::card> props({{property<Home::card>("factory.name"),
+		                                bank_ == Direction::output ? "api.alsa.pcm.sink" : "api.alsa.pcm.source"},
+		                               {property<Home::card>("api.alsa.path"), alsaPath(shape.card)},
+		                               {property<Home::card>("audio.channels"), channels},
+		                               {property<Home::card>("audio.rate"), rate},
+		                               {property<Home::card>("audio.position"), auxPositions(channels_)},
+		                               {property<Home::card>("node.name"), engineNode},
+		                               {property<Home::card>("node.always-process"), "true"},
+		                               {property<Home::card>("priority.driver"), priority},
+		                               {property<Home::card>("api.alsa.period-size"), periodSize},
+		                               {property<Home::card>("api.alsa.period-num"), periods}});
+		// The seam's keys, vetted again (each was at construction); each is text the AlsaSoundCards owns.
+		for (const auto& [key, value] : extra) props.set(seamChecked(key), value);
+		node_ = createObject(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, props);
 		if (node_ == nullptr) {
 			events_.failed(std::string("cannot ask for the card: ") + spa_strerror(-errno));
 			return;
@@ -142,7 +139,7 @@ namespace {
 /// quantum or rate, or take driving from the internal clock) and override none ear sets on every card, priority.driver
 /// among them (docs/engine.md#properties-ear-never-sets).
 AlsaSoundCards::Properties refuseClockProperties(AlsaSoundCards::Properties extra) {
-	for (const auto& [key, value] : extra) (void)PropertyKey::seamChecked(key); // throws for a refused key
+	for (const auto& [key, value] : extra) (void)seamChecked(key); // throws for a refused key
 	return extra;
 }
 } // namespace
@@ -157,7 +154,7 @@ std::uint32_t cardPeriods(std::uint32_t blockSize) noexcept {
 }
 
 AlsaSoundCards::Properties clocklessCardProperties() {
-	return {{std::string(property(Home::cardSeam, "clock.name").view()), internalClockName}};
+	return {{std::string(property<Home::cardSeam>("clock.name").view()), internalClockName}};
 }
 
 std::unique_ptr<EngineCompanion> AlsaSoundCards::make(const CompanionTarget& target, const SoundCardShape& shape,

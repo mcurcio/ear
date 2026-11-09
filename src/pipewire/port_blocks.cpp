@@ -115,11 +115,12 @@ public:
 		completion_ = addEvent(loop_, guarded<&FilterPortBlock::onCompletion>, this);
 		// Every key from the property table (docs/engine.md#properties-ear-sets says why each).
 		filter_ = pw_filter_new(engine.core(), node.c_str(),
-		                        newProperties({{property(Home::block, "node.name"), node},
-		                                       {property(Home::block, "media.name"), node},
-		                                       {property(Home::block, "media.type"), "Audio"},
-		                                       {property(Home::block, "node.group"), graphGroup},
-		                                       {property(Home::block, "node.always-process"), "true"}}));
+		                        PropertySet<Home::block>({{property<Home::block>("node.name"), node},
+		                                                  {property<Home::block>("media.name"), node},
+		                                                  {property<Home::block>("media.type"), "Audio"},
+		                                                  {property<Home::block>("node.group"), graphGroup},
+		                                                  {property<Home::block>("node.always-process"), "true"}})
+		                            .release());
 		if (filter_ == nullptr) {
 			fail(std::string("cannot make the engine node: ") + spa_strerror(-errno));
 			return;
@@ -232,11 +233,12 @@ private:
 		// The handle is the port's (empty) user data, freed with the filter; a refused port (null)
 		// leaves its span on zeros or scratch.
 		for (const PortName& name : names) {
-			handles.push_back(
-				pw_filter_add_port(filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
-			                       newProperties({{property(Home::blockPort, "format.dsp"), "32 bit float mono audio"},
-			                                      {property(Home::blockPort, "port.name"), name}}),
-			                       nullptr, 0));
+			handles.push_back(pw_filter_add_port(
+				filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+				PropertySet<Home::blockPort>({{property<Home::blockPort>("format.dsp"), "32 bit float mono audio"},
+			                                  {property<Home::blockPort>("port.name"), name}})
+					.release(),
+				nullptr, 0));
 		}
 	}
 

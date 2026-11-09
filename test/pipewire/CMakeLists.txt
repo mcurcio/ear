@@ -48,8 +48,9 @@ set_tests_properties(ear_callback_guard_refuses_checking_only_skipped_files PROP
 	PASS_REGULAR_EXPRESSION "the guard would check nothing")
 
 # Only src/pipewire/engine_property_set.{hpp,cpp}, whose functions take keys only from the property table, writes
-# PipeWire properties (docs/engine.md#properties-ear-sets): the guard over src/, and the guard itself refusing each
-# writer it knows (property_guard/<spelling>.snippet, a "//" inside a string and a call split across lines among them),
+# PipeWire properties or makes an object from them (docs/engine.md#properties-ear-sets): the guard over src/, and the
+# guard itself refusing each name it knows (property_guard/<spelling>.snippet, a "//" inside a string, a call split
+# across lines, a function pointer and each way to build a spa_dict among them),
 # letting through the table's functions, reads and look-alikes in strings and comments (allowed.snippet), skipping
 # exactly the exempt path and tests but not a namesake elsewhere, and refusing to check nothing.
 set(ear_property_guard "${CMAKE_CURRENT_SOURCE_DIR}/property_guard.cmake")
@@ -60,7 +61,8 @@ add_test(NAME ear_properties_from_the_table
 foreach(spelling pw_properties_new pw_properties_new_string_checked pw_properties_new_dict pw_properties_set
 		pw_properties_setf pw_properties_setva pw_properties_update pw_properties_update_string pw_properties_add
 		pw_filter_update_properties pw_context_load_module pw_impl_module_load spa_dict_item_init spa_dict_item_macro
-		spa_dict_init spa_dict_item comment_in_string call_split)
+		spa_dict_init spa_dict_item comment_in_string call_split pw_core_create_object function_pointer spa_dict_variable
+		spa_dict_temporary spa_dict_compound spa_dict_item_pointer)
 	add_test(NAME ear_property_guard_refuses_${spelling}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=${spelling}.snippet"
 			-P "${ear_property_guard}")

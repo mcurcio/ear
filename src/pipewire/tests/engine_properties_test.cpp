@@ -1,6 +1,7 @@
 // The property table (engine_properties.hpp, docs/engine.md#properties-ear-sets) against what it describes: the live
 // engine, engine.conf, the tests its rows name, and docs/engine.md's tables. The compile-time half is the table's own
-// static_asserts and property(), which compile_fail/engine_properties_bad.cpp shows refusing an unlisted key. The live
+// static_asserts, property<home>() and the PropertyKey<home> type, which compile_fail/engine_properties_bad.cpp shows
+// refusing an unlisted key and a key of another home. The live
 // check makes one of every object ear sets properties on (the context, the internal clock, two port blocks and their
 // ports, a route link, a sound card from the test ALSA configuration with the test seam's clock.name, an RTP receiver
 // and both companions' links) and reads each object's properties as PipeWire holds them, through the context's own
@@ -27,6 +28,7 @@
 #include <spa/utils/json.h>
 
 #include "../engine_properties.hpp"
+#include "../engine_property_set.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
@@ -660,4 +662,24 @@ TEST_CASE("docs/engine.md lists the property table's rows and forbidden keys, ea
 	std::set<std::pair<Home, std::string>> refused;
 	for (const auto& [home, key] : forbidden) refused.emplace(home, std::string(key));
 	CHECK(never == refused);
+}
+
+TEST_CASE("A module argument's value is one value: whitespace outside quotes, an array or an object would open another "
+          "key, and only stream.props nests the RTP stream's arguments",
+          "[properties]") {
+	ModuleArguments<Home::rtpReceiver> arguments;
+	const PropertyKey<Home::rtpReceiver> name = property<Home::rtpReceiver>("node.name");
+	for (const char* value : {"true", "\"fpp rtp\"", "[ AUX0 AUX1 ]", "{ mode = dsp monitor = false }", "48000"}) {
+		INFO(value);
+		CHECK_NOTHROW(arguments.add(name, value));
+	}
+	for (const char* value : {"true remote.name = \"elsewhere\"", "", "[ AUX0", "\"open", "] x", "{ a = b } c = d"}) {
+		INFO(value);
+		CHECK_THROWS_AS(arguments.add(name, value), std::logic_error);
+	}
+	ModuleArguments<Home::rtpStream> stream;
+	stream.add(property<Home::rtpStream>("node.always-process"), "true");
+	CHECK_THROWS_AS(arguments.add(name, stream), std::logic_error);
+	CHECK_NOTHROW(arguments.add(property<Home::rtpReceiver>("stream.props"), stream));
+	CHECK(arguments.text().ends_with(" stream.props = { node.always-process = true } }"));
 }

@@ -6,14 +6,14 @@
 # every file under ROOT matching GLOB (default: C and C++ sources and headers), except the paths EXEMPT names relative
 # to ROOT (default: those two files, exactly) and tests (anything under a folder named tests, which drive PipeWire
 # themselves), is read a line at a time with its character and string literals emptied first and then its comments
-# removed (so a "//" inside a string hides nothing), and a line that calls or builds any of these is printed with its
-# place and fails the script:
+# removed (so a "//" inside a string hides nothing), and a line that names any of these, as a whole word (a call, a
+# function pointer, anything), is printed with its place and fails the script:
 #   any pw_properties_new*, pw_properties_set*, pw_properties_update*, pw_properties_add* (the _checked, _string,
-#     _dict, f and va variants included); any pw_<object>_update_properties; pw_context_load_module and any
-#     pw_impl_module_load*; any SPA_DICT_ITEM* or SPA_DICT_INIT*; a spa_dict_item declared with an initializer or as an
-#     array.
-# A name counts as called when "(" follows it on its line or it ends the line. It fails, too, when ROOT and GLOB leave
-# it no file to check. Raw string literals are not emptied (src/ has none).
+#     _dict, f and va variants included); any pw_<object>_update_properties; pw_core_create_object;
+#     pw_context_load_module and any pw_impl_module_load*; any SPA_DICT_ITEM* or SPA_DICT_INIT*;
+#   spa_dict_item anywhere but as "const spa_dict_item*" (a pointer to read through);
+#   a spa_dict made here: a variable with an initializer, a temporary or a compound literal.
+# It fails, too, when ROOT and GLOB leave it no file to check. Raw string literals are not emptied (src/ has none).
 cmake_policy(VERSION 3.28) # while() and if() under today's rules
 if(NOT DEFINED ROOT)
 	message(FATAL_ERROR "property_guard: ROOT is not set")
@@ -26,13 +26,18 @@ if(NOT DEFINED EXEMPT)
 endif()
 
 set(before "(^|[^A-Za-z0-9_])")
-set(called "[A-Za-z0-9_]*[ \t]*(\\(|$)")
 set(rules
-	"${before}pw_properties_(new|set|update|add)${called}"
-	"${before}pw_[a-z_]+_update_properties${called}"
-	"${before}(pw_context_load_module|pw_impl_module_load)${called}"
-	"${before}SPA_DICT_(ITEM|INIT)${called}"
-	"${before}spa_dict_item[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(\\[|\\{|=)")
+	"${before}pw_properties_(new|set|update|add)"
+	"${before}pw_[a-z_]+_update_properties([^A-Za-z0-9_]|$)"
+	"${before}(pw_core_create_object|pw_context_load_module)([^A-Za-z0-9_]|$)"
+	"${before}pw_impl_module_load"
+	"${before}SPA_DICT_(ITEM|INIT)"
+	"${before}spa_dict_item([^A-Za-z0-9_]|$)"
+	"${before}spa_dict[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*(\\{|=|\\()"
+	"${before}spa_dict[ \t]*\\{"
+	"\\([ \t]*(struct[ \t]+)?spa_dict[ \t]*\\)[ \t]*\\{")
+# The one way to name spa_dict_item that builds nothing: a pointer to read through. Cut before the rules are applied.
+set(allowedItem "const[ \t]+(struct[ \t]+)?spa_dict_item[ \t]*\\*")
 
 set(patterns)
 foreach(pattern IN LISTS GLOB)
@@ -75,6 +80,7 @@ foreach(file IN LISTS files)
 			string(REGEX REPLACE [=[/\*.*$]=] "" code "${code}")
 			set(inBlock TRUE)
 		endif()
+		string(REGEX REPLACE "${allowedItem}" "" code "${code}")
 		foreach(rule IN LISTS rules)
 			if(code MATCHES "${rule}")
 				message(STATUS "${shown}:${number}: writes a PipeWire property outside engine_property_set: ${line}")

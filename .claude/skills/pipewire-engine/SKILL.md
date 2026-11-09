@@ -46,9 +46,10 @@ change or remove a property:
 
 1. Change its row in `engine_properties.hpp` (home, key, value, heading, `pinned::` test) and its
    row in `docs/engine.md`'s table in the same change.
-2. Build it with `property(Home::<home>, "<key>")`, a `PropertyKey`, through
-   `engine_property_set.hpp` (`newProperties`, `setProperty`, `ModuleArguments`); the property guard
-   refuses any other way to
+2. Build it with `property<Home::<home>>("<key>")`, a `PropertyKey<home>`, into that home's
+   `PropertySet` or `ModuleArguments` (`engine_property_set.hpp`; a core object through
+   `createObject`); a key of another home does not compile, and the property guard refuses any
+   other way to
    set a key.
 3. Give the live test the instance's expected value if the row's value is prose, or say where
    PipeWire holds it (another key, consumed before the node) and where its effect is checked.

@@ -72,14 +72,13 @@ private:
 		for (std::size_t channel = 0; channel < join_.blockPorts.size(); ++channel) {
 			const std::string& nodePort = join_.nodePorts[channel];
 			const std::string& blockPort = join_.blockPorts[channel];
-			pw_properties* props =
-				newProperties({{property(Home::companionLink, "link.output.node"), toNode ? block : node},
-			                   {property(Home::companionLink, "link.output.port"), toNode ? blockPort : nodePort},
-			                   {property(Home::companionLink, "link.input.node"), toNode ? node : block},
-			                   {property(Home::companionLink, "link.input.port"), toNode ? nodePort : blockPort}});
-			auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
-				engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
-			pw_properties_free(props);
+			const PropertySet<Home::companionLink> props(
+				{{property<Home::companionLink>("link.output.node"), toNode ? block : node},
+			     {property<Home::companionLink>("link.output.port"), toNode ? blockPort : nodePort},
+			     {property<Home::companionLink>("link.input.node"), toNode ? node : block},
+			     {property<Home::companionLink>("link.input.port"), toNode ? nodePort : blockPort}});
+			pw_proxy* proxy =
+				createObject(engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props);
 			if (proxy == nullptr) {
 				fail("cannot ask for the " + join_.kind + "'s link: " + spa_strerror(-errno));
 				return;

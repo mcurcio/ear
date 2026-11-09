@@ -110,18 +110,25 @@ if(BUILD_TESTS)
 	# that is not constexpr, named for the reason, so each regex is that function's name, which the compiler's error
 	# names.
 	set(bad_properties "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/engine_properties_bad.cpp")
-	ear_compile_check(ear_engine_properties_compile_fail_control "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}")
+	ear_compile_check(ear_engine_properties_compile_fail_control "${bad_properties}" ${boundary_includes})
 	function(ear_engine_properties_compile_fail case regex)
 		string(MAKE_C_IDENTIFIER "${case}" macro)
 		set(name ear_engine_properties_compile_fail_${case})
-		ear_compile_check(${name} "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}" -DEAR_CASE_${macro})
+		ear_compile_check(${name} "${bad_properties}" ${boundary_includes} -DEAR_CASE_${macro})
 		set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
 	endfunction()
 	ear_engine_properties_compile_fail(unlisted-key "notInThePropertyTable")
 	ear_engine_properties_compile_fail(other-home "notInThePropertyTable")
 	ear_engine_properties_compile_fail(forbidden-key "forbiddenOnThisHome")
-	ear_engine_properties_compile_fail(string-key "could not convert '[^']*\"node.latency\"' from 'const char\\*' to '[^']*PropertyKey'")
-	ear_engine_properties_compile_fail(pointer-key "PropertyKey\\(const char\\*\\)' is private")
+	ear_engine_properties_compile_fail(string-key "no matching function for call to '[^']*PropertySet<[^']*>::set\\(const char \\[")
+	ear_engine_properties_compile_fail(pointer-key "PropertyKey<H>::PropertyKey\\(const char\\*\\) .* is private")
+	ear_engine_properties_compile_fail(key-of-another-home
+		"no matching function for call to '[^']*PropertySet<[^']*Home::block>::set\\([^']*PropertyKey<[^']*Home::card>")
+	ear_engine_properties_compile_fail(seam-key-on-a-block
+		"no matching function for call to '[^']*PropertySet<[^']*Home::block>::set\\([^']*PropertyKey<[^']*Home::cardSeam>")
+	ear_engine_properties_compile_fail(seam-key-from-a-temporary "use of deleted function '[^']*seamChecked\\(std::string&&\\)'")
+	ear_engine_properties_compile_fail(stream-arguments-elsewhere
+		"no matching function for call to '[^']*ModuleArguments<[^']*Home::rtpStream>::add")
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")
 endif()

@@ -50,23 +50,35 @@ adds: `clocklessCardProperties()` alone), `RTP receiver` (`libpipewire-module-rt
 arguments, `rtp_receivers.cpp`), `RTP stream` (its `stream.props`), `route link` (`links.cpp`)
 and `companion link` (`engine_companions.cpp`). The table is checked four ways:
 
-- **By type, at compile time.** A key is a `PropertyKey`, which only `property(Home, "key")`
-  makes from a string; it does not compile for a key the table does not list for that home, nor
-  for one it forbids there. The only code that writes PipeWire properties or loads a module with
-  arguments is `engine_property_set.{hpp,cpp}` (`newProperties`, `setProperty`,
-  `ModuleArguments`, `loadModule`), whose functions take keys only as `PropertyKey`s, so a string
-  or a `const char*` where a key is wanted does not compile (`ear_engine_properties_compile_fail_*`).
-  The one key made at run time is the card seam's, through `PropertyKey::seamChecked`, which
-  refuses a key the table forbids on a card or sets on every card. The table's own
+- **By type, at compile time.** A key carries its home: `property<Home::h>("key")` returns a
+  `PropertyKey<h>` and is the only way to make one from a string; it does not compile for a key the
+  table does not list for that home, nor for one it forbids there. The only code that writes
+  PipeWire properties, makes a core object from them or loads a module with arguments is
+  `engine_property_set.{hpp,cpp}`: `PropertySet<h>` (an object's properties, set only with
+  `PropertyKey<h>`, released to the PipeWire call that takes them), `createObject` (which takes only
+  a `PropertySet`), `ModuleArguments<h>` and `loadModule` (an RTP receiver's arguments, whose
+  `stream.props` alone nests `ModuleArguments<Home::rtpStream>`). So a string, a `const char*` or
+  a key of another home where a key is wanted does not compile
+  (`ear_engine_properties_compile_fail_*`). The one key made at run time is the card seam's:
+  `seamChecked(key)` refuses a key the table forbids on a card or sets on every card and returns a
+  `PropertyKey<Home::cardSeam>`, which only a card's `PropertySet` takes; its text is an element of
+  the `AlsaSoundCards`' own extra properties (a temporary does not compile), and
+  `pw_properties_set` copies it. A module argument's value that would open another key (whitespace
+  outside quotes, an array or an object, or nothing) throws `std::logic_error`. The table's own
   `static_assert`s refuse a key listed twice, a row [ear never sets](#properties-ear-never-sets), a
   key in both `engine.conf` and `context` (the file would overwrite `Engine`'s) and a card seam key
-  that a card already sets.
+  that a card already sets. What the type does not cover is which row a builder picks for a value:
+  that is the live check's.
 - **In the source.** The property guard (`ear_properties_from_the_table`,
-  `test/pipewire/property_guard.cmake`) refuses, under `src/` outside `engine_property_set` and
-  tests, any call to PipeWire's property writers (every `pw_properties_new*`, `_set*`, `_update*`,
-  `_add*`, every `pw_*_update_properties`), `pw_context_load_module` or `pw_impl_module_load*`, and
-  any `SPA_DICT_ITEM*`, `SPA_DICT_INIT*` or initialised `spa_dict_item`. It reads each line with
-  its literals emptied before its comments are removed.
+  `test/pipewire/property_guard.cmake`) keeps `engine_property_set` the only writer: under `src/`
+  outside it and tests, it refuses any whole-word mention (a call, a function pointer) of
+  PipeWire's property writers (every `pw_properties_new*`, `_set*`, `_update*`, `_add*`, every
+  `pw_*_update_properties`), `pw_core_create_object`, `pw_context_load_module` and
+  `pw_impl_module_load*`, `SPA_DICT_ITEM*` and `SPA_DICT_INIT*`; `spa_dict_item` anywhere but as a
+  `const spa_dict_item*`; and a `spa_dict` made in place (a variable with an initializer, a
+  temporary, a compound literal). It reads each line with its literals emptied before its comments
+  are removed. It does not read raw string literals (`src/` has none) or code built from macros of
+  ear's own.
 - **Against the live engine.** "Every property ear sets is held by PipeWire as the property table
   says" makes one of every object and reads each row's value as PipeWire holds it on that object,
   through the context's own objects, so a PipeWire that drops or overrides one fails. Links are
