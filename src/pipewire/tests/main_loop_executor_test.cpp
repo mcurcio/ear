@@ -1,12 +1,17 @@
 // MainLoopExecutor on the real engine's main loop (docs/design/batch2.md section 4.3; acceptance
 // criterion E1(9)): post order per thread, the loop thread, never inline, and work left at
 // destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
-// the deadline only fails the test.
+// the deadline only fails the test. Also the main-loop watchdog (node-lifecycle.md 5.12) beaten by its timers, as
+// main.cpp wires it, reporting a real stall of the loop with where it was.
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -14,6 +19,8 @@
 #include <pipewire/pipewire.h>
 
 #include "catch2/catch.hpp"
+#include "ear/core/main_loop_activity.hpp"
+#include "ear/output/stall_watch.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 
 namespace {
@@ -164,4 +171,54 @@ TEST_CASE("A timer runs once on the main loop after its delay, never once destro
 	CHECK(waited >= std::chrono::milliseconds(50));
 	CHECK(cancelledRan == 0);
 	CHECK(own == nullptr);
+}
+
+TEST_CASE("The main-loop watchdog reports a stall of the engine's main loop with where it was, then its resumption",
+          "[executor][stall_watch]") {
+	auto engine = makeEngine();
+	MainLoopExecutor executor(*engine);
+	struct Report {
+		bool stalled;
+		std::int64_t ms;
+		std::string where;
+	};
+	std::mutex mutex;
+	std::vector<Report> reports;
+	ear::output::StallWatch watch(
+		[] { return MainLoopActivity::current(); },
+		[&](std::int64_t ms, const std::string& where) {
+			const std::scoped_lock lock(mutex);
+			reports.push_back({true, ms, where});
+		},
+		[&](std::int64_t ms) {
+			{
+				const std::scoped_lock lock(mutex);
+				reports.push_back({false, ms, ""});
+			}
+			executor.post([&] { engine->quit(); }); // the watchdog's thread posts; it never touches the loop
+		});
+	// main.cpp's heartbeat: a 100 ms timer armed again each time it beats.
+	std::unique_ptr<Timer> beat;
+	std::function<void()> arm = [&] {
+		beat = executor.after(std::chrono::milliseconds(100), [&] {
+			watch.beat();
+			arm();
+		});
+	};
+	arm();
+	// After a few beats, one main-loop turn runs 900 ms inside a named call.
+	auto stall = executor.after(std::chrono::milliseconds(350), [] {
+		const MainLoopActivity::Scope scope("configure", "desk");
+		std::this_thread::sleep_for(std::chrono::milliseconds(900));
+	});
+	REQUIRE(runUntilQuit(*engine, std::chrono::seconds(10)));
+	beat.reset();
+	watch.stop();
+	const std::scoped_lock lock(mutex);
+	REQUIRE(reports.size() == 2);
+	CHECK(reports[0].stalled);
+	CHECK(reports[0].ms > 500);
+	CHECK(reports[0].where == "configure desk");
+	CHECK_FALSE(reports[1].stalled);
+	CHECK(reports[1].ms >= 900); // the last beat before the stall to the first after it
 }

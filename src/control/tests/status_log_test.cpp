@@ -201,6 +201,9 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		                          "so no further engine change is applied",
 		                          {ear::DiagnosticField{"ms", 5000}}});
 		},
+		[](StatusLog& log, Lines&) { log.mainLoopStalled(612, "pw_filter_destroy desk"); },
+		[](StatusLog& log, Lines&) { log.mainLoopStalled(503, ""); },
+		[](StatusLog& log, Lines&) { log.mainLoopResumed(1840); },
 	};
 }
 
@@ -271,6 +274,38 @@ TEST_CASE("Records from many threads keep one order: seq rises by one a line", "
 	for (std::thread& thread : threads) thread.join();
 	REQUIRE(lines.kept.size() == 1000);
 	for (std::size_t i = 0; i < lines.kept.size(); ++i) CHECK(Json::parse(lines.kept[i])["seq"] == i + 1);
+}
+
+TEST_CASE("The watchdog's stall records, from its own thread, keep one order with the main thread's", "[status_log]") {
+	Lines lines;
+	StatusLog log(lines);
+	std::thread watchdog([&log] {
+		for (int i = 0; i < 200; ++i) {
+			log.mainLoopStalled(500 + i, "configure kitchen");
+			log.mainLoopResumed(600 + i);
+		}
+	});
+	for (int i = 0; i < 400; ++i) log.nodeSays("kitchen", std::to_string(i));
+	watchdog.join();
+	REQUIRE(lines.kept.size() == 800);
+	std::int64_t nextStall = 500;
+	std::int64_t nextResume = 600;
+	bool stalled = false;
+	for (std::size_t i = 0; i < lines.kept.size(); ++i) {
+		const Json record = Json::parse(lines.kept[i]);
+		CHECK(record["seq"] == i + 1);
+		if (record["kind"] != "diagnostic") continue;
+		if (record["code"] == "ear.main-loop-stalled") {
+			CHECK_FALSE(stalled);
+			CHECK(record["ms"] == nextStall++);
+			stalled = true;
+		} else {
+			CHECK(stalled);
+			CHECK(record["ms"] == nextResume++);
+			stalled = false;
+		}
+	}
+	CHECK(nextStall == 700);
 }
 
 TEST_CASE("A source that floods its log is paced: node states, routes and notes still get through", "[status_log]") {

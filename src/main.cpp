@@ -10,6 +10,7 @@
 // and ends the main loop; the keeper's last write runs as its thread is joined.
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <expected>
@@ -33,12 +34,14 @@
 #include "ear/control/status_log.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/graph_view.hpp"
+#include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/output/descriptor_capture.hpp"
 #include "ear/output/output_writer.hpp"
+#include "ear/output/stall_watch.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/engine_log.hpp"
@@ -127,6 +130,24 @@ public:
 
 private:
 	const ear::pipewire::Engine& engine_;
+};
+
+/// The main loop's heartbeat (docs/design/node-lifecycle.md 5.12): a main-loop timer that beats the watchdog every
+/// 100 ms, armed again each time it runs. Its first beat arms the watchdog, so boot before the loop runs is no stall.
+class Heartbeat {
+public:
+	Heartbeat(ear::Timers& timers, ear::output::StallWatch& watch) : timers_(timers), watch_(watch) { arm(); }
+
+private:
+	void arm() {
+		timer_ = timers_.after(std::chrono::milliseconds(100), [this] {
+			watch_.beat();
+			arm();
+		});
+	}
+	ear::Timers& timers_;
+	ear::output::StallWatch& watch_;
+	std::unique_ptr<ear::Timer> timer_;
 };
 
 } // namespace
@@ -244,6 +265,12 @@ int main(int argc, char** argv) {
 	log.engineScheduling(scheduling.realtime, scheduling.detail);
 
 	ear::pipewire::MainLoopExecutor mainLoop(*engine);
+	// The main-loop watchdog: its thread reads the heartbeat, asks MainLoopActivity where the loop is (ear_output sees
+	// nothing of EAR's) and writes its two records straight to the output queue, never waiting on the main loop.
+	ear::output::StallWatch stallWatch([] { return ear::MainLoopActivity::current(); },
+	                                   [&log](std::int64_t ms, const std::string& in) { log.mainLoopStalled(ms, in); },
+	                                   [&log](std::int64_t ms) { log.mainLoopResumed(ms); });
+	const Heartbeat heartbeat(mainLoop, stallWatch);
 	// After Engine::create, so its thread inherits the blocked stop signals.
 	ear::server::ControlThread control;
 	ear::server::LevelBell bell;
@@ -320,6 +347,8 @@ int main(int argc, char** argv) {
 	};
 	engine->onStopSignal(stop);
 	engine->run();
+	// The loop has ended and beats no more: the keeper's last write is not a stall.
+	stallWatch.stop();
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);

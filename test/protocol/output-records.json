@@ -333,6 +333,46 @@
         "detail": "node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied",
         "msg": "ear.data-loop-wedged: node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied"
       }
+    },
+    {
+      "case": "the main-loop watchdog, from its own thread: the heartbeat older than 500 ms, said once per stall, with the call the main loop is in",
+      "record": {
+        "v": 1,
+        "seq": 57,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-stalled",
+        "ms": 612,
+        "in": "pw_filter_destroy desk",
+        "detail": "the main loop has not turned for 612 ms, in pw_filter_destroy desk",
+        "msg": "ear.main-loop-stalled: the main loop has not turned for 612 ms, in pw_filter_destroy desk"
+      }
+    },
+    {
+      "case": "the main-loop watchdog: a stall between calls has no \"in\"",
+      "record": {
+        "v": 1,
+        "seq": 58,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-stalled",
+        "ms": 503,
+        "detail": "the main loop has not turned for 503 ms",
+        "msg": "ear.main-loop-stalled: the main loop has not turned for 503 ms"
+      }
+    },
+    {
+      "case": "the main-loop watchdog: the heartbeat moved again, with the stall's length (its last beat before to its first after)",
+      "record": {
+        "v": 1,
+        "seq": 59,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-resumed",
+        "ms": 1840,
+        "detail": "the main loop turned again after 1840 ms",
+        "msg": "ear.main-loop-resumed: the main loop turned again after 1840 ms"
+      }
     }
   ]
 }

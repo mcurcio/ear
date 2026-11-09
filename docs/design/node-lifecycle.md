@@ -1,7 +1,8 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.6, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
-file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6: building L-3b; section 17). Revision 1 went to one
+Status: proposal, revision 2.8, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
+file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6: building L-3b; 2.7: building L-3c; 2.8: building L-7;
+section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -775,7 +776,13 @@ moves. `StallWatch` does not know where the main loop is: its constructor takes 
 `MainLoopActivity::current()` (`ear_core`), so `ear_output` still sees nothing of EAR's. `main.cpp` arms a 100 ms
 main-loop timer that beats it and points its callbacks at `StatusLog`, which encodes `ear.main-loop-stalled` and
 `ear.main-loop-resumed` straight onto the output queue from the watchdog's thread (its encoder is safe from many
-threads, tested today as "one order from many threads"). `MainLoopActivity` (`ear/core/main_loop_activity.hpp`, its
+threads, tested today as "one order from many threads"). As built (revision 2.8): the beat stores the steady clock's
+time, so `ear.main-loop-stalled` carries `ms` (the heartbeat's age when seen) and `in` (control-plane.md 4.6's name:
+`where`'s text, absent when empty), and `ear.main-loop-resumed` carries `ms` from the last beat before the stall to the
+first after it; `in` is text, which `DiagnosticField` (whole numbers) cannot carry, so `StatusLog` has
+`mainLoopStalled(ms, in)` and `mainLoopResumed(ms)` rather than going through `EngineDiagnosticListener` (a main-thread
+interface). The watchdog judges nothing until the first beat (boot before the loop runs is no stall), and `main.cpp`
+stops it as soon as `Engine::run` returns (the keeper's last write is no stall). `MainLoopActivity` (`ear/core/main_loop_activity.hpp`, its
 own header, landing in step L-3b with the flush that first writes it) holds a string literal naming the call
 (`configure`, `pw_filter_destroy`) and a fixed 96-byte copy of the node's name, which `NodeHost` writes before each
 hook and each flush item and clears when it returns, under a sequence counter (a seqlock, as sendspin's `Mailbox`,
@@ -1293,7 +1300,9 @@ costs about one fade, one cycle and one batch of destroys" (measured and printed
 from `handoff_test.cpp`'s five, which stay for the legacy handoff): order, drops counted, close drains then finishes, no
 allocation on the tap, begin before the first consume, and "A ramp through a block's sink starts at the first driven
 sample and ends at the last, across a stop and a start, under an invoke storm". `ear_output_tests`: "StallWatch reports
-a heartbeat older than its bound once, then its resumption".
+a heartbeat older than its bound once, then its resumption" (and its judge on a clock stepped by hand, steady beats,
+before the first beat, after stop); `main_loop_executor_test.cpp`: "The main-loop watchdog reports a stall of the
+engine's main loop with where it was, then its resumption" (node-framework.md 13's row for the engine tests).
 
 ### 11.7 `ear_system_tests`, and the editor
 
@@ -1717,3 +1726,34 @@ a minimal edit or recorded here:
   runs hears its fade-in: `control_port_test.cpp`'s recording RMS skips its first 5 ms and its levels case reads the
   second window with noise, since those recordings last only 20 to 60 ms.
 
+### Revision 2.8 (2026-11-09, found building L-7)
+
+Step L-7 built 5.12's watchdog: `StallWatch` in `ear_output` (`stall_watch.hpp`, `.cpp`), a thread (every signal
+blocked) that wakes every 250 ms, reads one atomic heartbeat and reports through two callbacks; its judgement is
+`StallJudge`, a plain class told the last beat and the time, so its rules are tested on a clock stepped by hand. `main.cpp`
+beats it from a 100 ms `Timers::after` timer armed again each time, passes `where` as a lambda over
+`MainLoopActivity::current()` and points the callbacks at `StatusLog`. What building it settled, each a minimal edit
+or recorded here:
+
+- 5.12's records: `ear.main-loop-stalled` is `{"code", "ms", "in"?, "detail"}`, `in` being `where`'s text (absent
+  between calls), detail "the main loop has not turned for <ms> ms[, in <in>]"; `ear.main-loop-resumed` is `{"code",
+  "ms", "detail"}`, detail "the main loop turned again after <ms> ms". Both are `diagnostic` records with no `node`,
+  `output-records.json`'s last three cases (seq 57 to 59). `in` is text, so they are not `EngineDiagnostic`s (whose
+  `DiagnosticField`s are whole numbers, and whose listener is the main thread's): `StatusLog` gains
+  `mainLoopStalled(ms, in)` and `mainLoopResumed(ms)`, called from the watchdog's thread.
+- The heartbeat is the steady clock's time of the last beat, not a counter, so `resumed`'s `ms` is the stall's length
+  measured on the beats themselves (last before to first after), not on when the watchdog looked; `stalled`'s `ms` is
+  the heartbeat's age when it looked (500 to 750 ms past the beat at the first look, with the 250 ms period).
+- "Past 500 ms" is strictly older than the bound. A stall is reported once and its resumption once; a second stall is
+  a second pair. A stall still open when the watchdog stops is not resumed.
+- No false report at either end: nothing is judged before the first beat (the first timer fires 100 ms after
+  `Engine::run` starts, so boot's synchronous work is no stall), and `main.cpp` stops the watchdog as soon as
+  `Engine::run` returns, before the keeper's last write and the `_Exit` path. A stall inside ear's own stop, while the
+  loop still runs, is reported: it is one.
+- 11.6's test, plus one over the real engine (node-framework.md 13's row for the engine tests asks for "the main-loop
+  watchdog's diagnostic on a stalled main loop"): `main_loop_executor_test.cpp` beats it from the executor's timers,
+  sleeps one main-loop turn 900 ms inside `MainLoopActivity::Scope("configure", "desk")`, and sees one stall naming
+  `configure desk` and one resumption of at least 900 ms. `ear_pipewire_tests` links `ear_output` for it (tests only).
+  No system test: 11.7 lists none, and stalling the real binary's loop would need a hook ear does not have.
+- The bound stays [U] against CI's loaded host (16): a host that stalls the whole process for 500 ms is reported, which
+  is true; nothing is judged on the report.

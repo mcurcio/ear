@@ -51,7 +51,9 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///   exit                ear: <reason>
 ///   diagnostic          node <n> <code>: <detail>   (the framework's own observation about a node: ear.close-overdue,
 ///                       ear.fade-unacknowledged, ear.barrier-overdue; its fields, such as "ms", between code and detail)
-///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field)
+///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
+///                       ear.main-loop-stalled with "ms" and "in" (the call the main loop is in, when known) and
+///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -80,6 +82,11 @@ public:
 	void graphFileWritten(const std::string& version) override;
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
+	/// The main-loop watchdog (StallWatch, node-lifecycle.md 5.12), from its own thread: the heartbeat is `ms` old,
+	/// the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back after a
+	/// stall of `ms`.
+	void mainLoopStalled(std::int64_t ms, std::string_view in);
+	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);
 	void controlListening(std::string_view address, std::uint16_t port);
 	/// Why ear exits with `status` (a folder it cannot open, a port it cannot bind).

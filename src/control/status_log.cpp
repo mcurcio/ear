@@ -130,6 +130,25 @@ void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
 	emit("diagnostic", std::move(record), std::format("{}: {}", diagnostic.code, diagnostic.detail));
 }
 
+void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
+	constexpr std::string_view code = "ear.main-loop-stalled";
+	Fields record{{"code", json(code)}, {"ms", json(ms)}};
+	std::string detail = std::format("the main loop has not turned for {} ms", ms);
+	if (!in.empty()) {
+		record.emplace_back("in", json(in));
+		detail += std::format(", in {}", in);
+	}
+	record.emplace_back("detail", json(detail));
+	emit("diagnostic", std::move(record), std::format("{}: {}", code, detail));
+}
+
+void StatusLog::mainLoopResumed(std::int64_t ms) {
+	constexpr std::string_view code = "ear.main-loop-resumed";
+	const std::string detail = std::format("the main loop turned again after {} ms", ms);
+	emit("diagnostic", {{"code", json(code)}, {"ms", json(ms)}, {"detail", json(detail)}},
+	     std::format("{}: {}", code, detail));
+}
+
 void StatusLog::routeChanged(const RouteStatus& status) {
 	const std::string from = portText(status.route.from);
 	const std::string to = portText(status.route.to);
