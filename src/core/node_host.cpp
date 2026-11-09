@@ -1252,7 +1252,7 @@ struct NodeHost::Impl {
 		void drive(std::uint64_t barrier) {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
-			block_->carryLatency(LatencyPlan{c.pairs, c.latency});
+			block_->carryLatency(LatencyPlan{c.pairs, c.latency, {}}); // no companion adds latency yet
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings},
 			              completion(barrier, &lc::NodeAggregate::driven));
 			arm(barrier, Bound::barrier);

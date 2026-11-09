@@ -883,6 +883,90 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	REQUIRE(ear::testing::driveNow(*other, nullptr));
 }
 
+namespace {
+
+/// A sink's realtime end that keeps only the last stamp's upstreamFrames.
+class UpstreamTap final : public SinkTap {
+public:
+	explicit UpstreamTap(Waiter& waiter) : waiter_(waiter) {}
+	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp& stamp) noexcept override {
+		upstream_.store(stamp.upstreamFrames, std::memory_order_relaxed);
+		written_.store(true, std::memory_order_release);
+		waiter_.wake();
+	}
+	std::optional<std::uint32_t> upstream() const {
+		if (!written_.load(std::memory_order_acquire)) return std::nullopt;
+		return upstream_.load(std::memory_order_relaxed);
+	}
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint32_t> upstream_{0};
+	std::atomic<bool> written_{false};
+};
+
+} // namespace
+
+TEST_CASE("A companion's latency beyond an inside bank is one more peer of that bank: told on the paired output to "
+          "the next block, and downstream of an inside output to its code and to what feeds the paired input",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	// rx: a receiver's 480 to 960 beyond its inside input from_rtp, paired with stream; rx:stream.1 -> rec:in.1, and
+	// rec's sink on writer, paired with in, stamps what rec tells there. Capture runs rx -> rec.
+	LatencyProbe rxProbe(waiter, 1), recProbe(waiter, 1);
+	BlockEvents rxEvents(waiter), recEvents(waiter);
+	auto rx = blocks.make(
+		"rx",
+		Ports{{{Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside}, {Direction::output, "stream", {"1"}}}},
+		kFormat, rxEvents);
+	rx->carryLatency(LatencyPlan{{{"from_rtp", "stream"}}, {}, {{"from_rtp", Latency{480, 960}}}});
+	REQUIRE(ear::testing::driveNow(*rx, &rxProbe));
+	auto rec = blocks.make(
+		"rec", Ports{{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
+		kFormat, recEvents);
+	rec->carryLatency(LatencyPlan{{{"in", "writer"}}, {}, {}});
+	UpstreamTap tap(waiter);
+	const std::vector<SinkBinding> bindings{SinkBinding{&tap, 0, 1}};
+	bool driven = false;
+	rec->drive(DriveRequest{&recProbe, {}, bindings}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven; }));
+	CHECK(waiter.until([&] { return tap.upstream() == 0U; })); // nothing linked to rec:in yet
+	REQUIRE(wiring.link(waiter, {"rx", "stream.1"}, {"rec", "in.1"}));
+	CHECK(waiter.until([&] { return tap.upstream() == 960U; }));
+
+	// Playback: card's 256 beyond card's inside output to_card, paired with play; feed:out.1 -> card:play.1. card's
+	// code sees 256 downstream of to_card, and feed sees it downstream of out.
+	LatencyProbe feedProbe(waiter, 1), cardProbe(waiter, 1);
+	BlockEvents feedEvents(waiter), cardEvents(waiter);
+	auto feed = blocks.make("feed", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, feedEvents);
+	REQUIRE(ear::testing::driveNow(*feed, &feedProbe));
+	auto card = blocks.make(
+		"card",
+		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}},
+		kFormat, cardEvents);
+	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {{"to_card", Latency{256, 256}}}});
+	REQUIRE(ear::testing::driveNow(*card, &cardProbe));
+	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{256, 256}; }));
+	REQUIRE(wiring.link(waiter, {"feed", "out.1"}, {"card", "play.1"}));
+	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{256, 256}; }));
+	// A plan without it carries nothing.
+	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {}});
+	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{}; }));
+	CHECK(cardProbe.downstream(0) == Latency{});
+
+	REQUIRE(ear::testing::driveNow(*rx, nullptr));
+	REQUIRE(ear::testing::driveNow(*rec, nullptr));
+	REQUIRE(ear::testing::driveNow(*feed, nullptr));
+	REQUIRE(ear::testing::driveNow(*card, nullptr));
+}
+
 #if defined(__x86_64__) || defined(__i386__)
 namespace {
 

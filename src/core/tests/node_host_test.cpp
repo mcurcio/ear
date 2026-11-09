@@ -347,6 +347,7 @@ struct TestSink final : Sink, SinkTap {
 		if (began) consumer->finish();
 		mainLoop.post([closed = std::exchange(closed, nullptr), dropped = dropped]() mutable { closed(dropped); });
 	}
+	std::uint64_t droppedFrames() const noexcept override { return dropped; }
 	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {}
 };
 

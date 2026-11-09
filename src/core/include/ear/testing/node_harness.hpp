@@ -6,7 +6,8 @@
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
 // build them (docs/design/). The sink fake runs a consumer on the test's thread: begin at configure's return, each
-// chunk at once from the tap written after the fade in process(), finish at the close.
+// chunk at once from the tap written after the fade in process(), stamped with the upstream latency the latency plan
+// gives its bank (the harness has no peers), finish at the close.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -111,7 +112,9 @@ public:
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances; then the fade's gain on the faded outputs, as a real block applies it
-	/// (a 5 ms ramp from each drive, and to zero before each silence).
+	/// (a 5 ms ramp from each drive, and to zero before each silence); then each bound sink's tap, its stamp's
+	/// upstreamFrames the most capture latency the plan gives its bank (each paired input bank's `beyond`, plus what
+	/// the configuration declared on the bank), as a real block with no peers would tell.
 	void process(std::uint32_t frames = 0);
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.
@@ -140,7 +143,8 @@ public:
 	/// The fade gain the fake block applied to `port` at the last sample of the last process() (1 when none).
 	float lastFadeGain(std::string_view port) const;
 	/// The latency plan the fake block was last given (PortBlock::carryLatency, with each drive; cleared at a
-	/// release): the pass-through's pairs and what configure declared. Empty before the first drive.
+	/// release): the pass-through's pairs, what configure declared and what companions add. Empty before the first
+	/// drive.
 	const LatencyPlan& latencyPlan() const noexcept;
 	const std::vector<CompanionFake>& companions() const noexcept;
 	/// The newest companion on `bank`; std::logic_error when none.

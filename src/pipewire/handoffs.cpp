@@ -161,6 +161,8 @@ public:
 		signal();
 	}
 
+	std::uint64_t droppedFrames() const noexcept override { return dropped_.load(std::memory_order_relaxed); }
+
 	/// Realtime: the two rings drop together (docs/engine.md#sinks). With no free stamp entry nothing is written and
 	/// the whole chunk is dropped; else the frames the frame ring has room for are written and stamped.
 	void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
@@ -234,7 +236,7 @@ private:
 			                         .position = stamped.stamp.position + done,
 			                         .startNs = stamped.stamp.startNs,
 			                         .startRawNs = stamped.stamp.startRawNs,
-			                         .upstreamFrames = 0, // until slice 3b
+			                         .upstreamFrames = stamped.stamp.upstreamFrames,
 			                         .discontinuity = done == 0 && stamped.stamp.discontinuity});
 			ring_.skip(frames);
 			done += frames;

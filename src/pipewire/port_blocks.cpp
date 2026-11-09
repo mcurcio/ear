@@ -4,7 +4,8 @@
 // carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY. The asynchronous drive and fade
 // (docs/engine.md#drive-and-fade): requests in a ring of eight, one invoke in flight per block, applied inside it,
 // completed through the block's own event source. The interim sinks' taps (docs/engine.md#sinks) ride in each drive and
-// are written after the code and the fade, every cycle that code runs.
+// are written after the code and the fade, every cycle that code runs, each stamped with the upstream latency the block
+// last told on its bank.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -97,8 +98,8 @@ public:
 		  outputs_(ports.outputs().size() + ports.insideOutputs().size()), publicInputs_(ports.inputs().size()),
 		  publicOutputs_(ports.outputs().size()), meters_(ports.inputs().size() + ports.outputs().size()),
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
-		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()),
-		  inputPeers_(inputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
+		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
+		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
 		  outputPeers_(outputs_.size(), noLatency(SPA_DIRECTION_INPUT)), inputHeard_(inputs_.size(), false),
 		  outputHeard_(outputs_.size(), false), inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
 		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
@@ -213,6 +214,7 @@ public:
 			static_cast<void>(ports_.bank(pair.to));
 		}
 		for (const auto& entry : plan.internal) static_cast<void>(ports_.bank(entry.first));
+		for (const auto& entry : plan.beyond) static_cast<void>(ports_.bank(entry.first));
 		plan_ = plan;
 		retell();
 	}
@@ -317,19 +319,29 @@ private:
 		std::size_t first;
 		std::size_t count;
 	};
-	BankSpan span(const std::string& bank) const {
-		const Ports::Bank& found = ports_.bank(bank);
-		return {found.first, found.ports.size()};
-	}
 
-	/// The peers of `bank`'s ports combined: what lies beyond the bank. A port with no peer is no path, so it is left
-	/// out (as pw_impl_port_recalc_latency combines only a port's links), and a bank with none comes to zero.
-	static spa_latency_info combined(const std::vector<spa_latency_info>& peers, const std::vector<bool>& reported,
-	                                 BankSpan bank, spa_direction side) {
+	/// What lies beyond `bank`: its ports' peers combined (an input's upstream, an output's downstream), with what the
+	/// plan says a companion adds beyond it as one more peer (LatencyPlan::beyond). A port with no peer is no path, so
+	/// it is left out (as pw_impl_port_recalc_latency combines only a port's links), and a bank with neither comes to
+	/// zero.
+	spa_latency_info combined(const std::string& bank) const {
+		const Ports::Bank& found = ports_.bank(bank);
+		const bool output = found.direction == Direction::output;
+		const spa_direction side = output ? SPA_DIRECTION_INPUT : SPA_DIRECTION_OUTPUT;
+		const std::vector<spa_latency_info>& peers = output ? outputPeers_ : inputPeers_;
+		const std::vector<bool>& reported = output ? outputHeard_ : inputHeard_;
 		spa_latency_info info{};
 		spa_latency_info_combine_start(&info, side);
-		for (std::size_t i = bank.first; i < bank.first + bank.count; ++i)
+		for (std::size_t i = found.first; i < found.first + found.ports.size(); ++i)
 			if (reported[i]) spa_latency_info_combine(&info, &peers[i]);
+		for (const auto& [name, latency] : plan_.beyond) {
+			if (name != bank) continue;
+			spa_latency_info companion = noLatency(side);
+			companion.min_rate = static_cast<std::int32_t>(latency.minFrames);
+			companion.max_rate = static_cast<std::int32_t>(latency.maxFrames);
+			spa_latency_info_combine(&info, &companion);
+			break; // at most one per bank
+		}
 		spa_latency_info_combine_finish(&info);
 		return info;
 	}
@@ -352,7 +364,8 @@ private:
 	}
 
 	/// Main thread: works out every bank's latency afresh from what the peers report and the plan, publishes each
-	/// output's downstream latency to the realtime side, and tells each port's new latency to its peers.
+	/// output's downstream latency and each port's told latency to the realtime side, and tells each port's new latency
+	/// to its peers.
 	void retell() {
 		// On a wedged data loop no latency is told (data_loop_wedge.hpp): nothing more reaches the engine.
 		if (filter_ == nullptr || dataLoopWedged(engine_)) return;
@@ -361,15 +374,14 @@ private:
 			const Latency internal = internalOf(bank.name);
 			spa_latency_info told{};
 			if (bank.direction == Direction::output) {
-				const Latency beyond = frames(combined(outputPeers_, outputHeard_, at, SPA_DIRECTION_INPUT));
+				const Latency beyond = frames(combined(bank.name));
 				for (std::size_t i = at.first; i < at.first + at.count; ++i)
 					downstream_[i].store(packed(beyond), std::memory_order_release);
 				// Upstream of an output: what reaches the paired inputs, plus the run's own.
 				spa_latency_info_combine_start(&told, SPA_DIRECTION_OUTPUT);
 				for (const BankPair& pair : plan_.pairs) {
 					if (pair.to != bank.name) continue;
-					const spa_latency_info upstream =
-						combined(inputPeers_, inputHeard_, span(pair.from), SPA_DIRECTION_OUTPUT);
+					const spa_latency_info upstream = combined(pair.from);
 					spa_latency_info_combine(&told, &upstream);
 				}
 			} else {
@@ -377,8 +389,7 @@ private:
 				spa_latency_info_combine_start(&told, SPA_DIRECTION_INPUT);
 				for (const BankPair& pair : plan_.pairs) {
 					if (pair.from != bank.name) continue;
-					const spa_latency_info downstream =
-						combined(outputPeers_, outputHeard_, span(pair.to), SPA_DIRECTION_INPUT);
+					const spa_latency_info downstream = combined(pair.to);
 					spa_latency_info_combine(&told, &downstream);
 				}
 			}
@@ -387,6 +398,11 @@ private:
 			told.max_rate += static_cast<std::int32_t>(internal.maxFrames);
 			auto& ports = bank.direction == Direction::output ? outputPorts_ : inputPorts_;
 			auto& last = bank.direction == Direction::output ? outputTold_ : inputTold_;
+			// What the bank tells, for the realtime side: an output's capture latency stamps its sink's chunks.
+			auto& toldNow = bank.direction == Direction::output ? outputToldNow_ : inputToldNow_;
+			const std::uint64_t toldWord = packed(frames(told));
+			for (std::size_t i = at.first; i < at.first + at.count; ++i)
+				toldNow[i].store(toldWord, std::memory_order_release);
 			for (std::size_t i = at.first; i < at.first + at.count; ++i) {
 				if (ports[i] == nullptr || spa_latency_info_compare(&last[i], &told) == 0) continue;
 				last[i] = told;
@@ -606,8 +622,14 @@ private:
 			const SinkBinding& binding = sinks_[s];
 			if (binding.tap == nullptr || binding.firstOutput + binding.channels > outputs_.size()) continue;
 			for (std::size_t c = 0; c < binding.channels; ++c) tapSpans_[c] = outputs_[binding.firstOutput + c];
+			const Latency upstream =
+				unpacked(outputToldNow_[binding.firstOutput].load(std::memory_order_acquire)); // the bank's told
 			binding.tap->write(std::span<const std::span<const float>>(tapSpans_.data(), binding.channels), frames,
-			                   ChunkStamp{cycle.position, cycle.startNs, cycle.startRawNs, cycle.discontinuity});
+			                   ChunkStamp{.position = cycle.position,
+			                              .startNs = cycle.startNs,
+			                              .startRawNs = cycle.startRawNs,
+			                              .discontinuity = cycle.discontinuity,
+			                              .upstreamFrames = upstream.maxFrames});
 		}
 		// Public ports only: inputs_ and outputs_ list the public ports before the inside ones.
 		for (std::size_t i = 0; i < publicInputs_; ++i) meters_[i].add(inputs_[i]);
@@ -654,6 +676,10 @@ private:
 	// last, and the run's plan.
 	std::vector<std::atomic<std::uint64_t>> downstream_;
 	std::vector<Latency> downstreamNow_;
+	// What each port last told its peers, in frames (packed), published by the main thread for the realtime side: an
+	// input's playback latency, an output's capture latency.
+	std::vector<std::atomic<std::uint64_t>> inputToldNow_;
+	std::vector<std::atomic<std::uint64_t>> outputToldNow_;
 	std::vector<spa_latency_info> inputPeers_;  // upstream of each input
 	std::vector<spa_latency_info> outputPeers_; // downstream of each output
 	std::vector<bool> inputHeard_;              // whether each input has a peer that reported

@@ -47,6 +47,14 @@ struct Doubler {
 };
 
 int prepares = 0;
+/// The upstreamFrames of every chunk the sink's consumer took, in order.
+std::vector<std::uint32_t> upstreams;
+
+/// Keeps each chunk's upstreamFrames.
+struct Upstreams final : SinkConsumer {
+	void consume(const Chunk& chunk) override { upstreams.push_back(chunk.upstreamFrames); }
+	void finish() override {}
+};
 /// What every Probe instance did, in order: "made <node>", "configure", "start", "stop", "destroyed".
 std::vector<std::string> calls;
 
@@ -71,6 +79,12 @@ public:
 			cx.soundCard(toDevice,
 			             SoundCardRequest{.card = *CardId::parse("Probe"), .direction = CardDirection::playback});
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			return Configured::applied();
+		}
+		if (mode == "sink") {
+			cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Upstreams>());
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			cx.declareLatency(in, toDevice, Latency{30, 40});
 			return Configured::applied();
 		}
 		if (mode == "fail") return Configured::failed("asked to");
@@ -220,6 +234,22 @@ TEST_CASE("The harness readies and loses a sound card configure asked for", "[ty
 	CHECK(harness->health().reason->code == FailureReason::Code::engineRefused);
 	CHECK(harness->health().reason->detail == "card gone");
 	CHECK(harness.companion(toDevice).destroyed);
+}
+
+TEST_CASE("The harness stamps each sink chunk with the most capture latency the plan gives the sink's bank",
+          "[type-spec]") {
+	upstreams.clear();
+	Harness harness;
+	REQUIRE_FALSE(harness.parse({{"mode", "sink"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	// Nothing peers in the harness, so to_device tells what configure declared on it: 30 to 40 frames.
+	harness.process(16);
+	harness.process(16);
+	REQUIRE(harness.companion(toDevice).chunks.size() == 2);
+	CHECK(harness.companion(toDevice).chunks[0].stamp.upstreamFrames == 40);
+	CHECK(upstreams == std::vector<std::uint32_t>{40, 40}); // the consumer's chunks carry the stamp's
 }
 
 TEST_CASE("A configure that answers failed fails the node start-failed with its detail", "[type-spec]") {

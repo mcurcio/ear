@@ -128,10 +128,13 @@ protected:
 /// between (a pass-through's pairs), and what the run declared it adds on a bank (StartContext::declareLatency). An
 /// output bank tells its linked ports its internal latency plus the most upstream of any input bank paired with it; an
 /// input bank tells its internal latency plus the most downstream of any output bank paired with it. A bank in no pair
-/// tells its internal latency alone.
+/// tells its internal latency alone. `beyond` is what a companion adds beyond an inside bank (a receiver's buffer, a
+/// source's ring), at most once per bank: the block combines it with what the bank's ports' peers report, as one more
+/// peer, wherever it combines that bank's peers.
 struct LatencyPlan {
 	std::vector<BankPair> pairs;
 	std::vector<std::pair<std::string, Latency>> internal;
+	std::vector<std::pair<std::string, Latency>> beyond{};
 };
 /// What an asynchronous drive hands a block (docs/engine.md#drive-and-fade): the code (null: silence) and which outputs
 /// its fades touch, one flag per output in process()'s order (outputs, then inside outputs; a shorter span leaves the

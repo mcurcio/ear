@@ -206,11 +206,20 @@ A drive carries the sink bindings of its configuration; the invoke copies them i
 when the block was made (nothing allocates on the data loop) and unbinds them in the invoke that
 applies the next request. Each cycle the code runs, after the code and the fade, the block writes
 each bound inside bank's frames into its sink's frame ring with a stamp (position, both clocks,
-`discontinuity` on the first cycle after any drive) in the stamp ring beside it, and wakes the
-sink's thread (`pw_loop_signal_event`, an eventfd write; tested to allocate nothing). So a sink takes
-exactly the cycles its code drove. The two rings drop together; a full one counts dropped frames. A
+`discontinuity` on the first cycle after any drive, `upstreamFrames`) in the stamp ring beside it,
+and wakes the sink's thread (`pw_loop_signal_event`, an eventfd write; tested to allocate nothing).
+So a sink takes exactly the cycles its code drove. The two rings drop together; a full one counts
+dropped frames, which `Sink::droppedFrames()` reads at any time (an atomic) and the close reports. A
 sink's first chunk after a block's first drive carries the clock's real position, which may differ
 from that drive's take-up position when no cycle ran before it.
+
+`upstreamFrames` is the most capture latency the block last told on the sink's bank
+([below](#latency-per-bank-pair)): what reaches the input banks paired with it plus what the
+configuration declared on it. Each time the main loop works the block's latency out afresh it
+publishes every port's told latency, in frames, as one packed atomic per port, and the tap reads
+the bank's at the cycle the chunk was taken. So a consumer dates a chunk without a mailbox: its
+first frame entered the graph at `startRawNs - upstreamFrames * 1e9 / rate`. A wedged data loop
+stops the retelling, so chunks keep the last value told.
 
 ## Latency, per bank pair
 
@@ -228,10 +237,15 @@ to the peers.
 The block's rule, from its configuration's latency plan (given before the code drives, cleared at
 its teardown):
 
-- Each output bank's **downstream** latency is its ports' peers combined (only ports whose peers
-  reported one), published to the realtime side as `GraphCycle::downstream`.
-- An output bank tells upstream (**capture**) latency: what reaches the input banks paired with it,
-  plus what the configuration declared on it.
+- What lies **beyond** a bank is its ports' peers combined (only ports whose peers reported one),
+  plus the plan's `beyond` entry for the bank as one more peer: what a companion adds beyond an
+  inside bank, such as a receiver's buffer, which no engine node reports. A bank with neither comes
+  to zero.
+- Each output bank's **downstream** latency is what lies beyond it, published to the realtime side
+  as `GraphCycle::downstream`.
+- An output bank tells upstream (**capture**) latency: what lies beyond the input banks paired with
+  it, plus what the configuration declared on it. A sink on the bank stamps its chunks with the
+  most of it ([sinks](#sinks)).
 - An input bank tells downstream (**playback**) latency: what lies beyond the output banks paired
   with it, plus what the configuration declared.
 

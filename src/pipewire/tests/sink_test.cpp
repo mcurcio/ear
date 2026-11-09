@@ -2,8 +2,9 @@
 // (order, stamps, a chunk wrapping the ring's end, the two rings dropping together, close draining then finishing,
 // begin before the first consume and `begun` behind a lost said inside begin, no allocation on the tap), then through a
 // real block on the in-process engine (a ramp recorded through the sink starts at the first driven sample and ends at
-// the last, across a stop and a start, under an invoke storm). Every wait is event-gated: a test waits for the event it
-// needs; the deadline only fails the test.
+// the last, across a stop and a start, under an invoke storm; each chunk stamped with the capture latency the block
+// tells on the sink's bank; the dropped count read while the block writes). Every wait is event-gated: a test waits for
+// the event it needs; the deadline only fails the test.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 
 namespace {
@@ -80,6 +82,7 @@ struct Got {
 	std::uint32_t frames;
 	std::uint64_t position;
 	std::int64_t startNs;
+	std::uint32_t upstreamFrames;
 	bool discontinuity;
 	std::thread::id thread;
 };
@@ -149,6 +152,7 @@ public:
 			                             chunk.frames,
 			                             chunk.position,
 			                             chunk.startNs,
+			                             chunk.upstreamFrames,
 			                             chunk.discontinuity,
 			                             std::this_thread::get_id()});
 			shared_.frames += chunk.frames;
@@ -187,9 +191,14 @@ private:
 	std::array<std::span<const float>, 2> views_;
 };
 
+/// A stamp at `position`: both clocks at position * 1000 ns, and an upstream latency the block would have told, a
+/// value per position so a chunk shows it came with its own stamp.
 ChunkStamp stampAt(std::uint64_t position, bool discontinuity = false) {
-	return ChunkStamp{position, static_cast<std::int64_t>(position) * 1000, static_cast<std::int64_t>(position) * 1000,
-	                  discontinuity};
+	return ChunkStamp{.position = position,
+	                  .startNs = static_cast<std::int64_t>(position) * 1000,
+	                  .startRawNs = static_cast<std::int64_t>(position) * 1000,
+	                  .discontinuity = discontinuity,
+	                  .upstreamFrames = static_cast<std::uint32_t>(position % 997)};
 }
 
 /// Begins `sink` with `consumer` and waits for `begun` on the test's loop.
@@ -261,6 +270,7 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 		INFO("chunk " << b);
 		CHECK(shared.chunks[b].position == std::uint64_t{b} * kBlock);
 		CHECK(shared.chunks[b].startNs == static_cast<std::int64_t>(b * kBlock) * 1000);
+		CHECK(shared.chunks[b].upstreamFrames == stampAt(std::uint64_t{b} * kBlock).upstreamFrames);
 		CHECK(shared.chunks[b].discontinuity == (b == 0));
 	}
 	const std::thread::id sinkThread = shared.chunks.front().thread;
@@ -296,13 +306,14 @@ TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the secon
 	for (const Got& chunk : shared.chunks) {
 		const bool cycleStart = chunk.position % kBlock == 0;
 		CHECK(chunk.discontinuity == cycleStart); // only a cycle's first call carries its discontinuity
+		CHECK(chunk.upstreamFrames == stampAt(chunk.position - chunk.position % kBlock).upstreamFrames); // both calls
 		if (!cycleStart) ++split;
 	}
 	CHECK(split == shared.chunks.size() - kBlocks);
 }
 
 TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring drops whole chunks, a full frame ring "
-          "the rest of one, and closed reports every frame dropped",
+          "the rest of one, droppedFrames counts them as they drop, and closed reports every frame dropped",
           "[sink]") {
 	PipeWire pipewire;
 	TestLoop loop;
@@ -324,9 +335,11 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 	// The consumer holds the first stamp, so 127 more fit, then whole chunks drop (the frame ring has room for them).
 	for (int i = 0; i < 200; ++i, ++at) sink->tap().write(signal.block(at, 1), 1, stampAt(at));
 	const std::uint64_t droppedWhole = 200 - 127;
+	CHECK(sink->droppedFrames() == droppedWhole); // readable while the sink's thread runs, before any close
 	shared.release.open();
 	REQUIRE(shared.waitFor([&] { return shared.frames == 128; }));
 	CHECK(closeAndWait(loop, *sink) == droppedWhole);
+	CHECK(sink->droppedFrames() == droppedWhole);
 	{
 		const std::scoped_lock lock(shared.mutex);
 		checkChunksAgainstSignal(shared.chunks);
@@ -350,6 +363,7 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 		small->tap().write(signal.block(position, 100), 100, stampAt(position));
 	// 256 frames of room, 100 held: 156 more accepted (100, then 56 of the next, stamped with 56), the rest refused.
 	const std::uint64_t refused = 4 * 100 - 156;
+	CHECK(small->droppedFrames() == refused);
 	second.release.open();
 	REQUIRE(second.waitFor([&] { return second.frames == 256; }));
 	CHECK(closeAndWait(loop, *small) == refused);
@@ -479,6 +493,7 @@ public:
 			                     chunk.frames,
 			                     chunk.position,
 			                     chunk.startNs,
+			                     chunk.upstreamFrames,
 			                     chunk.discontinuity,
 			                     std::this_thread::get_id()});
 		}
@@ -623,4 +638,128 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 			                                                   << firstRun[round]);
 		if (round == 1) CHECK(start <= firstRun[round]);
 	}
+}
+
+TEST_CASE("A sink's chunks carry the capture latency its block tells on the sink's bank, a companion's beyond its "
+          "paired input included, and follow each new plan",
+          "[sink][blocks][latency]") {
+	using ear::pipewire::testing::kFormat;
+	auto engine = ear::pipewire::testing::makeEngine();
+	ear::pipewire::testing::Waiter waiter(*engine);
+	ear::pipewire::testing::NoBell bell;
+	FilterPortBlocks blocks(*engine, bell);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	ear::pipewire::testing::BlockEvents events(waiter);
+	// No links: no peer reports anything on `record` or `from_rtp`, so the bank tells what the plan gives it.
+	const Ports ports{{{Direction::input, "record", {"1"}},
+	                   {Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside},
+	                   {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}};
+	auto block = blocks.make("rec", ports, kFormat, events);
+	auto sink = sinks.make("rec", "writer", 1, 2 * kFormat.rate);
+	auto owned = std::make_unique<RampConsumer>(waiter);
+	RampConsumer& consumer = *owned;
+	bool begun = false;
+	sink->begin(std::move(owned), [&] {
+		begun = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return begun && events.isReady; }));
+	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 1}};
+	PositionRamp ramp(waiter);
+	const auto latest = [&]() -> std::optional<std::uint32_t> {
+		const std::scoped_lock lock(consumer.mutex);
+		if (consumer.chunks.empty()) return std::nullopt;
+		return consumer.chunks.back().upstreamFrames;
+	};
+
+	// The configuration's own latency on the sink's bank.
+	block->carryLatency(LatencyPlan{{{"record", "writer"}}, {{"writer", Latency{7, 9}}}, {}});
+	bool driven = false;
+	block->drive(DriveRequest{&ramp, {}, bindings}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven; }));
+	CHECK(waiter.until([&] { return latest() == 9U; }));
+	// A receiver's 480 to 960 beyond `from_rtp`, paired with `writer` too: the most upstream is 960 + 9, though nothing
+	// reaches `record`.
+	block->carryLatency(LatencyPlan{{{"record", "writer"}, {"from_rtp", "writer"}},
+	                                {{"writer", Latency{7, 9}}},
+	                                {{"from_rtp", Latency{480, 960}}}});
+	CHECK(waiter.until([&] { return latest() == 969U; }));
+	// An empty plan: nothing upstream at all.
+	block->carryLatency({});
+	CHECK(waiter.until([&] { return latest() == 0U; }));
+
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	bool closed = false;
+	sink->close([&](std::uint64_t) {
+		closed = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return closed; }));
+	block.reset();
+	// Every chunk carried one of the plans' values, in the plans' order.
+	const std::scoped_lock lock(consumer.mutex);
+	const std::vector<std::uint32_t> order{9, 969, 0};
+	std::size_t at = 0;
+	for (const Got& chunk : consumer.chunks) {
+		INFO("chunk at " << chunk.position << " with " << chunk.upstreamFrames);
+		while (at < order.size() && order[at] != chunk.upstreamFrames) ++at;
+		REQUIRE(at < order.size());
+	}
+}
+
+TEST_CASE("A sink's dropped count is readable while its block writes it, and closed reports what it last read",
+          "[sink][blocks]") {
+	using ear::pipewire::testing::kFormat;
+	auto engine = ear::pipewire::testing::makeEngine();
+	ear::pipewire::testing::Waiter waiter(*engine);
+	ear::pipewire::testing::NoBell bell;
+	FilterPortBlocks blocks(*engine, bell);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	ear::pipewire::testing::BlockEvents events(waiter);
+	const Ports ports{{{Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
+	auto block = blocks.make("rec", ports, kFormat, events);
+	// A ring of 1024 frames and a consumer that stalls in its first consume: the ring fills within a few cycles.
+	auto sink = sinks.make("rec", "writer", 2, 1024);
+	Shared shared;
+	struct Release {
+		Gate& gate;
+		~Release() { gate.open(); }
+	} release{shared.release};
+	bool begun = false;
+	sink->begin(std::make_unique<TestConsumer>(shared, nullptr, true), [&] {
+		begun = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return begun && events.isReady; }));
+	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 2}};
+	PositionRamp ramp(waiter);
+	bool driven = false;
+	block->drive(DriveRequest{&ramp, {}, bindings}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven; }));
+	// The ramp wakes the waiter every cycle, so the count is read again each cycle while the block writes the tap.
+	REQUIRE(waiter.until([&] { return sink->droppedFrames() >= 4 * kFormat.maxBlock; }));
+	const std::uint64_t seen = sink->droppedFrames();
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	const std::uint64_t silenced = sink->droppedFrames(); // nothing writes the tap any more
+	CHECK(silenced >= seen);
+	shared.release.open();
+	std::uint64_t dropped = 0;
+	bool closed = false;
+	sink->close([&](std::uint64_t d) {
+		dropped = d;
+		closed = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return closed; }));
+	block.reset();
+	CHECK(dropped == silenced);
+	CHECK(sink->droppedFrames() == silenced);
 }

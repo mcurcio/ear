@@ -23,10 +23,13 @@ namespace ear {
 struct Chunk {
 	std::span<const float> interleaved;
 	std::uint32_t frames;
-	std::uint64_t position;       // the driver's position of the chunk's first frame
-	std::int64_t startNs;         // its cycle's start, CLOCK_MONOTONIC
-	std::int64_t startRawNs;      // the same on CLOCK_MONOTONIC_RAW
-	std::uint32_t upstreamFrames; // the latency upstream of the bank's paired input: always 0 until slice 3b
+	std::uint64_t position;  // the driver's position of the chunk's first frame
+	std::int64_t startNs;    // its cycle's start, CLOCK_MONOTONIC
+	std::int64_t startRawNs; // the same on CLOCK_MONOTONIC_RAW
+	/// The most upstream (capture) latency the block told on the sink's bank in the cycle the chunk was taken: what
+	/// reaches the input banks paired with it plus what the configuration declared on it (docs/engine.md#sinks). The
+	/// chunk's first frame entered the graph at startRawNs - upstreamFrames * 1e9 / rate.
+	std::uint32_t upstreamFrames;
 	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
 	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
 	/// only in `position`: compare it with the last chunk's end to tell a gap (a stop) from a re-drive.
@@ -58,12 +61,14 @@ struct SinkShape {
 
 // ---- What the framework runs a sink with (no type sees these) ----
 
-/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle.
+/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle, and the most upstream
+/// latency the block last told on the sink's bank (Chunk::upstreamFrames).
 struct ChunkStamp {
 	std::uint64_t position;
 	std::int64_t startNs;
 	std::int64_t startRawNs;
 	bool discontinuity;
+	std::uint32_t upstreamFrames;
 };
 
 /// The realtime end of one sink. The port block calls write() once per cycle the code it was driven with ran, after
@@ -110,6 +115,8 @@ public:
 	/// then `closed(dropped)` runs on the main loop with the frames the tap refused over the sink's life. A stop closes
 	/// nothing: the next drive binds the same tap again.
 	virtual void close(std::move_only_function<void(std::uint64_t droppedFrames)> closed) = 0;
+	/// Any thread: the frames the tap refused since the sink was made (the count `closed` reports once closed).
+	virtual std::uint64_t droppedFrames() const noexcept = 0;
 };
 
 /// The sink kind's adapter (ResourceRegistry's slot). ear_pipewire's ThreadSinks implements it.

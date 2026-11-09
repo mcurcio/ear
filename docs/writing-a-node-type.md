@@ -184,8 +184,8 @@ cx.use(passThrough({bankPair(record, writer)}));
 ```
 
 - Each cycle the code ran, after the code, the block interleaves the bank's frames into the sink's
-  lock-free ring with a stamp (the cycle's position, both clocks, a discontinuity flag) beside them,
-  and wakes the sink's own thread.
+  lock-free ring with a stamp (the cycle's position, both clocks, a discontinuity flag, the upstream
+  latency) beside them, and wakes the sink's own thread.
 - The `SinkConsumer` is called on the sink's own thread only, one call at a time: `begin()` once,
   before the node is `configured` (open what it writes to; a failure is `handle().lost(detail)`,
   which fails the node `start-failed`); `consume(const Chunk&)` for each chunk in order;
@@ -193,8 +193,13 @@ cx.use(passThrough({bankPair(record, writer)}));
 - A sink takes exactly the cycles its code drove: a stop's silence ends them, a start begins them
   again; a stop closes nothing. A gap shows only in `Chunk::position`; `discontinuity` is set on the
   first chunk after any drive.
+- `Chunk::upstreamFrames` is the most capture latency the block told on the sink's bank in the
+  cycle the chunk was taken: what lies upstream of the input banks paired with it, plus what the
+  configuration declared on it ([engine.md](engine.md#sinks)). So the chunk's first frame entered the
+  graph at `startRawNs - upstreamFrames * 1e9 / rate`; a consumer that does not date audio ignores
+  it (`file`'s `WavWriter` does).
 - The frame ring and the stamp ring drop together (no frame without its stamp); dropped frames are
-  counted and reported as the node's `dropped=` at removal.
+  counted (readable at any time by the framework) and reported as the node's `dropped=` at removal.
 - A sink's bank is never faded, so a recording keeps exact samples.
 
 ## Latency
@@ -255,7 +260,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | An outside node on `bank` becomes ready, or is lost |
-| `h.process(frames)` | One cycle: outputs NaN-filled first, the 5 ms fade applied |
+| `h.process(frames)` | One cycle: outputs NaN-filled first, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |

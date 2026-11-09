@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -195,6 +196,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.companionList.at(index).destroyed = true;
 			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
 		}
+		std::uint64_t droppedFrames() const noexcept override { return 0; } // it takes every chunk
 		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 		           const ChunkStamp& stamp) noexcept override {
 			SeenChunk seen{std::vector<float>(static_cast<std::size_t>(frames) * channels, 0.0F), frames, stamp};
@@ -207,7 +209,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 				                        .position = stamp.position,
 				                        .startNs = stamp.startNs,
 				                        .startRawNs = stamp.startRawNs,
-				                        .upstreamFrames = 0,
+				                        .upstreamFrames = stamp.upstreamFrames,
 				                        .discontinuity = stamp.discontinuity});
 			harness.companionList.at(index).chunks.push_back(std::move(seen));
 		}
@@ -432,6 +434,32 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		lastGain.assign(outputNames.size(), 1.0F);
 		fadeMask.assign(outputNames.size(), false);
 	}
+	/// The capture latency the real block would tell on the output bank whose first port is `firstOutput`
+	/// (port_blocks.cpp, docs/engine.md#latency-per-bank-pair), from the plan alone: the harness has no peers, so what
+	/// lies beyond each paired input bank is its `beyond` entry or nothing; the least and the most across the pairs,
+	/// plus what the configuration declared on the bank.
+	Latency toldUpstream(std::size_t firstOutput) const {
+		const auto& banks = config->ports().banks();
+		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {
+			return bank.direction == Direction::output && bank.first == firstOutput;
+		});
+		if (found == banks.end()) return {};
+		const auto entry = [](const std::vector<std::pair<std::string, Latency>>& entries, const std::string& bank) {
+			const auto at = std::ranges::find(entries, bank, &std::pair<std::string, Latency>::first);
+			return at == entries.end() ? Latency{} : at->second;
+		};
+		std::optional<Latency> upstream;
+		for (const BankPair& pair : plan.pairs) {
+			if (pair.to != found->name) continue;
+			const Latency beyond = entry(plan.beyond, pair.from);
+			upstream = upstream ? Latency{std::min(upstream->minFrames, beyond.minFrames),
+			                              std::max(upstream->maxFrames, beyond.maxFrames)}
+			                    : beyond;
+		}
+		const Latency internal = entry(plan.internal, found->name);
+		const Latency combined = upstream.value_or(Latency{});
+		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
+	}
 	static std::size_t indexOf(const std::vector<PortName>& names, std::string_view port) {
 		const auto found = std::ranges::find(names, port);
 		if (found == names.end()) throw std::logic_error("the node has no port " + std::string(port));
@@ -625,7 +653,11 @@ void NodeHarness::process(std::uint32_t frames) {
 			for (std::size_t c = 0; c < binding.channels && binding.firstOutput + c < out.size(); ++c)
 				bank.emplace_back(out[binding.firstOutput + c]);
 			binding.tap->write(bank, frames,
-			                   ChunkStamp{cycle.position, cycle.startNs, cycle.startRawNs, cycle.discontinuity});
+			                   ChunkStamp{.position = cycle.position,
+			                              .startNs = cycle.startNs,
+			                              .startRawNs = cycle.startRawNs,
+			                              .discontinuity = cycle.discontinuity,
+			                              .upstreamFrames = h.toldUpstream(binding.firstOutput).maxFrames});
 		}
 	h.position += frames;
 	h.firstCycle = false;
