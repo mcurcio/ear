@@ -3916,11 +3916,17 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](InstanceContexts& cx) {
 			 cx.create.declareLatency("record", "pb", Latency{1, 1});
-			 cx.create.declareLatency("cap", "pb", Latency{2, 2});
+			 cx.create.declareLatency("record", "pb", Latency{2, 2});
 			 cx.create.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
-	     "start-failed: configure threw: latency declared twice for bank pb"},
+	     "start-failed: configure threw: latency declared twice for the path record to pb"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.declareLatency("cap", "pb", Latency{2, 2});
+			 cx.create.use(passThrough({{"record", "pb"}}));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure declared latency on cap to pb, a path its pass-through does not copy"},
 		{[&](InstanceContexts& cx) {
 			 cx.create.declareLatency("pb", "record", Latency{1, 1});
 			 cx.create.use(std::make_unique<TestAudioCode>(codes));
@@ -3987,6 +3993,39 @@ TEST_CASE("A typed declareLatency is a latency path: carried as a pair with its 
 		f.stopAll();
 		f.settle();
 	}
+}
+
+// A mixer: two inputs into one output, each path declared with its own delay. A typed declaration is keyed by its
+// path, so both are carried, each both ways: in what pb tells and in what its own input tells.
+TEST_CASE("A code with two inputs into one output declares each path's delay, each carried both ways",
+          "[node_host][latency][class]") {
+	Log codes;
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) {
+		cx.create.declareLatency("record", "pb", Latency{3, 5});
+		cx.create.declareLatency("cap", "pb", Latency{7, 7});
+		cx.create.use(std::make_unique<TestAudioCode>(codes));
+		return Configured::applied();
+	};
+	f.add("probe", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.host.health()[0].state == NodeState::running);
+	REQUIRE_FALSE(f.blocks.plans.at(0).empty());
+	const LatencyPlan& plan = f.blocks.plans.at(0).back();
+	const BankPair fromRecord{"record", "pb"}, fromCap{"cap", "pb"};
+	CHECK(plan.pairs == std::vector<BankPair>{fromRecord, fromCap});
+	REQUIRE(plan.onPair.size() == 2);
+	CHECK(plan.onPair[0] == std::pair<BankPair, Delay>{fromRecord, Delay{{3, 5}}});
+	CHECK(plan.onPair[1] == std::pair<BankPair, Delay>{fromCap, Delay{{7, 7}}});
+	CHECK(plan.onBank.empty());
+	// With no peers: each input tells its own path's delay; pb tells both paths side by side.
+	const LatencyFacts facts =
+		workOut(config->ports(), plan, std::vector<std::optional<Latency>>(3), std::vector<std::optional<Latency>>(2));
+	CHECK(facts.told == std::vector<Latency>{{3, 5}, {3, 5}, {7, 7}, {3, 7}, {3, 7}});
+	f.stopAll();
+	f.settle();
 }
 
 TEST_CASE("A context kept past its configure is refused at the call: from start() the node fails",

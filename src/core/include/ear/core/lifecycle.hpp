@@ -156,10 +156,11 @@ public:
 	/// until the configuration is freed (teardown step 5), closed at teardown step 1.
 	virtual SourceWriter& source(std::string_view bank, SourceShape shape) = 0;
 	/// The type's own code's latency (docs/engine.md#latency-per-bank-pair): `latency` on the path from `from` to `to`.
-	/// The plan carries that path (LatencyPlan::pairs, added when the pass-through has no such pair, as for a code of
-	/// the type's own) with the delay on it (LatencyPlan::onPair), so it counts both ways: in what `to` tells
-	/// downstream and in what `from` tells upstream. At most once per output bank (a second is a
-	/// std::logic_error).
+	/// The plan carries that path (LatencyPlan::pairs, added for a code of the type's own) with the delay on it
+	/// (LatencyPlan::onPair), so it counts both ways: in what `to` tells downstream and in what `from` tells upstream.
+	/// Keyed by the path, so a code with several inputs into one output (a mixer) declares each path: a second for the
+	/// same path is a std::logic_error. With a pass-through as the code, the path must be one of its pairs, or the
+	/// node fails at configure's return.
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).

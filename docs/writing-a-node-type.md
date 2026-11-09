@@ -129,7 +129,7 @@ optional row read as a plain value does not compile.
 | `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
-| `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | At most once per output bank; a plan that does not fit the ports fails the node `start-failed` |
+| `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency on the path from an input bank to an output bank, in frames: carried as a path through the block, so it counts in both banks' told latency ([latency](#latency)) | Once per path (a mixer declares each of its inputs' paths into one output); with a pass-through, one of its pairs; a plan that does not fit the ports fails the node `start-failed` |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
 (the node fails `start-failed: <detail>`). A `CreateOf` is valid only inside the `configure` it is
@@ -315,7 +315,8 @@ reads the latency downstream of its outputs in `GraphCycle`
 ([engine.md](engine.md#latency-per-bank-pair)).
 
 `cx.declareLatency(from, to, delay)` makes `from` to `to` a path the block carries, whether the code
-is a pass-through or the type's own, with `delay` on it both ways: what lies beyond `to` plus the
+is a pass-through (which must copy that pair) or the type's own, with `delay` on it both ways, once
+per path (a mixer declares each of its inputs' paths into one output): what lies beyond `to` plus the
 delay is what `from` tells upstream (so a source on `from` dates its `Played` late enough), and what
 lies beyond `from` plus the delay is what `to` tells downstream (so a sink on `to` stamps its chunks
 early enough). The framework works the configuration's plan out at configure's return; one that
@@ -344,7 +345,8 @@ when the type catches the throw; none takes ear down:
 | No `use` by an applied answer | `configure gave no code` |
 | A pass-through the ports refuse | `configure gave a pass-through: <why>` |
 | A sink with no consumer, or a consumer twice | `configure gave sink <bank> no consumer`; `configure threw: consumedBy called twice on sink <bank>` |
-| Latency twice for a bank | `configure threw: latency declared twice for bank <bank>` |
+| Latency declared twice for one path (`declareLatency(from, to, ...)`), or twice for one bank (the legacy `declareLatency(bank, ...)`) | `configure threw: latency declared twice for the path <from> to <to>`; `configure threw: latency declared twice for bank <bank>` |
+| Latency declared on a path the pass-through does not copy | `configure declared latency on <from> to <to>, a path its pass-through does not copy` |
 | A latency plan that does not fit the ports (only a framework bug makes one: each declaration is checked at its call) | `configure gave a latency plan that does not fit: <why>` |
 | A second companion on an inside bank | `configure threw: a second companion on bank <bank>` |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |

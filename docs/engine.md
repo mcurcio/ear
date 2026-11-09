@@ -339,10 +339,12 @@ By the plan, which names roles:
 
 `NodeHost` makes the plan at configure's return and carries it with each drive: `pairs` are the
 pass-through's; `beyond` holds each source's ring and each RTP receiver's `latencyMs`. A typed
-`declareLatency(from, to, delay)` makes `from` to `to` a path: its pair is added to `pairs` when
-the pass-through has none such (as for a code of the type's own), with `delay` as its `onPair`, so
+`declareLatency(from, to, delay)` makes `from` to `to` a path, with `delay` as its `onPair`, so
 the delay counts both ways on it (as PipeWire adds a node's process latency to both), in what `to`
-tells and in what `from` tells. A legacy declaration on one bank (`sendspin`'s) is `onPair` on the
+tells and in what `from` tells. For a code of the type's own the pair is added to `pairs`; a
+pass-through must already copy it, or the node fails at configure's return (a declared path must
+exist). Typed declarations are keyed by their path, so a mixer declares each input's path into one
+output. A legacy declaration on one bank (`sendspin`'s) is `onPair` on the
 pass-through's pair that ends at the bank or, on a bank no pair ends at, `onBank`. NodeHost works
 the plan out with no peer before configure's return is accepted, so a plan that does not fit the
 ports fails the node `start-failed` (`configure gave a latency plan that does not fit: <why>`)

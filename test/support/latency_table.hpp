@@ -111,6 +111,18 @@ inline std::vector<LatencyRow> latencyRows() {
 	     {Latency{256, 256}},
 	     {{256, 736}, {10, 490}},
 	     {{256, 256}}},
+		// A mixer: a code of the type's own with two inputs into one output declares each path's delay; each is
+		// carried both ways, and the output tells both paths side by side.
+		{"a mixer's two declared paths into one output, each delay on its own path",
+	     {{Direction::input, "a", numbered(1)},
+	      {Direction::input, "b", numbered(1)},
+	      {Direction::output, "mix", numbered(1)}},
+	     {.pairs = {{"a", "mix"}, {"b", "mix"}},
+	      .onPair = {{{"a", "mix"}, Delay{{64, 64}}}, {{"b", "mix"}, Delay{{256, 512}}}}},
+	     {Latency{10, 10}, Latency{100, 100}},
+	     {Latency{48, 48}},
+	     {{112, 112}, {304, 560}, {74, 612}},
+	     {{48, 48}}},
 		{"a pair's delay is on its path only, not on another pair's into the same output",
 	     {{Direction::input, "a", numbered(1)},
 	      {Direction::input, "b", numbered(1)},

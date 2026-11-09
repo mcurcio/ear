@@ -197,13 +197,16 @@ What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pa
 - **One namespace, one signature.** `LatencyPlan`, `LatencyFacts` and `workOut` are in `ear` (`ear::latency_model` is
   gone, and so is `node_host.hpp`'s plan with `internal`); `node_host.hpp` includes `latency.hpp`. `workOut` keeps
   3.3's one signature: the harness passes none for every port rather than gain an overload.
-- **A typed declaration is a path (review).** What configure declared stays one entry per bank (a second still fails
-  the node), now with the input bank a typed `declareLatency(from, to)` names. Its pair is carried (added to `pairs`
-  when the pass-through has none such) with the delay as its `onPair`. 3.5's mapping by bank alone dropped `from` for
-  a code of the type's own (no pass-through, so no pair): its delay reached `to` only, never `from`'s told playback
-  latency, so a source on `from` would date `Played` early, the class of the 3b.2 regression. No shipped type declares
-  that way (`sendspin`'s legacy declaration is on one bank and keeps 3.5's mapping), so nothing shipped changes; for a
-  pass-through whose pair into `to` starts elsewhere, the delay now lies on the declared path, not that pair.
+- **A typed declaration is a path (review).** A typed `declareLatency(from, to)` names its path, and the plan carries
+  that pair with the delay as its `onPair`. 3.5's mapping by bank alone dropped `from` for a code of the type's own
+  (no pass-through, so no pair): its delay reached `to` only, never `from`'s told playback latency, so a source on
+  `from` would date `Played` early, the class of the 3b.2 regression. For a code of the type's own the pair is added
+  to `pairs`; with a pass-through it must be one of its pairs, or the node fails `configureFailed` at configure's
+  return naming the pair (a declared path must exist: a delay on a path no audio takes would be told on banks it
+  never touches). Typed declarations are keyed by path, not by output bank, so a mixer (two inputs into one output)
+  declares each path, and a second for the same path is the error; the legacy one-bank declaration keeps its per-bank
+  key and 3.5's mapping. No shipped type declares a typed path (`sendspin`'s is legacy), so nothing shipped
+  changes.
 - **A misfit plan fails configure (review).** NodeHost builds the plan at configure's return and works it out with no
   peers there, so a plan that does not fit fails the node `start-failed` with its reason; `drive()` carries the plan
   it checked. (First built, `carryLatency`'s throw came in `drive()` before the barrier's bound was armed, so a

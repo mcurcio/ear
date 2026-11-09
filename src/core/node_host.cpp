@@ -1113,19 +1113,22 @@ struct NodeHost::Impl {
 			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
 		}
 
-		/// At most one declaration per bank. `from`: the input bank a typed declaration names, its path's start.
+		/// A typed declaration (`from` given) is keyed by its path, so a code with several inputs into one output (a
+		/// mixer) declares each path once; a legacy declaration on one bank is keyed by its bank, once.
 		void recordLatency(const std::string& bank, Latency latency, std::optional<std::string> from = std::nullopt) {
-			if (std::ranges::any_of(config_->latency,
-			                        [&](const DeclaredLatency& declared) { return declared.bank == bank; }))
-				throw std::logic_error("latency declared twice for bank " + bank);
+			if (std::ranges::any_of(config_->latency, [&](const DeclaredLatency& declared) {
+					return declared.bank == bank && declared.from == from;
+				}))
+				throw std::logic_error(from ? "latency declared twice for the path " + *from + " to " + bank
+				                            : "latency declared twice for bank " + bank);
 			config_->latency.push_back(DeclaredLatency{std::move(from), bank, latency});
 		}
 
 		/// The configuration's latency plan, by role (docs/engine.md#latency-per-bank-pair). What each source's ring
 		/// may hold is latency beyond its bank: the most its frames wait before they play; and an RTP receiver's
-		/// buffer, which its ports report as zero. A typed declaration (from, to) is a path of its own: its pair is carried
-		/// (added when the pass-through has none such) with the delay on it, both ways, so a code of the type's own
-		/// carries it as a pass-through's pair would. A legacy declaration on one bank is the delay on the
+		/// buffer, which its ports report as zero. A typed declaration (from, to) is a path of its own: its pair is
+		/// carried (added for a code of the type's own; a pass-through must already copy it, checked at configure's
+		/// return) with the delay on it, both ways. A legacy declaration on one bank is the delay on the
 		/// pass-through's pair that ends at the bank, or, on a bank no pair ends at, that bank's alone.
 		LatencyPlan latencyPlan(const Configuration& c) const {
 			LatencyPlan plan{.pairs = c.pairs};
@@ -1239,6 +1242,15 @@ struct NodeHost::Impl {
 				if (!slot->given)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave sink " + slot->bank + " no consumer");
+			// A declared path must exist: a pass-through copies only its pairs, so a delay declared on any other path
+			// would lie on audio that never flows there.
+			if (!c.pairs.empty())
+				for (const DeclaredLatency& declared : c.latency)
+					if (declared.from &&
+					    std::ranges::find(c.pairs, BankPair{*declared.from, declared.bank}) == c.pairs.end())
+						return failConfigure(lc::Fact::configureFailed, "configure declared latency on " +
+						                                                    *declared.from + " to " + declared.bank +
+						                                                    ", a path its pass-through does not copy");
 			// The latency plan fits the ports, worked out here as the block will (with no peer yet), so a misfit fails
 			// the node now with its reason and every drive carries a plan that fits.
 			try {
