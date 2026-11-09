@@ -41,17 +41,19 @@ struct Chunk {
 /// A sink's consumer (slice 3c's design: docs/design/node-primitives.md#65-a-sinks-consumer). It has a public virtual
 /// destructor, since a consumer given whole is owned and deleted by the sink). Every call is on the sink's own thread,
 /// never the main loop or the realtime thread, one at a time, in this order: begin once, consume in chunk order, finish
-/// once after the last consume. finish runs only if begin ran (a sink closed before it began calls neither).
+/// once after the last consume. finish runs only if begin returned (a sink closed before it began calls neither). A call
+/// that throws is a type bug the framework catches on the sink's thread: it fails the node, and after it no more
+/// consume is called (docs/writing-a-node-type.md#sinks).
 class SinkConsumer {
 public:
 	virtual ~SinkConsumer() = default;
 	/// Once, before any consume and before the node is `configured` (readiness 4'). Opens what it writes to; a failure
 	/// is the node handle's lost(detail) (in 3a NodeOf::handle(), an InsidesEvents&), which fails the node
-	/// start-failed. May block on I/O. Must not throw (a throw is std::terminate on the sink's thread).
+	/// start-failed. May block on I/O.
 	virtual void begin() {}
-	/// In order; may block on I/O. Must not throw.
+	/// In order; may block on I/O.
 	virtual void consume(const Chunk& chunk) = 0;
-	/// Once, after the last consume (teardown step 3). Must not throw.
+	/// Once, after the last consume (teardown step 3).
 	virtual void finish() = 0;
 };
 

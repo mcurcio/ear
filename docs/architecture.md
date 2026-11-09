@@ -165,6 +165,14 @@ message follows ([output-records.md](output-records.md#how-output-is-written)). 
 without a `Faults` (the tests') writes the same line to standard error and ends the same way. No
 record is added.
 
+**A node type's throw never reaches it.** NodeHost calls every piece of a type's code through one
+catch of its own, before any boundary: its hooks, its code's `prepare` and a legacy recipe and
+close on the main loop, and a sink's or legacy handoff's consumer on that one's thread. What a type
+throws there, a `std::logic_error` included, is a fact about its node
+([writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)), and the rest of the
+graph runs on. So a throw that leaves NodeHost, or a sink's or handoff's own code, for the boundary
+is ear's own bug (or an adapter's), never a type's.
+
 ## How a change moves
 
 ```
@@ -302,8 +310,8 @@ or its removal). Recovery that retries by itself is not built yet.
 | Code | When |
 |---|---|
 | `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), an engine companion was not ready by its deadline (a card that never started, an RTP receiver on a held UDP port), or the data loop is wedged |
-| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin or did not begin within 5 s, its insides said `lost`, or a hook threw |
-| `lost` | After that: its insides said `lost`, or a hook threw |
+| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin or did not begin within 5 s, its insides said `lost`, or the type's code threw (a hook, its code's `prepare`, a sink's consumer: [writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
+| `lost` | After that: its insides said `lost`, or the type's code threw |
 
 A lost **block** is final (`blockLost: true`): the node cannot be restarted (`not-restartable`,
 reason `block-lost`) until it is removed and added again or ear restarts.
@@ -463,6 +471,5 @@ the legacy adapter); recovery of failed nodes; sound cards opened off the main l
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
-failing only the node that owns it (today it ends the process), and a sink consumer's throw as a
-fact rather than a fault. The design pages for the unbuilt slices
+failing only the node that owns it (today it ends the process). The design pages for the unbuilt slices
 remain in `docs/design/`.

@@ -15,7 +15,11 @@
 // drive (T5), whose completion the block
 // posts and NodeHost checks against the node's serial, its configuration's generation and the barrier number
 // before the machine hears it; then the instance's start() runs. Its stop() runs once before each silence that follows
-// a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). A configuration is silenced the
+// a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). Every call into a type's code
+// (its configure, start() and stop(), its code's prepare, a legacy recipe and close, and a sink's or handoff's consumer
+// on that one's own thread) goes through one catch (callType, ConsumerCalls), so a type's throw is a fact about its
+// node; what NodeHost throws itself is ear's own bug and leaves for the callback boundary
+// (docs/writing-a-node-type.md#rules-the-framework-enforces). A configuration is silenced the
 // same way, then torn down by dependency: release(); engine companions; handoffs closed, each on its own thread; the
 // instance closed (a legacy run object, on its own threads); then, on the main loop, the code, the instance, the
 // recordings and the config. Steps 3 and 4 have the close deadline: past it the configuration is leaked, never
@@ -59,6 +63,7 @@
 #include <array>
 #include <deque>
 #include <exception>
+#include <expected>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -106,6 +111,48 @@ std::string whatOf(const std::exception_ptr& thrown) {
 		return "an exception that is no std::exception";
 	}
 }
+
+/// Runs a type's code and says what it threw instead of letting it pass: the one catch every call into a type's code
+/// goes through, on whatever thread calls it (NodeHost's hooks on the main loop, a consumer on its sink's or handoff's
+/// thread), so a type's throw is a fact about its node and never reaches the callback boundary
+/// (docs/writing-a-node-type.md#rules-the-framework-enforces).
+template <typename Call> auto caughtFrom(Call&& call) -> std::expected<std::invoke_result_t<Call>, std::string> {
+	try {
+		if constexpr (std::is_void_v<std::invoke_result_t<Call>>) {
+			std::forward<Call>(call)();
+			return {};
+		} else {
+			return std::forward<Call>(call)();
+		}
+	} catch (...) {
+		return std::unexpected(whatOf(std::current_exception()));
+	}
+}
+
+/// A hook of a type's code NodeHost calls on the main loop: its name in a fault's detail ("<name> threw: <what>"), the
+/// call MainLoopActivity names while it runs (a string literal: only its address is kept), and whether it is timed
+/// (ear.hook-slow, docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog).
+struct TypeHook {
+	std::string_view name;
+	std::string_view activity;
+	bool timed;
+};
+
+namespace hooks {
+inline constexpr TypeHook configure{"configure", "configure", true}; // the instance made, then its configure
+inline constexpr TypeHook start{"start", "start", true};
+inline constexpr TypeHook stop{"stop", "stop", true};
+inline constexpr TypeHook prepare{"prepare", "prepare", false}; // the code's
+inline constexpr TypeHook recipe{"recipe", "recipe", false};    // a legacy recipe
+inline constexpr TypeHook close{"close", "close run", false};   // a legacy run object's close
+} // namespace hooks
+
+/// What a call into a type's code ended with instead of returning (callType): its own throw, or the first rule a
+/// context call found broken while it ran, which fails it even when the type caught the throw.
+struct TypeFault {
+	std::string detail; // "<hook> threw: <what>"
+	std::string what;   // the exception's what(), or the rule's text
+};
 
 /// An exception a drain or flush keeps to rethrow once it has run everything else, with the place it left the main
 /// loop (MainLoopActivity::takeThrown), which the rethrow carries to the callback boundary that catches it
@@ -565,9 +612,12 @@ struct NodeHost::Impl {
 							if (bank.direction != Direction::input || handoff.consumer == nullptr)
 								throw std::logic_error("a handoff takes an input bank and a consumer, not \"" +
 						                               handoff.bank + "\"");
+							// The handoff calls the type's consumer through its catch, which outlives the handoff.
+							auto& caught =
+								*config_->handoffConsumers.emplace_back(std::make_unique<GuardedHandoffConsumer>(
+									*handoff.consumer, config_->channel, bank.name));
 							auto& made = config_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
-								name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
-								*handoff.consumer));
+								name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames, caught));
 							return &made->writer();
 						},
 					},
@@ -638,6 +688,17 @@ struct NodeHost::Impl {
 				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
 					if (Node* node = self->node(); node != nullptr && !self->closing_)
 						node->insidesLost(std::move(detail));
+				});
+			}
+			/// Any thread: a consumer of this configuration threw (ConsumerCalls). A fact, as a hook's throw is, while
+			/// facts reach the node; once its teardown began a log record, as a stop() that throws then is.
+			void threw(std::string detail) {
+				mainLoop_.post([self = shared_from_this(), detail = std::move(detail)]() mutable {
+					Node* node = self->node();
+					if (node == nullptr) return;
+					if (self->closing_)
+						node->host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node->name_});
+					else node->consumerThrew(std::move(detail));
 				});
 			}
 			/// Main thread. The configuration is going (its teardown began): a fact no longer reaches the node.
@@ -717,6 +778,72 @@ struct NodeHost::Impl {
 			Channel& channel_;
 		};
 
+		/// The catch a type's consumer is called through, on the one thread that calls it (its sink's or its legacy
+		/// handoff's): each call through caughtFrom, so what it throws is told as its configuration's fact
+		/// (Channel::threw, "<consumer> threw in <call>: <what>") and never reaches that thread's callback.
+		class ConsumerCalls {
+		public:
+			ConsumerCalls(std::shared_ptr<Channel> channel, std::string consumer)
+				: channel_(std::move(channel)), consumer_(std::move(consumer)) {}
+			/// Whether `run` returned.
+			template <typename Call> bool operator()(std::string_view call, Call&& run) {
+				auto done = caughtFrom(std::forward<Call>(run));
+				if (done) return true;
+				threw_ = true;
+				channel_->threw(consumer_ + " threw in " + std::string(call) + ": " + done.error());
+				return false;
+			}
+			/// A call threw: the consumer's state is the type's bug's, so no more chunks are handed to it.
+			bool threw() const noexcept { return threw_; }
+
+		private:
+			std::shared_ptr<Channel> channel_;
+			std::string consumer_;
+			bool threw_ = false; // its thread's only
+		};
+
+		/// A sink's consumer as its sink calls it (docs/writing-a-node-type.md#sinks). After a begin that threw nothing
+		/// more is called; after a consume that threw no more consume, but finish still pairs with the begin that
+		/// returned, so what begin opened is closed.
+		class GuardedSinkConsumer final : public SinkConsumer {
+		public:
+			GuardedSinkConsumer(std::unique_ptr<SinkConsumer> type, std::shared_ptr<Channel> channel,
+			                    const std::string& bank)
+				: type_(std::move(type)), calls_(std::move(channel), "the sink " + bank + "'s consumer") {}
+			void begin() override {
+				began_ = calls_("begin", [&] { type_->begin(); });
+			}
+			void consume(const Chunk& chunk) override {
+				if (began_ && !calls_.threw()) calls_("consume", [&] { type_->consume(chunk); });
+			}
+			void finish() override {
+				if (began_) calls_("finish", [&] { type_->finish(); });
+			}
+
+		private:
+			std::unique_ptr<SinkConsumer> type_;
+			ConsumerCalls calls_;
+			bool began_ = false; // its sink's thread's only
+		};
+
+		/// A legacy handoff's consumer as its handoff calls it (docs/writing-a-node-type.md#the-old-interface): after a
+		/// consume that threw no more consume; finish still runs once, after the last.
+		class GuardedHandoffConsumer final : public HandoffConsumer {
+		public:
+			GuardedHandoffConsumer(HandoffConsumer& type, std::shared_ptr<Channel> channel, const std::string& bank)
+				: type_(type), calls_(std::move(channel), "the handoff " + bank + "'s consumer") {}
+			void consume(std::span<const float> interleaved, std::uint32_t frames) override {
+				if (!calls_.threw()) calls_("consume", [&] { type_.consume(interleaved, frames); });
+			}
+			void finish() override {
+				calls_("finish", [&] { type_.finish(); });
+			}
+
+		private:
+			HandoffConsumer& type_; // the type's, which outlives the handoff (HandoffRequest)
+			ConsumerCalls calls_;
+		};
+
 		/// One cx.sink call (docs/writing-a-node-type.md#sinks): the sink, its one consumer until Sink::begin takes it,
 		/// and what a drive binds. By pointer in the configuration, so a SinkRequest& the type holds survives a later
 		/// sink.
@@ -733,8 +860,11 @@ struct NodeHost::Impl {
 					consumer_ = std::move(consumer);
 				});
 			}
-			/// Main thread, at configure's applied return: the consumer handed to the sink.
-			void begin(std::move_only_function<void()> begun) { sink->begin(std::move(consumer_), std::move(begun)); }
+			/// Main thread, at configure's applied return: the consumer handed to the sink, called through its catch.
+			void begin(std::shared_ptr<Channel> channel, std::move_only_function<void()> begun) {
+				sink->begin(std::make_unique<GuardedSinkConsumer>(std::move(consumer_), std::move(channel), bank),
+				            std::move(begun));
+			}
 
 			std::string bank;
 			std::unique_ptr<Sink> sink;
@@ -791,6 +921,8 @@ struct NodeHost::Impl {
 			std::vector<SourceBinding> sourceBindings; // every source's, built at the return checks, likewise
 			std::unique_ptr<ErasedInstance> instance;  // the legacy recipe and run object inside it
 			std::unique_ptr<AudioCode> code;           // may read the instance, so goes first
+			// Each handoff's catch around the type's consumer: outlives the handoff that calls it.
+			std::vector<std::unique_ptr<GuardedHandoffConsumer>> handoffConsumers;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
@@ -827,6 +959,7 @@ struct NodeHost::Impl {
 			std::vector<SinkBinding> bindings;
 			std::vector<SourceSlot> sources; // the block may still play them
 			std::vector<SourceBinding> sourceBindings;
+			std::vector<std::unique_ptr<GuardedHandoffConsumer>> handoffConsumers;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::unique_ptr<Companion>> engineCompanions; // a wedged loop's, never destroyed
 			std::unique_ptr<bool[]> faded;
@@ -959,6 +1092,8 @@ struct NodeHost::Impl {
 				config_->channel->closing();
 			// A hook that threw is a fact once its batch was carried out
 			// (docs/writing-a-node-type.md#rules-the-framework-enforces).
+			if (auto threw = std::exchange(prepareThrew_, std::nullopt))
+				feed(aggregate_.fault(lc::Fact::hookThrew, std::move(*threw)));
 			if (auto threw = std::exchange(startThrew_, std::nullopt)) feed(aggregate_.startThrew(std::move(*threw)));
 			if (auto threw = std::exchange(stopThrew_, std::nullopt))
 				feed(aggregate_.fault(lc::Fact::hookThrew, std::move(*threw)));
@@ -1019,12 +1154,9 @@ struct NodeHost::Impl {
 				break;
 			case Kind::runRecipe:
 				break; // ran before every resource was told ready (checkReady), so a failed recipe is a fault in readying
-			case Kind::prepare: {
-				const MainLoopActivity::Scope activity("prepare", name_);
-				config_->code->prepare(host_.format);
-				config_->prepared = true;
+			case Kind::prepare:
+				prepare();
 				break;
-			}
 			case Kind::drive:
 				drive(action.barrier);
 				break;
@@ -1163,24 +1295,30 @@ struct NodeHost::Impl {
 			if (!configuring_) throw std::logic_error(std::string(call) + " outside configure");
 		}
 
-		/// A hook's run, timed: one past hookSlowBound is ear.hook-slow, once per node and hook for the node's
-		/// life, whether or not it threw.
-		template <typename Hook> void timed(std::string_view hook, Hook&& run) {
+		/// Every call NodeHost makes into a type's code on the main loop: named in MainLoopActivity while it runs, timed
+		/// when the hook is (one past hookSlowBound is ear.hook-slow, once per node and hook for the node's life,
+		/// whether or not it threw), and caught. What it returned, or what ended it instead: its throw, or a rule a
+		/// context call found broken while it ran (first), even one the type caught. Only a throw of NodeHost's own,
+		/// outside `call`, leaves (docs/writing-a-node-type.md#rules-the-framework-enforces).
+		template <typename Call> auto callType(const TypeHook& hook, Call&& call)
+			-> std::expected<std::invoke_result_t<Call>, TypeFault> {
+			const MainLoopActivity::Scope activity(hook.activity, name_);
+			brokenRule_.reset();
 			const auto began = host_.timers.now();
-			const auto said = [&] {
+			auto result = caughtFrom(std::forward<Call>(call));
+			if (hook.timed) {
 				const std::int64_t ms = millisecondsBetween(began, host_.timers.now());
-				if (std::chrono::milliseconds(ms) <= hookSlowBound || !hooksReportedSlow_.insert(hook).second) return;
-				const std::array fields{DiagnosticField{"ms", ms}};
-				host_.diagnosed(name_, "ear.hook-slow", std::string(hook) + " ran " + std::to_string(ms) + " ms",
-				                fields);
-			};
-			try {
-				std::forward<Hook>(run)();
-			} catch (...) {
-				said();
-				throw;
+				if (std::chrono::milliseconds(ms) > hookSlowBound && hooksReportedSlow_.insert(hook.name).second) {
+					const std::array fields{DiagnosticField{"ms", ms}};
+					host_.diagnosed(name_, "ear.hook-slow",
+					                std::string(hook.name) + " ran " + std::to_string(ms) + " ms", fields);
+				}
 			}
-			said();
+			std::optional<std::string> what = std::exchange(brokenRule_, std::nullopt);
+			if (!what && !result) what = std::move(result.error());
+			if (what) return std::unexpected(TypeFault{std::string(hook.name) + " threw: " + *what, std::move(*what)});
+			if constexpr (std::is_void_v<std::invoke_result_t<Call>>) return {};
+			else return std::move(*result);
 		}
 
 		/// T2 (docs/writing-a-node-type.md#configure-and-createof): a new generation and its context; the instance made
@@ -1200,27 +1338,15 @@ struct NodeHost::Impl {
 			std::fill_n(c.faded.get(), c.fadedCount, true);
 			// Until configure returned a code that holds, the configuration asks for nothing more.
 			c.startFailed = true;
-			std::optional<Configured> answer;
-			std::string threw;
-			{
-				const MainLoopActivity::Scope activity("configure", name_);
-				configuring_ = true;
-				brokenRule_.reset();
-				try {
-					timed("configure", [&] {
-						c.instance = c.config->make(*c.context);
-						InstanceContexts contexts{*this, *this};
-						answer.emplace(c.instance->configure(contexts));
-					});
-				} catch (...) {
-					threw = "configure threw: " + whatOf(std::current_exception());
-				}
-				configuring_ = false;
-			}
+			configuring_ = true;
+			std::expected<Configured, TypeFault> answer = callType(hooks::configure, [&] {
+				c.instance = c.config->make(*c.context);
+				InstanceContexts contexts{*this, *this};
+				return c.instance->configure(contexts);
+			});
+			configuring_ = false;
 			// A rule a call found broken fails the node whatever configure did next: caught, answered or thrown.
-			if (auto broken = std::exchange(brokenRule_, std::nullopt))
-				return failConfigure(lc::Fact::hookThrew, "configure threw: " + *broken);
-			if (!answer) return failConfigure(lc::Fact::hookThrew, std::move(threw));
+			if (!answer) return failConfigure(lc::Fact::hookThrew, std::move(answer.error().detail));
 			if (answer->isFailed()) {
 				if (answer->detail().empty())
 					return failConfigure(lc::Fact::configureFailed, "configure answered failed with no detail");
@@ -1269,7 +1395,7 @@ struct NodeHost::Impl {
 			for (const auto& slot : c.sinks) c.bindings.push_back(slot->binding);
 			c.sourceBindings.reserve(c.sources.size());
 			for (const auto& slot : c.sources) c.sourceBindings.push_back(slot.binding);
-			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel->sinkBegunCall(i));
+			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel, c.channel->sinkBegunCall(i));
 			armReadinessDeadlines();
 			askResources();
 		}
@@ -1402,15 +1528,9 @@ struct NodeHost::Impl {
 		/// (it never set started, so no stop() pairs with it).
 		void startHook() {
 			if (!config_ || !config_->instance) return;
-			const MainLoopActivity::Scope activity("start", name_);
-			brokenRule_.reset();
-			try {
-				timed("start", [&] { config_->instance->start(); });
-			} catch (...) {
-				startThrew_ = "start threw: " + whatOf(std::current_exception());
-			}
 			// A context call it made and caught (a context kept past configure) still fails it.
-			if (auto broken = std::exchange(brokenRule_, std::nullopt)) startThrew_ = "start threw: " + *broken;
+			if (auto started = callType(hooks::start, [&] { config_->instance->start(); }); !started)
+				startThrew_ = std::move(started.error().detail);
 		}
 
 		/// Before a silence that follows a start() that returned: the instance's stop(), timed. One that threw during a
@@ -1420,18 +1540,21 @@ struct NodeHost::Impl {
 			if (!config_ || !config_->instance) return;
 			if (aggregate_.intent() != lc::Intent::stop) closeSources(); // teardown step 1 begins
 			idleSources();
-			const MainLoopActivity::Scope activity("stop", name_);
-			brokenRule_.reset();
-			std::optional<std::string> what;
-			try {
-				timed("stop", [&] { config_->instance->stop(); });
-			} catch (...) {
-				what = whatOf(std::current_exception());
+			auto stopped = callType(hooks::stop, [&] { config_->instance->stop(); });
+			if (stopped) return;
+			if (aggregate_.intent() == lc::Intent::stop) stopThrew_ = std::move(stopped.error().detail);
+			else host_.logged(LogEntry{LogLevel::error, "ear", "stop() threw: " + stopped.error().what, {}, name_});
+		}
+
+		/// The code's prepare (T3, and again after each stop's silence released it). One that threw leaves the code
+		/// unprepared: a drive in its batch drives no code, and the fault, once the batch was carried out, tears the
+		/// configuration down (docs/writing-a-node-type.md#rules-the-framework-enforces).
+		void prepare() {
+			if (auto prepared = callType(hooks::prepare, [&] { config_->code->prepare(host_.format); }); !prepared) {
+				prepareThrew_ = std::move(prepared.error().detail);
+				return;
 			}
-			if (auto broken = std::exchange(brokenRule_, std::nullopt)) what = std::move(broken);
-			if (!what) return;
-			if (aggregate_.intent() == lc::Intent::stop) stopThrew_ = "stop threw: " + *what;
-			else host_.logged(LogEntry{LogLevel::error, "ear", "stop() threw: " + *what, {}, name_});
+			config_->prepared = true;
 		}
 
 		/// Readiness, as far as slice 3a has it: the engine companions, made in the flush in request order once the
@@ -1471,18 +1594,14 @@ struct NodeHost::Impl {
 			c.recipeRan = true;
 			if (c.instance->hasRecipe()) {
 				building_ = true;
-				auto made = [&]() -> std::expected<void, FailureReason> {
-					const MainLoopActivity::Scope activity("recipe", name_);
-					try {
-						return c.instance->ready(*this);
-					} catch (...) {
-						// A recipe that throws is a type bug that fails its node, never thrown out of NodeHost.
-						return std::unexpected(FailureReason{FailureReason::Code::startFailed,
-						                                     "recipe threw: " + whatOf(std::current_exception())});
-					}
-				}();
+				auto built = callType(hooks::recipe, [&] { return c.instance->ready(*this); });
 				building_ = false;
-				if (!made) {
+				// A recipe that throws, or breaks a rule, is a type bug that fails its node like a failed recipe.
+				if (!built) {
+					feed(aggregate_.fault(lc::Fact::recipeFailed, std::move(built.error().detail)));
+					return;
+				}
+				if (auto& made = *built; !made) {
 					feed(
 						aggregate_.fault(factOf(made.error(), lc::Fact::recipeFailed), std::move(made.error().detail)));
 					return;
@@ -1492,10 +1611,16 @@ struct NodeHost::Impl {
 		}
 
 		/// T5: the latency plan first, then the code, by an asynchronous drive that fades in every output the code
-		/// writes; the barrier's bound (5 s) armed.
+		/// writes; the barrier's bound (5 s) armed. A code whose prepare threw in this batch is never run: the drive
+		/// carries no code, so the machine, told the fault behind it, silences a block that ran nothing of it.
 		void drive(std::uint64_t barrier) {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
+			if (!c.prepared) {
+				block_->drive(DriveRequest{nullptr, {}}, completion(barrier, &lc::NodeAggregate::driven));
+				arm(barrier, Bound::barrier);
+				return;
+			}
 			// The plan configure's return checked against the ports (latencyPlan), so carrying it cannot throw.
 			block_->carryLatency(c.plan);
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
@@ -1729,16 +1854,12 @@ struct NodeHost::Impl {
 			runClosing_ = true;
 			const bool closedInside = [&] {
 				if (!config_->instance) return true;
-				const MainLoopActivity::Scope activity("close run", name_);
-				try {
-					return config_->channel->close(*config_->instance);
-				} catch (...) {
-					// A legacy RunObject::close that throws: written, and the configuration taken as closed (facts are
-					// dropped once a teardown began), so the teardown goes on.
-					host_.logged(LogEntry{
-						LogLevel::error, "ear", "close threw: " + whatOf(std::current_exception()), {}, name_});
-					return true;
-				}
+				auto closed = callType(hooks::close, [&] { return config_->channel->close(*config_->instance); });
+				if (closed) return *closed;
+				// A legacy RunObject::close that throws: written, and the configuration taken as closed (facts are
+				// dropped once a teardown began), so the teardown goes on.
+				host_.logged(LogEntry{LogLevel::error, "ear", std::move(closed.error().detail), {}, name_});
+				return true;
 			}();
 			if (closedInside) runClosed();
 		}
@@ -1756,6 +1877,14 @@ struct NodeHost::Impl {
 		void insidesLost(std::string detail) {
 			host_.inputFor(serial_, [generation = config_->generation, detail = std::move(detail)](Node& node) mutable {
 				if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::nodeLost, std::move(detail)));
+			});
+		}
+
+		/// A consumer of the configuration threw while facts reach it (Channel::threw): it fails as a hook that throws
+		/// does (start-failed before it rested, lost after).
+		void consumerThrew(std::string detail) {
+			host_.inputFor(serial_, [generation = config_->generation, detail = std::move(detail)](Node& node) mutable {
+				if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::hookThrew, std::move(detail)));
 			});
 		}
 
@@ -1797,8 +1926,8 @@ struct NodeHost::Impl {
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
 			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
 			                             std::move(c.sinks), std::move(c.bindings), std::move(c.sources),
-			                             std::move(c.sourceBindings), std::move(c.handoffs),
-			                             std::move(c.engineCompanions), std::move(c.faded)});
+			                             std::move(c.sourceBindings), std::move(c.handoffConsumers),
+			                             std::move(c.handoffs), std::move(c.engineCompanions), std::move(c.faded)});
 			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;
@@ -1824,9 +1953,10 @@ struct NodeHost::Impl {
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false; // inside the instance's making and configure: the contexts' calls are valid
 		bool building_ = false;    // inside a legacy recipe: events() is valid
-		std::optional<std::string> brokenRule_; // the first rule a context call found broken in the hook running
-		std::optional<std::string> startThrew_; // a start() that threw, a fault after its batch
-		std::optional<std::string> stopThrew_;  // a stop() that threw during a stop, likewise
+		std::optional<std::string> brokenRule_;   // the first rule a context call found broken in the hook running
+		std::optional<std::string> prepareThrew_; // a code's prepare that threw, a fault after its batch
+		std::optional<std::string> startThrew_;   // a start() that threw, likewise
+		std::optional<std::string> stopThrew_;    // a stop() that threw during a stop, likewise
 		std::set<std::string_view, std::less<>> hooksReportedSlow_; // ear.hook-slow said, for the node's life
 		bool closingHandoffs_ = false;
 		bool runClosing_ = false;
@@ -1873,8 +2003,8 @@ struct NodeHost::Impl {
 	std::shared_ptr<char> alive = std::make_shared<char>(); // a posted flush finds the host gone by it
 
 	/// One input at a time: one that arrives while another is handled, from an action or a callback inside it,
-	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (a type
-	/// bug: a std::logic_error from a type's start or recipe) does not strand the inputs queued behind it, which may be
+	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (ear's
+	/// own bug, or an adapter's: a type's throw never leaves callType) does not strand the inputs queued behind it, which may be
 	/// other nodes' (a stop whose allGone would then never run): they are handled first, and the first exception is
 	/// rethrown once the queue is empty, with the place it was thrown from. The node it was thrown out of is left as the
 	/// throw left it.
@@ -1928,7 +2058,7 @@ struct NodeHost::Impl {
 
 	/// The turn's flush: the queued changes as a snapshot, destroys first; each item names itself in
 	/// MainLoopActivity while it runs, and the inputs it caused (an adapter's event told inside it) are handled once it
-	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (a type bug)
+	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (ear's bug)
 	/// strands nothing: the flush ends, then the first exception is rethrown, with the place it was thrown from.
 	void runFlush() {
 		flushPosted = false; // a later change posts a flush of its own, even past the throw below

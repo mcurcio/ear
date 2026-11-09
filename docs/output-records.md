@@ -108,7 +108,7 @@ write's failure as ear exits, which reaches nowhere else.
 ### `log`
 
 Free text from a source: `stdout` and `stderr` (captured, below), `pipewire` (with its `topic`),
-`alsa-lib`, `ear` (a hook that threw during a teardown), or a type's name (`sendspin`'s boot report
+`alsa-lib`, `ear` (a type's hook or consumer that threw during a teardown), or a type's name (`sendspin`'s boot report
 of key files it could not narrow). `level` is `debug`, `info`, `warn` or `error`; captured `stderr`
 is `warn`, `stdout` `info`. A line longer than its bound (4096 bytes) is cut and marked `cut`.
 

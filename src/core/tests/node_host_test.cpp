@@ -48,9 +48,16 @@ struct TestAudioCode final : AudioCode {
 	void release() noexcept override { log.push_back("release"); }
 };
 
+/// A handoff's consumer that counts what reaches it, and throws in consume when told to, as one with a bug.
 struct TestConsumer final : HandoffConsumer {
-	void consume(std::span<const float>, std::uint32_t) override {}
-	void finish() override {}
+	bool throwInConsume = false;
+	int consumed = 0;
+	int finished = 0;
+	void consume(std::span<const float>, std::uint32_t) override {
+		++consumed;
+		if (throwInConsume) throw std::runtime_error("disk full");
+	}
+	void finish() override { ++finished; }
 };
 
 /// A run object with no threads: it closes at once.
@@ -263,11 +270,13 @@ struct TestBlocks final : PortBlockFactory {
 	Held held;
 	std::vector<std::string> activities; // MainLoopActivity::current() inside each make
 	bool throwInMake = false;            // make() throws, as a factory with a bug
+	bool breakRuleInMake = false;        // make() throws std::logic_error, as ear's own broken rule
 	std::vector<TestBlock*> made;        // every block made, in make order (a destroyed one dangles: unused)
 	TestBlocks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		if (throwInMake) throw std::runtime_error("no memory for " + node);
+		if (breakRuleInMake) throw std::logic_error("a block made twice for " + node);
 		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		activities.push_back(MainLoopActivity::current());
 		events.push_back(&e);
@@ -314,9 +323,11 @@ struct TestHandoff final : Handoff {
 struct TestHandoffs final : HandoffAdapter {
 	Log& log;
 	std::vector<std::move_only_function<void(std::uint64_t)>> pendingCloses;
+	std::vector<HandoffConsumer*> consumers; // what each handoff made calls, in make order, as its thread would
 	explicit TestHandoffs(Log& l) : log(l) {}
 	std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels, std::uint32_t,
-	                              HandoffConsumer&) override {
+	                              HandoffConsumer& consumer) override {
+		consumers.push_back(&consumer);
 		log.push_back("handoff " + node + " " + std::to_string(channels) + " channels");
 		return std::make_unique<TestHandoff>(log, pendingCloses);
 	}
@@ -329,18 +340,28 @@ struct TestHandoffs final : HandoffAdapter {
 	}
 };
 
-/// A sink's consumer that logs its calls; one given an InsidesEvents says lost in begin, as a WAV it cannot open.
+/// A sink's consumer that logs its calls; one given an InsidesEvents says lost in begin, as a WAV it cannot open; one
+/// given a call's name throws in that call, as one with a bug.
 struct TestSinkConsumer final : SinkConsumer {
 	Log& log;
 	InsidesEvents* loseInBegin = nullptr;
-	explicit TestSinkConsumer(Log& l, InsidesEvents* lose = nullptr) : log(l), loseInBegin(lose) {}
+	std::string throwIn;
+	explicit TestSinkConsumer(Log& l, InsidesEvents* lose = nullptr, std::string t = {})
+		: log(l), loseInBegin(lose), throwIn(std::move(t)) {}
 	~TestSinkConsumer() override { log.push_back("consumer destroyed"); }
 	void begin() override {
 		log.push_back("consumer begin");
 		if (loseInBegin != nullptr) loseInBegin->lost("cannot open take.wav");
+		if (throwIn == "begin") throw std::runtime_error("no such folder");
 	}
-	void consume(const Chunk& chunk) override { log.push_back("consume " + std::to_string(chunk.frames)); }
-	void finish() override { log.push_back("consumer finish"); }
+	void consume(const Chunk& chunk) override {
+		log.push_back("consume " + std::to_string(chunk.frames));
+		if (throwIn == "consume") throw std::runtime_error("disk full");
+	}
+	void finish() override {
+		log.push_back("consumer finish");
+		if (throwIn == "finish") throw std::runtime_error("cannot write the header");
+	}
 };
 
 /// Sinks as docs/engine.md#sinks has them, on the test's thread: begin runs the consumer's begin and posts `begun`
@@ -376,6 +397,17 @@ struct TestSink final : Sink, SinkTap {
 		log.push_back("sink " + name + " close");
 		closed = std::move(c);
 		if (!holdClose) runClose();
+	}
+	/// The sink's thread hands its consumer one chunk of `frames` silent frames.
+	void feed(std::uint32_t frames) {
+		const std::vector<float> interleaved(static_cast<std::size_t>(frames) * 2, 0.0F);
+		consumer->consume(Chunk{.interleaved = interleaved,
+		                        .frames = frames,
+		                        .position = 0,
+		                        .startNs = 0,
+		                        .startRawNs = 0,
+		                        .upstreamFrames = 0,
+		                        .discontinuity = false});
 	}
 	void runClose() {
 		if (began) consumer->finish();
@@ -4184,19 +4216,30 @@ TEST_CASE("use with no code and failed with no detail are refused with rule text
 }
 
 namespace {
-/// A legacy config whose start fails engine-refused, or whose recipe throws, or whose run object's close throws.
+/// A legacy config whose start fails engine-refused, or whose recipe throws, or whose recipe breaks a rule and catches
+/// it (a start context kept past its start), or whose run object's close throws.
 struct LegacyFaults final : NodeConfig {
-	enum class Fault { engine, recipe, close } fault;
+	enum class Fault { engine, recipe, recipeRule, close } fault;
 	Log& log;
 	Ports ports_ = testPorts();
+	mutable TestConsumer consumer;
 	LegacyFaults(Fault f, Log& l) : fault(f), log(l) {}
 	const Ports& ports() const override { return ports_; }
 	struct ThrowingClose final : RunObject {
 		void close(std::move_only_function<void()>) override { throw std::runtime_error("cannot join"); }
 	};
-	StartResult start(StartContext&) const override {
+	StartResult start(StartContext& context) const override {
 		if (fault == Fault::engine)
 			return std::unexpected(FailureReason{FailureReason::Code::engineRefused, "no such device"});
+		if (fault == Fault::recipeRule)
+			return StartResult{std::make_unique<TestAudioCode>(log),
+			                   [this, &context](Ready&) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+								   try {
+									   context.acquire(HandoffRequest{"record", 64, &consumer});
+								   } catch (const std::logic_error&) { // caught: the rule is still broken
+								   }
+								   return std::make_unique<TestRun>(log);
+							   }};
 		if (fault == Fault::recipe)
 			return StartResult{std::make_unique<TestAudioCode>(log),
 			                   [](Ready&) -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
@@ -4223,6 +4266,15 @@ TEST_CASE("A legacy start's engine refusal keeps its fact, and a recipe or close
 		Fixture f;
 		f.add("old", std::make_shared<LegacyFaults>(LegacyFaults::Fault::recipe, f.log)); // never thrown out
 		CHECK(failureOf(f, "old") == "start-failed: recipe threw: no thread");
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("a recipe that breaks a rule and catches it") {
+		Fixture f;
+		f.add("old", std::make_shared<LegacyFaults>(LegacyFaults::Fault::recipeRule, f.log));
+		CHECK(failureOf(f, "old") == "start-failed: recipe threw: acquire outside configure");
+		CHECK(countOf(f.log, "drive code") == 0);
 		f.stopAll();
 		f.settle();
 		CHECK(f.allGone == 1);
@@ -5002,6 +5054,187 @@ TEST_CASE("A late deadline whose companion never became ready still fails the no
 	CHECK(failureOf(f, "fpp").empty());
 	f.settle();
 	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A type's throw is a fact about its node (docs/writing-a-node-type.md#rules-the-framework-enforces): every call into a
+// type's code goes through one catch, on the main loop (callType) or on a consumer's own thread, so the node fails with
+// what threw and the rest of the graph runs on; what ear itself throws still leaves NodeHost for the callback boundary.
+
+namespace {
+
+/// A code whose prepare throws while `failing` says so, as one that cannot allocate its buffers.
+struct PrepareFails final : AudioCode {
+	Log& log;
+	const bool& failing;
+	PrepareFails(Log& l, const bool& f) : log(l), failing(f) {}
+	void prepare(const AudioFormat&) override {
+		log.push_back("prepare");
+		if (failing) throw std::runtime_error("no buffers");
+	}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {}
+	void release() noexcept override { log.push_back("release"); }
+};
+
+/// configure on the probe: a sink on "pb" whose consumer throws in `call`, and a code.
+std::function<Configured(InstanceContexts&)> withThrowingSink(Log& log, std::string call) {
+	return [&log, call = std::move(call)](InstanceContexts& cx) {
+		cx.create.sink("pb", SinkShape{.frames = 1024})
+			.consumedBy(std::make_unique<TestSinkConsumer>(log, nullptr, call));
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+}
+
+} // namespace
+
+TEST_CASE("A code whose prepare throws fails its node, is never run, and the rest of the graph runs on",
+          "[node_host][type-throw]") {
+	Fixture f;
+	addRunning(f, "ok", std::make_shared<ProbeConfig>(f.log));
+	bool failing = true;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) {
+		cx.create.soundCard("pb", motuOut.shape); // ready only after the block: the drive comes in prepare's batch
+		cx.create.use(std::make_unique<PrepareFails>(f.log, failing));
+		return Configured::applied();
+	};
+	SECTION("its first prepare: start-failed, and the drive of its batch runs no code") {
+		f.log.clear();
+		f.add("bad", config);
+		f.blocks.events.at(1)->ready();
+		f.endTurn();
+		f.cards.events.at(0)->ready();
+		f.settle(); // nothing thrown out of NodeHost
+		CHECK(failureOf(f, "bad") == "start-failed: prepare threw: no buffers");
+		CHECK_FALSE(MainLoopActivity::takeThrown()); // caught where it was thrown, so no place left for the boundary
+		CHECK(countOf(f.log, "prepare") == 1);
+		CHECK(countOf(f.log, "drive nothing") >= 1);
+		CHECK(countOf(f.log, "drive code") == 0);
+		CHECK(countOf(f.log, "start()") == 0);
+		CHECK(countOf(f.log, "release") == 0); // never prepared, never released
+		CHECK(countOf(f.log, "instance destroyed") == 1);
+	}
+	SECTION("its prepare after a stop: lost, since it had rested") {
+		failing = false;
+		addRunning(f, "bad", config);
+		failing = true;
+		f.log.clear();
+		REQUIRE(f.host.stop("bad"));
+		f.settle();
+		CHECK(failureOf(f, "bad") == "lost: prepare threw: no buffers");
+		CHECK(indexOf(f.log, "release") < indexOf(f.log, "prepare"));
+		CHECK(countOf(f.log, "release") == 1); // the code whose prepare threw is not released again
+		CHECK(countOf(f.log, "instance destroyed") == 1);
+	}
+	CHECK(failureOf(f, "ok").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A sink's consumer that throws fails its node with what it threw, never its sink's thread, and the rest of "
+          "the graph runs on",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	addRunning(f, "ok", std::make_shared<ProbeConfig>(f.log));
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	SECTION("in begin: start-failed before the node is configured, and nothing more is called") {
+		config->onConfigure = withThrowingSink(f.log, "begin");
+		f.log.clear();
+		f.add("rec", config); // the fake sink's thread begins its consumer at once, inside this call
+		f.blocks.events.at(1)->ready();
+		f.settle();
+		CHECK(failureOf(f, "rec") == "start-failed: the sink pb's consumer threw in begin: no such folder");
+		CHECK(countOf(f.log, "drive code") == 0);
+		CHECK(countOf(f.log, "sink rec.pb close") == 1);
+		CHECK(countOf(f.log, "consumer finish") == 0); // its begin never returned: nothing to finish
+		CHECK(logs.entries.empty());
+	}
+	SECTION("in consume: lost once running, no further chunk handed to it, and finished at the teardown") {
+		config->onConfigure = withThrowingSink(f.log, "consume");
+		addRunning(f, "rec", config);
+		f.log.clear();
+		f.sinks.made.at(0)->feed(64);
+		f.sinks.made.at(0)->feed(64); // the sink's thread goes on; the consumer is not called again
+		f.settle();
+		CHECK(failureOf(f, "rec") == "lost: the sink pb's consumer threw in consume: disk full");
+		CHECK(countOf(f.log, "consume 64") == 1);
+		CHECK(indexOf(f.log, "sink rec.pb close") < indexOf(f.log, "consumer finish"));
+		CHECK(countOf(f.log, "consumer finish") == 1);
+		CHECK(logs.entries.empty());
+	}
+	SECTION("in finish, at the teardown: a log record, and the teardown goes on") {
+		config->onConfigure = withThrowingSink(f.log, "finish");
+		addRunning(f, "rec", config);
+		f.host.nodeRemoved("rec");
+		f.settle();
+		CHECK(countOf(f.log, "node rec gone dropped=0") == 1);
+		REQUIRE(logs.entries.size() == 1);
+		CHECK(logs.entries[0].level == LogLevel::error);
+		CHECK(logs.entries[0].source == "ear");
+		CHECK(logs.entries[0].text == "the sink pb's consumer threw in finish: cannot write the header");
+		CHECK(logs.entries[0].node == NodeName("rec"));
+	}
+	CHECK(failureOf(f, "ok").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A legacy handoff's consumer that throws fails its node, and is still finished once at the teardown",
+          "[node_host][legacy][type-throw]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	config->handoffs = 1;
+	addRunning(f, "old", config);
+	REQUIRE(f.handoffs.consumers.size() == 1);
+	config->consumer.throwInConsume = true;
+	const std::vector<float> frames(8, 0.0F);
+	f.handoffs.consumers[0]->consume(frames, 4);
+	f.handoffs.consumers[0]->consume(frames, 4); // not handed on
+	f.settle();
+	CHECK(countOf(f.log, "handoff close") == 1); // torn down
+	CHECK(config->consumer.consumed == 1);
+	f.handoffs.consumers[0]->finish(); // the handoff's thread, closing
+	f.handoffs.finishOne(0);
+	f.settle();
+	CHECK(failureOf(f, "old") == "lost: the handoff record's consumer threw in consume: disk full");
+	CHECK(config->consumer.finished == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A type's std::logic_error is a fact about its node, while ear's own still leaves NodeHost for the callback "
+          "boundary, with where it was thrown",
+          "[node_host][type-throw]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onStart = [] { throw std::logic_error("bad state"); };
+	f.add("probe", config);
+	f.blocks.events.at(0)->ready();
+	f.settle(); // nothing thrown out of NodeHost
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: bad state");
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+
+	f.blocks.breakRuleInMake = true;
+	f.addInTurn("amp", std::make_shared<ProbeConfig>(f.log));
+	CHECK_THROWS_AS(f.endTurn(), std::logic_error);
+	const auto thrownAt = MainLoopActivity::takeThrown();
+	REQUIRE(thrownAt);
+	CHECK(MainLoopActivity::describe(*thrownAt) == "make block amp");
+	CHECK(failureOf(f, "amp") == "engine-refused: making the port block threw: a block made twice for amp");
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: bad state");
+	f.blocks.breakRuleInMake = false;
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

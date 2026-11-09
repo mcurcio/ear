@@ -167,7 +167,7 @@ enum class Fact {
 	consumerNeverBegan, // a sink's consumer did not begin within its readiness deadline
 	recipeFailed,       // a legacy recipe failed
 	nodeLost,           // lost(detail) from the node's handle
-	hookThrew,          // configure, start() or stop() threw
+	hookThrew,          // a type's code threw: a hook, its code's prepare, or a consumer
 };
 FailureCode failureCodeFor(Fact fact, bool rested) noexcept;
 

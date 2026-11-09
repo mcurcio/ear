@@ -223,7 +223,11 @@ cx.use(passThrough({bankPair(record, writer)}));
   which fails the node `start-failed`; one that has not returned within 5 s of configure's return
   fails it `start-failed: the sink <bank>'s consumer did not begin within 5 s`,
   [engine.md](engine.md#readiness-deadlines)); `consume(const Chunk&)` for each chunk in order;
-  `finish()` once at the teardown, after the last chunk. None may throw. Each may block on I/O.
+  `finish()` once at the teardown, after the last chunk. Each may block on I/O. A call that throws
+  is a bug the framework catches on the sink's thread, a fact about the node as a hook's throw is
+  ([below](#rules-the-framework-enforces)): after a `begin()` that threw nothing more is called,
+  after a `consume` that threw no further chunk is handed over, and `finish()` still follows a
+  `begin()` that returned.
 - A sink takes exactly the cycles its code drove: a stop's silence ends them, a start begins them
   again; a stop closes nothing. A gap shows only in `Chunk::position`; `discontinuity` is set on the
   first chunk after any drive.
@@ -354,6 +358,18 @@ when the type catches the throw; none takes ear down:
 | `configure` throws | `configure threw: <what>` |
 | `start()` throws | `start threw: <what>` (then `start-failed`, or `lost` once rested) |
 | `stop()` throws during a stop | `stop threw: <what>`; during another teardown it is a `log` record |
+| The code's `prepare` throws | `prepare threw: <what>` (`start-failed`, or `lost` once rested); the code is never run or released |
+| A sink's consumer throws | `the sink <bank>'s consumer threw in <begin\|consume>: <what>` (`start-failed`, or `lost` once rested); in `finish()`, or once the teardown began, a `log` record |
+| A legacy recipe, or a legacy handoff's consumer, throws | `recipe threw: <what>` (`start-failed`); `the handoff <bank>'s consumer threw in consume: <what>`; a run object's `close` that throws is a `log` record |
+
+**One catch.** Every call the framework makes into a type's code goes through one catch: the hooks,
+the code's `prepare` and a legacy recipe and close on the main loop (each named in the main loop's
+activity while it runs, so a stall inside one is placed), and a sink's or legacy handoff's consumer
+on that one's own thread. So nothing a type throws reaches PipeWire's callbacks
+([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs fails it
+first, even when the type caught the throw. A type's own `std::logic_error` is its bug like any
+other throw. A code's `release` and `process`, and every destructor, are `noexcept`: a throw there
+is `std::terminate`.
 
 **Timing.** Each hook is timed; one that runs past 20 ms on the main loop is `ear.hook-slow` (once
 per node and hook). Hooks never block: they acquire, construct and post.

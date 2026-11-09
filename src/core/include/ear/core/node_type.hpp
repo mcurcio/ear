@@ -129,7 +129,8 @@ public:
 protected:
 	~RtWriter() = default;
 };
-/// Ordinary-thread end of a handoff, implemented by the node type.
+/// Ordinary-thread end of a handoff, implemented by the node type. A call that throws is caught on the handoff's
+/// thread: it fails the node, and no more consume follows (docs/writing-a-node-type.md#sinks says the same of a sink).
 class HandoffConsumer {
 public:
 	virtual ~HandoffConsumer() = default;

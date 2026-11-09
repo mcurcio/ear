@@ -2,9 +2,11 @@
 
 Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R2 built (the block and the
 harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R4a built (section 4.5 says what
-changed from 4.3), R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built
-(`ear_pipewire_tests` audited, section 5.5) and R6 built (the property table: `docs/engine.md#properties-ear-sets`,
-section 6.5 says what changed from 6.3); the rest designed, not built. Its steps are taken between slice 3b.4 and
+changed from 4.3), R4c built (a type's throw is its node's fact,
+`docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R5a built (its tools and guard:
+`docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section 5.5) and R6 built (the
+property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3); the rest designed, not
+built. Its steps are taken between slice 3b.4 and
 slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
@@ -346,8 +348,9 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
   into the crash's last words, then `std::terminate()` (the handler `main.cpp:216` installs). The guard lands with it.
 - **R4b**: the owner's answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
   `FaultOwner`s, routed to their node's `lost`.
-- **R4c** (behaviour-free but for the consumer): NodeHost's type calls go through `callType`; `ThreadSink` calls the
-  consumer through it and reports a fault as the sink's loss.
+- **R4c** (behaviour-free but for the consumer; **built**, as
+  `docs/writing-a-node-type.md#rules-the-framework-enforces` describes, with the changes in 4.6): NodeHost's type
+  calls go through `callType`; `ThreadSink` calls the consumer through it and reports a fault as the sink's loss.
 
 R4a follows 3b.4, since it edits `port_blocks.cpp`, `sound_cards.cpp` and `engine.cpp`; it must land before 3c, whose
 loops and I/O executor would otherwise add callbacks outside it.
@@ -400,6 +403,58 @@ What 4.3 declared that could not work as declared, and the least change made (th
   `pw_work_queue_add`, `spa_hook_list_append`, `pw_stream_new_simple`, `pw_filter_new_simple`, `SPA_INTERFACE_INIT`,
   `SPA_CALLBACKS_INIT`, `spa_callbacks`, any `spa_*_methods` or `pw_*_methods` table, `pw_log_set`,
   `snd_lib_error_set_handler`, and a listener whose parenthesis is on the next line.
+
+### 4.6 Found building R4c
+
+What 4.2 and 4.3 declared for the type boundary that could not work as declared, or left open, and the least change
+made (the built rule is `docs/writing-a-node-type.md#rules-the-framework-enforces`, its place beside the engine
+boundary `docs/architecture.md#the-callback-boundary`):
+
+- **The sites.** NodeHost calls a type's code at eleven places, each now through the one catch: on the main loop
+  (`callType`) the instance's making and its `configure` (one hook, timed together), `start()`, `stop()`, the code's
+  `prepare`, a legacy recipe and a legacy run object's `close`; on a consumer's own thread (`ConsumerCalls`) a sink's
+  consumer's `begin`, `consume` and `finish`, and a legacy handoff's consumer's `consume` and `finish`. Two were missed
+  by 4.2: the code's `prepare` had no catch at all (its throw reached the boundary and ended the process), and the
+  legacy handoff's consumer runs on its handoff's thread as a sink's does. A legacy recipe that broke a rule and caught
+  it ran on; it now fails as `configure` does. Not routed, each for its reason: a code's `release` and `process` are
+  `noexcept` by signature (checked at compile time); destructors (the instance, the code, a consumer, a run object) are
+  `noexcept`, so a throw there is the language's `std::terminate`; and a type's `ports` and `check` run at parse, in the
+  desired graph, outside NodeHost (a throw there leaves `NodeType::parse`'s caller: a step of its own if wanted).
+- **A `prepare` that throws in the batch that drives.** The machine answers every resource ready with the prepare and,
+  the block being ready, the drive in one batch, so a fault told after the batch finds the drive in flight. The drive of
+  an unprepared code carries no code (`DriveRequest{nullptr}`, a barrier like a silence); the fault, heard once the batch
+  was carried out (as `start()`'s is), asks the teardown, which waits for that drive's completion and silences a block
+  that ran nothing of the code. No state is added to the machines.
+- **One function cannot serve both threads.** 4.2's `callType` records a broken rule, times the hook on the main loop's
+  clock and names the main loop's activity, all main-thread state, and the consumer runs on its sink's thread. So the
+  catch is split: `caughtFrom` (any thread: runs the code, says what threw) under both `callType` (the main loop: the
+  activity, the rule, the timing) and `ConsumerCalls` (a consumer's thread), which tells the fault through the
+  configuration's `Channel` (`threw`), the FIFO the consumer's `lost()` and its sink's `begun` use, so a `begin` that
+  threw lands before its `begun`, and nothing of an old configuration lands on a new one. Told once the teardown began
+  (a `finish`, a chunk drained at the close) it is a `log` record, as a `stop()` that throws then is.
+- **`ThreadSink` is unchanged.** 4.4 had `ThreadSink` call the consumer through `callType` and report a fault as the
+  sink's loss: `ear_pipewire` would have had to see a type fault, and every sink adapter (the harness's fake among them)
+  would have had to repeat it. Instead NodeHost hands each sink, and each legacy handoff, the type's consumer inside a
+  core-owned wrapper (`GuardedSinkConsumer`, `GuardedHandoffConsumer`), so every adapter calls through the catch
+  without knowing it, and a throw of the sink's or handoff's own code still reaches the engine boundary as ear's bug.
+  After a `begin` that threw nothing more is called; after a `consume` that threw no further chunk is handed over, and
+  `finish` still pairs with the `begin` that returned.
+- **`TypeFault` is `{detail, what}`.** `rule` is dropped: nothing reads it, since a broken rule and a throw fail alike
+  and are worded alike (`<hook> threw: <what>`, the rule first); `what` is kept for the `log` records' own wording
+  (`stop() threw: <what>`).
+- **A framework bug and a type's throw (left open by 4.3).** 4.3 tells a broken rule from a type's own throw but not
+  ear's own failure inside a context call the type made (an adapter's throw inside `cx.sink`). Chosen: by where it is
+  caught, not by its class. Inside `callType` everything is the node's fact, as it was for `configure`, `start()` and
+  `stop()` before: the throw unwinds through the type's frames, which may catch it, and what a context call's adapter
+  made belongs to that configuration alone, so failing the node is what the owner's answer (section 9, C) gives an
+  adapter's fault too. Outside it, any throw of NodeHost's own or of an adapter called from NodeHost's own code (a
+  wiring `std::logic_error`, a factory's throw in the flush) still leaves NodeHost with its place for the boundary, as
+  R4a built; R4b's split by owner begins there and is no harder for this step. A type's own `std::logic_error` is its
+  throw like any other.
+- **What an operator sees.** A code whose `prepare` throws, and a sink's consumer that throws in `begin` or `consume`,
+  ended the process; each now fails only its node (`start-failed`, or `lost` once rested) with what threw, and a
+  `finish` that throws is a `log` record. No record kind is added and the wire is unchanged: section 9 adds
+  `ear.internal-error` only with R4b.
 
 ## 5. Class 3: tests that depend on the host
 
@@ -716,7 +771,7 @@ makes stale.
 | **R6** | The property table and its four checks; `docs/engine.md`'s table | After 3b.4 | None, unless the live check finds a drift |
 | **R4a** | The callback boundary, behaviour-free; its guard (built, 4.5) | After 3b.4 | None |
 | **R4b** | The owner's answer on faults | After R4a and the answer | Section 9 |
-| **R4c** | NodeHost's type calls through `callType`; a sink consumer's throw as a fact | After R4a | Section 9 |
+| **R4c** | NodeHost's type calls through `callType`; a sink consumer's throw as a fact (built, 4.6) | After R4a | Section 9 |
 | **R5b-d** | The audit, by executable (5.3) | After R5a | None |
 | **R7** | `cutChunk`; the harness's ring size and companion bank; conformance tests | After R3 | None |
 
