@@ -1306,7 +1306,7 @@ struct NodeHost::Impl {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
 			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play;
-			// and an RTP receiver's buffer, which PipeWire's receiver reports none of (docs/engine.md#rtp-receivers).
+			// and an RTP receiver's buffer, which its ports report as zero (docs/engine.md#latency-per-bank-pair).
 			std::vector<std::pair<std::string, Latency>> beyond;
 			for (const SourceSlot& slot : c.sources)
 				beyond.emplace_back(slot.bank, Latency{0, slot.source->writer().capacityFrames()});

@@ -272,9 +272,12 @@ The block's rule, from its configuration's latency plan (given before the code d
 its teardown):
 
 - What lies **beyond** a bank is its ports' peers combined (only ports whose peers reported one),
-  plus the plan's `beyond` entry for the bank as one more peer: what a companion adds beyond an
-  inside bank, such as a receiver's buffer or a source's ring (`[0, capacity]`), which no engine
-  node reports. A bank with neither comes to zero.
+  plus the plan's `beyond` entry for the bank **added in series** (to the least and to the most):
+  what a companion adds beyond an inside bank, such as a receiver's buffer or a source's ring
+  (`[0, capacity]`), which no engine node reports. *Why in series:* the buffer lies behind the
+  companion's own ports, and rtp-source's output ports report a latency of zero once linked;
+  combined as one more peer (least of the leasts) every path would read a least of zero. A bank with
+  neither comes to zero.
 - Each output bank's **downstream** latency is what lies beyond it, published to the realtime side
   as `GraphCycle::downstream`.
 - An output bank tells upstream (**capture**) latency: what lies beyond the input banks paired with
@@ -288,8 +291,8 @@ its teardown):
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. An RTP receiver's
-`latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's stream reports none), which the
-framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its own with
+`latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's ports report zero, not the buffer),
+which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its own with
 `declareLatency`: `sendspin` its feed on `from`. Frames are at the graph frequency. ALSA's
 playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames
 on the test card at a 256 quantum.

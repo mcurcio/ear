@@ -907,8 +907,8 @@ private:
 
 } // namespace
 
-TEST_CASE("A companion's latency beyond an inside bank is one more peer of that bank: told on the paired output to "
-          "the next block, and downstream of an inside output to its code and to what feeds the paired input",
+TEST_CASE("A companion's latency beyond an inside bank is added in series to that bank's peers: told on the paired "
+          "output to the next block, and downstream of an inside output to its code and to what feeds the paired input",
           "[port_blocks][latency]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -958,8 +958,10 @@ TEST_CASE("A companion's latency beyond an inside bank is one more peer of that 
 	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{256, 256}; }));
 	// A plan without it carries nothing.
 	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {}});
+	// Each probe sees it at its own next cycle after the retell; feed runs first in a cycle (it feeds card), so feed's
+	// sighting wakes the waiter before card's code has run that cycle: wait for card's too.
 	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{}; }));
-	CHECK(cardProbe.downstream(0) == Latency{});
+	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{}; }));
 
 	REQUIRE(ear::testing::driveNow(*rx, nullptr));
 	REQUIRE(ear::testing::driveNow(*rec, nullptr));

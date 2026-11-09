@@ -80,7 +80,7 @@ adapter in `ear_pipewire`.
 | Kind | Family | Joins | Name | Realtime side | Non-realtime side | Ring | Drops | Latency it adds beyond its bank | Asked by |
 |---|---|---|---|---|---|---|---|---|---|
 | Sound card playback, capture | engine | an inside output (playback) or input (capture) bank | `<node>.playback`, `<node>.capture` (its engine node) | PipeWire's ALSA adapter | the card | the card's buffer | the card's | what the adapter reports | `cx.soundCard(bank, SoundCardShape{card})` |
-| RTP receiver | engine | an inside input bank | `<node>.rtp` (its engine node) | `libpipewire-module-rtp-source` | the network | rtp-source's | rtp-source's | `latencyMs` (rtp-source reports none) | `cx.rtpReceiver(bank, RtpReceiverShape{...})` |
+| RTP receiver | engine | an inside input bank | `<node>.rtp` (its engine node) | `libpipewire-module-rtp-source` | the network | rtp-source's | rtp-source's | `latencyMs` (rtp-source's ports report zero) | `cx.rtpReceiver(bank, RtpReceiverShape{...})` |
 | Sink | ring | an inside output bank | `<node>.<bank>` (its thread's) | the block, after the code: copies the bank into its ring with the cycle's stamp | a `SinkConsumer` on the sink's own thread, which may block on I/O | frames the type gives (`file`: 2 s) | a full ring drops frames and counts them (the node's `dropped=`) | none | `cx.sink(bank, SinkShape{frames}).consumedBy(...)` (unchanged from 3a) |
 | Source | ring | an inside input bank | `<node>.<bank>` | the block, before the code: plays its ring into the bank, zeros when empty | a `SourceWriter` held by a loop's state or a library's thread; it may wait for room | frames the type gives | an empty ring plays zeros and counts the frames short (`shortfall`) | `[0, capacity]` | `cx.source(bank, SourceShape{frames})` |
 
@@ -258,8 +258,8 @@ stays a sum.
   This turns `docs/node-types.md#rtp`'s "a port another program holds leaves the node configuring for good" into a
   failure after 5 s (a better reason for a held port comes with 3c's UDP claim and probe).
 - **Latency.** A companion's latency beyond its bank enters the configuration's latency plan as `LatencyPlan::beyond`,
-  combined with what the bank's ports' peers report as if one more peer reported it: an RTP receiver's `latencyMs`, a
-  source's `[0, capacity]`. A card reports its own through its links, as built. The block's pass-through carries each to
+  added in series beyond what the bank's ports' peers report: an RTP receiver's `latencyMs`, a source's
+  `[0, capacity]`. A card reports its own through its links, as built. The block's pass-through carries each to
   the public bank. `cx.declareLatency` is left for a type's own code (a delay line); `rtp`'s call goes.
 
 ### 3.6 The quantum guard
@@ -551,8 +551,14 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
   receiver configs are classes: a `TestConfig` with cards or receivers makes an instance whose `configure` runs the
   same start (its handoffs, failure and code) and then asks for the companions through `CreateContext`.
 - An RTP receiver's `beyond` is `latencyMs * rate / 1000` frames, both bounds, at the drive (as `rtp` declared it on
-  `stream`): rtp-source's ports report no latency, so the plan's sum moves from `stream` to `from_rtp` and the
-  value told on `stream` is the same.
+  `stream`).
+- After review: `beyond` is **added in series** beyond the bank's peers, not combined with them as one more peer
+  (D-3b6 and 3.5 reworded). rtp-source's output ports do report a latency, of zero (`PIPEWIRE_DEBUG=4`: "set output
+  latency 0-0"), so as a parallel peer the receiver's buffer read `{0, B}` on `stream` once it was linked (the
+  least of the leasts), where `rtp`'s 3a declaration told `{B, B}`. `port_blocks.cpp`'s `combined()` now finishes
+  the peers' combination and then adds the entry's least and most; the harness has no peers, so its model is
+  unchanged. A source's bank has no peers, so a source's `[0, capacity]` is told as before. A real receiver's test
+  (`rtp_receiver_test.cpp`) reads the told capture latency on `stream` from the engine.
 - The flush's activity names follow the vocabulary: `make engine companion`, `destroy engine companion` (were
   `... outside node`), the one text an operator can see change (`ear.main-loop-stalled`'s `in`, while a flush item
   runs).
@@ -583,7 +589,7 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
 | Old | New |
 |---|---|
 | `struct DriveRequest { AudioCode* code; std::span<const bool> faded; std::span<const SinkBinding> sinks{}; };` | adds `std::span<const SourceBinding> sources{};` [3b.2]: bound in the invoke that applies the request, with the code and the sinks; each cycle the code runs the block plays each into its bank before the code; unbound by the next request's invoke (a silence binds none). Outlives the completion or the block |
-| `struct LatencyPlan { std::vector<BankPair> pairs; std::vector<std::pair<std::string, Latency>> internal; };` | adds `std::vector<std::pair<std::string, Latency>> beyond;` [3b.1]: what a companion adds beyond an inside bank, combined with the bank's peers as one more peer; at most once per bank |
+| `struct LatencyPlan { std::vector<BankPair> pairs; std::vector<std::pair<std::string, Latency>> internal; };` | adds `std::vector<std::pair<std::string, Latency>> beyond;` [3b.1]: what a companion adds beyond an inside bank, added in series beyond the bank's peers (3b.3's review); at most once per bank |
 | `PortBlock` | unchanged; its `drive` comment names sources beside sinks [3b.2] |
 | `class OutsideNode`, `OutsideNodeEvents`, `struct OutsideTarget`, `template <typename Request> class OutsideAdapter`, `SoundCardAdapter`, `RtpReceiverAdapter` | removed: `companions.hpp`'s [3b.3] |
 | `ResourceRegistry(SoundCardAdapter&, RtpReceiverAdapter&, HandoffAdapter&, SinkAdapter&, RecordingAdapter&)` and the four-argument form | `ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs, SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept` and the form without recordings [3b.2 adds `sources`; 3b.3 the engine adapters] |
@@ -861,8 +867,8 @@ makes stale (the rule in `AGENTS.md`).
 - **D-3b4** Every source rule lives in core's pure `SourceRing`; `EventSources` and the harness only wrap it: a type's
   tests and the engine cannot disagree.
 - **D-3b5** `SoundCardShape` has no direction: the bank's is it, checked at compile time; `CardDirection` goes.
-- **D-3b6** A companion's latency enters the plan as `LatencyPlan::beyond`, combined as a peer: one mechanism for the
-  receiver and the source, and `rtp` declares nothing.
+- **D-3b6** A companion's latency enters the plan as `LatencyPlan::beyond`, added in series beyond the bank's peers:
+  one mechanism for the receiver and the source, and `rtp` declares nothing.
 - **D-3b7** A sink whose consumer misses its 5 s fails `start-failed`, not `engine-refused`: `begin` is the type's code.
 - **D-3b8** The outside-node interfaces are renamed engine companions, and their private join with them: one concept,
   one vocabulary, done in one step of its own (3b.3).

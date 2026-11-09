@@ -166,8 +166,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			CompanionKind kind = CompanionKind::rtpReceiver;
 			if constexpr (std::is_same_v<Shape, SoundCardShape>)
 				kind = target.bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
-			harness.companionList.push_back(CompanionFake{
-				kind, harness.bankOf(target.blockPorts), target.engineNode, shape, true, false, false, {}});
+			harness.companionList.push_back(CompanionFake{kind,
+			                                              harness.bankOf(target.bank, target.blockPorts),
+			                                              target.engineNode,
+			                                              shape,
+			                                              true,
+			                                              false,
+			                                              false,
+			                                              {}});
 			harness.engineEvents.push_back(&events);
 			return std::make_unique<FakeEngineCompanion>(harness, harness.companionList.size() - 1);
 		}
@@ -477,16 +483,19 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		lastGain.assign(outputNames.size(), 1.0F);
 		fadeMask.assign(outputNames.size(), false);
 	}
-	/// The bank whose ports an engine companion joins: a CompanionTarget names its ports, not its bank.
-	std::string bankOf(const std::vector<PortName>& blockPorts) const {
-		for (const Ports::Bank& bank : config->ports().banks())
-			if (bank.ports == blockPorts) return bank.name;
-		throw std::logic_error("an engine companion joins ports of no bank of the node");
+	/// The inside bank of `direction` whose ports an engine companion joins: a CompanionTarget names its ports, not its
+	/// bank.
+	std::string bankOf(Direction direction, const std::vector<PortName>& blockPorts) const {
+		if (!blockPorts.empty())
+			for (const Ports::Bank& bank : config->ports().banks())
+				if (bank.reach == PortBank::Reach::inside && bank.direction == direction && bank.ports == blockPorts)
+					return bank.name;
+		throw std::logic_error("an engine companion joins ports of no inside bank of the node");
 	}
 	/// The capture latency the real block would tell on the output bank whose first port is `firstOutput`
 	/// (port_blocks.cpp, docs/engine.md#latency-per-bank-pair), from the plan alone: the harness has no peers, so what
-	/// lies beyond each paired input bank is its `beyond` entry or nothing; the least and the most across the pairs,
-	/// plus what the configuration declared on the bank.
+	/// lies beyond each paired input bank is its `beyond` entry, added in series to its peers' none, or nothing; the
+	/// least and the most across the pairs, plus what the configuration declared on the bank.
 	Latency toldUpstream(std::size_t firstOutput) const {
 		const auto& banks = config->ports().banks();
 		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {

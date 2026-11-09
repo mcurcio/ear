@@ -3945,11 +3945,73 @@ TEST_CASE("A context kept past its configure is refused at the call: from start(
 	f.add("probe", config);
 	REQUIRE(config->kept != nullptr);
 	CHECK_THROWS_WITH(config->kept->openRecording(RecordingRequest{"x.wav"}), "openRecording outside configure");
+	CHECK_THROWS_WITH(config->kept->soundCard("pb", motuOut.shape), "soundCard outside configure");
+	CHECK_THROWS_WITH(config->kept->rtpReceiver("cap", fppStream), "rtpReceiver outside configure");
 	f.blocks.events.at(0)->ready();
 	f.settle();
 	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
+	CHECK(f.cards.events.empty());
+	CHECK(f.receivers.events.empty());
 	f.stopAll();
 	f.settle();
+}
+
+TEST_CASE("One companion per inside bank, whatever the kinds: a card and a sink on one inside output bank, or a source "
+          "and a receiver on one inside input bank, in either order, fail the node start-failed",
+          "[node_host][class]") {
+	using Configure = std::function<Configured(InstanceContexts&)>;
+	Log codes;
+	const auto sink = [&](InstanceContexts& cx) {
+		cx.create.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+	};
+	const auto source = [](InstanceContexts& cx) { static_cast<void>(cx.create.source("cap", SourceShape{64})); };
+	const auto then = [&](InstanceContexts& cx) {
+		cx.create.use(std::make_unique<TestAudioCode>(codes));
+		return Configured::applied();
+	};
+	const std::vector<std::pair<Configure, std::string>> cases{
+		{[&](InstanceContexts& cx) {
+			 cx.create.soundCard("pb", motuOut.shape);
+			 sink(cx);
+			 return then(cx);
+		 },
+	     "pb"},
+		{[&](InstanceContexts& cx) {
+			 sink(cx);
+			 cx.create.soundCard("pb", motuOut.shape);
+			 return then(cx);
+		 },
+	     "pb"},
+		{[&](InstanceContexts& cx) {
+			 source(cx);
+			 cx.create.rtpReceiver("cap", fppStream);
+			 return then(cx);
+		 },
+	     "cap"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.rtpReceiver("cap", fppStream);
+			 source(cx);
+			 return then(cx);
+		 },
+	     "cap"},
+	};
+	for (std::size_t which = 0; which < cases.size(); ++which) {
+		INFO("case " << which);
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = cases[which].first;
+		f.add("probe", config);
+		f.settle();
+		CHECK(failureOf(f, "probe") ==
+		      "start-failed: configure threw: a second companion on bank " + cases[which].second);
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.cards.events.empty());
+		CHECK(f.receivers.events.empty());
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
 }
 
 TEST_CASE("A configure that threw after it opened a recording closes the recording after its instance",

@@ -329,10 +329,11 @@ private:
 		std::size_t count;
 	};
 
-	/// What lies beyond `bank`: its ports' peers combined (an input's upstream, an output's downstream), with what the
-	/// plan says a companion adds beyond it as one more peer (LatencyPlan::beyond). A port with no peer is no path, so
-	/// it is left out (as pw_impl_port_recalc_latency combines only a port's links), and a bank with neither comes to
-	/// zero.
+	/// What lies beyond `bank`: its ports' peers combined (an input's upstream, an output's downstream), plus what the
+	/// plan says a companion adds beyond it, in series (LatencyPlan::beyond): a receiver's buffer lies behind the
+	/// receiver's own ports, which report zero, so it adds to every path rather than being one path of its own. A port
+	/// with no peer is no path, so it is left out (as pw_impl_port_recalc_latency combines only a port's links), and a
+	/// bank with neither comes to zero.
 	spa_latency_info combined(const std::string& bank) const {
 		const Ports::Bank& found = ports_.bank(bank);
 		const bool output = found.direction == Direction::output;
@@ -343,15 +344,13 @@ private:
 		spa_latency_info_combine_start(&info, side);
 		for (std::size_t i = found.first; i < found.first + found.ports.size(); ++i)
 			if (reported[i]) spa_latency_info_combine(&info, &peers[i]);
+		spa_latency_info_combine_finish(&info);
 		for (const auto& [name, latency] : plan_.beyond) {
 			if (name != bank) continue;
-			spa_latency_info companion = noLatency(side);
-			companion.min_rate = static_cast<std::int32_t>(latency.minFrames);
-			companion.max_rate = static_cast<std::int32_t>(latency.maxFrames);
-			spa_latency_info_combine(&info, &companion);
+			info.min_rate += static_cast<std::int32_t>(latency.minFrames);
+			info.max_rate += static_cast<std::int32_t>(latency.maxFrames);
 			break; // at most one per bank
 		}
-		spa_latency_info_combine_finish(&info);
 		return info;
 	}
 

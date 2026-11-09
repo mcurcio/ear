@@ -292,8 +292,8 @@ engine and the harness both run, so a type's tests and the engine never disagree
   its whole patience (a library thread calling in a loop never spins). The writer stays valid
   until the configuration is freed, after the instance, so a thread the instance owns may hold it.
 - **Latency.** The ring's capacity is latency beyond the bank, `Latency{0, capacity}`, in the
-  configuration's plan as one more peer of the bank ([engine.md](engine.md#latency-per-bank-pair)),
-  so the public bank paired with it tells it upstream.
+  configuration's plan, added in series to what the bank's peers report (none, for a source's bank)
+  ([engine.md](engine.md#latency-per-bank-pair)), so the public bank paired with it tells it upstream.
 - One companion per inside bank: a source on a bank that has a receiver or another source is a
   rule broken (`start-failed`), and so is `frames == 0` or a source on any other bank (which does
   not compile).

@@ -196,8 +196,9 @@ paired with it, plus what the run declared on it; an input bank tells downstream
 latency = what lies beyond the output banks paired with it, plus what the run declared. The pairs
 are the pass-through's, so a card block forwards the card's playback latency from `to_card` to
 `play`, and the card's capture latency from `from_card` to `capture`. An RTP receiver's `latencyMs`
-(rtp-source's own stream reports none) is the plan's `beyond` entry on `from_rtp`, which the
-framework adds and `rtp`'s pass-through carries to `stream`. A run declares its own with
+(rtp-source's ports report zero, not the buffer) is the plan's `beyond` entry on `from_rtp`,
+which the block adds in series to its peers' latency (never as one more peer, which would make the
+least zero) and `rtp`'s pass-through carries to `stream`. A run declares its own with
 `StartContext::declareLatency(bank, Latency)`: `sendspin` its feed (0 to its size) on `from`. Frames: a quantum is the block
 size and nanoseconds are at the graph frequency. ALSA's playback node reports one quantum plus its
 headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
