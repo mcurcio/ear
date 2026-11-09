@@ -41,33 +41,55 @@ file. The test `ear_engine_conf_beside_ear` fails if the copy beside the binary 
 ## Properties ear sets
 
 Every PipeWire property ear sets, in `engine.conf` or in code, is one row of
-`src/pipewire/engine_properties.hpp`, and this table is the home of each one's reason. Where says
-which object carries it and which code builds it: `engine.conf` (its `context.properties`),
-`context` (`contextProperties()` in `engine.cpp`, `pw_context_new`'s own properties), `internal
-clock` (`engine.conf`'s `context.objects`), `block` and `block port` (`port_blocks.cpp`), `card`
-(`sound_cards.cpp`), `card seam` (what `AlsaSoundCards`' test seam adds: `clocklessCardProperties()`
-alone), `RTP receiver` (`libpipewire-module-rtp-source`'s arguments, `rtp_receivers.cpp`), `RTP
-stream` (its `stream.props`), `route link` (`links.cpp`) and `companion link`
-(`engine_companions.cpp`). The table is checked four ways:
+`src/pipewire/engine_properties.hpp`, and this table is the home of each one's reason and of what
+it couples to. Where says which object carries it and which code builds it: `engine.conf` (its
+`context.properties`), `context` (`contextProperties()` in `engine.cpp`, `pw_context_new`'s own
+properties), `internal clock` (`engine.conf`'s `context.objects`), `block` and `block port`
+(`port_blocks.cpp`), `card` (`sound_cards.cpp`), `card seam` (what `AlsaSoundCards`' test seam
+adds: `clocklessCardProperties()` alone), `RTP receiver` (`libpipewire-module-rtp-source`'s
+arguments, `rtp_receivers.cpp`), `RTP stream` (its `stream.props`), `route link` (`links.cpp`)
+and `companion link` (`engine_companions.cpp`). The table is checked four ways:
 
-- **At compile time.** Each builder takes its keys from `property(Home, "key")`, which does not
-  compile for a key the table does not list for that home (`ear_engine_properties_compile_fail_*`),
-  and the table's own `static_assert`s refuse a key listed twice, a row [ear never
-  sets](#properties-ear-never-sets), a key in both `engine.conf` and `context` (the file would
-  overwrite `Engine`'s) and a card seam key that a card already sets.
+- **At compile time and in the source.** Each builder takes its keys from `property(Home,
+  "key")`, which does not compile for a key the table does not list for that home, nor for one it
+  forbids there (`ear_engine_properties_compile_fail_*`); the table's own `static_assert`s refuse a
+  key listed twice, a row [ear never sets](#properties-ear-never-sets), a key in both `engine.conf`
+  and `context` (the file would overwrite `Engine`'s) and a card seam key that a card already sets.
+  The property guard (`ear_properties_from_the_table`, `test/pipewire/property_guard.cmake`) refuses
+  a key set any other way under `src/`: a string literal or a `PW_KEY_`/`SPA_KEY_` macro as the key
+  of `pw_properties_new`, `pw_properties_set`, `pw_properties_setf` or `SPA_DICT_ITEM`, a
+  properties string parsed (`pw_properties_new_string`, `pw_properties_update_string`), and a
+  literal string as a module's arguments. A key that is a plain name passes: the card seam's
+  (judged against the table when the seam is made) and a loop over `property()` keys.
 - **Against the live engine.** "Every property ear sets is held by PipeWire as the property table
   says" makes one of every object and reads each row's value as PipeWire holds it on that object,
-  through the context's own objects, so a PipeWire that drops or overrides one fails. "engine.conf
-  sets exactly the property table's engine.conf and internal clock rows, and nothing it forbids"
-  reads the file with PipeWire's own parser.
+  through the context's own objects, so a PipeWire that drops or overrides one fails. Links are
+  found by their nodes' ids, and a port row is the name of the port PipeWire's held id is on that
+  node. The RTP receiver's rows are read from its node (`source.ip` and `source.port` as
+  `rtp.source.ip` and `rtp.source.port`) and from the module's arguments as PipeWire parsed them;
+  `remote.name` and `stream.props` are held only there. The RTP stream's
+  `adapter.auto-port-config` is consumed by the stream's own adapter and never reaches the node:
+  it is read in the arguments, and its effect is checked as the node's exact ports (one
+  `receive_AUX<n>` per channel, no monitor or control port). No object holds a key
+  [ear never sets](#properties-ear-never-sets) on its home, except `node.driver` on a card, which
+  the ALSA node publishes itself. "engine.conf sets exactly the property table's engine.conf and
+  internal clock rows, and nothing it forbids" reads the file with PipeWire's own parser: it holds
+  `context.properties`, `context.spa-libs`, `context.modules` and `context.objects` and no other
+  section (libpipewire reads properties from `filter.properties`, `stream.properties`,
+  `node.rules` and more), and no module is loaded with arguments.
 - **Each coupling pinned.** Every row names the test that pins it ("Pinned by"); "Every row of the
   property table is pinned by a test that exists" fails for a name no test has.
 - **Against this page.** "docs/engine.md lists the property table's rows and forbidden keys, each
-  row's why under a heading that exists" fails when the rows below (where, key, value, couples to,
-  pinned by) and the code's differ, when a why does not link its row's heading, and when the next
-  section's keys and the code's forbidden list differ.
+  row's why under a heading that exists" fails when the rows below (where, key, value, pinned by)
+  and the code's differ, when a why does not link its row's heading, and when the next section's
+  keys and the code's forbidden list differ.
 
-A value in backticks is the value as set; prose says how it is computed.
+A value in backticks is the value as set, exactly; prose says how it is computed.
+
+The table holds properties, not params. What ear sends as a param is out of its scope: a card's
+port configuration (`SPA_PARAM_PortConfig`, [sound cards](#sound-cards)), the counterpart of the
+RTP stream's `adapter.auto-port-config`; a block's latency ([latency](#latency-per-bank-pair));
+and a filter's connect flags.
 
 | Where | Key | Value | Why | Couples to | Pinned by |
 |---|---|---|---|---|---|
@@ -91,17 +113,18 @@ A value in backticks is the value as set; prose says how it is computed.
 | internal clock | `clock.id` | `monotonic-raw` | `CLOCK_MONOTONIC` is slewed by NTP and a timerfd cannot arm `CLOCK_MONOTONIC_RAW`, so the driver tracks raw time with a delay-locked loop ([the internal clock](#the-internal-clock)) | tracking mode on `CLOCK_MONOTONIC_RAW`; `clock.name` `clock.system.monotonic-raw` | "Each cycle carries its start on both clocks, the internal clock as its driver, its rate and the next cycle's start, and only the first is a discontinuity" |
 | internal clock | `resync.ms` | `1000000000` | About 11 days, beyond any stall: a reset steps the position back and slews the graph for tens of seconds ([the internal clock](#the-internal-clock)) | the driver never resets after a stall | "After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and keeps its phase to the raw clock" |
 | block | `node.name` | the node's name | `pw_filter_new`'s name becomes `media.name`; `node.name` would otherwise be the program's ([port blocks](#port-blocks)) | how the registry, the live graph and link-factory name the block | "Live ports name their node, port and direction" |
+| block | `media.name` | the node's name | `pw_filter_new` would set it from its name anyway; set here so every property the block carries is a row ([port blocks](#port-blocks)) | nothing | "Every property ear sets is held by PipeWire as the property table says" |
 | block | `media.type` | `Audio` | A filter's media type, as any audio filter's ([port blocks](#port-blocks)) | nothing | "Every property ear sets is held by PipeWire as the property table says" |
 | block | `node.group` | `ear.graph` | One group, so one driver clocks every block ([the internal clock](#the-internal-clock)) | the internal clock's group, so it drives every block | "Every block is in the ear.graph group and processes on the dummy driver alone" |
 | block | `node.always-process` | `true` | The graph always runs: an unlinked always-processing node is assigned to the first active driver ([port blocks](#port-blocks)) | an unlinked block still runs, on the first active driver | "The engine runs with no daemon, runtime directory or D-Bus, and an unlinked sink block processes zeros" |
 | block port | `format.dsp` | `32 bit float mono audio` | Every port is one 32-bit float mono channel ([port blocks](#port-blocks)) | a DSP port of one float channel | "A link carries a source block's ramp to a sink block sample for sample" |
 | block port | `port.name` | the port's name | `<bank>.<member>`, the name routes and companion links use ([port blocks](#port-blocks)) | how the live graph and companion links name the port | "Live ports name their node, port and direction" |
-| card | `factory.name` | `api.alsa.pcm.sink` or `api.alsa.pcm.source` | Playback on an inside output bank, capture on an inside input bank ([sound cards](#sound-cards)) | the ALSA PCM node module-adapter wraps in a converter | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
+| card | `factory.name` | `api.alsa.pcm.sink or api.alsa.pcm.source` | Playback on an inside output bank, capture on an inside input bank ([sound cards](#sound-cards)) | the ALSA PCM node module-adapter wraps in a converter | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
 | card | `api.alsa.path` | `hw:CARD=<card id>,DEV=0` | Built in one place from a `CardId`, whose grammar keeps every other ALSA device form out, because ALSA's `file` plugin can run commands ([sound cards](#sound-cards)) | device 0 of the card | "A card that cannot open is lost after make returns, its node already gone, and the blocks keep running" |
 | card | `audio.channels` | the bank's channel count | The bank's ports, channel for channel ([sound cards](#sound-cards)) | one adapter port per channel | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
 | card | `audio.rate` | the graph frequency | The card runs at the graph frequency; as a follower it is resampled all the time ([sound cards](#sound-cards)) | the rate the PCM opens at | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
 | card | `audio.position` | `[ AUX0 AUX1 ... ]` | AUX positions, so the ports the card configures itself are numbered ([sound cards](#sound-cards)) | the ports `playback_AUX<n>` and `capture_AUX<n>` | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
-| card | `node.name` | `<node>.playback` or `<node>.capture` | The engine companion's name ([engine companions](#engine-companions)) | how the lifecycle names its links' node | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| card | `node.name` | `<node>.playback or <node>.capture` | The engine companion's name ([engine companions](#engine-companions)) | how the lifecycle names its links' node | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
 | card | `node.always-process` | `true` | Alone, before it is linked, it runs as its own driver ([engine companions](#engine-companions)) | it runs alone before it is linked, so RUNNING means its PCM runs | "A card running alone holds no port block: they stay on the dummy until it is ready" |
 | card | `priority.driver` | `1` | `cardPriority` (`engine_names.hpp`) must stay below the internal clock's ([the internal clock](#the-internal-clock)) | below the internal clock's 200000, so linked it follows | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
 | card | `api.alsa.period-size` | the block size | With no period count `alsa-pcm.c` caps the buffer at 4 x `clock.quantum-limit`, 4 blocks ([the quantum guard](#the-quantum-guard)) | with `api.alsa.period-num`, the ALSA buffer | "A card's engine node carries no property that forces or locks the graph's quantum or rate, keeps the adapters' old quantum limit for its ALSA buffer, and the extra properties refuse every clock property" |
@@ -113,7 +136,7 @@ A value in backticks is the value as set; prose says how it is computed.
 | RTP receiver | `sess.media` | `audio` | Audio ([RTP receivers](#rtp-receivers)) | nothing | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | RTP receiver | `sess.latency.msec` | the rtp node's latencyMs | The receive buffer, declared upstream of the bank as `beyond` it, since rtp-source reports none ([latency](#latency-per-bank-pair)) | the ring's target fill, rounded down to whole packets | "A real receiver's buffer beyond from_rtp reaches stream whole: the told capture latency's least and most are both the buffer once the receiver is linked and reports its own" |
 | RTP receiver | `sess.ignore-ssrc` | `true` | By default the receiver locks onto the first packet's SSRC and drops every other for good, so a sender that restarts (FPP) is never heard again (`module-rtp/audio.c:131-136, 199-206`) ([RTP receivers](#rtp-receivers)) | no lock on the first sender's SSRC | "A sender that restarts with a new SSRC is heard again" |
-| RTP receiver | `audio.format` | `S16BE` or `S24BE` | L16 or L24, big-endian on the wire ([RTP receivers](#rtp-receivers)) | the payload's sample format | "L16 sent at 44100 into the 48000 graph is resampled" |
+| RTP receiver | `audio.format` | `S16BE or S24BE` | L16 or L24, big-endian on the wire ([RTP receivers](#rtp-receivers)) | the payload's sample format | "L16 sent at 44100 into the 48000 graph is resampled" |
 | RTP receiver | `audio.rate` | the rtp node's rate | The sender's rate ([RTP receivers](#rtp-receivers)) | the receiver resamples it to the graph's | "L16 sent at 44100 into the 48000 graph is resampled" |
 | RTP receiver | `audio.channels` | the bank's channel count | The bank's ports, channel for channel ([RTP receivers](#rtp-receivers)) | one port per channel | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | RTP receiver | `audio.position` | `[ AUX0 AUX1 ... ]` | AUX positions name the ports ([RTP receivers](#rtp-receivers)) | the ports `receive_AUX<n>` | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
@@ -125,9 +148,9 @@ A value in backticks is the value as set; prose says how it is computed.
 | RTP stream | `adapter.auto-port-config` | `{ mode = dsp monitor = false control = false position = preserve }` | Without it the stream's converter has no format and so no ports at all; with it the ports are `receive_AUX0`.. (`audioadapter.c:2164-2171`, `audioconvert.c:1606-1617`). It works here, unlike on a card's adapter, because a stream's format is fixed. The module's side consumes it: the engine's node never holds it ([RTP receivers](#rtp-receivers)) | the stream's converter makes its ports | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 | route link | `link.output.port` | the output port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
 | route link | `link.input.port` | the input port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
-| companion link | `link.output.node` | `the block's` or `the companion's global id` | By id: a node of the same name still going would otherwise match first, and `link-factory` matches a name against nick, description and object path too ([engine companions](#engine-companions)) | never an older node of the same name | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| companion link | `link.output.node` | the block's or the companion's global id | By id: a node of the same name still going would otherwise match first, and `link-factory` matches a name against nick, description and object path too ([engine companions](#engine-companions)) | never an older node of the same name | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
 | companion link | `link.output.port` | the output port's name | By name within that node; PipeWire then holds the port's id ([engine companions](#engine-companions)) | a port of that node, by name | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
-| companion link | `link.input.node` | `the companion's` or `the block's global id` | By id, as the output node ([engine companions](#engine-companions)) | never an older node of the same name | "A receiver joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| companion link | `link.input.node` | the companion's or the block's global id | By id, as the output node ([engine companions](#engine-companions)) | never an older node of the same name | "A receiver joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
 | companion link | `link.input.port` | the input port's name | By name within that node; PipeWire then holds the port's id ([engine companions](#engine-companions)) | a port of that node, by name | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
 
 ### Properties ear never sets
@@ -201,7 +224,8 @@ graph's limit as `clock.quantum-limit`, and an ALSA node with no period count ca
 256-frame block that is 1024 frames (about 21 ms, with `max_delay` half of it), where the old limit
 gave 32768. So `AlsaSoundCards` makes every card with `api.alsa.period-size` = the block size and
 `api.alsa.period-num` = `cardPeriods(block)` ([the table](#properties-ear-sets)), which takes ALSA's
-period-count path instead. ALSA
+period-count path instead (`pw_context_update_properties` after creation does not change what
+`module-adapter` reads on 1.4.2, so raising the limit later is no way out). ALSA
 halves a batch card's period (a USB card such as the MOTU: block / 2, as before), so a batch card's
 buffer is again `min(hardware maximum, 4 x max(block, 8192))` frames, its period and headroom (and
 so its latency) unchanged; a card that is not batch gets periods of one block and twice that buffer,

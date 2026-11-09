@@ -104,16 +104,20 @@ if(BUILD_TESTS)
 	ear_callback_boundary_compile_fail(raw-log-method "could not convert '[^']*logNoexcept' from")
 	ear_callback_boundary_compile_fail(log-method-not-noexcept "must be noexcept: the data loop never throws")
 	# What must not compile about the property table (docs/engine.md#properties-ear-sets):
-	# tests/compile_fail/engine_properties_bad.cpp says what each case is. The regex is the image's GCC's wording for a
-	# consteval call that is not a constant expression.
+	# tests/compile_fail/engine_properties_bad.cpp says what each case is. property() refuses a key by calling a function
+	# that is not constexpr, named for the reason, so each regex is that function's name, which the compiler's error
+	# names.
 	set(bad_properties "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/engine_properties_bad.cpp")
 	ear_compile_check(ear_engine_properties_compile_fail_control "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}")
-	foreach(case unlisted-key other-home forbidden-key)
+	function(ear_engine_properties_compile_fail case regex)
 		string(MAKE_C_IDENTIFIER "${case}" macro)
 		set(name ear_engine_properties_compile_fail_${case})
 		ear_compile_check(${name} "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}" -DEAR_CASE_${macro})
-		set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "notInThePropertyTable")
-	endforeach()
+		set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+	endfunction()
+	ear_engine_properties_compile_fail(unlisted-key "notInThePropertyTable")
+	ear_engine_properties_compile_fail(other-home "notInThePropertyTable")
+	ear_engine_properties_compile_fail(forbidden-key "forbiddenOnThisHome")
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")
 endif()

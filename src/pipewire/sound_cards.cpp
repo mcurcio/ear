@@ -140,8 +140,8 @@ namespace {
 AlsaSoundCards::Properties refuseClockProperties(AlsaSoundCards::Properties extra) {
 	for (const auto& [key, value] : extra)
 		if (refusedOnCardSeam(key))
-			throw std::invalid_argument("a sound card may not carry " + key +
-			                            ": it would change every block's clock or what drives it");
+			throw std::invalid_argument("a sound card's test seam may not set " + key +
+			                            ": ear sets it on every card or forbids it there");
 	return extra;
 }
 } // namespace

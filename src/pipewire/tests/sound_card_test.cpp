@@ -33,6 +33,7 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "../engine_properties.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "temp_folder.hpp"
@@ -370,8 +371,15 @@ TEST_CASE("A card's engine node carries no property that forces or locks the gra
 	CHECK(props->at("priority.driver") == "1");
 	CHECK_FALSE(props->contains("node.group"));
 	CHECK_FALSE(props->contains("node.link-group"));
-	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate",
-	                        "priority.driver", "node.driver", "node.group", "node.link-group"}) {
+	// The seam refuses every key the property table sets on every card or forbids on one
+	// (docs/engine.md#properties-ear-never-sets).
+	std::vector<std::string> refused;
+	for (const PropertyRow& row : engineProperties)
+		if (row.home == Home::card) refused.emplace_back(row.key);
+	for (const auto& [home, key] : forbidden)
+		if (home == Home::card) refused.emplace_back(key);
+	CHECK(refused.size() > 8);
+	for (const std::string& key : refused) {
 		INFO(key);
 		CHECK_THROWS_AS(AlsaSoundCards(*graph.engine, AlsaSoundCards::Properties{{key, "1"}}), std::invalid_argument);
 	}

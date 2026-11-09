@@ -1,11 +1,13 @@
-// Every PipeWire property ear sets, in engine.conf or in code: one row each, with what it couples to, the
-// docs/engine.md heading that says why and the test that pins the coupling (docs/engine.md#properties-ear-sets).
+// Every PipeWire property ear sets, in engine.conf or in code: one row each, with the docs/engine.md heading that says
+// why and the test that pins its coupling (docs/engine.md#properties-ear-sets, whose table is the home of each reason and
+// of what each couples to).
 // Private to ear_pipewire: its sources and tests include it by this path; no public header does.
 //
 // The table is checked four ways: here at compile time (a builder takes each key from property(), which does not
-// compile for a key the table does not list for that home, and the static_asserts below); against the live engine
-// and engine.conf (engine_properties_test.cpp); each row's pinnedBy against the tests that exist; and against
-// docs/engine.md's tables, which must list the same rows.
+// compile for a key the table does not list for that home, and the static_asserts below), with the property guard
+// (test/pipewire/property_guard.cmake) refusing a key set any other way; against the live engine and engine.conf
+// (engine_properties_test.cpp); each row's pinnedBy against the tests that exist; and against docs/engine.md's tables,
+// which must list the same rows.
 #pragma once
 
 #include <array>
@@ -66,10 +68,9 @@ inline constexpr std::array allHomes{Home::engineConf, Home::context, Home::inte
 struct PropertyRow {
 	Home home;
 	std::string_view key;
-	std::string_view value;     // as set, or how it is computed ("the block size")
-	std::string_view couplesTo; // what else it changes, in PipeWire's terms
-	std::string_view anchor;    // the docs/engine.md heading that says why
-	std::string_view pinnedBy;  // the Catch test name that pins the coupling
+	std::string_view value;    // as set, or how it is computed ("the block size")
+	std::string_view anchor;   // the docs/engine.md heading that says why
+	std::string_view pinnedBy; // the Catch test name that pins the coupling
 };
 
 namespace pinned {
@@ -122,126 +123,75 @@ inline constexpr std::string_view receiverBuffer =
 /// One row per key ear sets. The reasons are docs/engine.md's (its table of these rows, and the heading each names).
 inline constexpr std::array engineProperties = std::to_array<PropertyRow>({
 	// engine.conf, context.properties.
-	{Home::engineConf, "core.daemon", "false", "no socket and no runtime directory", "properties-ear-sets",
-     pinned::noDaemon},
-	{Home::engineConf, "core.name", "ear", "nothing", "properties-ear-sets", pinned::live},
-	{Home::engineConf, "support.dbus", "false", "no D-Bus connection", "properties-ear-sets", pinned::noDaemon},
-	{Home::engineConf, "context.num-data-loops", "1",
-     "one data loop runs every engine node, so one clock.position a cycle and invokes between cycles",
-     "the-one-data-loop-and-invokes", pinned::oneDataLoop},
+	{Home::engineConf, "core.daemon", "false", "properties-ear-sets", pinned::noDaemon},
+	{Home::engineConf, "core.name", "ear", "properties-ear-sets", pinned::live},
+	{Home::engineConf, "support.dbus", "false", "properties-ear-sets", pinned::noDaemon},
+	{Home::engineConf, "context.num-data-loops", "1", "the-one-data-loop-and-invokes", pinned::oneDataLoop},
 	// contextProperties(): the clock, from EngineSettings.
-	{Home::context, "config.name", "the engine.conf path EngineSettings names",
-     "the file pw_context_new reads; its context.properties overwrite these", "properties-ear-sets", pinned::live},
-	{Home::context, "default.clock.rate", "the graph frequency", "clock.rate.denom every block sees", "the-clock",
-     pinned::rateAndBlock},
-	{Home::context, "default.clock.allowed-rates", "[ the graph frequency ]", "the graph never switches rate",
-     "the-clock", pinned::rateAndBlock},
-	{Home::context, "default.clock.quantum", "the block size", "clock.duration every block sees", "the-clock",
-     pinned::rateAndBlock},
-	{Home::context, "default.clock.min-quantum", "the block size", "the least quantum the graph picks", "the-clock",
-     pinned::rateAndBlock},
-	{Home::context, "default.clock.max-quantum", "the block size", "the most quantum the graph picks", "the-clock",
-     pinned::rateAndBlock},
-	{Home::context, "clock.power-of-two-quantum", "false", "the quantum is not rounded down to a power of two",
-     "the-clock", pinned::notPowerOfTwo},
-	{Home::context, "default.clock.quantum-floor", "the block size", "the least a forced quantum is clamped to",
-     "the-quantum-guard", pinned::quantumGuard},
-	{Home::context, "default.clock.quantum-limit", "the block size",
-     "the most a forced quantum is clamped to; module-adapter's clock.quantum-limit, which sizes an ALSA buffer "
-     "without a period count",
-     "the-quantum-guard", pinned::quantumGuard},
+	{Home::context, "config.name", "the engine.conf path EngineSettings names", "properties-ear-sets", pinned::live},
+	{Home::context, "default.clock.rate", "the graph frequency", "the-clock", pinned::rateAndBlock},
+	{Home::context, "default.clock.allowed-rates", "[ the graph frequency ]", "the-clock", pinned::rateAndBlock},
+	{Home::context, "default.clock.quantum", "the block size", "the-clock", pinned::rateAndBlock},
+	{Home::context, "default.clock.min-quantum", "the block size", "the-clock", pinned::rateAndBlock},
+	{Home::context, "default.clock.max-quantum", "the block size", "the-clock", pinned::rateAndBlock},
+	{Home::context, "clock.power-of-two-quantum", "false", "the-clock", pinned::notPowerOfTwo},
+	{Home::context, "default.clock.quantum-floor", "the block size", "the-quantum-guard", pinned::quantumGuard},
+	{Home::context, "default.clock.quantum-limit", "the block size", "the-quantum-guard", pinned::quantumGuard},
 	// engine.conf, context.objects: the internal clock.
-	{Home::internalClock, "factory.name", "support.node.driver", "a driver on a timer, with no device",
-     "the-internal-clock", pinned::group},
-	{Home::internalClock, "node.name", "Dummy-Driver", "nothing", "the-internal-clock", pinned::group},
-	{Home::internalClock, "priority.driver", "200000",
-     "PipeWire walks drivers in its order: above a card's, so a linked card follows", "the-internal-clock",
-     pinned::cardFollows},
-	{Home::internalClock, "node.group", "ear.graph", "the blocks' group, so this driver drives them all",
-     "the-internal-clock", pinned::group},
-	{Home::internalClock, "clock.id", "monotonic-raw",
-     "tracking mode on CLOCK_MONOTONIC_RAW; clock.name clock.system.monotonic-raw", "the-internal-clock",
-     pinned::bothClocks},
-	{Home::internalClock, "resync.ms", "1000000000", "the driver never resets after a stall", "the-internal-clock",
-     pinned::stalls},
+	{Home::internalClock, "factory.name", "support.node.driver", "the-internal-clock", pinned::group},
+	{Home::internalClock, "node.name", "Dummy-Driver", "the-internal-clock", pinned::group},
+	{Home::internalClock, "priority.driver", "200000", "the-internal-clock", pinned::cardFollows},
+	{Home::internalClock, "node.group", "ear.graph", "the-internal-clock", pinned::group},
+	{Home::internalClock, "clock.id", "monotonic-raw", "the-internal-clock", pinned::bothClocks},
+	{Home::internalClock, "resync.ms", "1000000000", "the-internal-clock", pinned::stalls},
 	// A port block's filter and its ports.
-	{Home::block, "node.name", "the node's name", "how the registry, the live graph and link-factory name the block",
-     "port-blocks", pinned::livePorts},
-	{Home::block, "media.type", "Audio", "nothing", "port-blocks", pinned::live},
-	{Home::block, "node.group", "ear.graph", "the internal clock's group, so it drives every block",
-     "the-internal-clock", pinned::group},
-	{Home::block, "node.always-process", "true", "an unlinked block still runs, on the first active driver",
-     "port-blocks", pinned::noDaemon},
-	{Home::blockPort, "format.dsp", "32 bit float mono audio", "a DSP port of one float channel", "port-blocks",
-     pinned::linkCarries},
-	{Home::blockPort, "port.name", "the port's name", "how the live graph and companion links name the port",
-     "port-blocks", pinned::livePorts},
+	{Home::block, "node.name", "the node's name", "port-blocks", pinned::livePorts},
+	{Home::block, "media.name", "the node's name", "port-blocks", pinned::live},
+	{Home::block, "media.type", "Audio", "port-blocks", pinned::live},
+	{Home::block, "node.group", "ear.graph", "the-internal-clock", pinned::group},
+	{Home::block, "node.always-process", "true", "port-blocks", pinned::noDaemon},
+	{Home::blockPort, "format.dsp", "32 bit float mono audio", "port-blocks", pinned::linkCarries},
+	{Home::blockPort, "port.name", "the port's name", "port-blocks", pinned::livePorts},
 	// A sound card's adapter.
-	{Home::card, "factory.name", "api.alsa.pcm.sink or api.alsa.pcm.source",
-     "the ALSA PCM node module-adapter wraps in a converter", "sound-cards", pinned::cardFollows},
-	{Home::card, "api.alsa.path", "hw:CARD=<card id>,DEV=0", "device 0 of the card", "sound-cards",
-     pinned::cardCannotOpen},
-	{Home::card, "audio.channels", "the bank's channel count", "one adapter port per channel", "sound-cards",
-     pinned::cardChannels},
-	{Home::card, "audio.rate", "the graph frequency", "the rate the PCM opens at", "sound-cards", pinned::cardFollows},
-	{Home::card, "audio.position", "[ AUX0 AUX1 ... ]", "the ports playback_AUX<n> and capture_AUX<n>", "sound-cards",
-     pinned::cardChannels},
-	{Home::card, "node.name", "<node>.playback or <node>.capture", "how the lifecycle names its links' node",
-     "engine-companions", pinned::cardJoins},
-	{Home::card, "node.always-process", "true", "it runs alone before it is linked, so RUNNING means its PCM runs",
-     "engine-companions", pinned::cardAlone},
-	{Home::card, "priority.driver", "1", "below the internal clock's 200000, so linked it follows",
-     "the-internal-clock", pinned::cardFollows},
-	{Home::card, "api.alsa.period-size", "the block size", "with api.alsa.period-num, the ALSA buffer",
-     "the-quantum-guard", pinned::cardBuffer},
-	{Home::card, "api.alsa.period-num", "cardPeriods(the block size)", "the ALSA buffer, not 4 x clock.quantum-limit",
-     "the-quantum-guard", pinned::cardBuffer},
-	{Home::cardSeam, "clock.name", "clock.system.monotonic-raw",
-     "a follower whose clock.name is its driver's turns rate matching off", "sound-cards", pinned::cardChannels},
+	{Home::card, "factory.name", "api.alsa.pcm.sink or api.alsa.pcm.source", "sound-cards", pinned::cardFollows},
+	{Home::card, "api.alsa.path", "hw:CARD=<card id>,DEV=0", "sound-cards", pinned::cardCannotOpen},
+	{Home::card, "audio.channels", "the bank's channel count", "sound-cards", pinned::cardChannels},
+	{Home::card, "audio.rate", "the graph frequency", "sound-cards", pinned::cardFollows},
+	{Home::card, "audio.position", "[ AUX0 AUX1 ... ]", "sound-cards", pinned::cardChannels},
+	{Home::card, "node.name", "<node>.playback or <node>.capture", "engine-companions", pinned::cardJoins},
+	{Home::card, "node.always-process", "true", "engine-companions", pinned::cardAlone},
+	{Home::card, "priority.driver", "1", "the-internal-clock", pinned::cardFollows},
+	{Home::card, "api.alsa.period-size", "the block size", "the-quantum-guard", pinned::cardBuffer},
+	{Home::card, "api.alsa.period-num", "cardPeriods(the block size)", "the-quantum-guard", pinned::cardBuffer},
+	{Home::cardSeam, "clock.name", "clock.system.monotonic-raw", "sound-cards", pinned::cardChannels},
 	// An RTP receiver's module arguments.
-	{Home::rtpReceiver, "remote.name", "internal", "the module's connection is to ear's own context", "rtp-receivers",
-     pinned::receiverReady},
-	{Home::rtpReceiver, "source.ip", "the rtp node's address", "the address the socket binds or connects to",
-     "rtp-receivers", pinned::receiverChannels},
-	{Home::rtpReceiver, "source.port", "the rtp node's port", "the UDP port the socket binds", "rtp-receivers",
-     pinned::receiverChannels},
-	{Home::rtpReceiver, "sess.media", "audio", "nothing", "rtp-receivers", pinned::receiverChannels},
-	{Home::rtpReceiver, "sess.latency.msec", "the rtp node's latencyMs",
-     "the ring's target fill, rounded down to whole packets", "latency-per-bank-pair", pinned::receiverBuffer},
-	{Home::rtpReceiver, "sess.ignore-ssrc", "true", "no lock on the first sender's SSRC", "rtp-receivers",
-     pinned::receiverSsrc},
-	{Home::rtpReceiver, "audio.format", "S16BE or S24BE", "the payload's sample format", "rtp-receivers",
-     pinned::receiverResamples},
-	{Home::rtpReceiver, "audio.rate", "the rtp node's rate", "the receiver resamples it to the graph's",
-     "rtp-receivers", pinned::receiverResamples},
-	{Home::rtpReceiver, "audio.channels", "the bank's channel count", "one port per channel", "rtp-receivers",
-     pinned::receiverChannels},
-	{Home::rtpReceiver, "audio.position", "[ AUX0 AUX1 ... ]", "the ports receive_AUX<n>", "rtp-receivers",
-     pinned::receiverChannels},
-	{Home::rtpReceiver, "node.name", "<node>.rtp", "how ear finds the module's node in the registry", "rtp-receivers",
-     pinned::receiverReady},
-	{Home::rtpReceiver, "node.description", "<node>.rtp", "link-factory matches descriptions too", "rtp-receivers",
-     pinned::receiverJoins},
-	{Home::rtpReceiver, "media.name", "<node>.rtp", "nothing", "rtp-receivers", pinned::receiverJoins},
-	{Home::rtpReceiver, "stream.props", "the RTP stream rows", "the receiver node's own properties", "rtp-receivers",
-     pinned::receiverReady},
-	{Home::rtpStream, "node.always-process", "true",
-     "it runs before it is linked, so RUNNING means its socket is bound", "rtp-receivers", pinned::receiverReady},
+	{Home::rtpReceiver, "remote.name", "internal", "rtp-receivers", pinned::receiverReady},
+	{Home::rtpReceiver, "source.ip", "the rtp node's address", "rtp-receivers", pinned::receiverChannels},
+	{Home::rtpReceiver, "source.port", "the rtp node's port", "rtp-receivers", pinned::receiverChannels},
+	{Home::rtpReceiver, "sess.media", "audio", "rtp-receivers", pinned::receiverChannels},
+	{Home::rtpReceiver, "sess.latency.msec", "the rtp node's latencyMs", "latency-per-bank-pair",
+     pinned::receiverBuffer},
+	{Home::rtpReceiver, "sess.ignore-ssrc", "true", "rtp-receivers", pinned::receiverSsrc},
+	{Home::rtpReceiver, "audio.format", "S16BE or S24BE", "rtp-receivers", pinned::receiverResamples},
+	{Home::rtpReceiver, "audio.rate", "the rtp node's rate", "rtp-receivers", pinned::receiverResamples},
+	{Home::rtpReceiver, "audio.channels", "the bank's channel count", "rtp-receivers", pinned::receiverChannels},
+	{Home::rtpReceiver, "audio.position", "[ AUX0 AUX1 ... ]", "rtp-receivers", pinned::receiverChannels},
+	{Home::rtpReceiver, "node.name", "<node>.rtp", "rtp-receivers", pinned::receiverReady},
+	{Home::rtpReceiver, "node.description", "<node>.rtp", "rtp-receivers", pinned::receiverJoins},
+	{Home::rtpReceiver, "media.name", "<node>.rtp", "rtp-receivers", pinned::receiverJoins},
+	{Home::rtpReceiver, "stream.props", "the RTP stream rows", "rtp-receivers", pinned::receiverReady},
+	{Home::rtpStream, "node.always-process", "true", "rtp-receivers", pinned::receiverReady},
 	{Home::rtpStream, "adapter.auto-port-config", "{ mode = dsp monitor = false control = false position = preserve }",
-     "the stream's converter makes its ports", "rtp-receivers", pinned::receiverChannels},
+     "rtp-receivers", pinned::receiverChannels},
 	// Links.
-	{Home::link, "link.output.port", "the output port's global id", "link-factory finds the port by id alone",
-     "no-session-manager", pinned::linkCarries},
-	{Home::link, "link.input.port", "the input port's global id", "link-factory finds the port by id alone",
-     "no-session-manager", pinned::linkCarries},
-	{Home::companionLink, "link.output.node", "the block's or the companion's global id",
-     "never an older node of the same name", "engine-companions", pinned::cardJoins},
-	{Home::companionLink, "link.output.port", "the output port's name", "a port of that node, by name",
-     "engine-companions", pinned::cardChannels},
-	{Home::companionLink, "link.input.node", "the companion's or the block's global id",
-     "never an older node of the same name", "engine-companions", pinned::receiverJoins},
-	{Home::companionLink, "link.input.port", "the input port's name", "a port of that node, by name",
-     "engine-companions", pinned::receiverChannels},
+	{Home::link, "link.output.port", "the output port's global id", "no-session-manager", pinned::linkCarries},
+	{Home::link, "link.input.port", "the input port's global id", "no-session-manager", pinned::linkCarries},
+	{Home::companionLink, "link.output.node", "the block's or the companion's global id", "engine-companions",
+     pinned::cardJoins},
+	{Home::companionLink, "link.output.port", "the output port's name", "engine-companions", pinned::cardChannels},
+	{Home::companionLink, "link.input.node", "the companion's or the block's global id", "engine-companions",
+     pinned::receiverJoins},
+	{Home::companionLink, "link.input.port", "the input port's name", "engine-companions", pinned::receiverChannels},
 });
 
 /// What no object of a home may carry from ear: a key, or every key under a prefix ending in '.'.
@@ -285,12 +235,16 @@ constexpr bool refusedOnCardSeam(std::string_view key) noexcept {
 }
 
 namespace detail {
-// Called only where property() finds no row: not a constant expression, so the call does not compile.
+// Each is called only where property() refuses a key: not a constant expression, so the call does not compile, and the
+// compiler's error names the function, which says why.
+inline const char* forbiddenOnThisHome() { return nullptr; }
 inline const char* notInThePropertyTable() { return nullptr; }
 } // namespace detail
 
-/// The key, if the table lists it for `home`; does not compile otherwise.
+/// The key, if the table lists it for `home`; does not compile otherwise, naming forbiddenOnThisHome for a key
+/// `forbidden` refuses there and notInThePropertyTable for any other.
 consteval const char* property(Home home, std::string_view key) {
+	if (isForbidden(home, key)) return detail::forbiddenOnThisHome();
 	for (const PropertyRow& row : engineProperties)
 		if (row.home == home && row.key == key) return row.key.data();
 	return detail::notInThePropertyTable();
@@ -323,8 +277,7 @@ constexpr bool seamRowsAllowed() {
 }
 constexpr bool rowsComplete() {
 	for (const PropertyRow& row : engineProperties)
-		if (row.key.empty() || row.value.empty() || row.couplesTo.empty() || row.anchor.empty() || row.pinnedBy.empty())
-			return false;
+		if (row.key.empty() || row.value.empty() || row.anchor.empty() || row.pinnedBy.empty()) return false;
 	return true;
 }
 } // namespace detail
@@ -333,6 +286,6 @@ static_assert(detail::rowsUnique(), "a home lists a key twice");
 static_assert(detail::noRowForbidden(), "a row sets a key forbidden on its home");
 static_assert(detail::confLeavesTheContextAlone(), "engine.conf would overwrite a property Engine sets");
 static_assert(detail::seamRowsAllowed(), "the card seam would set a key the card sets or may not carry");
-static_assert(detail::rowsComplete(), "every row names its value, coupling, heading and test");
+static_assert(detail::rowsComplete(), "every row names its value, heading and test");
 
 } // namespace ear::pipewire

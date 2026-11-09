@@ -39,31 +39,17 @@ file (`EAR_ENGINE_CONF`). `Engine` does no lookup of its own. The ctest
 ## Properties: one table
 
 Every PipeWire property EAR sets, in `engine.conf` or in code, is one row of
-`src/pipewire/engine_properties.hpp`: its home (the object that carries it and the code or file
-that builds it), key, value, what it couples to, the `docs/engine.md` heading that says why, and
-the test that pins the coupling. The reason for each key lives in
-`docs/engine.md#properties-ear-sets` (the table, checked against the code), and what EAR never sets
-(`default.clock.*` and `clock.power-of-two-quantum` in `engine.conf`, whose `context.properties`
-overwrite `Engine`'s; `cpu.zero.denormals`; force and lock keys on any node; `node.group`,
-`node.driver` and `node.link-group` on a card) in `docs/engine.md#properties-ear-never-sets`. Read
-those before changing a property; `engine.conf`'s comments are only pointers to them.
+`src/pipewire/engine_properties.hpp`. Why each is set, what it couples to and how the table is
+checked: `docs/engine.md#properties-ear-sets`; what EAR never sets:
+`docs/engine.md#properties-ear-never-sets`. `engine.conf`'s comments only point there. To add,
+change or remove a property:
 
-To add, change or remove a property:
-
-1. Change its row in `engine_properties.hpp` and its row in `docs/engine.md`'s table in the same
-   change (the doc test compares where, key, value, couples to and pinned by, and wants the why to
-   link the row's heading).
-2. Build it with `property(Home::<home>, "<key>")`: a key the table does not list for that home
-   does not compile, and the table's `static_assert`s refuse a forbidden key, a duplicate, a key in
-   both `engine.conf` and `context`, and a card seam key a card already sets.
-3. In `engine.conf`, the conf test refuses a key without a row, a value other than the row's and a
-   forbidden key.
-4. The live test ("Every property ear sets is held by PipeWire as the property table says") reads
-   the row back from the object PipeWire holds; a row whose value is prose ("the block size") needs
-   that test's expected value for its instance. A key PipeWire consumes before the engine's node
-   (`adapter.auto-port-config` on the RTP stream) is listed as consumed there, with where its
-   effect is checked.
-5. Name the test that pins the coupling (`pinned::` in the header); a name no test has fails.
+1. Change its row in `engine_properties.hpp` (home, key, value, heading, `pinned::` test) and its
+   row in `docs/engine.md`'s table in the same change.
+2. Build it with `property(Home::<home>, "<key>")`; the property guard refuses any other way to
+   set a key.
+3. Give the live test the instance's expected value if the row's value is prose, or say where
+   PipeWire holds it (another key, consumed before the node) and where its effect is checked.
 
 `engine.conf`'s `context.spa-libs` and `context.modules` (not properties) are in
 `docs/engine.md#modules-and-libraries`; `libpipewire-module-rtp-source` is not in `engine.conf`:
@@ -83,15 +69,8 @@ blocking invoke made right after `pw_context_new` meets the same race.
 
 ## The clock
 
-`Engine` sets the clock as context properties (the table's `context` rows): the graph frequency
-as the one rate and the block size as every quantum, the floor and the limit included, because
-PipeWire clamps a node's `node.force-quantum` to `[floor, limit]` (`context.c`), not to
-`[min, max]-quantum` (`docs/engine.md#the-quantum-guard`). **Trap:** `module-adapter` copies the
-limit into every adapter's `clock.quantum-limit`, and an ALSA node with no period count caps its
-buffer at 4 x that (1024 frames at a 256 block, `alsa-pcm.c`): every card is made with
-`api.alsa.period-size` and `api.alsa.period-num` (`cardPeriods`) so its buffer keeps the old size;
-`pw_context_update_properties` after creation does not change what `module-adapter` reads on
-1.4.2. A port block sees
+`Engine` sets the clock as context properties (the table's `context` rows; why each, and the
+trap a card's ALSA buffer fell into: `docs/engine.md#the-quantum-guard`). A port block sees
 `position->clock.duration == blockSize` and `clock.rate.denom == graphFrequency`; the test
 "Blocks process at the graph frequency and block size" checks it with 44100 Hz and 256.
 

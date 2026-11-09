@@ -18,7 +18,7 @@ const char* otherHome() { return property(Home::block, "resync.ms"); }
 #endif
 
 #ifdef EAR_CASE_forbidden_key
-// Forbidden on a card: no row may list it there, so property() finds none.
+// Forbidden on a card: refused as forbidden, before any lookup.
 const char* forced() { return property(Home::card, "node.force-quantum"); }
 #endif
 

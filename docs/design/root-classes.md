@@ -632,10 +632,20 @@ The table is `src/pipewire/engine_properties.hpp`; how it is checked and why eac
   key or a second `context.objects` entry.
 - **`clock.power-of-two-quantum` had no pinning test** (every engine test ran at 256): "A block size that is not a
   power of two runs as itself" runs the engine at 480.
-- **The doc table's columns are checked except why.** Value, couples to and pinned by must equal the code's (with
-  backticks and quotes stripped); why must link its row's anchor, and every anchor must be a heading of the page. The
+- **The doc table's columns are checked against the code's.** Value and pinned by must equal the code's (a value as
+  set is one backticked span, a computed one prose); why must link its row's anchor, and every anchor must be a heading of the page. The
   forbidden keys have their own table, "Properties ear never sets". `engine.conf`'s modules and libraries, which are
   not properties, moved to `docs/engine.md#modules-and-libraries`.
+- **The review closed the routes around the table.** `engine.conf` may hold only its four sections and modules
+  without arguments (libpipewire reads properties from `filter.properties`, `stream.properties`, `node.rules` and
+  more); no made object may hold a forbidden key (but `node.driver` on a card, which the ALSA node publishes); a
+  source guard (`test/pipewire/property_guard.cmake`) refuses a literal or macro key to every properties setter
+  under `src/`, since `property()` alone was a convention; the RTP receiver's rows are read from its node where it
+  holds them (`remote.name` and `stream.props` only from the module's arguments), `adapter.auto-port-config` by the
+  node's exact ports, and links are found by their nodes' ids with each held port id read back as its name. A
+  forbidden key fails `property()` by its own function (`forbiddenOnThisHome`). `couplesTo` left the code: what
+  a key couples to lives in `docs/engine.md`'s table alone, beside its reason, since no check reads it. The block's
+  `media.name`, which `pw_filter_new` derived from its name, is set from the table.
 
 ## 7. Class 5: the harness re-implements the engine
 

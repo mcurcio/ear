@@ -116,6 +116,7 @@ public:
 		// Every key from the property table (docs/engine.md#properties-ear-sets says why each).
 		filter_ = pw_filter_new(engine.core(), node.c_str(),
 		                        pw_properties_new(property(Home::block, "node.name"), node.c_str(),
+		                                          property(Home::block, "media.name"), node.c_str(),
 		                                          property(Home::block, "media.type"), "Audio",
 		                                          property(Home::block, "node.group"), graphGroup,
 		                                          property(Home::block, "node.always-process"), "true", nullptr));

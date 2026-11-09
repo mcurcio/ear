@@ -71,6 +71,19 @@ std::string readFile(const std::filesystem::path& file) {
 	return text.str();
 }
 
+/// Each object of an array, as PipeWire's own parser reads it.
+std::vector<Held> elements(const std::string& array) {
+	std::vector<Held> found;
+	spa_json it;
+	REQUIRE(spa_json_begin_array(&it, array.c_str(), array.size()) > 0);
+	const char* value = nullptr;
+	for (int length = 0; (length = spa_json_next(&it, &value)) > 0;) {
+		if (spa_json_is_container(value, length) != 0) length = spa_json_container_len(&it, value, length);
+		found.push_back(parsed(std::string(value, static_cast<std::size_t>(length))));
+	}
+	return found;
+}
+
 std::set<std::string> keysOf(const Held& props) {
 	std::set<std::string> keys;
 	for (const auto& [key, value] : props) keys.insert(key);
@@ -125,13 +138,44 @@ std::optional<HeldPort> portHeld(Engine& engine, std::uint32_t nodeId, std::stri
 	return std::nullopt;
 }
 
-/// The link from port `output` to port `input`, by their global ids.
-std::optional<Held> linkHeld(Engine& engine, std::uint32_t output, std::uint32_t input) {
+/// The names of the ports of node `nodeId`, as PipeWire holds them.
+std::set<std::string> portNamesOf(Engine& engine, std::uint32_t nodeId) {
+	std::set<std::string> names;
+	for (pw_global* global : globalsOf(engine, PW_TYPE_INTERFACE_Port)) {
+		Held props = held(&pw_impl_port_get_properties(static_cast<pw_impl_port*>(pw_global_get_object(global)))->dict);
+		if (props[PW_KEY_NODE_ID] == std::to_string(nodeId)) names.insert(props[PW_KEY_PORT_NAME]);
+	}
+	return names;
+}
+
+/// The name of port `portId` if it is a port of node `nodeId`; otherwise a text no port name equals.
+std::string portNameOn(Engine& engine, const std::string& nodeId, const std::string& portId) {
+	for (pw_global* global : globalsOf(engine, PW_TYPE_INTERFACE_Port)) {
+		if (std::to_string(pw_global_get_id(global)) != portId) continue;
+		Held props = held(&pw_impl_port_get_properties(static_cast<pw_impl_port*>(pw_global_get_object(global)))->dict);
+		return props[PW_KEY_NODE_ID] == nodeId ? props[PW_KEY_PORT_NAME]
+		                                       : "<a port of node " + props[PW_KEY_NODE_ID] + ">";
+	}
+	return "<no port " + portId + ">";
+}
+
+/// Every link from node `output` to node `input`, selected by those nodes' ids alone, with each port id PipeWire holds
+/// replaced by the name of the port it is on that node: what the row's value says, read from what is held.
+std::vector<Held> linksBetween(Engine& engine, std::uint32_t output, std::uint32_t input) {
+	std::vector<Held> found;
 	for (pw_global* global : globalsOf(engine, PW_TYPE_INTERFACE_Link)) {
 		const pw_link_info* info = pw_impl_link_get_info(static_cast<pw_impl_link*>(pw_global_get_object(global)));
-		if (info != nullptr && info->output_port_id == output && info->input_port_id == input) return held(info->props);
+		if (info == nullptr || info->output_node_id != output || info->input_node_id != input) continue;
+		Held props = held(info->props);
+		for (const char* side : {"output", "input"}) {
+			const std::string port = std::string("link.") + side + ".port";
+			const std::string node = std::string("link.") + side + ".node";
+			if (props.contains(port) && props.contains(node))
+				props[port] = portNameOn(engine, props.at(node), props.at(port));
+		}
+		found.push_back(std::move(props));
 	}
-	return std::nullopt;
+	return found;
 }
 
 /// The arguments of the loaded module `name`, as PipeWire parses them.
@@ -194,14 +238,18 @@ private:
 	Waiter& waiter_;
 };
 
-/// One object a home's rows are read on: what PipeWire holds, the value expected where the row's own value says how it
-/// is computed rather than what it is, and the keys PipeWire consumes before this object (each read on another
-/// instance of the home, and its effect checked here).
+/// One object a home's rows are read on: what PipeWire holds; the value expected where the row's own value says how it
+/// is computed rather than what it is; the keys PipeWire consumes before this object (each read on another instance
+/// of the home, and its effect checked in the test); keys PipeWire holds under another name; keys `forbidden` refuses
+/// to ear that PipeWire itself sets here; and whether the object is judged against `forbidden` at all.
 struct Instance {
 	std::string what;
 	Held props;
 	std::map<std::string, std::string, std::less<>> expected;
 	std::set<std::string, std::less<>> consumed;
+	std::map<std::string, std::string, std::less<>> heldAs;
+	std::set<std::string, std::less<>> setByPipeWire;
+	bool judgeForbidden = true;
 };
 
 // ---- docs/engine.md.
@@ -359,25 +407,21 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	const auto dummy = nodeHeld(*engine, "Dummy-Driver");
 	const auto cardBlockNode = nodeHeld(*engine, "card");
 	const auto toCard = portHeld(*engine, cardId, "to_card.1");
-	const auto fromRtp = portHeld(*engine, fppId, "from_rtp.1");
 	REQUIRE(cardNode);
 	REQUIRE(receiverNode);
 	REQUIRE(dummy);
 	REQUIRE(cardBlockNode);
 	REQUIRE(toCard);
-	REQUIRE(fromRtp);
 	const std::uint32_t cardNodeId = static_cast<std::uint32_t>(std::stoul(cardNode->at(PW_KEY_OBJECT_ID)));
 	const std::uint32_t receiverNodeId = static_cast<std::uint32_t>(std::stoul(receiverNode->at(PW_KEY_OBJECT_ID)));
-	const auto playbackAux0 = portHeld(*engine, cardNodeId, "playback_AUX0");
-	const auto receiveAux0 = portHeld(*engine, receiverNodeId, "receive_AUX0");
-	REQUIRE(playbackAux0);
-	REQUIRE(receiveAux0);
-	const auto routeLink = linkHeld(*engine, streamPort->id, playPort->id);
-	const auto cardLink = linkHeld(*engine, toCard->id, playbackAux0->id);
-	const auto receiverLink = linkHeld(*engine, receiveAux0->id, fromRtp->id);
-	REQUIRE(routeLink);
-	REQUIRE(cardLink);
-	REQUIRE(receiverLink);
+	const std::vector<Held> routeLinks = linksBetween(*engine, fppId, cardId);
+	const std::vector<Held> cardLinks = linksBetween(*engine, cardId, cardNodeId);
+	const std::vector<Held> receiverLinks = linksBetween(*engine, receiverNodeId, fppId);
+	REQUIRE(routeLinks.size() == 1);
+	REQUIRE(cardLinks.size() == 2);
+	REQUIRE(receiverLinks.size() == 2);
+	// adapter.auto-port-config's effect: the receiver's ports are exactly one per channel, no monitor or control port.
+	CHECK(portNamesOf(*engine, receiverNodeId) == std::set<std::string>{"receive_AUX0", "receive_AUX1"});
 	const auto rtpArguments = moduleArgumentsHeld(*engine, "libpipewire-module-rtp-source");
 	REQUIRE(rtpArguments);
 
@@ -385,8 +429,9 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	const std::string block = std::to_string(kBlock);
 	auto number = [](std::uint32_t value) { return std::to_string(value); };
 	std::map<Home, std::vector<Instance>> instances;
+	// engine.conf's forbidden keys are the file's (judged by the conf test): the context holds Engine's default.clock.*.
 	instances[Home::engineConf].push_back(
-		{"the context", held(&pw_context_get_properties(engine->context())->dict), {}});
+		{"the context", held(&pw_context_get_properties(engine->context())->dict), {}, {}, {}, {}, false});
 	instances[Home::context].push_back({"the context",
 	                                    held(&pw_context_get_properties(engine->context())->dict),
 	                                    {{"config.name", EAR_ENGINE_CONF},
@@ -398,7 +443,7 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	                                     {"default.clock.quantum-floor", block},
 	                                     {"default.clock.quantum-limit", block}}});
 	instances[Home::internalClock].push_back({"Dummy-Driver", *dummy, {}});
-	instances[Home::block].push_back({"block card", *cardBlockNode, {{"node.name", "card"}}});
+	instances[Home::block].push_back({"block card", *cardBlockNode, {{"node.name", "card"}, {"media.name", "card"}}});
 	instances[Home::blockPort].push_back({"port play.1", playPort->props, {{"port.name", "play.1"}}});
 	instances[Home::blockPort].push_back({"port to_card.1", toCard->props, {{"port.name", "to_card.1"}}});
 	const Held cardExpected{{"factory.name", "api.alsa.pcm.sink"},
@@ -409,44 +454,58 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 	                        {"node.name", "card.playback"},
 	                        {"api.alsa.period-size", block},
 	                        {"api.alsa.period-num", number(cardPeriods(kBlock))}};
-	instances[Home::card].push_back({"card.playback", *cardNode, cardExpected});
-	instances[Home::cardSeam].push_back({"card.playback", *cardNode, {}});
+	// The ALSA node publishes node.driver = true itself (docs/engine.md#properties-ear-never-sets).
+	instances[Home::card].push_back({"card.playback", *cardNode, cardExpected, {}, {}, {"node.driver"}});
+	instances[Home::cardSeam].push_back({"card.playback", *cardNode, {}, {}, {}, {"node.driver"}});
 	Held streamRows;
 	for (const PropertyRow& row : engineProperties)
 		if (row.home == Home::rtpStream) streamRows[std::string(row.key)] = row.value;
-	instances[Home::rtpReceiver].push_back({"rtp-source's arguments",
-	                                        *rtpArguments,
-	                                        {{"source.ip", "0.0.0.0"},
-	                                         {"source.port", number(udpPort)},
-	                                         {"sess.latency.msec", "100"},
-	                                         {"audio.format", "S24BE"},
-	                                         {"audio.rate", rate},
-	                                         {"audio.channels", "2"},
-	                                         {"audio.position", "[ AUX0 AUX1 ]"},
-	                                         {"node.name", "fpp.rtp"},
-	                                         {"node.description", "fpp.rtp"},
-	                                         {"media.name", "fpp.rtp"}}});
+	const Held receiverExpected{{"source.ip", "0.0.0.0"},
+	                            {"source.port", number(udpPort)},
+	                            {"sess.latency.msec", "100"},
+	                            {"audio.format", "S24BE"},
+	                            {"audio.rate", rate},
+	                            {"audio.channels", "2"},
+	                            {"audio.position", "[ AUX0 AUX1 ]"},
+	                            {"node.name", "fpp.rtp"},
+	                            {"node.description", "fpp.rtp"},
+	                            {"media.name", "fpp.rtp"}};
+	// The receiver's node holds most arguments; source.ip and source.port as rtp.source.*; remote.name (the module's
+	// connection) and stream.props (the node's own properties, read below) only the module's arguments hold.
+	instances[Home::rtpReceiver].push_back({"fpp.rtp",
+	                                        *receiverNode,
+	                                        receiverExpected,
+	                                        {"remote.name", "stream.props"},
+	                                        {{"source.ip", "rtp.source.ip"}, {"source.port", "rtp.source.port"}}});
+	instances[Home::rtpReceiver].push_back({"rtp-source's arguments", *rtpArguments, receiverExpected});
 	// The stream's own adapter, on the module's connection, consumes adapter.auto-port-config: the engine's node never
-	// holds it, and its effect is the receive_AUX0 port found above. The argument holds it.
+	// holds it, and its effect is the receiver's port set checked above. The argument holds it.
 	instances[Home::rtpStream].push_back(
 		{"rtp-source's stream.props", parsed(rtpArguments->at("stream.props")), {}, {}});
 	instances[Home::rtpStream].push_back({"fpp.rtp", *receiverNode, {}, {"adapter.auto-port-config"}});
+	// Links are selected by their nodes' ids; each port row is the name of the port PipeWire's held id is on that node.
 	instances[Home::link].push_back(
-		{"the route link",
-	     *routeLink,
-	     {{"link.output.port", number(streamPort->id)}, {"link.input.port", number(playPort->id)}}});
-	instances[Home::companionLink].push_back({"the card's first link",
-	                                          *cardLink,
-	                                          {{"link.output.node", number(cardId)},
-	                                           {"link.output.port", number(toCard->id)},
-	                                           {"link.input.node", number(cardNodeId)},
-	                                           {"link.input.port", number(playbackAux0->id)}}});
-	instances[Home::companionLink].push_back({"the receiver's first link",
-	                                          *receiverLink,
-	                                          {{"link.output.node", number(receiverNodeId)},
-	                                           {"link.output.port", number(receiveAux0->id)},
-	                                           {"link.input.node", number(fppId)},
-	                                           {"link.input.port", number(fromRtp->id)}}});
+		{"the route link", routeLinks[0], {{"link.output.port", "stream.1"}, {"link.input.port", "play.1"}}});
+	for (const Held& link : cardLinks) {
+		const std::string output = link.contains("link.output.port") ? link.at("link.output.port") : "";
+		const std::uint32_t channel = output.starts_with("to_card.") ? std::stoul(output.substr(8)) : 0;
+		instances[Home::companionLink].push_back({"a card link from " + output,
+		                                          link,
+		                                          {{"link.output.node", number(cardId)},
+		                                           {"link.output.port", "to_card." + number(channel)},
+		                                           {"link.input.node", number(cardNodeId)},
+		                                           {"link.input.port", "playback_AUX" + number(channel - 1)}}});
+	}
+	for (const Held& link : receiverLinks) {
+		const std::string output = link.contains("link.output.port") ? link.at("link.output.port") : "";
+		const std::uint32_t aux = output.starts_with("receive_AUX") ? std::stoul(output.substr(11)) : 99;
+		instances[Home::companionLink].push_back({"a receiver link from " + output,
+		                                          link,
+		                                          {{"link.output.node", number(receiverNodeId)},
+		                                           {"link.output.port", "receive_AUX" + number(aux)},
+		                                           {"link.input.node", number(fppId)},
+		                                           {"link.input.port", "from_rtp." + number(aux + 1)}}});
+	}
 
 	for (const Home home : allHomes) {
 		INFO(homeName(home));
@@ -457,7 +516,8 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 			INFO(homeName(row.home) << " " << row.key << " on " << instance.what);
 			const auto expected = instance.expected.find(row.key);
 			const std::string want = expected != instance.expected.end() ? expected->second : std::string(row.value);
-			const auto found = instance.props.find(row.key);
+			const auto heldAs = instance.heldAs.find(row.key);
+			const auto found = instance.props.find(heldAs != instance.heldAs.end() ? heldAs->second : row.key);
 			if (instance.consumed.contains(row.key)) {
 				CHECK(found == instance.props.end());
 				continue;
@@ -471,6 +531,16 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 			}
 		}
 	}
+	// No object holds a key `forbidden` refuses on its home, unless PipeWire itself sets it there.
+	for (const Home home : allHomes) {
+		for (const Instance& instance : instances[home]) {
+			if (!instance.judgeForbidden) continue;
+			for (const auto& [key, value] : instance.props) {
+				INFO(homeName(home) << " " << key << " on " << instance.what);
+				CHECK((!isForbidden(home, key) || instance.setByPipeWire.contains(key)));
+			}
+		}
+	}
 
 	receiver.reset();
 	card.reset();
@@ -481,8 +551,13 @@ TEST_CASE("Every property ear sets is held by PipeWire as the property table say
 TEST_CASE("engine.conf sets exactly the property table's engine.conf and internal clock rows, and nothing it forbids",
           "[properties]") {
 	const Held top = parsed(readFile(EAR_ENGINE_CONF));
+	// libpipewire reads properties from other sections too (filter.properties, stream.properties, node.rules and
+	// more): the file has these four and nothing else.
+	CHECK(keysOf(top) ==
+	      std::set<std::string>{"context.properties", "context.spa-libs", "context.modules", "context.objects"});
 	REQUIRE(top.contains("context.properties"));
 	REQUIRE(top.contains("context.objects"));
+	REQUIRE(top.contains("context.modules"));
 
 	const Held properties = parsed(top.at("context.properties"));
 	CHECK(keysOf(properties) == tableKeys(Home::engineConf));
@@ -491,15 +566,16 @@ TEST_CASE("engine.conf sets exactly the property table's engine.conf and interna
 		CHECK_FALSE(isForbidden(Home::engineConf, key));
 	}
 
-	std::vector<Held> objects;
-	const std::string& array = top.at("context.objects");
-	spa_json it;
-	REQUIRE(spa_json_begin_array(&it, array.c_str(), array.size()) > 0);
-	const char* value = nullptr;
-	for (int length = 0; (length = spa_json_next(&it, &value)) > 0;) {
-		if (spa_json_is_container(value, length) != 0) length = spa_json_container_len(&it, value, length);
-		objects.push_back(parsed(std::string(value, static_cast<std::size_t>(length))));
+	// A module loaded with arguments would set properties of its own: each is a name and flags alone.
+	const std::vector<Held> modules = elements(top.at("context.modules"));
+	CHECK_FALSE(modules.empty());
+	for (const Held& module : modules) {
+		INFO((module.contains("name") ? module.at("name") : std::string("a module with no name")));
+		CHECK(module.contains("name"));
+		for (const auto& [key, value] : module) CHECK((key == "name" || key == "flags"));
 	}
+
+	const std::vector<Held> objects = elements(top.at("context.objects"));
 	REQUIRE(objects.size() == 1); // the internal clock, and nothing else
 	CHECK(objects[0].at("factory") == "spa-node-factory");
 	const Held clock = parsed(objects[0].at("args"));
@@ -541,9 +617,13 @@ TEST_CASE("docs/engine.md lists the property table's rows and forbidden keys, ea
 			return candidate.home == *home && candidate.key == key;
 		});
 		REQUIRE(row != engineProperties.end());
-		CHECK(plain(cell[2]) == row->value);
+		// A value as set is one backticked span, exactly the row's; a value that says how it is computed is prose,
+		// with no backticks.
+		const std::string value = trim(cell[2]);
+		if (value.find('`') != std::string::npos) CHECK(value == "`" + std::string(row->value) + "`");
+		else CHECK(value == row->value);
 		CHECK(cell[3].find("(#" + std::string(row->anchor) + ")") != std::string::npos);
-		CHECK(plain(cell[4]) == row->couplesTo);
+		CHECK_FALSE(trim(cell[4]).empty()); // what it couples to: its home is this page
 		CHECK(plain(cell[5]) == row->pinnedBy);
 	}
 	for (const PropertyRow& row : engineProperties) {

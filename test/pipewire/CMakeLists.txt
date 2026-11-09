@@ -46,3 +46,34 @@ add_test(NAME ear_callback_guard_refuses_checking_only_skipped_files
 		-P "${ear_callback_guard}")
 set_tests_properties(ear_callback_guard_refuses_checking_only_skipped_files PROPERTIES
 	PASS_REGULAR_EXPRESSION "the guard would check nothing")
+
+# Every PipeWire property ear sets takes its key from the property table (docs/engine.md#properties-ear-sets): the
+# guard over src/, and the guard itself refusing each way to set one around the table that it knows
+# (property_guard/<spelling>.snippet), letting through property(), bound names, reads and look-alikes (allowed.snippet),
+# skipping tests (tests/excluded.snippet), and refusing to check nothing.
+set(ear_property_guard "${CMAKE_CURRENT_SOURCE_DIR}/property_guard.cmake")
+set(ear_property_snippets "${CMAKE_CURRENT_SOURCE_DIR}/property_guard")
+add_test(NAME ear_properties_from_the_table
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_property_guard}")
+foreach(spelling pw_properties_new pw_properties_new_later pw_properties_set pw_properties_setf spa_dict_item_init
+		spa_dict_item pw_properties_new_string pw_properties_update_string pw_context_load_module)
+	add_test(NAME ear_property_guard_refuses_${spelling}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=${spelling}.snippet"
+			-P "${ear_property_guard}")
+	set_tests_properties(ear_property_guard_refuses_${spelling} PROPERTIES
+		PASS_REGULAR_EXPRESSION "${spelling}\\.snippet:1: sets a property outside the table")
+endforeach()
+add_test(NAME ear_property_guard_allows_the_table_and_reads
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=allowed.snippet" -P "${ear_property_guard}")
+set_tests_properties(ear_property_guard_allows_the_table_and_reads PROPERTIES
+	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, every property set from the table")
+add_test(NAME ear_property_guard_skips_tests
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=allowed.snippet\;tests/excluded.snippet"
+		-P "${ear_property_guard}")
+set_tests_properties(ear_property_guard_skips_tests PROPERTIES
+	PASS_REGULAR_EXPRESSION "property_guard: 1 files under .*, every property set from the table")
+add_test(NAME ear_property_guard_refuses_checking_nothing
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_property_snippets}" "-DGLOB=no-such-file.snippet"
+		-P "${ear_property_guard}")
+set_tests_properties(ear_property_guard_refuses_checking_nothing PROPERTIES
+	PASS_REGULAR_EXPRESSION "the guard would check nothing")
