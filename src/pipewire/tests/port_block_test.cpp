@@ -1433,7 +1433,9 @@ TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks]
 
 /// Writes `value` to every output; once armed, holds the data thread inside one process() until the test releases it
 /// (an event: once it has made its requests), so requests made meanwhile reach the data loop together, in one invoke,
-/// before any further cycle. Held 5 s unreleased, it lets go and says it overran, which only fails the test.
+/// before any further cycle. It blocks on `released` (a futex wait, not a spin): a realtime data thread spinning or
+/// yielding on one core would keep the normal-priority main thread that releases it from running at all. A
+/// `ReleaseHold` frees it however the test ends, so a failing test never leaves the data thread held.
 class Holding final : public AudioCode {
 public:
 	Holding(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
@@ -1444,12 +1446,7 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			holding.store(true, std::memory_order_release);
 			waiter_.wake();
-			const auto until = std::chrono::steady_clock::now() + 5s;
-			// Yields as it spins: a realtime data thread on one or two cores would otherwise keep the main thread, which
-			// releases it, from running at all.
-			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until)
-				std::this_thread::yield();
-			overran.store(!released.load(std::memory_order_acquire), std::memory_order_release);
+			released.wait(false, std::memory_order_acquire);
 			holding.store(false, std::memory_order_release);
 		}
 		waiter_.wake();
@@ -1458,11 +1455,29 @@ public:
 	std::atomic<bool> armed{false};
 	std::atomic<bool> holding{false};
 	std::atomic<bool> released{false};
-	std::atomic<bool> overran{false}; // the hold ended unreleased: the test never released it
+	void letGo() noexcept {
+		released.store(true, std::memory_order_release);
+		released.notify_all();
+	}
 
 private:
 	Waiter& waiter_;
 	float value_;
+};
+
+/// Lets a `Holding` go when the test ends, passed or failed, before anything that needs the data thread is torn down.
+class ReleaseHold {
+public:
+	explicit ReleaseHold(Holding& holding) : holding_(holding) {}
+	ReleaseHold(const ReleaseHold&) = delete;
+	ReleaseHold& operator=(const ReleaseHold&) = delete;
+	~ReleaseHold() {
+		holding_.armed.store(false, std::memory_order_release);
+		holding_.letGo();
+	}
+
+private:
+	Holding& holding_;
 };
 
 TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blocks][fade][async]") {
@@ -1481,6 +1496,7 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 	const bool faded[] = {true};
 	REQUIRE(wiring.link(waiter, {"fader", "out.a"}, {"listener", "in.1"}));
 	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; })); // silent so far
+	const ReleaseHold releaseHold(half); // destroyed first: never leaves the data thread held
 
 	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output. Judged on a take-up
 	// the listener heard with no jump of the clock around it (see below); after a jump, silence and again.
@@ -1536,9 +1552,8 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 		const int driveTag = tag++;
 		block->fadeOut(done.fade(fadeTag));
 		block->drive(DriveRequest{&one, faded}, done.drive(driveTag));
-		half.released.store(true);
+		half.letGo();
 		REQUIRE(waiter.until([&] { return done.has(driveTag); }));
-		REQUIRE_FALSE(half.overran.load());
 		const std::uint64_t taken = done.takens.back();
 		std::size_t again = heldAt;
 		REQUIRE(waiter.until([&] {

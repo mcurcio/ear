@@ -64,9 +64,11 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   a sink's stretches exactly the code's) is checked every time. A model of a rule the design defines
   over jumps applies the rule: S5's source takes a jump beyond its capacity as a new clock and
   re-anchors, as the source rule says, instead of counting a drift. What excuses a jump is checked
-  against the engine, never taken from it: each jump must be time the raw clock shows was lost (within
-  two cycles and the driver's 1 ms clamp), so a host's stall is excused and an engine that jumps
-  further than time went fails.
+  against the engine, never taken from it: each jump must be time the raw clock shows was lost, that
+  is, the position may never lead the raw clock by more than the driver's 1 ms clamp and its wake
+  latency (two cycles' room), so a host's stall is excused and an engine that jumps further than time
+  went fails. S5 reads `CLOCK_MONOTONIC_RAW` itself; part A reads it in its code too, never the
+  driver's own stamp.
 
 ### A writer's own event
 

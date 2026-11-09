@@ -290,7 +290,7 @@ with a writer waiting and the wake ringing. Once a stop's silence completed, `No
 source `stopped()` (its ring dropped); at a teardown's first step it closes each writer, and frees
 the sources after the instance. The rules a source plays by are
 [writing-a-node-type.md](writing-a-node-type.md#sources)'s; `EventSources` adds only the writer's
-wait (`poll` on an eventfd) and the played wake's eventfd, and one test seam:
+wait (`poll` on an eventfd) and the played wake's eventfd, and three test seams:
 `EventSources::waitsBegun(source)` counts the waits a writer began, each past its last look at the
 ring, `waitsWoken(source)` how many of them the room descriptor ended (a play or the close, not the
 patience), and `waitDeadline(patience)` is when a wait of that patience ends, so a

@@ -380,6 +380,13 @@ private:
 	std::atomic<std::size_t> count_{0};
 };
 
+/// CLOCK_MONOTONIC_RAW now, in nanoseconds: the clock the dummy driver tracks, read independently of its stamps.
+std::int64_t rawNsNow() noexcept {
+	timespec now{};
+	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+	return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
+}
+
 /// What the block's code saw of a cycle: its position and frames, its start, and the source's Played after it played;
 /// with a source and a writer to watch, the source's shortfall after it played, and the frames the writer had written
 /// by the cycle's end (so by the next cycle's play, at least that many).
@@ -390,6 +397,8 @@ struct CodeCycle {
 	Played played;
 	std::uint64_t shortfall = 0;
 	std::uint64_t written = 0;
+	/// CLOCK_MONOTONIC_RAW read by the code itself at its entry: a clock the driver's own stamp cannot move.
+	std::int64_t entryRawNs = 0;
 };
 
 /// The block's code: out = from_writer (the source's bank, as the code reads it), each cycle logged with the source's
@@ -411,7 +420,7 @@ public:
 		const std::atomic<std::uint64_t>* written = writtenBy.load(std::memory_order_acquire);
 		log.add(CodeCycle{cycle.position, frames, cycle.startRawNs, writer_.played(),
 		                  source != nullptr ? source->shortfallFrames() : 0,
-		                  written != nullptr ? written->load(std::memory_order_acquire) : 0});
+		                  written != nullptr ? written->load(std::memory_order_acquire) : 0, rawNsNow()});
 		calls.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
@@ -765,11 +774,13 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 				++j.jumps;
 				jump = c.position - p->position - p->frames;
 				j.largestJump = std::max(j.largestJump, jump);
-				// The jump is time the graph really lost: the raw clock at this cycle's start had passed the last
-				// one's end by as much, within two cycles and the driver's 1 ms error clamp. A host's stall is
-				// excused that way; an engine that jumped further than time went is not.
+				// The jump is time the graph really lost: the raw clock, read by the code itself at this cycle's entry,
+				// had passed the last one's end by as much. Since the last end cancels out, this says the position
+				// never leads the raw clock by more than the driver's 1 ms error clamp and its wake latency (two
+				// cycles' room). A host's stall only makes the position lag, so it is excused; an engine that jumped
+				// further than time went is not.
 				const auto rawFrames =
-					static_cast<std::int64_t>(static_cast<__int128>(c.startRawNs) * kRate / 1'000'000'000);
+					static_cast<std::int64_t>(static_cast<__int128>(c.entryRawNs) * kRate / 1'000'000'000);
 				const std::int64_t lost = rawFrames - static_cast<std::int64_t>(p->position + p->frames);
 				const std::int64_t over = static_cast<std::int64_t>(jump) - lost;
 				j.mostOverLost = std::max(j.mostOverLost, over);

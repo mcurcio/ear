@@ -766,8 +766,9 @@ constexpr std::uint32_t kS5Capacity = 2048;
 /// short on its own only by chance (S2: 1 to 17 in 25 s idle; one GitHub runner 9 in 60 s beside a busy thread per core,
 /// where a loaded workstation cut 5,000), so S5 never waits for those: they are counted with the rest when they come.
 constexpr std::size_t kS5Overruns = 200;
-/// How far a position jump may outrun the time the raw clock shows was lost: two cycles (the driver's timeout after an
-/// overrun, and the cycle cut) and its 1 ms error clamp.
+/// How far a position jump may outrun the time the raw clock shows was lost. Since the last end cancels out, this bounds
+/// how far the position may lead the raw clock: the driver's 1 ms error clamp plus its wake latency, with two cycles'
+/// room for the latter; a stall only makes the position lag.
 constexpr std::uint64_t kJumpSlack = 2 * kS2Block + kRate / 1000;
 constexpr std::size_t kS5OverrunEvery = 16;
 /// About 4.5 s at 750 cycles a second; the deadline only fails the test.
