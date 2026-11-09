@@ -171,7 +171,7 @@ The header is the declaration's text; this table gives what the header's comment
 | `CreateContext` (abstract) | `NodeHost` (its `Node`), valid only inside `configure` | main loop | a call outside `configure`, a second `use`, a bank direction a value contradicts: `std::logic_error` naming the node and the call |
 | `NodeOf<Spec>` | `SpecInstance`, a member before the type's object; the type keeps `NodeOf<spec>&` | main loop (but `handle()`) | none |
 | `CreateOf<Spec>` | `SpecInstance`, on its stack for one `configure` call; never copied | main loop | compile time: a bank of another spec, of the wrong reach or direction; run time: `use` of a code written against another spec (`std::logic_error`) |
-| `ChangeOf<Spec>` | declared, never defined in 3a | — | a class that writes the change version does not compile (D-M2) |
+| `ChangeOf<Spec>` | declared in 3a; a class may write the change version, and 3a never calls it | — | every change restarts the node in 3a whatever the class writes (D-M2, the owner's Q1) |
 | `InstanceContexts` | `NodeHost`, on its stack for one `configure` | main loop | — |
 | `ErasedInstance` (abstract) | `NodeConfig::make` returns it in a `std::unique_ptr`; the `Configuration` owns it | main loop | a type's exception passes through every call; `NodeHost` catches it there (3.3) |
 | `spec_detail::SpecInstance<Spec, Type>` | `SpecConfig::make` | main loop | the class's checks are `static_assert`s (3.10) |
@@ -1035,7 +1035,7 @@ Each is technical or internal; the owner can overturn any. Section 10 asks what 
 | # | Decision | Why |
 |---|---|---|
 | D-M1 | `lifecycle.hpp` is the type author's API and, from L-4a, the home of `SpecConfig`, `SpecNodeType` and `makeNodeType`; `type_spec.hpp` keeps the spec vocabulary | They now make an instance, which needs the contexts; `type_spec.hpp` including `lifecycle.hpp` would be a cycle, since `CreateOf` needs bank handles and `CheckedOf` |
-| D-M2 | `ChangeOf<Spec>` is declared, not defined, in 3a, and a class that writes the change version does not compile ("the change version of configure is slice 3d's") | node-lifecycle.md puts the change version in 3d; a version 3a would never call is the "near miss never called" the class checks exist to refuse. Question Q1 |
+| D-M2 | The owner's answer to Q1 (2026-11-09: "Accept, ignore until 3d"): a class that writes the change version compiles, and 3a never calls it: every change restarts the node. `SpecInstance` checks only its signature (a change version of the wrong shape still does not compile), `ChangeOf<Spec>` is declared so the signature can name it, and AGENTS.md's "Adding a node type" says the change version is ignored until slice 3d. L-4a builds this; no type is given one before 3d | The owner chose it over this page's recommendation (refuse until 3d) |
 | D-M3 | Every rule a type breaks inside or at the return of `configure` fails the node `start-failed` with the rule's text; none escapes `NodeHost` (D-L40, as built, excepted) | node-framework.md 6.10 says each is a `std::logic_error`; 6.4 says a hook that throws is caught and "one type's bug never takes ear down". A `logic_error` thrown at the call escapes `configure` and is caught as its throw; the return checks make the same failure, so both readings hold |
 | D-M4 | The sink's declarations have one header, `sink.hpp`, not `node_type.hpp` and `node_host.hpp` as node-lifecycle.md 6's table placed them | One home for the sink; `lifecycle.hpp` needs `SinkConsumer` without `node_host.hpp`; it lands without touching two frozen headers L-3d is editing |
 | D-M5 | `SinkConsumer` has a public virtual destructor | node-primitives.md 6.6 gives it a protected non-virtual one, but `consumedBy(std::unique_ptr<SinkConsumer>)` deletes it through the base, which does not compile with that destructor |
@@ -1076,22 +1076,8 @@ Nothing found is wrong in the sense of unbuildable, but item 1, which does not c
 
 ## 10. Questions for the owner
 
-**Q1. A type that writes the change version of `configure` before slice 3d: refuse it, or accept and ignore it?**
-
-Background: you asked for `configure` in two versions (R33): one for creation, required, and one for a change,
-optional. Slice 3a builds only the creation version: every change of settings restarts the node, and the change
-version (with holds and make-before-break) comes in slice 3d. A type author could write the change version now, for
-example to get ready for 3d.
-
-Scenario: someone writes `rtp`'s change version in December, before 3d lands, expecting a port change to retune in
-place. With "accept and ignore", it compiles and ear restarts the node on every change anyway, silently never calling
-it; the author learns only by watching the records (`stopping: restarting (settings changed: port)`). With "refuse", it
-does not compile, with "the change version of configure is slice 3d's: in 3a every change restarts the node".
-
-Options: (a) refuse at compile time until 3d; (b) accept, never call it until 3d, and say so in AGENTS.md.
-
-Recommendation: (a). It matches the rule the class checks already follow (a near miss is refused rather than never
-called), costs nothing to lift in 3d, and no built type needs the change version before then.
+**Q1 (answered 2026-11-09).** A type that writes the change version of `configure` before slice 3d: refuse it, or
+accept and ignore it? The owner: "Accept, ignore until 3d". D-M2 records what L-4a builds. No question is open.
 
 ## 11. Review record
 
