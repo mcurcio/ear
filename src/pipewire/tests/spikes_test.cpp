@@ -57,6 +57,7 @@
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
+#include "inducers.hpp"
 #include "probes.hpp"
 #include "rtp_tone.hpp"
 #include "temp_folder.hpp"
@@ -66,6 +67,9 @@ using namespace ear;
 using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
 using namespace std::chrono_literals;
+using ear::test::StallLength;
+using ear::test::StallPlan;
+using ear::test::Stalls;
 
 class PortLog final : public LivePortListener {
 public:
@@ -407,26 +411,15 @@ std::uint64_t rawFramesNow() noexcept {
 }
 
 /// Which recorded cycles a probe overruns (S5): those whose index in its log is `phase` modulo `every`, the first
-/// `limit` of them; none when `every` is 0.
-struct Overruns {
-	std::size_t every = 0;
-	std::size_t phase = 0;
-	std::size_t limit = 0; // overruns at most
-	bool at(std::size_t n) const noexcept { return every != 0 && n % every == phase && n / every < limit; }
-};
-
-/// S5's overrun: sleeps one and a half of the clock's cycles inside a probe's process, so the driver's next timeout
-/// expires before the probe returns. Every node on the one data loop is woken by an eventfd its upstream writes as it
-/// finishes, and the loop dispatches ready sources in the order they became ready (spa's loop_iterate over epoll), so
-/// the timer's is dispatched first: node_ready (impl-node.c) starts the next cycle and resets the node this probe just
-/// triggered, whose wake then finds it no longer triggered. That cycle is cut short straight after this probe, whatever
-/// the host's load. The half cycle beyond the timeout is a margin; the driver may cut a cycle or two more as it catches
-/// up, which S5 counts with the host's own.
-void overrun(const spa_io_clock& clock) noexcept {
-	const std::uint64_t nanoseconds = clock.duration * 3 * 1'000'000'000ULL / (2 * kRate);
-	const timespec pause{static_cast<time_t>(nanoseconds / 1'000'000'000ULL),
-	                     static_cast<long>(nanoseconds % 1'000'000'000ULL)};
-	nanosleep(&pause, nullptr);
+/// `limit` of them, each by one and a half of the clock's cycles slept inside the probe's process, so the driver's next
+/// timeout expires before the probe returns. Every node on the one data loop is woken by an eventfd its upstream writes
+/// as it finishes, and the loop dispatches ready sources in the order they became ready (spa's loop_iterate over
+/// epoll), so the timer's is dispatched first: node_ready (impl-node.c) starts the next cycle and resets the node this
+/// probe just triggered, whose wake then finds it no longer triggered. That cycle is cut short straight after this
+/// probe, whatever the host's load. The half cycle beyond the timeout is a margin; the driver may cut a cycle or two
+/// more as it catches up, which S5 counts with the host's own.
+StallPlan overruns(std::size_t every, std::size_t phase, std::size_t limit) {
+	return StallPlan::every(every, phase, limit, StallLength::cycles(1.5));
 }
 
 /// U: records its cycles, with the raw clock on entry, and stamps every frame it writes with its cycle's position
@@ -434,8 +427,8 @@ void overrun(const spa_io_clock& clock) noexcept {
 /// With `overruns` (S5), it overruns those of its recorded cycles once it has written its output.
 class Upstream final : public ProbeCode {
 public:
-	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity, Overruns overruns = {})
-		: shared_(shared), overruns_(overruns), log(capacity), rawAtEntry(capacity), overran(capacity) {}
+	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity, StallPlan overruns = {})
+		: shared_(shared), overruns_(std::move(overruns)), log(capacity), rawAtEntry(capacity), overran(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -444,25 +437,21 @@ public:
 		if (!shared_.recording.load(std::memory_order_acquire)) return;
 		if (const auto n = log.add(clock.position, sequence)) {
 			rawAtEntry[*n] = raw;
-			const bool overrunning = overruns_.at(*n);
-			overran[*n] = overrunning ? 1 : 0;
+			overran[*n] = overruns_.plan().planned(*n) ? 1 : 0;
 			log.commit(*n);
-			if (overrunning) {
-				overrun(clock);
-				overrunCount.fetch_add(1, std::memory_order_release);
-			}
+			overruns_(*n, clock.duration, kRate);
 		}
 	}
+	std::size_t overrunCount() const { return overruns_.made(); }
 
 private:
 	Shared& shared_;
-	Overruns overruns_;
+	Stalls overruns_;
 
 public:
 	CycleLog log;
 	std::vector<std::uint64_t> rawAtEntry;
 	std::vector<std::uint8_t> overran; // per cycle: U overran it
-	std::atomic<std::size_t> overrunCount{0};
 };
 
 /// B: docs/engine.md#drive-and-fade take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives
@@ -793,9 +782,9 @@ constexpr std::size_t kS5Log = 750 * 40;
 /// `overruns` of its recorded cycles once it has played.
 class RingSource final : public ProbeCode {
 public:
-	RingSource(Shared& shared, Waiter& waiter, Overruns overruns)
-		: shared_(shared), waiter_(waiter), overruns_(overruns), ring_(kS5Capacity), log(kS5Log), totalBefore(kS5Log),
-		  stamp(kS5Log), uniform(kS5Log), overran(kS5Log) {
+	RingSource(Shared& shared, Waiter& waiter, StallPlan overruns)
+		: shared_(shared), waiter_(waiter), overruns_(std::move(overruns)), ring_(kS5Capacity), log(kS5Log),
+		  totalBefore(kS5Log), stamp(kS5Log), uniform(kS5Log), overran(kS5Log) {
 		for (std::uint32_t k = 0; k < kS5Capacity; ++k) ring_[k] = rampAt(k);
 	}
 	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_acquire); }
@@ -831,20 +820,15 @@ public:
 		const float* in = inputs[0];
 		bool same = true;
 		for (std::uint32_t i = 1; i < frames; ++i) same = same && in[i] == in[0];
-		bool overrunning = false;
 		if (recording) {
 			if (const auto n = log.add(at, sequence)) {
 				totalBefore[*n] = before;
 				stamp[*n] = in[0];
 				uniform[*n] = same ? 1 : 0;
-				overrunning = overruns_.at(*n);
-				overran[*n] = overrunning ? 1 : 0;
+				overran[*n] = overruns_.plan().planned(*n) ? 1 : 0;
 				log.commit(*n);
+				overruns_(*n, clock.duration, kRate);
 			}
-		}
-		if (overrunning) {
-			overrun(clock);
-			overrunCount.fetch_add(1, std::memory_order_release);
 		}
 		cycles_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
@@ -859,7 +843,7 @@ private:
 
 	Shared& shared_;
 	Waiter& waiter_;
-	Overruns overruns_;
+	Stalls overruns_;
 	// Data thread only.
 	std::vector<float> ring_;
 	std::uint64_t total_ = 0;
@@ -877,7 +861,7 @@ public:
 	std::vector<float> stamp;               // per cycle: the first frame read from U
 	std::vector<std::uint8_t> uniform;      // per cycle: every frame read from U was that one
 	std::vector<std::uint8_t> overran;      // per cycle: B overran it
-	std::atomic<std::size_t> overrunCount{0};
+	std::size_t overrunCount() const { return overruns_.made(); }
 };
 
 /// S5's D: per cycle, whether every frame is B's ring frame of that position, rampAt(position - B's first position + i).
@@ -1320,7 +1304,7 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
           "upstream and after it, overrun on purpose under an invoke storm beside a busy thread per core",
           "[spike][s2][s5]") {
 	// U → B → D at S2's block under its storm, beside a busy thread per core. U overruns kS5Overruns of its cycles and
-	// B as many of its own, so each of those is cut short straight after the probe that overran it (overrun()), on any
+	// B as many of its own, so each of those is cut short straight after the probe that overran it (overruns()), on any
 	// host; the host's own cut-short cycles come with them, as many as it makes. Part A, the gate: across every cycle B
 	// ran, `total - (position - first position)` stays what it was (no drift across a cut-short cycle), and in every
 	// cycle B and D both ran D heard B's ring frame of that position, sample for sample. Part B, recorded only: in B's
@@ -1331,8 +1315,8 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	Waiter waiter(*engine);
 	Wiring wiring(*engine, waiter);
 	Shared shared;
-	Upstream upCode(shared, kS5Log, Overruns{kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns});
-	RingSource sourceCode(shared, waiter, Overruns{kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns});
+	Upstream upCode(shared, kS5Log, overruns(kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns));
+	RingSource sourceCode(shared, waiter, overruns(kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns));
 	RampListener downCode(shared, sourceCode);
 	Probe up(*engine, waiter, "u", 0, 1, upCode);
 	Probe block(*engine, waiter, "b", 1, 1, sourceCode);
@@ -1353,7 +1337,7 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	const auto start = std::chrono::steady_clock::now();
 	const bool overrunAll = waiter.until(
 		[&] {
-			return (upCode.overrunCount.load() >= kS5Overruns && sourceCode.overrunCount.load() >= kS5Overruns) ||
+			return (upCode.overrunCount() >= kS5Overruns && sourceCode.overrunCount() >= kS5Overruns) ||
 		           upCode.log.full.load();
 		},
 		kS5Deadline);
@@ -1365,8 +1349,7 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	busy.reset();
 	storm.stop();
 	REQUIRE(waiter.until([&] { return stormCounts.drained(); }));
-	INFO("overruns in " << seconds << " s: U " << upCode.overrunCount.load() << ", B "
-	                    << sourceCode.overrunCount.load());
+	INFO("overruns in " << seconds << " s: U " << upCode.overrunCount() << ", B " << sourceCode.overrunCount());
 	REQUIRE(overrunAll);
 	REQUIRE_FALSE(upCode.log.full.load());
 	REQUIRE_FALSE(sourceCode.log.full.load());

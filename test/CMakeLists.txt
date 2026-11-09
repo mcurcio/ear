@@ -97,3 +97,55 @@ target_compile_definitions(ear_sendspin_server INTERFACE
 
 # ear_node_types_tests: what holds for every node type together (each type's own tests are in src/nodes/<type>).
 add_subdirectory(nodes)
+
+# ear_inducers: the rare events a test makes itself (test/support/inducers.hpp, header-only): planned data-thread stalls
+# and the cycle ledger that judges over clean cycles (docs/testing.md#making-the-rare-event). ear_statistics: a
+# statistical bound from the count measured (test/support/statistics.hpp, docs/testing.md#statistics-from-the-count).
+add_library(ear_inducers INTERFACE)
+target_include_directories(ear_inducers INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_link_libraries(ear_inducers INTERFACE ear_core)
+add_library(ear_statistics INTERFACE)
+target_include_directories(ear_statistics INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
+# ear_test_support_tests: the tools themselves, on cycles and samples made by hand.
+add_executable(ear_test_support_tests support/tests/inducers_test.cpp support/tests/statistics_test.cpp)
+target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_statistics ear_catch_main)
+ear_catch_tests(ear_test_support_tests)
+
+# The sleep guard (docs/testing.md#the-sleep-guard): every sleep and WARN in the tests and their support listed in
+# sleeps.txt with its role; and the guard itself refusing each spelling it knows (sleep_guard/<spelling>.snippet),
+# letting through what only looks like one (allowed.snippet, allowed.py.snippet), taking a listed line as often as it
+# is listed, and refusing a stale entry, a role a line may not have, an unknown role, a luck-wait that names no step, a
+# malformed entry, a missing listing and a check of nothing.
+set(ear_sleep_guard "${CMAKE_CURRENT_SOURCE_DIR}/sleep_guard.cmake")
+set(ear_sleep_guard_dir "${CMAKE_CURRENT_SOURCE_DIR}/sleep_guard")
+add_test(NAME ear_sleeps_are_listed
+	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}"
+		"-DGLOB=test/*.cpp,test/*.hpp,test/*.h,test/*.c,test/*.py,src/*.cpp,src/*.hpp,src/*.h,src/*.c,src/*.py"
+		"-DFILTER=^(test/|src/.*/(tests|testing)/)" "-DLIST=${CMAKE_CURRENT_SOURCE_DIR}/sleeps.txt" -P "${ear_sleep_guard}")
+# ear_sleep_guard_case(<name> <snippet glob> <listing> <regex the output must hold>)
+function(ear_sleep_guard_case name glob listing regex)
+	add_test(NAME ear_sleep_guard_${name}
+		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_sleep_guard_dir}" "-DGLOB=${glob}"
+			"-DLIST=${ear_sleep_guard_dir}/${listing}" -P "${ear_sleep_guard}")
+	set_tests_properties(ear_sleep_guard_${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+endfunction()
+foreach(spelling sleep_for sleep_until usleep nanosleep clock_nanosleep posix_sleep bare_sleep poll_nothing
+		select_nothing time_sleep.py asyncio_sleep.py after_string)
+	ear_sleep_guard_case(refuses_${spelling} ${spelling}.snippet empty.txt "${spelling}\\.snippet:1: unlisted sleep")
+endforeach()
+foreach(spelling warn catch_warn check_nofail)
+	ear_sleep_guard_case(refuses_${spelling} ${spelling}.snippet empty.txt "${spelling}\\.snippet:1: unlisted WARN")
+endforeach()
+ear_sleep_guard_case(allows_lookalikes allowed.snippet empty.txt "1 files under .*, 0 sleeps and WARNs")
+ear_sleep_guard_case(allows_python_lookalikes allowed.py.snippet empty.txt "1 files under .*, 0 sleeps and WARNs")
+ear_sleep_guard_case(takes_listed listed.snippet listed.txt "1 files under .*, 3 sleeps and WARNs, each listed")
+ear_sleep_guard_case(refuses_a_line_listed_once_too_few listed.snippet once.txt "listed\\.snippet:3: unlisted sleep")
+ear_sleep_guard_case(refuses_stale allowed.snippet listed.txt "listed but not found: listed\\.snippet \\| ")
+ear_sleep_guard_case(refuses_warn_as_induce warn.snippet warn_as_induce.txt "listed only as luck or owed, not induce")
+ear_sleep_guard_case(refuses_sleep_owed sleep_for.snippet sleep_owed.txt "a sleep is listed by its role, never owed")
+ear_sleep_guard_case(refuses_unknown_role sleep_for.snippet unknown_role.txt "unknown role 'maybe'")
+ear_sleep_guard_case(refuses_luck_without_step sleep_for.snippet luck_without_step.txt "names no audit step")
+ear_sleep_guard_case(refuses_malformed sleep_for.snippet malformed.txt "malformed\\.txt:2: not '<role>")
+ear_sleep_guard_case(refuses_missing_listing sleep_for.snippet no-such-listing.txt "does not exist")
+ear_sleep_guard_case(refuses_checking_nothing no-such-file.snippet empty.txt "the guard would check nothing")

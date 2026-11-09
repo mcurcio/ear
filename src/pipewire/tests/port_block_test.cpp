@@ -32,7 +32,9 @@
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "inducers.hpp"
 #include "probes.hpp"
+#include "quiescence.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
 // binary's one malloc hook.
@@ -42,6 +44,10 @@ namespace {
 using namespace ear;
 using namespace ear::pipewire;
 using namespace std::chrono_literals;
+using ear::test::CycleLedger;
+using ear::test::StallingCode;
+using ear::test::StallLength;
+using ear::test::StallPlan;
 
 constexpr std::uint32_t kRate = 48000;
 constexpr std::uint32_t kBlock = 256;
@@ -812,6 +818,7 @@ public:
 			const Latency latency = cycle.downstreamOf(i);
 			seen_[i].store((std::uint64_t{latency.minFrames} << 32U) | latency.maxFrames, std::memory_order_relaxed);
 		}
+		cycles_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
@@ -819,10 +826,13 @@ public:
 		const std::uint64_t word = seen_[output].load(std::memory_order_relaxed);
 		return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word)};
 	}
+	/// Whole cycles run, for Quiescence::quiesce.
+	std::uint64_t cycles() const { return cycles_.load(std::memory_order_acquire); }
 
 private:
 	Waiter& waiter_;
 	std::vector<std::atomic<std::uint64_t>> seen_;
+	std::atomic<std::uint64_t> cycles_{0};
 };
 
 } // namespace
@@ -835,6 +845,7 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
 	// source:out -> mid:in, mid's pair in -> thru; mid:thru.1 -> sink:in (thru.2 is linked to nothing), and mid's
 	// unpaired bank side -> other:in. sink declares 300 frames on its input (a following card would report its buffer
 	// there), other 900.
@@ -868,6 +879,8 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	CHECK(waiter.until([&] { return midProbe.downstream(0) == Latency{300, 300}; }));
 	CHECK(waiter.until([&] { return midProbe.downstream(1) == Latency{300, 300}; }));
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{310, 320}; }));
+	// What was not waited for is read once every retell has reached every block.
+	REQUIRE(settled.quiesce({[&] { return midProbe.cycles(); }, [&] { return sourceProbe.cycles(); }}));
 	CHECK(midProbe.downstream(2) == Latency{900, 900});
 	CHECK(sourceProbe.downstream(1) == Latency{});
 
@@ -915,6 +928,7 @@ TEST_CASE("A companion's latency beyond an inside bank is added in series to tha
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
 	// rx: a receiver's 480 to 960 beyond its inside input from_rtp, paired with stream; rx:stream.1 -> rec:in.1, and
 	// rec's sink on writer, paired with in, stamps what rec tells there. Capture runs rx -> rec.
 	LatencyProbe rxProbe(waiter, 1), recProbe(waiter, 1);
@@ -956,12 +970,12 @@ TEST_CASE("A companion's latency beyond an inside bank is added in series to tha
 	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{256, 256}; }));
 	REQUIRE(wiring.link(waiter, {"feed", "out.1"}, {"card", "play.1"}));
 	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{256, 256}; }));
-	// A plan without it carries nothing.
+	// A plan without it carries nothing, to card's code and, once the retell reached it, to feed's: read once the
+	// engine has settled and each has run a whole cycle since.
 	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {}});
-	// Each probe sees it at its own next cycle after the retell; feed runs first in a cycle (it feeds card), so feed's
-	// sighting wakes the waiter before card's code has run that cycle: wait for card's too.
-	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{}; }));
-	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{}; }));
+	REQUIRE(settled.quiesce({[&] { return feedProbe.cycles(); }, [&] { return cardProbe.cycles(); }}));
+	CHECK(feedProbe.downstream(0) == Latency{});
+	CHECK(cardProbe.downstream(0) == Latency{});
 
 	REQUIRE(ear::testing::driveNow(*rx, nullptr));
 	REQUIRE(ear::testing::driveNow(*rec, nullptr));
@@ -1766,54 +1780,17 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 
 namespace {
 
-/// Records each cycle's position and raw start, and stalls the data thread once for each of `stalls` (cycle, ms).
-class StallingLog final : public AudioCode {
-public:
-	struct Stall {
-		std::size_t atCycle;
-		std::chrono::milliseconds length;
-	};
-	StallingLog(Waiter& waiter, std::size_t capacity, std::vector<Stall> stalls)
-		: waiter_(waiter), position_(capacity), startRawNs_(capacity), rateDiff_(capacity), stalls_(std::move(stalls)) {
-	}
-	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const ear::GraphCycle& cycle) noexcept override {
-		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-		const std::size_t at = count_.load(std::memory_order_relaxed);
-		if (at < position_.size()) {
-			position_[at] = cycle.position;
-			startRawNs_[at] = cycle.startRawNs;
-			rateDiff_[at] = cycle.rateDiff;
-			count_.store(at + 1, std::memory_order_release);
-			for (const Stall& stall : stalls_) {
-				if (stall.atCycle == at) std::this_thread::sleep_for(stall.length); // the data thread stalls
-			}
-		}
-		waiter_.wake();
-	}
-	void release() noexcept override {}
-	std::size_t count() const { return count_.load(std::memory_order_acquire); }
-	std::size_t capacity() const { return position_.size(); }
-	/// Where the graph's position lies against the raw clock, in frames, at cycle `i` (a constant while it tracks it).
-	double phase(std::size_t i) const {
-		return static_cast<double>(position_[i]) - static_cast<double>(startRawNs_[i]) * kRate / 1e9;
-	}
-	/// The phase averaged over cycles [from, to).
-	double phase(std::size_t from, std::size_t to) const {
-		double sum = 0.0;
-		for (std::size_t i = from; i < to; ++i) sum += phase(i) - phase(0);
-		return sum / static_cast<double>(to - from);
-	}
-	std::vector<std::uint64_t> position_;
-	std::vector<std::int64_t> startRawNs_;
-	std::vector<double> rateDiff_;
-
-private:
-	Waiter& waiter_;
-	std::vector<Stall> stalls_;
-	std::atomic<std::size_t> count_{0};
-};
+/// Where the graph's position lies against the raw clock, in frames, at cycle `i` of `ledger` (a constant while it
+/// tracks it).
+double phase(const CycleLedger& ledger, std::size_t i) {
+	return static_cast<double>(ledger[i].position) - static_cast<double>(ledger[i].startRawNs) * kRate / 1e9;
+}
+/// The phase averaged over cycles [from, to).
+double phase(const CycleLedger& ledger, std::size_t from, std::size_t to) {
+	double sum = 0.0;
+	for (std::size_t i = from; i < to; ++i) sum += phase(ledger, i) - phase(ledger, 0);
+	return sum / static_cast<double>(to - from);
+}
 
 } // namespace
 
@@ -1827,22 +1804,29 @@ private:
 TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and "
           "keeps its phase to the raw clock",
           "[port_blocks][clock]") {
-	using Stall = StallingLog::Stall;
+	struct Stall {
+		std::size_t atCycle;
+		std::chrono::milliseconds length;
+	};
 	const std::vector<Stall> stalls{{200, 30ms}, {600, 60ms}, {1000, 120ms}};
+	std::vector<StallPlan::At> plan;
+	for (const Stall& stall : stalls) plan.push_back({stall.atCycle, StallLength::of(stall.length)});
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
-	StallingLog log(waiter, 1400, stalls);
+	StallingCode code(1400, StallPlan::at(plan), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
 	BlockEvents events(waiter);
 	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	REQUIRE(ear::testing::driveNow(*block, &log));
-	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 30s));
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 30s));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == stalls.size());
 
 	std::size_t back = 0, notWhole = 0, jumps = 0;
 	for (std::size_t i = 1; i < log.capacity(); ++i) {
-		const std::uint64_t before = log.position_[i - 1], now = log.position_[i];
+		const std::uint64_t before = log[i - 1].position, now = log[i].position;
 		if (now <= before) ++back;
 		else if ((now - before) % kBlock != 0) ++notWhole;
 		else if (now - before > kBlock) ++jumps;
@@ -1856,8 +1840,8 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in 
 	for (const Stall& stall : stalls) {
 		// Before: the cycles just ahead of the stall. After: a second on, when the catching up is long over. The loop's own
 		// wander over that second is a few frames (140 ppm at worst, before it has settled: 7 frames).
-		const double before = log.phase(stall.atCycle - 60, stall.atCycle - 10);
-		const double after = log.phase(stall.atCycle + 190, stall.atCycle + 240);
+		const double before = phase(log, stall.atCycle - 60, stall.atCycle - 10);
+		const double after = phase(log, stall.atCycle + 190, stall.atCycle + 240);
 		INFO("stall of " << stall.length.count() << " ms at cycle " << stall.atCycle << ": phase " << before
 		                 << " frames before, " << after << " after");
 		CHECK(std::abs(after - before) < 48.0); // 1 ms: the driver's own error clamp, well under one block
@@ -1873,30 +1857,31 @@ TEST_CASE(
 	"After a 3 s data-thread stall the internal clock never steps back, and 5 s on runs within 150 ppm of the raw "
 	"clock",
 	"[port_blocks][clock]") {
-	using Stall = StallingLog::Stall;
 	constexpr std::size_t stallAt = 200;
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
-	StallingLog log(waiter, 2400, {Stall{stallAt, 3000ms}});
+	StallingCode code(2400, StallPlan::at({{stallAt, StallLength::of(3000ms)}}), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
 	BlockEvents events(waiter);
 	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
-	REQUIRE(ear::testing::driveNow(*block, &log));
-	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 60s));
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 60s));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == 1);
 
 	std::size_t back = 0;
-	for (std::size_t i = 1; i < log.capacity(); ++i) back += log.position_[i] <= log.position_[i - 1] ? 1 : 0;
+	for (std::size_t i = 1; i < log.capacity(); ++i) back += log[i].position <= log[i - 1].position ? 1 : 0;
 	CHECK(back == 0);
 	// From 5 s after the stall ended to the log's end.
-	const std::int64_t stallEndNs = log.startRawNs_[stallAt] + 3'000'000'000;
+	const std::int64_t stallEndNs = log[stallAt].startRawNs + 3'000'000'000;
 	double worstPpm = 0.0;
 	std::size_t judged = 0;
 	for (std::size_t i = stallAt + 1; i < log.capacity(); ++i) {
-		if (log.startRawNs_[i] < stallEndNs + 5'000'000'000) continue;
+		if (log[i].startRawNs < stallEndNs + 5'000'000'000) continue;
 		++judged;
-		worstPpm = std::max(worstPpm, std::abs(log.rateDiff_[i] - 1.0) * 1e6);
+		worstPpm = std::max(worstPpm, std::abs(log[i].rateDiff - 1.0) * 1e6);
 	}
 	INFO("judged " << judged << " cycles, worst rate " << worstPpm << " ppm off the raw clock");
 	REQUIRE(judged > 100);

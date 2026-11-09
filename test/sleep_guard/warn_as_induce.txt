@@ -1,0 +1,2 @@
+# The sleep guard's own tests: a WARN listed by a sleep's role.
+induce | warn.snippet | WARN("the graph did not settle"); | a WARN is never the event

@@ -428,8 +428,9 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   node's maker).
 - **S5 (slice 3b.0, tag `[s2]`, so serial)**: a source served by its block, on S2's harness
   beside a busy thread per core, about 5 s. It cuts its own cycles short, 200 after U and 200
-  after B, by sleeping past the cycle inside the probe's `process` (never wait for a host to cut
-  cycles short: a GitHub runner cut 9 in 60 s under the same load). Its played count keeps
+  after B, by planned overruns of 1.5 cycles inside the probe's `process` (`StallPlan` and
+  `Stalls`, `docs/testing.md#making-the-rare-event`; never wait for a host to cut cycles short: a
+  GitHub runner cut 9 in 60 s under the same load). Its played count keeps
   to the clock across cut-short cycles (the skip-up-to-capacity rule absorbs every jump), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
@@ -559,7 +560,10 @@ Nothing like WirePlumber runs. Two things make that work:
 - **Tests and the environment.** `engine_test.cpp` unsets `XDG_RUNTIME_DIR`,
   `PIPEWIRE_RUNTIME_DIR`, `PIPEWIRE_REMOTE` and the D-Bus addresses, so it proves the engine
   needs none of them. Its `Waiter` runs the main loop until the awaited events have arrived; a
-  timer only fails the test. Copy that pattern for new engine tests.
+  timer only fails the test. Copy that pattern for new engine tests. A test that needs a stall or a
+  cut-short cycle makes it (`StallingCode`, `Stalls`), judges exactness over a `CycleLedger`'s clean
+  cycles, and reads a retold latency after `Quiescence::quiesce`; a new sleep or `WARN` must be
+  listed in `test/sleeps.txt` (`docs/testing.md#the-tools`).
 
 ## Bumping PipeWire
 

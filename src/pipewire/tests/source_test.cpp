@@ -12,6 +12,7 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <ctime>
 #include <memory>
 #include <optional>
@@ -33,6 +34,7 @@
 #include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
+#include "inducers.hpp"
 #include "probes.hpp"
 
 namespace {
@@ -42,6 +44,9 @@ using namespace ear::pipewire::testing;
 using namespace std::chrono_literals;
 
 using Clock = std::chrono::steady_clock;
+using ear::test::StallLength;
+using ear::test::StallPlan;
+using ear::test::Stalls;
 
 /// One value per frame of a stream, nonzero and exact as a float.
 float rampAt(std::uint64_t frame) noexcept { return static_cast<float>((frame & 0xFFFFFFU) + 1U); }
@@ -460,29 +465,24 @@ public:
 	CycleLog<HeardCycle> log;
 };
 
-/// U: upstream of rx, logging each cycle's position; while armed it sleeps past the quantum every `every` cycles, so
-/// the driver's next timeout comes before the rest of the graph ran the cycle (spike S2's cut-short cycles, made at
-/// will instead of by load).
+/// U: upstream of rx, logging each cycle's position; while armed it stalls the data thread past the quantum at the
+/// cycles its plan names (counted from the first armed cycle), so the driver's next timeout comes before the rest of
+/// the graph ran the cycle (spike S2's cut-short cycles, made at will instead of by load).
 class SleepingUpstream final : public ProbeCode {
 public:
-	SleepingUpstream(std::size_t capacity, std::uint32_t every, std::chrono::microseconds sleep)
-		: every_(every), sleep_(sleep), log(capacity) {}
+	SleepingUpstream(std::size_t capacity, StallPlan plan) : stalls_(std::move(plan)), log(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		std::fill_n(outputs[0], frames, 0.0F);
 		if (!armed.load(std::memory_order_acquire)) return;
 		log.add(clock.position);
-		if (++cycles_ % every_ == 0) {
-			std::this_thread::sleep_for(sleep_); // the data thread is held past the quantum
-			slept.fetch_add(1, std::memory_order_release);
-		}
+		stalls_(cycles_++, clock.duration, kRate);
 	}
 	std::atomic<bool> armed{false};
-	std::atomic<std::uint64_t> slept{0};
+	std::uint64_t slept() const { return stalls_.made(); }
 
 private:
-	std::uint32_t every_;
-	std::chrono::microseconds sleep_;
+	Stalls stalls_;
 	std::uint64_t cycles_ = 0;
 
 public:
@@ -665,7 +665,9 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	auto source = sources.make("rx", "from_writer", 1, 8192, kRate);
 	SourceCode code(waiter, source->writer(), kCycles);
 	Listener listenerCode(waiter, code, kCycles);
-	SleepingUpstream upstreamCode(kCycles * 2, 50, 12ms); // a quantum is 5.3 ms
+	// Every 50th armed cycle, the 50th first, held 12 ms (a quantum is 5.3 ms).
+	SleepingUpstream upstreamCode(
+		kCycles * 2, StallPlan::every(50, 49, std::numeric_limits<std::size_t>::max(), StallLength::of(12ms)));
 	BlockEvents events(waiter);
 	Probe upstream(*engine, waiter, "upstream", 0, 1, upstreamCode);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
@@ -715,11 +717,11 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	}
 	std::printf("S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
 	            " frames), %zu cut short after the upstream; %zu frames heard, %zu wrong; %" PRIu64 " short\n",
-	            cycles.size(), upstreamCode.slept.load(), jumps, largestJump, cutAfterUpstream, checked, wrong,
+	            cycles.size(), upstreamCode.slept(), jumps, largestJump, cutAfterUpstream, checked, wrong,
 	            source->shortfallFrames());
 	INFO(jumps << " jumps (largest " << largestJump << "), " << cutAfterUpstream << " cut short after the upstream, "
-	           << upstreamCode.slept.load() << " sleeps");
-	REQUIRE(upstreamCode.slept.load() >= kCycles / 50 - 2);
+	           << upstreamCode.slept() << " sleeps");
+	REQUIRE(upstreamCode.slept() >= kCycles / 50 - 2);
 	// The block missed cycles its upstream ran (cut short after it, 2026-11-09: one per sleep), which is what this
 	// test is about.
 	CHECK(cutAfterUpstream > 0);

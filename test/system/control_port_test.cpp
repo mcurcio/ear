@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "ear_system.hpp"
+#include "statistics.hpp"
 
 namespace {
 
@@ -181,16 +182,13 @@ TEST_CASE("A client sees the file's graph, adds a node and a route, and they are
 	});
 
 	CHECK(ear.stop(rpc) == 0);
-	// Uniform noise in [-1, 1) has a mean square of 1/3 and var(x^2) = 4/45, so the RMS of N samples of it is 0.577 with a
-	// standard deviation of sqrt(4/45) / (2 sqrt(1/3)) / sqrt(N) = 0.258 / sqrt(N). Over the 14 whole windows recorded at
-	// least (22400 frames) that is 0.0017, and the margin is 5 of them for the frames actually measured: a gain off by 2%,
-	// silence or the wrong channel still fails.
+	// The noise's RMS within 5 standard deviations for the frames actually measured (statistics.hpp): over the 14 whole
+	// windows recorded at least (22400 frames) that is 0.0086, so a gain off by 2%, silence or the wrong channel still
+	// fails.
 	const Rms right = channelRms(directory.recordings() / "rec.wav", 1);
-	INFO("measured over " << right.frames << " frames");
+	INFO("measured " << right.value << " over " << right.frames << " frames, sigma " << noiseRmsSigma(right.frames));
 	REQUIRE(right.frames >= (recordedWindows - 1) * windowFrames);
-	const double sigma =
-		std::sqrt(4.0 / 45.0) / (2.0 * std::sqrt(1.0 / 3.0)) / std::sqrt(static_cast<double>(right.frames));
-	CHECK(right.value == Approx(std::sqrt(1.0 / 3.0)).margin(5.0 * sigma));
+	CHECK(noiseRmsWithin(right.value, right.frames, 5.0));
 }
 
 TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {

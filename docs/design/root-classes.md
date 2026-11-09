@@ -1,6 +1,7 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
-Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it); the rest designed, not built. Its steps are taken between slice 3b.4 and slice 3c
+Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it) and R5a built (its tools and guard:
+`docs/testing.md#the-tools`, section 5.4); the rest designed, not built. Its steps are taken between slice 3b.4 and slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
 
@@ -312,7 +313,8 @@ E2(3) and J(5) (889ccc50e5), and the beyond-latency test reading one probe (40be
 
 ### 5.2 The fix
 
-Three tools, a guard, and the audit.
+Three tools, a guard, and the audit. The tools and the guard are built (R5a), as amended in 5.4; `docs/testing.md#the-tools`
+is their home, and this section stays only as the audit's starting point.
 
 - **Inducers** (`src/pipewire/tests/inducers.hpp`): `StallingCode`, an `AudioCode` that sleeps a planned length inside
   `process` at planned cycles and counts what it did (lifted from S5 and `port_block_test.cpp:1780-1795`), and
@@ -357,6 +359,39 @@ R5d: the system tests).
 
 `docs/testing.md`'s rules gain the ledger, `quiesce`, statistics from the count and the guard, and the table of what
 each program proves keeps its rows.
+
+### 5.4 Found building R5a
+
+- **Where the inducers live.** `inducers.hpp` is in `test/support/` (the target `ear_inducers`, namespace `ear::test`),
+  not `src/pipewire/tests/`: R5c's `sendspin` clock tests and R5d's system tests need the ledger too, and nothing in it
+  is PipeWire's. The planned stall is its own value and actor (`StallPlan`, `Stalls`), which `StallingCode` uses:
+  S5's overruns and the source's cut-short cycles are made inside probes (a `ProbeCode`, not an `AudioCode`), so the
+  stall had to be usable outside `StallingCode`. `CycleLedger` records what the design says plus the frames, both
+  clocks' start and the rate (the clock tests judge those), and marks the cycle that stalled on purpose so the one after
+  it is not clean.
+- **`quiesce` has no `EngineHarness` to live on and no counter in `ear_pipewire`.** No class of that name exists (the
+  engine tests share free functions and a `Waiter`, and `port_block_test.cpp` has its own), and
+  `FilterPortBlocks::latencyRetells()` would edit `port_blocks.*`, which 3b.4 is changing. It is
+  `ear::pipewire::testing::Quiescence<Waiter>` (`src/pipewire/tests/quiescence.hpp`), which counts every port info
+  with changed params heard through the registry: a block's retell reaches PipeWire as exactly that, and so do the
+  latency PipeWire sets on the peers and a probe's or a companion's change, which a block counter would miss. It waits
+  for two quiet round trips, not one (the engine shares its main loop with ear, so a trip can end while PipeWire holds
+  work for a later turn), and "one complete cycle of each block named" is given as each code's cycle count (moved on by
+  two). R2 may still add the counter; nothing here needs it.
+- **Two more roles of a sleep.** Besides `induce` and `negative`: `poll` (a pause between looks at the event, which
+  decides: `driveNow`, the test server's wait for a player role the library gives no event for) and `pace` (the clock
+  of a stand-in that keeps real time: the RTP test sender, the stall watch's heartbeat, the invoke storm, the server's
+  play-out). The audit's inventory is listed as `luck` (a sleep or `WARN` that stands in for an event or needs the host
+  to be quick) and `owed` (a `WARN` that skips or reports), each naming its step.
+- **The `WARN` rule is enforced by the same guard, statically.** A Catch reporter or listener failing any run with a
+  warning would fail the suite at once: `clock_test.cpp` reports with `WARN` on every run, and two tests skip under
+  root with one. So `WARN`, `CATCH_WARN` and `CHECK_NOFAIL` are listed in `test/sleeps.txt` like sleeps, as `luck` or
+  `owed` only: none can be added unlisted, and R5b to R5d remove the listed ones.
+- **What the table above misses.** `source_test.cpp:143` and `:197` are luck-waits (50 and 200 ms standing for "the
+  writer is waiting"), not negatives; `:103` is a negative. The guard also reads `src/core/testing/`,
+  `src/core/include/ear/testing/` and `test/support/sendspin_server.py`; and `ear_output_tests`
+  (`output_writer_test.cpp`'s 50 ms, the stall watch's) and `ear_folder_tests` (a skip under root) have entries the
+  table lacks: they are given to R5d. `sleeps.txt` is the inventory; this table is not kept in step with it.
 
 ## 6. Class 4: PipeWire properties
 

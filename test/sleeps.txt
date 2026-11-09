@@ -1,0 +1,61 @@
+# Every sleep in ear's tests and their support, and every Catch WARN or CHECK_NOFAIL, with its role. The sleep guard
+# (test/sleep_guard.cmake, the CTest test ear_sleeps_are_listed) fails on one that is not listed here, on a listing
+# that matches no line, and on a role a line may not have; docs/testing.md#the-sleep-guard is the rule.
+#
+# One line each: <role> | <path from the repository root> | <the line, trimmed, exactly as it stands> | <why>
+# A line that occurs twice in a file is listed twice. Editing a listed line, even its comment, means editing its entry:
+# that is the review the guard asks for.
+#
+# Roles of a sleep:
+#   induce    the sleep is the event: a stall, a hold or a slow step the test makes on purpose.
+#   negative  a bounded look for something that must not happen, taken after the event that would have caused it.
+#   poll      a pause between looks at the event a test waits for, which a deadline only fails (the look decides).
+#   pace      the clock of a stand-in for something that keeps real time: a sender, a heartbeat, a storm's rate.
+#   luck      it stands in for an event, or the test passes only if the host is quick: owed to the audit
+#             (docs/design/root-classes.md#53-the-audit), and names the step that removes it (R5b, R5c or R5d).
+# Roles of a WARN or CHECK_NOFAIL, which tells and goes on where a test should fail naming its event:
+#   luck      it goes on when the host did not do what the test needed (owed, naming its step).
+#   owed      any other telling-and-going-on: a skip, or a report that belongs in INFO (owed, naming its step).
+
+# ear_pipewire_tests (R5b)
+induce | src/pipewire/tests/engine_test.cpp | while (!flag->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); | the wedge itself: an invoke that holds the data loop until the test lets it go
+induce | src/pipewire/tests/main_loop_executor_test.cpp | std::this_thread::sleep_for(std::chrono::milliseconds(900)); | the main-loop stall the watchdog must see, made on purpose
+induce | src/pipewire/tests/port_block_test.cpp | nanosleep(&stall, nullptr); | a 150 ms hold inside one process(), so the requests made meanwhile reach the data loop together
+luck | src/pipewire/tests/port_block_test.cpp | WARN("the hold ended before both requests were made; again"); | retries until the host was quick enough inside the hold; R5b: the hold ends on the test's release (an event), never a time
+luck | src/pipewire/tests/port_block_test.cpp | WARN("an xrun at the take-up: first cycle at " << ramp.first() << ", published " << taken); | an xrun at the take-up skips the check; R5b: judge over the ledger's clean cycles, to a planned count of take-ups
+luck | src/pipewire/tests/sink_test.cpp | std::this_thread::sleep_for(50ms); | 50 ms standing for the cycles a stopped block runs; R5b: wait for N cycles in the ledger
+luck | src/pipewire/tests/sink_test.cpp | WARN("the sink's frames came in " << runs.size() << " stretches: the graph clock jumped while it ran"); | tells of an xrun and goes on; R5b: judge over clean cycles, fail naming the event
+luck | src/pipewire/tests/sink_test.cpp | WARN("an xrun at the take-up: the start taken at " << start << ", its code's first cycle at " | an xrun at the take-up skips the check; R5b: judge over clean cycles, to a planned count
+negative | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(50ms); // the writer waits meanwhile | a write into a full ring must not return; R5b: taken after N cycles ran, not wall time
+luck | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(50ms); | stands in for "the writer is waiting" before the close; R5b: wait for the writer's own wait (an event), as feed_test.cpp does
+luck | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(200ms); // it waits meanwhile, its deadline a year away | stands in for "the writer is waiting" before the close; R5b: wait for the writer's own wait (an event)
+induce | src/pipewire/tests/spikes_test.cpp | nanosleep(&twoSeconds, nullptr); | S2's 2 s data-loop stall, made on purpose
+pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | the invoke storm's rate between bursts of posts (the storm is the load S2 and S5 make on purpose)
+pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | S2's posts 200 us apart during the stall, so 3,000 of them span 0.6 s inside it
+
+# ear_node_sendspin_tests (R5c)
+negative | src/nodes/sendspin/tests/feed_test.cpp | std::this_thread::sleep_for(50ms); | past the writer's second look at the ring, once it says it waits, so only a wake ends its wait (its comment)
+luck | src/nodes/sendspin/tests/clock_test.cpp | WARN("the graph did not settle on the raw clock's rate within 20 s"); | goes on unsettled under load; R5c: fail naming the event, the wait being ear's own
+owed | src/nodes/sendspin/tests/clock_test.cpp | WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, downstream " | a report on every run, not a warning; R5c: INFO or a printf, and the judging over the ledger's clean cycles
+owed | src/nodes/sendspin/tests/keys_test.cpp | WARN("root writes a read-only folder; this case needs an ordinary user"); | a skip under root, which docs/testing.md forbids; R5c: fail naming why, or drop the privilege
+
+# ear_system_tests (R5d)
+negative | test/system/sendspin_floods_test.cpp | std::this_thread::sleep_for(1ms); | the thread peak sampled while the flood runs: can miss a breach, never invent one; R5d proves the bound in the transport's own tests
+luck | test/system/white_to_file_test.cpp | std::this_thread::sleep_for(1s); | a 1 s recording window; R5d: wait for the WAV to hold the frames the check needs
+luck | test/system/graph_file_test.cpp | std::this_thread::sleep_for(1s); | a 1 s recording window; R5d: wait for the WAV to hold the frames the check needs
+
+# ear_output_tests and ear_folder_tests (not in the audit's table; given to R5d)
+pace | src/output/tests/stall_watch_test.cpp | std::this_thread::sleep_for(10ms); | the heartbeat beatFor() stands in for, at its 10 ms period
+induce | src/output/tests/stall_watch_test.cpp | std::this_thread::sleep_for(50ms); | the gap between two beats whose length the report must give
+negative | src/output/tests/stall_watch_test.cpp | std::this_thread::sleep_for(300ms); // boot: the main loop has not run yet | six periods with no beat yet: no report may come before the first beat
+negative | src/output/tests/stall_watch_test.cpp | std::this_thread::sleep_for(100ms); | a beat after stop: no second report may come
+luck | src/output/tests/output_writer_test.cpp | std::this_thread::sleep_for(std::chrono::milliseconds(50)); // lets the writer take it; either way spill is bounded | makes it likely the writer took the first line, which the test does not need; R5d: drop it, or wait for the writer's take
+owed | src/folder/tests/confined_folder_test.cpp | WARN("root writes a read-only folder; this case needs an ordinary user"); | a skip under root, which docs/testing.md forbids; R5d: fail naming why, or drop the privilege
+
+# Test support
+induce | test/support/inducers.hpp | std::this_thread::sleep_for(length->at(frames, rate)); // the data thread stalls, on purpose | Stalls: every planned data-thread stall, the one place a test makes one
+poll | src/core/include/ear/testing/drive_now.hpp | std::this_thread::sleep_for(std::chrono::microseconds(100)); | driveNow polls settle() for the drive's completion; the completion decides
+pace | test/support/rtp_tone.hpp | std::this_thread::sleep_until(start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due)); | the RTP sender sends each packet when its last frame is due, as a device clock would
+induce | test/support/sendspin_server.py | await asyncio.sleep(self._slow_upgrade) | a slow WebSocket upgrade, made on purpose by the tests that ask for one
+poll | test/support/sendspin_server.py | await asyncio.sleep(0.005) | until the client's player role is active: the library has no event for it
+pace | test/support/sendspin_server.py | await asyncio.sleep(max(left_us / 1_000_000, 0.0) + PLAYED_OUT_MARGIN_S) | a stream ends once it has played out, as a track does
