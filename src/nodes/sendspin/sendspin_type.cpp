@@ -1,5 +1,5 @@
 // The "sendspin" node type (docs/node-types.md#sendspin): a port block with its own audio code and its own
-// threads, not an outside node. Its ports are fixed; the connection is the worker's, so an absent server is no
+// threads, not an engine companion. Its ports are fixed; the connection is the worker's, so an absent server is no
 // failure: the node runs and its outputs are silent.
 #include "ear/nodes/sendspin.hpp"
 

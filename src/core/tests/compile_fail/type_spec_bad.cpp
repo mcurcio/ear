@@ -100,14 +100,14 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 		return Configured::restart("x");
 #endif
 #ifdef EAR_CASE_sound_card_on_public_bank
-		cx.soundCard(out, SoundCardRequest{.card = *CardId::parse("C"), .direction = CardDirection::playback});
+		cx.soundCard(out, SoundCardShape{.card = *CardId::parse("C")});
 #endif
 #ifdef EAR_CASE_rtp_receiver_on_output_bank
-		cx.rtpReceiver(insideOut, RtpReceiverRequest{.address = *RtpAddress::parse("0.0.0.0"),
-		                                             .port = 5004,
-		                                             .encoding = RtpEncoding::l24,
-		                                             .rate = 48000,
-		                                             .latencyMs = 100});
+		cx.rtpReceiver(insideOut, RtpReceiverShape{.address = *RtpAddress::parse("0.0.0.0"),
+		                                           .port = 5004,
+		                                           .encoding = RtpEncoding::l24,
+		                                           .rate = 48000,
+		                                           .latencyMs = 100});
 #endif
 #ifdef EAR_CASE_sink_on_input_bank
 		static_cast<void>(cx.sink(in, SinkShape{.frames = 64}));

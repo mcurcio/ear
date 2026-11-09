@@ -954,9 +954,9 @@ std::vector<std::string> threadsNamed(const std::string& prefix) {
 	return names;
 }
 
-class OutsideEvents final : public OutsideNodeEvents {
+class CompanionEvents final : public EngineCompanionEvents {
 public:
-	explicit OutsideEvents(Waiter& waiter) : waiter_(waiter) {}
+	explicit CompanionEvents(Waiter& waiter) : waiter_(waiter) {}
 	void ready() override {
 		isReady = true;
 		waiter_.wake();
@@ -1532,15 +1532,15 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 	Probe probe(*engine, waiter, "probe", 0, 1, probeCode);
 	REQUIRE(waiter.until([&] { return cardBlockEvents.isReady && fppBlockEvents.isReady && probe.streaming(); }));
 
-	OutsideEvents cardEvents(waiter), receiverEvents(waiter);
-	auto card =
-		cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
-	               SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, cardEvents);
-	auto receiver =
-		receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, fppBlock->blockId()},
-	                   RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24,
-	                                      kRate, 100, "from_rtp"},
-	                   receiverEvents);
+	CompanionEvents cardEvents(waiter), receiverEvents(waiter);
+	auto card = cards.make(
+		CompanionTarget{
+			"card.playback", "card", Direction::output, {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
+		SoundCardShape{*CardId::parse("Test")}, cardEvents);
+	auto receiver = receivers.make(
+		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, fppBlock->blockId()},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate, 100},
+		receiverEvents);
 	const std::vector<NodeName> nodes{"Dummy-Driver", "card", "fpp", "probe", "card.playback", "fpp.rtp"};
 	REQUIRE(waiter.until([&] {
 		return (cardEvents.isReady || cardEvents.lostDetail) && (receiverEvents.isReady || receiverEvents.lostDetail) &&

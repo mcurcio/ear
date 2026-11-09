@@ -149,33 +149,27 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
-	/// An outside node: its companion is marked destroyed with it.
-	struct FakeOutsideNode final : OutsideNode {
-		FakeOutsideNode(Impl& h, std::size_t i) : harness(h), index(i) {}
-		~FakeOutsideNode() override {
+	/// An engine companion: its fake is marked destroyed with it.
+	struct FakeEngineCompanion final : EngineCompanion {
+		FakeEngineCompanion(Impl& h, std::size_t i) : harness(h), index(i) {}
+		~FakeEngineCompanion() override {
 			harness.companionList.at(index).destroyed = true;
-			harness.outsideEvents.at(index) = nullptr;
+			harness.engineEvents.at(index) = nullptr;
 		}
 		Impl& harness;
 		std::size_t index;
 	};
-	template <typename Request> struct FakeOutside final : OutsideAdapter<Request> {
-		explicit FakeOutside(Impl& h) : harness(h) {}
-		std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
-		                                  OutsideNodeEvents& events) override {
-			CompanionFake fake{std::is_same_v<Request, SoundCardRequest> ? CompanionFake::Kind::soundCard
-			                                                             : CompanionFake::Kind::rtpReceiver,
-			                   request.bank,
-			                   target.engineNode,
-			                   request,
-			                   false,
-			                   false,
-			                   false,
-			                   {}};
-			fake.made = true;
-			harness.companionList.push_back(std::move(fake));
-			harness.outsideEvents.push_back(&events);
-			return std::make_unique<FakeOutsideNode>(harness, harness.companionList.size() - 1);
+	template <typename Shape> struct FakeEngineCompanions final : EngineCompanionAdapter<Shape> {
+		explicit FakeEngineCompanions(Impl& h) : harness(h) {}
+		std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const Shape& shape,
+		                                      EngineCompanionEvents& events) override {
+			CompanionKind kind = CompanionKind::rtpReceiver;
+			if constexpr (std::is_same_v<Shape, SoundCardShape>)
+				kind = target.bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
+			harness.companionList.push_back(CompanionFake{
+				kind, harness.bankOf(target.blockPorts), target.engineNode, shape, true, false, false, {}});
+			harness.engineEvents.push_back(&events);
+			return std::make_unique<FakeEngineCompanion>(harness, harness.companionList.size() - 1);
 		}
 		Impl& harness;
 	};
@@ -225,7 +219,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		explicit FakeSinks(Impl& h) : harness(h) {}
 		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
 		                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override { // never splits
-			CompanionFake fake{CompanionFake::Kind::sink,
+			CompanionFake fake{CompanionKind::sink,
 			                   std::string(bank),
 			                   node + "." + std::string(bank),
 			                   SinkShape{.frames = capacityFrames},
@@ -234,7 +228,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                   false,
 			                   {}};
 			harness.companionList.push_back(std::move(fake));
-			harness.outsideEvents.push_back(nullptr); // a sink has no outside events
+			harness.engineEvents.push_back(nullptr); // a sink has no engine companion's events
 			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels);
 		}
 		Impl& harness;
@@ -277,7 +271,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		explicit FakeSources(Impl& h) : harness(h) {}
 		std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
 		                             std::uint32_t capacityFrames, std::uint32_t rate) override {
-			harness.companionList.push_back(CompanionFake{CompanionFake::Kind::source,
+			harness.companionList.push_back(CompanionFake{CompanionKind::source,
 			                                              std::string(bank),
 			                                              node + "." + std::string(bank),
 			                                              SourceShape{.frames = capacityFrames},
@@ -285,7 +279,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                                              true,
 			                                              false,
 			                                              {}});
-			harness.outsideEvents.push_back(nullptr); // a source has no outside events
+			harness.engineEvents.push_back(nullptr); // a source has no engine companion's events
 			auto made =
 				std::make_unique<FakeSource>(harness, harness.companionList.size() - 1, channels, capacityFrames, rate);
 			harness.sourceList.push_back(made.get());
@@ -339,11 +333,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const NodeName& node() const override { return create.node(); }
 		const Ports& ports() const override { return create.ports(); }
 		void use(NodeCode code) override { create.use(std::move(code)); }
-		void soundCard(std::string_view bank, SoundCardRequest request) override {
-			create.soundCard(bank, std::move(request));
+		void soundCard(std::string_view bank, SoundCardShape shape) override {
+			create.soundCard(bank, std::move(shape));
 		}
-		void rtpReceiver(std::string_view bank, RtpReceiverRequest request) override {
-			create.rtpReceiver(bank, std::move(request));
+		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
+			create.rtpReceiver(bank, std::move(shape));
 		}
 		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
 			harness.recordingList.push_back(request);
@@ -365,14 +359,6 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	protected:
 		Acquired acquireResource(const ResourceRequest& request) override {
-			if (const auto* card = std::get_if<SoundCardRequest>(&request)) {
-				legacy.acquire(*card);
-				return std::monostate{};
-			}
-			if (const auto* receiver = std::get_if<RtpReceiverRequest>(&request)) {
-				legacy.acquire(*receiver);
-				return std::monostate{};
-			}
 			if (const auto* handoff = std::get_if<HandoffRequest>(&request)) {
 				harness.handoffList.push_back(SeenHandoff{handoff->bank, 0, handoff->capacityFrames});
 				return &legacy.acquire(*handoff);
@@ -491,6 +477,12 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		lastGain.assign(outputNames.size(), 1.0F);
 		fadeMask.assign(outputNames.size(), false);
 	}
+	/// The bank whose ports an engine companion joins: a CompanionTarget names its ports, not its bank.
+	std::string bankOf(const std::vector<PortName>& blockPorts) const {
+		for (const Ports::Bank& bank : config->ports().banks())
+			if (bank.ports == blockPorts) return bank.name;
+		throw std::logic_error("an engine companion joins ports of no bank of the node");
+	}
 	/// The capture latency the real block would tell on the output bank whose first port is `firstOutput`
 	/// (port_blocks.cpp, docs/engine.md#latency-per-bank-pair), from the plan alone: the harness has no peers, so what
 	/// lies beyond each paired input bank is its `beyond` entry or nothing; the least and the most across the pairs,
@@ -575,8 +567,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	ManualExecutor executor;
 	FakeClock clock;
 	FakeBlocks blocks;
-	FakeOutside<SoundCardRequest> cards;
-	FakeOutside<RtpReceiverRequest> receivers;
+	FakeEngineCompanions<SoundCardShape> cards;
+	FakeEngineCompanions<RtpReceiverShape> receivers;
 	FakeHandoffs handoffs;
 	FakeSinks sinks;
 	FakeSources sources;
@@ -605,8 +597,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	bool firstCycle = true;
 
 	std::vector<CompanionFake> companionList;
-	std::vector<OutsideNodeEvents*> outsideEvents; // per companion; null once destroyed
-	std::vector<FakeSource*> sourceList;           // every source made, in order (a freed one dangles: unused)
+	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
+	std::vector<FakeSource*> sourceList;              // every source made, in order (a freed one dangles: unused)
 	std::vector<std::uint64_t> handoffCounts;
 	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
@@ -623,7 +615,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<std::vector<float>> outputs;
 	std::vector<float> lastGain;
 	std::uint32_t lastFrames = 0;
-	// Last, so it goes first: its nodes' blocks, outside nodes and instances tell the members above as they go.
+	// Last, so it goes first: its nodes' blocks, engine companions and instances tell the members above as they go.
 	std::unique_ptr<NodeHost> host;
 };
 
@@ -676,8 +668,8 @@ void NodeHarness::blockLost(std::string detail) {
 void NodeHarness::ready(std::string_view bank) {
 	CompanionFake& fake = companion(bank);
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
-	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
-	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	EngineCompanionEvents* events = impl_->engineEvents.at(index);
+	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	fake.ready = true;
 	events->ready();
 	impl_->executor.pump();
@@ -686,8 +678,8 @@ void NodeHarness::ready(std::string_view bank) {
 void NodeHarness::lose(std::string_view bank, std::string detail) {
 	CompanionFake& fake = companion(bank);
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
-	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
-	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	EngineCompanionEvents* events = impl_->engineEvents.at(index);
+	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	events->lost(std::move(detail));
 	impl_->executor.pump();
 }

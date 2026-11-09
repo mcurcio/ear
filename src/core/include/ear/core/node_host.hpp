@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "ear/core/companions.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
 #include "ear/core/log.hpp"
@@ -19,7 +20,7 @@
 namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health; 3a's four kinds):
 /// an older node of its name still closing (`name` its name), the engine's block (`block`), a companion (`name`: an
-/// outside node's engine name, `<node>.<suffix>`), a sink's consumer (`consumer`).
+/// engine companion's engine name, `<node>.<suffix>`), a sink's consumer (`consumer`).
 struct WaitingFor {
 	enum class Kind { olderNode, block, companion, consumer };
 	Kind kind;
@@ -181,7 +182,7 @@ public:
 	/// Any thread: the position from which the block runs what it was last driven with (0 before any cycle ran).
 	virtual std::uint64_t takenAt() const noexcept = 0;
 	/// Main thread: the block's engine node's global id, read once the block was first STREAMING
-	/// (pw_filter_get_node_id), so an outside node links it by id, not by name; before that, or on a
+	/// (pw_filter_get_node_id), so an engine companion links it by id, not by name; before that, or on a
 	/// block with no engine node, 0xFFFFFFFF (no id).
 	virtual std::uint32_t blockId() const noexcept = 0;
 };
@@ -222,58 +223,6 @@ public:
 protected:
 	~HandoffAdapter() = default;
 };
-/// An outside node: a PipeWire node a run asked for (a sound card or an RTP receiver), plus the links joining its
-/// channels to the node's inside ports. Destroying it (main thread) removes both, in any state, and tells nothing.
-class OutsideNode {
-public:
-	virtual ~OutsideNode() = default;
-};
-/// One outside node's lifecycle, the same for every kind (main thread).
-class OutsideNodeEvents {
-public:
-	/// The node runs (a card's PCM runs; a receiver's socket is bound) and every channel is
-	/// linked to its block port; at most once.
-	virtual void ready() = 0;
-	/// At most once, before or after ready, never inside make(). When it is told, the outside
-	/// node's engine node and links are already destroyed, so it no longer clocks or holds any
-	/// part of the graph. Destroying the OutsideNode inside lost() is allowed (not inside ready()):
-	/// the adapter touches nothing of it after telling (NodeHost tears a failed configuration
-	/// down in the same call, T14).
-	virtual void lost(std::string detail) = 0;
-
-protected:
-	~OutsideNodeEvents() = default;
-};
-/// Where an outside node goes, worked out by the framework from the request's bank: the one engine name it is made
-/// with ("<node>.<suffix>"), the block it joins (its name, and its engine node's global id, PortBlock::blockId, which
-/// its links name: docs/architecture.md#phases-states-and-what-is-wanted), and the block's ports it joins, channel i to
-/// blockPorts[i].
-struct OutsideTarget {
-	NodeName engineNode;
-	NodeName blockNode;
-	std::vector<PortName> blockPorts;
-	AudioFormat format;
-	std::uint32_t blockId = 0xFFFFFFFFU; // no id: the join cannot link and the outside node is lost
-};
-/// One outside kind's adapter.
-///  - SoundCardRequest: one engine node for request.card with blockPorts.size() channels at format.rate. It joins the
-///    graph's clock only through its links to the block, made once its PCM runs.
-///  - RtpReceiverRequest: one engine node receiving the stream the request names, with blockPorts.size() channels. It
-///    follows the graph's clock and never drives it; its channels are linked once it runs (its socket is bound).
-///    Packets that stop or never come change nothing: it stays ready and its channels are silent.
-template <typename Request> class OutsideAdapter {
-public:
-	/// Main thread; only once port block `target.blockNode` is ready (its ports exist, and target.blockId is its id).
-	/// NodeHost calls it inside its per-turn flush (docs/architecture.md#isolation): a ready() told inside
-	/// it is heard once it returned.
-	virtual std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
-	                                          OutsideNodeEvents& events) = 0;
-
-protected:
-	~OutsideAdapter() = default;
-};
-using SoundCardAdapter = OutsideAdapter<SoundCardRequest>;
-using RtpReceiverAdapter = OutsideAdapter<RtpReceiverRequest>;
 /// One open recording file (RecordingRequest). Destroying it (main thread) closes it.
 class RecordingFile {
 public:
@@ -290,21 +239,22 @@ public:
 protected:
 	~RecordingAdapter() = default;
 };
-/// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of ResourceRequest,
-/// so a new kind is one adapter here and nothing more in NodeHost's constructor.
+/// The resource registry (docs/writing-a-node-type.md#configure-and-createof): one adapter per kind of companion and
+/// of ResourceRequest, so a new kind is one adapter here and nothing more in NodeHost's constructor.
 class ResourceRegistry {
 public:
 	/// All outlive the registry.
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
 	                 SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept
 		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), sources_(sources),
 		  recordings_(&recordings) {}
 	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
 	/// node (tests).
-	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
+	ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs,
 	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept;
-	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
-	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
+	/// The engine companions' adapters (docs/engine.md#engine-companions).
+	SoundCardCompanions& adapterFor(const SoundCardShape&) const noexcept { return cards_; }
+	RtpReceiverCompanions& adapterFor(const RtpReceiverShape&) const noexcept { return receivers_; }
 	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
 	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
 	/// The interim sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
@@ -313,8 +263,8 @@ public:
 	SourceAdapter& sources() const noexcept { return sources_; }
 
 private:
-	SoundCardAdapter& cards_;
-	RtpReceiverAdapter& receivers_;
+	SoundCardCompanions& cards_;
+	RtpReceiverCompanions& receivers_;
 	HandoffAdapter& handoffs_;
 	SinkAdapter& sinks_;
 	SourceAdapter& sources_;
@@ -355,8 +305,8 @@ public:
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):
 	/// config.make(context) makes its instance (the type's class, or the legacy adapter over config.start), whose
 	/// configure acquires only, through CreateContext or StartContext on one set of internals, and gives the code
-	/// (every rule the type breaks, caught by it or not, a legacy recipe beside an outside node, and a configure or
-	/// recipe that throws, fail the node start-failed); the outside nodes it asked for are made once the block is
+	/// (every rule the type breaks, caught by it or not, and a configure or recipe that throws, fail the node
+	/// start-failed); the engine companions it asked for are made once the block is
 	/// ready, in request order, named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver);
 	/// once every resource is ready a legacy recipe builds the run object and the code is prepared; once the block is
 	/// ready the code drives it (PortBlock's asynchronous drive, fading in every output the code writes: public outputs
@@ -367,7 +317,7 @@ public:
 	/// restart, a removal, a failure, stopAll) first fades those outputs out over 5 ms (unacknowledged within 100 ms:
 	/// ear.fade-unacknowledged and the silence unfaded); a drive or silence not completed within 5 s marks the data
 	/// loop wedged (ear.barrier-overdue, then ear.data-loop-wedged once): from then on NodeHost makes no PipeWire call,
-	/// every configuration, block and outside node it would end is leaked (leaked()), and a node added fails
+	/// every configuration, block and engine companion it would end is leaked (leaked()), and a node added fails
 	/// engine-refused "the data loop is wedged" without a block. Every bound first settles the block, so a completion a
 	/// stalled main loop has not yet dispatched is never judged late. A failure fails the node and tears its
 	/// configuration down; its port block stays. A name added back gets its block in the flush that destroys the older
@@ -377,7 +327,7 @@ public:
 	/// phase has lasted 2 s and then at most once a second. A node added disabled keeps its block, silent, and is
 	/// never configured (T19).
 	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) override;
-	/// Restart: the barrier (a drive with no code, once it completed), release(); outside nodes destroyed; handoffs
+	/// Restart: the barrier (a drive with no code, once it completed), release(); engine companions destroyed; handoffs
 	/// closed; the run object closed; then, on the main loop, the code destroyed, then the run object, the recipe, the
 	/// recordings and the config; then a new configuration from `config` as in nodeAdded. The port block and routes
 	/// stay. An update arriving during a restart replaces the config to start; one on a failed node configures it again
@@ -414,7 +364,7 @@ public:
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
 	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
-	/// loop, and the blocks and outside nodes a wedged loop kept. Their threads may still post to `mainLoop` or
+	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
 	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp
 	/// ends with std::_Exit).
 	std::size_t leaked() const noexcept;

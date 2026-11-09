@@ -117,7 +117,7 @@ struct ConfigAction {
 		silence,            // post a silence (5 s timer)
 		fadeUnacknowledged, // ear.fade-unacknowledged
 		release,            // clear the latency plan; release the code
-		teardown,           // queue the outside nodes' destruction; close sinks and legacy handoffs; 10 s timer
+		teardown,           // queue the engine companions' destruction; close sinks and legacy handoffs; 10 s timer
 		free,               // on the main loop: the code, the instance, the recordings, in that order
 		barrierOverdue,     // ear.barrier-overdue
 		markWedged,         // the data loop is wedged

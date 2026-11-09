@@ -98,7 +98,7 @@ private:
 };
 
 /// What a card tells, with what the registry showed at the moment it was told.
-class CardEvents final : public OutsideNodeEvents {
+class CardEvents final : public EngineCompanionEvents {
 public:
 	CardEvents(Waiter& waiter, Registry& registry, NodeName engineNode)
 		: waiter_(waiter), registry_(registry), engineNode_(std::move(engineNode)) {}
@@ -154,11 +154,12 @@ struct Graph {
 		ear::testing::silenceOrAbort(*otherBlock);
 	}
 
-	std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
+	std::unique_ptr<EngineCompanion> makeCard(const CardId& id, CardEvents& events) {
 		events.insideMake = true;
 		auto card = cards.make(
-			OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
-			SoundCardRequest{id, CardDirection::playback, "to_card"}, events);
+			CompanionTarget{
+				"card.playback", "card", Direction::output, {"to_card.1", "to_card.2"}, kFormat, cardBlock->blockId()},
+			SoundCardShape{id}, events);
 		events.insideMake = false;
 		return card;
 	}
@@ -249,9 +250,9 @@ TEST_CASE("A card joins its block by the block's id: beside an older block of th
 	const std::uint32_t newerId = newer->blockId();
 	REQUIRE(olderId != newerId);
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
-	const auto card =
-		graph.cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, newerId},
-	                     SoundCardRequest{cardId("Test"), CardDirection::playback, "to_card"}, events);
+	const auto card = graph.cards.make(
+		CompanionTarget{"card.playback", "card", Direction::output, {"to_card.1", "to_card.2"}, kFormat, newerId},
+		SoundCardShape{cardId("Test")}, events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 	CHECK(graph.registry.activeLinksOf(newerId) == 2);
@@ -275,8 +276,9 @@ TEST_CASE("A card running alone holds no port block: they stay on the dummy unti
 		cardProps = *graph.registry.props(name);
 		graph.registry.rebind({"card", "other"});
 	};
-	const auto card = graph.cards.make(OutsideTarget{"card.playback", "nowhere", {"to_card.1", "to_card.2"}, kFormat},
-	                                   SoundCardRequest{cardId("Test"), CardDirection::playback, "to_card"}, events);
+	const auto card = graph.cards.make(
+		CompanionTarget{"card.playback", "nowhere", Direction::output, {"to_card.1", "to_card.2"}, kFormat},
+		SoundCardShape{cardId("Test")}, events);
 	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
 	graph.registry.onNodeInfo = nullptr;
 	CHECK(events.readyCount == 0);
@@ -445,12 +447,12 @@ TEST_CASE("to_card's last 5 ms before a silence decay to zero, and its drive fad
 }
 
 // node_host.hpp's contract (T14, node_lifecycle.hpp): NodeHost tears a failed configuration down inside
-// the lost() that failed it, so the outside node is destroyed inside its own callback.
+// the lost() that failed it, so the engine companion is destroyed inside its own callback.
 TEST_CASE("A card lost before it was ready may be destroyed inside its own lost(), and the blocks keep running",
           "[cards][lost]") {
 	Graph graph;
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
-	std::unique_ptr<OutsideNode> card;
+	std::unique_ptr<EngineCompanion> card;
 	events.onLost = [&] { card.reset(); };
 	card = graph.makeCard(cardId("Absent"), events);
 	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));

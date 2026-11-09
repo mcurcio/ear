@@ -1,11 +1,11 @@
 // The node framework driven through fake engine adapters: how a node starts, what makes it running or failed, and the
 // order a configuration is torn down in (docs/architecture.md#the-node-lifecycle): the port block made first; restart,
-// sound cards, a lost block, removal; RTP receivers on the same outside-node path; the resource registry, named inside
-// banks, the framework's pass-through, the two-phase start, and teardown by dependency with its close deadline
+// sound cards, a lost block, removal; RTP receivers on the same engine-companion path; the resource registry, named
+// inside banks, the framework's pass-through, the two-phase start, and teardown by dependency with its close deadline
 // (docs/architecture.md#teardown-by-dependency). NodeHost runs on the lifecycle machines: every drive and silence is
-// asynchronous, its completion
-// posted to the main loop by the fake block (or held for the test to run), every type goes through the legacy adapter
-// (a recipe beside an outside node is a type bug), and a failed node's configuration is torn down at once.
+// asynchronous, its completion posted to the main loop by the fake block (or held for the test to run), a config with
+// no engine companion goes through the legacy adapter and one with them through a class's configure, and a failed
+// node's configuration is torn down at once.
 // Every step a fake engine would take later (ready, lost, a completion, a handoff closing, a card or receiver ready or
 // lost, a close deadline passing) is an event the test sends.
 #include <algorithm>
@@ -77,20 +77,32 @@ Ports testPorts() {
 	              {Direction::output, "pb", {"1", "2"}, PortBank::Reach::inside}}};
 }
 
-/// A node config whose start asks for `handoffs` handoffs, `cards` sound cards and `receivers` RTP receivers, then
-/// succeeds or fails. A config with a tag logs its start and its destruction with that tag. Its start returns a recipe
-/// handing over a TestRun only when it asks for no outside node, as the legacy adapter requires
-/// (docs/writing-a-node-type.md#the-old-interface), unless `recipe` says otherwise; its handoffs' consumer is the
-/// config's own, which outlives every configuration made from it.
+/// A sound card a TestConfig asks for: the inside bank it joins (its direction is the card's) and its shape.
+struct CardAsk {
+	std::string bank;
+	SoundCardShape shape;
+};
+/// An RTP receiver a TestConfig asks for, likewise.
+struct ReceiverAsk {
+	std::string bank;
+	RtpReceiverShape shape;
+};
+
+/// A node config whose start asks for `handoffs` handoffs, then succeeds or fails. A config with a tag logs its start
+/// and its destruction with that tag. Its start returns a recipe handing over a TestRun only when it asks for no engine
+/// companion, unless `recipe` says otherwise; its handoffs' consumer is the config's own, which outlives every
+/// configuration made from it. With `cards` or `receivers` it is a class (CompanionInstance below): its configure runs
+/// the same start, then asks for the cards, then the receivers (CreateContext::soundCard, rtpReceiver), as a type's
+/// class does; a legacy start has no engine companions (docs/writing-a-node-type.md#the-old-interface).
 struct TestConfig final : NodeConfig {
 	Log& log;
 	std::string tag;
 	Ports ports_ = testPorts();
 	int handoffs = 0;
-	std::vector<SoundCardRequest> cards;
-	std::vector<RtpReceiverRequest> receivers;
+	std::vector<CardAsk> cards;
+	std::vector<ReceiverAsk> receivers;
 	bool fail = false;
-	std::optional<bool> recipe;              // default: a recipe when no outside node is asked for
+	std::optional<bool> recipe;              // default: a recipe when no engine companion is asked for
 	mutable StartContext* context = nullptr; // the context start() was given, kept to misuse it later
 	mutable TestConsumer consumer;
 	explicit TestConfig(Log& l, std::string t = {}) : log(l), tag(std::move(t)) {}
@@ -103,16 +115,35 @@ struct TestConfig final : NodeConfig {
 		const AudioFormat format = c.format();
 		log.push_back("start " + std::to_string(format.rate) + (tag.empty() ? "" : " " + tag));
 		for (int i = 0; i < handoffs; ++i) c.acquire(HandoffRequest{"record", 1024, &consumer});
-		for (const auto& card : cards) c.acquire(card);
-		for (const auto& receiver : receivers) c.acquire(receiver);
 		if (fail) return std::unexpected(FailureReason{FailureReason::Code::startFailed, "cannot open /nope"});
 		if (!recipe.value_or(cards.empty() && receivers.empty())) return std::make_unique<TestAudioCode>(log);
 		return StartResult{std::make_unique<TestAudioCode>(log), handOver(log, std::make_unique<TestRun>(log))};
 	}
+	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override;
 };
 
-const SoundCardRequest motuOut{*CardId::parse("Pro24"), CardDirection::playback, "pb"};
-const SoundCardRequest motuIn{*CardId::parse("Pro24"), CardDirection::capture, "cap"};
+/// A TestConfig with engine companions, as a class: its configure is the config's start (its handoffs, its failure,
+/// its code), then a card per CardAsk and a receiver per ReceiverAsk, in that order.
+struct CompanionInstance final : ErasedInstance {
+	const TestConfig& config;
+	explicit CompanionInstance(const TestConfig& c) : config(c) {}
+	Configured configure(InstanceContexts& cx) override {
+		StartResult started = config.start(cx.legacy);
+		if (started.failed()) return Configured::failed(std::move(started.failure().detail));
+		for (const auto& card : config.cards) cx.create.soundCard(card.bank, card.shape);
+		for (const auto& receiver : config.receivers) cx.create.rtpReceiver(receiver.bank, receiver.shape);
+		cx.create.use(std::move(started.code()));
+		return Configured::applied();
+	}
+};
+
+std::unique_ptr<ErasedInstance> TestConfig::make(NodeContext& node) const {
+	if (cards.empty() && receivers.empty()) return NodeConfig::make(node);
+	return std::make_unique<CompanionInstance>(*this);
+}
+
+const CardAsk motuOut{"pb", SoundCardShape{*CardId::parse("Pro24")}};
+const CardAsk motuIn{"cap", SoundCardShape{*CardId::parse("Pro24")}};
 
 std::shared_ptr<TestConfig> withCards(Log& log, std::string tag = {}) {
 	auto config = std::make_shared<TestConfig>(log, std::move(tag));
@@ -120,11 +151,11 @@ std::shared_ptr<TestConfig> withCards(Log& log, std::string tag = {}) {
 	return config;
 }
 
-const RtpReceiverRequest fppStream{*RtpAddress::parse("239.69.0.1"), 5004, RtpEncoding::l24, 44100, 100, "cap"};
+const RtpReceiverShape fppStream{*RtpAddress::parse("239.69.0.1"), 5004, RtpEncoding::l24, 44100, 100};
 
 std::shared_ptr<TestConfig> withReceiver(Log& log, std::string tag = {}) {
 	auto config = std::make_shared<TestConfig>(log, std::move(tag));
-	config->receivers = {fppStream};
+	config->receivers = {{"cap", fppStream}};
 	return config;
 }
 
@@ -430,11 +461,11 @@ struct TestSources final : SourceAdapter {
 	}
 };
 
-struct TestOutside final : OutsideNode {
+struct TestCompanion final : EngineCompanion {
 	Log& log;
 	std::string what;
-	TestOutside(Log& l, std::string w) : log(l), what(std::move(w)) {}
-	~TestOutside() override { log.push_back(what + " destroyed"); }
+	TestCompanion(Log& l, std::string w) : log(l), what(std::move(w)) {}
+	~TestCompanion() override { log.push_back(what + " destroyed"); }
 };
 
 std::string joined(const std::vector<PortName>& ports) {
@@ -444,44 +475,44 @@ std::string joined(const std::vector<PortName>& ports) {
 }
 
 /// Cards whose readiness and loss the test tells, as a real card's PCM and links report later.
-struct TestCards final : SoundCardAdapter {
+struct TestCards final : SoundCardCompanions {
 	Log& log;
-	std::vector<OutsideNodeEvents*> events;
+	std::vector<EngineCompanionEvents*> events;
 	bool readyInMake = false;            // tells ready() inside make(), as a card already running might
 	bool throwInMake = false;            // make() throws, as an adapter with a bug
 	std::vector<std::string> activities; // MainLoopActivity::current() inside each make
-	std::vector<OutsideTarget> targets;
+	std::vector<CompanionTarget> targets;
 	explicit TestCards(Log& l) : log(l) {}
-	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const SoundCardRequest& request,
-	                                  OutsideNodeEvents& e) override {
-		if (throwInMake) throw std::runtime_error("no card " + request.card.text());
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const SoundCardShape& shape,
+	                                      EngineCompanionEvents& e) override {
+		if (throwInMake) throw std::runtime_error("no card " + shape.card.text());
 		activities.push_back(MainLoopActivity::current());
 		targets.push_back(target);
-		log.push_back("card " + target.engineNode + " of " + target.blockNode + " " + request.card.text() + " " +
+		log.push_back("card " + target.engineNode + " of " + target.blockNode + " " + shape.card.text() + " " +
 		              joined(target.blockPorts) + " at " + std::to_string(target.format.rate));
 		events.push_back(&e);
 		if (readyInMake) {
 			e.ready(); // heard once make() returned
 			log.push_back("card " + target.engineNode + " made");
 		}
-		return std::make_unique<TestOutside>(log, "card " + target.engineNode);
+		return std::make_unique<TestCompanion>(log, "card " + target.engineNode);
 	}
 };
 
-/// RTP receivers whose readiness and loss the test tells; each request and target is kept as it was given.
-struct TestReceivers final : RtpReceiverAdapter {
+/// RTP receivers whose readiness and loss the test tells; each shape and target is kept as it was given.
+struct TestReceivers final : RtpReceiverCompanions {
 	Log& log;
-	std::vector<OutsideNodeEvents*> events;
-	std::vector<RtpReceiverRequest> requests;
-	std::vector<OutsideTarget> targets;
+	std::vector<EngineCompanionEvents*> events;
+	std::vector<RtpReceiverShape> shapes;
+	std::vector<CompanionTarget> targets;
 	explicit TestReceivers(Log& l) : log(l) {}
-	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const RtpReceiverRequest& request,
-	                                  OutsideNodeEvents& e) override {
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const RtpReceiverShape& shape,
+	                                      EngineCompanionEvents& e) override {
 		log.push_back("receiver " + target.engineNode + " of " + target.blockNode);
 		events.push_back(&e);
-		requests.push_back(request);
+		shapes.push_back(shape);
 		targets.push_back(target);
-		return std::make_unique<TestOutside>(log, "receiver " + target.engineNode);
+		return std::make_unique<TestCompanion>(log, "receiver " + target.engineNode);
 	}
 };
 
@@ -663,7 +694,7 @@ TEST_CASE("A node gets its port block, then starts, builds its run and prepares 
 
 	f.add("rec", rec);
 
-	// T2, then T3 in the same turn (no outside node); the block is made in the turn's flush: nothing drives a
+	// T2, then T3 in the same turn (no engine companion); the block is made in the turn's flush: nothing drives a
 	// block that is not ready.
 	CHECK(f.log == Log{"node rec starting", "start 44100", "handoff rec 2 channels", "run built", "prepare 44100/256",
 	                   "make rec 2 inputs"});
@@ -988,8 +1019,6 @@ TEST_CASE("A node acquires resources and its events only inside start", "[node_h
 	auto config = std::make_shared<TestConfig>(f.log);
 	f.add("motu", config);
 	REQUIRE(config->context != nullptr);
-	CHECK_THROWS_AS(config->context->acquire(motuOut), std::logic_error);
-	CHECK_THROWS_AS(config->context->acquire(fppStream), std::logic_error);
 	TestConsumer consumer;
 	CHECK_THROWS_AS(config->context->acquire(HandoffRequest{"record", 64, &consumer}), std::logic_error);
 	CHECK_THROWS_AS(config->context->events(), std::logic_error);
@@ -1121,7 +1150,7 @@ TEST_CASE("After stopAll no node event can reach the node framework", "[node_hos
 }
 
 TEST_CASE("A node's RTP receiver is made once its port block is ready, named <node>.rtp, with the "
-          "request unchanged and the ports of the bank it named",
+          "shape unchanged and the ports of the bank it named",
           "[node_host][rtp]") {
 	Fixture f;
 	f.add("fpp", withReceiver(f.log));
@@ -1131,14 +1160,14 @@ TEST_CASE("A node's RTP receiver is made once its port block is ready, named <no
 	f.blocks.events.at(0)->ready();
 	f.endTurn();
 	CHECK(f.log == Log{"receiver fpp.rtp of fpp"});
-	REQUIRE(f.receivers.requests.size() == 1);
-	const RtpReceiverRequest& made = f.receivers.requests[0];
+	REQUIRE(f.receivers.shapes.size() == 1);
+	const RtpReceiverShape& made = f.receivers.shapes[0];
 	CHECK(made.address == fppStream.address);
 	CHECK(made.port == fppStream.port);
 	CHECK(made.encoding == fppStream.encoding);
 	CHECK(made.rate == fppStream.rate);
 	CHECK(made.latencyMs == fppStream.latencyMs);
-	CHECK(made.bank == "cap");
+	CHECK(f.receivers.targets[0].bank == Direction::input);
 	CHECK(f.receivers.targets[0].blockPorts == std::vector<PortName>{"cap.1"});
 	CHECK(f.receivers.targets[0].format.rate == 44100);
 	CHECK(f.host.health().at(0).state == NodeState::starting);
@@ -1155,7 +1184,7 @@ TEST_CASE("A node with a card and a receiver runs only once both are ready, in e
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
 	config->cards = {motuOut};
-	config->receivers = {fppStream};
+	config->receivers = {{"cap", fppStream}};
 	f.add("mix", config);
 	f.log.clear();
 	f.blocks.events.at(0)->ready();
@@ -1221,13 +1250,13 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	f.settle();
 }
 
-TEST_CASE("An outside node lost before the node ran fails it with engine-refused and the outside "
-          "node's detail, and its code is never prepared or driven",
+TEST_CASE("An engine companion lost before the node ran fails it with engine-refused and the companion's "
+          "detail, and its code is never prepared or driven",
           "[node_host][rtp]") {
 	Fixture f;
 	auto config = std::make_shared<TestConfig>(f.log);
 	config->cards = {motuOut};
-	config->receivers = {fppStream};
+	config->receivers = {{"cap", fppStream}};
 	f.add("mix", config);
 	f.blocks.events.at(0)->ready();
 	f.endTurn();
@@ -1235,7 +1264,7 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 	REQUIRE(f.receivers.events.size() == 1);
 	f.log.clear();
 
-	// Never driven: torn down at once, with no barrier; the outside nodes go in the turn's flush.
+	// Never driven: torn down at once, with no barrier; the engine companions go in the turn's flush.
 	SECTION("the receiver, with the card ready") {
 		f.cards.events[0]->ready();
 		f.receivers.events[0]->lost("cannot load PipeWire's rtp-source module: No such file or directory");
@@ -1268,7 +1297,7 @@ TEST_CASE("One configuration names each engine object once: a second of a name, 
           "[node_host][rtp]") {
 	Fixture f;
 	auto twice = std::make_shared<TestConfig>(f.log);
-	twice->receivers = {fppStream, fppStream};
+	twice->receivers = {{"cap", fppStream}, {"cap", fppStream}};
 	f.add("fpp", twice); // never thrown out of NodeHost: one type's bug never takes ear down
 	CHECK(failureOf(f, "fpp") == "start-failed: configure threw: a second resource named fpp.rtp in one configuration");
 
@@ -1279,19 +1308,26 @@ TEST_CASE("One configuration names each engine object once: a second of a name, 
 	      "start-failed: configure threw: a second resource named motu.playback in one configuration");
 
 	auto routable = std::make_shared<TestConfig>(f.log);
-	routable->receivers = {RtpReceiverRequest{fppStream.address, 5004, RtpEncoding::l24, 44100, 100, "record"}};
+	routable->receivers = {{"record", fppStream}};
 	f.add("routable", routable);
 	CHECK(failureOf(f, "routable") ==
 	      "start-failed: configure threw: an RTP receiver joins an inside input bank, not \"record\"");
 
-	auto wrongWay = std::make_shared<TestConfig>(f.log);
-	wrongWay->cards = {SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback, "cap"}};
-	f.add("wrongway", wrongWay);
-	CHECK(failureOf(f, "wrongway") ==
-	      "start-failed: configure threw: a playback card joins an inside output bank, not \"cap\"");
+	auto routableCard = std::make_shared<TestConfig>(f.log);
+	routableCard->cards = {{"record", motuIn.shape}};
+	f.add("routablecard", routableCard);
+	CHECK(failureOf(f, "routablecard") ==
+	      "start-failed: configure threw: a sound card joins an inside bank, not \"record\"");
+
+	// One companion per inside bank, whatever their kinds and names.
+	auto shared = std::make_shared<TestConfig>(f.log);
+	shared->cards = {motuIn};
+	shared->receivers = {{"cap", fppStream}};
+	f.add("shared", shared);
+	CHECK(failureOf(f, "shared") == "start-failed: configure threw: a second companion on bank cap");
 
 	auto missing = std::make_shared<TestConfig>(f.log);
-	missing->cards = {SoundCardRequest{*CardId::parse("Pro24"), CardDirection::capture, "nope"}};
+	missing->cards = {{"nope", motuIn.shape}};
 	f.add("missing", missing);
 	CHECK(failureOf(f, "missing").starts_with("start-failed: configure threw: "));
 
@@ -1303,31 +1339,6 @@ TEST_CASE("One configuration names each engine object once: a second of a name, 
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
-}
-
-TEST_CASE("A legacy type with a recipe that asks for an outside node fails its node start-failed at T2",
-          "[node_host][legacy]") {
-	Fixture f;
-	auto config = withCards(f.log);
-	config->recipe = true;
-	f.add("motu", config); // never thrown out of NodeHost
-	CHECK(failureOf(f, "motu") == "start-failed: a legacy type with a recipe may ask for no outside node");
-	f.blocks.events.at(0)->ready();
-	CHECK(f.cards.events.empty());
-	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
-	f.stopAll(); // ~NodeHost's precondition; it asked for no handoff
-	f.settle();
-	CHECK(f.allGone == 1);
-
-	// A recipe alone, or outside nodes alone, is fine.
-	Fixture g;
-	g.add("rec", std::make_shared<TestConfig>(g.log));
-	g.add("motu", withCards(g.log));
-	CHECK(g.host.health().at(0).state == NodeState::starting);
-	CHECK(g.host.health().at(1).state == NodeState::starting);
-	g.stopAll();
-	g.settle();
-	CHECK(g.allGone == 1);
 }
 
 TEST_CASE("Restart and removal destroy the receiver after the barrier, in the turn's flush, before the handoffs finish "
@@ -1957,7 +1968,7 @@ TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
 
 namespace {
 
-/// A config whose recipe fails, or logs what Ready hands it. It asks for no outside node.
+/// A config whose recipe fails, or logs what Ready hands it. It asks for no engine companion.
 struct RecipeConfig final : NodeConfig {
 	Log& log;
 	bool fail = false;
@@ -2532,7 +2543,7 @@ void addRunning(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConf
 
 } // namespace
 
-TEST_CASE("PipeWire's object changes of one turn run together in one flush, destroys first: outside nodes, then "
+TEST_CASE("PipeWire's object changes of one turn run together in one flush, destroys first: engine companions, then "
           "blocks, then makes",
           "[node_host][flush]") {
 	Fixture f;
@@ -2658,8 +2669,8 @@ TEST_CASE("A name added back three times in one turn has one block at a time, an
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("An outside node ready told inside its making, during the flush, is handled after that flush item, and a "
-          "block a destroy frees is made in the same flush",
+TEST_CASE("An engine companion's ready told inside its making, during the flush, is handled after that flush item, "
+          "and a block a destroy frees is made in the same flush",
           "[node_host][flush]") {
 	Fixture f;
 	f.cards.readyInMake = true;
@@ -2682,7 +2693,7 @@ TEST_CASE("An outside node ready told inside its making, during the flush, is ha
 	                   "drive code", "make a 2 inputs"});
 	REQUIRE(f.cards.targets.size() == 1);
 	CHECK(f.cards.targets[0].blockId == 0xFFFFFFFFU); // TestBlock has no engine id
-	CHECK(f.cards.activities == std::vector<std::string>{"make outside node c"});
+	CHECK(f.cards.activities == std::vector<std::string>{"make engine companion c"});
 	CHECK(f.blocks.activities.back() == "make block a");
 	CHECK(MainLoopActivity::current().empty());
 	CHECK(f.mainLoop.queue.size() == 1); // c's drive completion; no second flush
@@ -2736,7 +2747,7 @@ struct ActivityConfig final : NodeConfig {
 
 } // namespace
 
-TEST_CASE("An outside node is made with its block's id, read once the block is ready (5.7)", "[node_host][flush]") {
+TEST_CASE("An engine companion is made with its block's id, read once the block is ready (5.7)", "[node_host][flush]") {
 	Log log;
 	QueueExecutor mainLoop;
 	IdBlocks blocks{mainLoop};
@@ -3071,7 +3082,7 @@ TEST_CASE("A factory or an adapter that throws inside the flush fails its node a
 		f.settle();
 		CHECK(f.allGone == 1);
 	}
-	SECTION("an outside node's adapter") {
+	SECTION("an engine companion's adapter") {
 		Fixture f;
 		f.cards.throwInMake = true;
 		f.add("desk", withPlayback(f.log));
@@ -3755,7 +3766,7 @@ TEST_CASE("stop() pairs only with a start() that returned: a failure stops a sta
 		Fixture f;
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onConfigure = [&](InstanceContexts& cx) {
-			cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			cx.create.soundCard("pb", motuOut.shape);
 			cx.create.use(std::make_unique<TestAudioCode>(f.log));
 			return Configured::applied();
 		};
@@ -3870,17 +3881,25 @@ TEST_CASE("Every rule a type breaks at a call or at configure's return fails its
 	     "start-failed: configure threw: an exception that is no "
 	     "std::exception"},
 		{[&](InstanceContexts& cx) {
-			 cx.create.soundCard("cap", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			 cx.create.soundCard("record", motuIn.shape);
 			 cx.create.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
-	     "start-failed: configure threw: a playback card joins an inside output bank, not \"cap\""},
+	     "start-failed: configure threw: a sound card joins an inside bank, not \"record\""},
 		{[&](InstanceContexts& cx) {
-			 cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback, "elsewhere"});
+			 cx.create.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.soundCard("pb", motuOut.shape);
 			 cx.create.use(std::make_unique<TestAudioCode>(codes));
 			 return Configured::applied();
 		 },
-	     "start-failed: configure threw: a sound card's request names bank \"elsewhere\", not \"pb\""},
+	     "start-failed: configure threw: a second companion on bank pb"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.soundCard("pb", motuOut.shape);
+			 cx.create.sink("pb", SinkShape{.frames = 64}).consumedBy(std::make_unique<TestSinkConsumer>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: a second companion on bank pb"},
 		{[&](InstanceContexts& cx) {
 			 cx.create.declareLatency("record", "pb", Latency{1, 1});
 			 cx.create.declareLatency("cap", "pb", Latency{2, 2});
@@ -3961,15 +3980,14 @@ TEST_CASE("A broken rule the type catches still fails its node with the rule's t
 	config->onConfigure = [&](InstanceContexts& cx) {
 		cx.create.use(std::make_unique<TestAudioCode>(f.log));
 		try {
-			cx.create.soundCard("record", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::capture});
+			cx.create.soundCard("record", motuIn.shape);
 		} catch (const std::exception&) {
 			// swallowed: the type goes on half-acquired
 		}
 		return Configured::applied();
 	};
 	f.add("probe", config);
-	CHECK(failureOf(f, "probe") ==
-	      "start-failed: configure threw: a capture card joins an inside input bank, not \"record\"");
+	CHECK(failureOf(f, "probe") == "start-failed: configure threw: a sound card joins an inside bank, not \"record\"");
 	f.blocks.events.at(0)->ready();
 	f.settle();
 	CHECK(f.blocks.driven.at(0) == nullptr);
@@ -4080,7 +4098,7 @@ TEST_CASE("A stop() that throws during a disable or a failure is a log record, a
 		auto config = std::make_shared<ProbeConfig>(f.log);
 		config->onStop = [] { throw std::runtime_error("stuck"); };
 		config->onConfigure = [&](InstanceContexts& cx) {
-			cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			cx.create.soundCard("pb", motuOut.shape);
 			cx.create.use(std::make_unique<TestAudioCode>(f.log));
 			return Configured::applied();
 		};
@@ -4313,7 +4331,7 @@ TEST_CASE("A sink's engine name is one of its configuration's: a sink on bank pl
 	config->ports_ = Ports{{{Direction::output, "playback", {"1"}, PortBank::Reach::inside},
 	                        {Direction::output, "pb", {"1"}, PortBank::Reach::inside}}};
 	config->onConfigure = [&](InstanceContexts& cx) {
-		cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+		cx.create.soundCard("pb", motuOut.shape);
 		cx.create.sink("playback", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(f.log));
 		cx.create.use(std::make_unique<TestAudioCode>(f.log));
 		return Configured::applied();

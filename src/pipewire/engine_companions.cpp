@@ -1,10 +1,10 @@
-// The one outside-node lifecycle (docs/engine.md#outside-nodes, outside_nodes.hpp):
+// The one engine-companion lifecycle (docs/engine.md#engine-companions, engine_companions.hpp):
 // the card's state machine (docs/engine.md#sound-cards), moved out of the card so every
-// kind of outside node is joined, made ready, lost and torn down by this code. A kind's body
-// says only how its engine node is made and heard from; this owns "is this outside node in the
+// kind of engine companion is joined, made ready, lost and torn down by this code. A kind's body
+// says only how its engine node is made and heard from; this owns "is this engine companion in the
 // graph": it runs alone until its body says it runs, then links its channels to its port block,
 // and on any failure destroys its links and its body before it reports the loss.
-#include "outside_nodes.hpp"
+#include "engine_companions.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -22,17 +22,18 @@
 namespace ear::pipewire {
 namespace {
 
-class JoinedOutsideNode final : public OutsideNode, public OutsideBodyEvents, public LinkEvents {
+class JoinedEngineCompanion final : public EngineCompanion, public CompanionBodyEvents, public LinkEvents {
 public:
-	JoinedOutsideNode(Engine& engine, OutsideJoin join, OutsideNodeEvents& events, OutsideBodyMaker makeBody)
+	JoinedEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
+	                      CompanionBodyMaker makeBody)
 		: engine_(engine), join_(std::move(join)), events_(events) {
-		later_ = pw_loop_add_event(engine_.mainLoop(), &JoinedOutsideNode::onLater, this);
+		later_ = pw_loop_add_event(engine_.mainLoop(), &JoinedEngineCompanion::onLater, this);
 		pw_core_add_listener(engine_.core(), &coreHook_, &coreEvents(), this);
 		coreListening_ = true;
 		body_ = makeBody(*this);
 	}
 
-	~JoinedOutsideNode() override {
+	~JoinedEngineCompanion() override {
 		silence();
 		if (dataLoopWedged(engine_)) leakEngineObjects();
 		links_.clear();
@@ -40,8 +41,8 @@ public:
 		if (later_ != nullptr) pw_loop_destroy_source(engine_.mainLoop(), later_);
 	}
 
-	JoinedOutsideNode(const JoinedOutsideNode&) = delete;
-	JoinedOutsideNode& operator=(const JoinedOutsideNode&) = delete;
+	JoinedEngineCompanion(const JoinedEngineCompanion&) = delete;
+	JoinedEngineCompanion& operator=(const JoinedEngineCompanion&) = delete;
 
 private:
 	enum class State { opening, linking, ready, failing, lost };
@@ -50,19 +51,19 @@ private:
 		static const pw_core_events table = [] {
 			pw_core_events events{};
 			events.version = PW_VERSION_CORE_EVENTS;
-			events.done = &JoinedOutsideNode::onCoreDone;
+			events.done = &JoinedEngineCompanion::onCoreDone;
 			return events;
 		}();
 		return table;
 	}
 
-	// OutsideBodyEvents. opening --running--> linking; any state --failed--> failing.
+	// CompanionBodyEvents. opening --running--> linking; any state --failed--> failing.
 	void running(std::uint32_t nodeId) override {
 		if (state_ == State::opening) link(nodeId);
 	}
 	void failed(std::string detail) override { fail(std::move(detail)); }
 
-	/// One link per channel, the outside node and the block each by its global id (never the block's node.name: an
+	/// One link per channel, the engine companion and the block each by its global id (never the block's node.name: an
 	/// older block of the name may still be going, docs/architecture.md#phases-states-and-what-is-wanted), each port by
 	/// name, owned by EAR's connection.
 	void link(std::uint32_t nodeId) {
@@ -121,7 +122,7 @@ private:
 	/// Destroys the links and the body (its engine node goes with it), then syncs with the
 	/// engine, so the removal is done before the loss is told.
 	static void onLater(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<JoinedOutsideNode*>(data);
+		auto* self = static_cast<JoinedEngineCompanion*>(data);
 		if (self->state_ != State::failing || self->syncing_) return;
 		self->syncing_ = true;
 		if (dataLoopWedged(self->engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
@@ -136,7 +137,7 @@ private:
 	}
 
 	static void onCoreDone(void* data, std::uint32_t id, int seq) {
-		auto* self = static_cast<JoinedOutsideNode*>(data);
+		auto* self = static_cast<JoinedEngineCompanion*>(data);
 		if (id != PW_ID_CORE || !self->syncing_ || self->state_ != State::failing || seq != self->syncSeq_) {
 			return;
 		}
@@ -168,11 +169,11 @@ private:
 	}
 
 	Engine& engine_;
-	OutsideJoin join_;
-	OutsideNodeEvents& events_;
+	CompanionJoin join_;
+	EngineCompanionEvents& events_;
 	State state_ = State::opening;
 	std::string detail_;
-	std::unique_ptr<OutsideBody> body_;
+	std::unique_ptr<CompanionBody> body_;
 	spa_hook coreHook_{};
 	bool coreListening_ = false;
 	std::vector<std::unique_ptr<LinkProxy>> links_; // link id = channel
@@ -190,7 +191,8 @@ std::string auxPositions(std::size_t channels) {
 	return positions + " ]";
 }
 
-void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId, OutsideBodyEvents& events) {
+void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint32_t nodeId,
+                   CompanionBodyEvents& events) {
 	if ((info.change_mask & PW_NODE_CHANGE_MASK_STATE) == 0) return;
 	if (info.state == PW_NODE_STATE_ERROR) {
 		events.failed("the " + kind + " failed: " + (info.error != nullptr ? info.error : "engine error"));
@@ -203,9 +205,9 @@ void tellNodeState(const pw_node_info& info, const std::string& kind, std::uint3
 	}
 }
 
-std::unique_ptr<OutsideNode> joinOutsideNode(Engine& engine, OutsideJoin join, OutsideNodeEvents& events,
-                                             OutsideBodyMaker makeBody) {
-	return std::make_unique<JoinedOutsideNode>(engine, std::move(join), events, std::move(makeBody));
+std::unique_ptr<EngineCompanion> joinEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
+                                                     CompanionBodyMaker makeBody) {
+	return std::make_unique<JoinedEngineCompanion>(engine, std::move(join), events, std::move(makeBody));
 }
 
 } // namespace ear::pipewire

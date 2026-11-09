@@ -24,7 +24,7 @@ changing this code.
 | Level mailbox | `level_mailbox.hpp` | One triple buffer per block |
 | Live ports | `live_graph.cpp` | Registry globals joined into node name, port name, direction, port id |
 | Links | `links.cpp`, `link_proxy.hpp` | `link-factory` links by port global id |
-| Outside nodes | `outside_nodes.cpp` (`joinOutsideNode`) | The one lifecycle of every engine node a node's insides ask for |
+| Engine companions | `engine_companions.cpp` (`joinEngineCompanion`) | The one lifecycle of every engine node a node's configuration asks for |
 | Sound cards | `sound_cards.cpp` | One ALSA adapter node per card and direction |
 | RTP receivers | `rtp_receivers.cpp` | `libpipewire-module-rtp-source`, one per `rtp` node |
 | Sinks and handoffs | `handoffs.cpp` | `ThreadSinks` (interim sinks) and `ThreadHandoffs` (the legacy handoff `sendspin` uses) |
@@ -65,7 +65,7 @@ PCM node), `audio.convert.*` (the converter the adapter wraps around it). Debian
 | `libpipewire-module-protocol-native` | The protocol ear's own connection speaks, even with no socket |
 | `libpipewire-module-client-node` | A `pw_filter` exports its node through it (`filter.c:1682-1713`); without it no port block appears |
 | `libpipewire-module-spa-node-factory` | Makes the internal clock |
-| `libpipewire-module-link-factory` | Makes route links (by port global id) and outside nodes' links |
+| `libpipewire-module-link-factory` | Makes route links (by port global id) and engine companions' links |
 | `libpipewire-module-adapter` | Makes a sound card: an ALSA PCM node wrapped in a converter |
 
 `libpipewire-module-rtp-source` is not listed: `RtpReceivers` loads one per `rtp` node with
@@ -167,7 +167,7 @@ public and inside banks alike, every one in the graph group, with `node.always-p
   (`filter.c:2038-2045`): an input then reads zeros, an output writes to scratch.
 - **A name added back waits for its older block.** Two blocks of one `node.name` would confuse
   `LiveGraph` and `link-factory`, so a node's block is made only once the older block of its name was
-  destroyed, and an outside node links its block by the block's global id (`pw_filter_get_node_id`,
+  destroyed, and an engine companion links its block by the block's global id (`pw_filter_get_node_id`,
   read at its first STREAMING), never by name.
 - **Destroying a filter is a barrier**: `pw_filter_destroy` removes the node from the data loop with
   a blocking invoke. It is never called once the data loop is wedged (the block is leaked), and
@@ -194,7 +194,7 @@ so a drive or fade never waits for a cycle that will not come.
   Each bound first runs every `done` the data loop already completed, and is judged after a grace
   when the whole process stalled, so a stalled main loop never blames the data loop. Once wedged,
   `Links` makes no link (each refused "the data loop is wedged") and leaks the proxies it would
-  destroy, an outside node leaks its links and body, and a block tells its peers no latency (it
+  destroy, an engine companion leaks its links and body, and a block tells its peers no latency (it
   still publishes it to its own realtime side, only atomics), since each of those reaches the data
   loop through a blocking invoke (`impl-port.c`'s mix release, `port_set_io`) that would hang the
   main loop, SIGTERM included.
@@ -287,11 +287,12 @@ its teardown):
   of it ([sources](#sources)).
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
-`to_card` to `play`, and its capture latency from `from_card` to `capture`. A configuration declares
-its own with `declareLatency`: `rtp` its `latencyMs` on `stream` (rtp-source's stream reports none),
-`sendspin` its feed on `from`. Frames are at the graph frequency. ALSA's playback node reports one
-quantum plus its headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames on the test card at a 256
-quantum.
+`to_card` to `play`, and its capture latency from `from_card` to `capture`. An RTP receiver's
+`latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's stream reports none), which the
+framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its own with
+`declareLatency`: `sendspin` its feed on `from`. Frames are at the graph frequency. ALSA's
+playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames
+on the test card at a 256 quantum.
 
 **Trap: the last link going is never told.** When a port loses its last peer the engine sets a null
 Latency param, and `handle_latency` returns on null before it emits anything, so a block keeps the
@@ -299,25 +300,34 @@ latency its last peers reported until another peer reports. A lost card leaves i
 card block's inside ports (harmless while nothing hears what goes there). A test checks the trap, so
 a PipeWire that fixes it fails it.
 
-## Outside nodes
+## Engine companions
 
-An outside node is a PipeWire node a node's configuration asks for, joined channel for channel to
-its block's inside ports and torn down with the configuration. Sound cards and RTP receivers are
-the two kinds; both share one lifecycle (`NodeHost` in `ear_core`, `joinOutsideNode` in
-`ear_pipewire`), and a kind says only how its node is made, how ear hears from it, and what fails it:
+An engine companion is a PipeWire node a node's configuration asks for, joined channel for channel
+to the ports of one of its block's inside banks and torn down with the configuration. Sound cards
+and RTP receivers are the two kinds. A type asks with its bank and a shape (`companions.hpp`:
+`SoundCardShape{card}`, `RtpReceiverShape{...}`); a card's direction is its bank's (playback on an
+inside output bank, capture on an inside input bank), and an inside bank has at most one companion
+of any kind ([writing-a-node-type.md](writing-a-node-type.md#engine-companions)). `NodeHost` works
+out each one's `CompanionTarget` (its engine name, the block, the bank's direction and ports) and,
+once the block is ready, hands it with the shape to the kind's `EngineCompanionAdapter`
+(`AlsaSoundCards`, `RtpReceivers`), which tells `ready` and `lost` through `EngineCompanionEvents`.
+Both kinds share one lifecycle (`NodeHost` in `ear_core`, `joinEngineCompanion` in `ear_pipewire`),
+and a kind says only how its node is made, how ear hears from it, and what fails it:
 
-1. **Alone.** The outside node is made and runs on its own until it reports RUNNING.
+1. **Alone.** The engine companion is made and runs on its own until it reports RUNNING.
 2. **Linked.** One link per channel through `link-factory` (`link.output.node`, `link.output.port`,
-   `link.input.node`, `link.input.port`): the outside node and the block each by its **global id**
+   `link.input.node`, `link.input.port`): the engine companion and the block each by its **global id**
    (the block's is `PortBlock::blockId`), ports by name. *Why by id:* a node of the same name still
    going (a restart's old one, or an older block of a name added back) would otherwise match first, and `link-factory` matches a name against nick, description and
    object path too (`module-link-factory.c`).
 3. **Ready** once every link is active; the node is `running` only then.
-4. **Lost.** Any failure first destroys the links and the outside node, waits for a `pw_core_sync`
+4. **Lost.** Any failure first destroys the links and the engine companion, waits for a `pw_core_sync`
    round trip, and only then tells `lost(detail)`: the node fails `engine-refused: <detail>`, its
    block and routes stay.
 
-Outside nodes are named `<node>.playback`, `<node>.capture` and `<node>.rtp`.
+Engine companions are named `<node>.playback`, `<node>.capture` and `<node>.rtp`. An RTP
+receiver's `latencyMs` enters the configuration's latency plan as `beyond` its bank
+([latency](#latency-per-bank-pair)); a card reports its own through its links.
 
 ### Sound cards
 
@@ -507,11 +517,11 @@ gone (`module-link-factory.c` 1.0.5:263-277,365-400). ear never destroys a proxy
   after the call that made it returns. `LiveGraph` gives each subscriber its own binding and caches
   nothing; a port can arrive before or after its node.
 - **Never tell a listener inside the call that caused it.** Refusals in making a block, a link or an
-  outside node are told later through `pw_loop_signal_event` on the main loop.
+  engine companion are told later through `pw_loop_signal_event` on the main loop.
 - **Main-loop work from another thread.** `MainLoopExecutor::post` queues the function and signals
   a main-loop event; posted from the loop thread itself it still runs later. Work left when it goes
   is destroyed unrun.
-- **A user node named like another engine node** (only `Dummy-Driver` today) gets outside-node links
+- **A user node named like another engine node** (only `Dummy-Driver` today) gets engine-companion links
   that fail, since the block side of those links is matched by name.
 
 ## Xruns on a loaded host are not bugs

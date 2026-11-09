@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, outside nodes (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, outside nodes, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring or is silent, a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring or is silent, a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -24,8 +24,8 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | Level mailbox | `level_mailbox.hpp` | One triple buffer per block: the realtime thread publishes a level window, an ordinary thread reads the latest |
 | Live ports | `live_graph.cpp` | Registry globals joined into node name, port name, direction, port id |
 | Links | `links.cpp`, `link_proxy.hpp` | `link-factory` links by port global id, owned by EAR's connection |
-| Outside nodes | `outside_nodes.cpp` (`joinOutsideNode`) | The one lifecycle of every engine node a node's insides ask for: runs alone, then linked to the block (the outside node by global id, the block by node name, ports by name), ready, lost |
-| Sound cards | `sound_cards.cpp` | One kind of outside node: one ALSA adapter node per card and direction |
+| Engine companions | `engine_companions.cpp` (`joinEngineCompanion`) | The one lifecycle of every engine node a node's insides ask for: runs alone, then linked to the block (the engine companion by global id, the block by node name, ports by name), ready, lost |
+| Sound cards | `sound_cards.cpp` | One kind of engine companion: one ALSA adapter node per card and direction |
 | RTP receivers | `rtp_receivers.cpp` | The other kind: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
 | Sinks and handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `ThreadSinks` (the interim sink: a frame ring and a stamp ring, written by the block's taps, and one `pw_thread_loop` handing chunks to its consumer) and `ThreadHandoffs` (the legacy handoff `sendspin` alone uses until slice 3c): `spa_ringbuffer` plus one `pw_thread_loop` each |
 | The wedge mark | `data_loop_wedge.hpp` | Once ear says the data loop is wedged, `main.cpp` marks the engine and the adapters stop calling into it (section "drive()") |
@@ -65,7 +65,7 @@ audioconvert/libspa-audioconvert` (the converter the adapter wraps around it). D
   port block appears.
 - `libpipewire-module-spa-node-factory`: makes the dummy driver below.
 - `libpipewire-module-link-factory`: makes the route links (by port global id) and each
-  outside node's own links (by node and port).
+  engine companion's own links (by node and port).
 - `libpipewire-module-adapter`: makes a sound card, an ALSA PCM node wrapped in a converter
   with one port per channel.
 
@@ -195,9 +195,10 @@ per output port); an output bank tells upstream (capture) latency = what reaches
 paired with it, plus what the run declared on it; an input bank tells downstream (playback)
 latency = what lies beyond the output banks paired with it, plus what the run declared. The pairs
 are the pass-through's, so a card block forwards the card's playback latency from `to_card` to
-`play`, and the card's capture latency from `from_card` to `capture`. A run declares its own with
-`StartContext::declareLatency(bank, Latency)`: `rtp` its `latencyMs` on `stream` (rtp-source's own
-stream reports none), `sendspin` its feed (0 to its size) on `from`. Frames: a quantum is the block
+`play`, and the card's capture latency from `from_card` to `capture`. An RTP receiver's `latencyMs`
+(rtp-source's own stream reports none) is the plan's `beyond` entry on `from_rtp`, which the
+framework adds and `rtp`'s pass-through carries to `stream`. A run declares its own with
+`StartContext::declareLatency(bank, Latency)`: `sendspin` its feed (0 to its size) on `from`. Frames: a quantum is the block
 size and nanoseconds are at the graph frequency. ALSA's playback node reports one quantum plus its
 headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
 
@@ -205,8 +206,8 @@ headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames on the test card at a 256
 
 A `card` node is a port block (its public ports, metered) plus one ALSA adapter node per
 direction made by `AlsaSoundCards` (`sound_cards.cpp`), joined to the block's inside ports by
-the card's own links. A card is one kind of outside node: the state machine below is
-`joinOutsideNode` (`outside_nodes.cpp`), shared with RTP receivers; the card's body says only
+the card's own links. A card is one kind of engine companion: the state machine below is
+`joinEngineCompanion` (`engine_companions.cpp`), shared with RTP receivers; the card's body says only
 how its node is made and heard from (its own proxy) and what fails it:
 
 1. **Opening.** The adapter is made with `factory.name = api.alsa.pcm.sink` (playback) or
@@ -365,7 +366,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
   loop already completed), and is judged after a grace when the whole process stalled, so a stalled
   main loop never blames the data loop. Once wedged, `NodeHost` makes no PipeWire call and leaks what
   it would end, and `main.cpp` marks the engine (`markDataLoopWedged`): `Links` makes no link (each
-  refused "the data loop is wedged") and leaks the proxies it would destroy, an outside node leaks
+  refused "the data loop is wedged") and leaks the proxies it would destroy, an engine companion leaks
   its links and body, and a block tells no latency, since each of those reaches the data loop through
   a blocking invoke (`impl-port.c`'s mix release, `port_set_io`) that would hang the main loop, SIGTERM
   included. A new node fails `engine-refused: the data loop is wedged` without a block, and ear ends
@@ -465,7 +466,7 @@ Nothing like WirePlumber runs. Two things make that work:
 
 - **A dot in a public port's name is safe.** Ports are `<bank>.<member>` since 2026-11-06. In PipeWire 1.4.2 `pw_impl_port_add`
   (`impl-port.c`) only copies `port.name` and joins it into `port.alias` with a `:`; it never parses the name, and a route's link goes
-  by port ids. `port_block_test.cpp` carries a ramp and levels over dotted names. Read again at a PipeWire bump. Only the outside nodes'
+  by port ids. `port_block_test.cpp` carries a ramp and levels over dotted names. Read again at a PipeWire bump. Only the engine companions'
   links go by name, and those name inside ports and `playback_AUX<i>`, with no dot.
 - **Stop signals kill the process unless blocked first.** `pw_context_new` starts the data-loop
   thread. A SIGTERM sent to the process goes to any thread that does not block it, where its
@@ -491,7 +492,7 @@ Nothing like WirePlumber runs. Two things make that work:
   (docs/architecture.md#isolation), so the main loop waits on the data loop at most once a turn.
 - **A name added back waits for its older block.** Two blocks of one `node.name` would confuse
   `LiveGraph` and link-factory, so a node's block is made only in the flush that destroyed the older
-  block of its name, and an outside node links its block by the block's global id
+  block of its name, and an engine companion links its block by the block's global id
   (`pw_filter_get_node_id`, read at its first STREAMING), never by name.
 - **Link lifetime.** A link made through `link-factory` belongs to the connection that asked for
   it (no `object.linger`), so destroying its proxy removes it. The factory destroys a link that
@@ -502,7 +503,7 @@ Nothing like WirePlumber runs. Two things make that work:
   events after the call that made it returns, never inside it. `LiveGraph` gives each
   subscriber its own binding and caches nothing; a port can arrive before or after its node.
 - **Never tell a listener inside the call that caused it.** Refusals in `FilterPortBlocks::make`,
-  `Links::createLink` and `joinOutsideNode` (every outside node's `make`) are told later through `pw_loop_signal_event`
+  `Links::createLink` and `joinEngineCompanion` (every engine companion's `make`) are told later through `pw_loop_signal_event`
   on the main loop, as the core interfaces require.
 - **The adapter's `adapter.auto-port-config` fails on 1.4.2.** It left one unconfigured port
   whose PCM failed to start (EINVAL). The card sends the port configuration itself, as a
@@ -516,9 +517,9 @@ Nothing like WirePlumber runs. Two things make that work:
   `node.driver-id` when its driver changes but sends no info event for it. A test that reads it
   binds the node again (`sound_card_test.cpp`).
 - **link-factory finds nodes by more than `node.name`.** By name it also matches nick,
-  description and object path (`module-link-factory.c`). Outside-node links therefore name the
-  outside node by global id; the block side is still a name, so a node a user names like another
-  engine node (only `Dummy-Driver` today) gets outside-node links that fail, and the outside node
+  description and object path (`module-link-factory.c`). Engine-companion links therefore name the
+  engine companion by global id; the block side is still a name, so a node a user names like another
+  engine node (only `Dummy-Driver` today) gets engine-companion links that fail, and the engine companion
   is lost with the factory's error.
 - **Main-loop work from another thread.** `MainLoopExecutor::post` queues the function and
   signals a main-loop event; posted from the loop thread itself it still runs later, never

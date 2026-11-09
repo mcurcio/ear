@@ -32,7 +32,7 @@ void everySampleWritten(ear::testing::NodeHarness& harness, std::uint32_t maxBlo
 void readyEvery(ear::testing::NodeHarness& harness) {
 	for (const auto& companion : harness.companions())
 		if (!companion.destroyed && !companion.ready) {
-			CHECK(companion.engineName.starts_with("probe."));
+			CHECK(companion.name.starts_with("probe."));
 			harness.ready(companion.bank);
 		}
 }

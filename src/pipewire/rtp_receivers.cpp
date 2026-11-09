@@ -1,7 +1,7 @@
 // RTP receivers through PipeWire's rtp-source module (docs/engine.md#rtp-receivers,
-// rtp_receivers.hpp). A receiver is one kind of outside node: its body here loads the module
+// rtp_receivers.hpp). A receiver is one kind of engine companion: its body here loads the module
 // into the engine's context and finds the module's node through the registry; the one
-// outside-node lifecycle (outside_nodes.hpp) links it once it runs and tears it down.
+// engine-companion lifecycle (engine_companions.hpp) links it once it runs and tears it down.
 #include "ear/pipewire/rtp_receivers.hpp"
 
 #include <cerrno>
@@ -18,7 +18,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
-#include "outside_nodes.hpp"
+#include "engine_companions.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -33,13 +33,13 @@ std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_st
 /// The module's arguments (docs/engine.md#rtp-receivers): the one home of this form. Every value
 /// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
 /// user text reaches PipeWire's parsers.
-std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request, std::size_t channels) {
+std::string moduleArguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
 	const std::string name = "\"" + engineNode + "\"";
-	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + request.address.text() + "\"" +
-	       " source.port = " + std::to_string(request.port) + " sess.media = \"audio\"" +
-	       " sess.latency.msec = " + std::to_string(request.latencyMs) + " sess.ignore-ssrc = true" +
-	       " audio.format = \"" + (request.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
-	       " audio.rate = " + std::to_string(request.rate) + " audio.channels = " + std::to_string(channels) +
+	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + shape.address.text() + "\"" +
+	       " source.port = " + std::to_string(shape.port) + " sess.media = \"audio\"" +
+	       " sess.latency.msec = " + std::to_string(shape.latencyMs) + " sess.ignore-ssrc = true" +
+	       " audio.format = \"" + (shape.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
+	       " audio.rate = " + std::to_string(shape.rate) + " audio.channels = " + std::to_string(channels) +
 	       " audio.position = " + auxPositions(channels) + " node.name = " + name + " node.description = " + name +
 	       " media.name = " + name +
 	       " stream.props = { node.always-process = true"
@@ -55,9 +55,9 @@ std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest
 ///   2. On the done: the module is loaded. The first node global named engineNode that is not
 ///      stale is this receiver's; it is bound for its info.
 ///   3. Its info RUNNING (its socket is bound, docs/engine.md#rtp-receivers, finding g): running.
-class RtpReceiverBody final : public OutsideBody {
+class RtpReceiverBody final : public CompanionBody {
 public:
-	RtpReceiverBody(Engine& engine, NodeName engineNode, std::string arguments, OutsideBodyEvents& events)
+	RtpReceiverBody(Engine& engine, NodeName engineNode, std::string arguments, CompanionBodyEvents& events)
 		: engine_(engine), engineNode_(std::move(engineNode)), arguments_(std::move(arguments)), events_(events) {
 		registry_ = pw_core_get_registry(engine_.core(), PW_VERSION_REGISTRY, 0);
 		if (registry_ == nullptr) {
@@ -201,7 +201,7 @@ private:
 	Engine& engine_;
 	NodeName engineNode_;
 	std::string arguments_;
-	OutsideBodyEvents& events_;
+	CompanionBodyEvents& events_;
 	pw_registry* registry_ = nullptr;
 	spa_hook registryHook_{};
 	spa_hook coreHook_{};
@@ -221,23 +221,23 @@ private:
 
 RtpReceivers::RtpReceivers(Engine& engine) : engine_(engine) {}
 
-std::unique_ptr<OutsideNode> RtpReceivers::make(const OutsideTarget& target, const RtpReceiverRequest& request,
-                                                OutsideNodeEvents& events) {
+std::unique_ptr<EngineCompanion> RtpReceivers::make(const CompanionTarget& target, const RtpReceiverShape& shape,
+                                                    EngineCompanionEvents& events) {
 	std::vector<PortName> receiverPorts;
 	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
 		receiverPorts.push_back(channelPort(channel));
 	}
-	return joinOutsideNode(engine_,
-	                       OutsideJoin{.kind = kind,
-	                                   .blockId = target.blockId,
-	                                   .flow = ChannelFlow::nodeToBlock,
-	                                   .nodePorts = std::move(receiverPorts),
-	                                   .blockPorts = target.blockPorts},
-	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<RtpReceiverBody>(
-								   engine_, target.engineNode,
-								   moduleArguments(target.engineNode, request, target.blockPorts.size()), body);
-						   });
+	return joinEngineCompanion(engine_,
+	                           CompanionJoin{.kind = kind,
+	                                         .blockId = target.blockId,
+	                                         .flow = ChannelFlow::nodeToBlock,
+	                                         .nodePorts = std::move(receiverPorts),
+	                                         .blockPorts = target.blockPorts},
+	                           events, [&](CompanionBodyEvents& body) -> std::unique_ptr<CompanionBody> {
+								   return std::make_unique<RtpReceiverBody>(
+									   engine_, target.engineNode,
+									   moduleArguments(target.engineNode, shape, target.blockPorts.size()), body);
+							   });
 }
 
 } // namespace ear::pipewire

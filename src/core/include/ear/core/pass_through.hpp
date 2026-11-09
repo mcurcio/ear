@@ -1,6 +1,6 @@
 // The framework's pass-through (docs/writing-a-node-type.md#the-class): what `card` and `rtp` run, so no
-// type writes audio code to join an outside node to its public ports. NodeHost makes it from a NodeCode::passThrough;
-// a type's own tests make it the same way to check what their pairs carry.
+// type writes audio code to join an engine companion to its public ports. NodeHost makes it from a
+// NodeCode::passThrough; a type's own tests make it the same way to check what their pairs carry.
 #pragma once
 #include <memory>
 #include <vector>

@@ -41,10 +41,8 @@ struct Card {
 	}
 
 	Configured configure(CreateOf<spec>& cx, const Checked& s) {
-		if (s.get<playbackRow>() > 0)
-			cx.soundCard(toCard, SoundCardRequest{.card = s.get<cardRow>(), .direction = CardDirection::playback});
-		if (s.get<captureRow>() > 0)
-			cx.soundCard(fromCard, SoundCardRequest{.card = s.get<cardRow>(), .direction = CardDirection::capture});
+		if (s.get<playbackRow>() > 0) cx.soundCard(toCard, SoundCardShape{.card = s.get<cardRow>()});
+		if (s.get<captureRow>() > 0) cx.soundCard(fromCard, SoundCardShape{.card = s.get<cardRow>()});
 		cx.use(passThrough({bankPair(play, toCard), bankPair(fromCard, capture)}));
 		return Configured::applied();
 	}

@@ -140,15 +140,17 @@ struct Handoffs final : HandoffAdapter {
 	}
 };
 
-struct NoCards final : SoundCardAdapter {
-	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const SoundCardRequest&, OutsideNodeEvents&) override {
+struct NoCards final : SoundCardCompanions {
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget&, const SoundCardShape&,
+	                                      EngineCompanionEvents&) override {
 		FAIL("a sound card was made");
 		return nullptr;
 	}
 };
 
-struct NoReceivers final : RtpReceiverAdapter {
-	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const RtpReceiverRequest&, OutsideNodeEvents&) override {
+struct NoReceivers final : RtpReceiverCompanions {
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget&, const RtpReceiverShape&,
+	                                      EngineCompanionEvents&) override {
 		FAIL("an RTP receiver was made");
 		return nullptr;
 	}

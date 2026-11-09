@@ -121,8 +121,9 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
 | `latencyMs` | whole number | 1 to 1000, the receive buffer | 100 | `latencyMs: must be a whole number of milliseconds, 1-1000` |
 
 - Outputs `stream.1`..`stream.N`; no inputs. The receiver, `<node>.rtp`, feeds the inside bank
-  `from_rtp`, passed straight through. The node declares `latencyMs` as its own latency on
-  `stream`, so downstream nodes are told it.
+  `from_rtp`, passed straight through. The receiver's `latencyMs` is latency beyond `from_rtp`
+  ([engine.md](engine.md#latency-per-bank-pair)), carried to `stream`, so downstream nodes are
+  told it.
 - The stream follows the graph's clock and never drives it. A sender at another rate is
   resampled to the graph frequency.
 - **Why only those addresses:** a unicast address does not mean "this host's address" to
@@ -165,7 +166,7 @@ tested, and a multicast-capable pod network; a larger datagram (`net.mtu`) for m
 a `latencyMs` bound tied to the ring (`latencyMs * rate / 1000 * channels * bytesPerSample` under
 4 MiB); packet handling on a data loop of its own (`context.data-loops` and the module's
 `node.loop.class`); refusing `224.0.0.0/24` and other well-known groups; refusing a second `rtp`
-node on one port; a limit on outside nodes; SAP discovery; IPv6 and a sender-address filter; an
+node on one port; a limit on engine companions; SAP discovery; IPv6 and a sender-address filter; an
 RTP sender.
 
 ## `sendspin`

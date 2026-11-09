@@ -1710,8 +1710,8 @@ TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate noth
 }
 
 // Settled for slice 3b's design (docs/design/companions.md): pw_filter_get_node_id gives the block's global id once
-// STREAMING, and an outside node's link made by it (as joinOutsideNode will write link.output.node) reaches that block
-// even beside an older block of the same name.
+// STREAMING, and an engine companion's link made by it (as joinEngineCompanion writes link.output.node) reaches that
+// block even beside an older block of the same name.
 TEST_CASE("A block's id is its engine node's global id once STREAMING, and a link made by it reaches that block, not "
           "another of its name",
           "[blocks][drive][async]") {
@@ -1741,7 +1741,7 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 	CHECK(std::ranges::find(ids, first->blockId()) != ids.end());
 	CHECK(std::ranges::find(ids, second->blockId()) != ids.end());
 
-	// The link as link-factory makes it for an outside node: each end by node id, each port by name.
+	// The link as link-factory makes it for an engine companion: each end by node id, each port by name.
 	const std::string output = std::to_string(second->blockId());
 	const std::string input = std::to_string(probe.nodeId());
 	pw_properties* props =

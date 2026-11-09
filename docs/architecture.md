@@ -45,7 +45,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
-| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, outside nodes (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)) | Policy |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)) | Policy |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
 | `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
@@ -77,7 +77,7 @@ the main loop by posting.
 
 | Thread | Runs |
 |---|---|
-| PipeWire's data loop (realtime, one for the whole engine) | Every port block's `process`, level metering, the sinks' taps and the legacy handoffs' writers; every outside node's processing |
+| PipeWire's data loop (realtime, one for the whole engine) | Every port block's `process`, level metering, the sinks' taps and the legacy handoffs' writers; every engine companion's processing |
 | PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
 | The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
 | The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
@@ -160,9 +160,9 @@ engine refused the link. A wire never depends on a node's state.
    each output), so no type reads a clock ([engine.md](engine.md#graphcycle)).
 5. **Routes.** `LiveGraph` reports ports as the engine's registry announces them; the
    `Reconciler` links wanted routes between live ports. An unlinked input reads zeros.
-6. **Outside nodes.** A `card` or `rtp` node's block has inside banks no route can name; the
+6. **Engine companions.** A `card` or `rtp` node's block has inside banks no route can name; the
    framework joins an ALSA adapter node or an RTP receiver to them, and its pass-through copies
-   between inside and public banks ([engine.md](engine.md#outside-nodes)).
+   between inside and public banks ([engine.md](engine.md#engine-companions)).
 7. **Off the realtime thread.** A `file` node's block writes each cycle into a sink's lock-free
    ring, read by the sink's own thread ([engine.md](engine.md#sinks)).
 8. **Levels.** Each block meters its public ports and publishes a window every 1/30 s of graph
@@ -228,7 +228,7 @@ or its removal). Recovery that retries by itself is not built yet.
 
 | Code | When |
 |---|---|
-| `engine-refused` | The engine refused or lost the block or an outside node (a card that cannot open or is unplugged, an RTP receiver lost), or the data loop is wedged |
+| `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), or the data loop is wedged |
 | `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin, its insides said `lost`, or a hook threw |
 | `lost` | After that: its insides said `lost`, or a hook threw |
 
@@ -255,7 +255,7 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 | A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`) |
 
 **A wedged data loop.** Once ear judges the data loop wedged it makes no PipeWire call that could
-wait on it: no block, outside node or link is made or destroyed, and no latency is told. A new
+wait on it: no block, engine companion or link is made or destroyed, and no latency is told. A new
 node fails `engine-refused: the data loop is wedged`, a new route is `refused` with that detail,
 and what ear would destroy is leaked. ear's stop still writes `ear.conf` and every record, then
 leaves through `std::_Exit(0)` (as it does whenever anything was leaked).
@@ -271,11 +271,11 @@ requests; the watchdog makes that visible.
 ### Isolation
 
 One node's lifecycle touches only its own block's code, the audio its peers read from it, and its
-own outside nodes' links. What is shared and how it is kept safe:
+own engine companions' links. What is shared and how it is kept safe:
 
 | Shared | Kept safe by |
 |---|---|
-| The engine and the clock driver | A refused or lost block or outside node fails only its node; the internal clock belongs to no node and outranks every card |
+| The engine and the clock driver | A refused or lost block or engine companion fails only its node; the internal clock belongs to no node and outranks every card |
 | The one data loop | `process` is bounded; ear's barriers are asynchronous invokes; a barrier past 5 s marks the loop wedged |
 | The main loop | Hooks never block; every wait on another thread is asynchronous; PipeWire calls are batched per turn; the watchdog reports stalls |
 | ALSA calls of a card | **Not isolated (a known limit):** ALSA's open, drop and close run on the main loop, so a USB card that wedges in the kernel can block every node until ear restarts |
@@ -289,7 +289,7 @@ the main loop never joins a thread:
    `start()` ran; the fade; the barrier, a drive of no code (after it completes, no `process` of
    the code runs, so nothing the realtime thread can reach is freed while it can reach it); the
    code's `release`.
-2. Outside nodes destroyed (and, for a removal, the block, only after the barrier).
+2. Engine companions destroyed (and, for a removal, the block, only after the barrier).
 3. Sinks and handoffs drained and finished, each on its own thread.
 4. A legacy run object closed, off the main loop (a `sendspin` node's worker says goodbye on its
    own thread).

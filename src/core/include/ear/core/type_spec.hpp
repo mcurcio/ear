@@ -108,7 +108,7 @@ inline constexpr BankHandle<Name, Direction::output, PortBank::Reach::routable> 
 /// A routable input bank.
 template <spec_detail::BankName Name>
 inline constexpr BankHandle<Name, Direction::input, PortBank::Reach::routable> input{};
-/// An inside output bank: only the node's own outside nodes and code reach it (a sound card's playback).
+/// An inside output bank: only the node's own companions and code reach it (a sound card's playback).
 template <spec_detail::BankName Name>
 inline constexpr BankHandle<Name, Direction::output, PortBank::Reach::inside> insideOutput{};
 /// An inside input bank (a sound card's capture, an RTP receiver).

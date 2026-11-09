@@ -76,8 +76,7 @@ public:
 		calls.emplace_back("configure");
 		const auto mode = settings.get<modeRow>();
 		if (mode == "card") {
-			cx.soundCard(toDevice,
-			             SoundCardRequest{.card = *CardId::parse("Probe"), .direction = CardDirection::playback});
+			cx.soundCard(toDevice, SoundCardShape{.card = *CardId::parse("Probe")});
 			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
 			return Configured::applied();
 		}
@@ -222,9 +221,10 @@ TEST_CASE("The harness readies and loses a sound card configure asked for", "[ty
 	harness.blockReady();
 	CHECK(harness.phase() == "configuring");
 	const testing::CompanionFake& card = harness.companion(toDevice);
-	CHECK(card.engineName == "node.playback");
-	CHECK(card.kind == testing::CompanionFake::Kind::soundCard);
-	CHECK(std::get<SoundCardRequest>(card.request).bank == "to_device"); // filled from the handle
+	CHECK(card.name == "node.playback");
+	CHECK(card.kind == CompanionKind::cardPlayback); // the bank's direction is the card's
+	CHECK(card.bank == "to_device");
+	CHECK(std::get<SoundCardShape>(card.shape).card.text() == "Probe");
 	harness.ready(toDevice);
 	CHECK(harness.phase() == "running");
 	harness.process(); // the fade-in
@@ -263,7 +263,7 @@ TEST_CASE("The harness plays what a test feeds a source into its bank before the
 	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}});
 	REQUIRE_FALSE(harness.parse({{"mode", "source"}, {"channels", 2}}));
 	harness.add();
-	CHECK(harness.companion(fromDevice).kind == testing::CompanionFake::Kind::source);
+	CHECK(harness.companion(fromDevice).kind == CompanionKind::source);
 	CHECK(harness.companion(fromDevice).ready);
 	harness.blockReady();
 	REQUIRE(harness.phase() == "running");

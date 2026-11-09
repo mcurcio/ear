@@ -64,7 +64,7 @@ std::string contents(const std::filesystem::path& path) {
 /// Whether the node asked for a sink.
 bool madeSink(const Harness& harness) {
 	for (const auto& companion : harness.companions())
-		if (companion.kind == ear::testing::CompanionFake::Kind::sink) return true;
+		if (companion.kind == ear::CompanionKind::sink) return true;
 	return false;
 }
 
@@ -224,10 +224,10 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	REQUIRE(harness->recordingRequests().size() == 1);
 	CHECK(harness->recordingRequests()[0].path == "rec.wav");
 	ear::testing::CompanionFake& sink = harness->companion(file::writer);
-	CHECK(sink.kind == ear::testing::CompanionFake::Kind::sink);
-	CHECK(sink.engineName == "rec.writer");
-	CHECK(std::get<ear::SinkShape>(sink.request).frames == 2 * format.rate); // 2 s ring
-	CHECK(sink.ready);                                                       // its consumer began: the WAV is open
+	CHECK(sink.kind == ear::CompanionKind::sink);
+	CHECK(sink.name == "rec.writer");
+	CHECK(std::get<ear::SinkShape>(sink.shape).frames == 2 * format.rate); // 2 s ring
+	CHECK(sink.ready);                                                     // its consumer began: the WAV is open
 	CHECK(harness->handoffs().empty());
 
 	std::vector<float> left;

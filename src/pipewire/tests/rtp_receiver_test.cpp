@@ -117,7 +117,7 @@ private:
 };
 
 /// What a receiver tells, with what the registry showed at the moment it was told.
-class ReceiverEvents final : public OutsideNodeEvents {
+class ReceiverEvents final : public EngineCompanionEvents {
 public:
 	ReceiverEvents(Waiter& waiter, Registry& registry) : waiter_(waiter), registry_(registry) {}
 	void ready() override {
@@ -165,12 +165,13 @@ struct Graph {
 	}
 	~Graph() { ear::testing::silenceOrAbort(*block); }
 
-	std::unique_ptr<OutsideNode> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
-	                                          ReceiverEvents& events) {
+	std::unique_ptr<EngineCompanion> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
+	                                              ReceiverEvents& events) {
 		events.insideMake = true;
 		auto receiver = receivers.make(
-			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
-			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, "from_rtp"}, events);
+			CompanionTarget{
+				"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
+			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100}, events);
 		events.insideMake = false;
 		return receiver;
 	}
@@ -297,11 +298,10 @@ TEST_CASE("A receiver joins its block by the block's id: beside an older block o
 	const std::uint32_t newerId = newer->blockId();
 	REQUIRE(olderId != newerId);
 	ReceiverEvents events(graph.waiter, graph.registry);
-	const auto receiver =
-		graph.receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
-	                         RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
-	                                            RtpEncoding::l24, kRate, 100, "from_rtp"},
-	                         events);
+	const auto receiver = graph.receivers.make(
+		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate, 100},
+		events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 	CHECK(graph.registry.activeLinksOf(newerId) == 2);
@@ -393,7 +393,7 @@ pw_impl_module* rtpSourceModule(Engine& engine) {
 }
 
 /// A ready receiver whose two links are up; its node id is in `events`.
-std::unique_ptr<OutsideNode> readyReceiver(Graph& graph, ReceiverEvents& events) {
+std::unique_ptr<EngineCompanion> readyReceiver(Graph& graph, ReceiverEvents& events) {
 	auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");

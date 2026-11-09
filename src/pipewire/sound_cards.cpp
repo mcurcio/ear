@@ -1,8 +1,8 @@
 // Sound cards as ALSA adapter nodes with their own links (docs/engine.md, sound_cards.hpp). A card is one kind of
-// outside node: its body here makes the ALSA adapter and hears from it through its own proxy; the one outside-node
-// lifecycle (outside_nodes.hpp, docs/engine.md#outside-nodes) runs it alone until its PCM runs, then links its channels
-// to its port block, and on any failure destroys its links and its engine node before it reports the loss. Linked, it
-// follows ear's internal clock, never drives the blocks.
+// engine companion: its body here makes the ALSA adapter and hears from it through its own proxy; the one
+// engine-companion lifecycle (engine_companions.hpp, docs/engine.md#engine-companions) runs it alone until its PCM
+// runs, then links its channels to its port block, and on any failure destroys its links and its engine node before it
+// reports the loss. Linked, it follows ear's internal clock, never drives the blocks.
 #include "ear/pipewire/sound_cards.hpp"
 
 #include <cerrno>
@@ -19,7 +19,7 @@
 #include <spa/utils/result.h>
 
 #include "engine_names.hpp"
-#include "outside_nodes.hpp"
+#include "engine_companions.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -31,18 +31,17 @@ constexpr char kind[] = "card"; // names it in failure details
 std::string alsaPath(const CardId& card) { return "hw:CARD=" + card.text() + ",DEV=0"; }
 
 /// The adapter's port for channel `channel` (from 0), as its dsp port configuration names it.
-std::string channelPort(CardDirection direction, std::size_t channel) {
-	return (direction == CardDirection::playback ? "playback_AUX" : "capture_AUX") + std::to_string(channel);
+std::string channelPort(Direction bank, std::size_t channel) {
+	return (bank == Direction::output ? "playback_AUX" : "capture_AUX") + std::to_string(channel);
 }
 
 /// One card's engine node: the ALSA adapter, made on EAR's connection and heard from through its
-/// own proxy. The lifecycle (joinOutsideNode) links it once it runs and tears it down.
-class AlsaCardBody final : public OutsideBody {
+/// own proxy. The lifecycle (joinEngineCompanion) links it once it runs and tears it down.
+class AlsaCardBody final : public CompanionBody {
 public:
-	AlsaCardBody(Engine& engine, const OutsideTarget& target, const SoundCardRequest& request,
-	             const AlsaSoundCards::Properties& extra, OutsideBodyEvents& events)
-		: direction_(request.direction), channels_(target.blockPorts.size()), rate_(target.format.rate),
-		  events_(events) {
+	AlsaCardBody(Engine& engine, const CompanionTarget& target, const SoundCardShape& shape,
+	             const AlsaSoundCards::Properties& extra, CompanionBodyEvents& events)
+		: bank_(target.bank), channels_(target.blockPorts.size()), rate_(target.format.rate), events_(events) {
 		const NodeName& engineNode = target.engineNode;
 		const AudioFormat& format = target.format;
 		const auto channels = std::to_string(channels_);
@@ -52,8 +51,8 @@ public:
 		// the lifecycle (link once RUNNING) cannot do. Alone it drives itself until its links join it to the blocks,
 		// where the internal clock outranks it and it follows (docs/engine.md#the-internal-clock).
 		pw_properties* props = pw_properties_new(
-			SPA_KEY_FACTORY_NAME, direction_ == CardDirection::playback ? "api.alsa.pcm.sink" : "api.alsa.pcm.source",
-			"api.alsa.path", alsaPath(request.card).c_str(), "audio.channels", channels.c_str(), "audio.rate",
+			SPA_KEY_FACTORY_NAME, bank_ == Direction::output ? "api.alsa.pcm.sink" : "api.alsa.pcm.source",
+			"api.alsa.path", alsaPath(shape.card).c_str(), "audio.channels", channels.c_str(), "audio.rate",
 			rate.c_str(), "audio.position", auxPositions(channels_).c_str(), PW_KEY_NODE_NAME, engineNode.c_str(),
 			PW_KEY_NODE_ALWAYS_PROCESS, "true", PW_KEY_PRIORITY_DRIVER, priority.c_str(), nullptr);
 		for (const auto& [key, value] : extra) pw_properties_set(props, key.c_str(), value.c_str());
@@ -117,7 +116,7 @@ private:
 		spa_pod* format = spa_format_audio_raw_build(&builder, SPA_PARAM_Format, &raw);
 		auto* config = static_cast<spa_pod*>(spa_pod_builder_add_object(
 			&builder, SPA_TYPE_OBJECT_ParamPortConfig, SPA_PARAM_PortConfig, SPA_PARAM_PORT_CONFIG_direction,
-			SPA_POD_Id(direction_ == CardDirection::playback ? SPA_DIRECTION_INPUT : SPA_DIRECTION_OUTPUT),
+			SPA_POD_Id(bank_ == Direction::output ? SPA_DIRECTION_INPUT : SPA_DIRECTION_OUTPUT),
 			SPA_PARAM_PORT_CONFIG_mode, SPA_POD_Id(SPA_PARAM_PORT_CONFIG_MODE_dsp), SPA_PARAM_PORT_CONFIG_monitor,
 			SPA_POD_Bool(false), SPA_PARAM_PORT_CONFIG_control, SPA_POD_Bool(false), SPA_PARAM_PORT_CONFIG_format,
 			SPA_POD_Pod(format)));
@@ -137,10 +136,10 @@ private:
 		static_cast<AlsaCardBody*>(data)->events_.failed("the engine removed the card");
 	}
 
-	CardDirection direction_;
+	Direction bank_;
 	std::size_t channels_;
 	std::uint32_t rate_;
-	OutsideBodyEvents& events_;
+	CompanionBodyEvents& events_;
 	pw_proxy* node_ = nullptr;
 	spa_hook proxyHook_{};
 	spa_hook nodeHook_{};
@@ -152,22 +151,22 @@ AlsaSoundCards::AlsaSoundCards(Engine& engine, Properties extra) : engine_(engin
 
 AlsaSoundCards::Properties clocklessCardProperties() { return {{"clock.name", internalClockName}}; }
 
-std::unique_ptr<OutsideNode> AlsaSoundCards::make(const OutsideTarget& target, const SoundCardRequest& request,
-                                                  OutsideNodeEvents& events) {
+std::unique_ptr<EngineCompanion> AlsaSoundCards::make(const CompanionTarget& target, const SoundCardShape& shape,
+                                                      EngineCompanionEvents& events) {
 	std::vector<PortName> cardPorts;
 	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
-		cardPorts.push_back(channelPort(request.direction, channel));
+		cardPorts.push_back(channelPort(target.bank, channel));
 	}
-	return joinOutsideNode(engine_,
-	                       OutsideJoin{.kind = kind,
-	                                   .blockId = target.blockId,
-	                                   .flow = request.direction == CardDirection::playback ? ChannelFlow::blockToNode
-	                                                                                        : ChannelFlow::nodeToBlock,
-	                                   .nodePorts = std::move(cardPorts),
-	                                   .blockPorts = target.blockPorts},
-	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<AlsaCardBody>(engine_, target, request, extra_, body);
-						   });
+	return joinEngineCompanion(
+		engine_,
+		CompanionJoin{.kind = kind,
+	                  .blockId = target.blockId,
+	                  .flow = target.bank == Direction::output ? ChannelFlow::blockToNode : ChannelFlow::nodeToBlock,
+	                  .nodePorts = std::move(cardPorts),
+	                  .blockPorts = target.blockPorts},
+		events, [&](CompanionBodyEvents& body) -> std::unique_ptr<CompanionBody> {
+			return std::make_unique<AlsaCardBody>(engine_, target, shape, extra_, body);
+		});
 }
 
 } // namespace ear::pipewire

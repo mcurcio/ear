@@ -1,13 +1,12 @@
 // Companions, slice 3b (docs/design/companions.md#8-module-design; this header is their home until the slice is built,
-// then docs/writing-a-node-type.md#companions and docs/engine.md#companions): what a type asks for on an inside bank
-// (the engine companions' shapes; the ring companions' shapes are sink.hpp's and source.hpp's), the closed list of
-// kinds and their readiness deadlines, a companion as the wire sees it, and the engine companions' adapter interface.
+// then the library docs: so far docs/writing-a-node-type.md#engine-companions and docs/engine.md#engine-companions):
+// what a type asks for on an inside bank (the engine companions' shapes; the ring companions' shapes are sink.hpp's and
+// source.hpp's), the closed list of kinds and their readiness deadlines, a companion as the wire sees it, and the
+// engine companions' adapter interface.
 //
-// Declarations only until the slice's steps build them. The engine companion interfaces here replace node_host.hpp's
-// outside-node ones in step 3b.4 (OutsideNode -> EngineCompanion, OutsideNodeEvents -> EngineCompanionEvents,
-// OutsideTarget -> CompanionTarget, OutsideAdapter<Request> -> EngineCompanionAdapter<Shape>), and the shapes replace
-// SoundCardRequest and RtpReceiverRequest; until then both sets compile side by side under different names. Pure:
-// nothing but the standard library and ear_core.
+// Built so far: the shapes and the engine companions' interfaces (docs/engine.md#engine-companions), which NodeHost
+// and ear_pipewire's adapters use; the kinds, the readiness bounds and the wire's view are declarations until the
+// slice's later steps build them. Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -42,8 +41,7 @@ struct RtpReceiverShape {
 	std::uint32_t latencyMs; // the receive buffer, 1-1000; declared upstream of the bank by the framework
 };
 
-/// An engine companion's shape, as NodeHost keeps it until the block is ready (replaces node_host.cpp's
-/// OutsideRequest).
+/// An engine companion's shape, as NodeHost keeps it until the block is ready.
 using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
 
 // ---- The kinds ----
@@ -102,29 +100,32 @@ protected:
 
 /// An engine companion: a PipeWire node a configuration asked for (a sound card or an RTP receiver), plus the links
 /// joining its channels to the block's inside ports. Destroying it (main thread) removes both, in any state, and tells
-/// nothing. (Was OutsideNode.)
+/// nothing.
 class EngineCompanion {
 public:
 	virtual ~EngineCompanion() = default;
 };
 
-/// One engine companion's lifecycle, the same for every engine kind (main thread). (Was OutsideNodeEvents; the rules are
-/// unchanged.)
+/// One engine companion's lifecycle, the same for every engine kind (main thread).
 class EngineCompanionEvents {
 public:
 	/// It runs (a card's PCM runs; a receiver's socket is bound) and every channel is linked to its block port; at most
 	/// once.
 	virtual void ready() = 0;
 	/// At most once, before or after ready, never inside make(). Its engine node and links are already destroyed when it
-	/// is told. Destroying the EngineCompanion inside lost() is allowed (not inside ready()).
+	/// is told, so it no longer clocks or holds any part of the graph. Destroying the EngineCompanion inside lost() is
+	/// allowed (not inside ready()): the adapter touches nothing of it after telling (NodeHost tears a failed
+	/// configuration down in the same call).
 	virtual void lost(std::string detail) = 0;
 
 protected:
 	~EngineCompanionEvents() = default;
 };
 
-/// Where an engine companion goes, worked out by the framework from the bank (was OutsideTarget, plus `bank`): its one
-/// engine name, the block it joins by global id, and the block's ports it joins, channel i to blockPorts[i].
+/// Where an engine companion goes, worked out by the framework from the bank: its one engine name, the block it joins
+/// (its name, and its engine node's global id, PortBlock::blockId, which its links name:
+/// docs/architecture.md#phases-states-and-what-is-wanted), the bank's direction, and the block's ports it joins,
+/// channel i to blockPorts[i].
 struct CompanionTarget {
 	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp"
 	NodeName blockNode;               // the node's name, its block's
@@ -134,15 +135,21 @@ struct CompanionTarget {
 	std::uint32_t blockId = 0xFFFFFFFFU; // PortBlock::blockId; no id: the join cannot link and the companion is lost
 };
 
-/// One engine kind's adapter (was OutsideAdapter<Request>). Each strips nothing it did not set: it never sets
-/// node.force-quantum, node.force-rate, node.lock-quantum or node.lock-rate, and a test seam that would is refused
+/// One engine kind's adapter. Each strips nothing it did not set: it never sets node.force-quantum, node.force-rate,
+/// node.lock-quantum or node.lock-rate, and a test seam that would is refused
 /// (docs/design/companions.md#36-the-quantum-guard).
-///  - SoundCardShape: one ALSA adapter for shape.card, playback when target.bank is output, capture when input.
-///  - RtpReceiverShape: one libpipewire-module-rtp-source node receiving the stream the shape names.
+///  - SoundCardShape: one ALSA adapter for shape.card with blockPorts.size() channels at format.rate, playback when
+///    target.bank is output, capture when input. It joins the graph's clock only through its links to the block, made
+///    once its PCM runs.
+///  - RtpReceiverShape: one libpipewire-module-rtp-source node receiving the stream the shape names, with
+///    blockPorts.size() channels. It follows the graph's clock and never drives it; its channels are linked once it
+///    runs (its socket is bound). Packets that stop or never come change nothing: it stays ready and its channels are
+///    silent.
 template <class Shape> class EngineCompanionAdapter {
 public:
-	/// Main thread; only once port block `target.blockNode` is ready. NodeHost calls it inside its per-turn flush: a
-	/// ready() told inside it is heard once it returned.
+	/// Main thread; only once port block `target.blockNode` is ready (its ports exist, and target.blockId is its id).
+	/// NodeHost calls it inside its per-turn flush (docs/architecture.md#isolation): a ready() told inside it is heard
+	/// once it returned.
 	virtual std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const Shape& shape,
 	                                              EngineCompanionEvents& events) = 0;
 

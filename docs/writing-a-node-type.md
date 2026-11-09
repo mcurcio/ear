@@ -88,7 +88,7 @@ inline constexpr auto portRow = setting::optional("port", setting::number(1, 655
 ```cpp
 inline constexpr auto play = bank::input<"play">;             // routable: routes name play.1, play.2, ...
 inline constexpr auto capture = bank::output<"capture">;
-inline constexpr auto toCard = bank::insideOutput<"to_card">;   // inside: only the node's own outside nodes and code
+inline constexpr auto toCard = bank::insideOutput<"to_card">;   // inside: only the node's own companions and code
 inline constexpr auto fromCard = bank::insideInput<"from_card">;
 inline constexpr TypeSpec spec{.settings = SettingsTable<cardRow, playbackRow, captureRow>{"card"},
                                .banks = Banks<play, capture, fromCard, toCard>{}};
@@ -124,10 +124,10 @@ optional row read as a plain value does not compile.
 |---|---|---|
 | `cx.format()`, `cx.node()` | The graph's rate and block size; the node's name | |
 | `cx.use(code)` | The code: a struct with `process`, or `passThrough({bankPair(in, out), ...})` | Exactly once |
-| `cx.soundCard(bank, SoundCardRequest{.card, .direction})` | A sound card joined to an inside bank: playback on an inside output, capture on an inside input. Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); the direction must agree with the bank's |
-| `cx.rtpReceiver(bank, RtpReceiverRequest{...})` | An RTP receiver joined to an inside input bank, `<node>.rtp` | Inside input banks only |
+| `cx.soundCard(bank, SoundCardShape{.card})` | A sound card, an [engine companion](#engine-companions) on an inside bank: playback on an inside output, capture on an inside input (the bank's direction is the card's). Named `<node>.playback` or `<node>.capture`; made once the block is ready | Inside banks only (compile time); one companion per bank |
+| `cx.rtpReceiver(bank, RtpReceiverShape{...})` | An RTP receiver, an [engine companion](#engine-companions) on an inside input bank, `<node>.rtp`; its `latencyMs` is latency beyond the bank | Inside input banks only (compile time); one companion per bank |
 | `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
-| `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer |
+| `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer; one companion per bank |
 | `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency, from an input bank to an output bank, in frames | At most once per output bank |
 
@@ -173,6 +173,35 @@ struct MyCode {
   ports to an output bank's, member for member, and silences every output no pair names. Banks of
   a pair must be the same size, an output bank written once. `card` and `rtp` write no audio code
   of their own: they pass between their inside and public banks.
+
+## Engine companions
+
+An engine companion is an engine node of its own that a configuration asks for on one of its
+inside banks: a sound card (`cx.soundCard`) or an RTP receiver (`cx.rtpReceiver`). The type gives
+the bank's handle and a shape (`ear/core/companions.hpp`), never a direction or a port: a card on
+an inside output bank plays it, one on an inside input bank captures into it, and a receiver feeds
+an inside input bank, one channel per port of the bank. Every member of a shape is checked by the
+type's settings table first (a `CardId`, an `RtpAddress`, closed enums, ranged numbers), so nothing
+unparsed reaches the engine.
+
+```cpp
+cx.soundCard(toCard, SoundCardShape{.card = s.get<cardRow>()});    // playback: to_card is an inside output
+cx.rtpReceiver(fromRtp, RtpReceiverShape{.address = s.get<addressRow>(), /* port, encoding, rate, */
+                                         .latencyMs = s.get<latencyRow>()});
+cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
+```
+
+- The framework makes each one once the node's block is ready, in the order asked, and joins its
+  channels to the bank's ports ([engine.md](engine.md#engine-companions)). The node is `running`
+  only once every companion is ready; one that is lost, before or after, fails the node
+  `engine-refused: <detail>`, and the teardown removes it after the code's silence.
+- A playback card's bank fades with the public outputs; a capture card's or receiver's input is
+  never faded.
+- An inside bank has at most one companion of any kind (an engine companion, a sink, a source);
+  a second is a broken rule (`a second companion on bank <bank>`).
+- A receiver's `latencyMs` is latency beyond its bank, which the framework adds to the latency
+  plan ([latency](#latency)); a type declares none for it. A card's latency arrives through its
+  links.
 
 ## Sinks
 
@@ -275,7 +304,8 @@ interface.
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
-an output bank (`rtp`'s receive buffer, `sendspin`'s feed). The framework carries everything else:
+an output bank (`sendspin`'s feed). The framework carries everything else, a companion's included
+(an RTP receiver's buffer, a source's ring, as latency beyond its bank):
 a pass-through's pair forwards what lies beyond it, each block tells its linked ports, and the code
 reads the latency downstream of its outputs in `GraphCycle`
 ([engine.md](engine.md#latency-per-bank-pair)).
@@ -289,8 +319,8 @@ lacks or a misspelt one in `Io`, `ports()` or a context, a write into an input, 
 pass-through, a bad or doubled bank name, a `process` that may throw, a class that is final or has
 no `ports` or `configure`, a member of the wrong signature (`configure`, `start`, `stop`, `check`,
 `prepare`, `release`, the change version), a private or overloaded one, a static `start` (the old
-interface), a call `CreateOf` does not offer, a sound card, RTP receiver or sink on the wrong bank,
-and the harness given a bank the spec lacks.
+interface), a call `CreateOf` does not offer, a sound card, RTP receiver, sink or source on the wrong
+bank, and the harness given a bank the spec lacks.
 
 **At run time**, a rule the type breaks fails the node `start-failed` with the rule's text, even
 when the type catches the throw; none takes ear down:
@@ -303,7 +333,7 @@ when the type catches the throw; none takes ear down:
 | A pass-through the ports refuse | `configure gave a pass-through: <why>` |
 | A sink with no consumer, or a consumer twice | `configure gave sink <bank> no consumer`; `configure threw: consumedBy called twice on sink <bank>` |
 | Latency twice for a bank | `configure threw: latency declared twice for bank <bank>` |
-| A card whose direction disagrees with its bank | `configure threw: ... joins an inside output bank, not "<bank>"` |
+| A second companion on an inside bank | `configure threw: a second companion on bank <bank>` |
 | A `CreateOf` call after `configure` returned | `<call> outside configure` |
 | `Configured::failed("")` | `configure answered failed with no detail` |
 | `configure` throws | `configure threw: <what>` |
@@ -329,14 +359,14 @@ fakes allow. Banks are named by the spec's handles.
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
-| `h.ready(bank)`, `h.lose(bank, detail)` | An outside node on `bank` becomes ready, or is lost |
+| `h.ready(bank)`, `h.lose(bank, detail)` | The engine companion on `bank` becomes ready, or is lost |
 | `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the downstream latency the plan gives its bank), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |
 | `h->unwritten()`, `h->notes()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness` |
-| `h.companion(bank)` | What was made on a bank: a card's or receiver's request (a sink's or source's shape), `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them |
+| `h.companion(bank)` | What was made on a bank: its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them |
 | `h.recordingRequests()` | Every recording asked for |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in
@@ -347,7 +377,7 @@ The harness does not see a class's `start()` and `stop()`; their pairing is test
 - **Valid settings.** Add an entry to `validSettings` in `test/nodes/all_types.hpp`: one or more
   settings objects that together give every key the type declares. The all-type tests (which list
   no type: they take them from `allNodeTypes()`) fail naming the type without it. They run every
-  type through the harness: added, configured, running once every outside node is ready, every
+  type through the harness: added, configured, running once every engine companion is ready, every
   output sample written, then stopped, started, restarted, disabled, enabled and removed. (A type
   that cannot run there yet is listed in `notYetInHarness`; today only `sendspin`.)
 - **Refusals.** Add a test case to `test/nodes/settings_refusals_test.cpp` giving each refusal's

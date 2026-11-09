@@ -284,7 +284,7 @@ struct Rig {
 	std::unique_ptr<PortBlock> block;
 };
 
-class CardEvents final : public OutsideNodeEvents {
+class CardEvents final : public EngineCompanionEvents {
 public:
 	explicit CardEvents(Waiter& waiter) : waiter_(waiter) {}
 	void ready() override {
@@ -319,8 +319,10 @@ struct TestCard {
 		block->carryLatency(LatencyPlan{pairs, {}});
 		REQUIRE(ear::testing::driveNow(*block, passThrough.get()));
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
-		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, block->blockId()},
-		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
+		card = cards.make(
+			CompanionTarget{
+				"card.playback", "card", Direction::output, {"to_card.1", "to_card.2"}, kFormat, block->blockId()},
+			SoundCardShape{*CardId::parse("Test")}, events);
 		REQUIRE(rig.waiter.until([&] { return events.isReady || events.lostDetail.has_value(); }));
 		REQUIRE(events.lostDetail.value_or("") == "");
 		for (const char* side : {"left", "right"})
@@ -351,7 +353,7 @@ struct TestCard {
 	CardEvents events;
 	Registry registry;
 	std::unique_ptr<PortBlock> block;
-	std::unique_ptr<OutsideNode> card;
+	std::unique_ptr<EngineCompanion> card;
 	std::vector<pw_proxy*> links;
 };
 

@@ -533,6 +533,30 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
   past the quantum every 50th cycle cuts that cycle short after itself (the block never runs it), so the test meets
   cut-short cycles at will instead of by load.
 
+**Found building 3b.3.** The engine companions are built on the declared interfaces with no declaration changed
+(what lasts is `docs/engine.md#engine-companions` and `docs/writing-a-node-type.md#engine-companions`):
+
+- `CompanionTarget` names the bank's direction and ports but not its name, which the one-companion check and
+  `beyond`'s key need. `NodeHost` keeps the bank's name beside each asked companion (its private `EngineAsk`: shape,
+  target, bank), and the harness's fake engine companion finds its bank by the target's ports. Nothing outside needs
+  the name.
+- D-3b14 is checked for every kind against every kind (it was a source against an outside node only): an engine
+  companion, a sink or a source on a bank that already has one is `a second companion on bank <bank>`, the built
+  one-name check first (so two receivers on one bank still read `a second resource named <node>.rtp ...`).
+- With no direction in the shape, a card's refusals are one: a routable bank is `a sound card joins an inside bank,
+  not "<bank>"` (the 3a texts "a playback card joins an inside output bank" and "a sound card's request names bank"
+  cannot arise).
+- The legacy check "a legacy type with a recipe may ask for no outside node" went with the legacy acquires (D-3b9):
+  no legacy start can ask for an engine companion, so it could not be reached. `node_host_test.cpp`'s card and
+  receiver configs are classes: a `TestConfig` with cards or receivers makes an instance whose `configure` runs the
+  same start (its handoffs, failure and code) and then asks for the companions through `CreateContext`.
+- An RTP receiver's `beyond` is `latencyMs * rate / 1000` frames, both bounds, at the drive (as `rtp` declared it on
+  `stream`): rtp-source's ports report no latency, so the plan's sum moves from `stream` to `from_rtp` and the
+  value told on `stream` is the same.
+- The flush's activity names follow the vocabulary: `make engine companion`, `destroy engine companion` (were
+  `... outside node`), the one text an operator can see change (`ear.main-loop-stalled`'s `in`, while a flush item
+  runs).
+
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
 
 | Old | New |
@@ -819,7 +843,7 @@ makes stale (the rule in `AGENTS.md`).
 | **3b.0 Spike S5** | `spikes_test.cpp` only (3.4), and the result of its part B in `docs/engine.md` | Low: test-only. A fail of part A changes `SourceRing`'s counting rule before 3b.2 |
 | **3b.1 Sinks' upstream, `beyond`, drop counts** | `ChunkStamp::upstreamFrames`; the block publishes each port's told latency for the realtime side and combines `LatencyPlan::beyond`; `Sink::droppedFrames`; `ThreadSink` fills `upstreamFrames`; the harness stamps from the plan; `docs/engine.md#sinks`, `docs/writing-a-node-type.md#sinks` | Low |
 | **3b.2 The source** | `source.hpp`, `source_ring.*`, `sources.*`; `DriveRequest::sources`; the block plays sources (8.5); `CreateContext::source`, `CreateOf::source`; `NodeHost`'s source slots (bind, `stopped`, `close` at step 1, freed at step 5, `beyond`); `ResourceRegistry::sources` (main.cpp, the harness, tests' registries); the harness's `feed`, `played`, `shortfall`; `docs/writing-a-node-type.md` gains Sources | Medium: realtime code. No type uses it yet; S5 part A on the real block gates it |
-| **3b.3 Engine companions on shapes** | `companions.hpp`'s engine interfaces replace the `Outside*` ones; shapes replace requests; the legacy acquires go (`node_host_test.cpp`'s legacy card and receiver configs become classes); `engine_companions.*`; `AlsaSoundCards`, `RtpReceivers`; `card`, `rtp`; `docs/engine.md#outside-nodes` becomes Engine companions, `docs/writing-a-node-type.md` | Churn: mechanical, but every card and receiver test moves |
+| **3b.3 Engine companions on shapes** | `companions.hpp`'s engine interfaces replace the `Outside*` ones; shapes replace requests; the legacy acquires go (`node_host_test.cpp`'s legacy card and receiver configs become classes); `engine_companions.*`; `AlsaSoundCards`, `RtpReceivers`; `card`, `rtp`; `docs/engine.md`'s Outside nodes section becomes Engine companions, `docs/writing-a-node-type.md` | Churn: mechanical, but every card and receiver test moves |
 | **3b.4 Readiness deadlines, the quantum guard** | `NodeHost`'s timers per kind and their texts; the harness's clock; `quantum-limit` at the block size; the card seam's refusal; `docs/node-types.md#rtp` (a held port fails after 5 s), `docs/engine.md` | The [U] of 3.6: if cards or rtp-source will not run at the limit, the limit stays `max(block, 8192)` and the step keeps only the refusal |
 | **3b.5 Companions in core's view** | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json` | Low |
 | **3b.6 The wire** | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit | Low; the order rules are the subtle part (`gateway_test.cpp`) |

@@ -22,6 +22,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include "ear/core/companions.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
@@ -36,16 +37,16 @@ struct SeenChunk {
 	ChunkStamp stamp;
 };
 
-/// What the fakes made for one engine object, sink or source the configuration asked for, by bank, in request order.
+/// What the fakes made for one companion the configuration asked for (an engine companion, a sink or a source), by
+/// bank, in request order.
 struct CompanionFake {
-	enum class Kind { soundCard, rtpReceiver, sink, source };
-	Kind kind;
+	CompanionKind kind;
 	std::string bank;
-	NodeName engineName; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's or source's "<node>.<bank>"
-	std::variant<SoundCardRequest, RtpReceiverRequest, SinkShape, SourceShape> request;
-	bool made = false;      // an outside node: the flush made it (the block was ready); a sink, a source: at once
-	bool ready = false;     // an outside node: ready(bank) told it; a sink: its consumer began; a source: at once
-	bool destroyed = false; // an outside node destroyed, a sink closed (its consumer finished), a source freed
+	NodeName name; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's or source's "<node>.<bank>"
+	std::variant<SoundCardShape, RtpReceiverShape, SinkShape, SourceShape> shape;
+	bool made = false;      // an engine companion: the flush made it (the block was ready); a sink, a source: at once
+	bool ready = false;     // an engine companion: ready(bank) told it; a sink: its consumer began; a source: at once
+	bool destroyed = false; // an engine companion destroyed, a sink closed (its consumer finished), a source freed
 	std::vector<SeenChunk> chunks; // a sink's, in order
 };
 
@@ -103,9 +104,9 @@ public:
 	void blockReady();
 	/// The fake block's PortBlockEvents::lost: T13.
 	void blockLost(std::string detail);
-	/// The outside node on `bank` becomes ready; std::logic_error when none was made for it.
+	/// The engine companion on `bank` becomes ready; std::logic_error when none was made for it.
 	void ready(std::string_view bank);
-	/// The outside node on `bank` is lost: the node fails engine-refused with `detail`.
+	/// The engine companion on `bank` is lost: the node fails engine-refused with `detail`.
 	void lose(std::string_view bank, std::string detail);
 	/// With autoComplete off: the fade-out posted is acknowledged; the request posted (a drive or a silence) completes.
 	/// std::logic_error when none is pending.

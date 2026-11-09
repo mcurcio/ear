@@ -262,7 +262,7 @@ machine:
      stops moving while `state: RUNNING`.
    - A wedged MOTU and ear's main loop: record whether a frozen or unplugged MOTU blocks
      `node.stop`, `node.restart` or the pod's stop. If ALSA's drop or close blocks, ear's log shows
-     `ear.main-loop-stalled ... in destroy outside node motu` (or `make outside node motu`) and no
+     `ear.main-loop-stalled ... in destroy engine companion motu` (or `make engine companion motu`) and no
      `ear.main-loop-resumed`; if the data loop stops answering, `ear.barrier-overdue` and then
      `ear.data-loop-wedged`. Either answers the open question of `docs/design/cards-and-clock.md`
      (whether a wedged card blocks those calls), which decides how cards are opened off the main

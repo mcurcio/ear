@@ -60,10 +60,10 @@ exact silence on its right.
 | node | One instance of a node type, named in `ear.conf` |
 | port block | A node's one PipeWire filter, made once for the node's life, with one mono port per declared port |
 | bank | A named group of a node's ports, all one direction; a port is `<bank>.<member>` |
-| inside bank | A bank no route can name, reached only by the node's own code and outside nodes |
+| inside bank | A bank no route can name, reached only by the node's own code and engine companions |
 | route | A link from one node's output port to another's input port |
 | configuration | What a node's settings make behind its block: the type's instance, its resources and its code. Restarted, it is torn down and made again |
-| outside node | A PipeWire node a configuration asks for (a sound card's ALSA node, an RTP receiver), joined to an inside bank |
+| engine companion | A PipeWire node a configuration asks for (a sound card's ALSA node, an RTP receiver), joined to an inside bank |
 | sink | A lock-free ring and a thread that take a bank's audio off the realtime thread (a `file` node's writer) |
 | internal clock | The dummy driver that always drives the graph, tracking `CLOCK_MONOTONIC_RAW` |
 | desired graph | The wanted nodes and routes, and the one judge of every change |

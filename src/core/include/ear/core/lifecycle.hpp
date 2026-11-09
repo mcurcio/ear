@@ -45,6 +45,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include "ear/core/companions.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
 #include "ear/core/source.hpp"
@@ -122,8 +123,8 @@ protected:
 
 /// What creation's configure acquires through: the erased side of CreateOf<Spec>. NodeHost implements it on the node,
 /// valid only inside the configure it is handed to; any call outside it throws std::logic_error. Banks arrive by name,
-/// already checked against the spec at compile time; NodeHost checks only what a value decides (a sound card's
-/// direction against its bank's).
+/// already checked against the spec at compile time; NodeHost re-checks each bank's reach and direction (a
+/// std::logic_error naming the bank otherwise).
 class CreateContext {
 public:
 	virtual AudioFormat format() const = 0;
@@ -133,14 +134,15 @@ public:
 	/// The code (prepared at T3, driven at T5). Exactly once: a second call is a std::logic_error at the call; none by an
 	/// applied configure's return, one at the return.
 	virtual void use(NodeCode code) = 0;
-	/// Slice 3a's interim sound card (docs/writing-a-node-type.md#the-class, "The 3a interim"): `request.bank` is
-	/// filled from `bank` (a non-empty, different one is a std::logic_error), its direction must agree with the bank's
-	/// (playback: an inside output; capture: an inside input; else std::logic_error); a playback card's bank is faded
-	/// with the public outputs. Made once the block is ready, in the turn's flush; `<node>.playback` or
-	/// `<node>.capture`.
-	virtual void soundCard(std::string_view bank, SoundCardRequest request) = 0;
-	/// Slice 3a's interim RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded.
-	virtual void rtpReceiver(std::string_view bank, RtpReceiverRequest request) = 0;
+	/// A sound card, an engine companion (docs/writing-a-node-type.md#engine-companions): playback on an inside
+	/// output bank, `<node>.playback`, capture on an inside input bank, `<node>.capture` (the bank's direction is the
+	/// card's; a routable bank is a std::logic_error naming it); a playback card's bank is faded with the public
+	/// outputs. Made once the block is ready, in the turn's flush. A second companion on the bank is a
+	/// std::logic_error.
+	virtual void soundCard(std::string_view bank, SoundCardShape shape) = 0;
+	/// An RTP receiver on an inside input bank, `<node>.rtp`, likewise; never faded. Its `latencyMs` is latency beyond
+	/// the bank (LatencyPlan::beyond).
+	virtual void rtpReceiver(std::string_view bank, RtpReceiverShape shape) = 0;
 	/// Slice 3a's interim recording: opened at once, beneath the recordings folder; its descriptor is closed after the
 	/// configuration's code and instance (teardown step 5). The error is why not (it names no path).
 	virtual std::expected<int, std::string> openRecording(const RecordingRequest& request) = 0;
@@ -214,18 +216,19 @@ public:
 		context_->use(std::move(code));
 	}
 
-	/// 3a interim (3b: soundCard(Bank, SoundCardShape)). `request.bank` is left empty: the handle names it.
-	template <class Bank> void soundCard(Bank, SoundCardRequest request) {
+	/// A sound card on an inside bank: playback on an output bank, capture on an input bank (the bank's direction is
+	/// the card's, so the shape names none).
+	template <class Bank> void soundCard(Bank, SoundCardShape shape) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec");
-		context_->soundCard(Bank::name, std::move(request));
+		context_->soundCard(Bank::name, std::move(shape));
 	}
-	/// 3a interim (3b: rtpReceiver(Bank, RtpReceiverShape)). `request.bank` is left empty: the handle names it.
-	template <class Bank> void rtpReceiver(Bank, RtpReceiverRequest request) {
+	/// An RTP receiver on an inside input bank.
+	template <class Bank> void rtpReceiver(Bank, RtpReceiverShape shape) {
 		static_assert(ownBank<Bank>, "a context takes only its spec's banks");
 		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
 		              "an RTP receiver joins an inside input bank of the spec");
-		context_->rtpReceiver(Bank::name, std::move(request));
+		context_->rtpReceiver(Bank::name, std::move(shape));
 	}
 	/// 3a interim (3c: recording()). A refusal is the caller's to answer: Configured::failed("cannot open ...").
 	std::expected<int, std::string> openRecording(const RecordingRequest& request) {
@@ -282,7 +285,7 @@ public:
 	virtual ~ErasedInstance() = default;
 	/// T2: creation's configure (or the legacy start). Called once, timed as the hook `configure`.
 	virtual Configured configure(InstanceContexts& cx) = 0;
-	/// Legacy only: whether its start returned a recipe (with the outside nodes it asked for).
+	/// Legacy only: whether its start returned a recipe.
 	virtual bool hasRecipe() const noexcept { return false; }
 	/// Legacy only: configure answered failed because the old SPI's start said engineRefused (its fact is kept: the node
 	/// fails engine-refused, not start-failed).

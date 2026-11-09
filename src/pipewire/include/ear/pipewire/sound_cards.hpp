@@ -3,18 +3,18 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include "ear/core/node_host.hpp"
+#include "ear/core/companions.hpp"
 #include "ear/pipewire/engine.hpp"
 namespace ear::pipewire {
-/// One card = pw_core_create_object("adapter") with factory.name api.alsa.pcm.sink (playback) or api.alsa.pcm.source
-/// (capture), api.alsa.path = "hw:CARD=<id>,DEV=0" (built here from the CardId: the one home of that form),
-/// audio.channels, audio.rate = format.rate, audio.position AUX0.., node.name = engineNode, node.always-process = true,
-/// priority.driver = cardPriority, no node.group, then the extra properties it was made with (a test seam, below). It
-/// runs alone as its own driver until its PCM runs; once linked it follows ear's internal clock, which always drives
-/// (docs/engine.md#the-internal-clock), and matches its rate to it. Its ports: a dsp PortConfig with AUX positions sent
-/// by pw_node_set_param, as a session manager does (adapter.auto-port-config leaves one port, playback_1, whose start
-/// fails with EINVAL on PipeWire 1.4.2). Its state machine (one owner of "is this card in the clock"; the one
-/// outside-node lifecycle, docs/engine.md#outside-nodes):
+/// One card = pw_core_create_object("adapter") with factory.name api.alsa.pcm.sink (playback: the bank is an output)
+/// or api.alsa.pcm.source (capture: an input), api.alsa.path = "hw:CARD=<id>,DEV=0" (built here from the CardId: the
+/// one home of that form), audio.channels, audio.rate = format.rate, audio.position AUX0.., node.name = engineNode,
+/// node.always-process = true, priority.driver = cardPriority, no node.group, then the extra properties it was made
+/// with (a test seam, below). It runs alone as its own driver until its PCM runs; once linked it follows ear's internal
+/// clock, which always drives (docs/engine.md#the-internal-clock), and matches its rate to it. Its ports: a dsp
+/// PortConfig with AUX positions sent by pw_node_set_param, as a session manager does (adapter.auto-port-config leaves
+/// one port, playback_1, whose start fails with EINVAL on PipeWire 1.4.2). Its state machine (one owner of "is this
+/// card in the clock"; the one engine-companion lifecycle, docs/engine.md#engine-companions):
 ///   opening --node info RUNNING--> linking: one link per channel through link-factory, the
 ///     card and the block each named by its global id, each port by name
 ///     (link.output.node/port, link.input.node/port), owned by EAR's connection (link_proxy.hpp)
@@ -22,13 +22,13 @@ namespace ear::pipewire {
 ///   any state --node ERROR, proxy error, node removed, a link failed or gone--> destroy the
 ///     links, destroy the adapter proxy, then events.lost(detail)
 /// channelPorts: "playback_AUX<i>" / "capture_AUX<i>".
-class AlsaSoundCards final : public SoundCardAdapter {
+class AlsaSoundCards final : public SoundCardCompanions {
 public:
 	using Properties = std::vector<std::pair<std::string, std::string>>;
 	/// `extra`: adapter properties added to every card's, after its own (a test seam: clocklessCardProperties).
 	explicit AlsaSoundCards(Engine& engine, Properties extra = {}); // engine outlives it
-	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const SoundCardRequest& request,
-	                                  OutsideNodeEvents& events) override;
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const SoundCardShape& shape,
+	                                      EngineCompanionEvents& events) override;
 
 private:
 	Engine& engine_;

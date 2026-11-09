@@ -1,16 +1,16 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
-# engine_names.hpp, link_proxy.hpp and outside_nodes.hpp are private to this package: its
+# engine_names.hpp, link_proxy.hpp and engine_companions.hpp are private to this package: its
 # sources include them by path.
 add_library(ear_pipewire STATIC
 	engine.cpp
+	engine_companions.cpp
 	engine_log.cpp
 	handoffs.cpp
 	links.cpp
 	live_graph.cpp
 	main_loop_executor.cpp
-	outside_nodes.cpp
 	port_blocks.cpp
 	rtp_receivers.cpp
 	sound_cards.cpp

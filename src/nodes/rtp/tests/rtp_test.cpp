@@ -59,11 +59,12 @@ Harness addedOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
 	return harness;
 }
 
-ear::RtpReceiverRequest startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
+ear::RtpReceiverShape startOk(const NodeSettings& settings, std::uint32_t graphRate = 48000) {
 	auto harness = addedOk(settings, graphRate);
 	REQUIRE(harness->companions().size() == 1);
-	REQUIRE(harness.companion(rtp::fromRtp).engineName == "fpp.rtp");
-	return std::get<ear::RtpReceiverRequest>(harness.companion(rtp::fromRtp).request);
+	REQUIRE(harness.companion(rtp::fromRtp).name == "fpp.rtp");
+	REQUIRE(harness.companion(rtp::fromRtp).kind == ear::CompanionKind::rtpReceiver);
+	return std::get<ear::RtpReceiverShape>(harness.companion(rtp::fromRtp).shape);
 }
 
 } // namespace
@@ -84,13 +85,12 @@ TEST_CASE("Rtp accepts a full settings object, and its ports are stream.i out an
 }
 
 TEST_CASE("Rtp's configure asks for exactly one receiver with its settings, joined to its inside bank", "[rtp]") {
-	const auto request = startOk(settingsWith({{"port", 6000}, {"rate", 96000}, {"latencyMs", 250}}));
-	CHECK(request.address == *ear::RtpAddress::parse("239.69.0.1"));
-	CHECK(request.port == 6000);
-	CHECK(request.encoding == ear::RtpEncoding::l24);
-	CHECK(request.rate == 96000);
-	CHECK(request.latencyMs == 250);
-	CHECK(request.bank == rtp::fromRtp.name);
+	const auto shape = startOk(settingsWith({{"port", 6000}, {"rate", 96000}, {"latencyMs", 250}}));
+	CHECK(shape.address == *ear::RtpAddress::parse("239.69.0.1"));
+	CHECK(shape.port == 6000);
+	CHECK(shape.encoding == ear::RtpEncoding::l24);
+	CHECK(shape.rate == 96000);
+	CHECK(shape.latencyMs == 250);
 
 	SECTION("an absent rate is the graph frequency, taken at configure") {
 		const auto defaulted = startOk(settingsWith({{"rate", nullptr}}), 44100);
@@ -99,16 +99,18 @@ TEST_CASE("Rtp's configure asks for exactly one receiver with its settings, join
 	SECTION("an absent latencyMs is 100") { CHECK(startOk(settingsWith({{"latencyMs", nullptr}})).latencyMs == 100); }
 }
 
-TEST_CASE("Rtp declares its receive buffer as the latency of its stream bank, in frames of the graph",
+TEST_CASE("Rtp's receive buffer is latency beyond its from_rtp bank, in frames of the graph, carried to stream by "
+          "the pass-through",
           "[rtp][latency]") {
 	auto harness = addedOk(settingsWith({{"latencyMs", 250}, {"rate", 96000}}), 44100);
-	CHECK(harness->latencyPlan().internal.empty()); // carried with the drive, not before
+	CHECK(harness->latencyPlan().beyond.empty()); // carried with the drive, not before
 	harness.ready(rtp::fromRtp);
 	CHECK(harness.phase() == "running");
-	const auto& latency = harness->latencyPlan().internal;
-	REQUIRE(latency.size() == 1);
-	CHECK(latency[0].first == rtp::stream.name);
-	CHECK(latency[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
+	CHECK(harness->latencyPlan().internal.empty()); // the type declares nothing
+	const auto& beyond = harness->latencyPlan().beyond;
+	REQUIRE(beyond.size() == 1);
+	CHECK(beyond[0].first == rtp::fromRtp.name);
+	CHECK(beyond[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
 	REQUIRE(harness->latencyPlan().pairs.size() == 1);
 	CHECK(harness->latencyPlan().pairs[0] == ear::BankPair{"from_rtp", "stream"});
 }

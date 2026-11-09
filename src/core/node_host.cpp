@@ -1,34 +1,34 @@
 // The node framework (docs/architecture.md#the-node-lifecycle; node_host.hpp), on the node lifecycle's
 // two pure machines (docs/architecture.md#the-node-lifecycle, node_lifecycle.hpp). Each node is a
-// NodeAggregate: NodeHost feeds it every input (a commit, a block's or an outside node's event, a completion, a post
-// from the node's own threads, a timer) and carries out the actions it returns, never waiting for another thread.
+// NodeAggregate: NodeHost feeds it every input (a commit, a block's or an engine companion's event, a completion, a
+// post from the node's own threads, a timer) and carries out the actions it returns, never waiting for another thread.
 //
 // The port block is made when the node is added and goes only once it is removed; configurations come and go
 // behind it, one at a time. Each configuration has its instance (docs/writing-a-node-type.md),
 // made by its config: the type's class (lifecycle.hpp's SpecInstance), or the legacy adapter over the old SPI's start
 // (legacy_instance.hpp). Its configure acquires only, through CreateContext (the class) or StartContext (the
 // legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
-// the return, and a configure that throws, fail the node start-failed. The outside nodes it asked for are made
+// the return, and a configure that throws, fail the node start-failed. The engine companions it asked for are made
 // once the block is ready; once every resource is ready a legacy recipe builds the run object (T3), the code is
 // prepared, and once the block is ready it is driven by an asynchronous drive (T5), whose completion the block
 // posts and NodeHost checks against the node's serial, its configuration's generation and the barrier number
 // before the machine hears it; then the instance's start() runs. Its stop() runs once before each silence that follows
 // a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). A configuration is silenced the
-// same way, then torn down by dependency: release(); outside nodes; handoffs closed, each on its own thread; the
+// same way, then torn down by dependency: release(); engine companions; handoffs closed, each on its own thread; the
 // instance closed (a legacy run object, on its own threads); then, on the main loop, the code, the instance, the
 // recordings and the config. Steps 3 and 4 have the close deadline: past it the configuration is leaked, never
 // freed.
 // Everything a configuration's threads tell crosses to the main loop and lands only on that configuration.
 //
-// PipeWire's own object changes (a block made or destroyed, an outside node made or destroyed) are never made inside an
-// input: they are queued into the turn's flush, posted to the main loop once per turn and run there in
-// one go, destroys first (outside nodes, then blocks), then makes (blocks, then outside nodes, which need their block's
-// ports). The flush works on a snapshot: an item an input causes while it runs (a waiting block freed by a destroy)
-// runs behind the snapshot in the same flush, and an event an adapter tells inside an item (an outside node ready
-// inside its making) is an input of its own, handled once that item returned. Each item, and each type's hook, names
-// itself in MainLoopActivity while it runs. A name added back (T1) gets its block once the older block of the name was
-// destroyed, in the flush that destroyed it, and its configuration once the older node is gone; an outside node joins
-// its block by the block's global id (PortBlock::blockId).
+// PipeWire's own object changes (a block made or destroyed, an engine companion made or destroyed) are never made
+// inside an input: they are queued into the turn's flush, posted to the main loop once per turn and run there in
+// one go, destroys first (engine companions, then blocks), then makes (blocks, then engine companions, which need their
+// block's ports). The flush works on a snapshot: an item an input causes while it runs (a waiting block freed by a
+// destroy) runs behind the snapshot in the same flush, and an event an adapter tells inside an item (an engine
+// companion ready inside its making) is an input of its own, handled once that item returned. Each item, and each
+// type's hook, names itself in MainLoopActivity while it runs. A name added back (T1) gets its block once the older
+// block of the name was destroyed, in the flush that destroyed it, and its configuration once the older node is gone;
+// an engine companion joins its block by the block's global id (PortBlock::blockId).
 //
 // Fades and bounds: every output the code writes (public outputs and inside outputs, which feed a card) fades in with
 // each drive and out before each planned silence; a fade unacknowledged within 100 ms is said (ear.fade-unacknowledged)
@@ -36,11 +36,11 @@
 // (ear.barrier-overdue, then ear.data-loop-wedged once, through EngineDiagnosticListener). Every bound first settles
 // the block, as an input of its own, and judges in the input behind what that settle ran, so a completion a stalled
 // main loop has not dispatched yet is heard first and nothing is judged. Once wedged, NodeHost makes no PipeWire call
-// again: the flush still runs its items in order, but a destruction leaks what it would destroy (a block, an outside
-// node), a making makes nothing (a block is lost "the data loop is wedged"), latency is no longer carried, and every
-// drive, fade or silence a configuration would post is judged overdue at once, its configuration leaked; a node added
-// afterwards fails engine-refused "the data loop is wedged" before T1. So every removal still ends, stopAll's allGone
-// still runs, and main.cpp leaves through std::_Exit (leaked() is above 0).
+// again: the flush still runs its items in order, but a destruction leaks what it would destroy (a block, an engine
+// companion), a making makes nothing (a block is lost "the data loop is wedged"), latency is no longer carried, and
+// every drive, fade or silence a configuration would post is judged overdue at once, its configuration leaked; a node
+// added afterwards fails engine-refused "the data loop is wedged" before T1. So every removal still ends, stopAll's
+// allGone still runs, and main.cpp leaves through std::_Exit (leaked() is above 0).
 //
 // Health: after every machine transition that changes a member of the derived health, every
 // listener is told, in subscribe order, with what the node still waits for added once its phase has lasted
@@ -74,9 +74,6 @@ namespace ear {
 namespace {
 
 namespace lc = ::ear; // the lifecycle's machines (node_lifecycle.hpp)
-
-/// One outside node a configuration asked for, of any kind.
-using OutsideRequest = std::variant<SoundCardRequest, RtpReceiverRequest>;
 
 template <typename... Kinds> struct Overloaded : Kinds... {
 	using Kinds::operator()...;
@@ -112,14 +109,15 @@ std::int64_t millisecondsBetween(std::chrono::steady_clock::time_point from, std
 	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
 }
 
-/// The suffix of a configuration's outside node: "playback" or "capture" (a sound card), "rtp" (an RTP receiver), so
-/// its engine node is "<node>.<suffix>" (a node name never holds '.', so they cannot collide with a node).
-std::string_view outsideSuffix(const SoundCardRequest& card) noexcept {
-	return card.direction == CardDirection::playback ? "playback" : "capture";
+/// The suffix of a configuration's engine companion: "playback" or "capture" (a sound card, by its bank's direction),
+/// "rtp" (an RTP receiver), so its engine node is "<node>.<suffix>" (a node name never holds '.', so they cannot
+/// collide with a node).
+std::string_view engineSuffix(const SoundCardShape&, Direction bank) noexcept {
+	return bank == Direction::output ? "playback" : "capture";
 }
-std::string_view outsideSuffix(const RtpReceiverRequest&) noexcept { return "rtp"; }
+std::string_view engineSuffix(const RtpReceiverShape&, Direction) noexcept { return "rtp"; }
 
-/// The inside bank of this direction an outside node joins; std::logic_error (a type bug) otherwise.
+/// The inside bank of this direction a companion joins; std::logic_error (a type bug) otherwise.
 const Ports::Bank& insideBank(const Ports& ports, const std::string& name, Direction direction, std::string_view what) {
 	const Ports::Bank& bank = ports.bank(name);
 	if (bank.reach != PortBank::Reach::inside || bank.direction != direction)
@@ -128,12 +126,13 @@ const Ports::Bank& insideBank(const Ports& ports, const std::string& name, Direc
 	return bank;
 }
 
-/// The bank a sound card's request names, checked against the node's ports: a playback card joins an inside output
-/// bank, a capture card an inside input bank.
-const Ports::Bank& cardBank(const Ports& ports, const SoundCardRequest& card) {
-	return card.direction == CardDirection::playback
-	           ? insideBank(ports, card.bank, Direction::output, "a playback card")
-	           : insideBank(ports, card.bank, Direction::input, "a capture card");
+/// The inside bank a sound card joins, of either direction (its direction is the card's); std::logic_error (a type
+/// bug) for a routable bank.
+const Ports::Bank& cardBank(const Ports& ports, const std::string& name) {
+	const Ports::Bank& bank = ports.bank(name);
+	if (bank.reach != PortBank::Reach::inside)
+		throw std::logic_error("a sound card joins an inside bank, not \"" + name + "\"");
+	return bank;
 }
 
 /// The phases whose waits reach health once they lasted 2 s (docs/control-port.md#node-health).
@@ -158,14 +157,14 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 	return "unknown";
 }
 
-ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-                                   SinkAdapter& sinks, SourceAdapter& sources) noexcept
+ResourceRegistry::ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers,
+                                   HandoffAdapter& handoffs, SinkAdapter& sinks, SourceAdapter& sources) noexcept
 	: ResourceRegistry(cards, receivers, handoffs, sinks, sources, noRecordings) {}
 
 struct NodeHost::Impl {
-	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (outside nodes, then
-	/// blocks), then makes (blocks, then outside nodes).
-	enum class FlushKind { destroyOutside, destroyBlock, makeBlock, makeOutside };
+	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (engine companions, then
+	/// blocks), then makes (blocks, then engine companions).
+	enum class FlushKind { destroyCompanion, destroyBlock, makeBlock, makeCompanion };
 	struct FlushItem {
 		FlushKind kind;
 		NodeName node;
@@ -344,26 +343,28 @@ struct NodeHost::Impl {
 				node.host_.blockDestroyed(node.name_);
 			});
 		}
-		/// The outside node `index` of the configuration of `generation`, in request order, once its block is ready;
-		/// nothing for a configuration that moved on (torn down, or another one).
-		void makeOutside(std::uint64_t generation, std::size_t index) {
+		/// The engine companion `index` of the configuration of `generation`, in request order, once its block is
+		/// ready; nothing for a configuration that moved on (torn down, or another one).
+		void makeCompanion(std::uint64_t generation, std::size_t index) {
 			if (host_.wedged || !current(generation) || config_->startFailed || config_->tearing || !block_ ||
-			    aggregate_.configuration().state() != lc::ConfigState::readying || index != config_->outside.size() ||
-			    index >= config_->outsideRequests.size())
+			    aggregate_.configuration().state() != lc::ConfigState::readying ||
+			    index != config_->engineCompanions.size() || index >= config_->engineAsks.size())
 				return;
 			Configuration& c = *config_;
-			auto& outside = *c.outside.emplace_back(std::make_unique<Outside>(host_, serial_, c.generation, index));
-			auto& [request, target] = c.outsideRequests[index];
+			auto& companion =
+				*c.engineCompanions.emplace_back(std::make_unique<Companion>(host_, serial_, c.generation, index));
+			EngineAsk& asked = c.engineAsks[index];
+			CompanionTarget& target = asked.target;
 			target.blockId = block_->blockId(); // ready, so read
 			try {
-				outside.node = std::visit(
-					[&](const auto& kind) { return host_.resources.adapterFor(kind).make(target, kind, outside); },
-					request);
+				companion.made = std::visit(
+					[&](const auto& shape) { return host_.resources.adapterFor(shape).make(target, shape, companion); },
+					asked.shape);
 			} catch (...) {
 				// An adapter that throws (a bug) strands nothing: the half-made entry goes, and the node fails as for
-				// an outside node refused.
+				// an engine companion refused.
 				std::string detail = "making " + target.engineNode + " threw: " + whatOf(std::current_exception());
-				c.outside.pop_back();
+				c.engineCompanions.pop_back();
 				host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
 					if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
 				});
@@ -410,19 +411,17 @@ struct NodeHost::Impl {
 				c.code = std::move(code.own());
 			});
 		}
-		void soundCard(std::string_view bank, SoundCardRequest request) override {
+		void soundCard(std::string_view bank, SoundCardShape shape) override {
 			guarded([&] {
 				requireConfiguring("soundCard");
-				named(request.bank, bank, "a sound card");
-				askOutside(request, cardBank(ports_, request), outsideSuffix(request));
+				askEngineCompanion(std::move(shape), cardBank(ports_, std::string(bank)));
 			});
 		}
-		void rtpReceiver(std::string_view bank, RtpReceiverRequest request) override {
+		void rtpReceiver(std::string_view bank, RtpReceiverShape shape) override {
 			guarded([&] {
 				requireConfiguring("rtpReceiver");
-				named(request.bank, bank, "an RTP receiver");
-				askOutside(request, insideBank(ports_, request.bank, Direction::input, "an RTP receiver"),
-				           outsideSuffix(request));
+				askEngineCompanion(std::move(shape),
+				                   insideBank(ports_, std::string(bank), Direction::input, "an RTP receiver"));
 			});
 		}
 		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
@@ -442,6 +441,7 @@ struct NodeHost::Impl {
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::output, "a sink");
 				requireOneName(name_ + "." + found.name);
+				requireFreeBank(found);
 				Configuration& c = *config_;
 				std::unique_ptr<Sink> made;
 				try {
@@ -463,9 +463,9 @@ struct NodeHost::Impl {
 				return slot;
 			});
 		}
-		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound by
-		/// every drive of the configuration; its capacity declared beyond the bank. An adapter that cannot make it (no
-		/// eventfd) fails the node through configure, recorded so a type that catches it still fails.
+		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound
+		/// by every drive of the configuration; its capacity declared beyond the bank. An adapter that cannot make it
+		/// (no eventfd) fails the node through configure, recorded so a type that catches it still fails.
 		SourceWriter& source(std::string_view bank, SourceShape shape) override {
 			return guarded([&]() -> SourceWriter& {
 				requireConfiguring("source");
@@ -522,15 +522,6 @@ struct NodeHost::Impl {
 				requireConfiguring("acquire");
 				return std::visit(
 					Overloaded{
-						[&](const SoundCardRequest& card) -> Acquired {
-							askOutside(card, cardBank(ports_, card), outsideSuffix(card));
-							return std::monostate{};
-						},
-						[&](const RtpReceiverRequest& receiver) -> Acquired {
-							askOutside(receiver, insideBank(ports_, receiver.bank, Direction::input, "an RTP receiver"),
-					                   outsideSuffix(receiver));
-							return std::monostate{};
-						},
 						[&](const RecordingRequest& recording) -> Acquired { return openRecording(recording); },
 						[&](const HandoffRequest& handoff) -> Acquired {
 							const Ports::Bank& bank = ports_.bank(handoff.bank);
@@ -547,8 +538,8 @@ struct NodeHost::Impl {
 			});
 		}
 
-		/// Runs a context call; a rule it finds broken (a std::logic_error) is recorded, the first one only, before it is
-		/// thrown on to the type.
+		/// Runs a context call; a rule it finds broken (a std::logic_error) is recorded, the first one only, before it
+		/// is thrown on to the type.
 		template <typename Call> std::invoke_result_t<Call> guarded(Call&& call) {
 			try {
 				return std::forward<Call>(call)();
@@ -559,21 +550,22 @@ struct NodeHost::Impl {
 		}
 
 	private:
-		/// One outside node the configuration asked for (a sound card or an RTP receiver), and its events, which land
-		/// only on the configuration that made it.
-		class Outside final : public OutsideNodeEvents {
+		/// One engine companion the configuration asked for (a sound card or an RTP receiver), and its events, which
+		/// land only on the configuration that made it.
+		class Companion final : public EngineCompanionEvents {
 		public:
-			Outside(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index)
+			Companion(Impl& host, std::uint64_t serial, std::uint64_t generation, std::size_t index)
 				: host_(host), serial_(serial), generation_(generation), index_(index) {}
-			std::unique_ptr<OutsideNode> node;
+			std::unique_ptr<EngineCompanion> made;
 			bool isReady = false;
 			// Told inside its making (during the flush) or later: an input of its own either way.
 			void ready() override {
 				host_.inputFor(serial_, [generation = generation_, index = index_](Node& node) {
-					// Still current while it tears down, when its outside nodes are already gone: nothing to ready.
-					if (!node.current(generation) || node.config_->tearing || index >= node.config_->outside.size())
+					// Still current while it tears down, when its engine companions are already gone: nothing to ready.
+					if (!node.current(generation) || node.config_->tearing ||
+					    index >= node.config_->engineCompanions.size())
 						return;
-					node.config_->outside[index]->isReady = true;
+					node.config_->engineCompanions[index]->isReady = true;
 					node.checkReady(generation);
 					node.refreshWaiting();
 				});
@@ -725,6 +717,14 @@ struct NodeHost::Impl {
 			SourceBinding binding{};
 		};
 
+		/// One engine companion a configuration asked for, until its block is ready: its shape, where it goes, and the
+		/// inside bank it joins (one companion per bank).
+		struct EngineAsk {
+			EngineCompanionShape shape;
+			CompanionTarget target;
+			std::string bank;
+		};
+
 		/// One configuration (docs/architecture.md#the-node-lifecycle,
 		/// docs/writing-a-node-type.md#configure-and-createof), from configure to the end of its close. Members in
 		/// reverse teardown order.
@@ -733,8 +733,8 @@ struct NodeHost::Impl {
 			std::shared_ptr<const NodeConfig> config;
 			std::shared_ptr<Channel> channel;
 			std::unique_ptr<Context> context;
-			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it open
-			// (file's WavWriter closes its SNDFILE on the descriptor when freed).
+			// Outlives the handoffs that write it and the instance (a legacy run object and recipe) that may hold it
+			// open (file's WavWriter closes its SNDFILE on the descriptor when freed).
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
 			// Each sink's consumer may write a recording above; freed after the code and instance (teardown step 5).
 			std::vector<std::unique_ptr<SinkSlot>> sinks;
@@ -745,8 +745,8 @@ struct NodeHost::Impl {
 			std::unique_ptr<ErasedInstance> instance;  // the legacy recipe and run object inside it
 			std::unique_ptr<AudioCode> code;           // may read the instance, so goes first
 			std::vector<std::unique_ptr<Handoff>> handoffs;
-			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
-			std::vector<std::unique_ptr<Outside>> outside;
+			std::vector<EngineAsk> engineAsks; // in request order
+			std::vector<std::unique_ptr<Companion>> engineCompanions;
 			std::unique_ptr<Timer> deadline;
 			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
 			std::chrono::steady_clock::time_point postedAt; // when that request was posted
@@ -757,9 +757,9 @@ struct NodeHost::Impl {
 			std::vector<BankPair> pairs;                          // the pass-through's pairs, for the latency plan
 			std::vector<std::pair<std::string, Latency>> latency; // what configure declared, by bank
 			bool codeGiven = false;                               // use() was called
-			bool startFailed = false;  // configure failed, threw or broke a rule: nothing to make, prepare or drive
-			bool outsideAsked = false; // its outside nodes' making is queued
-			bool recipeRan = false;    // T3 ran (or there was no recipe)
+			bool startFailed = false;     // configure failed, threw or broke a rule: nothing to make, prepare or drive
+			bool companionsAsked = false; // its engine companions' making is queued
+			bool recipeRan = false;       // T3 ran (or there was no recipe)
 			bool prepared = false;
 			bool tearing = false; // teardown step 3 began
 			std::size_t handoffsClosed = 0;
@@ -779,7 +779,7 @@ struct NodeHost::Impl {
 			std::vector<SourceSlot> sources; // the block may still play them
 			std::vector<SourceBinding> sourceBindings;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
-			std::vector<std::unique_ptr<Outside>> outside; // a wedged loop's, never destroyed
+			std::vector<std::unique_ptr<Companion>> engineCompanions; // a wedged loop's, never destroyed
 			std::unique_ptr<bool[]> faded;
 		};
 
@@ -806,7 +806,7 @@ struct NodeHost::Impl {
 			                  superseded_};
 		}
 
-		/// What the node waits for now, unpaced (3a's kinds): an older node of its name; its outside nodes
+		/// What the node waits for now, unpaced (3a's kinds): an older node of its name; its engine companions
 		/// while configuring (the block first, since they are made only once it is ready); the block while starting.
 		std::vector<WaitingFor> waitingNow() const {
 			std::vector<WaitingFor> waits;
@@ -816,14 +816,14 @@ struct NodeHost::Impl {
 				break;
 			case lc::NodePhase::configuring:
 				if (!config_ || config_->startFailed) break;
-				if (!config_->outsideRequests.empty()) {
+				if (!config_->engineAsks.empty()) {
 					if (aggregate_.block().state() != lc::BlockState::ready) {
 						waits.push_back({WaitingFor::Kind::block});
 					} else {
-						for (std::size_t i = 0; i < config_->outsideRequests.size(); ++i)
-							if (i >= config_->outside.size() || !config_->outside[i]->isReady)
+						for (std::size_t i = 0; i < config_->engineAsks.size(); ++i)
+							if (i >= config_->engineCompanions.size() || !config_->engineCompanions[i]->isReady)
 								waits.push_back(
-									{WaitingFor::Kind::companion, config_->outsideRequests[i].second.engineNode});
+									{WaitingFor::Kind::companion, config_->engineAsks[i].target.engineNode});
 					}
 				}
 				// A sink's consumer that has not begun (readiness 4').
@@ -1030,22 +1030,22 @@ struct NodeHost::Impl {
 			}
 		}
 
-		/// Records an outside node to make once the block is ready, under its one name.
-		void askOutside(OutsideRequest request, const Ports::Bank& bank, std::string_view suffix) {
-			const NodeName engineNode = name_ + "." + std::string(suffix);
+		/// Records an engine companion to make once the block is ready, under its one name, on a bank of its own.
+		template <class Shape> void askEngineCompanion(Shape shape, const Ports::Bank& bank) {
+			const NodeName engineNode = name_ + "." + std::string(engineSuffix(shape, bank.direction));
 			requireOneName(engineNode);
-			if (std::ranges::any_of(config_->sources, [&](const auto& slot) { return slot.bank == bank.name; }))
-				throw std::logic_error("a second companion on bank " + bank.name);
-			config_->outsideRequests.emplace_back(std::move(request),
-			                                      OutsideTarget{engineNode, name_, bank.ports, host_.format});
+			requireFreeBank(bank);
+			config_->engineAsks.push_back(
+				EngineAsk{std::move(shape),
+			              CompanionTarget{engineNode, name_, bank.direction, bank.ports, host_.format}, bank.name});
 		}
 
-		/// One engine name per resource of a configuration: an outside node's "<node>.<suffix>" and a sink's
-		/// "<node>.<bank>" (its thread's name) are never two of one name.
+		/// One engine name per resource of a configuration: an engine companion's "<node>.<suffix>" and a sink's or
+		/// source's "<node>.<bank>" (a sink's thread's name) are never two of one name.
 		void requireOneName(const NodeName& engineNode) const {
 			const bool taken =
-				std::ranges::any_of(config_->outsideRequests,
-			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }) ||
+				std::ranges::any_of(config_->engineAsks,
+			                        [&](const EngineAsk& asked) { return asked.target.engineNode == engineNode; }) ||
 				std::ranges::any_of(config_->sinks,
 			                        [&](const auto& slot) { return name_ + "." + slot->bank == engineNode; }) ||
 				std::ranges::any_of(config_->sources,
@@ -1053,25 +1053,15 @@ struct NodeHost::Impl {
 			if (taken) throw std::logic_error("a second resource named " + engineNode + " in one configuration");
 		}
 
-		/// One companion per inside bank: a source's bank has no outside node, and an outside node's no source, so the
-		/// block's storage for bindings, one per inside bank, always holds them all.
+		/// One companion per inside bank, whatever its kind (an engine companion, a sink, a source), so the block's
+		/// storage for bindings, one per inside bank, always holds them all.
 		void requireFreeBank(const Ports::Bank& bank) const {
 			const bool taken =
-				std::ranges::any_of(config_->outsideRequests,
-			                        [&](const auto& asked) {
-										return std::visit([](const auto& request) { return request.bank; },
-				                                          asked.first) == bank.name;
-									}) ||
+				std::ranges::any_of(config_->engineAsks,
+			                        [&](const EngineAsk& asked) { return asked.bank == bank.name; }) ||
+				std::ranges::any_of(config_->sinks, [&](const auto& slot) { return slot->bank == bank.name; }) ||
 				std::ranges::any_of(config_->sources, [&](const auto& slot) { return slot.bank == bank.name; });
 			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
-		}
-
-		/// A request's bank, filled from the handle's name: one already given must be that one.
-		static void named(std::string& requested, std::string_view bank, std::string_view what) {
-			if (!requested.empty() && requested != bank)
-				throw std::logic_error(std::string(what) + "'s request names bank \"" + requested + "\", not \"" +
-				                       std::string(bank) + "\"");
-			requested = std::string(bank);
 		}
 
 		/// At most one declaration per bank.
@@ -1108,8 +1098,8 @@ struct NodeHost::Impl {
 
 		/// T2 (docs/writing-a-node-type.md#configure-and-createof): a new generation and its context; the instance made
 		/// and its configure called, timed together as the hook `configure`; then its answer and the return checks. A
-		/// throw, a failed answer or a broken rule (a legacy recipe beside an outside node among them) is a fault in
-		/// readying (start-failed); else the code is kept, unprepared, and the resources are asked for.
+		/// throw, a failed answer or a broken rule is a fault in readying (start-failed); else the code is kept,
+		/// unprepared, and the resources are asked for.
 		void configure() {
 			if (config_) throw std::logic_error("node " + name_ + ": a configuration began while another had not gone");
 			config_ = std::make_unique<Configuration>();
@@ -1165,10 +1155,6 @@ struct NodeHost::Impl {
 				if (!slot->given)
 					return failConfigure(lc::Fact::configureFailed,
 					                     "configure gave sink " + slot->bank + " no consumer");
-			// A type bug that fails the node, never thrown out of NodeHost.
-			if (c.instance->hasRecipe() && !c.outsideRequests.empty())
-				return failConfigure(lc::Fact::configureFailed,
-				                     "a legacy type with a recipe may ask for no outside node");
 			c.startFailed = false;
 			// Every drive of this configuration binds these taps; then each consumer begins on its sink's thread.
 			c.bindings.reserve(c.sinks.size());
@@ -1179,7 +1165,7 @@ struct NodeHost::Impl {
 			askResources();
 		}
 
-		/// A sink's consumer began (readiness 4'): with every outside node ready too, every resource is.
+		/// A sink's consumer began (readiness 4'): with every engine companion ready too, every resource is.
 		void sinkBegun(std::uint64_t generation, std::size_t index) {
 			host_.inputFor(serial_, [generation, index](Node& node) {
 				if (!node.current(generation) || node.config_->startFailed || node.config_->tearing ||
@@ -1206,14 +1192,14 @@ struct NodeHost::Impl {
 
 		/// configure failed, threw or broke a rule: nothing was driven by its code, so the handoffs may go now (their
 		/// consumers may have gone with a legacy start's result), and so may the sinks, none begun (a consumer given is
-		/// freed unbegun, with nothing to finish); no outside node was made. The recordings and the instance stay
+		/// freed unbegun, with nothing to finish); no engine companion was made. The recordings and the instance stay
 		/// until step 5 frees them, the instance first. The fault is an input of its own.
 		void failConfigure(lc::Fact fact, std::string detail) {
 			Configuration& c = *config_;
 			c.handoffs.clear();
 			c.sinks.clear();
 			closeSources(); // freed at step 5, after the instance that may hold their writers
-			c.outsideRequests.clear();
+			c.engineAsks.clear();
 			c.channel->detach();
 			host_.inputFor(serial_, [generation = c.generation, fact, detail = std::move(detail)](Node& node) mutable {
 				if (!node.current(generation)) return;
@@ -1257,26 +1243,26 @@ struct NodeHost::Impl {
 			else host_.logged(LogEntry{LogLevel::error, "ear", "stop() threw: " + *what, {}, name_});
 		}
 
-		/// Readiness, as far as slice 3a has it: the outside nodes, made in the flush in request order once the block
-		/// is ready (their ports exist); with none pending, every resource is ready at once (in this turn, as its
+		/// Readiness, as far as slice 3a has it: the engine companions, made in the flush in request order once the
+		/// block is ready (their ports exist); with none pending, every resource is ready at once (in this turn, as its
 		/// own input). An adapter that tells ready() inside make() is heard after that item, and every ready is judged
-		/// against every outside node made.
+		/// against every engine companion made.
 		void askResources() {
 			if (!config_ || config_->startFailed || config_->recipeRan ||
 			    aggregate_.configuration().state() != lc::ConfigState::readying)
 				return;
 			Configuration& c = *config_;
-			if (c.outsideRequests.empty()) {
+			if (c.engineAsks.empty()) {
 				host_.inputFor(serial_, [generation = c.generation](Node& node) { node.checkReady(generation); });
 				return;
 			}
-			if (aggregate_.block().state() != lc::BlockState::ready || c.outsideAsked) return;
-			c.outsideAsked = true;
-			c.outside.reserve(c.outsideRequests.size());
-			for (std::size_t i = 0; i < c.outsideRequests.size(); ++i)
-				host_.queue(FlushKind::makeOutside, name_,
+			if (aggregate_.block().state() != lc::BlockState::ready || c.companionsAsked) return;
+			c.companionsAsked = true;
+			c.engineCompanions.reserve(c.engineAsks.size());
+			for (std::size_t i = 0; i < c.engineAsks.size(); ++i)
+				host_.queue(FlushKind::makeCompanion, name_,
 				            [&host = host_, serial = serial_, generation = c.generation, i] {
-								if (Node* node = host.find(serial)) node->makeOutside(generation, i);
+								if (Node* node = host.find(serial)) node->makeCompanion(generation, i);
 							});
 		}
 
@@ -1287,8 +1273,8 @@ struct NodeHost::Impl {
 			    aggregate_.configuration().state() != lc::ConfigState::readying)
 				return;
 			Configuration& c = *config_;
-			if (c.outside.size() != c.outsideRequests.size() ||
-			    !std::ranges::all_of(c.outside, [](const auto& outside) { return outside->isReady; }) ||
+			if (c.engineCompanions.size() != c.engineAsks.size() ||
+			    !std::ranges::all_of(c.engineCompanions, [](const auto& companion) { return companion->isReady; }) ||
 			    !std::ranges::all_of(c.sinks, [](const auto& slot) { return slot->begun; }))
 				return;
 			c.recipeRan = true;
@@ -1319,10 +1305,17 @@ struct NodeHost::Impl {
 		void drive(std::uint64_t barrier) {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
-			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play.
+			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play;
+			// and an RTP receiver's buffer, which PipeWire's receiver reports none of (docs/engine.md#rtp-receivers).
 			std::vector<std::pair<std::string, Latency>> beyond;
 			for (const SourceSlot& slot : c.sources)
 				beyond.emplace_back(slot.bank, Latency{0, slot.source->writer().capacityFrames()});
+			for (const EngineAsk& asked : c.engineAsks)
+				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
+					const auto buffered =
+						static_cast<std::uint32_t>(std::uint64_t{receiver->latencyMs} * host_.format.rate / 1000);
+					beyond.emplace_back(asked.bank, Latency{buffered, buffered});
+				}
 			block_->carryLatency(LatencyPlan{c.pairs, c.latency, std::move(beyond)});
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
 			                           c.sourceBindings},
@@ -1352,8 +1345,8 @@ struct NodeHost::Impl {
 			arm(barrier, Bound::barrier);
 		}
 
-		/// A stop or teardown begins: every source's writer counts as idle, so what the type's stop() does to its writer
-		/// leaves no shortfall in the fade and the silence. Idempotent.
+		/// A stop or teardown begins: every source's writer counts as idle, so what the type's stop() does to its
+		/// writer leaves no shortfall in the fade and the silence. Idempotent.
 		void idleSources() noexcept {
 			if (!config_) return;
 			for (SourceSlot& slot : config_->sources) slot.source->stopping();
@@ -1499,23 +1492,24 @@ struct NodeHost::Impl {
 			config_->prepared = false;
 		}
 
-		/// teardown steps 1's rest to 3: the outside nodes; the handoffs closed, each on its own thread. Steps 3 and 4
-		/// have the close deadline. The rest goes once every handoff has closed.
+		/// teardown steps 1's rest to 3: the engine companions; the handoffs closed, each on its own thread. Steps 3
+		/// and 4 have the close deadline. The rest goes once every handoff has closed.
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
 			closeSources();
-			for (auto& outside : c.outside)
-				host_.queue(FlushKind::destroyOutside, name_, [&host = host_, outside = std::move(outside)]() mutable {
-					if (!host.wedged) {
-						outside.reset();
-						return;
-					}
-					static_cast<void>(outside.release()); // leaked: destroying it calls into the wedged loop
-					++host.leaked;
-				});
-			c.outside.clear();
-			c.outsideRequests.clear();
+			for (auto& companion : c.engineCompanions)
+				host_.queue(
+					FlushKind::destroyCompanion, name_, [&host = host_, companion = std::move(companion)]() mutable {
+						if (!host.wedged) {
+							companion.reset();
+							return;
+						}
+						static_cast<void>(companion.release()); // leaked: destroying it calls into the wedged loop
+						++host.leaked;
+					});
+			c.engineCompanions.clear();
+			c.engineAsks.clear();
 			c.deadline =
 				host_.timers.after(host_.closeDeadline, [&host = host_, serial = serial_, generation = c.generation] {
 					host.inputFor(serial, [generation](Node& node) {
@@ -1620,8 +1614,8 @@ struct NodeHost::Impl {
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
 			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
 			                             std::move(c.sinks), std::move(c.bindings), std::move(c.sources),
-			                             std::move(c.sourceBindings), std::move(c.handoffs), std::move(c.outside),
-			                             std::move(c.faded)});
+			                             std::move(c.sourceBindings), std::move(c.handoffs),
+			                             std::move(c.engineCompanions), std::move(c.faded)});
 			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;
@@ -1684,7 +1678,7 @@ struct NodeHost::Impl {
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; removed ones are pruned on add
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
 	std::uint64_t serials = 0;                // every node's serial, so a completion never finds a newer node
-	std::size_t leaked = 0;                   // configurations, blocks and outside nodes never freed
+	std::size_t leaked = 0;                   // configurations, blocks and engine companions never freed
 	bool stopRequested = false;
 	std::move_only_function<void()> allGone;
 	std::deque<std::move_only_function<void()>> inputs; // what waits for the input being handled
@@ -1788,14 +1782,14 @@ struct NodeHost::Impl {
 
 	static constexpr std::string_view callName(FlushKind kind) noexcept {
 		switch (kind) {
-		case FlushKind::destroyOutside:
-			return "destroy outside node";
+		case FlushKind::destroyCompanion:
+			return "destroy engine companion";
 		case FlushKind::destroyBlock:
 			return "destroy block";
 		case FlushKind::makeBlock:
 			return "make block";
-		case FlushKind::makeOutside:
-			return "make outside node";
+		case FlushKind::makeCompanion:
+			return "make engine companion";
 		}
 		return "flush";
 	}
@@ -1950,8 +1944,8 @@ NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistr
 	: impl_(std::make_unique<Impl>(format, blocks, resources, mainLoop, timers, closeDeadline)) {}
 
 NodeHost::~NodeHost() {
-	// On a wedged loop, leaked blocks, outside nodes and configurations still point into the host: it is never freed
-	// (main.cpp ends through std::_Exit before this runs; a test's host is kept for good).
+	// On a wedged loop, leaked blocks, engine companions and configurations still point into the host: it is never
+	// freed (main.cpp ends through std::_Exit before this runs; a test's host is kept for good).
 	if (impl_->wedged) static_cast<void>(impl_.release());
 }
 

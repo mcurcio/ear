@@ -10,13 +10,11 @@
 #include <variant>
 #include <vector>
 #include "ear/core/command_error.hpp"
-#include "ear/core/rtp_receiver.hpp"
-#include "ear/core/sound_card.hpp"
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
 /// public: routes name them. An inside bank's ports belong to the port block only: nothing reaches them but the node's
-/// own outside nodes (its sound cards and RTP receivers), which name the bank they join, and the node's code. Both are
-/// named alike, so no type spells a port's name or indexes a list of ports by hand.
+/// own companions (its sound cards, RTP receivers, sinks and sources), each on the bank it joins, and the node's code.
+/// Both are named alike, so no type spells a port's name or indexes a list of ports by hand.
 struct PortBank {
 	enum class Reach { routable, inside };
 	Direction direction;
@@ -161,9 +159,10 @@ struct HandoffRequest {
 struct RecordingRequest {
 	std::string path;
 };
-/// Every kind of resource a run can acquire: a closed list, on purpose, since a kind changes what the framework
-/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp).
-using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest, RecordingRequest>;
+/// Every kind of resource a legacy run can acquire: a closed list, on purpose, since a kind changes what the framework
+/// promises (docs/writing-a-node-type.md#configure-and-createof). Each kind has one adapter (node_host.hpp). Sound
+/// cards and RTP receivers are engine companions a class asks for (CreateOf::soundCard, CreateOf::rtpReceiver).
+using ResourceRequest = std::variant<HandoffRequest, RecordingRequest>;
 /// What a run tells, from any of its threads; never blocks. Told on the main loop in order, and only to the run that
 /// wrote it: nothing after its close's `closed`, and nothing of an older run lands on a newer one
 /// (docs/architecture.md#the-node-lifecycle).
@@ -176,18 +175,11 @@ protected:
 };
 /// What `start` sees (docs/writing-a-node-type.md#the-class): the format, the node's name, and the acquire calls. Main
 /// thread, inside start() only: any call outside it throws std::logic_error. Everything acquired belongs to the run and
-/// is torn down by the framework by dependency: outside nodes, then handoffs, then the run object.
+/// is torn down by the framework by dependency: handoffs, then the run object.
 class StartContext {
 public:
 	virtual AudioFormat format() const = 0; // the value prepare() will get
 	virtual const NodeName& node() const = 0;
-	/// A sound card joined to `request.bank`, an inside output bank (playback) or inside input bank (capture): opened at
-	/// format().rate with one channel per port of the bank, ready once its PCM runs and every channel is linked, and
-	/// lost (the node fails engine-refused) when it fails, before or after it was ready.
-	void acquire(const SoundCardRequest& request) { acquireResource(request); }
-	/// An RTP receiver joined to `request.bank`, an inside input bank, with one channel per port of it; readiness, loss
-	/// and teardown as a sound card's.
-	void acquire(const RtpReceiverRequest& request) { acquireResource(request); }
 	/// A handoff (HandoffRequest); its writer for the run's code. Ready at once.
 	RtWriter& acquire(const HandoffRequest& request) { return *std::get<RtWriter*>(acquireResource(request)); }
 	/// A recording file (RecordingRequest): its descriptor, or why it cannot be opened (the type fails its start).
@@ -231,7 +223,7 @@ protected:
 class RunObject {
 public:
 	virtual ~RunObject() = default;
-	/// Main thread, once, after every outside node of the run is gone and every handoff closed. A run object with
+	/// Main thread, once, after every engine companion of the run is gone and every handoff closed. A run object with
 	/// threads stops them (off the main loop: the main loop never joins a thread) and calls `closed`, last, from any
 	/// thread; one without calls it at once. A run that has not called it within the close deadline is leaked, never
 	/// destroyed.

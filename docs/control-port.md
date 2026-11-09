@@ -138,7 +138,7 @@ The meaning of each phase and state is [architecture.md](architecture.md#the-nod
 | `wanted` | yes | `running`, `stopped` (a stop held in memory) or `disabled` (in `ear.conf`) |
 | `blockLost` | yes | The node's block is gone for good; it cannot restart until removed and added, or ear restarts |
 | `cause` | `stopping`; `configuring` after a restart, retry or enable | `{"kind"}`: `stop`, `disabling`, `removing`, `restarting` (with `restart: {"kind"}`, the restart's own kind: `settings` with its `keys`, or `action` for `node.restart`), and for `configuring`: `settings` (with `keys`), `action`, `retry`, `enabling` |
-| `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an outside node, by engine name: `fpp.rtp`), `consumer` (a sink's consumer). Changed at most once a second |
+| `waitingFor` | once the phase has lasted 2 s | What the node still waits for: a list of `{"kind", "name"?}`, kind `older-node` (a removed or renamed node of its name still closing), `block` (the engine), `companion` (an engine companion, by engine name: `fpp.rtp`), `consumer` (a sink's consumer). Changed at most once a second |
 | `reason` | `failed` | `{"code", "detail"}`, code `engine-refused`, `start-failed` or `lost` |
 
 A `node.state` is sent whenever any member changes, never coalesced, and replaces every health

@@ -65,7 +65,7 @@ does; it carries the `phase` beside the state.
 
 `<why>` and the configuring cause read `settings changed: <keys>`, `restart invoked` (for
 `node.restart`), `retry` or `enabling`. `<what>` names `the previous <name>` (an older node of its
-name), `the engine` (its block), an outside node's engine name (`fpp.rtp`), or `its consumer`.
+name), `the engine` (its block), an engine companion's engine name (`fpp.rtp`), or `its consumer`.
 `configuring`, `configured` and `starting` after the first add write nothing of their own (they
 share the colour `starting`). The `cause` field is `{"kind"}`, with `restart: {"kind", "keys"?}`
 for a restart, as on the wire ([control-port.md](control-port.md#node-health)).
