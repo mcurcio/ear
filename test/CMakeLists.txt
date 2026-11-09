@@ -57,6 +57,20 @@ set_tests_properties(ear_help_lists_config PROPERTIES
 add_test(NAME ear_carried_patch_check COMMAND "${CMAKE_COMMAND}"
 	"-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/carried_patch_test" -P "${CMAKE_CURRENT_SOURCE_DIR}/carried_patch_test.cmake")
 
+# The worked example of docs/writing-a-node-type.md, the `tone` type, taken from the page and compiled (syntax only)
+# against today's headers, so the page cannot drift from them: the type, with the folder's name its table must carry,
+# and its tests. It is never a node type of this build: nothing under src/nodes/ is made.
+set(doc_tone "${CMAKE_CURRENT_BINARY_DIR}/doc_example/tone")
+add_test(NAME ear_doc_example_extract COMMAND "${CMAKE_COMMAND}"
+	"-DDOC=${PROJECT_SOURCE_DIR}/docs/writing-a-node-type.md" "-DOUT=${doc_tone}"
+	-P "${CMAKE_CURRENT_SOURCE_DIR}/doc_example.cmake")
+set_tests_properties(ear_doc_example_extract PROPERTIES FIXTURES_SETUP doc_example)
+ear_compile_check(ear_doc_example_type "${doc_tone}/tone.cpp" "-I${doc_tone}" "-I${doc_tone}/include"
+	"-DEAR_NODE_TYPE_NAME=\"tone\"")
+ear_compile_check(ear_doc_example_tests "${doc_tone}/tests/tone_test.cpp" "-I${doc_tone}" "-I${doc_tone}/include"
+	"-I${PROJECT_SOURCE_DIR}/vendor/catch/single_include")
+set_tests_properties(ear_doc_example_type ear_doc_example_tests PROPERTIES FIXTURES_REQUIRED doc_example)
+
 # ear_ws_client: the tests' WebSocket client (test/support/ws_client.hpp, header-only, on
 # Boost.Beast), for the control port's tests (src/server/tests) and the system tests.
 add_library(ear_ws_client INTERFACE)
@@ -69,7 +83,7 @@ add_library(ear_temp_folder INTERFACE)
 target_include_directories(ear_temp_folder INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 
 # ear_rtp_tone: the tests' RTP sender and tone fit (test/support/rtp_tone.hpp, header-only), for
-# the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/design/rtp.md).
+# the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/node-types.md#rtp).
 add_library(ear_rtp_tone INTERFACE)
 target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 
