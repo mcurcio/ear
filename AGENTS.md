@@ -604,7 +604,9 @@ choosing the advertised interface, RFC 6762 probing, more than stereo.
 Catch2 v2; each package has one test executable, and `ear_catch_tests` (`test/CMakeLists.txt`:
 `catch_discover_tests` with Catch's `--warn NoTests`) makes each test case its own CTest test, so
 `ctest --parallel` runs them side by side; a CTest test that matches no test case fails. Keep `;`
-out of test names: CMake splits a name at it.
+out of test names: CMake splits a name at it. A test case whose load would starve the realtime-timed
+tests beside it is named by tag in `ear_catch_tests(<target> SERIAL <tag>)`, which gives it CTest's
+`RUN_SERIAL` (only S2, `[s2]`, in `ear_pipewire_tests`).
 
 | Executable | What it proves |
 |---|---|

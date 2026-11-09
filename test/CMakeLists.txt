@@ -11,9 +11,22 @@ target_include_directories(ear_catch_main SYSTEM PUBLIC
 # exits 0; this is what makes that, or any other filter that runs nothing, fail. Catch.cmake is
 # included inside the function: it sets the path of its discovery script as a variable, which a
 # sibling directory (src/<package>) would not see from here.
+#
+# SERIAL <test spec>: the test cases the Catch test spec matches (a tag, such as [s2]) are discovered apart, with the
+# CTest property RUN_SERIAL, so ctest --parallel runs nothing beside them: for a test whose load would starve the
+# realtime-timed tests running beside it (PipeWire's data thread keeping time), and theirs it.
 function(ear_catch_tests target)
+	cmake_parse_arguments(PARSE_ARGV 1 arg "" "SERIAL" "")
+	if(arg_UNPARSED_ARGUMENTS)
+		message(FATAL_ERROR "ear_catch_tests: unexpected arguments: ${arg_UNPARSED_ARGUMENTS}")
+	endif()
 	include(Catch)
-	catch_discover_tests(${target} EXTRA_ARGS --warn NoTests)
+	if(arg_SERIAL)
+		catch_discover_tests(${target} TEST_SPEC "~${arg_SERIAL}" EXTRA_ARGS --warn NoTests)
+		catch_discover_tests(${target} TEST_SPEC "${arg_SERIAL}" EXTRA_ARGS --warn NoTests PROPERTIES RUN_SERIAL TRUE)
+	else()
+		catch_discover_tests(${target} EXTRA_ARGS --warn NoTests)
+	endif()
 endfunction()
 
 # ear_compile_check(<name> <source> [<flag>...]): compiles <source> (syntax only) against ear_core's headers as a test.

@@ -120,7 +120,13 @@ monotonic-raw` the driver runs in its tracking mode (`node-driver.c`): its timer
 `CLOCK_MONOTONIC`, a delay-locked loop steers it so `clock.position` follows raw time, and
 `rate_diff` is the loop's correction. `clock.nsec` and `next_nsec` stay `CLOCK_MONOTONIC`. Its
 error is clamped at 1 ms a cycle; past `resync.ms` (10 ms, e.g. after a data-thread stall) the
-position jumps to raw time. Its `clock.name` is `clock.system.monotonic-raw` (`internalClockName`).
+position jumps to raw time. It can jump *back*: a starved data loop reads the timer late, the
+reset puts the position forward on raw time, the next timeouts (computed from the late one) fire
+back to back, a block each, until the position is `resync.ms` ahead, and the next reset steps it
+back by up to about 440 frames. The whole graph then runs positions it already ran, so a test or
+a type must never treat `clock.position` as unique or tell cycles apart by it (node-lifecycle.md
+10.5; S2 in `spikes_test.cpp` tells them apart by entry order). Its `clock.name` is
+`clock.system.monotonic-raw` (`internalClockName`).
 Whether it follows a host slewed at chrony's worst case is untested; the fallback is chrony's
 `maxslewrate` (the `ear-on-talos` skill).
 

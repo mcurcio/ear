@@ -1,7 +1,7 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.3, 2026-11-08 (2.2: gaps found building step L-1; 2.3: building L-5's graph file and
-desired graph; section 17). Revision 1 went to one
+Status: proposal, revision 2.4, 2026-11-09 (2.2: gaps found building step L-1; 2.3: building L-5's graph file and
+desired graph; 2.4: S2 on CI; section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -486,7 +486,8 @@ How `FilterPortBlock` (`port_blocks.cpp`) does it:
   frame `k` at `k / N` in and `(N - k) / N` out (`N = rate * 5 / 1000`), so exact at both ends; a fade-out's first frame
   is still at full gain and frame `N` on is zero. `takenAt` is the *expected* position: when a stall longer than the
   driver's resync bound (480 frames, 10 ms) makes the dummy driver reset, the next cycle carries another position (L-2's
-  fade test found it); nothing in 3a reads it but tests, and 3b's companions must allow for it.
+  fade test found it), forward or back (10.5: after a step back the swap waits until the position reaches `takenAt`
+  again, up to `resync.ms` late); nothing in 3a reads it but tests, and 3b's companions must allow for it.
 - **Completing.** The data loop writes the completed request's number into an atomic (`appliedSeq`, `fadedSeq`) and
   calls `pw_loop_signal_event` on an event source the block made on the main loop at construction (as the handoff
   does from `process` today, `handoffs.cpp:54` [V], and as the block already does for refusals, `port_blocks.cpp:106`
@@ -1092,7 +1093,7 @@ the facts below: `spa/plugins/support/loop.c`, `pipewire/context.c`, `pipewire/f
 | Spike | Verdict | Measured |
 |---|---|---|
 | S1 | Pass; D-L26 not needed | 13,000 invokes (bursts, singles, and 3,000 during a 2 s stall) ran in posting order, on the data thread, never inside any `process`; every post returned the async code, never the function's result; completions all reached the main loop (about 2,000 coalesced events); no allocation on the data thread; a burst of 1,000 cost the main loop 0.3 to 0.9 ms; the slowest post during the stall 0.04 to 0.81 ms |
-| S2 | Take-up and sample exactness pass; the literal "identical position sequences" fails under xruns | 1,000 requests a run under a storm of about 490,000 invokes a second: every one taken up once, in order, `takenAt` one cycle after publication; U, B, D entered in link order in every cycle they all ran (0 misordered of about 17,845); D's ramp exact at every take-up and silence. But 1 to 17 cycles a run were run by only an upstream prefix (U, or U and B), at driver resyncs and xruns |
+| S2 | Take-up and sample exactness pass; the literal "identical position sequences" fails under xruns | 1,000 requests a run under a storm of about 490,000 invokes a second: every one taken up once, in order, `takenAt` one cycle after publication; U, B, D entered in link order in every cycle they all ran (0 misordered of about 17,845); D's ramp exact at every take-up and silence. But 1 to 17 cycles a run were run by only an upstream prefix (U, or U and B), at driver resyncs and xruns. On a loaded host (CI, 2026-11-08; locally with 6 busy loops on 4 cores) 500 to 4,600 cycles a run were cut short, and clock.position stepped back up to 11 times a run, by up to 438 frames, with the whole graph running positions again (below) |
 | S3 | Pass in substance | the property reads 1; one `data-loop.0` thread in the process; a filter's `pw_filter_get_data_loop` is that loop; adapters and the rtp module name `data-loop.0` in their info, while `pw_filter`s name no loop (so `node.loop.name` is set only by a node's maker) |
 
 What the spikes changed in this page's criteria (the kept tests assert the corrected ones):
@@ -1116,12 +1117,33 @@ What the spikes changed in this page's criteria (the kept tests assert the corre
   means a *source* companion, upstream of its block, can run a cycle its block never runs, so a source must not count
   a chunk as played until its block took it up (its `takenAt`); 3b's design either adopts that rule or takes D-L25
   (ring companions' realtime side inside the block). Recorded as open in 16 and node-framework.md 15.
+- **clock.position steps back, and the whole graph runs a position again.** Found on CI (2026-11-08), where S2 failed
+  twice (8 D cycles "heard zeros, wanted the ramp"), and reproduced with busy loops beside it. A starved data loop reads
+  the dummy driver's timer late; past `resync.ms` (480 frames) behind the raw clock the driver resets the position
+  forward to it (`node-driver.c` `on_timeout`), but its next timeout, computed from the late one, is due at once, and
+  the timeouts it fires back to back each add a block until the position is `resync.ms` *ahead* of the raw clock,
+  when it resets back to it (the log shows the pair: `err -665 ... resetting`, then `err 519 ... resetting` 1 ms
+  later). U, B and D had run those run-ahead positions as whole cycles, so after the step back they run positions
+  below ones they already ran, and B's swaps happen at positions below those cycles. The first S2 compared D's samples
+  with the swaps by position, which put a swap made after a step back in force in cycles that ran before it: the model
+  was wrong, not the take-up (B and D agreed sample for sample in every cycle). Corrected criterion: cycles are told
+  apart by the order they ran in (the shared entry sequence: a cycle is U's number, then B's, then D's, straight after
+  each other, at one position), never by position; prefix semantics for cycles cut short as above; D hears the ramp
+  from exactly the cycle of each drive's swap to exactly the cycle before the next silence's swap, in the order the
+  cycles ran; D sees `takenAt` in the cycle B published it, when D runs that cycle; and no cycle starts more than
+  `resync.ms` ahead of the raw clock (the bound the driver keeps). Exact everywhere else: no tolerance. For 3a: a
+  take-up published just before a step back waits until the position reaches `takenAt` again (30 to 215 of 1,000 a
+  run were swapped after `takenAt`, by a jump forward or back, under that load), so a drive's take-up is late by up
+  to `resync.ms` plus a block, never early. For 3b: a companion that keys anything on `clock.position` (a chunk played "at" a position) sees positions
+  repeat, and must key on the cycle instead.
 - **S3's literal "every node names the loop" fails for `pw_filter`s.** Corrected: the property reads 1; the process has
   one data-loop thread; a block's filter loop is the context's loop; any node that names a loop names that one. The
   fallback (naming the loop on every adapter and module) is not needed.
-- **Two deviations, both in the test's favour of running on CI:** S2 runs at a 64-frame block (24 s instead of 95 s;
-  at 256 frames its load made two load-sensitive sendspin clock tests fail in the parallel suite), and its storm is
-  bounded as above.
+- **Three deviations, all in the test's favour of running on CI:** S2 runs at a 64-frame block (24 s instead of 95 s;
+  at 256 frames its load made two load-sensitive sendspin clock tests fail in the parallel suite), its storm is
+  bounded as above, and it runs alone: its CTest test has `RUN_SERIAL` (`ear_catch_tests(... SERIAL [s2])`,
+  `test/CMakeLists.txt`), since even at 64 frames it kept a CI core busy while the realtime-timed tests ran beside it
+  (a sendspin system test, stable before S2 was added, lost 10 ms of its ramp in the same suite on 2026-11-08); it adds about 25 s to the suite's wall time.
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then resets about 70
   times within 7 ms (`node-driver.c on_timeout ... resetting`); 5.4's bounds already treat a stall as no wedge while
   the loop answers.
@@ -1368,7 +1390,9 @@ None. Every choice here is internal or follows an owner's answer already given (
   allocates an overflow queue), one data-loop thread. Step L-0 done; 3a may proceed.
 - Open for 3b (10.5): S2 passed take-up and sample exactness, but a cycle cut short by an xrun is run by an upstream
   prefix only, so a source companion can run a cycle its block never runs. 3b's design either counts a source's chunk
-  as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block).
+  as played only once its block took it up, or takes D-L25 (ring companions' realtime side inside the block). And
+  `clock.position` steps back on a loaded host, the whole graph running positions again, so nothing may key on a
+  position as unique.
 - [V] knobly's layout of `insert_statements` into a one-line block (8.3): not acceptable on the `{`'s line, so that
   case is written textually; pinned by L-5's first test.
 - [V] `pw_filter_get_node_id` returning the block's global id once STREAMING, in PipeWire 1.4.2 (5.7): L-2's test finds
@@ -1513,3 +1537,12 @@ edit:
   its braces"); the wire's text for a `disabled` key in settings is control-plane.md 4.2's, refused by the model's
   `updateNode` and `addNode` before any edit.
 - `NodeSpec` and `desired_graph.hpp` are frozen interfaces: errata in m1-white-to-file.md and batch2.md section 11.
+
+### Revision 2.4 (2026-11-09, S2 on CI)
+
+S2 failed twice on CI's parallel suite, and a sendspin system test beside it lost 10 ms of its ramp. 10.5 records why: on a
+loaded host the dummy driver steps `clock.position` back after a run of late timeouts, and the whole graph runs
+positions again, so S2's model of D, which compared swaps by position, was wrong; and its check that steps back lie
+near a jump B saw kept only B's first 256 jumps. S2 now tells cycles apart by the order they ran in, asserts the
+corrected criterion exactly, and runs alone (`RUN_SERIAL`). 5.3's `takenAt` and 16's open item for 3b name the step
+back.

@@ -7,7 +7,8 @@
 //    (not yet entered, or stopped) runs the function inline on the caller. A function may run before its post returns.
 //  - S2 (10.2): take-up by position (node-lifecycle.md 5.3) under an invoke storm: a block and its peers see one
 //    clock.position per cycle, in link order, and a ramp switched on and off by position arrives sample-exact. An xrun
-//    cuts a cycle short: only a prefix of the graph runs it.
+//    cuts a cycle short: only a prefix of the graph runs it. Positions can step back (the dummy driver's reset onto the
+//    raw clock), so cycles are told apart by the order they ran in, never by position.
 //  - S3 (10.3): one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), and S2's
@@ -23,9 +24,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -344,7 +345,10 @@ struct CycleLog {
 	/// Data thread; returns the cycle's index, or none when full.
 	std::optional<std::size_t> add(std::uint64_t at, std::uint64_t sequence) noexcept {
 		const std::size_t n = count.load(std::memory_order_relaxed);
-		if (n >= position.size()) return std::nullopt;
+		if (n >= position.size()) {
+			full.store(true, std::memory_order_relaxed);
+			return std::nullopt;
+		}
 		position[n] = at;
 		entry[n] = sequence;
 		return n;
@@ -353,6 +357,7 @@ struct CycleLog {
 	std::vector<std::uint64_t> position;
 	std::vector<std::uint64_t> entry;
 	std::atomic<std::size_t> count{0};
+	std::atomic<bool> full{false}; // a cycle was not recorded: the log is incomplete and S2's analysis void
 };
 
 /// What S2's three filters share: the entry sequence and whether cycles are recorded.
@@ -377,18 +382,36 @@ std::unique_ptr<Engine> engineAt(std::uint32_t block) {
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
-constexpr std::size_t kS2Capacity = kS2Requests * 40 + 4000; // cycles: at most 30 between requests, plus take-ups
+/// Cycles a log holds: at most 30 between requests, plus take-ups, plus the cycles a starved data loop runs only U for
+/// (under load the driver starts cycles faster than the graph finishes them).
+constexpr std::size_t kS2Capacity = kS2Requests * 80 + 8000;
 
-/// U: records its cycles and writes zeros.
+/// The dummy driver's resync.ms (node-driver.c's default, 10 ms; engine.conf leaves it) in frames.
+constexpr std::uint64_t kResyncFrames = kRate / 100;
+
+/// CLOCK_MONOTONIC_RAW now, in frames of the graph frequency: the clock the dummy driver tracks (engine.conf's
+/// clock.id), on the scale of its clock.position (node-driver.c's current_position).
+std::uint64_t rawFramesNow() noexcept {
+	timespec now{};
+	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+	return static_cast<std::uint64_t>(now.tv_sec) * kRate +
+	       static_cast<std::uint64_t>(now.tv_nsec) * kRate / 1'000'000'000U;
+}
+
+/// U: records its cycles, with the raw clock on entry, and writes zeros.
 class Upstream final : public ProbeCode {
 public:
-	explicit Upstream(Shared& shared) : shared_(shared), log(kS2Capacity) {}
+	explicit Upstream(Shared& shared) : shared_(shared), log(kS2Capacity), rawAtEntry(kS2Capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		const std::uint64_t raw = rawFramesNow();
 		std::fill_n(outputs[0], frames, 0.0F);
 		if (!shared_.recording.load(std::memory_order_acquire)) return;
-		if (const auto n = log.add(clock.position, sequence)) log.commit(*n);
+		if (const auto n = log.add(clock.position, sequence)) {
+			rawAtEntry[*n] = raw;
+			log.commit(*n);
+		}
 	}
 
 private:
@@ -396,12 +419,14 @@ private:
 
 public:
 	CycleLog log;
+	std::vector<std::uint64_t> rawAtEntry;
 };
 
 /// B: node-lifecycle.md 5.3's take-up by position, test-only. A request (drive: the ramp; silence: zeros) arrives by a
 /// non-blocking invoke into `pending`; the next cycle that sees it publishes takenAt = position + duration and runs the
-/// old code once more; the cycle whose position reaches takenAt swaps the code (a cycle that jumped past it, at once)
-/// and completes the request: its number into `applied`, then a main-loop signal.
+/// old code once more; the cycle whose position reaches takenAt swaps the code (a cycle that jumped past it, at once;
+/// after a step back, once the position reaches it again) and completes the request: its number into `applied`, then a
+/// main-loop signal.
 class TakeUp final : public ProbeCode {
 public:
 	struct Request {
@@ -413,7 +438,9 @@ public:
 		bool drive;
 		std::uint64_t publishedAt; // the position of the cycle that published takenAt
 		std::uint64_t takenAt;
-		std::uint64_t swappedAt; // the position of the first cycle that ran the new code
+		std::uint64_t swappedAt;    // the position of the first cycle that ran the new code
+		std::uint64_t publishedSeq; // B's entry sequence number in the cycle that published takenAt
+		std::uint64_t swappedSeq;   // and in the first cycle that ran the new code
 	};
 
 	TakeUp(Shared& shared, Waiter& waiter) : shared_(shared), waiter_(waiter), log(kS2Capacity), taken_(kS2Requests) {}
@@ -429,26 +456,12 @@ public:
 	std::uint64_t overlaps() const { return overlaps_.load(std::memory_order_acquire); }
 	std::uint64_t jumps() const { return jumps_.load(std::memory_order_acquire); }
 	std::uint64_t backwardJumps() const { return backwardJumps_.load(std::memory_order_acquire); }
-	/// Whether `position` lies within `cycles` cycles of a jump B saw (on either side of it).
-	bool nearJump(std::uint64_t position, std::uint64_t cycles) const {
-		const std::size_t n = std::min<std::size_t>(jumps(), jumpFrom_.size());
-		for (std::size_t j = 0; j < n; ++j) {
-			const std::uint64_t low = std::min(jumpFrom_[j], jumpTo_[j]), high = std::max(jumpFrom_[j], jumpTo_[j]);
-			if (position + cycles * kS2Block >= low && position <= high + cycles * kS2Block) return true;
-		}
-		return false;
-	}
 
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
 		const std::uint64_t at = clock.position;
 		if (cycles_.load(std::memory_order_relaxed) > 0 && at != next_) {
-			const std::size_t j = jumps_.load(std::memory_order_relaxed);
-			if (j < jumpFrom_.size()) {
-				jumpFrom_[j] = next_;
-				jumpTo_[j] = at;
-			}
 			jumps_.fetch_add(1, std::memory_order_release);
 			if (at < next_) backwardJumps_.fetch_add(1, std::memory_order_relaxed);
 		}
@@ -457,13 +470,15 @@ public:
 			if (!published_) {
 				published_ = true;
 				publishedAt_ = at;
+				publishedSeq_ = sequence;
 				takenAtLocal_ = at + clock.duration;
 				takenAt_.store(takenAtLocal_, std::memory_order_release);
 			} else if (at >= takenAtLocal_) {
 				driving_ = pending_.drive;
 				const std::size_t n = takenCount_.load(std::memory_order_relaxed);
 				if (n < taken_.size()) {
-					taken_[n] = Taken{pending_.number, pending_.drive, publishedAt_, takenAtLocal_, at};
+					taken_[n] = Taken{pending_.number, pending_.drive, publishedAt_, takenAtLocal_, at,
+					                  publishedSeq_,   sequence};
 					takenCount_.store(n + 1, std::memory_order_release);
 				}
 				hasPending_ = false;
@@ -503,6 +518,7 @@ private:
 	bool published_ = false;
 	bool driving_ = false;
 	std::uint64_t publishedAt_ = 0;
+	std::uint64_t publishedSeq_ = 0;
 	std::uint64_t takenAtLocal_ = 0;
 	std::uint64_t next_ = 0;
 	// Read elsewhere.
@@ -514,8 +530,6 @@ private:
 	std::atomic<std::uint64_t> backwardJumps_{0};
 	std::vector<Taken> taken_;
 	std::atomic<std::size_t> takenCount_{0};
-	std::array<std::uint64_t, 256> jumpFrom_{}; // where the clock should have been, per jump
-	std::array<std::uint64_t, 256> jumpTo_{};   // where it was
 };
 
 /// D: records its cycles, the B takenAt it sees, and what each cycle's samples were.
@@ -563,41 +577,84 @@ public:
 	std::vector<std::uint32_t> frames;
 };
 
-/// The three logs compared position by position, between the first and the last position all three hold.
-struct Compared {
-	std::size_t common = 0;                // positions every log holds
-	std::size_t misordered = 0;            // of those, the ones whose entries are not U < B < D
-	std::vector<std::uint64_t> partial;    // positions only some logs hold
-	std::vector<std::string> partialWhich; // for each: which logs hold it ("UB-")
-	std::vector<std::uint64_t> backwards;  // positions a log stepped back to (each log's should strictly increase)
+/// The three logs read as one timeline of graph cycles. U, B and D all run on the one data thread and each takes the
+/// shared entry sequence number on entry, so a graph cycle is a run of consecutive numbers: U's, then B's, then D's, all
+/// at one clock.position. Cycles are told apart by sequence, never by position: positions can repeat and step back.
+struct Timeline {
+	std::size_t cycles = 0;        // U's entries: the cycles the driver started while recording
+	std::size_t whole = 0;         // cycles all three ran
+	std::size_t onlyU = 0;         // cycles cut short after U
+	std::size_t onlyUB = 0;        // cycles cut short after B
+	std::size_t broken = 0;        // B or D entries not straight after their upstream's, in its cycle, at its position
+	std::string firstBroken;       // the first of those, described
+	std::size_t stepsBack = 0;     // cycles whose position is not above the previous cycle's
+	std::uint64_t largestBack = 0; // frames, the largest step back
+	std::size_t tooFarAhead = 0;   // cycles more than resync.ms ahead of the raw clock, where the driver puts none
+	std::string firstTooFarAhead;  // the first of those, described
 };
 
-Compared compare(const CycleLog& u, const CycleLog& b, const CycleLog& d) {
-	Compared result;
-	std::map<std::uint64_t, std::array<std::optional<std::uint64_t>, 3>> byPosition;
-	const std::array<const CycleLog*, 3> logs{&u, &b, &d};
-	std::uint64_t lo = 0, hi = UINT64_MAX;
-	for (std::size_t which = 0; which < logs.size(); ++which) {
+Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
+	struct Entry {
+		std::uint64_t sequence;
+		std::uint8_t which; // 0 U, 1 B, 2 D
+		std::size_t index;
+		std::uint64_t position;
+	};
+	std::vector<Entry> entries;
+	const std::array<const CycleLog*, 3> logs{&u.log, &b, &d};
+	for (std::uint8_t which = 0; which < logs.size(); ++which) {
 		const std::size_t n = logs[which]->count.load();
-		if (n == 0) return result;
-		lo = std::max(lo, logs[which]->position[0]);
-		hi = std::min(hi, logs[which]->position[n - 1]);
-		for (std::size_t i = 0; i < n; ++i) {
-			if (i > 0 && logs[which]->position[i] <= logs[which]->position[i - 1])
-				result.backwards.push_back(logs[which]->position[i]);
-			byPosition[logs[which]->position[i]][which] = logs[which]->entry[i];
-		}
+		for (std::size_t i = 0; i < n; ++i)
+			entries.push_back(Entry{logs[which]->entry[i], which, i, logs[which]->position[i]});
 	}
-	for (auto it = byPosition.lower_bound(lo); it != byPosition.end() && it->first <= hi; ++it) {
-		const auto& [eu, eb, ed] = it->second;
-		if (eu && eb && ed) {
-			++result.common;
-			if (!(*eu < *eb && *eb < *ed)) ++result.misordered;
+	std::sort(entries.begin(), entries.end(), [](const Entry& x, const Entry& y) { return x.sequence < y.sequence; });
+
+	Timeline result;
+	std::optional<Entry> cycleU, cycleB;
+	bool cycleD = false;
+	const auto closeCycle = [&] {
+		if (!cycleU) return;
+		if (cycleD) ++result.whole;
+		else if (cycleB) ++result.onlyUB;
+		else ++result.onlyU;
+	};
+	const auto broke = [&](const Entry& e, const char* why) {
+		if (result.broken++ == 0)
+			result.firstBroken = std::string(e.which == 1 ? "B" : "D") + " entry " + std::to_string(e.sequence) +
+			                     " at " + std::to_string(e.position) + ": " + why;
+	};
+	for (const Entry& e : entries) {
+		if (e.which == 0) {
+			if (cycleU && e.position <= cycleU->position) {
+				++result.stepsBack;
+				result.largestBack = std::max(result.largestBack, cycleU->position - e.position);
+			}
+			// node-driver.c on_timeout resets clock.position to the raw clock (as it reads it, before U enters)
+			// whenever it would lie more than resync.ms from it: no cycle starts further ahead than that.
+			if (e.position > u.rawAtEntry[e.index] + kResyncFrames && result.tooFarAhead++ == 0)
+				result.firstTooFarAhead =
+					std::to_string(e.position) + " with the raw clock at " + std::to_string(u.rawAtEntry[e.index]);
+			closeCycle();
+			++result.cycles;
+			cycleU = e;
+			cycleB.reset();
+			cycleD = false;
+		} else if (!cycleU) {
+			continue; // recording began inside a cycle, after U's entry
+		} else if (e.which == 1) {
+			if (cycleB) broke(e, "B twice in one cycle");
+			else if (e.sequence != cycleU->sequence + 1) broke(e, "not straight after U");
+			else if (e.position != cycleU->position) broke(e, "not at U's position");
+			cycleB = e;
 		} else {
-			result.partial.push_back(it->first);
-			result.partialWhich.push_back(std::string(eu ? "U" : "-") + (eb ? "B" : "-") + (ed ? "D" : "-"));
+			if (!cycleB) broke(e, "D without B in its cycle");
+			else if (cycleD) broke(e, "D twice in one cycle");
+			else if (e.sequence != cycleB->sequence + 1) broke(e, "not straight after B");
+			else if (e.position != cycleB->position) broke(e, "not at B's position");
+			cycleD = true;
 		}
 	}
+	closeCycle();
 	return result;
 }
 
@@ -917,55 +974,55 @@ TEST_CASE(
 	REQUIRE(finished);
 	REQUIRE(waiter.until([&] { return stormRan.load() == stormPosts.load(); }));
 
-	// One clock.position per cycle for all three, and U entered before B, B before D, in every cycle all three ran. A
-	// cycle the data thread cannot finish before the driver's next one (the graph's xrun: a loaded host, or the dummy
-	// driver resyncing after a stall) is abandoned part way: only a prefix of the graph in link order runs it (U, or U
-	// and B), its audio never reaches the rest, and the next cycle carries a later position. So such a cycle is counted
-	// and printed, and fails only if a node ran it without every node upstream of it ("-B-", "--D", "U-D", "-BD"). The
-	// first node may also run a cycle at a position a resync then takes back (its own positions stepping back): that
-	// fails only away from a jump B saw.
-	const Compared compared = compare(upCode.log, blockCode.log, downCode.log);
-	std::size_t notPrefix = 0;
-	std::string partials;
-	for (std::size_t i = 0; i < compared.partial.size(); ++i) {
-		const bool near = blockCode.nearJump(compared.partial[i], 4);
-		if (compared.partialWhich[i] != "U--" && compared.partialWhich[i] != "UB-") ++notPrefix;
-		partials += std::to_string(compared.partial[i]) + ":" + compared.partialWhich[i] + (near ? "(resync) " : " ");
-	}
-	std::size_t backwardsAwayFromJump = 0;
-	for (const std::uint64_t at : compared.backwards)
-		if (!blockCode.nearJump(at, 4)) ++backwardsAwayFromJump;
-	INFO("positions not every node ran: " << partials);
-	CHECK(backwardsAwayFromJump == 0);
-	CHECK(compared.common > 0);
-	CHECK(compared.misordered == 0);
-	CHECK(notPrefix == 0);
+	// Every log complete: a cycle dropped from a full log would void what follows.
+	REQUIRE_FALSE(upCode.log.full.load());
+	REQUIRE_FALSE(blockCode.log.full.load());
+	REQUIRE_FALSE(downCode.log.full.load());
+
+	// Cycle by cycle (by entry sequence, never by position): U, B and D see one clock.position in each cycle, entered in
+	// link order. A cycle the data thread cannot finish before the driver starts the next (the graph's xrun: a loaded
+	// host) is abandoned part way: only a prefix of the graph in link order runs it (U, or U and B) and its audio never
+	// reaches the rest. So such a cycle is counted and printed, and fails only if a node ran it without every node
+	// upstream of it straight before, at the same position. Positions may step back: a starved data loop reads the
+	// driver's timer late, so the driver resets clock.position forward to the raw clock (node-driver.c on_timeout, past
+	// resync.ms), but its next timeout is still due at once, and the timeouts it then fires back to back each add a block
+	// until the position is resync.ms ahead of the raw clock, when it resets back to it: the whole graph then runs again
+	// positions it has already run. So a step back is counted, and every cycle fails only if it starts more than
+	// resync.ms ahead of the raw clock, where the driver puts none.
+	const Timeline timeline = readTimeline(upCode, blockCode.log, downCode.log);
+	INFO("first broken cycle: " << timeline.firstBroken);
+	INFO("first cycle too far ahead of the raw clock: " << timeline.firstTooFarAhead);
+	CHECK(timeline.whole > 0);
+	CHECK(timeline.broken == 0);
+	CHECK(timeline.tooFarAhead == 0);
 
 	// Every request taken up once, in order, alternating; takenAt published one cycle before.
 	const auto taken = blockCode.taken();
 	REQUIRE(taken.size() == kS2Requests);
-	std::size_t wrongOrder = 0, notOneCycle = 0, resynced = 0;
+	std::size_t wrongOrder = 0, notOneCycle = 0, late = 0;
 	for (std::size_t i = 0; i < taken.size(); ++i) {
 		if (taken[i].number != i + 1 || taken[i].drive != (i % 2 == 0)) ++wrongOrder;
 		if (taken[i].takenAt != taken[i].publishedAt + kS2Block) ++notOneCycle;
-		if (taken[i].swappedAt != taken[i].takenAt) ++resynced;
+		if (taken[i].swappedAt != taken[i].takenAt) ++late;
 	}
 	CHECK(wrongOrder == 0);
 	CHECK(notOneCycle == 0);
 	CHECK(blockCode.overlaps() == 0);
 
-	// D, cycle by cycle: the ramp from exactly each drive's swap to exactly the cycle before the next silence's swap,
-	// zeros elsewhere: no gap, no trailing zero. And D saw takenAt in the very cycle B published it.
+	// D, cycle by cycle in the order the cycles ran: the ramp from exactly the cycle of each drive's swap to exactly the
+	// cycle before the next silence's swap, zeros elsewhere: no gap, no trailing zero. A swap is in force from B's cycle
+	// that made it, so for D from the cycle whose entry follows that one; comparing positions instead would put a swap
+	// made after a step back in force in cycles that ran before it. And D saw takenAt in the very cycle B published it
+	// (when D ran that cycle).
 	const std::size_t nd = downCode.log.count.load();
-	std::size_t wrongCycles = 0, otherCycles = 0, rampCycles = 0, wrongFrames = 0, missedPublish = 0;
+	std::size_t wrongCycles = 0, otherCycles = 0, rampCycles = 0, wrongFrames = 0, missedPublish = 0, publishSeen = 0;
 	std::string firstWrong;
 	std::size_t next = 0; // the first taken entry not yet in force
 	bool driving = false;
-	std::map<std::uint64_t, std::size_t> publishedAt;
-	for (std::size_t i = 0; i < taken.size(); ++i) publishedAt[taken[i].publishedAt] = i;
 	for (std::size_t i = 0; i < nd; ++i) {
 		const std::uint64_t at = downCode.log.position[i];
-		while (next < taken.size() && taken[next].swappedAt <= at) driving = taken[next++].drive;
+		const std::uint64_t sequence = downCode.log.entry[i];
+		while (next < taken.size() && taken[next].swappedSeq < sequence) driving = taken[next++].drive;
 		if (downCode.frames[i] != kS2Block) ++wrongFrames;
 		const auto heard = downCode.heard[i];
 		if (heard == Downstream::Heard::ramp) ++rampCycles;
@@ -980,19 +1037,25 @@ TEST_CASE(
 			}
 			++wrongCycles;
 		}
-		if (const auto found = publishedAt.find(at);
-		    found != publishedAt.end() && downCode.takenAtSeen[i] != taken[found->second].takenAt)
-			++missedPublish;
 	}
-	std::printf("S2: %zu requests taken up in %.1f s over %zu cycles of D (%zu with the ramp); %zu take-ups after a "
+	for (const auto& request : taken) {
+		const auto first = downCode.log.entry.begin();
+		const auto found = std::lower_bound(first, first + static_cast<std::ptrdiff_t>(nd), request.publishedSeq + 1);
+		if (found == first + static_cast<std::ptrdiff_t>(nd) || *found != request.publishedSeq + 1) continue;
+		++publishSeen;
+		if (downCode.takenAtSeen[static_cast<std::size_t>(found - first)] != request.takenAt) ++missedPublish;
+	}
+	std::printf("S2: %zu requests taken up in %.1f s over %zu cycles of D (%zu with the ramp); %zu take-ups late by a "
 	            "jump; B saw %" PRIu64 " position jumps (%" PRIu64 " backwards); %" PRIu64
-	            " storm invokes (%.0f a second, %" PRIu64 " refused); %zu cycles every node ran, %zu misordered; %zu "
-	            "positions not every node ran (%s), %zu steps back; %zu D cycles wrong (%zu neither zeros nor the "
-	            "ramp)\n",
-	            taken.size(), seconds, nd, rampCycles, resynced, blockCode.jumps(), blockCode.backwardJumps(),
+	            " storm invokes (%.0f a second, %" PRIu64 " refused); %zu cycles started, %zu run by every node, %zu "
+	            "cut short after U and %zu after B, %zu broken; %zu steps back (largest %" PRIu64
+	            " frames; %zu cycles too far ahead of the raw clock); D saw %zu publications, %zu missed; %zu D cycles "
+	            "wrong (%zu "
+	            "neither zeros nor the ramp)\n",
+	            taken.size(), seconds, nd, rampCycles, late, blockCode.jumps(), blockCode.backwardJumps(),
 	            stormPosts.load(), static_cast<double>(stormPosts.load()) / seconds, stormRefused.load(),
-	            compared.common, compared.misordered, compared.partial.size(), partials.c_str(),
-	            compared.backwards.size(), wrongCycles, otherCycles);
+	            timeline.cycles, timeline.whole, timeline.onlyU, timeline.onlyUB, timeline.broken, timeline.stepsBack,
+	            timeline.largestBack, timeline.tooFarAhead, publishSeen, missedPublish, wrongCycles, otherCycles);
 	INFO(firstWrong);
 	CHECK(refusedPosts == 0);
 	CHECK(stormRefused.load() == 0);
