@@ -1664,7 +1664,8 @@ public:
 		std::chrono::milliseconds length;
 	};
 	StallingLog(Waiter& waiter, std::size_t capacity, std::vector<Stall> stalls)
-		: waiter_(waiter), position_(capacity), startRawNs_(capacity), stalls_(std::move(stalls)) {}
+		: waiter_(waiter), position_(capacity), startRawNs_(capacity), rateDiff_(capacity), stalls_(std::move(stalls)) {
+	}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
 	             const ear::GraphCycle& cycle) noexcept override {
@@ -1673,6 +1674,7 @@ public:
 		if (at < position_.size()) {
 			position_[at] = cycle.position;
 			startRawNs_[at] = cycle.startRawNs;
+			rateDiff_[at] = cycle.rateDiff;
 			count_.store(at + 1, std::memory_order_release);
 			for (const Stall& stall : stalls_) {
 				if (stall.atCycle == at) std::this_thread::sleep_for(stall.length); // the data thread stalls
@@ -1695,6 +1697,7 @@ public:
 	}
 	std::vector<std::uint64_t> position_;
 	std::vector<std::int64_t> startRawNs_;
+	std::vector<double> rateDiff_;
 
 private:
 	Waiter& waiter_;
@@ -1709,8 +1712,9 @@ private:
 // time barely moves, stepping the position back by the next reset, and leave it up to resync.ms ahead of the raw clock.
 // There its error is clamped to 1 ms a cycle, and the loop slews the whole graph by hundreds of ppm for tens of seconds
 // to work it off (-230 ppm 9 s after one 20 ms stall). engine.conf sets resync.ms beyond any stall, so the driver never
-// resets: it catches up on its own timer, by whole blocks, and the phase it held against the raw clock is kept
-// (docs/design/node-framework.md section 10, "Slice 7 as built").
+// resets: it catches up on its own timer, by whole blocks, and after stalls of up to a few seconds the phase it held
+// against the raw clock is kept (docs/design/node-framework.md section 10, "Slice 7 as built"; longer pauses: the next
+// test).
 TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up by whole blocks, never steps back, and "
           "keeps its phase to the raw clock",
           "[port_blocks][clock]") {
@@ -1747,4 +1751,43 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up by 
 		                 << " frames before, " << after << " after");
 		CHECK(std::abs(after - before) < 48.0); // 1 ms: the driver's own error clamp, well under one block
 	}
+}
+
+// A stall of seconds is caught up the same way, by a burst of about half its timeouts' blocks, but the loop is fed its
+// clamped 1 ms error at every one of the burst's timeouts, so it winds up and slews the graph for a while after (the
+// limit of resync.ms beyond any stall; docs/design/node-framework.md section 10). For a 3 s stall the simulated loop
+// (node-driver.c's DLL, cycle for cycle) is within 80 ppm of the raw clock from 5 s on, and the real one measured 38 to 95
+// ppm in ten runs; 150 ppm bounds it here.
+TEST_CASE(
+	"After a 3 s data-thread stall the internal clock never steps back, and 5 s on runs within 150 ppm of the raw "
+	"clock",
+	"[port_blocks][clock]") {
+	using Stall = StallingLog::Stall;
+	constexpr std::size_t stallAt = 200;
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingLog log(waiter, 2400, {Stall{stallAt, 3000ms}});
+	BlockEvents events(waiter);
+	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &log));
+	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 60s));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+
+	std::size_t back = 0;
+	for (std::size_t i = 1; i < log.capacity(); ++i) back += log.position_[i] <= log.position_[i - 1] ? 1 : 0;
+	CHECK(back == 0);
+	// From 5 s after the stall ended to the log's end.
+	const std::int64_t stallEndNs = log.startRawNs_[stallAt] + 3'000'000'000;
+	double worstPpm = 0.0;
+	std::size_t judged = 0;
+	for (std::size_t i = stallAt + 1; i < log.capacity(); ++i) {
+		if (log.startRawNs_[i] < stallEndNs + 5'000'000'000) continue;
+		++judged;
+		worstPpm = std::max(worstPpm, std::abs(log.rateDiff_[i] - 1.0) * 1e6);
+	}
+	INFO("judged " << judged << " cycles, worst rate " << worstPpm << " ppm off the raw clock");
+	REQUIRE(judged > 100);
+	CHECK(worstPpm < 150.0);
 }

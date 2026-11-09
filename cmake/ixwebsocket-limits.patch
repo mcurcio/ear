@@ -130,12 +130,14 @@ index 1070836f..cbf2a481 100644
  
          std::atomic<bool> _stop;
 diff --git a/ixwebsocket/IXWebSocketServer.cpp b/ixwebsocket/IXWebSocketServer.cpp
-index 70f9568f..82a6b742 100644
+index 70f9568f..d5a0f4a0 100644
 --- a/ixwebsocket/IXWebSocketServer.cpp
 +++ b/ixwebsocket/IXWebSocketServer.cpp
-@@ -13,10 +13,102 @@
+@@ -12,11 +12,106 @@
+ #include "IXWebSocket.h"
  #include "IXWebSocketTransport.h"
  #include <future>
++#include <map>
  #include <sstream>
 +#include <poll.h>
  #include <string.h>
@@ -162,22 +164,22 @@ index 70f9568f..82a6b742 100644
 +        // thread to see it before it leaves the list, and on a loaded host that can take longer
 +        // than an honest server takes to come back, which its own closed sockets must not refuse.
 +        // The kernel knows at once; every socket's thread still counts against the second bound.
++        // A socket that gave way (the shutdown below) shows POLLHUP, so it leaves its address's
++        // count at once too. Each socket is polled once an admission, under the lock.
 +        std::lock_guard<std::mutex> lock(_clientsMutex);
 +        const std::string& address = connectionState->getRemoteIp();
-+        const auto open = [](const AdmittedSocket& socket)
++        std::map<std::string, size_t> heldBy;
++        for (const auto& socket : _admittedSockets)
 +        {
 +            pollfd ends {socket.probeFd, POLLRDHUP, 0};
-+            return ::poll(&ends, 1, 0) == 0 ||
-+                   (ends.revents & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0;
-+        };
-+        const auto held = [this, &open](const std::string& ip)
++            const bool open = ::poll(&ends, 1, 0) == 0 ||
++                              (ends.revents & (POLLRDHUP | POLLHUP | POLLERR | POLLNVAL)) == 0;
++            if (open) ++heldBy[socket.state->getRemoteIp()];
++        }
++        const auto held = [&heldBy](const std::string& ip)
 +        {
-+            size_t count = 0;
-+            for (const auto& socket : _admittedSockets)
-+            {
-+                if (socket.state->getRemoteIp() == ip && open(socket)) ++count;
-+            }
-+            return count;
++            const auto it = heldBy.find(ip);
++            return it == heldBy.end() ? size_t(0) : it->second;
 +        };
 +        const bool ownShareFull = held(address) >= kSocketsPerAddress;
 +        if (ownShareFull || _admittedSockets.size() >= getMaxConnections())
@@ -205,6 +207,8 @@ index 70f9568f..82a6b742 100644
 +        }
 +        const int upgradeFd = ::dup(fd);
 +        if (upgradeFd < 0) return false;
++        // The probe's dup holds the socket open after its own thread closes it, so the FIN of our
++        // own close waits for settleUpgrade(forget) at the end of that thread.
 +        const int probeFd = ::dup(fd);
 +        if (probeFd < 0)
 +        {
@@ -236,7 +240,7 @@ index 70f9568f..82a6b742 100644
      const int WebSocketServer::kDefaultHandShakeTimeoutSecs(3); // 3 seconds
      const bool WebSocketServer::kDefaultEnablePong(true);
      const int WebSocketServer::kPingIntervalSeconds(-1); // disable heartbeat
-@@ -87,6 +179,7 @@ namespace ix
+@@ -87,6 +182,7 @@ namespace ix
      {
          handleUpgrade(std::move(socket), connectionState);
  
@@ -244,7 +248,7 @@ index 70f9568f..82a6b742 100644
          connectionState->setTerminated();
      }
  
-@@ -152,6 +245,7 @@ namespace ix
+@@ -152,6 +248,7 @@ namespace ix
                                                   _enablePerMessageDeflate,
                                                   request,
                                                   _sendTimeoutSeconds);

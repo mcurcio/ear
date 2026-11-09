@@ -134,10 +134,19 @@ the next reset steps the position *back* by up to about 440 frames, and the burs
 bandwidth, slews the whole graph by hundreds of ppm for tens of seconds to work it off (measured:
 +190 frames and -230 ppm 9 s after one 20 ms stall; a sendspin stream then interpolates frames,
 and a reset's forward jump is any number of frames, not whole blocks). Without the reset the
-driver catches up on its own timer: the blocks see forward jumps of whole blocks (every other
-cycle of the burst; each an xrun), the position never steps back, and the phase to the raw clock
-is kept to within a frame (the test "After data-thread stalls past 10 ms ...", and S2's
-`stepsBack == 0`). PipeWire's non-tracking driver never resets either. A cycle is still told
+driver catches up on its own timer: the blocks run about every other timeout of the burst, and
+each cycle they run skips one block; after stalls of up to a few seconds the position never
+steps back and the phase to the raw clock is kept to within a frame (the test "After data-thread
+stalls past 10 ms ...", and S2's `stepsBack == 0`). PipeWire's non-tracking driver never resets
+either. **The limit:** the catch-up burst after any pause is inherent to `node-driver.c` whatever
+`resync.ms` is (about 187 timeouts a second of pause at 48000/256), and each feeds the loop its
+clamped 1 ms error, so a pause of tens of seconds or more winds it up and slews the graph by 0.1
+to 0.6 % for minutes (simulated: 30 s, +287/-429 ppm for about 60 s; 120 s, 1700 ppm at peak).
+A 3 s one stays within 150 ppm from 5 s on ("After a 3 s data-thread stall ..."). The default is
+somewhat better only for pauses of minutes; a large finite value is worse than both (it resets
+mid-burst and steps back again and again). The real fix is upstream: a reset that re-arms
+`next_time` from now and calls `spa_dll_init` (`docs/design/node-framework.md`, "Slice 7 as
+built"). A cycle is still told
 apart by entry order where it matters, not by position (node-lifecycle.md 10.5; S2 in
 `spikes_test.cpp`). Its `clock.name` is
 `clock.system.monotonic-raw` (`internalClockName`).
@@ -150,7 +159,7 @@ difference added to `clock.nsec`, so a late wake cancels out), `rateDiff` (`cloc
 `driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`), `xruns` and
 `discontinuity`. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA
 node), so the block counts cycles that start ahead of where the last one ended on the same driver
-(the blocks a stall's catching up skipped); `discontinuity` marks the block's first cycle, a new code's first
+(each cycle run during a stall's catch-up skips one block); `discontinuity` marks the block's first cycle, a new code's first
 cycle, a new driver, any position jump (a stall's catching up), and the cycle after one too large for
 the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
 `node-driver.c` does. `downstream` is the latency downstream of each output (below). The dummy's
@@ -548,7 +557,8 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    whitelist, and module-rtp-source: its arguments, whether a failed bind is now reported, the
    SSRC lock, the resync on a sequence mismatch, and the `rtp.receiving` property. And
    `node-driver.c`'s tracking mode: whether `resync.ms` is still read, and whether a reset now
-   moves its timer too (then the default could come back; the stall test says either way).
+   re-arms `next_time` from now and calls `spa_dll_init` (then the default could come back, and
+   long pauses would stop slewing the graph; the two stall tests say either way).
 3. Check each module named in `engine.conf`, and `libpipewire-module-rtp-source`, still exists:
    `scripts/dev.sh bash -c 'ls /usr/lib/*/pipewire-0.3/'`.
 4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover the engine facts (`[rtp]` the
