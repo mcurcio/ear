@@ -5,7 +5,9 @@
 #include "ear/pipewire/sources.hpp"
 
 #include <atomic>
+#include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <chrono>
 #include <system_error>
 
@@ -17,6 +19,14 @@
 
 namespace ear::pipewire {
 namespace {
+
+/// The longest a single wait is taken to last: a patience of milliseconds::max() would overflow now() + patience.
+constexpr std::chrono::milliseconds longestPatience = std::chrono::hours(24 * 365);
+
+/// When a wait of `patience` from now ends, the patience clamped to [0, a year].
+std::chrono::steady_clock::time_point deadlineAfter(std::chrono::milliseconds patience) noexcept {
+	return std::chrono::steady_clock::now() + std::clamp(patience, std::chrono::milliseconds(0), longestPatience);
+}
 
 /// An eventfd: made non-blocking and close-on-exec, written (one write never blocks: realtime-safe), drained.
 class EventFd {
@@ -41,7 +51,7 @@ public:
 		const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
 		if (left.count() <= 0) return;
 		pollfd ready{fd_, POLLIN, 0};
-		::poll(&ready, 1, static_cast<int>(left.count()));
+		::poll(&ready, 1, static_cast<int>(std::min<std::chrono::milliseconds::rep>(left.count(), INT_MAX)));
 		drain();
 	}
 
@@ -58,7 +68,8 @@ public:
 	int descriptor() const noexcept override { return fd_.fd(); }
 	void answer() noexcept override {
 		fd_.drain();
-		pending_.store(false, std::memory_order_release);
+		// acq_rel: the watcher's look that follows sees what the ring published before it rang.
+		pending_.exchange(false, std::memory_order_acq_rel);
 	}
 
 private:
@@ -75,6 +86,7 @@ public:
 	SourceWriter& writer() noexcept override { return *this; }
 	SourceTap& tap() noexcept override { return ring_; }
 	void stopped() noexcept override { ring_.dropForStop(); }
+	void stopping() noexcept override { ring_.markIdle(); }
 	void close() noexcept override {
 		if (ring_.closed()) return;
 		ring_.close();
@@ -86,7 +98,7 @@ public:
 	// SourceWriter.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
 	                    std::chrono::milliseconds patience) override {
-		const auto until = std::chrono::steady_clock::now() + patience;
+		const auto until = deadlineAfter(patience);
 		for (;;) {
 			if (ring_.closed()) return sleepClosed(until);
 			if (const std::uint32_t accepted = ring_.offer(interleaved, frames); accepted > 0 || frames == 0)
@@ -110,7 +122,7 @@ public:
 		}
 	}
 	void idle(std::chrono::milliseconds patience) override {
-		const auto until = std::chrono::steady_clock::now() + patience;
+		const auto until = deadlineAfter(patience);
 		if (ring_.closed()) {
 			sleepClosed(until);
 			return;

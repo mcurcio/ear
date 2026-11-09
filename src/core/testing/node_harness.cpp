@@ -250,6 +250,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		SourceWriter& writer() noexcept override { return *this; }
 		SourceTap& tap() noexcept override { return rules; }
 		void stopped() noexcept override { rules.dropForStop(); }
+		void stopping() noexcept override { rules.markIdle(); }
 		void close() noexcept override { rules.close(); }
 		std::uint64_t shortfallFrames() const noexcept override { return rules.shortfallFrames(); }
 		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
@@ -517,8 +518,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
 	}
 	/// The playback latency the real block would tell on the input bank whose first port is `firstInput`, likewise:
-	/// what lies beyond each paired output bank is its `beyond` entry or nothing; the least and the most across the
-	/// pairs, plus what the configuration declared on the bank.
+	/// what lies beyond each paired output bank is its `beyond` entry or nothing, plus what the configuration declared
+	/// on that output; the least and the most across the pairs, plus what it declared on the bank itself.
 	Latency toldDownstream(std::size_t firstInput) const {
 		const auto& banks = config->ports().banks();
 		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {
@@ -532,7 +533,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::optional<Latency> downstream;
 		for (const BankPair& pair : plan.pairs) {
 			if (pair.from != found->name) continue;
-			const Latency beyond = entry(plan.beyond, pair.to);
+			const Latency beyondOut = entry(plan.beyond, pair.to);
+			const Latency through = entry(plan.internal, pair.to);
+			const Latency beyond{beyondOut.minFrames + through.minFrames, beyondOut.maxFrames + through.maxFrames};
 			downstream = downstream ? Latency{std::min(downstream->minFrames, beyond.minFrames),
 			                                  std::max(downstream->maxFrames, beyond.maxFrames)}
 			                        : beyond;

@@ -395,11 +395,16 @@ private:
 					spa_latency_info_combine(&told, &upstream);
 				}
 			} else {
-				// Downstream of an input: what lies beyond the paired outputs, plus the run's own.
+				// Downstream of an input: what lies beyond each paired output plus the code's own latency on that output
+				// (a run declares it on the output it lands on, and PipeWire adds a node's process latency both ways),
+				// the most across the pairs; then the run's own on this bank.
 				spa_latency_info_combine_start(&told, SPA_DIRECTION_INPUT);
 				for (const BankPair& pair : plan_.pairs) {
 					if (pair.from != bank.name) continue;
-					const spa_latency_info downstream = combined(pair.to);
+					spa_latency_info downstream = combined(pair.to);
+					const Latency through = internalOf(pair.to);
+					downstream.min_rate += static_cast<std::int32_t>(through.minFrames);
+					downstream.max_rate += static_cast<std::int32_t>(through.maxFrames);
 					spa_latency_info_combine(&told, &downstream);
 				}
 			}

@@ -49,6 +49,8 @@ struct SourceRing::State {
 	std::uint32_t clearsSeen = 0;   // clearWord's count as play() last applied it
 	std::uint32_t gain = 0;         // the fades' level, 0 (silent) to fadeFrames (full): gain / fadeFrames
 	bool clearing = false;          // a clear's fade to zero is not over: new frames wait for it
+	std::uint32_t debt = 0;         // frames the clock skipped that the ring did not hold yet: counted played, and
+									// dropped from what is written next, so the stream keeps to the clock exactly
 	std::vector<float> last;        // the last frame played, which an underrun or a clear decays from
 	std::vector<float> tail;        // a clear's next 5 ms, played faded out; interleaved
 	std::uint32_t tailAt = 0;       // frames of `tail` played
@@ -75,6 +77,7 @@ struct SourceRing::State {
 		drop(stragglers + (tailFrames - tailAt));
 		tailAt = tailFrames = 0;
 		clearing = false;
+		debt = 0;
 		gain = 0;
 		started = false;
 		clearsSeen = static_cast<std::uint32_t>(clearWord.load(std::memory_order_acquire) >> 32U);
@@ -90,6 +93,7 @@ struct SourceRing::State {
 		const auto asked = static_cast<std::uint32_t>(word >> 32U);
 		if (asked == clearsSeen) return;
 		clearsSeen = asked;
+		debt = 0;                  // owed by the stream the clear ends, never by the next one
 		drop(tailFrames - tailAt); // an earlier clear's tail, not played yet
 		tailAt = tailFrames = 0;
 		const auto to = static_cast<std::uint32_t>(word);
@@ -112,25 +116,27 @@ struct SourceRing::State {
 		clearing = true;
 	}
 
-	/// Keeping time: a forward jump of at most the capacity skips that many frames of the stream, counted played (a
-	/// clear's tail first; while a clear fades, the new stream is not skipped). A larger jump, or one back, is a new
-	/// clock. Returns the frames skipped.
+	/// Keeping time: a forward jump of at most the capacity skips that many frames of the stream, counted played: a
+	/// clear's tail first, then what the ring holds (not while a clear fades), and what it does not hold yet is a debt,
+	/// dropped from the frames written next. A larger jump, or one back, is a new clock. Returns the frames skipped.
 	std::uint32_t keepTime(const SourceCycle& cycle) noexcept {
 		std::uint32_t skipped = 0;
 		if (started && cycle.position > expected && cycle.position - expected <= ring.capacityFrames()) {
-			auto gap = static_cast<std::uint32_t>(cycle.position - expected);
+			// The whole gap is counted played, whatever of it the ring holds now.
+			skipped = static_cast<std::uint32_t>(cycle.position - expected);
+			std::uint32_t gap = skipped;
 			const std::uint32_t fromTail = std::min(gap, tailFrames - tailAt);
 			if (fromTail > 0) {
 				tailAt += fromTail;
 				std::copy_n(tail.begin() + static_cast<std::ptrdiff_t>(tailAt - 1) * channels, channels, last.begin());
 			}
 			gap -= fromTail;
-			skipped = fromTail;
 			if (!clearing && gap > 0) {
 				const std::uint32_t fromRing = ring.skip(gap);
-				skipped += fromRing;
+				gap -= fromRing;
 				consumedRing += fromRing;
 			}
+			debt = std::min(debt + gap, ring.capacityFrames());
 		}
 		started = true;
 		expected = cycle.position + cycle.frames;
@@ -189,6 +195,12 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 	if (s.tailAt == s.tailFrames && s.gain == 0) s.clearing = false;
 	// The ring's frames, fading in from the level the last cycle left.
 	while (i < frames && !s.clearing) {
+		if (s.debt > 0) { // the frames the clock already passed: dropped, counted played when skipped
+			const std::uint32_t paid = s.ring.skip(s.debt);
+			s.debt -= paid;
+			s.consumedRing += paid;
+			if (s.debt > 0) break; // the ring is dry
+		}
 		const std::span<const float> run = s.ring.readSpan();
 		const std::uint32_t got = std::min(static_cast<std::uint32_t>(run.size() / s.channels), frames - i);
 		if (got == 0) break;

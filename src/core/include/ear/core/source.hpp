@@ -18,11 +18,15 @@ namespace ear {
 
 // ---- What a type writes against ----
 
-/// How much a source's ring holds, in frames at the graph frequency. The channel count is its bank's size. It is also
-/// the most the source declares upstream of its bank: Latency{0, frames}.
+/// How much a source's ring holds, in frames at the graph frequency: 1 to maxSourceFrames (anything else is a rule
+/// broken, failing the node start-failed). The channel count is its bank's size. It is also the most the source
+/// declares upstream of its bank: Latency{0, frames} (rounded up to a power of two).
 struct SourceShape {
 	std::uint32_t frames;
 };
+/// The most frames a source's ring may hold: 2^24, about 5.8 minutes at 48 kHz, far past any network buffer, and small
+/// enough that the ring, its latency and its positions stay sane.
+inline constexpr std::uint32_t maxSourceFrames = std::uint32_t{1} << 24U;
 
 /// What a source has played (docs/writing-a-node-type.md#sources), published after each cycle that played or skipped
 /// frames.
@@ -131,6 +135,10 @@ public:
 	/// Main thread, once a stop's silence completed (no cycle plays it until the next drive): clears the ring, the
 	/// frames counted dropped, so a start never plays audio written before it. A writer then waits for room or idles.
 	virtual void stopped() noexcept = 0;
+	/// Main thread, when a stop or a teardown begins (before the type's stop() and the fade): the writer counts as idle,
+	/// so the fade and the silence that follow are no shortfall when the type's stop() stops its writer; its next write
+	/// ends the idle.
+	virtual void stopping() noexcept = 0;
 	/// Main thread, at teardown step 1: closes the writer (SourceWriter::write's closing rules). Idempotent.
 	virtual void close() noexcept = 0;
 	/// Any thread: frames played as zeros while the writer was not idle, since the source was made.

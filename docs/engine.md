@@ -280,9 +280,11 @@ its teardown):
 - An output bank tells upstream (**capture**) latency: what lies beyond the input banks paired with
   it, plus what the configuration declared on it. A sink on the bank stamps its chunks with the
   most of it ([sinks](#sinks)).
-- An input bank tells downstream (**playback**) latency: what lies beyond the output banks paired
-  with it, plus what the configuration declared. A source on the bank dates its `Played` with the
-  most of it ([sources](#sources)).
+- An input bank tells downstream (**playback**) latency: for each output bank paired with it, what
+  lies beyond that output plus what the configuration declared on it (the code's own delay counts
+  both ways, as PipeWire adds a node's process latency to both), the most across the pairs; plus
+  what was declared on the input bank itself. A source on the bank dates its `Played` with the most
+  of it ([sources](#sources)).
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. A configuration declares

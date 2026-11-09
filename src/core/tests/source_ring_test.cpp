@@ -276,8 +276,54 @@ TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it, ref
 	CHECK(ring.played().totalFrames == 16);
 	REQUIRE(offer(ring, 100, 16) == 16);
 	ring.play(bank.view(), cycleAt(5016 + 30, 16)); // the time kept from the cycle above: 30 frames skipped
-	CHECK(ring.played().totalFrames == 16 + 16);    // only what the ring held could be skipped: all of it
+	CHECK(ring.played().totalFrames == 16 + 30);    // all 30 counted: 16 the ring held, 14 owed
 	CHECK(ring.droppedFrames() == 24);
+}
+
+TEST_CASE("A jump past what a writer that fell behind has written is owed: the next frames written are dropped, "
+          "counted played, so the stream keeps to the clock",
+          "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, kRate, signals);
+	REQUIRE(offer(ring, 0, 21) == 21);
+	Bank bank(1, 16);
+	ring.play(bank.view(), cycleAt(0, 16)); // 5 frames left
+	ring.play(bank.view(), cycleAt(16 + 20, 16));
+	// 20 lost: the 5 held skipped, 15 owed; all 20 counted at once; nothing to play.
+	CHECK(ring.played().totalFrames == 16 + 20);
+	for (std::uint32_t i = kFade; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
+	// The writer catches up from where it was: stream frames 21..35 are the debt, dropped; 36 on play, at the clock.
+	REQUIRE(offer(ring, 21, 40) == 40);
+	ring.play(bank.view(), cycleAt(52, 16));
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(36 + i), std::min(i, kFade)));
+	// The clock's 68 frames since the first position, but for the dry cycle's 16 zeros (a shortfall, not played).
+	CHECK(ring.played().totalFrames == 68 - 16);
+	CHECK(ring.shortfallFrames() == 16);
+	CHECK(ring.droppedFrames() == 0); // owed frames are played, not dropped
+	// A clear forgets a debt: the next stream owes nothing.
+	ring.play(bank.view(), cycleAt(68 + 30, 16)); // 30 lost, the ring holds 9: 21 owed
+	CHECK(ring.played().totalFrames == 52 + 30);
+	ring.clear();
+	REQUIRE(offer(ring, 500, 16) == 16);
+	ring.play(bank.view(), cycleAt(114, 16));
+	CHECK(bank.data[0][kFade] == faded(streamAt(500 + kFade), kFade)); // nothing of 500.. was dropped
+}
+
+TEST_CASE("A jump during a clear's fade skips the tail, and the rest is owed by the new stream", "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, kRate, signals);
+	REQUIRE(offer(ring, 0, 40) == 40);
+	Bank bank(1, 16);
+	ring.play(bank.view(), cycleAt(0, 16));
+	ring.clear();
+	REQUIRE(offer(ring, 1000, 40) == 40);
+	// 10 lost: the tail's 5 frames (16..20) skipped, 5 owed by the new stream.
+	ring.play(bank.view(), cycleAt(16 + 10, 16));
+	for (std::uint32_t i = 0; i < kFade; ++i) CHECK(bank.data[0][i] == faded(streamAt(20), kFade - i)); // the decay
+	for (std::uint32_t i = kFade; i < 16; ++i)
+		CHECK(bank.data[0][i] == faded(streamAt(1005 + i - kFade), std::min(i - kFade, kFade)));
+	CHECK(ring.played().totalFrames == 16 + 10 + 11);
+	CHECK(ring.played().totalFrames == 26 + 16 - kFade); // on the clock, but for the decay's frames
 }
 
 TEST_CASE("Played is dated by the cycle's start, the frames played and the most latency downstream", "[source_ring]") {

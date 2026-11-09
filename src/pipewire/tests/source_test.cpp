@@ -174,6 +174,36 @@ TEST_CASE("A close wakes a waiting write at once, and a write or idle after it s
 	CHECK(idled >= 50ms);
 }
 
+TEST_CASE("A write or an idle waiting with a patience of milliseconds::max() is woken by a close at once, without "
+          "spinning",
+          "[source]") {
+	EventSources sources;
+	for (const bool idling : {false, true}) {
+		INFO((idling ? "idle" : "write"));
+		auto source = sources.make("rx", "from_writer", 1, 64, kRate);
+		SourceWriter& writer = source->writer();
+		REQUIRE(writer.write(ramp(0, 64), 64, 0ms) == 64);
+		std::uint32_t accepted = ~0U;
+		std::int64_t cpuNs = 0;
+		Clock::duration took{};
+		std::thread waiting([&] {
+			const std::int64_t cpuBefore = threadCpuNs();
+			const auto began = Clock::now();
+			if (idling) writer.idle(std::chrono::milliseconds::max());
+			else accepted = writer.write(ramp(64, 16), 16, std::chrono::milliseconds::max());
+			took = Clock::now() - began;
+			cpuNs = threadCpuNs() - cpuBefore;
+		});
+		std::this_thread::sleep_for(200ms); // it waits meanwhile, its deadline a year away
+		source->close();
+		waiting.join();
+		if (!idling) CHECK(accepted == 0);
+		CHECK(took >= 150ms);
+		CHECK(took < 5s);
+		CHECK(cpuNs < 20'000'000);
+	}
+}
+
 TEST_CASE("A source's played wake rings once until answered, and Played says what played", "[source]") {
 	EventSources sources;
 	auto source = sources.make("rx", "from_writer", 1, 64, kRate);
@@ -373,7 +403,21 @@ struct HeardCycle {
 	float first;           // the cycle's first frame
 };
 
-/// D: listens to rx's output.
+/// What a node after rx heard of one cycle at `position`, checked against the source's ramp from rx's first position on.
+HeardCycle hear(const SourceCode& code, std::uint64_t position, const float* in, std::uint32_t frames) noexcept {
+	constexpr std::uint32_t kFadeFrames = kRate * 5 / 1000;
+	const std::uint64_t first = code.firstPosition.load(std::memory_order_relaxed);
+	HeardCycle heard{position, 0, 0, in[0]};
+	for (std::uint32_t i = 0; i < frames; ++i) {
+		const std::uint64_t at = position + i;
+		if (at < first + kFadeFrames) continue;
+		++heard.checked;
+		if (in[i] != rampAt(at - first)) ++heard.wrong;
+	}
+	return heard;
+}
+
+/// D: a probe listening to rx's output.
 class Listener final : public ProbeCode {
 public:
 	Listener(Waiter& waiter, const SourceCode& code, std::size_t capacity)
@@ -382,17 +426,31 @@ public:
 	           std::uint32_t frames) noexcept override {
 		waiter_.wake();
 		if (!code_.started.load(std::memory_order_acquire)) return;
-		const std::uint64_t first = code_.firstPosition.load(std::memory_order_relaxed);
-		HeardCycle heard{clock.position, 0, 0, inputs[0][0]};
-		for (std::uint32_t i = 0; i < frames; ++i) {
-			const std::uint64_t at = clock.position + i;
-			if (at < first + kFadeFrames) continue;
-			++heard.checked;
-			if (inputs[0][i] != rampAt(at - first)) ++heard.wrong;
-		}
-		log.add(heard);
+		log.add(hear(code_, clock.position, inputs[0], frames));
 	}
-	static constexpr std::uint32_t kFadeFrames = kRate * 5 / 1000;
+
+private:
+	Waiter& waiter_;
+	const SourceCode& code_;
+
+public:
+	CycleLog<HeardCycle> log;
+};
+
+/// D as a block: listens to rx's output on its input bank `in`, whose playback latency the test declares, so rx hears
+/// it from a peer as it would a following card's buffer.
+class ListeningCode final : public AudioCode {
+public:
+	ListeningCode(Waiter& waiter, const SourceCode& code, std::size_t capacity)
+		: waiter_(waiter), code_(code), log(capacity) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
+	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+		waiter_.wake();
+		if (!code_.started.load(std::memory_order_acquire)) return;
+		log.add(hear(code_, cycle.position, inputs[0].data(), frames));
+	}
+	void release() noexcept override {}
 
 private:
 	Waiter& waiter_;
@@ -462,7 +520,7 @@ private:
 } // namespace
 
 TEST_CASE("A bound source plays its ramp into its bank before the code, reaching the public output in the same cycle, "
-          "dated by the latency the block tells on its bank, and a silence unbinds it",
+          "dated by the latency downstream of its paired output and the code's own, and a silence unbinds it",
           "[source][blocks]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
@@ -472,17 +530,19 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	EventSources sources;
 	auto source = sources.make("rx", "from_writer", 1, 8192, kRate);
 	SourceCode code(waiter, source->writer(), 4000);
-	Listener listenerCode(waiter, code, 4000);
-	BlockEvents events(waiter);
+	ListeningCode listening(waiter, code, 4000);
+	BlockEvents events(waiter), dstEvents(waiter);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
-	Probe listener(*engine, waiter, "listener", 1, 0, listenerCode);
-	REQUIRE(wiring.link(waiter, {"rx", "out.1"}, {"listener", "in.1"}));
-	REQUIRE(waiter.until([&] { return events.isReady && listener.streaming(); }));
+	// The node after rx tells 960 frames of playback latency on its input, as a card's buffer would be told.
+	auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, dstEvents);
+	dst->carryLatency(LatencyPlan{{}, {{"in", Latency{0, 960}}}, {}});
+	REQUIRE(waiter.until([&] { return events.isReady && dstEvents.isReady; }));
+	REQUIRE(ear::testing::driveNow(*dst, &listening));
+	REQUIRE(wiring.link(waiter, {"rx", "out.1"}, {"dst", "in.1"}));
 	RampWriter writer(*source, waiter);
 	REQUIRE(waiter.until([&] { return writer.written.load() >= 8192; }));
-	// What the block tells on from_writer: what lies beyond its paired output (the listener reports nothing), plus 4800
-	// frames the plan declares on the bank itself: the source's Played is dated by it.
-	block->carryLatency(LatencyPlan{{{"from_writer", "out"}}, {{"from_writer", Latency{0, 4800}}}, {}});
+	// The code's own latency, declared as a type does, on the output it lands on: 4800 frames.
+	block->carryLatency(LatencyPlan{{{"from_writer", "out"}}, {{"out", Latency{0, 4800}}}, {}});
 	const std::vector<SourceBinding> bound{SourceBinding{&source->tap(), kInside, 1}};
 	bool driven = false;
 	block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {
@@ -490,20 +550,23 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		waiter.wake();
 	});
 	REQUIRE(waiter.until([&] { return driven; }));
-	REQUIRE(waiter.until([&] { return code.log.count() >= 200 && listenerCode.log.count() >= 200; }, 10s));
+	// Dated by the cycle's start, the frames it played, dst's 960 beyond `out` and the code's 4800 on it.
+	const auto heardAt = [](const CodeCycle& cycle, std::uint32_t downstream) {
+		return cycle.startRawNs + static_cast<std::int64_t>(cycle.frames + downstream) * 1'000'000'000 / kRate;
+	};
+	const auto dated = [&] {
+		const auto cycles = code.log.entries();
+		return !cycles.empty() && cycles.back().played.heardRawNs == heardAt(cycles.back(), 960 + 4800);
+	};
+	REQUIRE(waiter.until(dated)); // once dst's latency reached rx
+	const std::size_t datedFrom = code.log.count() - 1;
+	REQUIRE(waiter.until([&] { return code.log.count() >= datedFrom + 200 && listening.log.count() >= 200; }, 10s));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
 	const Played stopped = source->writer().played();
-	const std::size_t heardBefore = listenerCode.log.count();
-	REQUIRE(waiter.until([&] { return listenerCode.log.count() >= heardBefore + 20; }));
+	const std::size_t heardBefore = listening.log.count();
+	REQUIRE(waiter.until([&] { return listening.log.count() >= heardBefore + 20; }));
 	CHECK(source->writer().played() == stopped); // unbound: the block plays it no more
-	const auto heard = listenerCode.log.entries();
-	std::size_t silent = 0;
-	for (const HeardCycle& cycle : heard)
-		if (cycle.position > code.log.entries().back().position) {
-			CHECK(cycle.first == 0.0F); // a cycle the code did not run
-			++silent;
-		}
-	CHECK(silent >= 20);
+	REQUIRE(ear::testing::driveNow(*dst, nullptr));
 	source->close();
 
 	const auto cycles = code.log.entries();
@@ -515,19 +578,26 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		INFO("cycle " << n << " at " << cycles[n].position);
 		// Played keeps to the clock: every frame since the first position is counted, played or skipped.
 		CHECK(cycles[n].played.totalFrames == cycles[n].position + cycles[n].frames - first);
-		// Dated: the cycle's start, the frames it played, and the 4800 frames told downstream of its bank.
-		CHECK(cycles[n].played.heardRawNs ==
-		      cycles[n].startRawNs + static_cast<std::int64_t>(cycles[n].frames + 4800) * 1'000'000'000 / kRate);
+		// Before dst's latency arrived, the code's own alone; from then on, both.
+		if (n >= datedFrom) CHECK(cycles[n].played.heardRawNs == heardAt(cycles[n], 960 + 4800));
+		else
+			CHECK((cycles[n].played.heardRawNs == heardAt(cycles[n], 4800) ||
+			       cycles[n].played.heardRawNs == heardAt(cycles[n], 960 + 4800)));
 		if (n > 0 && cycles[n].position != cycles[n - 1].position + cycles[n - 1].frames) ++jumps;
 	}
-	// The listener heard each position's ramp frame in the cycle the block played it: no offset in position.
-	std::size_t checked = 0, wrong = 0;
-	for (const HeardCycle& cycle : heard) {
-		if (cycle.position > last) break; // the silence's
+	// dst heard each position's ramp frame in the cycle rx played it: no offset in position; and silence after.
+	std::size_t checked = 0, wrong = 0, silent = 0;
+	for (const HeardCycle& cycle : listening.log.entries()) {
+		if (cycle.position > last) {
+			CHECK(cycle.first == 0.0F); // a cycle the code did not run
+			++silent;
+			continue;
+		}
 		checked += cycle.checked;
 		wrong += cycle.wrong;
 	}
 	INFO(jumps << " position jumps in " << cycles.size() << " cycles");
+	CHECK(silent >= 20);
 	CHECK(checked > 100 * kBlock);
 	CHECK(wrong == 0);
 	CHECK(source->shortfallFrames() == 0);

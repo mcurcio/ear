@@ -518,6 +518,17 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
   keeps it).
 - The harness's `CompanionFake` gains `Kind::source` and `SourceShape` in its variant (3b.3 reshapes it as 8.3 says);
   its fake source plays into the test's own input buffers of the bank, so `input(port)` shows what played.
+- After review (2026-11-09):
+  - An input bank's told playback latency adds each paired output's declared (internal) latency, the most across
+    the pairs: `declareLatency` lands on the output, so without it a source's `Played` was dated early by the code's
+    own delay (PipeWire adds a node's process latency both ways). The harness's `toldDownstream` mirrors it.
+  - Keeping time is exact: a jump past what the ring holds leaves a debt, the next frames written dropped up to it,
+    counted played at the jump (a clear forgets the debt of the stream it ends).
+  - `Source::stopping()` (new, main thread): the writer counts as idle from the start of a stop or teardown (before
+    the type's `stop()`, and at the fade), so stopping the writer's thread is no shortfall.
+  - `maxSourceFrames` (2^24, `source.hpp`): `SourceShape::frames` above it is a rule broken, as 0 is.
+  - `EventSources` clamps a patience to a year (no overflow for `milliseconds::max()`) and the poll timeout to
+    `INT_MAX`; `Wake::answer` clears pending with an acq_rel exchange, so the watcher synchronises with the publish.
 - S5's part A on the real block is `source_test.cpp`'s, not `port_block_test.cpp`'s: an upstream probe sleeping 12 ms
   past the quantum every 50th cycle cuts that cycle short after itself (the block never runs it), so the test meets
   cut-short cycles at will instead of by load.

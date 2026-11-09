@@ -128,7 +128,7 @@ optional row read as a plain value does not compile.
 | `cx.rtpReceiver(bank, RtpReceiverRequest{...})` | An RTP receiver joined to an inside input bank, `<node>.rtp` | Inside input banks only |
 | `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer |
-| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `n > 0`; one companion per bank |
+| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `0 < n <= maxSourceFrames` (2^24); one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency, from an input bank to an output bank, in frames | At most once per output bank |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
@@ -230,7 +230,10 @@ engine and the harness both run, so a type's tests and the engine never disagree
 - **It keeps time.** A cycle whose position jumped ahead of the last one's end by at most the
   capacity (the graph lost time: an xrun, a stall caught up, a cycle cut short before the block)
   skips that many frames of the stream and counts them played, so the audio moves on with the
-  graph. Any other jump (back, or more than the capacity) is a new clock: nothing is skipped.
+  graph. What of them the ring does not hold yet (the writer behind, or the new stream during a
+  clear's fade) is owed: the next frames written are dropped up to it, already counted, so
+  `Played` stays on the clock exactly. A clear forgets what the stream it ends owed. Any other jump
+  (back, or more than the capacity) is a new clock: nothing is skipped.
 - **It fades at its edges, with no lookahead**, so the latency it adds stays `[0, capacity]`: audio
   that starts or comes back fades in over 5 ms; at an underrun (the ring dry) it decays from the
   last frame it played to zero over 5 ms; after `clear()` it plays the next 5 ms of what was
@@ -242,16 +245,19 @@ engine and the harness both run, so a type's tests and the engine never disagree
 - **`Played` says what played.** After each cycle that played or skipped frames,
   `writer.played()` gives `Played{totalFrames, heardRawNs}`: the frames played or skipped since the
   source was made, and when the last of them is heard on `CLOCK_MONOTONIC_RAW` (the cycle's start,
-  plus the frames it played, plus the most playback latency the block told on the bank: what lies
-  downstream of the outputs it is paired with, a following card's buffer included, plus what the
-  configuration declared on it). It means the graph's clock moved past those frames, not that a
-  device sounded them: a cycle cut short after the block loses frames it played, and no node can
+  plus the frames it played, plus the most playback latency the block told on the bank: for each
+  output it is paired with, what lies downstream of it, a following card's buffer included, plus
+  what the configuration declared on that output with `declareLatency`). It means the graph's clock
+  moved past those frames, not that a device sounded them: a cycle cut short after the block loses frames it played, and no node can
   see that. `writer.playedWake()` is rung after each new `Played`, at most once until answered: its
   `descriptor()` is readable while rung, and its one watcher calls `answer()` before it looks.
 - **A stop** unbinds the source with the code; once the silence completed, what its ring holds is
   dropped (counted, never played), so a start never plays audio written before it. Meanwhile a
   write waits as at a full ring; the first cycle after the next start lets it go, with no shortfall
-  counted for that cycle.
+  counted for that cycle. When a stop or a teardown begins, before the type's `stop()`, the writer
+  counts as idle, so a `stop()` that stops the writer's thread leaves no shortfall in the fade and
+  the silence. A `stop()` must not call `write` or `idle` itself: they wait, and `stop()` runs on
+  the main loop, which they would sleep.
 - **Closing.** At the teardown's first step the framework closes the writer: a `write` or `idle`
   already waiting returns at once, and one that begins after the close accepts nothing and sleeps
   its whole patience (a library thread calling in a loop never spins). The writer stays valid

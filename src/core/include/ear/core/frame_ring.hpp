@@ -8,7 +8,7 @@
 #include <vector>
 namespace ear {
 /// A lock-free ring of interleaved float frames between one writing thread and one reading thread: the one ring of
-/// the handoff (realtime writer) and of the sendspin node's feed (realtime reader). Its size is a power of two, at
+/// the handoff (realtime writer), of the sendspin node's feed and of every source (SourceRing; realtime reader). Its size is a power of two, at
 /// least the capacity asked for, because its positions count frames and wrap at 2^32. Nothing here locks, allocates
 /// or waits, but the constructor; what a writer or a reader does with no room or nothing to read is its own.
 class FrameRing {
@@ -79,7 +79,9 @@ public:
 		return got;
 	}
 	/// Reader. Discards every frame before `position`, a writePosition() taken earlier; one it has read past already
-	/// discards nothing.
+	/// discards nothing. Another thread may act as the reader (a source's main thread at a stop) only while the
+	/// reading thread cannot run and under a handover that orders the two: the silence's completion, after which
+	/// the next cycle comes only behind the next drive's invoke.
 	void skipTo(std::uint32_t position) noexcept {
 		const std::uint32_t read = read_.load(std::memory_order_relaxed);
 		if (static_cast<std::int32_t>(position - read) > 0) read_.store(position, std::memory_order_release);

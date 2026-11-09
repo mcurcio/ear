@@ -390,6 +390,10 @@ struct TestSource final : Source, SourceWriter, SourceRing::Signals {
 		log.push_back("source " + name + " stopped");
 		ring.dropForStop();
 	}
+	void stopping() noexcept override {
+		log.push_back("source " + name + " stopping");
+		ring.markIdle();
+	}
 	void close() noexcept override {
 		log.push_back("source " + name + " close");
 		ring.close();
@@ -4460,6 +4464,8 @@ TEST_CASE("A source is ready at once, every drive binds it with its capacity bey
 	REQUIRE(f.host.stop("rx"));
 	f.settle();
 	CHECK(f.blocks.modes.sources.back().empty());
+	CHECK(indexOf(f.log, "source rx.cap stopping") < indexOf(f.log, "stop()")); // its writer idle before stop()
+	CHECK(indexOf(f.log, "stop()") < indexOf(f.log, "fade"));
 	CHECK(indexOf(f.log, "drive nothing") < indexOf(f.log, "source rx.cap stopped"));
 	CHECK(f.sources.made.at(0)->droppedFrames() == 300);
 	CHECK(writer->write(frames, 300, std::chrono::milliseconds(0)) == 0);
@@ -4536,6 +4542,11 @@ TEST_CASE("A source on a bank that is no inside input, a second companion on its
 			 return then(cx);
 		 },
 	     "start-failed: configure threw: a source on bank cap holds no frames"},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "cap", maxSourceFrames + 1);
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a source on bank cap holds more than 16777216 frames"},
 		{[&](InstanceContexts& cx) {
 			 source(cx, "cap");
 			 source(cx, "cap");

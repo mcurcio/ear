@@ -472,6 +472,9 @@ struct NodeHost::Impl {
 				const std::string name(bank);
 				const Ports::Bank& found = insideBank(ports_, name, Direction::input, "a source");
 				if (shape.frames == 0) throw std::logic_error("a source on bank " + found.name + " holds no frames");
+				if (shape.frames > maxSourceFrames)
+					throw std::logic_error("a source on bank " + found.name + " holds more than " +
+					                       std::to_string(maxSourceFrames) + " frames");
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
@@ -1239,6 +1242,7 @@ struct NodeHost::Impl {
 		void stopHook() {
 			if (!config_ || !config_->instance) return;
 			if (aggregate_.intent() != lc::Intent::stop) closeSources(); // teardown step 1 begins
+			idleSources();
 			const MainLoopActivity::Scope activity("stop", name_);
 			brokenRule_.reset();
 			std::optional<std::string> what;
@@ -1330,6 +1334,7 @@ struct NodeHost::Impl {
 		/// (100 ms) armed.
 		void fade(std::uint64_t barrier) {
 			if (aggregate_.intent() != lc::Intent::stop) closeSources();
+			idleSources();
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::fade);
 			block_->fadeOut([faded = completion(barrier, &lc::NodeAggregate::faded)]() mutable { faded(0); });
 			arm(barrier, Bound::fade);
@@ -1345,6 +1350,13 @@ struct NodeHost::Impl {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			block_->drive(DriveRequest{nullptr, {}}, completion(barrier, &lc::NodeAggregate::silenced, true));
 			arm(barrier, Bound::barrier);
+		}
+
+		/// A stop or teardown begins: every source's writer counts as idle, so what the type's stop() does to its writer
+		/// leaves no shortfall in the fade and the silence. Idempotent.
+		void idleSources() noexcept {
+			if (!config_) return;
+			for (SourceSlot& slot : config_->sources) slot.source->stopping();
 		}
 
 		/// Teardown step 1: every source's writer closed (a write or idle waiting returns at once). Idempotent.
