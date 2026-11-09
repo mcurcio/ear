@@ -765,7 +765,7 @@ TEST_CASE("The failure code is chosen by the fact: engine-refused always for the
 	const std::vector<std::tuple<Fact, FailureCode, FailureCode>> table{
 		{Fact::engine, engineRefused, engineRefused},
 		{Fact::configureFailed, startFailed, startFailed},
-		{Fact::consumerLost, startFailed, startFailed},
+		{Fact::consumerNeverBegan, startFailed, startFailed},
 		{Fact::recipeFailed, startFailed, startFailed},
 		{Fact::nodeLost, startFailed, lost},
 		{Fact::hookThrew, startFailed, lost},

@@ -4718,22 +4718,26 @@ TEST_CASE("A card that never starts fails its node engine-refused at 10 s naming
 }
 
 TEST_CASE("An RTP receiver that never runs fails its node engine-refused at 5 s naming its UDP port, counted from its "
-          "request even while the block is not ready",
+          "request, and one never made blames the block that was not ready",
           "[node_host][deadline][rtp]") {
 	Fixture f;
 	f.add("fpp", withReceiver(f.log));
+	std::string expected;
 	SECTION("its block ready, the receiver made and never ready") {
 		f.blocks.events.at(0)->ready();
 		f.settle();
 		REQUIRE(f.receivers.events.size() == 1);
+		expected = "engine-refused: the RTP receiver never ran (UDP port 5004 held?)";
 	}
-	SECTION("its block never ready, so the receiver is never made") {}
+	SECTION("its block never ready, so the receiver is never made") {
+		expected = "engine-refused: fpp.rtp was never made: the node's block was not ready within 5 s";
+	}
 	f.timers.advance(rtpReceiverReadinessBound - std::chrono::milliseconds(1));
 	f.settle();
 	CHECK(failureOf(f, "fpp").empty());
 	f.timers.advance(std::chrono::milliseconds(1));
 	f.settle();
-	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	CHECK(failureOf(f, "fpp") == expected);
 	CHECK(f.host.health().at(0).state == NodeState::failed);
 	CHECK(countOf(f.log, "receiver fpp.rtp destroyed") == f.receivers.events.size());
 	f.stopAll();
@@ -4868,4 +4872,46 @@ TEST_CASE("Each kind's readiness bound is the one the design gives, and a source
 	CHECK(rtpReceiverReadinessBound == std::chrono::milliseconds(5'000));
 	CHECK(sinkReadinessBound == std::chrono::milliseconds(5'000));
 	CHECK(companionKindName(CompanionKind::rtpReceiver) == "rtp-receiver");
+}
+
+TEST_CASE("A deadline whose timer fires late, after a main-loop stall, lets a ready the stall held back land first",
+          "[node_host][deadline]") {
+	Fixture f;
+	f.add("fpp", withReceiver(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.receivers.events.size() == 1);
+	// The receiver ran during the stall: its ready waits on the main loop, dispatched behind the timer.
+	f.mainLoop.post([&f] { f.receivers.events.at(0)->ready(); });
+	SECTION("the timer fires late: the judgement waits behind the held ready, which wins") {
+		f.timers.advance(rtpReceiverReadinessBound + std::chrono::milliseconds(2'000));
+		CHECK(failureOf(f, "fpp").empty());
+		f.settle();
+		CHECK(failureOf(f, "fpp").empty());
+		CHECK(f.host.health().at(0).state == NodeState::running);
+	}
+	SECTION("the timer fires on time: it judges at once") {
+		f.timers.advance(rtpReceiverReadinessBound);
+		CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+		f.settle();
+		CHECK(f.host.health().at(0).state == NodeState::failed);
+	}
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A late deadline whose companion never became ready still fails the node, once the stall's events landed",
+          "[node_host][deadline]") {
+	Fixture f;
+	f.add("fpp", withReceiver(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(rtpReceiverReadinessBound + std::chrono::milliseconds(2'000));
+	CHECK(failureOf(f, "fpp").empty());
+	f.settle();
+	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }

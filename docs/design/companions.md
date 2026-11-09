@@ -573,8 +573,25 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
   became ready fails at 5 s like one made and never run. Each timer is an input of its own and judges then (current
   generation, not `tearing`, not failed, readying, the companion not ready); a companion's readiness resets its timer,
   and the teardown clears them all.
-- A sink's expiry is fed as `lc::Fact::consumerLost`, the fact 3a declared for a consumer and never used (it maps to
-  `start-failed` in every phase); its comment now says what it is for. An engine companion's is `Fact::engine`.
+- A sink's expiry is fed as `lc::Fact::consumerNeverBegan` (3a's unused `consumerLost`, renamed after review: it
+  maps to `start-failed` in every phase). An engine companion's is `Fact::engine`; it is not "marked lost": the
+  teardown destroys it in the flush, and destroying it tells nothing (8.6 reworded).
+- After review: one engine companion never made, because its block was not ready by the deadline, does not get its
+  kind's text (which would blame the card or the port): it fails `engine-refused: <engine node> was never made: the
+  node's block was not ready within <n> s`. A departure from 3.5's texts, which assumed the companion was made.
+- After review: a deadline timer that fires more than 250 ms past due (NodeHost's `lateSlack`, a stalled main loop)
+  posts its judgement to the main loop once more, so a ready held back by the stall and dispatched behind the timer
+  lands first (as the bounds' grace does for a barrier).
+- After review: `quantum-floor` is the block size too (it was `min(block, 4)`, and a forced quantum is clamped to
+  `[floor, limit]`, so a node could force a shorter cycle); `AlsaSoundCards`' `extra` refuses `priority.driver`,
+  `node.driver`, `node.group` and `node.link-group` as well (they would take driving from the internal clock).
+- After review: with the limit at the block size, `module-adapter` hands a card `clock.quantum-limit` = the block, and
+  alsa-pcm.c caps a card's buffer at 4 x that when no period count is set: 1024 frames at a 256 block, where it was
+  `min(hw max, 32768)`. Each card is now made with `api.alsa.period-size` = the block and `api.alsa.period-num` =
+  `cardPeriods(block)` (`sound_cards.hpp`): a batch (USB) card gets its old buffer, period and headroom back exactly;
+  one that is not batch gets block-sized periods and twice the old buffer, capped by the hardware (no single count
+  gives both their old buffers, since ALSA halves only a batch card's period). Restoring the old limit for adapters
+  alone through the context's properties after creation did not work on 1.4.2 (the property stayed the block size).
 - The texts are 3.5's with the shape's values: `the card never started: <card id>` (one text for either direction,
   since a card's id is the same on both banks), `the RTP receiver never ran (UDP port <port> held?)`, `the sink
   <bank>'s consumer did not begin within 5 s` (the seconds from `sinkReadinessBound`).
@@ -752,7 +769,7 @@ sinks (built).
 `engine-refused: <detail>` → a teardown, as above.
 
 **Readiness deadline expiry**: [T] the companion's timer fires; if its configuration is current, still readying and
-the companion not ready: an engine companion is marked lost and the aggregate hears the fault `engine-refused` with its
+the companion not ready: the aggregate hears the fault `engine-refused` with an engine companion's
 kind's text (3.5); a sink's, the fault `start-failed` with its text. The teardown destroys the engine companion in the
 flush (its `lost` is never told: destroying it tells nothing) and closes the sink (a `begin` still running finishes
 first; the close deadline, 10 s, covers a `begin` that never returns, leaking the configuration as built). A companion

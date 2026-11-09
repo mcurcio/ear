@@ -80,8 +80,8 @@ as a live port.
 
 `Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates` (only
 the graph frequency); `default.clock.quantum`, `min-quantum` and `max-quantum` (all the block size);
-`clock.power-of-two-quantum = false`; widens `default.clock.quantum-floor` (default 4) so the block
-size fits; and sets `default.clock.quantum-limit` (default 8192) to the block size itself
+`clock.power-of-two-quantum = false`; and sets `default.clock.quantum-floor` (default 4) and
+`default.clock.quantum-limit` (default 8192) to the block size itself
 ([the quantum guard](#the-quantum-guard)). A block sees `clock.duration == block size` and
 `clock.rate.denom == graph frequency`. Both are fixed for the engine's life: `main.cpp` reads
 `ear.conf` once before `Engine::create` and takes both values when both lines read, else the flags
@@ -92,19 +92,35 @@ size fits; and sets `default.clock.quantum-limit` (default 8192) to the block si
 The graph has one quantum and one rate, the driver's, and every block is made for at most the block
 size (`maxBlock`): a cycle longer than that the block cannot run, so it writes zeros. A node that
 carries `node.force-quantum` (or `node.force-rate`, `node.lock-quantum`, `node.lock-rate`) asks the
-driver for its own, and PipeWire clamps a forced quantum to `[quantum-floor, quantum-limit]`, not to
-`min-quantum`/`max-quantum`. So two guards keep every cycle at the block size:
+driver for its own, and PipeWire clamps a forced quantum to `[quantum-floor, quantum-limit]`
+(`context.c`), not to `min-quantum`/`max-quantum`. So two guards keep every cycle at the block size:
 
-- **`quantum-limit` is the block size**, so even a forced quantum is clamped back to it
-  (`engine_test.cpp` forces four blocks on a node in the group: with the old limit of 8192 every
-  block stopped running; with the limit at the block size every cycle stays one block).
-- **No engine companion carries a force property.** ear builds every property it gives a card or a
+- **`quantum-floor` and `quantum-limit` are the block size**, so even a forced quantum is clamped
+  back to it (`engine_test.cpp` forces four blocks, and a quarter block, on a node in the group: with
+  the old limit of 8192 every block stopped running at four blocks; with both at the block size every
+  cycle stays one block).
+- **No engine companion carries a clock property.** ear builds every property it gives a card or a
   receiver from closed grammars and sets none of these; `AlsaSoundCards`' test seam (its `extra`
-  properties) refuses each with `std::invalid_argument` rather than stripping it after the fact.
+  properties) refuses each with `std::invalid_argument` rather than stripping it after the fact, and
+  refuses as well what would take driving from the internal clock: `priority.driver` (ear sets it,
+  1), `node.driver`, `node.group` and `node.link-group`.
+
+**A card's ALSA buffer does not follow the limit.** `module-adapter` hands every node it makes the
+graph's limit as `clock.quantum-limit`, and an ALSA node with no period count caps its buffer at
+`min(hardware maximum, 4 x clock.quantum-limit)` (`alsa-pcm.c`, `spa_alsa_set_format`): at a
+256-frame block that is 1024 frames (about 21 ms, with `max_delay` half of it), where the old limit
+gave 32768. So `AlsaSoundCards` makes every card with `api.alsa.period-size` = the block size and
+`api.alsa.period-num` = `cardPeriods(block)`, which takes ALSA's period-count path instead. ALSA
+halves a batch card's period (a USB card such as the MOTU: block / 2, as before), so a batch card's
+buffer is again `min(hardware maximum, 4 x max(block, 8192))` frames, its period and headroom (and
+so its latency) unchanged; a card that is not batch gets periods of one block and twice that buffer,
+capped by the hardware (the test card: 65536 frames, 256 periods of 256, where it had 32768). ALSA's
+info log shows it (`PIPEWIRE_DEBUG="2,spa.alsa:4"`: `buffer frames ..., period frames ...,
+periods ...`); `sound_card_test.cpp` pins the properties.
 
 Cards (the test card) and RTP receivers run at that limit, a receiver whose sender is at 44.1 kHz
 or 96 kHz into a 48 kHz graph included (`sound_card_test.cpp`, `rtp_receiver_test.cpp`). A real
-card's buffer at that limit is checked only on the hardware (the `ear-on-talos` skill).
+card at that limit is checked only on the hardware (the `ear-on-talos` skill).
 
 ### The internal clock
 
@@ -369,9 +385,13 @@ counts too.
 Each deadline is an input of its own when its timer fires, and judges then: if its configuration is
 still the current one, still readying (not torn down, not failed) and the companion not ready, the
 node fails. Readiness heard first, even in the same main-loop turn, wins, and a companion's
-readiness cancels its timer. The failure tears the configuration down as any other: the flush
-destroys an engine companion made or not (destroying one tells nothing, so its `lost` never comes),
-and a sink is closed (a `begin` still running finishes first; the close deadline covers one that
+readiness cancels its timer. A timer that fires more than 250 ms late (the main loop stalled) posts
+its judgement to the main loop once more, so a ready the stall held back, dispatched behind the
+timer, lands first. An engine companion never made, because its block was not ready by the
+deadline, fails the node `engine-refused: <node>.<suffix> was never made: the node's block was not
+ready within <n> s` rather than blaming the card or the port. The failure tears the configuration
+down as any other: the flush destroys an engine companion made or not (destroying one tells nothing,
+so its `lost` never comes), and a sink is closed (a `begin` still running finishes first; the close deadline covers one that
 never returns). Meanwhile `waitingFor` shows `companion` or `consumer` after 2 s. A failed node is
 retried only by `node.start`, `node.restart` or a change until recovery is built; a USB card that
 takes longer than 10 s to start fails.
@@ -384,7 +404,9 @@ takes longer than 10 s to start fails.
   `api.alsa.path = hw:CARD=<card id>,DEV=0` (built in one place from a `CardId`, whose grammar keeps
   every other ALSA device form out, because ALSA's `file` plugin can run commands), `audio.rate` =
   the graph frequency, `audio.channels`, `audio.position = [ AUX0 AUX1 ... ]`,
-  `node.always-process = true`, `priority.driver = 1` and **no `node.group`**. So it runs alone, on
+  `node.always-process = true`, `priority.driver = 1`, `api.alsa.period-size` = the block size and
+  `api.alsa.period-num` = `cardPeriods(block)` (its buffer, [the quantum guard](#the-quantum-guard)),
+  and **no `node.group`**. So it runs alone, on
   its own clock, and holds no port block while it opens. In the group it would follow the dummy from
   creation and never start before it is linked, which a lifecycle that links once RUNNING cannot do.
   Never mark it `node.driver = false` either: the ALSA node publishes `node.driver = true` again.

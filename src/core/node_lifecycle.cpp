@@ -500,7 +500,7 @@ FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 	case Fact::engine:
 		return FailureCode::engineRefused;
 	case Fact::configureFailed:
-	case Fact::consumerLost:
+	case Fact::consumerNeverBegan:
 	case Fact::recipeFailed:
 		return FailureCode::startFailed;
 	case Fact::nodeLost:

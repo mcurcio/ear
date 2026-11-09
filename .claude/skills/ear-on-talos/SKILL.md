@@ -248,10 +248,14 @@ machine:
      (`api.alsa.period-size`) on the card's adapter; both are adapter properties, so a change is a
      code change to `AlsaCardBody` (`sound_cards.cpp`), not a graph setting yet.
    - The quantum limit at the block size (`docs/engine.md#the-quantum-guard`; CI checks only the
-     test card): the MOTU opens, follows and plays with no more resyncs than before, and its playback
-     node's reported latency (one quantum plus headroom) is unchanged. ALSA sizes its buffer partly
-     from the limit, so a USB card is where a smaller limit could show. If it does not hold, the
-     fallback the design names is `max(block, 8192)` with only the force properties refused. NOT RUN.
+     test card): the MOTU's buffer must be what it was before the guard. Run with
+     `PIPEWIRE_DEBUG="2,spa.alsa:4"` and read the playback and capture lines `buffer frames ...,
+     period frames ..., periods ... batch:1`: a batch card made with `api.alsa.period-num` gets
+     `min(hardware maximum, 32768)` frames at a 256 block in half-block periods, never 1024. Compare
+     them, and the xruns and follower resyncs over an hour, with an image before the guard; the
+     playback node's reported latency (one quantum plus headroom) should not change. If it does not
+     hold, the fallback the design names is the limit back to `max(block, 8192)` with the clock
+     properties still refused. NOT RUN.
    - The card's readiness deadline: the MOTU must open, run and link within 10 s of its node's
      configure (`docs/engine.md#readiness-deadlines`), or the node fails `engine-refused: the card
      never started: <id>`. Time it from ear's records on a cold start. NOT RUN.

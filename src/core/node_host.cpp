@@ -1194,17 +1194,32 @@ struct NodeHost::Impl {
 				const EngineAsk& asked = c.engineAsks[i];
 				const CompanionKind kind =
 					std::visit([&](const auto& shape) { return engineKind(shape, asked.target.bank); }, asked.shape);
-				c.engineDeadlines.push_back(host_.timers.after(*readinessBound(kind), [&host = host_, serial = serial_,
-				                                                                       generation = c.generation, i] {
-					host.inputFor(serial, [generation, i](Node& node) { node.engineDeadlinePassed(generation, i); });
-				}));
+				c.engineDeadlines.push_back(armDeadline(Deadline::engine, i, *readinessBound(kind)));
 			}
 			for (std::size_t i = 0; i < c.sinks.size(); ++i)
-				c.sinks[i]->deadline =
-					host_.timers.after(*readinessBound(CompanionKind::sink), [&host = host_, serial = serial_,
-				                                                              generation = c.generation, i] {
-						host.inputFor(serial, [generation, i](Node& node) { node.sinkDeadlinePassed(generation, i); });
+				c.sinks[i]->deadline = armDeadline(Deadline::sink, i, *readinessBound(CompanionKind::sink));
+		}
+
+		enum class Deadline { engine, sink };
+
+		/// One readiness deadline's timer. When it fires late (the main loop stalled), the judgement is posted to the
+		/// main loop once more, so that a ready the stall held back, dispatched behind the timer, is heard first.
+		std::unique_ptr<Timer> armDeadline(Deadline which, std::size_t index, std::chrono::milliseconds bound) {
+			const auto due = host_.timers.now() + bound;
+			return host_.timers.after(
+				bound, [&host = host_, serial = serial_, generation = config_->generation, which, index, due] {
+					host.inputFor(serial, [generation, which, index, due](Node& node) {
+						if (node.host_.timers.now() - due <= lateSlack)
+							return node.deadlinePassed(generation, which, index);
+						node.host_.mainLoop.post([&host = node.host_, alive = std::weak_ptr<char>(node.host_.alive),
+					                              serial = node.serial_, generation, which, index] {
+							if (!alive.lock()) return;
+							host.inputFor(serial, [generation, which, index](Node& later) {
+								later.deadlinePassed(generation, which, index);
+							});
+						});
 					});
+				});
 		}
 
 		/// The configuration of `generation` is the current one and still waits for its resources.
@@ -1213,15 +1228,30 @@ struct NodeHost::Impl {
 			       aggregate_.configuration().state() == lc::ConfigState::readying;
 		}
 
+		void deadlinePassed(std::uint64_t generation, Deadline which, std::size_t index) {
+			if (which == Deadline::engine) engineDeadlinePassed(generation, index);
+			else sinkDeadlinePassed(generation, index);
+		}
+
 		/// Engine companion `index` missed its deadline: unless it became ready meanwhile, the node fails
-		/// engine-refused with its kind's text, and the teardown destroys it in the flush, made or not (destroying it
-		/// tells nothing, so its lost() never comes).
+		/// engine-refused, and the teardown destroys it in the flush, made or not (destroying it tells nothing, so its
+		/// lost() never comes). One made and not ready is blamed with its kind's text; one never made, because the
+		/// block was not ready, blames the block.
 		void engineDeadlinePassed(std::uint64_t generation, std::size_t index) {
 			if (!stillReadying(generation) || index >= config_->engineAsks.size()) return;
 			Configuration& c = *config_;
 			if (index < c.engineCompanions.size() && c.engineCompanions[index]->isReady) return;
-			std::string detail =
-				std::visit([](const auto& shape) { return neverReady(shape); }, c.engineAsks[index].shape);
+			const EngineAsk& asked = c.engineAsks[index];
+			std::string detail;
+			if (index < c.engineCompanions.size()) {
+				detail = std::visit([](const auto& shape) { return neverReady(shape); }, asked.shape);
+			} else {
+				const CompanionKind kind =
+					std::visit([&](const auto& shape) { return engineKind(shape, asked.target.bank); }, asked.shape);
+				const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(*readinessBound(kind)).count();
+				detail = asked.target.engineNode + " was never made: the node's block was not ready within " +
+				         std::to_string(seconds) + " s";
+			}
 			feed(aggregate_.fault(lc::Fact::engine, std::move(detail)));
 		}
 
@@ -1230,9 +1260,9 @@ struct NodeHost::Impl {
 		void sinkDeadlinePassed(std::uint64_t generation, std::size_t index) {
 			if (!stillReadying(generation) || index >= config_->sinks.size() || config_->sinks[index]->begun) return;
 			const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(sinkReadinessBound).count();
-			feed(aggregate_.fault(lc::Fact::consumerLost, "the sink " + config_->sinks[index]->bank +
-			                                                  "'s consumer did not begin within " +
-			                                                  std::to_string(seconds) + " s"));
+			feed(aggregate_.fault(lc::Fact::consumerNeverBegan, "the sink " + config_->sinks[index]->bank +
+			                                                        "'s consumer did not begin within " +
+			                                                        std::to_string(seconds) + " s"));
 		}
 
 		/// A sink's consumer began (readiness 4'): with every engine companion ready too, every resource is.

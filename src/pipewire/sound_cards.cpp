@@ -5,11 +5,14 @@
 // reports the loss. Linked, it follows ear's internal clock, never drives the blocks.
 #include "ear/pipewire/sound_cards.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -48,6 +51,8 @@ public:
 		const auto channels = std::to_string(channels_);
 		const auto rate = std::to_string(format.rate);
 		const auto priority = std::to_string(cardPriority);
+		const auto periodSize = std::to_string(format.maxBlock);
+		const auto periods = std::to_string(cardPeriods(format.maxBlock));
 		// No node.group: a card in the group would follow from creation and never start before it is linked, which
 		// the lifecycle (link once RUNNING) cannot do. Alone it drives itself until its links join it to the blocks,
 		// where the internal clock outranks it and it follows (docs/engine.md#the-internal-clock).
@@ -55,7 +60,11 @@ public:
 			SPA_KEY_FACTORY_NAME, bank_ == Direction::output ? "api.alsa.pcm.sink" : "api.alsa.pcm.source",
 			"api.alsa.path", alsaPath(shape.card).c_str(), "audio.channels", channels.c_str(), "audio.rate",
 			rate.c_str(), "audio.position", auxPositions(channels_).c_str(), PW_KEY_NODE_NAME, engineNode.c_str(),
-			PW_KEY_NODE_ALWAYS_PROCESS, "true", PW_KEY_PRIORITY_DRIVER, priority.c_str(), nullptr);
+			PW_KEY_NODE_ALWAYS_PROCESS, "true", PW_KEY_PRIORITY_DRIVER, priority.c_str(),
+			// The ALSA buffer from a period size and count, never from clock.quantum-limit, which module-adapter
+			// sets to the graph's (the block size, docs/engine.md#the-quantum-guard): with no period count alsa-pcm.c
+			// caps the buffer at 4 x that limit, 4 blocks (cardPeriods).
+			"api.alsa.period-size", periodSize.c_str(), "api.alsa.period-num", periods.c_str(), nullptr);
 		for (const auto& [key, value] : extra) pw_properties_set(props, key.c_str(), value.c_str());
 		node_ = static_cast<pw_proxy*>(
 			pw_core_create_object(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, &props->dict, 0));
@@ -149,19 +158,29 @@ private:
 } // namespace
 
 namespace {
-/// The properties that would let one node change every block's quantum or rate (docs/engine.md#the-quantum-guard): ear
-/// sets none on a companion, and its test seam may not either.
-AlsaSoundCards::Properties refuseForceProperties(AlsaSoundCards::Properties extra) {
+/// The properties that would let one card change every block's quantum or rate, or take driving from the internal clock
+/// (docs/engine.md#the-quantum-guard, docs/engine.md#the-internal-clock): ear sets none of the first four, sets
+/// priority.driver itself and leaves the rest unset, and its test seam may set none of them.
+AlsaSoundCards::Properties refuseClockProperties(AlsaSoundCards::Properties extra) {
+	constexpr std::array<std::string_view, 8> refused{"node.force-quantum", "node.force-rate", "node.lock-quantum",
+	                                                  "node.lock-rate",     "priority.driver", "node.driver",
+	                                                  "node.group",         "node.link-group"};
 	for (const auto& [key, value] : extra)
-		if (key == "node.force-quantum" || key == "node.force-rate" || key == "node.lock-quantum" ||
-		    key == "node.lock-rate")
-			throw std::invalid_argument("a sound card may not carry " + key + ": it would change every block's clock");
+		if (std::ranges::find(refused, key) != refused.end())
+			throw std::invalid_argument("a sound card may not carry " + key +
+			                            ": it would change every block's clock or what drives it");
 	return extra;
 }
 } // namespace
 
 AlsaSoundCards::AlsaSoundCards(Engine& engine, Properties extra)
-	: engine_(engine), extra_(refuseForceProperties(std::move(extra))) {}
+	: engine_(engine), extra_(refuseClockProperties(std::move(extra))) {}
+
+std::uint32_t cardPeriods(std::uint32_t blockSize) noexcept {
+	const std::uint64_t buffer = 4ULL * std::max(blockSize, 8192U); // the buffer the old limit gave
+	const std::uint64_t halfBlock = std::max(blockSize / 2, 1U);    // a batch card's period (alsa-pcm.c)
+	return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(buffer / halfBlock, 2, 1024));
+}
 
 AlsaSoundCards::Properties clocklessCardProperties() { return {{"clock.name", internalClockName}}; }
 

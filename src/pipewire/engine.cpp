@@ -138,10 +138,10 @@ pw_properties* contextProperties(const EngineSettings& settings) {
 		// size such as 480 would otherwise run as 256.
 		"clock.power-of-two-quantum", "false", nullptr);
 	pw_properties_setf(props, "default.clock.allowed-rates", "[ %u ]", settings.graphFrequency);
-	// The quantum is clamped to [floor, limit] (defaults 4 and 8192): the floor is widened to hold it, and the limit is
-	// the block size itself, so no node can ask the graph for a larger cycle than every block was made for
+	// A forced quantum is clamped to [floor, limit] (defaults 4 and 8192), not to min/max-quantum: both are the block
+	// size, so no node can ask the graph for a cycle longer or shorter than every block was made for
 	// (docs/engine.md#the-quantum-guard).
-	pw_properties_setf(props, "default.clock.quantum-floor", "%u", std::min(settings.blockSize, 4u));
+	pw_properties_setf(props, "default.clock.quantum-floor", "%u", settings.blockSize);
 	pw_properties_setf(props, "default.clock.quantum-limit", "%u", settings.blockSize);
 	return props;
 }

@@ -94,12 +94,18 @@ blocking invoke made right after `pw_context_new` meets the same race.
 
 `Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates`
 (only the graph frequency), `default.clock.quantum`, `min-quantum` and `max-quantum` (all the
-block size), `clock.power-of-two-quantum = false`, widens `default.clock.quantum-floor`
-(default 4) so the block size fits, and sets `quantum-limit` (default 8192) to the block size: PipeWire
-clamps a node's `node.force-quantum` to `[floor, limit]`, not to `max-quantum`, so with 8192 one forcing
-node made every cycle longer than a block's `maxBlock` and every block wrote zeros (`engine_test.cpp`'s
-"The quantum limit is the block size", `docs/engine.md#the-quantum-guard`). No engine companion sets
-a force or lock property, and `AlsaSoundCards`' `extra` seam refuses them. A port block sees
+block size), `clock.power-of-two-quantum = false`, and sets `default.clock.quantum-floor` (default 4)
+and `quantum-limit` (default 8192) to the block size: PipeWire clamps a node's `node.force-quantum` to
+`[floor, limit]` (`context.c`), not to `[min, max]-quantum`, so with 8192 one forcing node made every
+cycle longer than a block's `maxBlock` and every block wrote zeros, and with a floor of 4 one could make
+it shorter (`engine_test.cpp`'s "The quantum floor and limit are the block size",
+`docs/engine.md#the-quantum-guard`). No engine companion sets a force, lock or driving property, and
+`AlsaSoundCards`' `extra` seam refuses them (`priority.driver`, `node.driver`, `node.group`,
+`node.link-group` too). **Trap:** `module-adapter` copies the limit into every adapter's
+`clock.quantum-limit`, and an ALSA node with no period count caps its buffer at 4 x that (1024 frames at
+a 256 block, `alsa-pcm.c`): every card is made with `api.alsa.period-size` and `api.alsa.period-num`
+(`cardPeriods`) so its buffer keeps the old size; `pw_context_update_properties` after creation does not
+change what `module-adapter` reads on 1.4.2. A port block sees
 `position->clock.duration == blockSize` and `clock.rate.denom == graphFrequency`; the test
 "Blocks process at the graph frequency and block size" checks it with 44100 Hz and 256.
 

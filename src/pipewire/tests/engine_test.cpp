@@ -389,15 +389,16 @@ TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
 	CHECK(recorder.samples().size() == recorder.calls() * kBlock);
 }
 
-// docs/engine.md#the-quantum-guard: the limit is the block size, so a node that forces a larger quantum cannot change
-// every block's cycle (one longer than a block's maxBlock would play as zeros).
-TEST_CASE("The quantum limit is the block size: a node forcing a larger quantum leaves every cycle at the block size",
+// docs/engine.md#the-quantum-guard: the floor and the limit are the block size, so a node that forces another quantum
+// cannot change every block's cycle (a longer one would play as zeros, a shorter one break clock.duration == block).
+TEST_CASE("The quantum floor and limit are the block size: a node forcing a larger or a smaller quantum leaves every "
+          "cycle at the block size",
           "[engine][quantum]") {
+	// What a companion must never carry (ear sets none): a forced quantum of four blocks, or of a quarter block.
+	std::uint32_t forcedFrames = 0;
+	SECTION("four blocks") { forcedFrames = 4 * kBlock; }
+	SECTION("a quarter block") { forcedFrames = kBlock / 4; }
 	auto engine = makeEngine();
-	const spa_dict* context = &pw_context_get_properties(engine->context())->dict;
-	REQUIRE(spa_dict_lookup(context, "default.clock.quantum-limit") != nullptr);
-	CHECK(std::string(spa_dict_lookup(context, "default.clock.quantum-limit")) == std::to_string(kBlock));
-
 	Waiter waiter(*engine);
 	NoLevelWake wake;
 	FilterPortBlocks blocks(*engine, wake);
@@ -408,6 +409,7 @@ TEST_CASE("The quantum limit is the block size: a node forcing a larger quantum 
 	struct Clock {
 		Waiter* waiter;
 		std::atomic<std::uint64_t> longest{0};
+		std::atomic<std::uint64_t> shortest{~std::uint64_t{0}};
 		std::atomic<std::uint64_t> cycles{0};
 	} clock{&waiter};
 	pw_filter_events probeEvents{};
@@ -415,11 +417,11 @@ TEST_CASE("The quantum limit is the block size: a node forcing a larger quantum 
 	probeEvents.process = [](void* data, spa_io_position* position) {
 		auto* seen = static_cast<Clock*>(data);
 		if (position->clock.duration > seen->longest.load()) seen->longest.store(position->clock.duration);
+		if (position->clock.duration < seen->shortest.load()) seen->shortest.store(position->clock.duration);
 		seen->cycles.fetch_add(1);
 		seen->waiter->wake();
 	};
-	// What a companion must never carry (ear sets none): a forced quantum four blocks long, in the graph's group.
-	const std::string forced = std::to_string(4 * kBlock);
+	const std::string forced = std::to_string(forcedFrames);
 	pw_filter* probe = pw_filter_new(engine->core(), "forcing-probe",
 	                                 pw_properties_new(PW_KEY_NODE_ALWAYS_PROCESS, "true", "node.force-quantum",
 	                                                   forced.c_str(), PW_KEY_NODE_GROUP, "ear.graph", nullptr));
@@ -432,8 +434,10 @@ TEST_CASE("The quantum limit is the block size: a node forcing a larger quantum 
 	const bool ran = waiter.until(
 		[&] { return clock.cycles.load() >= 64 && events.readyCount > 0 && recorder.calls() >= before + 64; });
 	pw_filter_destroy(probe);
+	INFO("forced " << forcedFrames);
 	REQUIRE(ran);
 	CHECK(clock.longest.load() == kBlock);
+	CHECK(clock.shortest.load() == kBlock);
 	CHECK(recorder.wrongFrames() == 0);
 }
 

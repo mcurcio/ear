@@ -346,8 +346,8 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 }
 
 // docs/engine.md#the-quantum-guard: ear sets no force property on a card, and its test seam may not either.
-TEST_CASE("A card's engine node carries no property that forces or locks the graph's quantum or rate, and the extra "
-          "properties refuse each one",
+TEST_CASE("A card's engine node carries no property that forces or locks the graph's quantum or rate, keeps the "
+          "adapters' old quantum limit for its ALSA buffer, and the extra properties refuse every clock property",
           "[cards][quantum]") {
 	Graph graph;
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
@@ -360,8 +360,20 @@ TEST_CASE("A card's engine node carries no property that forces or locks the gra
 	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate"}) {
 		INFO(key);
 		CHECK_FALSE(props->contains(key));
-		CHECK_THROWS_AS(AlsaSoundCards(*graph.engine, AlsaSoundCards::Properties{{key, "1024"}}),
-		                std::invalid_argument);
+	}
+	// The card's ALSA buffer is set by its period size and count, not by the quantum limit (now the block size), so it
+	// keeps what it had before the guard (docs/engine.md#the-quantum-guard).
+	CHECK(props->at("clock.quantum-limit") == std::to_string(kBlock));
+	CHECK(props->at("api.alsa.period-size") == std::to_string(kBlock));
+	CHECK(props->at("api.alsa.period-num") == std::to_string(cardPeriods(kBlock)));
+	CHECK(cardPeriods(kBlock) * kBlock / 2 == 32768); // a batch (USB) card: half-block periods, 4 x 8192 frames
+	CHECK(props->at("priority.driver") == "1");
+	CHECK_FALSE(props->contains("node.group"));
+	CHECK_FALSE(props->contains("node.link-group"));
+	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate",
+	                        "priority.driver", "node.driver", "node.group", "node.link-group"}) {
+		INFO(key);
+		CHECK_THROWS_AS(AlsaSoundCards(*graph.engine, AlsaSoundCards::Properties{{key, "1"}}), std::invalid_argument);
 	}
 	CHECK_NOTHROW(AlsaSoundCards(*graph.engine, clocklessCardProperties()));
 }
