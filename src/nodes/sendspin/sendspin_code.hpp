@@ -37,7 +37,7 @@ private:
 	Feed& feed_;
 	Mailbox<PlayProgress>& progress_;
 	const EventFd& bell_;
-	std::uint32_t rate_;
+	FrameClock clock_; // the graph's rate: what plays is dated by it (docs/engine.md#dating)
 	RtWriter& toServer_;
 	Mailbox<CaptureAnchor>& capture_;
 	std::uint64_t framesWritten_ = 0;

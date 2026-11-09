@@ -374,8 +374,10 @@ private:
 };
 
 std::uint16_t requiredLeadMs(std::uint32_t feedFrames, std::uint32_t maxBlock, std::uint32_t rate) noexcept {
-	const std::uint64_t frames = std::uint64_t{feedFrames} + maxBlock;
-	return static_cast<std::uint16_t>(std::min<std::uint64_t>((frames * 1000 + rate - 1) / rate, UINT16_MAX));
+	// Whole milliseconds rounded up, so the lead is never short of what the frames last (docs/engine.md#dating).
+	constexpr std::int64_t nsPerMs = 1'000'000;
+	const std::int64_t ns = FrameClock(rate).ns(std::int64_t{feedFrames} + maxBlock);
+	return static_cast<std::uint16_t>(std::min<std::int64_t>((ns + nsPerMs - 1) / nsPerMs, UINT16_MAX));
 }
 
 SendspinWorker::SendspinWorker(std::shared_ptr<const folder::ConfinedFolder> folder, NodeName node,

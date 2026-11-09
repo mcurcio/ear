@@ -234,8 +234,10 @@ cx.use(passThrough({bankPair(record, writer)}));
 - `Chunk::upstreamFrames` is the most capture latency the block told on the sink's bank in the
   cycle the chunk was taken: what lies upstream of the input banks paired with it, plus what the
   configuration declared on it ([engine.md](engine.md#sinks)). So the chunk's first frame entered the
-  graph at `startRawNs - upstreamFrames * 1e9 / rate`, for each call of a chunk split at the ring's
-  end too (the second call's start times are its own first frame's). It is the most of each part,
+  graph at `FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames})` (`FrameClock`, in
+  `ear/core/latency.hpp`, is the one place frames become time: [engine.md](engine.md#dating)), for
+  each call of a chunk split at the ring's end too (the second call's start times are its own first
+  frame's). A type converts frames and time through it too. It is the most of each part,
   as PipeWire combines latencies, so an upper bound when the bank's paths differ. A consumer that
   does not date audio ignores it (`file`'s `WavWriter` does).
 - The frame ring and the stamp ring drop together (no frame without its stamp); dropped frames are
@@ -284,7 +286,8 @@ engine and the harness both run, so a type's tests and the engine never disagree
   source was made, and when the last of them is heard on `CLOCK_MONOTONIC_RAW` (the cycle's start,
   plus the frames it played, plus the most playback latency the block told on the bank: for each
   output it is paired with, what lies downstream of it, a following card's buffer included, plus
-  what the configuration declared on that output with `declareLatency`). It means the graph's clock
+  what the configuration declared on that output with `declareLatency`; `FrameClock::heardRawNs`,
+  [engine.md](engine.md#dating)). It means the graph's clock
   moved past those frames, not that a device sounded them: a cycle cut short after the block loses frames it played, and no node can
   see that. `writer.playedWake()` is rung after each new `Played`, at most once until answered: its
   `descriptor()` is readable while rung, and its one watcher calls `answer()` before it looks.

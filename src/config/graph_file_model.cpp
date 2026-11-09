@@ -319,8 +319,9 @@ bool writable(std::string_view text) {
 	});
 }
 
-/// knobly's quote of a text, escapes included.
-std::string quoted(std::string_view text) {
+/// knobly's quote of a text, escapes included. Not named `quoted`: a std::string argument would find std::quoted by
+/// argument-dependent lookup wherever <iomanip> comes in through another header (<chrono> brings it).
+std::string knoblyQuoted(std::string_view text) {
 	const vl::config_text quote = vl::quote(text);
 	return std::string(quote.view());
 }
@@ -334,12 +335,12 @@ bool bareWord(std::string_view word, std::string_view more = "") {
 }
 
 /// A name or type: bare when it is a bare word, otherwise quoted.
-std::string wordText(std::string_view word) { return bareWord(word) ? std::string(word) : quoted(word); }
+std::string wordText(std::string_view word) { return bareWord(word) ? std::string(word) : knoblyQuoted(word); }
 
 /// A route's end: bare when its node is a bare word and its port one with a port's '.', otherwise quoted.
 std::string endText(const PortRef& end) {
 	const std::string joined = end.node + ":" + end.port;
-	return bareWord(end.node) && bareWord(end.port, ".") ? joined : quoted(joined);
+	return bareWord(end.node) && bareWord(end.port, ".") ? joined : knoblyQuoted(joined);
 }
 
 /// A setting's key is written as a directive name: a word starting with a letter or one of _ . / * ?,
@@ -358,7 +359,7 @@ std::expected<std::string, InvalidSettings> textValue(const NodeName& node, cons
                                                       const std::string& text) {
 	if (!writable(text))
 		return std::unexpected(InvalidSettings{node, key + ": holds a control character ear.conf cannot hold"});
-	return quoted(text);
+	return knoblyQuoted(text);
 }
 
 /// One setting's value as knobly text: text is knobly's quote of the JSON string, a whole number the

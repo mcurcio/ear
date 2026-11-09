@@ -26,8 +26,8 @@ public:
 	};
 
 	/// Main thread. `capacityFrames` is rounded up to a power of two (FrameRing's); `rate` sets the 5 ms fades
-	/// (rate * 5 / 1000 frames, at least 1) and Played's dating. `signals` outlives the ring. May allocate; throws
-	/// std::bad_alloc only.
+	/// (FrameClock::frames(5 ms), at least 1) and Played's dating (docs/engine.md#dating). `signals` outlives the
+	/// ring. May allocate; throws std::bad_alloc only.
 	SourceRing(std::uint32_t channels, std::uint32_t capacityFrames, std::uint32_t rate, Signals& signals);
 	~SourceRing();
 	SourceRing(const SourceRing&) = delete;

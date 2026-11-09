@@ -4,7 +4,7 @@ namespace ear::sendspin {
 
 SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const EventFd& bell, std::uint32_t rate,
                            RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept
-	: feed_(feed), progress_(progress), bell_(bell), rate_(rate), toServer_(toServer), capture_(capture) {}
+	: feed_(feed), progress_(progress), bell_(bell), clock_(rate), toServer_(toServer), capture_(capture) {}
 
 void SendspinCode::prepare(const AudioFormat&) { started_ = false; }
 
@@ -37,9 +37,8 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	totalFrames_ += static_cast<std::uint64_t>(skipped) + got;
 	// What this cycle writes is heard once what lies downstream of the outputs has played: a following card's buffer,
 	// as the framework carries it back through the graph (docs/engine.md#latency-per-bank-pair). The
-	// longest path is taken; the left and right outputs are one bank, so either tells it.
-	const std::int64_t heardFrames = static_cast<std::int64_t>(got) + cycle.downstreamOf(0).maxFrames;
-	progress_.publish({totalFrames_, startRawNs + heardFrames * 1'000'000'000 / rate_});
+	// longest path is taken; the left and right outputs are one bank, so either tells it (docs/engine.md#dating).
+	progress_.publish({totalFrames_, clock_.heardRawNs(startRawNs, got, cycle.downstreamOf(0))});
 	bell_.ring();
 }
 

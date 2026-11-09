@@ -332,6 +332,10 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   the raw clock (`GraphCycle::startRawNs`) plus the latency downstream of its outputs (a following
   card's buffer, carried back by the framework), never from when the thread woke. *Why:* wake time
   failed the spike, 52% of cycles within 1 ms against 100% from the cycle's start.
+- The audio sent to the server (`to`) is dated by when its cycle started, each piece from the
+  newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
+  of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
+  buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
 - A skipped cycle counts as played; otherwise it costs 25 ms (the library sees -5.3 ms, drops a
   chunk and inserts silence). A jump larger than the feed, or backward, is a change of driver, not
   a skip.

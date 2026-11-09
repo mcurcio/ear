@@ -161,9 +161,9 @@ public:
 	/// thread and still completes by signal. What `request` points to outlives `done` or the block. Requests to one
 	/// block complete in the order they were made, whichever of drive and fadeOut made them.
 	virtual void drive(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) = 0;
-	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms (rate * 5 /
-	/// 1000 frames) and stays there, the code still running; `done()` runs on the main loop once a cycle ended at zero
-	/// (a cycle too large to run counts as one). A block that is not processing (not STREAMING, or no data loop)
+	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms
+	/// (FrameClock::frames, at least 1 frame) and stays there, the code still running; `done()` runs on the main loop
+	/// once a cycle ended at zero (a cycle too large to run counts as one). A block that is not processing (not STREAMING, or no data loop)
 	/// completes it by signal, never inline, and so does a block that leaves STREAMING before the fade ended.
 	virtual void fadeOut(std::move_only_function<void()> done) = 0;
 	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event

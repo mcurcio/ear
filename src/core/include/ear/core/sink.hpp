@@ -30,7 +30,7 @@ struct Chunk {
 	/// The most upstream (capture) latency the block told on the sink's bank in the cycle the chunk was taken: what
 	/// reaches the input banks paired with it plus what the configuration declared on it (docs/engine.md#sinks): the
 	/// most of each part, so an upper bound when the bank mixes paths. The chunk's first frame entered the graph at
-	/// startRawNs - upstreamFrames * 1e9 / rate.
+	/// FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames}) (docs/engine.md#dating).
 	std::uint32_t upstreamFrames;
 	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
 	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows

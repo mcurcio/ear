@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -29,7 +30,8 @@ namespace {
 
 /// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks.
 std::uint32_t feedFramesFor(const AudioFormat& format) {
-	return std::bit_ceil(std::max(format.rate * 40 / 1000, 2 * format.maxBlock));
+	const auto forty = static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{40}));
+	return std::bit_ceil(std::max(forty, 2 * format.maxBlock));
 }
 
 /// A listening node's claim on its port, for as long as its insides live, so past the library's own socket.
@@ -97,7 +99,9 @@ public:
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
 		const std::uint32_t rate = context.format().rate;
-		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
+		// The handoff to the server holds half a second.
+		const auto half = static_cast<std::uint32_t>(FrameClock(rate).frames(std::chrono::milliseconds{500}));
+		RtWriter& toServer = context.acquire(HandoffRequest{"to", half, &run->toServer()});
 		// The feed holds the server's audio up to its size before it leaves (docs/engine.md#latency-per-bank-pair).
 		context.declareLatency("from", Latency{0, feedFramesFor(context.format())});
 		auto code = run->code(rate, toServer);

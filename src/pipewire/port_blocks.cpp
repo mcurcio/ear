@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <ctime>
 #include <deque>
 #include <functional>
@@ -98,7 +99,9 @@ public:
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
 		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
 		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()), outputPeers_(outputs_.size()),
-		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), fadeFrames_(std::max(format.rate * 5 / 1000, 1U)),
+		  inputTold_(inputs_.size()), outputTold_(outputs_.size()),
+		  fadeFrames_(
+			  std::max(static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{5})), 1U)),
 		  fadeMask_(outputs_.size(), 0), sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
 		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {

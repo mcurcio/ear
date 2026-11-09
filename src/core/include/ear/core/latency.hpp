@@ -3,6 +3,7 @@
 // into time. Pure: no PipeWire type, no clock read. Frames at the graph's rate are its one unit; PipeWire's triples
 // are converted at the port, in ear_pipewire's latency_spa.hpp.
 #include <algorithm>
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <limits>
@@ -78,28 +79,39 @@ private:
 	std::optional<Latency> combined_;
 };
 
-/// Frames as time at the graph's rate, and the two dating rules (docs/engine.md#sinks, docs/engine.md#sources). The
-/// only code that turns frames into ns: one division of the whole frame count, truncated toward zero.
+/// Frames as time at the graph's rate, a duration as frames, and the two dating rules (docs/engine.md#dating). The only
+/// code that converts between frames and time: each conversion is the exact quotient of the whole count, truncated
+/// toward zero, and never overflows on the way (whole seconds and the rest are converted apart).
 class FrameClock {
 public:
 	/// `rate` > 0: the graph's, fixed at boot.
 	explicit constexpr FrameClock(std::uint32_t rate) noexcept : rate_(rate) {}
 	constexpr std::uint32_t rate() const noexcept { return rate_; }
 	/// How long `frames` frames last (negative: how long before).
-	constexpr std::int64_t ns(std::int64_t frames) const noexcept { return frames * 1'000'000'000 / rate_; }
+	constexpr std::int64_t ns(std::int64_t frames) const noexcept {
+		const std::int64_t rate = rate_;
+		return frames / rate * nsPerSecond + frames % rate * nsPerSecond / rate;
+	}
+	/// How many whole frames `duration` holds: a buffer's, a fade's or a piece's length.
+	constexpr std::int64_t frames(std::chrono::nanoseconds duration) const noexcept {
+		const std::int64_t ns = duration.count();
+		const std::int64_t rate = rate_;
+		return ns / nsPerSecond * rate + ns % nsPerSecond * rate / nsPerSecond;
+	}
 	/// When frame `offset` of a cycle that started at `startRawNs` is heard: once what lies `downstream` of it has
 	/// played (its most).
 	constexpr std::int64_t heardRawNs(std::int64_t startRawNs, std::uint32_t offset,
 	                                  Latency downstream) const noexcept {
 		return startRawNs + ns(std::int64_t{offset} + downstream.maxFrames);
 	}
-	/// When frame `offset` of that cycle entered the graph: what lies `upstream` of it before it (its most).
-	constexpr std::int64_t enteredRawNs(std::int64_t startRawNs, std::uint32_t offset,
-	                                    Latency upstream) const noexcept {
-		return startRawNs + ns(std::int64_t{offset} - std::int64_t{upstream.maxFrames});
+	/// When frame `offset` of that cycle (negative: a frame before the cycle's first) entered the graph: what lies
+	/// `upstream` of it before it (its most).
+	constexpr std::int64_t enteredRawNs(std::int64_t startRawNs, std::int64_t offset, Latency upstream) const noexcept {
+		return startRawNs + ns(offset - std::int64_t{upstream.maxFrames});
 	}
 
 private:
+	static constexpr std::int64_t nsPerSecond = 1'000'000'000;
 	std::uint32_t rate_;
 };
 

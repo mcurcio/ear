@@ -1245,8 +1245,8 @@ struct NodeHost::Impl {
 				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
 			for (const EngineAsk& asked : c.engineAsks)
 				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
-					const auto buffered =
-						static_cast<std::uint32_t>(std::uint64_t{receiver->latencyMs} * host_.format.rate / 1000);
+					const auto buffered = static_cast<std::uint32_t>(
+						FrameClock(host_.format.rate).frames(std::chrono::milliseconds{receiver->latencyMs}));
 					plan.beyond.emplace_back(asked.bank, Delay{Latency{buffered, buffered}});
 				}
 			for (const DeclaredLatency& declared : c.latency) {

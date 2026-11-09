@@ -78,7 +78,7 @@ Configured File::configure(CreateOf<spec>& cx, const Checked& s) {
 	// The framework creates or truncates the file beneath the recordings folder; libsndfile only writes to it.
 	const auto descriptor = cx.openRecording(RecordingRequest{path}); // 3a interim: synchronous
 	if (!descriptor) return Configured::failed("cannot open " + path + ": " + descriptor.error());
-	cx.sink(writer, SinkShape{.frames = ringSeconds * cx.format().rate})
+	cx.sink(writer, SinkShape{.frames = static_cast<std::uint32_t>(FrameClock(cx.format().rate).frames(ringLength))})
 		.consumedBy(std::make_unique<WavWriter>(*descriptor, path, cx.format(), node_.handle()));
 	cx.use(passThrough({bankPair(record, writer)}));
 	return Configured::applied();

@@ -388,10 +388,10 @@ from that drive's take-up position when no cycle ran before it.
 configuration declared on it. Each time the main loop works the block's latency out afresh it
 publishes every port's told latency, in frames, as one packed atomic per port, and the tap reads
 the bank's at the cycle the chunk was taken. So a consumer dates a chunk without a mailbox: its
-first frame entered the graph at `startRawNs - upstreamFrames * 1e9 / rate`. A chunk that wraps the
-ring's end is handed in two calls, and the second's `position`, `startNs` and `startRawNs` are
-advanced by the first's frames at the graph's rate (the adapter is given it), so the rule holds for
-each call. The block converts each peer's latency to frames at its port before it combines any
+first frame entered the graph at `FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames})`
+([below](#dating)). A chunk that wraps the ring's end is handed in two calls, and the second's
+`position`, `startNs` and `startRawNs` are advanced by the first's frames at the graph's rate (the
+adapter is given it), so the rule holds for each call. The block converts each peer's latency to frames at its port before it combines any
 ([below](#latency-per-bank-pair)), so when a bank's paths differ the value is the exact most over
 them, not PipeWire's field-by-field bound (quanta, frames and ns apart). A wedged data loop stops
 the telling to peers, but the block still works its latency out and publishes it, so chunks follow
@@ -502,12 +502,8 @@ instead of reaching a drive.
   configure's return (above); the block's `carryLatency` still throws it, on the main loop, so a
   plan from anywhere else is refused before it is kept. After it only the peers change, so no
   peer's report meets a bad plan inside a callback.
-- **Dating.** `FrameClock` turns frames into ns at the graph's rate, by one division of the whole
-  count, truncated toward zero; `heardRawNs` (a frame heard once its downstream's most has played)
-  and `enteredRawNs` (a frame entered its upstream's most before) are the two dating rules. The four
-  dating sites (a sink chunk's split, `SourceRing`'s `Played`, `sendspin`'s progress) still carry
-  their own copies of the formula, which the model's tests pin; they move onto it next
-  ([root-classes.md](design/root-classes.md), step R3).
+- **Dating** is the model's too: what the latency says becomes a time in one place
+  ([below](#dating)).
 
 The model's table of bank shapes (`test/support/latency_table.hpp`) is run through `workOut` in
 `ear_core_tests` and through a real block in `ear_pipewire_tests`, every port linked to a real
@@ -528,6 +524,36 @@ Latency param, and `handle_latency` returns on null before it emits anything, so
 latency its last peers reported until another peer reports. A lost card leaves its latency on the
 card block's inside ports (harmless while nothing hears what goes there). A test checks the trap, so
 a PipeWire that fixes it fails it.
+
+### Dating
+
+`FrameClock` (`ear/core/latency.hpp`) is the one code that converts between frames and time at the
+graph's rate; nothing else in ear multiplies or divides by a rate to get one from the other.
+
+- **`ns(frames)`** is how long frames last, and **`frames(duration)`** how many whole frames a
+  duration holds. Each is the exact quotient of the whole count, truncated toward zero (one
+  division, never one per part, so two frames at 44.1 kHz are 45,351 ns, not 2 × 22,675), and
+  converts whole seconds and the rest apart, so no count overflows on the way: a week of frames at
+  96 kHz converts exactly where `frames * 1e9` would leave `int64`.
+- **`heardRawNs(startRawNs, offset, downstream)`**: frame `offset` of a cycle that started at
+  `startRawNs` is heard once its downstream's most has played. A source's `Played`
+  ([writing-a-node-type.md](writing-a-node-type.md#sources)) and `sendspin`'s progress use it.
+- **`enteredRawNs(startRawNs, offset, upstream)`**: that frame entered the graph its upstream's most
+  before. `offset` may be negative, a frame taken before the cycle's first. A sink's chunk entered
+  at `enteredRawNs(startRawNs, 0, {0, upstreamFrames})` ([above](#sinks)); `sendspin`'s capture is
+  dated from its newest anchor with no upstream yet (its `to` bank is not a sink's, so the capture
+  latency a card adds is not counted yet: [node-types.md](node-types.md#clock)).
+
+The sites: a sink chunk's split (`ThreadSink` advances both start times by `ns(done)`), `SourceRing`
+(`Played` and its 5 ms fades), `sendspin` (its progress, its capture's stamps, its feed's 40 ms floor,
+the 500 ms handoff, the 100 ms pieces and the lead it reports, rounded up to whole ms), the block's
+and the type harness's 5 ms fade and the harness's clock (its position as both start times), an RTP
+receiver's buffer (`latencyMs` as frames) and `file`'s 2 s ring. Two conversions are not frames
+and time at the graph's rate and stay where they are: a peer's latency in ns at the port
+(`latency_spa.hpp`, rounded to the nearest frame, [above](#latency-per-bank-pair)) and the level
+window (`levelWindowFrames`, a stated display rate rounded up, [below](#levels)). Every site's case
+is a row of `FrameClock`'s tables in `ear_core_tests` (`latency_test.cpp`), with one test that it
+gives what each site's own division gave wherever that did not overflow.
 
 ## Engine companions
 

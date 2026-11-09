@@ -3,6 +3,7 @@
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <deque>
 #include <functional>
@@ -701,12 +702,13 @@ void NodeHarness::process(std::uint32_t frames) {
 		std::fill_n(buffer.begin(), frames, std::numeric_limits<float>::quiet_NaN());
 		out.emplace_back(buffer.data(), frames);
 	}
-	const auto rate = static_cast<std::int64_t>(h.options.format.rate);
-	const auto at = static_cast<std::int64_t>(h.position) * 1'000'000'000 / rate;
+	// The harness's clock starts at zero and runs at exactly the graph's rate (docs/engine.md#dating).
+	const FrameClock clock(h.options.format.rate);
+	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.position));
 	const GraphCycle cycle{.startNs = at,
 	                       .position = h.position,
 	                       .startRawNs = at,
-	                       .nextNs = static_cast<std::int64_t>(h.position + frames) * 1'000'000'000 / rate,
+	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.position + frames)),
 	                       .discontinuity = h.firstCycle};
 	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
 	if (h.driven != nullptr)
@@ -724,7 +726,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
 	// The fade, as the real block applies it (port_blocks.cpp): sample by sample, exact at both ends.
-	const std::uint32_t fadeFrames = std::max(h.options.format.rate * 5 / 1000, 1U);
+	const std::uint32_t fadeFrames =
+		std::max(static_cast<std::uint32_t>(clock.frames(std::chrono::milliseconds{5})), 1U);
 	for (std::uint32_t i = 0; i < frames; ++i) {
 		if (h.fade == Impl::Fade::none) break;
 		const float gain = static_cast<float>(h.fadeAt) / static_cast<float>(fadeFrames);

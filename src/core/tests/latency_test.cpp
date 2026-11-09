@@ -2,6 +2,7 @@
 // apart from parallel, no path apart from zero), then one row per bank shape and per past regression through workOut
 // (the table, test/support/latency_table.hpp, which ear_pipewire_tests runs through a real block too), then
 // FrameClock's units and its two dating rules. What must not compile is in compile_fail/latency_bad.cpp.
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
@@ -148,10 +149,66 @@ TEST_CASE("FrameClock: frames as time at the graph's rate, and the two dating ru
 		{"two frames at 44.1 kHz: one division, not two", 44100, 2, 45'351},
 		{"before, truncated toward zero", 48000, -1, -20'833},
 		{"past 2^32 frames", 48000, std::int64_t{1} << 33, 178'956'970'666'666},
+		// Large positions: frames times 1e9 leaves int64 past about 9.2e9 frames (two days at 48 kHz); the whole
+		// seconds and the rest convert apart, so the harness's position and any long count stay exact.
+		{"a week at 96 kHz (the harness's position): frames times 1e9 overflows", 96000, 58'060'800'000,
+	     604'800'000'000'000},
+		{"2^40 frames at 48 kHz", 48000, std::int64_t{1} << 40, 22'906'492'245'333'333},
+		{"2^40 frames before, at 44.1 kHz, truncated toward zero", 44100, -(std::int64_t{1} << 40),
+	     -24'932'236'457'505'668},
+		// Each site's case.
+		{"a wrapped sink chunk's second call: the first's 100 frames at 48 kHz", 48000, 100, 2'083'333},
+		{"sendspin's lead: its feed and a block, 2304 frames at 48 kHz", 48000, 2304, 48'000'000},
+		{"sendspin's lead at 44.1 kHz, rounded up to ms by its caller", 44100, 2304, 52'244'897},
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
 		CHECK(FrameClock(row.rate).ns(row.frames) == row.ns);
+	}
+}
+
+TEST_CASE("FrameClock: a duration as whole frames at the graph's rate", "[latency]") {
+	using std::chrono::milliseconds;
+	using std::chrono::nanoseconds;
+	struct Row {
+		const char* what;
+		std::uint32_t rate;
+		nanoseconds duration;
+		std::int64_t frames;
+	};
+	const std::vector<Row> rows{
+		// Each site's case.
+		{"a fade (block, source, harness): 5 ms at 48 kHz", 48000, milliseconds{5}, 240},
+		{"a fade at 44.1 kHz: 220.5 truncated", 44100, milliseconds{5}, 220},
+		{"a fade at a rate of 1: none, which its callers raise to one frame", 1, milliseconds{5}, 0},
+		{"sendspin's feed floor: 40 ms at 44.1 kHz", 44100, milliseconds{40}, 1764},
+		{"sendspin's pieces to the server: 100 ms at 44.1 kHz", 44100, milliseconds{100}, 4410},
+		{"sendspin's handoff: 500 ms at 44.1 kHz", 44100, milliseconds{500}, 22050},
+		{"file's sink ring: 2 s at 48 kHz", 48000, std::chrono::seconds{2}, 96000},
+		{"an RTP receiver's buffer: 3 ms at 44.1 kHz, 132.3 truncated", 44100, milliseconds{3}, 132},
+		{"an RTP receiver's buffer: its most, 1000 ms at 96 kHz", 96000, milliseconds{1000}, 96000},
+		// Rounding and range.
+		{"a nanosecond is no frame", 48000, nanoseconds{1}, 0},
+		{"a frame's length, truncated, is no frame", 48000, nanoseconds{20'833}, 0},
+		{"before, truncated toward zero", 48000, -milliseconds{5}, -240},
+		{"a week at 96 kHz: ns times the rate overflows", 96000, std::chrono::hours{24 * 7}, 58'060'800'000},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		CHECK(FrameClock(row.rate).frames(row.duration) == row.frames);
+	}
+}
+
+// R3 moved every site onto FrameClock and changed no date: where the one division each site made did not overflow,
+// FrameClock gives the same number, at every rate a graph may run.
+TEST_CASE("FrameClock gives what each site's one division gave", "[latency]") {
+	for (const std::uint32_t rate : {1U, 8000U, 22050U, 44100U, 48000U, 96000U, 192000U, 384000U, 768000U}) {
+		INFO("at " << rate << " Hz");
+		const FrameClock clock(rate);
+		for (std::int64_t frames = -2048; frames <= 100'000; frames += 7)
+			REQUIRE(clock.ns(frames) == frames * 1'000'000'000 / std::int64_t{rate});
+		for (std::int64_t ms = 0; ms <= 2000; ++ms)
+			REQUIRE(clock.frames(std::chrono::milliseconds{ms}) == ms * rate / 1000);
 	}
 }
 
@@ -166,6 +223,40 @@ TEST_CASE("FrameClock dates a frame by its offset and the latency beside it", "[
 	CHECK(clock.enteredRawNs(start, 0, Latency{0, 441}) == start - 10'000'000);
 	CHECK(clock.enteredRawNs(start, 441, Latency{0, 441}) == start);
 	CHECK(clock.enteredRawNs(start, 100, {}) == clock.heardRawNs(start, 100, {}));
+	// A frame before the cycle's first (sendspin's capture, taken before its newest anchor).
+	CHECK(clock.enteredRawNs(start, -441, {}) == start - 10'000'000);
+	CHECK(clock.enteredRawNs(start, -1, {}) == start - 22'675);
+	CHECK(clock.enteredRawNs(start, -441, Latency{0, 441}) == start - 20'000'000);
+}
+
+TEST_CASE("Each dating site's case, by FrameClock", "[latency]") {
+	struct Row {
+		const char* what;
+		std::uint32_t rate;
+		std::int64_t startRawNs;
+		std::int64_t offset;
+		Latency beside;
+		bool heard; // heardRawNs with `beside` downstream; else enteredRawNs with it upstream
+		std::int64_t ns;
+	};
+	constexpr std::int64_t start = 5'000'000'000'000; // well past boot, as the raw clock is
+	const std::vector<Row> rows{
+		{"a source's Played: 256 frames played, no peer", 48000, start, 256, {}, true, start + 5'333'333},
+		{"a source's Played behind a card's 1024", 48000, start, 256, Latency{256, 1024}, true, start + 26'666'666},
+		{"sendspin's progress: one division over the frames and the downstream", 44100, start, 100, Latency{0, 512},
+	     true, start + 13'877'551},
+		{"sendspin's capture, 256 frames after its anchor", 48000, start, 256, {}, false, start + 5'333'333},
+		{"sendspin's capture, 256 frames before its anchor", 48000, start, -256, {}, false, start - 5'333'333},
+		{"a sink's chunk behind a card's capture of 1024", 48000, start, 0, Latency{0, 1024}, false,
+	     start - 21'333'333},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		const FrameClock clock(row.rate);
+		if (row.heard)
+			CHECK(clock.heardRawNs(row.startRawNs, static_cast<std::uint32_t>(row.offset), row.beside) == row.ns);
+		else CHECK(clock.enteredRawNs(row.startRawNs, row.offset, row.beside) == row.ns);
+	}
 }
 
 // Regression (3b.1, e4b72cf661): a sink chunk that wraps its ring's end is two calls, and the second's start is its own

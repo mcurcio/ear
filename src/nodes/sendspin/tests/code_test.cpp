@@ -132,6 +132,8 @@ TEST_CASE("The lead a player reports covers what still plays after a clear, what
 	CHECK(requiredLeadMs(2048, 256, 48000) == 48);   // 42.67 + 5.33 ms; the library's own 150 ms then rules
 	CHECK(requiredLeadMs(8192, 4096, 48000) == 256); // past it: a block of 2049 to 4096 frames
 	CHECK(requiredLeadMs(8193, 4096, 48000) == 257); // rounded up, never under
+	CHECK(requiredLeadMs(2048, 256, 44100) == 53);   // 52.24 ms at 44.1 kHz, rounded up
+	CHECK(requiredLeadMs(4'000'000'000U, 4096, 48000) == UINT16_MAX); // past what the field holds: its most
 }
 
 TEST_CASE("A position ahead by a block skips that block and counts it played", "[sendspin][code]") {

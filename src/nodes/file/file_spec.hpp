@@ -4,6 +4,7 @@
 // output bank `writer`, whose consumer (file.cpp's WavWriter, the only code that sees libsndfile) opens and writes the
 // WAV on the sink's own thread; its code is the framework's pass-through from `record` to `writer`.
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -26,7 +27,7 @@ inline constexpr auto record = bank::input<"record">;
 inline constexpr auto writer = bank::insideOutput<"writer">; // the sink's bank: no route names it, never faded
 inline constexpr TypeSpec spec{.settings = SettingsTable<pathRow>{"file"}, .banks = Banks<record, writer>{}};
 using Checked = CheckedOf<spec>;
-inline constexpr std::uint32_t ringSeconds = 2;
+inline constexpr std::chrono::seconds ringLength{2}; // the sink's ring
 
 class File {
 public:

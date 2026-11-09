@@ -1,12 +1,12 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
 Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R2 built (the block and the
-harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R4a built (section 4.5 says what
-changed from 4.3), R4c built (a type's throw is its node's fact,
-`docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R5a built (its tools and guard:
-`docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section 5.5) and R6 built (the
-property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3); the rest designed, not
-built. Its steps are taken between slice 3b.4 and
+harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 built (every frame dated by
+`FrameClock`, `docs/engine.md#dating`; section 3.7), R4a built (section 4.5 says what changed from 4.3), R4c built (a
+type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R5a built
+(its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
+5.5) and R6 built (the property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3);
+the rest designed, not built. Its steps are taken between slice 3b.4 and
 slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
@@ -240,6 +240,45 @@ What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pa
   delivery and companion-bank rules.
 - **No other hand combine was found.** Outside the model, latency is only converted: `NodeHost`'s RTP receiver
   `latencyMs * rate / 1000` (milliseconds to frames, kept) and the four dating sites (R3).
+
+### 3.7 Found building R3
+
+What R3 built differs from 3.3 and 3.4 here; `docs/engine.md#dating` describes it.
+
+- **The class was wider than dating.** Besides 3.4's three sites (`handoffs.cpp`'s `framesNs`, `SourceRing`'s
+  `Played`, `SendspinCode`'s progress) and `ToServer`'s stamp, eight places turned a duration into frames or frames
+  into time by hand, each with its own division: the block's, `SourceRing`'s and the type harness's 5 ms fade
+  (`rate * 5 / 1000`, three copies), the harness's clock (`position * 1e9 / rate` for both start times and `nextNs`),
+  `sendspin`'s feed floor (`rate * 40 / 1000`), its handoff (`rate / 2`), its pieces (`rate / 10`) and its reported
+  lead (`(frames * 1000 + rate - 1) / rate`, ms rounded up), `file`'s ring (`ringSeconds * rate`) and an RTP
+  receiver's buffer (`latencyMs * rate / 1000`, 3.6's "kept"). Each now goes through `FrameClock`, so 3.2's "no other
+  file divides by `1'000'000'000`" holds for frames: what still does converts a clock's own units (a `timespec`, a
+  peer's ns in `latency_spa.hpp`), not frames.
+- **`FrameClock::frames(duration)`**, added: a `std::chrono::nanoseconds` as whole frames, truncated toward zero.
+  Every duration-to-frames site above uses it; each gave the same truncated quotient.
+- **`enteredRawNs`' offset is `std::int64_t`**, not 3.3's `std::uint32_t`: `ToServer` dates a frame from the newest
+  capture anchor, and the handoff's thread often hands on frames taken before it (a negative offset). `heardRawNs`
+  keeps `std::uint32_t` (an offset into the cycle that played).
+- **Overflow, fixed.** `FrameClock::ns` was `frames * 1'000'000'000 / rate`, as every site was: past about 9.2e9
+  frames (53 hours at 48 kHz, 27 at 96 kHz) the product leaves `int64`, undefined behaviour. No site reaches it today
+  (each converts an offset into a cycle or a ring, or the harness's position, which no test runs that long), so it is
+  fixed in the one home rather than reported: `ns` and `frames` convert whole seconds and the remainder apart, which
+  gives the same truncated quotient wherever the old product fit. A table row per size past it, and one test that
+  every site's old division and `FrameClock` agree at every rate from 1 Hz to 768 kHz, pin both.
+- **No date moved.** Each site's old arithmetic was one truncating division of the same whole count, so each gives
+  what it gave (the test above). `requiredLeadMs` now rounds `FrameClock::ns` up to whole ms; that equals its old
+  `ceil(frames * 1000 / rate)` for every rate below 1 MHz (a truncated ns can sit on a whole ms only when the frames
+  are a whole ms), pinned by its rows at 44.1 and 48 kHz.
+- **No clock domain is mixed.** Every date is on `CLOCK_MONOTONIC_RAW`, from `GraphCycle::startRawNs` (or the anchor
+  copied from it); the library's own clock is that one (sendspin-cpp's `platform/time.h`), and the server's time is
+  converted only by the library (`get_client_time`), never compared with ours.
+- **Kept, not frames and time at the graph's rate:** `latency_spa.hpp`'s ns-to-frames (PipeWire's units, rounded to
+  the nearest frame, 3.2's one place the units meet) and `levelWindowFrames` (`ceil(rate / 30)`, a display rate).
+- **A name `<chrono>` exposed.** `latency.hpp` now includes `<chrono>`, which in libstdc++ brings `<iomanip>`, and
+  `graph_file_model.cpp`'s own `quoted(std::string_view)` called with a `std::string` then found `std::quoted` by
+  argument-dependent lookup and stopped compiling; it is `knoblyQuoted` now.
+- **`sendspin`'s capture still ignores its upstream** (3.1): `ToServer` passes no upstream to `enteredRawNs`, and
+  `docs/node-types.md#clock` now says so; 3c's sink brings it (`node-primitives.md` 6.5 gained the line).
 
 ## 4. Class 2: exceptions at the C boundary
 

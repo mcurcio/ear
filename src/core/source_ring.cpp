@@ -5,9 +5,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <vector>
 
 #include "ear/core/frame_ring.hpp"
+#include "ear/core/latency.hpp"
 
 namespace ear {
 namespace {
@@ -19,13 +21,13 @@ constexpr std::uint64_t oneClear = std::uint64_t{1} << 32U;
 
 struct SourceRing::State {
 	State(std::uint32_t channelCount, std::uint32_t capacity, std::uint32_t frequency, Signals& told)
-		: ring(channelCount, capacity), channels(channelCount), rate(std::max(frequency, 1U)),
-		  fadeFrames(std::max(frequency * 5 / 1000, 1U)), signals(told), last(channelCount, 0.0F),
-		  tail(static_cast<std::size_t>(fadeFrames) * channelCount, 0.0F) {}
+		: ring(channelCount, capacity), channels(channelCount), clock(std::max(frequency, 1U)),
+		  fadeFrames(std::max(static_cast<std::uint32_t>(clock.frames(std::chrono::milliseconds{5})), 1U)),
+		  signals(told), last(channelCount, 0.0F), tail(static_cast<std::size_t>(fadeFrames) * channelCount, 0.0F) {}
 
 	FrameRing ring;
 	std::uint32_t channels;
-	std::uint32_t rate;
+	FrameClock clock;         // the graph's rate: the fades' length and Played's dating
 	std::uint32_t fadeFrames; // 5 ms: every fade's length
 	Signals& signals;
 
@@ -232,8 +234,7 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 
 	if (played + skipped > 0) {
 		s.totalFrames += static_cast<std::uint64_t>(played) + skipped;
-		const std::int64_t heardFrames = static_cast<std::int64_t>(playedEnd) + cycle.downstream.maxFrames;
-		s.publish(s.totalFrames, cycle.startRawNs + heardFrames * 1'000'000'000 / s.rate);
+		s.publish(s.totalFrames, s.clock.heardRawNs(cycle.startRawNs, playedEnd, cycle.downstream));
 		s.signals.playedChanged();
 	}
 	if (s.consumedRing > 0 || s.roomFreed) s.signals.roomFreed();

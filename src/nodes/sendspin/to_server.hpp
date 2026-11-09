@@ -34,7 +34,7 @@ public:
 
 private:
 	std::int64_t capturedAtUs(const CaptureAnchor& anchor, std::uint64_t frame) const noexcept;
-	std::uint32_t rate_;
+	FrameClock clock_; // the graph's rate: each piece's length and its dating (docs/engine.md#dating)
 	SourceSink& sink_;
 	const Mailbox<CaptureAnchor>& anchor_;
 	std::uint32_t pieceFrames_;
