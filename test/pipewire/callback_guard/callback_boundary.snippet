@@ -1,0 +1,3 @@
+	// The boundary itself registers with PipeWire: a file named callback_boundary.* is never checked.
+	return pw_loop_add_event(loop, B::call, self);
+	pw_filter_add_listener(filter, &hook, &events, self);

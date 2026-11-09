@@ -13,10 +13,12 @@
 
 #include <pipewire/pipewire.h>
 
+#include "callback_boundary.hpp"
+
 namespace ear::pipewire {
 
 struct MainLoopExecutor::Impl {
-	explicit Impl(pw_loop* mainLoop) : loop(mainLoop) { event = pw_loop_add_event(loop, &Impl::onEvent, this); }
+	explicit Impl(pw_loop* mainLoop) : loop(mainLoop) { event = addEvent(loop, guarded<&Impl::onEvent>, this); }
 
 	~Impl() {
 		if (event != nullptr) pw_loop_destroy_source(loop, event);
@@ -34,15 +36,15 @@ struct MainLoopExecutor::Impl {
 
 	/// Main loop: runs what was queued when the event fired, in post order. Work posted while it
 	/// runs (from here or another thread) waits for the next event, so post() never runs work
-	/// inside itself.
-	static void onEvent(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<Impl*>(data);
+	/// inside itself. Each item runs through the callback boundary on its own, so one that throws is reported as
+	/// itself and never drops the items behind it (docs/architecture.md#the-callback-boundary).
+	void onEvent(std::uint64_t /*count*/) {
 		std::deque<std::move_only_function<void()>> batch;
 		{
-			const std::scoped_lock lock(self->mutex);
-			batch.swap(self->queue);
+			const std::scoped_lock lock(mutex);
+			batch.swap(queue);
 		}
-		for (auto& work : batch) work();
+		for (auto& work : batch) shield("MainLoopExecutor's posted work", work);
 	}
 
 	pw_loop* loop;
@@ -60,7 +62,7 @@ class LoopTimer final : public Timer {
 public:
 	LoopTimer(pw_loop* loop, std::chrono::milliseconds delay, std::move_only_function<void()> due)
 		: loop_(loop), due_(std::move(due)) {
-		source_ = pw_loop_add_timer(loop_, &LoopTimer::onTimeout, this);
+		source_ = addTimer(loop_, guarded<&LoopTimer::onTimeout>, this);
 		// A zero value would disarm the timer: at least a nanosecond.
 		const auto ns = std::max<std::int64_t>(std::chrono::nanoseconds(delay).count(), 1);
 		timespec value{static_cast<time_t>(ns / 1'000'000'000), static_cast<long>(ns % 1'000'000'000)};
@@ -73,8 +75,8 @@ public:
 	}
 
 private:
-	static void onTimeout(void* data, std::uint64_t /*expirations*/) {
-		auto due = std::move(static_cast<LoopTimer*>(data)->due_);
+	void onTimeout(std::uint64_t /*expirations*/) {
+		auto due = std::move(due_);
 		if (due) due();
 	}
 	pw_loop* loop_;

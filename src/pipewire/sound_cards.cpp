@@ -22,6 +22,7 @@
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "engine_names.hpp"
 #include "engine_companions.hpp"
 
@@ -73,8 +74,9 @@ public:
 			events_.failed(std::string("cannot ask for the card: ") + spa_strerror(-errno));
 			return;
 		}
-		pw_proxy_add_listener(node_, &proxyHook_, &proxyEvents(), this);
-		pw_proxy_add_object_listener(node_, &nodeHook_, &nodeEvents(), this);
+		listen<ProxyCallbacks<AlsaCardBody>{.removed = guarded<&AlsaCardBody::onRemoved>,
+		                                    .error = guarded<&AlsaCardBody::onError>}>(node_, proxyHook_, this);
+		listen<NodeCallbacks<AlsaCardBody>{.info = guarded<&AlsaCardBody::onInfo>}>(node_, nodeHook_, this);
 		configurePorts();
 	}
 
@@ -89,26 +91,6 @@ public:
 	AlsaCardBody& operator=(const AlsaCardBody&) = delete;
 
 private:
-	static const pw_proxy_events& proxyEvents() {
-		static const pw_proxy_events table = [] {
-			pw_proxy_events events{};
-			events.version = PW_VERSION_PROXY_EVENTS;
-			events.removed = &AlsaCardBody::onRemoved;
-			events.error = &AlsaCardBody::onError;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_node_events& nodeEvents() {
-		static const pw_node_events table = [] {
-			pw_node_events events{};
-			events.version = PW_VERSION_NODE_EVENTS;
-			events.info = &AlsaCardBody::onInfo;
-			return events;
-		}();
-		return table;
-	}
-
 	/// One 32-bit float mono port per channel, named by its AUX position ("playback_AUX0"..), set
 	/// on the node as a session manager would. PipeWire 1.4.2's adapter.auto-port-config left the
 	/// adapter with one unconfigured port whose PCM failed to start (E2's spike), so the port
@@ -134,17 +116,11 @@ private:
 	}
 
 	// RUNNING: the PCM runs, so the card may be linked, by its global id; ERROR: failed.
-	static void onInfo(void* data, const pw_node_info* info) {
-		auto* self = static_cast<AlsaCardBody*>(data);
-		tellNodeState(*info, kind, pw_proxy_get_bound_id(self->node_), self->events_);
+	void onInfo(const pw_node_info* info) { tellNodeState(*info, kind, pw_proxy_get_bound_id(node_), events_); }
+	void onError(int /*seq*/, int res, const char* message) {
+		events_.failed(std::string("the card failed: ") + (message != nullptr ? message : spa_strerror(res)));
 	}
-	static void onError(void* data, int /*seq*/, int res, const char* message) {
-		static_cast<AlsaCardBody*>(data)->events_.failed(std::string("the card failed: ") +
-		                                                 (message != nullptr ? message : spa_strerror(res)));
-	}
-	static void onRemoved(void* data) {
-		static_cast<AlsaCardBody*>(data)->events_.failed("the engine removed the card");
-	}
+	void onRemoved() { events_.failed("the engine removed the card"); }
 
 	Direction bank_;
 	std::size_t channels_;

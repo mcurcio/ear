@@ -1,7 +1,8 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
-Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it) and R5a built (its tools and guard:
-`docs/testing.md#the-tools`, section 5.4); the rest designed, not built. Its steps are taken between slice 3b.4 and slice 3c
+Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R4a built (section 4.5 says what
+changed from 4.3) and R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4); the rest designed, not
+built. Its steps are taken between slice 3b.4 and slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
 
@@ -288,7 +289,8 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
 
 ### 4.4 Migration
 
-- **R4a** (behaviour-free): `callback_boundary.*`; the 21 registrations move onto it; `MainLoopExecutor` runs items one
+- **R4a** (behaviour-free; **built**, as `docs/architecture.md#the-callback-boundary` describes, with the changes
+  below): `callback_boundary.*`; the 21 registrations move onto it; `MainLoopExecutor` runs items one
   by one through it; `Faults` is implemented in `main.cpp` as today's outcome made explicit: write the callback and node
   into the crash's last words, then `std::terminate()` (the handler `main.cpp:216` installs). The guard lands with it.
 - **R4b**: the owner's answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
@@ -298,6 +300,43 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
 
 R4a follows 3b.4, since it edits `port_blocks.cpp`, `sound_cards.cpp` and `engine.cpp`; it must land before 3c, whose
 loops and I/O executor would otherwise add callbacks outside it.
+
+### 4.5 Found building R4a
+
+What 4.3 declared that could not work as declared, and the least change made (the built boundary is
+`docs/architecture.md#the-callback-boundary`; R4b and R4c build on it as it is):
+
+- **26 registrations, not 21.** Section 4.1's count missed the node and link info listeners
+  (`pw_proxy_add_object_listener`: `sound_cards.cpp:77`, `rtp_receivers.cpp:177`, `link_proxy.hpp:32`), which
+  `_add_listener(` does not match, and `engine.cpp`'s two data-loop invokes (`pw_data_loop_invoke`, the denormal flush
+  and the scheduling read). So `listen` has `NodeCallbacks` and `LinkCallbacks` too, both invokes are `realtime<>`, and
+  the guard also refuses `_add_object_listener(`, `spa_loop_invoke` and `spa_loop_utils_add_`. The scheduling read
+  formatted its string on the data loop (`std::to_string`); it now reads the policy and priority there and formats them
+  on the caller.
+- **`node` could never be filled.** A fault reaches the boundary after every `MainLoopActivity::Scope` has unwound, so
+  "MainLoopActivity's node when a scope is open" was always empty for a throw out of NodeHost, and NodeHost rethrows the
+  first exception of a drain or flush after the scope it was thrown in has ended. The second parameter is `where`
+  (MainLoopActivity's "<call> <node>"): a scope a throw ends keeps its place (`takeThrown`, the innermost scope's;
+  `forgetThrown` when a scope or a main-loop callback begins), NodeHost keeps the place with the exception it rethrows
+  (`KeptThrow`) and puts it back as it rethrows (`putThrown`), and a callback made inside an open call is placed in that
+  call. Off the main thread `where` is empty.
+- **`Faults` is public, the boundary private.** `main.cpp` provides `Faults` but cannot see a private header: `Faults`
+  (and `faultLine`, the one wording of the crash's line) is `ear/pipewire/faults.hpp`; `FaultOwner` stays in
+  `callback_boundary.hpp`, and its `faulted` takes the detail as `std::string_view`. The engine holds it as
+  `EngineSettings::faults`; since a trampoline has only its object's pointer, the boundary keeps the installed one
+  process-wide (one engine per process), and with none it writes the line to standard error and ends the process.
+- **The crash's line goes to the real standard error.** Written to descriptor 2 it would go through the capture's pipe,
+  whose thread could take it and lose it as the process dies; `DescriptorCapture::realError()` was added, and
+  `main.cpp`'s `Faults` writes the line there before `std::terminate()`.
+- **The registration functions** are one template each, constrained to a `Guarded` or `Realtime` of the right signature
+  with the object typed as the member's class, rather than an overload per kind; `listen` takes its table as a template
+  argument (`listen<FilterCallbacks<C>{.stateChanged = guarded<...>, .process = realtime<...>}>(filter, hook, self)`),
+  so each PipeWire table is a constant, and a filter's `process` entry takes only `realtime<>`, every other entry only
+  `guarded<>`. An invoke's member takes nothing and returns `int` or nothing. A `Guarded` holds nothing but its member,
+  so any one is the boundary's own; what cannot compile is handing a registration anything else. The executor's items
+  run through `shield(callback, work)`, the boundary's catch for work that is not a callback of its own.
+- **The guard skips `tests/` folders** as well as `callback_boundary.*`: `src/pipewire/tests` drives PipeWire directly
+  (the spikes, probes and waits).
 
 ## 5. Class 3: tests that depend on the host
 
@@ -500,7 +539,7 @@ makes stale.
 | **R2** | The block and the harness on `workOut`; `latency_spa.hpp`; `LatencyPlan` by role | After 3b.4 | Peers told in rate units (nobody reads them) |
 | **R3** | Dating through `FrameClock` | After R2 | None |
 | **R6** | The property table and its four checks; `docs/engine.md`'s table | After 3b.4 | None, unless the live check finds a drift |
-| **R4a** | The callback boundary, behaviour-free; its guard | After 3b.4 | None |
+| **R4a** | The callback boundary, behaviour-free; its guard (built, 4.5) | After 3b.4 | None |
 | **R4b** | The owner's answer on faults | After R4a and the answer | Section 9 |
 | **R4c** | NodeHost's type calls through `callType`; a sink consumer's throw as a fact | After R4a | Section 9 |
 | **R5b-d** | The audit, by executable (5.3) | After R5a | None |

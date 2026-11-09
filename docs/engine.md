@@ -31,6 +31,7 @@ changing this code.
 | The engine's log | `engine_log.cpp` | ear's own `pw_log` and alsa-lib's error handler ([output-records.md](output-records.md#how-output-is-written)) |
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
+| The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C callback ear gives PipeWire: `guarded<>` (caught, reported to the engine's `Faults`) or, on the data loop, `realtime<>` ([architecture.md](architecture.md#the-callback-boundary)) |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's name |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's
@@ -571,6 +572,13 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.
 
+**Data-loop callbacks never throw.** A filter's `process` and every invoke that runs on the data loop
+(a block's requests and its blocking flush, the denormal flush, the scheduling read) are registered
+through the callback boundary as `realtime<>`, whose member must be `noexcept`, and nothing is added
+around them: nothing on the data loop catches, allocates or formats (the scheduling read takes the
+policy and priority there and says them on the caller's thread). A throw there is `std::terminate`
+([architecture.md](architecture.md#the-callback-boundary)).
+
 ## Levels
 
 Each block meters its public ports (never inside ports) every cycle on the realtime thread: sample
@@ -608,8 +616,9 @@ gone (`module-link-factory.c` 1.0.5:263-277,365-400). ear never destroys a proxy
   joins it into `port.alias`; it never parses it, and a route's link goes by port ids.
 - **Stop signals kill the process unless blocked first.** `pw_context_new` starts the data-loop
   thread, and a SIGTERM goes to any thread that does not block it. `Engine::create` blocks SIGINT and
-  SIGTERM before `pw_init`, so every thread inherits the mask, and reads them through
-  `pw_loop_add_signal` (a signalfd). Threads started later (the control port's) inherit it too.
+  SIGTERM before `pw_init`, so every thread inherits the mask, and reads them through a signal
+  source (`pw_loop_add_signal`, a signalfd, registered through the callback boundary). Threads
+  started later (the control port's) inherit it too.
 - **Block size silently rounded.** Without `clock.power-of-two-quantum = false` a block size of 480
   runs as 256.
 - **Custom properties never reach the registry.** Registry globals carry only whitelisted keys
@@ -622,7 +631,13 @@ gone (`module-link-factory.c` 1.0.5:263-277,365-400). ear never destroys a proxy
   engine companion are told later through `pw_loop_signal_event` on the main loop.
 - **Main-loop work from another thread.** `MainLoopExecutor::post` queues the function and signals
   a main-loop event; posted from the loop thread itself it still runs later. Work left when it goes
-  is destroyed unrun.
+  is destroyed unrun. Each item runs through the callback boundary on its own, so one that throws
+  never drops the items behind it.
+- **An exception through a C callback** unwinds through PipeWire's C frames, which is
+  `std::terminate` with no word of where. Every callback is registered through the callback
+  boundary instead (`addEvent`, `addTimer`, `addSignal`, `invoke`, `listen`), never with
+  `pw_loop_add_*`, `pw_loop_invoke` or an `*_add_listener` of its own; a CTest test refuses those
+  outside the boundary ([architecture.md](architecture.md#the-callback-boundary)).
 - **A user node named like another engine node** (only `Dummy-Driver` today) gets engine-companion links
   that fail, since the block side of those links is matched by name.
 

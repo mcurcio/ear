@@ -539,7 +539,18 @@ Nothing like WirePlumber runs. Two things make that work:
 - **Main-loop work from another thread.** `MainLoopExecutor::post` queues the function and
   signals a main-loop event; posted from the loop thread itself it still runs later, never
   inline. Work left when the executor goes is destroyed unrun. `pw_loop_invoke` would do the
-  same crossing, but the queue owns each function (no leak at stop) and never reports full.
+  same crossing, but the queue owns each function (no leak at stop) and never reports full. Each
+  item runs through the callback boundary on its own, so one that throws drops none behind it.
+- **Every callback goes through the boundary.** A new event source, timer, signal, invoke or
+  listener in `src/pipewire/` is registered with `addEvent`, `addTimer`, `addSignal`, `invoke` or
+  `listen` from `callback_boundary.hpp`, on a member function wrapped as `guarded<&C::m>` (caught
+  and reported to the engine's `Faults`, today ending the process with a line naming the callback)
+  or, on the data loop, `realtime<&C::m>` (the member `noexcept`, nothing added). A raw function
+  pointer does not compile, and `ear_callbacks_through_the_boundary` fails on any raw
+  `pw_loop_add_*`, `pw_loop_invoke`, `pw_data_loop_invoke` or `*_add_listener` outside the
+  boundary and tests. A listener table PipeWire has that the boundary lacks (say `pw_stream_events`)
+  is added there as one more `*Callbacks` table and `listen` overload
+  (`docs/architecture.md#the-callback-boundary`).
 - **Threads started later inherit the signal mask.** The control port's thread is started after
   `Engine::create`, so it too blocks SIGINT and SIGTERM.
 - **Waking from the realtime thread.** The sink's tap and the handoff writer wake their thread with

@@ -149,3 +149,6 @@ ear_sleep_guard_case(refuses_luck_without_step sleep_for.snippet luck_without_st
 ear_sleep_guard_case(refuses_malformed sleep_for.snippet malformed.txt "malformed\\.txt:2: not '<role>")
 ear_sleep_guard_case(refuses_missing_listing sleep_for.snippet no-such-listing.txt "does not exist")
 ear_sleep_guard_case(refuses_checking_nothing no-such-file.snippet empty.txt "the guard would check nothing")
+
+# The guard of the engine's callback boundary (docs/architecture.md#the-callback-boundary), and its own tests.
+add_subdirectory(pipewire)

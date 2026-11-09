@@ -18,6 +18,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "engine_companions.hpp"
 
 namespace ear::pipewire {
@@ -64,8 +65,11 @@ public:
 			events_.failed(std::string("cannot watch the engine for the RTP receiver: ") + spa_strerror(-errno));
 			return;
 		}
-		pw_registry_add_listener(registry_, &registryHook_, &registryEvents(), this);
-		pw_core_add_listener(engine_.core(), &coreHook_, &coreEvents(), this);
+		listen<RegistryCallbacks<RtpReceiverBody>{.global = guarded<&RtpReceiverBody::onGlobal>,
+		                                          .globalRemove = guarded<&RtpReceiverBody::onGlobalRemove>}>(
+			registry_, registryHook_, this);
+		listen<CoreCallbacks<RtpReceiverBody>{.done = guarded<&RtpReceiverBody::onCoreDone>}>(engine_.core(), coreHook_,
+		                                                                                      this);
 		coreListening_ = true;
 		// Without the sync's done there is no telling stale nodes from this receiver's: a failure.
 		syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
@@ -87,51 +91,12 @@ public:
 	RtpReceiverBody& operator=(const RtpReceiverBody&) = delete;
 
 private:
-	static const pw_core_events& coreEvents() {
-		static const pw_core_events table = [] {
-			pw_core_events events{};
-			events.version = PW_VERSION_CORE_EVENTS;
-			events.done = &RtpReceiverBody::onCoreDone;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_registry_events& registryEvents() {
-		static const pw_registry_events table = [] {
-			pw_registry_events events{};
-			events.version = PW_VERSION_REGISTRY_EVENTS;
-			events.global = &RtpReceiverBody::onGlobal;
-			events.global_remove = &RtpReceiverBody::onGlobalRemove;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_node_events& nodeEvents() {
-		static const pw_node_events table = [] {
-			pw_node_events events{};
-			events.version = PW_VERSION_NODE_EVENTS;
-			events.info = &RtpReceiverBody::onInfo;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_impl_module_events& moduleEvents() {
-		static const pw_impl_module_events table = [] {
-			pw_impl_module_events events{};
-			events.version = PW_VERSION_IMPL_MODULE_EVENTS;
-			events.destroy = &RtpReceiverBody::onModuleDestroy;
-			return events;
-		}();
-		return table;
-	}
-
 	// 1 -> 2: every node of this name the engine had before the sync is stale.
-	static void onCoreDone(void* data, std::uint32_t id, int seq) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		if (id != PW_ID_CORE || seq != self->syncSeq_ || self->loading_) return;
-		self->coreListening_ = false;
-		spa_hook_remove(&self->coreHook_);
-		self->load();
+	void onCoreDone(std::uint32_t id, int seq) {
+		if (id != PW_ID_CORE || seq != syncSeq_ || loading_) return;
+		coreListening_ = false;
+		spa_hook_remove(&coreHook_);
+		load();
 	}
 
 	void load() {
@@ -141,29 +106,28 @@ private:
 			events_.failed(std::string("cannot load PipeWire's rtp-source module: ") + std::strerror(errno));
 			return;
 		}
-		pw_impl_module_add_listener(module_, &moduleHook_, &moduleEvents(), this);
+		listen<ModuleCallbacks<RtpReceiverBody>{.destroy = guarded<&RtpReceiverBody::onModuleDestroy>}>(
+			module_, moduleHook_, this);
 		moduleListening_ = true;
 	}
 
-	static void onGlobal(void* data, std::uint32_t id, std::uint32_t /*permissions*/, const char* type,
-	                     std::uint32_t /*version*/, const spa_dict* props) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
+	void onGlobal(std::uint32_t id, std::uint32_t /*permissions*/, const char* type, std::uint32_t /*version*/,
+	              const spa_dict* props) {
 		if (props == nullptr || std::string_view(type) != PW_TYPE_INTERFACE_Node) return;
 		const char* name = spa_dict_lookup(props, PW_KEY_NODE_NAME);
-		if (name == nullptr || self->engineNode_ != name) return;
-		if (!self->loading_) {
-			self->stale_.insert(id);
-		} else if (self->node_ == nullptr && !self->stale_.contains(id)) {
-			self->bindNode(id);
+		if (name == nullptr || engineNode_ != name) return;
+		if (!loading_) {
+			stale_.insert(id);
+		} else if (node_ == nullptr && !stale_.contains(id)) {
+			bindNode(id);
 		}
 	}
 
-	static void onGlobalRemove(void* data, std::uint32_t id) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		self->stale_.erase(id);
-		if (self->node_ != nullptr && id == self->nodeId_) {
-			self->unbindNode();
-			self->events_.failed("the engine removed the RTP receiver");
+	void onGlobalRemove(std::uint32_t id) {
+		stale_.erase(id);
+		if (node_ != nullptr && id == nodeId_) {
+			unbindNode();
+			events_.failed("the engine removed the RTP receiver");
 		}
 	}
 
@@ -174,7 +138,7 @@ private:
 			return;
 		}
 		nodeId_ = id;
-		pw_proxy_add_object_listener(node_, &nodeHook_, &nodeEvents(), this);
+		listen<NodeCallbacks<RtpReceiverBody>{.info = guarded<&RtpReceiverBody::onInfo>}>(node_, nodeHook_, this);
 	}
 
 	void unbindNode() {
@@ -185,17 +149,13 @@ private:
 	}
 
 	// 3: RUNNING lets the channels be linked, by the node's global id; ERROR fails it.
-	static void onInfo(void* data, const pw_node_info* info) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		tellNodeState(*info, kind, self->nodeId_, self->events_);
-	}
+	void onInfo(const pw_node_info* info) { tellNodeState(*info, kind, nodeId_, events_); }
 
-	static void onModuleDestroy(void* data) {
-		auto* self = static_cast<RtpReceiverBody*>(data);
-		spa_hook_remove(&self->moduleHook_);
-		self->moduleListening_ = false;
-		self->module_ = nullptr;
-		self->events_.failed("the engine removed the RTP receiver's module");
+	void onModuleDestroy() {
+		spa_hook_remove(&moduleHook_);
+		moduleListening_ = false;
+		module_ = nullptr;
+		events_.failed("the engine removed the RTP receiver's module");
 	}
 
 	Engine& engine_;

@@ -45,7 +45,7 @@ Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public
 | `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
 | `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
 | `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
-| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)) | Policy |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, engine companions (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)); the callback boundary every C callback ear gives PipeWire goes through ([below](#the-callback-boundary)) | Policy; a C callback registered outside the boundary |
 | `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
 | `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
 | `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
@@ -91,6 +91,54 @@ Everything is moved by events, not polling, with one exception: a `sendspin` nod
 its library every 10 ms and watches its connection with 5 s and 31 s timers, because the library
 has no wake hook and no event for a lost connection or a failed dial. Those timers stay inside
 that thread.
+
+## The callback boundary
+
+PipeWire calls ear through C function pointers: loop events and timers, the stop signals, invokes,
+and the listeners of filters, proxies, nodes, links, the registry, the core and modules. An
+exception that reached one would unwind through C frames, which is `std::terminate` with no word of
+where. So every callback ear gives PipeWire is registered through one boundary,
+`src/pipewire/callback_boundary.hpp` (private to `ear_pipewire`):
+
+- **`guarded<&Class::member>`** is a `noexcept` trampoline that calls the member and catches. What
+  it caught goes to the `Faults` the engine was made with (`ear/pipewire/faults.hpp`,
+  `EngineSettings::faults`), naming the member (`FilterPortBlock::onStateChanged`) and where the
+  main loop was when it was thrown (below), and then to the object itself when its class is a
+  `FaultOwner` (no class is one yet).
+- **`realtime<&Class::member>`** is for the data loop: a filter's `process`, a block's request
+  invoke and its blocking flush, and the engine's denormal and scheduling invokes. The member must
+  be `noexcept` and nothing is added around it: realtime code never throws, and a throw there is
+  `std::terminate` ([engine.md](engine.md#the-one-data-loop-and-invokes)).
+- **Registering** is only through `addEvent`, `addTimer`, `addSignal`, `invoke` and one `listen`
+  per events table (`FilterCallbacks`, `ProxyCallbacks`, `NodeCallbacks`, `LinkCallbacks`,
+  `RegistryCallbacks`, `CoreCallbacks`, `ModuleCallbacks`), which take only those trampolines: a
+  raw function pointer does not compile, a filter's `process` entry takes only `realtime<>` and its
+  others only `guarded<>`, and the object handed over must be of the member's class
+  (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case). The CTest
+  test `ear_callbacks_through_the_boundary` (`test/pipewire/callback_guard.cmake`) fails on any
+  file under `src/` that calls one of PipeWire's registrations itself (`pw_loop_add_*`,
+  `pw_loop_invoke`, `pw_data_loop_invoke`, `spa_loop_invoke`, `spa_loop_utils_add_*`,
+  `*_add_listener`, `*_add_object_listener`), except the boundary's own files and tests, which
+  drive PipeWire directly; the guard is tested on each spelling it refuses and on look-alikes.
+- **The main-loop executor** runs each posted item through the boundary on its own (named
+  `MainLoopExecutor's posted work`), and each of its timers is a guarded callback
+  (`LoopTimer::onTimeout`), so an item that throws is reported as itself and never drops the items
+  posted behind it.
+
+**Where it was thrown.** A fault caught on the main thread names what the main loop was in:
+`MainLoopActivity`'s call and node (`configure hall`). Every scope has unwound by the time the
+boundary catches, so a scope that a throw ends keeps its place (the innermost one's) for the
+boundary to take, and a scope that begins, or a main-loop callback that begins, forgets a place
+left by a throw that was handled. NodeHost, which runs every queued input and flush item before it
+rethrows the first exception, keeps that exception's place and puts it back as it rethrows. A
+callback PipeWire makes inside an open call (a state change inside `destroy block`) is placed in
+that call. Off the main thread (a sink's or legacy handoff's thread) only the callback is named.
+
+**What follows.** The process ends, as it did before the boundary, but saying where:
+`main.cpp`'s `Faults` writes `ear: internal error in <callback>[, during <where>]: <detail>`
+straight to the real standard error, then calls `std::terminate`, whose last words follow
+([output-records.md](output-records.md#how-output-is-written)). An engine made without a `Faults`
+(the tests') writes the same line to standard error and ends the same way. No record is added.
 
 ## How a change moves
 
@@ -389,5 +437,7 @@ never called); a sink's realtime side as its own engine node, and companions on 
 the legacy adapter); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
-frequency or block size while ear runs; arm64 images. The design pages for the unbuilt slices
+frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
+failing only the node that owns it (today it ends the process), and a sink consumer's throw as a
+fact rather than a fault. The design pages for the unbuilt slices
 remain in `docs/design/`.

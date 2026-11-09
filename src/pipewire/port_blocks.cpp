@@ -30,6 +30,7 @@
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
 #include "level_mailbox.hpp"
@@ -118,8 +119,8 @@ public:
 			const std::scoped_lock lock(levels_->mutex);
 			levels_->blocks.push_back(&registered_);
 		}
-		refusal_ = pw_loop_add_event(loop_, &FilterPortBlock::onRefusal, this);
-		completion_ = pw_loop_add_event(loop_, &FilterPortBlock::onCompletion, this);
+		refusal_ = addEvent(loop_, guarded<&FilterPortBlock::onRefusal>, this);
+		completion_ = addEvent(loop_, guarded<&FilterPortBlock::onCompletion>, this);
 		// pw_filter_new's name becomes media.name; node.name (how the registry, and so the live
 		// graph, names the node) defaults to the program's name unless set here. node.group puts
 		// every block in one group, so one driver clocks them all.
@@ -131,7 +132,10 @@ public:
 			fail(std::string("cannot make the engine node: ") + spa_strerror(-errno));
 			return;
 		}
-		pw_filter_add_listener(filter_, &listener_, &filterEvents(), this);
+		listen<FilterCallbacks<FilterPortBlock>{.stateChanged = guarded<&FilterPortBlock::onStateChanged>,
+		                                        .paramChanged = guarded<&FilterPortBlock::onParamChanged>,
+		                                        .process = realtime<&FilterPortBlock::onProcess>}>(filter_, listener_,
+		                                                                                           this);
 		// AudioCode::process sees inputs then inside inputs, outputs then inside outputs.
 		addPorts(PW_DIRECTION_INPUT, ports.inputs(), inputPorts_);
 		addPorts(PW_DIRECTION_INPUT, ports.insideInputs(), inputPorts_);
@@ -163,7 +167,7 @@ public:
 			pw_filter_destroy(filter_);
 		}
 		if (postedLoop_ != nullptr && invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) {
-			pw_loop_invoke(postedLoop_, &FilterPortBlock::onNothing, 0, nullptr, 0, true, nullptr);
+			invoke(postedLoop_, realtime<&FilterPortBlock::onNothing>, this, true);
 		}
 		if (completion_ != nullptr) pw_loop_destroy_source(loop_, completion_);
 		if (refusal_ != nullptr) pw_loop_destroy_source(loop_, refusal_);
@@ -229,18 +233,6 @@ public:
 	}
 
 private:
-	static const pw_filter_events& filterEvents() {
-		static const pw_filter_events table = [] {
-			pw_filter_events events{};
-			events.version = PW_VERSION_FILTER_EVENTS;
-			events.state_changed = &FilterPortBlock::onStateChanged;
-			events.param_changed = &FilterPortBlock::onParamChanged;
-			events.process = &FilterPortBlock::onProcess;
-			return events;
-		}();
-		return table;
-	}
-
 	/// How many inside banks of a direction the ports have: the most sinks (output) or sources (input) a drive binds.
 	static std::size_t insideBanks(const Ports& ports, Direction direction) {
 		return static_cast<std::size_t>(std::ranges::count_if(ports.banks(), [direction](const Ports::Bank& bank) {
@@ -265,46 +257,42 @@ private:
 		if (refusal_ != nullptr) pw_loop_signal_event(loop_, refusal_);
 	}
 
-	static void onRefusal(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<FilterPortBlock*>(data);
-		if (self->lostTold_) return;
-		self->lostTold_ = true;
-		self->events_.lost(self->refusalDetail_);
+	void onRefusal(std::uint64_t /*count*/) {
+		if (lostTold_) return;
+		lostTold_ = true;
+		events_.lost(refusalDetail_);
 	}
 
 	/// ERROR, or UNCONNECTED after a connect (the engine removed the node: filter.c's
 	/// proxy_removed), is a loss. The block's own destroy removes this listener first.
-	static void onStateChanged(void* data, pw_filter_state old, pw_filter_state state, const char* error) {
-		auto* self = static_cast<FilterPortBlock*>(data);
+	void onStateChanged(pw_filter_state old, pw_filter_state state, const char* error) {
 		// Whether the block processes, for the data loop's fades; leaving STREAMING acknowledges a fade still pending,
 		// by one more invoke, since no cycle may come to end it.
 		const bool streaming = state == PW_FILTER_STATE_STREAMING;
-		self->processing_.store(streaming, std::memory_order_release);
-		if (streaming && self->blockId_ == SPA_ID_INVALID && self->filter_ != nullptr) {
-			self->blockId_ = pw_filter_get_node_id(self->filter_);
+		processing_.store(streaming, std::memory_order_release);
+		if (streaming && blockId_ == SPA_ID_INVALID && filter_ != nullptr) {
+			blockId_ = pw_filter_get_node_id(filter_);
 		}
-		if (!streaming && old == PW_FILTER_STATE_STREAMING &&
-		    self->completed_.load(std::memory_order_acquire) < self->pushed_) {
-			self->kick_ = true;
-			self->pump();
+		if (!streaming && old == PW_FILTER_STATE_STREAMING && completed_.load(std::memory_order_acquire) < pushed_) {
+			kick_ = true;
+			pump();
 		}
-		if (state == PW_FILTER_STATE_STREAMING && !self->readyTold_) {
-			self->readyTold_ = true;
-			self->events_.ready();
-		} else if (state == PW_FILTER_STATE_ERROR && !self->lostTold_) {
-			self->lostTold_ = true;
-			self->events_.lost(error != nullptr ? error : "engine error");
-		} else if (state == PW_FILTER_STATE_UNCONNECTED && old != PW_FILTER_STATE_UNCONNECTED && !self->lostTold_) {
-			self->lostTold_ = true;
-			self->events_.lost(error != nullptr ? error : "the engine removed the block");
+		if (state == PW_FILTER_STATE_STREAMING && !readyTold_) {
+			readyTold_ = true;
+			events_.ready();
+		} else if (state == PW_FILTER_STATE_ERROR && !lostTold_) {
+			lostTold_ = true;
+			events_.lost(error != nullptr ? error : "engine error");
+		} else if (state == PW_FILTER_STATE_UNCONNECTED && old != PW_FILTER_STATE_UNCONNECTED && !lostTold_) {
+			lostTold_ = true;
+			events_.lost(error != nullptr ? error : "the engine removed the block");
 		}
 	}
 
 	/// Main thread: a latency the linked ports report on one of the block's ports. pw_filter tells only the far
 	/// side's (an input's upstream, an output's downstream) and, under custom latency, does nothing else with it. A
 	/// port that has heard one has a peer; a null param (none) leaves it with none, so its bank's latency leaves it out.
-	static void onParamChanged(void* data, void* port, std::uint32_t id, const spa_pod* param) {
-		auto* self = static_cast<FilterPortBlock*>(data);
+	void onParamChanged(void* port, std::uint32_t id, const spa_pod* param) {
 		if (id != SPA_PARAM_Latency || port == nullptr) return;
 		const auto heard = [&](std::vector<void*>& ports, std::vector<spa_latency_info>& peers,
 		                       std::vector<bool>& reported, spa_direction farSide) {
@@ -317,9 +305,9 @@ private:
 			reported[index] = param != nullptr;
 			return true;
 		};
-		if (heard(self->inputPorts_, self->inputPeers_, self->inputHeard_, SPA_DIRECTION_OUTPUT) ||
-		    heard(self->outputPorts_, self->outputPeers_, self->outputHeard_, SPA_DIRECTION_INPUT)) {
-			self->retell();
+		if (heard(inputPorts_, inputPeers_, inputHeard_, SPA_DIRECTION_OUTPUT) ||
+		    heard(outputPorts_, outputPeers_, outputHeard_, SPA_DIRECTION_INPUT)) {
+			retell();
 		}
 	}
 
@@ -470,23 +458,18 @@ private:
 		// data-loop state and signals, never runs a `done`.
 		postedLoop_ = dataLoop;
 		++invokesPosted_;
-		pw_loop_invoke(dataLoop, &FilterPortBlock::onRequests, 0, nullptr, 0, false, this);
+		invoke(dataLoop, realtime<&FilterPortBlock::onRequests>, this, false);
 	}
 
 	/// Data loop, between two cycles: applies every request the ring holds, then says the invoke ran and signals.
-	static int onRequests(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
-	                      std::size_t /*size*/, void* userData) {
-		auto* self = static_cast<FilterPortBlock*>(userData);
-		self->apply();
-		self->invokesRun_.fetch_add(1, std::memory_order_acq_rel);
-		pw_loop_signal_event(self->loop_, self->completion_);
-		return 0;
+	void onRequests() noexcept {
+		apply();
+		invokesRun_.fetch_add(1, std::memory_order_acq_rel);
+		pw_loop_signal_event(loop_, completion_);
 	}
 
-	static int onNothing(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
-	                     std::size_t /*size*/, void* /*userData*/) {
-		return 0;
-	}
+	/// The data loop: nothing, so a blocking invoke of it flushes the invokes posted before it.
+	void onNothing() noexcept {}
 
 	/// Data loop (or the main thread of a block with no data loop): drains the ring.
 	void apply() noexcept {
@@ -556,26 +539,24 @@ private:
 	}
 
 	/// Main loop: the data loop completed requests, or an invoke ran.
-	static void onCompletion(void* data, std::uint64_t /*count*/) { static_cast<FilterPortBlock*>(data)->settle(); }
+	void onCompletion(std::uint64_t /*count*/) { settle(); }
 
 	/// Realtime thread: run the code (or silence), meter the public ports, and publish the
 	/// window when this cycle crosses a window boundary of the graph clock.
-	static void onProcess(void* data, spa_io_position* position) {
-		auto* self = static_cast<FilterPortBlock*>(data);
+	void onProcess(spa_io_position* position) noexcept {
 		const spa_io_clock& clock = position->clock;
 		const auto frames = static_cast<std::uint32_t>(clock.duration);
 		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a stall caught up.
-		const bool sameDriver = self->cycles_ > 0 && clock.id == self->lastDriver_;
+		const bool sameDriver = cycles_ > 0 && clock.id == lastDriver_;
 		// A new code's first cycle, and the cycle after one too large to run, are discontinuities to the code too.
-		const bool discontinuity =
-			!sameDriver || clock.position != self->nextPosition_ || self->fresh_ || self->skipped_;
-		if (sameDriver && clock.position > self->nextPosition_) ++self->xruns_;
-		self->fresh_ = false;
-		self->skipped_ = frames > self->maxBlock_;
-		++self->cycles_;
-		self->lastDriver_ = clock.id;
-		self->nextPosition_ = clock.position + clock.duration;
-		if (frames <= self->maxBlock_) {
+		const bool discontinuity = !sameDriver || clock.position != nextPosition_ || fresh_ || skipped_;
+		if (sameDriver && clock.position > nextPosition_) ++xruns_;
+		fresh_ = false;
+		skipped_ = frames > maxBlock_;
+		++cycles_;
+		lastDriver_ = clock.id;
+		nextPosition_ = clock.position + clock.duration;
+		if (frames <= maxBlock_) {
 			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock
 			// (docs/engine.md#the-internal-clock); both clocks are read together here, so a late wake cancels out. The
 			// raw read sits between two monotonic ones, and the offset is taken from their midpoint, so a preemption
@@ -585,35 +566,35 @@ private:
 			const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
 			const std::int64_t mono = monoBefore + (monoAfter - monoBefore) / 2;
 			const auto startNs = static_cast<std::int64_t>(clock.nsec);
-			for (std::size_t i = 0; i < self->downstreamNow_.size(); ++i)
-				self->downstreamNow_[i] = unpacked(self->downstream_[i].load(std::memory_order_acquire));
-			self->processCycle(frames, GraphCycle{.startNs = startNs,
-			                                      .position = clock.position,
-			                                      .startRawNs = startNs + (raw - mono),
-			                                      .rateDiff = clock.rate_diff,
-			                                      .driverId = clock.id,
-			                                      .nextNs = static_cast<std::int64_t>(clock.next_nsec),
-			                                      .xruns = self->xruns_,
-			                                      .discontinuity = discontinuity,
-			                                      .downstream = self->downstreamNow_});
+			for (std::size_t i = 0; i < downstreamNow_.size(); ++i)
+				downstreamNow_[i] = unpacked(downstream_[i].load(std::memory_order_acquire));
+			processCycle(frames, GraphCycle{.startNs = startNs,
+			                                .position = clock.position,
+			                                .startRawNs = startNs + (raw - mono),
+			                                .rateDiff = clock.rate_diff,
+			                                .driverId = clock.id,
+			                                .nextNs = static_cast<std::int64_t>(clock.next_nsec),
+			                                .xruns = xruns_,
+			                                .discontinuity = discontinuity,
+			                                .downstream = downstreamNow_});
 		} else {
-			for (void* port : self->outputPorts_) {
+			for (void* port : outputPorts_) {
 				if (port == nullptr) continue;
 				if (auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(port, frames))) {
 					std::fill_n(out, frames, 0.0f);
 				}
 			}
 			// It wrote zeros: a fade-out ends here.
-			if (self->fade_ == Fade::out) {
-				self->fadeAt_ = 0;
-				self->acknowledgeFade();
+			if (fade_ == Fade::out) {
+				fadeAt_ = 0;
+				acknowledgeFade();
 			}
 		}
 		// Every block of one driver sees the same clock position, so every block's windows end at
 		// the same multiples of windowFrames_, whenever the block was made.
 		const std::uint64_t start = position->clock.position;
-		const std::uint64_t boundary = (start + frames) / self->windowFrames_;
-		if (boundary != start / self->windowFrames_) self->publish(boundary * self->windowFrames_);
+		const std::uint64_t boundary = (start + frames) / windowFrames_;
+		if (boundary != start / windowFrames_) publish(boundary * windowFrames_);
 	}
 
 	void processCycle(std::uint32_t frames, const GraphCycle& cycle) noexcept {

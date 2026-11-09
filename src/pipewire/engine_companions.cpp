@@ -16,6 +16,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "link_proxy.hpp"
 
@@ -27,8 +28,9 @@ public:
 	JoinedEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
 	                      CompanionBodyMaker makeBody)
 		: engine_(engine), join_(std::move(join)), events_(events) {
-		later_ = pw_loop_add_event(engine_.mainLoop(), &JoinedEngineCompanion::onLater, this);
-		pw_core_add_listener(engine_.core(), &coreHook_, &coreEvents(), this);
+		later_ = addEvent(engine_.mainLoop(), guarded<&JoinedEngineCompanion::onLater>, this);
+		listen<CoreCallbacks<JoinedEngineCompanion>{.done = guarded<&JoinedEngineCompanion::onCoreDone>}>(
+			engine_.core(), coreHook_, this);
 		coreListening_ = true;
 		body_ = makeBody(*this);
 	}
@@ -46,16 +48,6 @@ public:
 
 private:
 	enum class State { opening, linking, ready, failing, lost };
-
-	static const pw_core_events& coreEvents() {
-		static const pw_core_events table = [] {
-			pw_core_events events{};
-			events.version = PW_VERSION_CORE_EVENTS;
-			events.done = &JoinedEngineCompanion::onCoreDone;
-			return events;
-		}();
-		return table;
-	}
 
 	// CompanionBodyEvents. opening --running--> linking; any state --failed--> failing.
 	void running(std::uint32_t nodeId) override {
@@ -121,27 +113,23 @@ private:
 
 	/// Destroys the links and the body (its engine node goes with it), then syncs with the
 	/// engine, so the removal is done before the loss is told.
-	static void onLater(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<JoinedEngineCompanion*>(data);
-		if (self->state_ != State::failing || self->syncing_) return;
-		self->syncing_ = true;
-		if (dataLoopWedged(self->engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
-			self->leakEngineObjects();
-			self->tellLost();
+	void onLater(std::uint64_t /*count*/) {
+		if (state_ != State::failing || syncing_) return;
+		syncing_ = true;
+		if (dataLoopWedged(engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
+			leakEngineObjects();
+			tellLost();
 			return;
 		}
-		self->links_.clear();
-		self->body_.reset();
-		self->syncSeq_ = pw_core_sync(self->engine_.core(), PW_ID_CORE, 0);
-		if (self->syncSeq_ < 0) self->tellLost(); // nothing to wait for
+		links_.clear();
+		body_.reset();
+		syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
+		if (syncSeq_ < 0) tellLost(); // nothing to wait for
 	}
 
-	static void onCoreDone(void* data, std::uint32_t id, int seq) {
-		auto* self = static_cast<JoinedEngineCompanion*>(data);
-		if (id != PW_ID_CORE || !self->syncing_ || self->state_ != State::failing || seq != self->syncSeq_) {
-			return;
-		}
-		self->tellLost();
+	void onCoreDone(std::uint32_t id, int seq) {
+		if (id != PW_ID_CORE || !syncing_ || state_ != State::failing || seq != syncSeq_) return;
+		tellLost();
 	}
 
 	void tellLost() {

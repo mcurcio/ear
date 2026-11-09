@@ -1,6 +1,7 @@
 // MainLoopActivity (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): what the main loop is in, read
 // from another thread without a lock, never torn.
 #include <atomic>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -62,4 +63,45 @@ TEST_CASE("MainLoopActivity read from another thread is always one whole write",
 	done.store(true);
 	reader.join();
 	CHECK(torn.load() == 0);
+}
+
+TEST_CASE("A throw that ends scopes keeps the innermost one's place until it is taken", "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	MainLoopActivity::forgetThrown();
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+	try {
+		const MainLoopActivity::Scope outer("make engine companion", "desk");
+		const MainLoopActivity::Scope inner("prepare", "porch");
+		throw std::runtime_error("prepare threw");
+	} catch (const std::runtime_error&) {
+		CHECK(MainLoopActivity::current().empty());
+		const auto at = MainLoopActivity::takeThrown();
+		REQUIRE(at);
+		CHECK(MainLoopActivity::describe(*at) == "prepare porch");
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown()); // taken
+}
+
+TEST_CASE("A scope that begins forgets the place a handled throw left, and one that returns leaves none",
+          "[main_loop_activity]") {
+	MainLoopActivity::clear();
+	try {
+		const MainLoopActivity::Scope scope("start", "attic");
+		throw std::runtime_error("start threw");
+	} catch (const std::runtime_error&) {
+	}
+	{
+		const MainLoopActivity::Scope later("stop", "attic");
+	}
+	CHECK_FALSE(MainLoopActivity::takeThrown());
+	MainLoopActivity::Saved put = MainLoopActivity::save();
+	{
+		const MainLoopActivity::Scope scope("recipe", "attic");
+		put = MainLoopActivity::save();
+	}
+	MainLoopActivity::putThrown(put);
+	const auto at = MainLoopActivity::takeThrown();
+	REQUIRE(at);
+	CHECK(MainLoopActivity::describe(*at) == "recipe attic");
+	CHECK(MainLoopActivity::describe(MainLoopActivity::Saved{}).empty());
 }

@@ -40,6 +40,9 @@ public:
 
 	/// The real standard output, for the encoder's writer alone; close-on-exec, owned by this object.
 	int realOutput() const noexcept { return realOutput_; }
+	/// The real standard error, for a crash's own last line written straight to it (no pipe, no thread between), as
+	/// the callback boundary's faults are (docs/architecture.md#the-callback-boundary); owned by this object.
+	int realError() const noexcept { return realError_; }
 	/// Before start: also waits on `descriptor` (not owned) and calls `onReady` on the capture thread whenever it is
 	/// readable, and once more as the capture stops. `onReady` must make it unreadable again (read its eventfd).
 	void watch(int descriptor, std::function<void()> onReady);

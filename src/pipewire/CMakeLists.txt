@@ -1,9 +1,11 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
-# engine_names.hpp, link_proxy.hpp, engine_companions.hpp and latency_spa.hpp are private to this package: its
-# sources include them by path.
+# engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp and callback_boundary.hpp (every C callback
+# ear gives PipeWire, docs/architecture.md#the-callback-boundary) are private to this package: its sources include them
+# by path.
 add_library(ear_pipewire STATIC
+	callback_boundary.cpp
 	engine.cpp
 	engine_companions.cpp
 	engine_log.cpp
@@ -21,6 +23,7 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/data_loop_wedge.hpp
 	include/ear/pipewire/engine.hpp
 	include/ear/pipewire/engine_log.hpp
+	include/ear/pipewire/faults.hpp
 	include/ear/pipewire/handoffs.hpp
 	include/ear/pipewire/links.hpp
 	include/ear/pipewire/live_graph.hpp
@@ -40,6 +43,7 @@ configure_file(engine.conf "${PROJECT_BINARY_DIR}/engine.conf" COPYONLY)
 if(BUILD_TESTS)
 	add_executable(ear_pipewire_tests
 		tests/allocation_count.cpp
+		tests/callback_boundary_test.cpp
 		tests/engine_log_test.cpp
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
@@ -69,6 +73,26 @@ if(BUILD_TESTS)
 	# busy thread per core); beside them, the engine, RTP and sendspin clock tests miss their deadlines.
 	ear_catch_tests(ear_pipewire_tests SERIAL [s2])
 
+	# What must not compile about the callback boundary (docs/architecture.md#the-callback-boundary):
+	# tests/compile_fail/callback_boundary_bad.cpp says what each case is. The regexes are the image's GCC's wording.
+	set(bad_boundary "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/callback_boundary_bad.cpp")
+	set(boundary_includes "-I${CMAKE_CURRENT_SOURCE_DIR}" "-I${CMAKE_CURRENT_SOURCE_DIR}/include"
+		"-I$<JOIN:$<TARGET_PROPERTY:PkgConfig::PIPEWIRE,INTERFACE_INCLUDE_DIRECTORIES>,$<SEMICOLON>-I>")
+	ear_compile_check(ear_callback_boundary_compile_fail_control "${bad_boundary}" ${boundary_includes})
+	# As ear_compile_fail (test/CMakeLists.txt), with PipeWire's headers and this package's private ones.
+	function(ear_callback_boundary_compile_fail case regex)
+		string(MAKE_C_IDENTIFIER "${case}" macro)
+		set(name ear_callback_boundary_compile_fail_${case})
+		ear_compile_check(${name} "${bad_boundary}" ${boundary_includes} -DEAR_CASE_${macro})
+		set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}")
+	endfunction()
+	ear_callback_boundary_compile_fail(raw-event "no matching function for call to 'addEvent\\(pw_loop\\*&, void \\(\\*\\)")
+	ear_callback_boundary_compile_fail(raw-invoke "no matching function for call to 'invoke\\(pw_loop\\*&, int \\(\\*\\)")
+	ear_callback_boundary_compile_fail(raw-listener-entry "could not convert '[^']*rawState' from 'void \\(\\*\\)")
+	ear_callback_boundary_compile_fail(guarded-process "could not convert '[^']*guarded<.* to '[^']*RealtimeSlot<")
+	ear_callback_boundary_compile_fail(realtime-not-noexcept "the data loop never throws")
+	ear_callback_boundary_compile_fail(other-class "cannot convert '[^']*Other\\*' to '[^']*::Class\\*'")
+	ear_callback_boundary_compile_fail(wrong-signature "no matching function for call to 'addTimer")
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")
 endif()

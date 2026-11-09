@@ -17,6 +17,7 @@
 
 #include <pipewire/pipewire.h>
 
+#include "callback_boundary.hpp"
 #include "ear/core/frame_ring.hpp"
 
 namespace ear::pipewire {
@@ -30,8 +31,8 @@ public:
 		const std::string name = "ear-handoff " + node;
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), name);
-		wake_ = pw_loop_add_event(pw_thread_loop_get_loop(thread_), &ThreadHandoff::onWake, this);
-		finished_ = pw_loop_add_event(mainLoop_, &ThreadHandoff::onFinished, this);
+		wake_ = addEvent(pw_thread_loop_get_loop(thread_), guarded<&ThreadHandoff::onWake>, this);
+		finished_ = addEvent(mainLoop_, guarded<&ThreadHandoff::onFinished>, this);
 		if (const int result = pw_thread_loop_start(thread_); result < 0) {
 			destroy();
 			throw std::system_error(-result, std::generic_category(), name);
@@ -72,26 +73,24 @@ private:
 		}
 	}
 
-	static void onWake(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<ThreadHandoff*>(data);
+	void onWake(std::uint64_t /*count*/) {
 		// Read before draining: once closing, the drain below sees every write.
-		const bool closing = self->closing_.load(std::memory_order_acquire);
-		self->drain();
-		if (closing && !self->consumerFinished_) {
-			self->consumerFinished_ = true;
-			self->consumer_.finish();
-			pw_loop_signal_event(self->mainLoop_, self->finished_);
+		const bool closing = closing_.load(std::memory_order_acquire);
+		drain();
+		if (closing && !consumerFinished_) {
+			consumerFinished_ = true;
+			consumer_.finish();
+			pw_loop_signal_event(mainLoop_, finished_);
 		}
 	}
 
 	/// The main loop, after the consumer's finish(). The handoff's thread, idle now, is
 	/// stopped by the destructor, never here: `closed` must not wait on the consumer. `closed`
 	/// may destroy this handoff, so it is the last thing done here.
-	static void onFinished(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<ThreadHandoff*>(data);
-		if (!self->closed_) return;
-		auto closed = std::exchange(self->closed_, {});
-		closed(self->dropped_.load(std::memory_order_relaxed));
+	void onFinished(std::uint64_t /*count*/) {
+		if (!closed_) return;
+		auto closed = std::exchange(closed_, {});
+		closed(dropped_.load(std::memory_order_relaxed));
 	}
 
 	void destroy() noexcept {
@@ -128,7 +127,7 @@ public:
 		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), "sink thread " + name);
-		wake_ = pw_loop_add_event(pw_thread_loop_get_loop(thread_), &ThreadSink::onWake, this);
+		wake_ = addEvent(pw_thread_loop_get_loop(thread_), guarded<&ThreadSink::onWake>, this);
 		if (wake_ == nullptr) {
 			const int error = errno;
 			destroy();
@@ -190,22 +189,21 @@ private:
 	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_); }
 
 	/// The sink's thread: begin once asked, every stamped chunk to the consumer, then (closing) finish once.
-	static void onWake(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<ThreadSink*>(data);
+	void onWake(std::uint64_t /*count*/) {
 		// Read before draining: once closing, the drain below sees every write.
-		const bool closing = self->closing_.load(std::memory_order_acquire);
-		if (!self->began_ && !self->finished_ && self->beginAsked_.load(std::memory_order_acquire)) {
-			self->began_ = true;
-			self->consumer_->begin();
-			self->mainLoop_.post(std::move(self->begun_));
+		const bool closing = closing_.load(std::memory_order_acquire);
+		if (!began_ && !finished_ && beginAsked_.load(std::memory_order_acquire)) {
+			began_ = true;
+			consumer_->begin();
+			mainLoop_.post(std::move(begun_));
 		}
-		self->drain();
-		if (closing && !self->finished_) {
-			self->finished_ = true;
-			if (self->began_) self->consumer_->finish(); // only a consumer that began
-			self->mainLoop_.post(
-				[closed = std::move(self->closed_),
-			     dropped = self->dropped_.load(std::memory_order_relaxed)]() mutable { closed(dropped); });
+		drain();
+		if (closing && !finished_) {
+			finished_ = true;
+			if (began_) consumer_->finish(); // only a consumer that began
+			mainLoop_.post([closed = std::move(closed_), dropped = dropped_.load(std::memory_order_relaxed)]() mutable {
+				closed(dropped);
+			});
 		}
 	}
 

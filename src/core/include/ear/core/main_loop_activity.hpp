@@ -3,10 +3,14 @@
 // main-loop watchdog (StallWatch) can say where a stall began without a lock and without following a pointer into a
 // node. One writer, the main thread; any thread reads. A seqlock: the writer never waits, a reader retries (bounded).
 // Scopes nest: one inside another (a hook called inside a flush item) names the inner call while it runs and gives the
-// outer one back when it ends.
+// outer one back when it ends. A throw that ends a scope leaves the scope's place behind (takeThrown), so the callback
+// boundary that catches it, after every scope has unwound, can still say where it was thrown
+// (docs/architecture.md#the-callback-boundary).
 #pragma once
 #include <array>
 #include <cstddef>
+#include <exception>
+#include <optional>
 #include <string>
 #include <string_view>
 namespace ear {
@@ -33,18 +37,40 @@ public:
 	static Saved save() noexcept;
 	/// Main thread: writes `saved` again.
 	static void restore(const Saved& saved) noexcept;
+	/// "<call> <node>" (or "<call>") of a saved place, as current() says it; empty for one between calls.
+	static std::string describe(const Saved& saved);
+
+	/// Main thread: where the throw being handled left the main loop: the innermost scope it ended, kept until it is
+	/// taken or forgotten; nothing when it ended no scope. Taking it forgets it.
+	static std::optional<Saved> takeThrown() noexcept;
+	/// Main thread: a catch that keeps an exception to rethrow later puts the place it took back just before the
+	/// rethrow, so the place travels with the exception (no scope the rethrow ends replaces it).
+	static void putThrown(const Saved& at) noexcept;
+	/// Main thread: no throw's place is kept. A scope that begins, and the callback boundary when a main-loop callback
+	/// begins, forget the place of a throw that was handled before them.
+	static void forgetThrown() noexcept;
 
 	/// Sets on construction and, on destruction, gives back what was written before it (main thread), so an inner
-	/// scope ends naming the outer call again, and the outermost ends between calls.
+	/// scope ends naming the outer call again, and the outermost ends between calls. One ended by a throw keeps its
+	/// place for takeThrown unless an inner scope the same throw ended already did.
 	class Scope {
 	public:
-		Scope(std::string_view call, std::string_view node) noexcept : previous_(save()) { set(call, node); }
-		~Scope() { restore(previous_); }
+		Scope(std::string_view call, std::string_view node) noexcept
+			: previous_(save()), uncaught_(std::uncaught_exceptions()) {
+			forgetThrown();
+			set(call, node);
+		}
+		~Scope() {
+			if (std::uncaught_exceptions() > uncaught_) endedByThrow();
+			restore(previous_);
+		}
 		Scope(const Scope&) = delete;
 		Scope& operator=(const Scope&) = delete;
 
 	private:
+		static void endedByThrow() noexcept;
 		Saved previous_;
+		int uncaught_;
 	};
 };
 } // namespace ear

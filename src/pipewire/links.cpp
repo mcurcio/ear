@@ -11,6 +11,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "link_proxy.hpp"
 
@@ -21,7 +22,7 @@ namespace ear::pipewire {
 /// event and outside any listener's call into destroyLink.
 struct Links::Impl final : LinkEvents {
 	explicit Impl(Engine& engine) : engine(engine) {
-		later = pw_loop_add_event(engine.mainLoop(), &Impl::onLater, this);
+		later = addEvent(engine.mainLoop(), guarded<&Impl::onLater>, this);
 	}
 	~Impl() {
 		if (dataLoopWedged(engine)) leakAll();
@@ -63,15 +64,14 @@ struct Links::Impl final : LinkEvents {
 		done.clear();
 	}
 
-	static void onLater(void* data, std::uint64_t /*count*/) {
-		auto* self = static_cast<Impl*>(data);
-		if (dataLoopWedged(self->engine)) {
-			for (auto& proxy : self->done) static_cast<void>(proxy.release());
+	void onLater(std::uint64_t /*count*/) {
+		if (dataLoopWedged(engine)) {
+			for (auto& proxy : done) static_cast<void>(proxy.release());
 		}
-		self->done.clear();
-		auto refused = std::exchange(self->refused, {});
-		for (auto& [link, detail] : refused) {
-			for (LinkListener* listener : self->listeners) listener->linkFailed(link, detail);
+		done.clear();
+		auto told = std::exchange(refused, {});
+		for (auto& [link, detail] : told) {
+			for (LinkListener* listener : listeners) listener->linkFailed(link, detail);
 		}
 	}
 

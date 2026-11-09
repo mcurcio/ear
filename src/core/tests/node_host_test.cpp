@@ -3073,6 +3073,10 @@ TEST_CASE("A factory or an adapter that throws inside the flush fails its node a
 		f.blocks.throwInMake = true;
 		f.addInTurn("amp", std::make_shared<OutputConfig>(f.log));
 		CHECK_THROWS_WITH(f.endTurn(), "no memory for amp");
+		// The rethrow carries where it was thrown, for the callback boundary that catches it.
+		const auto thrownAt = MainLoopActivity::takeThrown();
+		REQUIRE(thrownAt);
+		CHECK(MainLoopActivity::describe(*thrownAt) == "make block amp");
 		REQUIRE(f.host.health().size() == 1);
 		CHECK(f.host.health()[0].state == NodeState::failed);
 		REQUIRE(f.host.health()[0].reason.has_value());

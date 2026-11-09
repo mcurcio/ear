@@ -1,0 +1,13 @@
+// What only looks like a registration: none of these lines may be refused (ear_callback_guard_allows_lookalikes).
+	event_ = addEvent(loop, guarded<&Thing::onEvent>, this);
+	timer_ = addTimer(loop, guarded<&Thing::onTimeout>, this);
+	invoke(dataLoop, realtime<&Thing::onRequests>, this, false);
+	listen<FilterCallbacks<Thing>{.process = realtime<&Thing::onProcess>}>(filter_, listener_, this);
+	pw_loop_signal_event(loop, event_);
+	pw_loop_update_timer(loop, timer_, &value, nullptr, false);
+	pw_loop_destroy_source(loop, event_);
+	spa_hook_remove(&listener_);
+	pw_filter_get_data_loop(filter_);
+	std::size_t add_listener_count = 0;
+	reinvoke(loop);
+	listeners.push_back(&listener);

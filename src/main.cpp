@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <exception>
 #include <expected>
 #include <filesystem>
 #include <limits>
@@ -44,6 +45,7 @@
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/engine_log.hpp"
+#include "ear/pipewire/faults.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
@@ -152,6 +154,24 @@ private:
 	std::unique_ptr<ear::Timer> timer_;
 };
 
+/// Where the engine's callback boundary reports a caught exception (docs/architecture.md#the-callback-boundary): today,
+/// as before the boundary, the process ends. The line naming the callback and where the main loop was goes straight
+/// to the real standard error (never through the capture's pipe, whose thread could take it and lose it as the process
+/// dies); then std::terminate writes out what is queued and its own message, naming what was thrown.
+class EndOnFault final : public ear::pipewire::Faults {
+public:
+	explicit EndOnFault(int realError) : realError_(realError) {}
+	void caught(std::string_view callback, std::string_view where, std::string_view detail,
+	            bool /*owned*/) noexcept override {
+		const std::string line = ear::pipewire::faultLine(callback, where, detail);
+		static_cast<void>(::write(realError_, line.data(), line.size()));
+		std::terminate();
+	}
+
+private:
+	int realError_;
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -256,7 +276,9 @@ int main(int argc, char** argv) {
 
 	// Declaration order is boot order; destruction runs the other way: port, gateway, keeper, core,
 	// adapters, control thread, main-loop executor, engine.
-	auto created = ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock});
+	EndOnFault faults(capture->realError());
+	auto created =
+		ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock, &faults});
 	if (!created) {
 		log.exiting(1, created.error().detail);
 		return 1;

@@ -8,6 +8,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "callback_boundary.hpp"
 #include "ear/core/reconciler.hpp"
 
 namespace ear::pipewire {
@@ -28,8 +29,9 @@ protected:
 class LinkProxy {
 public:
 	LinkProxy(LinkId id, pw_proxy* proxy, LinkEvents& events) : id_(id), proxy_(proxy), events_(events) {
-		pw_proxy_add_listener(proxy_, &proxyHook_, &proxyEvents(), this);
-		pw_proxy_add_object_listener(proxy_, &linkHook_, &linkEvents(), this);
+		listen<ProxyCallbacks<LinkProxy>{.removed = guarded<&LinkProxy::onRemoved>,
+		                                 .error = guarded<&LinkProxy::onError>}>(proxy_, proxyHook_, this);
+		listen<LinkCallbacks<LinkProxy>{.info = guarded<&LinkProxy::onInfo>}>(proxy_, linkHook_, this);
 	}
 	~LinkProxy() {
 		silence();
@@ -47,50 +49,27 @@ public:
 	}
 
 private:
-	static const pw_proxy_events& proxyEvents() {
-		static const pw_proxy_events table = [] {
-			pw_proxy_events events{};
-			events.version = PW_VERSION_PROXY_EVENTS;
-			events.removed = &LinkProxy::onRemoved;
-			events.error = &LinkProxy::onError;
-			return events;
-		}();
-		return table;
-	}
-	static const pw_link_events& linkEvents() {
-		static const pw_link_events table = [] {
-			pw_link_events events{};
-			events.version = PW_VERSION_LINK_EVENTS;
-			events.info = &LinkProxy::onInfo;
-			return events;
-		}();
-		return table;
-	}
-
-	static void onInfo(void* data, const pw_link_info* info) {
-		auto* self = static_cast<LinkProxy*>(data);
+	void onInfo(const pw_link_info* info) {
 		if ((info->change_mask & PW_LINK_CHANGE_MASK_STATE) == 0) return;
-		if (info->state == PW_LINK_STATE_ACTIVE && !self->active_) {
-			self->active_ = true;
-			self->events_.active(self->id_);
-		} else if (info->state == PW_LINK_STATE_ERROR && !self->active_) {
+		if (info->state == PW_LINK_STATE_ACTIVE && !active_) {
+			active_ = true;
+			events_.active(id_);
+		} else if (info->state == PW_LINK_STATE_ERROR && !active_) {
 			// The link-factory destroys a link in error; an active one reports removed next.
-			self->events_.failed(self->id_, info->error != nullptr ? info->error : "link error");
+			events_.failed(id_, info->error != nullptr ? info->error : "link error");
 		}
 	}
 
-	static void onError(void* data, int /*seq*/, int res, const char* message) {
-		auto* self = static_cast<LinkProxy*>(data);
-		if (self->active_) return;
-		self->events_.failed(self->id_, message != nullptr ? message : spa_strerror(res));
+	void onError(int /*seq*/, int res, const char* message) {
+		if (active_) return;
+		events_.failed(id_, message != nullptr ? message : spa_strerror(res));
 	}
 
-	static void onRemoved(void* data) {
-		auto* self = static_cast<LinkProxy*>(data);
-		if (self->active_) {
-			self->events_.gone(self->id_);
+	void onRemoved() {
+		if (active_) {
+			events_.gone(id_);
 		} else {
-			self->events_.failed(self->id_, "the engine removed the link before it was active");
+			events_.failed(id_, "the engine removed the link before it was active");
 		}
 	}
 

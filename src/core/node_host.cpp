@@ -107,6 +107,28 @@ std::string whatOf(const std::exception_ptr& thrown) {
 	}
 }
 
+/// An exception a drain or flush keeps to rethrow once it has run everything else, with the place it left the main
+/// loop (MainLoopActivity::takeThrown), which the rethrow carries to the callback boundary that catches it
+/// (docs/architecture.md#the-callback-boundary).
+struct KeptThrow {
+	std::exception_ptr error;
+	MainLoopActivity::Saved at;
+
+	explicit operator bool() const noexcept { return error != nullptr; }
+	/// Inside a catch handler: keeps the exception handled, and its place, when none is kept yet; a later one's place
+	/// is forgotten.
+	void keepCaught() noexcept {
+		const std::optional<MainLoopActivity::Saved> left = MainLoopActivity::takeThrown();
+		if (error) return;
+		error = std::current_exception();
+		at = left.value_or(MainLoopActivity::save());
+	}
+	[[noreturn]] void rethrow() const {
+		MainLoopActivity::putThrown(at);
+		std::rethrow_exception(error);
+	}
+};
+
 std::int64_t millisecondsBetween(std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
 	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
 }
@@ -1796,24 +1818,25 @@ struct NodeHost::Impl {
 	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (a type
 	/// bug: a std::logic_error from a type's start or recipe) does not strand the inputs queued behind it, which may be
 	/// other nodes' (a stop whose allGone would then never run): they are handled first, and the first exception is
-	/// rethrown once the queue is empty. The node it was thrown out of is left as the throw left it.
+	/// rethrown once the queue is empty, with the place it was thrown from. The node it was thrown out of is left as the
+	/// throw left it.
 	void input(std::move_only_function<void()> work) {
 		inputs.push_back(std::move(work));
 		if (handling || inItem) return;
-		if (std::exception_ptr thrown = drain()) std::rethrow_exception(thrown);
+		if (const KeptThrow thrown = drain()) thrown.rethrow();
 	}
 
 	/// Handles every queued input, and what they queue; the first exception, if any.
-	std::exception_ptr drain() {
+	KeptThrow drain() {
 		handling = true;
-		std::exception_ptr thrown;
+		KeptThrow thrown;
 		while (!inputs.empty()) {
 			auto next = std::move(inputs.front());
 			inputs.pop_front();
 			try {
 				next();
 			} catch (...) {
-				if (!thrown) thrown = std::current_exception();
+				thrown.keepCaught();
 			}
 		}
 		handling = false;
@@ -1848,13 +1871,13 @@ struct NodeHost::Impl {
 	/// The turn's flush: the queued changes as a snapshot, destroys first; each item names itself in
 	/// MainLoopActivity while it runs, and the inputs it caused (an adapter's event told inside it) are handled once it
 	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (a type bug)
-	/// strands nothing: the flush ends, then the first exception is rethrown.
+	/// strands nothing: the flush ends, then the first exception is rethrown, with the place it was thrown from.
 	void runFlush() {
 		flushPosted = false; // a later change posts a flush of its own, even past the throw below
 		if (handling || inItem || flushing)
 			throw std::logic_error("the flush ran inside an input or another flush: the executor ran a post inline");
 		flushing = true;
-		std::exception_ptr thrown;
+		KeptThrow thrown;
 		std::deque<FlushItem> pending;
 		const auto take = [&] {
 			std::vector<FlushItem> batch = std::exchange(flush, {});
@@ -1871,16 +1894,16 @@ struct NodeHost::Impl {
 				try {
 					item.run();
 				} catch (...) {
-					if (!thrown) thrown = std::current_exception();
+					thrown.keepCaught(); // inside the item's scope: an item with no inner scope is placed by its own
 				}
 				item.run = nullptr; // a destroy's object goes inside its activity, whether or not the item threw
 			}
 			inItem = false;
-			if (std::exception_ptr caused = drain(); caused && !thrown) thrown = caused;
+			if (KeptThrow caused = drain(); caused && !thrown) thrown = std::move(caused);
 			take();
 		}
 		flushing = false;
-		if (thrown) std::rethrow_exception(thrown);
+		if (thrown) thrown.rethrow();
 	}
 
 	static constexpr std::string_view callName(FlushKind kind) noexcept {
