@@ -8,9 +8,13 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 
 namespace ear {
 namespace {
+
+/// How many times current() tries before it gives up.
+constexpr int maxReads = 1000;
 
 constexpr std::size_t wordCount = MainLoopActivity::nameBytes / sizeof(std::uint64_t);
 static_assert(MainLoopActivity::nameBytes % sizeof(std::uint64_t) == 0);
@@ -64,7 +68,10 @@ void MainLoopActivity::restore(const Saved& saved) noexcept {
 }
 
 std::string MainLoopActivity::current() {
-	for (;;) {
+	// A writer preempted mid-write would keep a spinning reader busy for its whole time slice: the reader yields
+	// between tries and gives up after a bounded number, saying "unknown" (empty) rather than burning a core.
+	for (int attempt = 0; attempt < maxReads; ++attempt) {
+		if (attempt > 0) std::this_thread::yield();
 		const std::uint64_t before = shared.sequence.load(std::memory_order_acquire);
 		if ((before & 1U) != 0) continue;
 		const char* call = shared.call.load(std::memory_order_relaxed);
@@ -84,6 +91,7 @@ std::string MainLoopActivity::current() {
 		}
 		return where;
 	}
+	return {};
 }
 
 } // namespace ear

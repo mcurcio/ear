@@ -138,10 +138,11 @@ graph-file-written       graph-file written <version>
 graph-file-write-failed  graph-file write-failed <detail>
 log                      [node <name> ]<source>[ <topic>] <level>: <text>
 diagnostic               node <name> <code>: <detail>   (ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue)
-                         <code>: <detail>               (no node field: ear.data-loop-wedged)
+                         <code>: <detail>               (no node field: ear.data-loop-wedged, ear.main-loop-stalled,
+                                                        ear.main-loop-resumed)
+                         ear.main-loop-stalled: no main-loop heartbeat for <ms> ms[, in <call>[ <node>]]
+                         ear.main-loop-resumed: the main-loop heartbeat came back after a gap of <ms> ms
 exit                     ear: <reason>
-diagnostic               ear.main-loop-stalled: the main loop has not turned for <ms> ms[, in <call>[ <node>]]
-                         ear.main-loop-resumed: the main loop turned again after <ms> ms
 ```
 
 A `note` (`says`) is a note from a node's insides, never a state; a type's texts are its own (the
@@ -502,7 +503,7 @@ it will not be real time"):
 | Handoff threads | the `file` node's writer; a `sendspin` node's `write_audio` |
 | The output thread (`ear_output`) | every write to the real standard output: the encoder's lines, from a bounded queue (a full one refuses the line, and the next record counts it) |
 | The capture thread (`ear_output`) | reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine log's ring (PipeWire's and alsa-lib's messages) when its bell rings |
-| The watchdog thread (`ear_output`) | `StallWatch`: every 250 ms reads the heartbeat a 100 ms main-loop timer beats; past 500 ms without a beat it writes `ear.main-loop-stalled` (with `ms` and `in`, where the loop is), and `ear.main-loop-resumed` (`ms`, the stall's length) once beats return, straight to the output queue; it never touches PipeWire or waits on the main loop (`docs/design/node-lifecycle.md` 5.12) |
+| The watchdog thread (`ear_output`) | `StallWatch`: every 250 ms reads the heartbeat a 100 ms main-loop timer beats; once a look finds the heartbeat older than 500 ms it writes `ear.main-loop-stalled` (with `ms`, the heartbeat's age, and `in`, where the loop is; any stall longer than 750 ms is seen, a shorter one past 500 ms may not be), and `ear.main-loop-resumed` (`ms`, the gap between the beats either side, measured by the beat itself) once beats return, straight to the output queue; it never touches PipeWire or waits on the main loop (`docs/design/node-lifecycle.md` 5.12) |
 | A `sendspin` node's own threads | the worker (the library's "main loop": the key file, its start and stop, every listener callback but `on_audio_write`, the connection watch, mDNS; a 10 ms `poll`, since the library has no wake hook or connection event), the notifier (`notify_audio_played`, waiting on the block's bell) and the library's own |
 
 How a change moves (`docs/design/knobly-config.md`, design rules 1 to 3): a request reaches the

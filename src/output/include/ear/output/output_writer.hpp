@@ -11,9 +11,9 @@
 namespace ear::output {
 class OutputWriter {
 public:
-	/// Writes to `descriptor`, which it neither owns nor closes, on its own thread (every signal blocked, so a stop
-	/// signal never lands on it and a closed reader gives EPIPE, not SIGPIPE). At most `capacity` lines wait, and at
-	/// most `byteCapacity` bytes of them (unless one line alone is larger).
+	/// Writes to `descriptor`, which it neither owns nor closes, on its own thread (every signal but the faults blocked,
+	/// so a stop signal never lands on it and a closed reader gives EPIPE, not SIGPIPE). At most `capacity` lines wait,
+	/// and at most `byteCapacity` bytes of them (unless one line alone is larger).
 	explicit OutputWriter(int descriptor, std::size_t capacity = 4096, std::size_t byteCapacity = 4 << 20);
 	~OutputWriter(); // stop()
 	OutputWriter(const OutputWriter&) = delete;

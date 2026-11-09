@@ -1,7 +1,7 @@
 // The main-loop watchdog (docs/design/node-lifecycle.md 5.12, 11.6; step L-7): its judgement on a clock stepped by hand
-// (armed by the first beat, a stall past the bound reported once, its resumption once with the stall's length), and the
-// thread over real short stalls: reported after the bound and resumed once, nothing under steady beats, nothing before
-// the first beat, nothing once stopped, and stop joining at once.
+// (armed by the first beat, a stall past the bound reported once, its resumption once with the gap the first beat after
+// it measured), and the thread over real short stalls: reported after the bound and resumed once with the real gap,
+// nothing under steady beats, nothing before the first beat, no resumption once stopped, and stop joining at once.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -100,25 +100,53 @@ TEST_CASE("The stall judge reports a heartbeat older than its bound once, then i
 	CHECK(again->ms == 600);
 }
 
+TEST_CASE("The stall judge takes a resumption's length from the gap the first beat after it measured",
+          "[stall_watch]") {
+	StallJudge judge(500ms);
+	const std::int64_t beat = 1'000 * ms;
+	REQUIRE(judge.look(beat, beat + 750 * ms));
+	// Between two looks the beat moved twice: at +900 ms (which recorded the gap from the stall's beat) and at +1,000.
+	const auto resumed = judge.look(beat + 1'000 * ms, beat + 1'010 * ms, {beat, beat + 900 * ms});
+	REQUIRE(resumed);
+	CHECK(resumed->kind == StallJudge::Verdict::Kind::resumed);
+	CHECK(resumed->ms == 900);
+	// A gap that does not start at the stall's last beat is an older stall's: ignored.
+	REQUIRE(judge.look(beat + 1'000 * ms, beat + 1'600 * ms, {beat, beat + 900 * ms}));
+	const auto second = judge.look(beat + 1'700 * ms, beat + 1'750 * ms, {beat, beat + 900 * ms});
+	REQUIRE(second);
+	CHECK(second->ms == 700);
+}
+
 TEST_CASE("StallWatch reports a heartbeat older than its bound once, then its resumption", "[stall_watch]") {
+	using Clock = std::chrono::steady_clock;
+	const auto msBetween = [](Clock::time_point from, Clock::time_point to) {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+	};
 	Reports reports;
-	StallWatch watch = reports.make({.bound = 100ms, .period = 10ms});
+	// Looks 200 ms apart, so the beat moves twice between two looks below.
+	StallWatch watch = reports.make({.bound = 100ms, .period = 200ms});
+	const auto beforeFirst = Clock::now();
 	watch.beat();
-	const auto stalledFrom = std::chrono::steady_clock::now();
+	const auto afterFirst = Clock::now();
 	REQUIRE(reports.waitFor(1));
-	CHECK(std::chrono::steady_clock::now() - stalledFrom >= 100ms);
-	std::this_thread::sleep_for(100ms); // still stalled: nothing more
+	CHECK(Clock::now() - afterFirst >= 100ms);
 	auto seen = reports.taken();
 	REQUIRE(seen.size() == 1);
 	CHECK(seen[0].stalled);
 	CHECK(seen[0].ms > 100);
 	CHECK(seen[0].where == "configure kitchen");
 	CHECK(seen[0].thread != std::this_thread::get_id()); // where is asked on the watchdog's own thread
-	watch.beat();
+	const auto beforeBack = Clock::now();
+	watch.beat(); // the first beat after the stall measures it
+	const auto afterBack = Clock::now();
+	std::this_thread::sleep_for(50ms);
+	watch.beat(); // a later beat before the next look changes nothing
 	REQUIRE(reports.waitFor(2));
 	seen = reports.taken();
 	CHECK_FALSE(seen[1].stalled);
-	CHECK(seen[1].ms >= 200);
+	// The gap between the beats either side, from below and from above, never the later beat nor the look.
+	CHECK(seen[1].ms >= msBetween(afterFirst, beforeBack) - 1);
+	CHECK(seen[1].ms <= msBetween(beforeFirst, afterBack));
 	CHECK(seen[1].thread == seen[0].thread);
 	watch.stop();
 	CHECK(reports.taken().size() == 2);
@@ -132,16 +160,26 @@ TEST_CASE("StallWatch says nothing while the heartbeat keeps moving", "[stall_wa
 	CHECK(reports.taken().empty());
 }
 
-TEST_CASE("StallWatch says nothing before the first beat, nor once stopped", "[stall_watch]") {
+TEST_CASE("StallWatch says nothing before the first beat", "[stall_watch]") {
 	Reports reports;
 	StallWatch watch = reports.make({.bound = 50ms, .period = 10ms});
 	std::this_thread::sleep_for(300ms); // boot: the main loop has not run yet
-	CHECK(reports.taken().empty());
-	watch.beat();
-	watch.stop(); // ear's stop, past the main loop: no beat comes again
-	std::this_thread::sleep_for(200ms);
+	watch.stop();
 	CHECK(reports.taken().empty());
 	watch.stop(); // idempotent
+}
+
+TEST_CASE("A stall still open when StallWatch stops is never resumed", "[stall_watch]") {
+	Reports reports;
+	StallWatch watch = reports.make({.bound = 50ms, .period = 10ms});
+	watch.beat();
+	REQUIRE(reports.waitFor(1)); // ear's stop, past the main loop: no beat comes again
+	watch.stop();
+	watch.beat(); // a beat after stop is harmless and judged by no one
+	std::this_thread::sleep_for(100ms);
+	const auto seen = reports.taken();
+	REQUIRE(seen.size() == 1);
+	CHECK(seen[0].stalled);
 }
 
 TEST_CASE("StallWatch's stop joins its thread at once, whatever its period", "[stall_watch]") {

@@ -48,8 +48,8 @@ public:
 	void onCrash(std::function<void()> hook);
 	/// The crash path's call of the onCrash hook; never throws. Not for other callers.
 	void beforeCrash() noexcept;
-	/// Starts the capture thread (every signal blocked); each captured line goes to `onLine` on it, in order per
-	/// descriptor.
+	/// Starts the capture thread (every signal but the faults blocked); each captured line goes to `onLine` on it, in
+	/// order per descriptor.
 	void start(std::function<void(Line)> onLine);
 	/// Puts the real descriptors back on 1 and 2, so a write after this goes where it went before ear started; reads
 	/// what the pipes still hold (a last partial line included) and calls every watched handler once; ends the thread,

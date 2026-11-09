@@ -777,9 +777,12 @@ moves. `StallWatch` does not know where the main loop is: its constructor takes 
 main-loop timer that beats it and points its callbacks at `StatusLog`, which encodes `ear.main-loop-stalled` and
 `ear.main-loop-resumed` straight onto the output queue from the watchdog's thread (its encoder is safe from many
 threads, tested today as "one order from many threads"). As built (revision 2.8): the beat stores the steady clock's
-time, so `ear.main-loop-stalled` carries `ms` (the heartbeat's age when seen) and `in` (control-plane.md 4.6's name:
-`where`'s text, absent when empty), and `ear.main-loop-resumed` carries `ms` from the last beat before the stall to the
-first after it; `in` is text, which `DiagnosticField` (whole numbers) cannot carry, so `StatusLog` has
+time, so `ear.main-loop-stalled` carries `ms` (the heartbeat's age at the look that saw it) and `in` (control-plane.md
+4.6's name: `where`'s text, absent when empty), and `ear.main-loop-resumed` carries `ms` from the last beat before the
+stall to the first after it, which that first beat measures itself (a beat that follows the last by more than the bound
+records the pair for the watchdog), so neither the look's period nor later beats inflate it. Looks are 250 ms apart, so
+the guarantee is: a stall longer than bound + period (750 ms) is always reported, one between 500 and 750 ms may not be;
+the detail says what was seen ("no main-loop heartbeat for <ms> ms"). `in` is text, which `DiagnosticField` (whole numbers) cannot carry, so `StatusLog` has
 `mainLoopStalled(ms, in)` and `mainLoopResumed(ms)` rather than going through `EngineDiagnosticListener` (a main-thread
 interface). The watchdog judges nothing until the first beat (boot before the loop runs is no stall), and `main.cpp`
 stops it as soon as `Engine::run` returns (the keeper's last write is no stall). `MainLoopActivity` (`ear/core/main_loop_activity.hpp`, its
@@ -787,7 +790,8 @@ own header, landing in step L-3b with the flush that first writes it) holds a st
 (`configure`, `pw_filter_destroy`) and a fixed 96-byte copy of the node's name, which `NodeHost` writes before each
 hook and each flush item and clears when it returns, under a sequence counter (a seqlock, as sendspin's `Mailbox`,
 `mailbox.hpp` [V]), so the watchdog's thread reads a consistent pair without a lock and never follows a pointer into
-a node; empty means "between calls".
+a node; empty means "between calls" (or, revision 2.8, unknown: a reader yields between tries and gives up after
+1,000 of them, so the watchdog never spins on a writer preempted mid-write).
 
 ## 6. File by file
 
@@ -1736,14 +1740,18 @@ beats it from a 100 ms `Timers::after` timer armed again each time, passes `wher
 or recorded here:
 
 - 5.12's records: `ear.main-loop-stalled` is `{"code", "ms", "in"?, "detail"}`, `in` being `where`'s text (absent
-  between calls), detail "the main loop has not turned for <ms> ms[, in <in>]"; `ear.main-loop-resumed` is `{"code",
-  "ms", "detail"}`, detail "the main loop turned again after <ms> ms". Both are `diagnostic` records with no `node`,
+  between calls), detail "no main-loop heartbeat for <ms> ms[, in <in>]"; `ear.main-loop-resumed` is `{"code", "ms",
+  "detail"}`, detail "the main-loop heartbeat came back after a gap of <ms> ms". Both are `diagnostic` records with no `node`,
   `output-records.json`'s last three cases (seq 57 to 59). `in` is text, so they are not `EngineDiagnostic`s (whose
   `DiagnosticField`s are whole numbers, and whose listener is the main thread's): `StatusLog` gains
   `mainLoopStalled(ms, in)` and `mainLoopResumed(ms)`, called from the watchdog's thread.
-- The heartbeat is the steady clock's time of the last beat, not a counter, so `resumed`'s `ms` is the stall's length
-  measured on the beats themselves (last before to first after), not on when the watchdog looked; `stalled`'s `ms` is
-  the heartbeat's age when it looked (500 to 750 ms past the beat at the first look, with the 250 ms period).
+- The heartbeat is the steady clock's time of the last beat, not a counter; and a beat that follows the last by more
+  than the bound also stores that pair (from, to) before the beat, so `resumed`'s `ms` is the gap the first beat after
+  the stall measured, not the distance to whatever beat a look later sees (which overstated it by up to a period and a
+  beat interval; review's F1). A pair that does not start at the stall's last beat is an older stall's, and the look's
+  own beats are used instead. `stalled`'s `ms` is the heartbeat's age when a look saw it (500 to 750 ms at the first
+  look, with the 250 ms period); so a stall is reported once it is older than bound + period, and one between the
+  bound and bound + period may go unreported (review's F3; control-plane.md 4.6 says the same).
 - "Past 500 ms" is strictly older than the bound. A stall is reported once and its resumption once; a second stall is
   a second pair. A stall still open when the watchdog stops is not resumed.
 - No false report at either end: nothing is judged before the first beat (the first timer fires 100 ms after
@@ -1757,3 +1765,9 @@ or recorded here:
   No system test: 11.7 lists none, and stalling the real binary's loop would need a hook ear does not have.
 - The bound stays [U] against CI's loaded host (16): a host that stalls the whole process for 500 ms is reported, which
   is true; nothing is judged on the report.
+- After review: `main.cpp`'s heartbeat is not `const` (its timer re-arms itself, F2); the engine test quits only on the
+  resumption that follows its own stall, tolerating a loaded host's earlier pairs (F4); `MainLoopActivity::current()`
+  yields between tries and gives up after 1,000, empty (F5); `maskedThread` leaves the fault signals (SIGSEGV, SIGBUS,
+  SIGFPE, SIGILL) unblocked on ear_output's threads, since one blocked when its thread faults is delivered with its
+  default action and skips the crash handler's last words (F6); the judge test where the beat moves twice between looks,
+  and the thread test bounding the resumed `ms` from both sides.

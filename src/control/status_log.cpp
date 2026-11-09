@@ -133,7 +133,7 @@ void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
 void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
 	constexpr std::string_view code = "ear.main-loop-stalled";
 	Fields record{{"code", json(code)}, {"ms", json(ms)}};
-	std::string detail = std::format("the main loop has not turned for {} ms", ms);
+	std::string detail = std::format("no main-loop heartbeat for {} ms", ms);
 	if (!in.empty()) {
 		record.emplace_back("in", json(in));
 		detail += std::format(", in {}", in);
@@ -144,7 +144,7 @@ void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
 
 void StatusLog::mainLoopResumed(std::int64_t ms) {
 	constexpr std::string_view code = "ear.main-loop-resumed";
-	const std::string detail = std::format("the main loop turned again after {} ms", ms);
+	const std::string detail = std::format("the main-loop heartbeat came back after a gap of {} ms", ms);
 	emit("diagnostic", {{"code", json(code)}, {"ms", json(ms)}, {"detail", json(detail)}},
 	     std::format("{}: {}", code, detail));
 }

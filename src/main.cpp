@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
 	ear::output::StallWatch stallWatch([] { return ear::MainLoopActivity::current(); },
 	                                   [&log](std::int64_t ms, const std::string& in) { log.mainLoopStalled(ms, in); },
 	                                   [&log](std::int64_t ms) { log.mainLoopResumed(ms); });
-	const Heartbeat heartbeat(mainLoop, stallWatch);
+	Heartbeat heartbeat(mainLoop, stallWatch); // not const: its timer re-arms itself
 	// After Engine::create, so its thread inherits the blocked stop signals.
 	ear::server::ControlThread control;
 	ear::server::LevelBell bell;

@@ -82,9 +82,9 @@ public:
 	void graphFileWritten(const std::string& version) override;
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
-	/// The main-loop watchdog (StallWatch, node-lifecycle.md 5.12), from its own thread: the heartbeat is `ms` old,
-	/// the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back after a
-	/// stall of `ms`.
+	/// The main-loop watchdog (StallWatch, node-lifecycle.md 5.12), from its own thread: a look found the heartbeat
+	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back
+	/// after a gap of `ms` between the beats either side.
 	void mainLoopStalled(std::int64_t ms, std::string_view in);
 	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);

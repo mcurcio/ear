@@ -335,7 +335,7 @@
       }
     },
     {
-      "case": "the main-loop watchdog, from its own thread: the heartbeat older than 500 ms, said once per stall, with the call the main loop is in",
+      "case": "the main-loop watchdog, from its own thread: a look found the heartbeat older than 500 ms (ms is its age then), said once per stall, with the call the main loop is in",
       "record": {
         "v": 1,
         "seq": 57,
@@ -344,8 +344,8 @@
         "code": "ear.main-loop-stalled",
         "ms": 612,
         "in": "pw_filter_destroy desk",
-        "detail": "the main loop has not turned for 612 ms, in pw_filter_destroy desk",
-        "msg": "ear.main-loop-stalled: the main loop has not turned for 612 ms, in pw_filter_destroy desk"
+        "detail": "no main-loop heartbeat for 612 ms, in pw_filter_destroy desk",
+        "msg": "ear.main-loop-stalled: no main-loop heartbeat for 612 ms, in pw_filter_destroy desk"
       }
     },
     {
@@ -357,12 +357,12 @@
         "kind": "diagnostic",
         "code": "ear.main-loop-stalled",
         "ms": 503,
-        "detail": "the main loop has not turned for 503 ms",
-        "msg": "ear.main-loop-stalled: the main loop has not turned for 503 ms"
+        "detail": "no main-loop heartbeat for 503 ms",
+        "msg": "ear.main-loop-stalled: no main-loop heartbeat for 503 ms"
       }
     },
     {
-      "case": "the main-loop watchdog: the heartbeat moved again, with the stall's length (its last beat before to its first after)",
+      "case": "the main-loop watchdog: the heartbeat moved again; ms is the gap from the last beat before the stall to the first after, measured by that beat",
       "record": {
         "v": 1,
         "seq": 59,
@@ -370,8 +370,8 @@
         "kind": "diagnostic",
         "code": "ear.main-loop-resumed",
         "ms": 1840,
-        "detail": "the main loop turned again after 1840 ms",
-        "msg": "ear.main-loop-resumed: the main loop turned again after 1840 ms"
+        "detail": "the main-loop heartbeat came back after a gap of 1840 ms",
+        "msg": "ear.main-loop-resumed: the main-loop heartbeat came back after a gap of 1840 ms"
       }
     }
   ]

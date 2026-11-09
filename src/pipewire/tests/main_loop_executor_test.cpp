@@ -3,6 +3,7 @@
 // destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
 // the deadline only fails the test. Also the main-loop watchdog (node-lifecycle.md 5.12) beaten by its timers, as
 // main.cpp wires it, reporting a real stall of the loop with where it was.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -191,11 +192,15 @@ TEST_CASE("The main-loop watchdog reports a stall of the engine's main loop with
 			reports.push_back({true, ms, where});
 		},
 		[&](std::int64_t ms) {
+			bool planned = false;
 			{
 				const std::scoped_lock lock(mutex);
+				// A loaded host may stall the loop unplanned first: only the planned stall's resumption ends the run.
+				planned = !reports.empty() && reports.back().stalled && reports.back().where == "configure desk";
 				reports.push_back({false, ms, ""});
 			}
-			executor.post([&] { engine->quit(); }); // the watchdog's thread posts; it never touches the loop
+			if (planned)
+				executor.post([&] { engine->quit(); }); // the watchdog's thread posts; it never touches the loop
 		});
 	// main.cpp's heartbeat: a 100 ms timer armed again each time it beats.
 	std::unique_ptr<Timer> beat;
@@ -215,10 +220,18 @@ TEST_CASE("The main-loop watchdog reports a stall of the engine's main loop with
 	beat.reset();
 	watch.stop();
 	const std::scoped_lock lock(mutex);
-	REQUIRE(reports.size() == 2);
-	CHECK(reports[0].stalled);
-	CHECK(reports[0].ms > 500);
-	CHECK(reports[0].where == "configure desk");
-	CHECK_FALSE(reports[1].stalled);
-	CHECK(reports[1].ms >= 900); // the last beat before the stall to the first after it
+	// The planned stall and the resumption after it; other reports, if any, were the host's.
+	const auto planned = std::ranges::find_if(
+		reports, [](const Report& report) { return report.stalled && report.where == "configure desk"; });
+	REQUIRE(planned != reports.end());
+	REQUIRE(planned + 1 != reports.end());
+	const Report& stalled = *planned;
+	const Report& resumed = *(planned + 1);
+	CHECK(stalled.ms > 500);
+	CHECK(stalled.where == "configure desk");
+	CHECK_FALSE(resumed.stalled);
+	// The gap from the last beat before the stall to the first after it: the 900 ms turn, plus at most one 100 ms beat
+	// interval and the loop's dispatch.
+	CHECK(resumed.ms >= 900);
+	CHECK(resumed.ms < 1500);
 }

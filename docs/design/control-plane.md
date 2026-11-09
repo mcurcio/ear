@@ -1120,7 +1120,9 @@ knowledge to clear a badge.
 Three framework diagnostics name no node, so they are standard-output records only (a `diagnostic` record with no
 `node`), never `node.diagnostic`: `ear.main-loop-stalled` (`ms`, and `in`: the PipeWire call or hook running, when
 known), active while the main loop's heartbeat is older than 500 ms, written from the watchdog's own thread while the
-stall lasts; `ear.main-loop-resumed` (`ms`, the stall's length); and `ear.data-loop-wedged` (once: no further engine
+stall lasts (its looks are 250 ms apart: a stall longer than 750 ms is always reported, a shorter one past 500 ms may not
+be, and `ms` is the heartbeat's age at the look; node-lifecycle.md 5.12); `ear.main-loop-resumed` (`ms`, the stall's
+length: the gap from the last beat before it to the first after); and `ear.data-loop-wedged` (once: no further engine
 change is applied, and ear's stop leaves through `std::_Exit`). The control port's graph requests wait on the same main
 loop, so the wire could not carry them in time (node-framework.md 6.3; round 4's F1, F6).
 
