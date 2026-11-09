@@ -17,7 +17,8 @@ operate it, and what bites.
   <123-456>`, type it there. `says paired`, then `says connected "<server>" paired`, with no `disconnected` between. A wrong
   code keeps the same code showing.
 - **20 wrong rounds hold pairing back** (`says pairing-failed pairing-code-mismatch`, `says pairing-held`), for this
-  client's life: the count is in memory. Change a setting (`name`, and back) or restart ear to release it. Any network peer
+  client's life: the count is in memory. `node.restart` (or changing a setting, or restarting ear) makes a new client and
+  releases it; `node.stop` and `node.start` do not. Any network peer
   can burn these rounds (spec: not partitioned by server or address).
 - **The code is on standard output only.** Notes never reach the control port or the editor (deferred), so whoever pairs
   needs ear's log open.
@@ -25,8 +26,9 @@ operate it, and what bites.
   client that `is_connected`, whichever side dialled, and a dynamic code when digits are offered. So a node must be connected
   before Music Assistant can offer pairing: `says connected "<server>" unpaired` comes first.
 - **The same settings change nothing.** `node.update` with what the node already has is no restart, for a failed node too.
-  To retry, change a setting or restart ear.
-- **A server that dialled by hand may not come back after a restart of the node.** After a `node.update` the goodbye is
+  To retry, `node.restart` or `node.start` (a failed node is configured again only when asked).
+- **A server that dialled by hand may not come back after a restart of the node.** After a `node.update` or `node.restart`
+  the goodbye is
   `shutdown`, and `aiosendspin`, having dialled by hand, did not redial within 30 s, though the spec has a server reconnect on
   that reason. One browsing mDNS comes back by itself.
 
@@ -39,7 +41,7 @@ operate it, and what bites.
 - A wider mode is narrowed, not refused, at each boot for every key file in the folder and its staging file, and at each start
   and save, because the `fsGroup` that `ear-on-talos` prescribes widens it on every mount.
 - Renaming a node makes a new identity, and adding a removed name back inherits the old one (`node.remove` leaves the file). To
-  wipe one, delete the file and restart the node: a file something else changed or removed fails the write
+  wipe one, delete the file and restart the node (`node.restart`): a file something else changed or removed fails the write
   (`key-write-failed`), so ear never puts it back.
 - A file it cannot trust (not JSON, a missing field, a `keypair` of the wrong size, a symlink, too large) fails the node, left
   unchanged, mode included: delete or fix it. No new identity is minted over it, or the server's trust would be lost silently.
@@ -56,6 +58,28 @@ operate it, and what bites.
 | `says advertise-failed <detail>` | Listening, not advertising. Give the server `ws://<address>:<port>/sendspin` |
 | `says stream <codec> ...` and silence | A format ear did not ask for breaks the spec: the sink stays full, and the library closes the connection when its ring pins |
 | `says key-write-failed <detail>` | Pairing holds this run only. Fix the folder, pair again. A key file something else changed is left as it is |
+
+## Lifecycle: the legacy adapter until slice 3c
+
+`sendspin` is the one type still written on the old type interface (`NodeTypeOf`, a config whose `start` returns a
+`StartResult` with a recipe that builds the `RunObject`, its handoff asked through `StartContext`). Since slice 3a it runs
+under the node lifecycle through the framework's legacy adapter (`src/core/legacy_instance.hpp`, `docs/design/
+node-lifecycle.md` 5.10): its `start` is the configuration's `configure`, its recipe runs once every resource is ready,
+its code is driven and faded like any other, and its `RunObject::close` runs off the main loop at the teardown. What
+that means to an operator:
+
+- **A stop keeps the connection.** `node.stop` fades and silences its code, and nothing else: the worker, the
+  connection, the pairing and the library keep running (there is no `stop()` hook to say goodbye with, D-L27). Its
+  outputs are silent and nothing it is sent is played or reported played. `node.start` drives the code again; the feed
+  is not cleared at a stop, so up to about 43 ms it held from before plays first (node-lifecycle.md 16, accepted until
+  3c). It never reports the stop's gap as played (D-L33: every stop prepares the code afresh).
+- **A restart, a disable or a removal drops it.** The run object closes (goodbye `shutdown`, the worker joined) and a
+  restart or an enable builds a new client from the key file. A disabled node holds no port and no connection.
+- **Bugs fail, never crash.** A recipe that throws fails the node `start-failed` (`recipe threw: ...`), a `close` that
+  throws is a `log` record, and the run past its close deadline (10 s) is leaked with `ear.close-overdue`.
+- **It is not in the type harness** (`notYetInHarness` in `test/nodes/all_types.hpp`); its own tests and the system
+  tests cover it. Slice 3c moves it onto the type's class (loops, a source and a sink instead of the feed and the
+  handoff), and the adapter, `StartContext`, `RunObject` and `ThreadHandoffs` go with that step.
 
 ## mDNS
 

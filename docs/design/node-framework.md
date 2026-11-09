@@ -32,8 +32,11 @@ node-lifecycle.md's review round 1 needed here (section 16, revision 8.2).
 Built: slice 1
 (section 13, "Slice 1 as built", says where it differs) and slice 4's framework side (8.8's erratum), slice 2, the type
 interface and its harness (section 13, "Slice 2 as built"), and slice 7, the internal clock with latency (section 13,
-"Slice 7 as built"; its spike's verified answers are in sections 10 and 15). Those records keep the built code's own
-words (`RunObject`, the recipe, `StartContext`): they name code that 13.2 retires. Nothing else is built. The two module
+"Slice 7 as built"; its spike's verified answers are in sections 10 and 15), and slice 3a, the lifecycle (section 13,
+"Slice 3a as built", 2026-11-09; its module designs `docs/design/node-lifecycle.md` and
+`docs/design/node-lifecycle-modules.md`). The older records keep the built code's own words (`RunObject`, the recipe,
+`StartContext`): they name code that 13.2 retires, which in 3a still runs for `sendspin` alone, behind the legacy
+adapter, until 3c. Nothing else is built. The two module
 designs beneath this page, `docs/design/node-primitives.md` (slice 3c and the primitives' part of 3d) and
 `docs/design/control-plane.md` (slices 5 and 6, and the wire of 3a, 3b, 3d and 8), are both at revision 6, written to
 this revision in the same change (control-plane.md also records the owner's answers to its own gates W3, X2, G1, G3 and
@@ -2088,8 +2091,9 @@ and every card follows it.**
 ## 13. Slices
 
 Each slice keeps every existing test green, or says which test changes and why, and changes no audio path unless it
-says so. Slices 1, 2, 4 and 7 are built; their "as built" subsections below stay as the record of what was built, in
-the built code's words, and 13.2 says what revision 6 changes in that code.
+says so. Slices 1, 2, 4, 7 and 3a are built; their "as built" subsections below stay as the record of what was built,
+in the built code's words, and 13.2 says what revision 6 changes in that code (3a made most of it; "Slice 3a as built"
+says what is left for 3b to 3d).
 
 ### 13.1 The slices, re-cut for revision 6
 
@@ -2418,6 +2422,70 @@ sections above, and why:
   fallback), which are owed on the hardware and listed in the `ear-on-talos` skill. `docs/design/sendspin.md` section 11
   still lists "PipeWire's port latency in the clock": the following card's latency now reaches the dating; a resampler
   before the card is still left to Music Assistant's output delay.
+
+### Slice 3a as built
+
+Slice 3a is built (2026-11-09), in the steps `docs/design/node-lifecycle.md` section 12 cut, each merged green: L-0 the
+spikes S1 to S3 as tests (`spikes_test.cpp`) and `context.num-data-loops = 1`; L-1 the two pure machines and the
+aggregate (`node_lifecycle.hpp`, tested by table); L-2 `PortBlock`'s asynchronous `drive` and `fadeOut`, `settle()`,
+`takenAt` and `blockId`; L-3a `NodeHost` on the machines (every type through the legacy adapter, the blocking drive
+removed); L-3b the per-turn flush of engine changes, T1's wait for an older block, joins by block id and
+`MainLoopActivity`; L-3c the fades, the three bounds and the wedged data loop; L-3d `disabled` honoured, `NodeHealth`'s
+members, `NodeOperations` and the new `node` records; L-4a the type's class (`lifecycle.hpp`: `configure`, `start()`,
+`stop()`, `CreateOf`, `NodeOf`, `Configured`; `white`, `card` and `rtp` moved; the harness over a real `NodeHost`);
+L-4b the interim sink (`sink.hpp`, `ThreadSinks`, the block's taps; `file` moved); L-5 the reserved key `disabled` in
+the graph file; L-6 the lifecycle on the wire (protocol 1); L-7 the main-loop watchdog (`StallWatch`); L-8 the closing
+system tests and these records. What each step had to settle beyond its design is in the module pages' review records
+(node-lifecycle.md 17, revisions 2.2 to 2.10; node-lifecycle-modules.md 11). The operator's view (states, records,
+requests, the fades and bounds) is `AGENTS.md`'s; the engine's facts are the `pipewire-engine` skill's. Where the
+built code differs from the sections above, and why:
+
+- **6.10 and 6.4: a broken rule fails the node; nothing is thrown out of `NodeHost`** (node-lifecycle-modules.md D-M3,
+  superseding node-lifecycle.md D-L40). 6.10 says each rule a compiler cannot check is a `std::logic_error`, 6.4 that
+  the framework catches a hook's throw and fails the node. As built both hold: a context call that breaks a rule
+  throws at the call and is also recorded on the node, and once `configure`, `start()` or `stop()` returns the node
+  fails `start-failed` with the rule's text (`configure threw: use called twice`) even when the type caught the throw;
+  a legacy type's bug at its `start`, a legacy recipe beside an outside node, a recipe that throws and a `RunObject::close`
+  that throws (a `log` record) are contained the same way. The harness reports these as the node's failure, not as a
+  throw (7.6's "caught by the harness" is that failure).
+- **6.4 and 6.10: the change version of `configure` compiles and is ignored until 3d** (D-M2, the owner's answer of
+  2026-11-09, "Accept, ignore until 3d"). Its signature is checked (a wrong one does not compile), and in 3a every
+  change of settings restarts the node; `ChangeOf<spec>` is declared for the signature only, and `Changed::applied()`
+  and `restart(reason)` have trivial bodies so a definition links.
+- **6.10's `CreateOf` members**, as built: `soundCard(bank, SoundCardRequest)` and `rtpReceiver(bank,
+  RtpReceiverRequest)` on an inside bank (the request's `bank` defaults empty and the handle names it, D-M15),
+  `openRecording(RecordingRequest)` (synchronous), `sink(bank, SinkShape).consumedBy(std::unique_ptr<SinkConsumer>)`,
+  `declareLatency(from, to, Latency)` and `use(code)` exactly once; `hold`, `whenReady` and `unclaim` are 3d's and do not
+  compile. The class's members are found by name whatever their access, so each must be public and not overloaded,
+  and the class is a class and not final (node-lifecycle-modules.md, after review of L-4a, item 1); `type_spec_bad.cpp`'s 45
+  compile-fail cases pin the shapes.
+- **6.6, the sink's consumer, as built** (`sink.hpp`, D-M4, D-M5): the sink's declarations have one header, and
+  `SinkConsumer` has a public virtual destructor, since `consumedBy` frees it through the base (node-primitives.md 6.6's
+  erratum). Its realtime side is interim (13.1): the block writes each sink's bank after the code, from taps carried in
+  the drive request, so a sink takes exactly the cycles its code drove; `Chunk::upstreamFrames` is 0 and
+  `Chunk::discontinuity` marks the first cycle after any drive. `file` opens its WAV in its consumer's `begin` on the
+  sink's thread.
+- **6.3's operations on the wire, as built** (D-M8, D-M10, D-M13): `NodeOperations`' calls take a callback with the
+  judged reply, called before any action, so the `action` record comes before the `stopping` it causes; `node.state`
+  carries `blockLost` always; the verbs ride the keeper's step with reads, in order with edits, and work while the file
+  has errors; once the keeper stopped they are answered `stopping` on the main loop. A node added disabled gets its
+  first `node.state` (`disabled`) though `node.added` said it, for a protocol 0 client.
+- **The erased instance** (D-M6): `ErasedInstance::ready` returns `std::expected<void, FailureReason>` (a failed legacy
+  recipe is a fault) and `hasRecipe()` tells D-L40's check a recipe exists; `engineRefused()` keeps a legacy start's
+  engine refusal `engine-refused`.
+- **6.8's bounds, as built** (node-lifecycle.md 5.4): the fade's 100 ms, the barrier's 5 s and the close's 10 s are
+  `NodeHost`'s timers, each judging only after the block's `settle()` and after a grace when the whole process stalled;
+  once wedged, `NodeHost` and the engine's adapters (`data_loop_wedge.hpp`: links, outside nodes, port blocks' latency)
+  make no PipeWire call that could wait on the data loop, leak instead, and ear leaves through `std::_Exit(0)`.
+- **Hooks timed** (D-M7): `ear.hook-slow` names the hook in its detail (`configure ran 31 ms`) with `ms`, once per node
+  and hook for the node's life; making the instance counts as `configure`.
+- **What 3a leaves, as 13.1 planned:** `sendspin` on the old SPI behind the legacy adapter (`LegacyInstance`,
+  `StartContext`, `StartResult`, the recipe, `RunObject`, `ThreadHandoffs`), a stopped `sendspin` node keeping its run
+  object and connection, and its feed's leftover (up to about 43 ms) played after a start (node-lifecycle.md 16), until
+  3c; the sink's realtime side inside the block, readiness deadlines, `rtp`'s declared latency and the shapes of
+  `soundCard` and `rtpReceiver`, until 3b; a synchronous `openRecording`, until 3c; a replace for a change of ports,
+  until 3d. Open for 3b (15): a cycle an xrun cuts short is run by an upstream prefix only, and `clock.position` steps
+  back on a loaded host. Sound cards opened off the main loop stay a later slice (6.8, 13.1).
 
 ## 14. Gate answers
 

@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, outside nodes (sound cards and RTP receivers loaded from module-rtp-source), drive(), level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, outside nodes, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays starting or is silent, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, outside nodes (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, outside nodes, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring or is silent, a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -28,7 +28,8 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 | Outside nodes | `outside_nodes.cpp` (`joinOutsideNode`) | The one lifecycle of every engine node a node's insides ask for: runs alone, then linked to the block (the outside node by global id, the block by node name, ports by name), ready, lost |
 | Sound cards | `sound_cards.cpp` | One kind of outside node: one ALSA adapter node per card and direction |
 | RTP receivers | `rtp_receivers.cpp` | The other kind: `libpipewire-module-rtp-source` loaded into the context, one per `rtp` node |
-| Handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `spa_ringbuffer` plus one `pw_thread_loop` each |
+| Sinks and handoffs | `handoffs.cpp` | Realtime thread to an ordinary thread: `ThreadSinks` (the interim sink: a frame ring and a stamp ring, written by the block's taps, and one `pw_thread_loop` handing chunks to its consumer) and `ThreadHandoffs` (the legacy handoff `sendspin` alone uses until slice 3c): `spa_ringbuffer` plus one `pw_thread_loop` each |
+| The wedge mark | `data_loop_wedge.hpp` | Once ear says the data loop is wedged, `main.cpp` marks the engine and the adapters stop calling into it (section "drive()") |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread (the control port's graph calls) runs on the main loop: a mutex-guarded queue plus a `pw_loop` event source |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority and the internal clock's name |
 
@@ -43,6 +44,11 @@ file (`EAR_ENGINE_CONF`). `Engine` does no lookup of its own. The ctest
   client. Serving the socket (so shairport-sync can connect) is parked.
 - `core.name = ear`.
 - `support.dbus = false`: there is no D-Bus in the container.
+- `context.num-data-loops = 1`: one data loop runs every engine node's `process` (the blocks, the
+  cards' adapters, the RTP receivers). It is 1.4.2's default (`context.c`, `DEFAULT_DATA_LOOPS`),
+  pinned because the node framework relies on it: a block and the engine nodes beside it see one
+  `clock.position` per cycle, and a non-blocking invoke on that loop runs between any two of their
+  cycles (S3, below). A bump that changes the default must keep it.
 - Never `default.clock.*` or `clock.power-of-two-quantum`: `context.properties` from the file
   overwrite the properties `Engine` passes to `pw_context_new`, which carry the clock.
 
@@ -286,8 +292,9 @@ What PipeWire 1.4.2 does that ear cannot see or change:
 
 - **A port that cannot be bound is only logged** (`bind() failed: Address already in use`). The
   stream's error is set, but the node is not put in ERROR, not removed, the module not destroyed.
-  With always-process the node then never reaches RUNNING, so the `rtp` node stays `starting`
-  with silent outputs. The module sets `SO_REUSEADDR`, so two receivers on one port both bind
+  With always-process the node then never reaches RUNNING, so the `rtp` node stays `configuring`
+  (state `starting`) with silent outputs, waiting for its companion: after 2 s ear says `node <n> still
+  configuring after 2s: waiting for <n>.rtp` (`lifecycle_test.cpp` holds the port to check it). The module sets `SO_REUSEADDR`, so two receivers on one port both bind
   (unicast then reaches only one); a port held by a program without it fails.
 - **No packets is not a failure.** The module never destroys itself. After `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (true again on the next packet); a
@@ -307,19 +314,88 @@ What PipeWire 1.4.2 does that ear cannot see or change:
 CI's tests use a sender thread on 127.0.0.1 (`test/support/rtp_tone.hpp`), never PipeWire's
 `module-rtp-sink`, and never multicast.
 
-## drive(): swapping a block's code
+## drive() and fadeOut(): swapping a block's code
 
 `PortBlock::drive(request, done)` (`docs/design/node-lifecycle.md` section 5.3) returns at once:
 the request goes into the block's ring of eight, one non-blocking `pw_loop_invoke` per block in
 flight applies it on the block's own data loop between two cycles, and `done(P)` runs later on the
-main loop, from the block's completion event (or `settle()`), never inside the call. Once `done`
-ran, no `process()` of the old code is running or will run, so the node framework can release the
-old insides. A request with no code makes every output silent; the block keeps processing. A
-block with no data loop (refused, never connected, or its local node destroyed: `filter.c` clears
-the pointer) applies it on the main thread and still completes by signal. A block whose engine
-node was destroyed through the registry keeps its data loop (E1 found this), so the invoke runs
-there as usual. The blocking `drive(code)` went with step L-3a; an engine test that needs a code
-running before it goes on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
+main loop, from the block's completion event (or `settle()`), never inside the call, with `P` the
+position it takes effect from (`takenAt`: the next cycle's expected position, wrong by up to
+`resync.ms` plus a block across a driver reset, never early). Once `done` ran, no `process()` of the
+old code is running or will run, so the node framework can release the old insides. A request with
+no code makes every output silent; the block keeps processing. A block with no data loop (refused,
+never connected, or its local node destroyed: `filter.c` clears the pointer) applies it on the main
+thread and still completes by signal. A request is applied whatever the block's state: a block
+PAUSED (suspended) or whose driver went still runs the loop's invokes, so a drive or fade never waits
+for a cycle that will not come (L-2's test suspends a block). A block whose engine node was destroyed
+through the registry keeps its data loop (E1 found this), so the invoke runs there as usual. The
+blocking `drive(code)` went with step L-3a; an engine test that needs a code running before it goes
+on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
+
+- **Fades.** A drive names which outputs it fades (`DriveRequest::faded`, one flag per output in
+  `process()`'s order: public outputs, then inside outputs, so a card's playback bank fades too); the
+  invoke resets their gain to the fade-in's start, so the new code ramps in linearly over 5 ms (rate *
+  5 / 1000 frames, exact at both ends) and any pending fade-out is cancelled (its `done` dropped).
+  `fadeOut(done)` ramps the faded outputs to zero over 5 ms from the next cycle, the code still
+  running, and completes once a cycle ended at zero (a cycle too large to run counts as one); a block
+  that is not processing, or leaves STREAMING mid-fade, acknowledges it by signal. `NodeHost` fades
+  before every planned silence (a stop, restart, disable, removal, failure, `stopAll`) and then
+  drives no code. A sink's bank is never faded. A node with no output but sink banks (`file`) still
+  posts a fade, acknowledged at the next cycle's end.
+- **Bounds and the wedge** (node-lifecycle.md 5.4; the timers are `NodeHost`'s). A fade not
+  acknowledged in 100 ms is `ear.fade-unacknowledged` and the silence goes ahead unfaded. A drive or
+  silence not completed in 5 s is `ear.barrier-overdue`, and then, once, `ear.data-loop-wedged`: the
+  loop runs no invoke. Every bound first calls the block's `settle()` (it runs every `done` the data
+  loop already completed), and is judged after a grace when the whole process stalled, so a stalled
+  main loop never blames the data loop. Once wedged, `NodeHost` makes no PipeWire call and leaks what
+  it would end, and `main.cpp` marks the engine (`markDataLoopWedged`): `Links` makes no link (each
+  refused "the data loop is wedged") and leaks the proxies it would destroy, an outside node leaks
+  its links and body, and a block tells no latency, since each of those reaches the data loop through
+  a blocking invoke (`impl-port.c`'s mix release, `port_set_io`) that would hang the main loop, SIGTERM
+  included. A new node fails `engine-refused: the data loop is wedged` without a block, and ear ends
+  through `std::_Exit(0)` after writing `ear.conf` and every record.
+- **The interim sinks' taps** (node-lifecycle-modules.md 4.4). A drive carries `SinkBinding`s; the
+  invoke copies them into storage sized when the block was made (at most one tap per inside output
+  bank; nothing allocates on the data loop) and unbinds them in the invoke that applies the next
+  request. Each cycle the code runs, after the code and the fade, the block writes each bound bank's
+  frames into its sink's frame ring with a stamp (position, both clocks, `discontinuity` on the first
+  cycle after any drive) in the stamp ring beside it, and wakes the sink's thread
+  (`pw_loop_signal_event`). So a sink takes exactly the cycles its code drove: a stop's silence ends
+  them, a start begins them again at its first cycle. The two rings drop together; a full one counts
+  dropped frames, which reach the node's `removed dropped=<n>`. A sink's first chunk after a block's
+  first drive carries the clock's real position, which may differ from that drive's `takenAt` when no
+  cycle ran before it (`takenAt` is 0 until one did). In 3b the realtime side moves behind a ring
+  companion's own `pw_filter`.
+- **One invoke in flight per block is a requirement** (D-L38, S1 below): an unbounded producer of
+  invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
+
+## What the slice 3a spikes proved (S1 to S3, `spikes_test.cpp`)
+
+Recorded in `docs/design/node-lifecycle.md` 10.5 with PipeWire's sources (`loop.c`, `context.c`,
+`filter.c`):
+
+- **S1: asynchronous `pw_loop_invoke` from the main loop** runs on the data thread in posting
+  order, never inside any `process`, and the post returns the async code, never the function's
+  result. A full invoke queue (32 KiB, about 455 items) is never refused: the *posting* thread
+  `calloc`s an overflow queue and goes on, and posting order holds across queues; the data thread
+  allocates nothing. A loop whose thread is not running (not started, or stopped) runs the function
+  inline on the caller and returns its result, which is why completions are posted, never run inline.
+  A producer posting as fast as it can outruns the flush: the data loop spins in
+  `flush_all_queues`, never runs `process` again, and memory grows.
+- **S2: take-up by position, under an invoke storm** (`RUN_SERIAL`, tag `[s2]`, a 64-frame block).
+  Every request is taken up once, in order, one cycle after publication, and nodes enter in link
+  order in every cycle they all run. But a cycle an xrun cuts short is run by an upstream prefix of
+  the graph only (U, or U and B), never by a downstream node without its upstream; and on a loaded
+  host `clock.position` steps back (section "The clock"), the whole graph running positions again.
+  So cycles are told apart by the order they ran in, never by position. For 3a this changes nothing
+  (the sink is inside the block); 3b's source companions must count a chunk as played only once
+  their block took it up, or keep their realtime side inside the block (D-L25).
+- **S3: one data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0`
+  thread, and a filter's `pw_filter_get_data_loop` is that loop. Adapters and the rtp module name
+  `data-loop.0` in their info, while `pw_filter`s name no loop (`node.loop.name` is set only by a
+  node's maker).
+- After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
+  resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 
 ## Levels
 
@@ -385,7 +461,14 @@ Nothing like WirePlumber runs. Two things make that work:
 - **Destroying a filter is a barrier.** `pw_filter_destroy` removes the node from the data loop
   with a blocking invoke, so `process` is never called after it returns. The node framework no
   longer relies on it (since step L-3a a node is silenced by an asynchronous drive before its block
-  is destroyed), but a block destroyed with a code still driven is safe.
+  is destroyed), but a block destroyed with a code still driven is safe. Because it blocks, it is
+  never called once the data loop is wedged (the block is leaked instead), and `NodeHost` batches
+  every destroy and make of a turn into one flush posted to the main-loop executor, destroys first
+  (node-lifecycle.md 5.5), so the main loop waits on the data loop at most once a turn.
+- **A name added back waits for its older block.** Two blocks of one `node.name` would confuse
+  `LiveGraph` and link-factory, so a node's block is made only in the flush that destroyed the older
+  block of its name, and an outside node links its block by the block's global id
+  (`pw_filter_get_node_id`, read at its first STREAMING), never by name.
 - **Link lifetime.** A link made through `link-factory` belongs to the connection that asked for
   it (no `object.linger`), so destroying its proxy removes it. The factory destroys a link that
   goes to ERROR. A proxy removed before ACTIVE is a failure; after ACTIVE it is gone. Never
@@ -419,7 +502,7 @@ Nothing like WirePlumber runs. Two things make that work:
   same crossing, but the queue owns each function (no leak at stop) and never reports full.
 - **Threads started later inherit the signal mask.** The control port's thread is started after
   `Engine::create`, so it too blocks SIGINT and SIGTERM.
-- **Waking from the realtime thread.** The handoff writer wakes its thread with
+- **Waking from the realtime thread.** The sink's tap and the handoff writer wake their thread with
   `pw_loop_signal_event` (an eventfd write). The S4 test checks it allocates nothing; the
   design page lists its realtime safety as otherwise unverified.
 - **Xruns on a loaded host are not bugs.** When the host is busy (other containers in Docker's

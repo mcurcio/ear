@@ -1,8 +1,9 @@
 # The node lifecycle, built: slice 3a's module design
 
-Status: proposal, revision 2.9, 2026-11-09 (2.2: gaps found building steps L-1 and L-2; 2.3: building L-5's graph
-file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6: building L-3b; 2.7: building L-3c; 2.8: building L-7;
-2.9: building L-3d; section 17). Revision 1 went to one
+Status: built, revision 2.10, 2026-11-09: every step of section 12 is in (slice 3a, L-0 to L-8), and
+`docs/design/node-framework.md` section 13's "Slice 3a as built" is the record of what was built (2.2: gaps found
+building steps L-1 and L-2; 2.3: building L-5's graph file and desired graph; 2.4: S2 on CI; 2.5: building L-3a; 2.6:
+building L-3b; 2.7: building L-3c; 2.8: building L-7; 2.9: building L-3d; 2.10: L-4a, L-4b, L-6 and L-8, section 17). Revision 1 went to one
 independent review; revision 2 answers it (section 17,
 round 1: one blocker, nine major, fourteen minor and five nits, each checked in the code first). The module design
 `docs/design/node-framework.md` (revision 8.2) asks for before slice 3a's code (its D-D2 and 13.1): the two pure
@@ -803,7 +804,8 @@ a node; empty means "between calls" (or, revision 2.8, unknown: a reader yields 
 | `src/core/include/ear/core/main_loop_activity.hpp`, `main_loop_activity.cpp` (new) | `MainLoopActivity` (5.12) | L-3b |
 | `src/core/include/ear/core/node_machines.hpp`, `node_machines.cpp` | `AddFacts::olderNode` and `NodeAggregate::olderNodeGone()` (4.3's `olderNode`, revision 2.6) | L-3b |
 | `src/core/include/ear/core/lifecycle.hpp` (new) | 6.10's 3a classes: `NodeOf`, `CreateOf`, `Configured`, `SinkRequest` (3a members), `SinkShape`, `NodeCode`; `ErasedInstance`, `InstanceContexts`, `CreateContext`, `NodeContext` | L-4a |
-| `src/core/include/ear/core/node_type.hpp` | `FailureReason::Code::lost`, `failureCode` (L-3d); `NodeConfig::make` with the legacy default, `start` with a throwing default, `RunCode` renamed `NodeCode` (an alias kept until 3c for `sendspin`) (L-4a); `Chunk`, `SinkConsumer` (as node-primitives.md 6.6) (L-4b) | L-3d, L-4a, L-4b |
+| `src/core/include/ear/core/node_type.hpp` | `FailureReason::Code::lost`, `failureCode` (L-3d); `NodeConfig::make` with the legacy default, `start` with a throwing default, `RunCode` renamed `NodeCode` (an alias kept until 3c for `sendspin`) (L-4a) | L-3d, L-4a |
+| `src/core/include/ear/core/sink.hpp` (new) | as built (node-lifecycle-modules.md D-M4, in place of this table's first plan, which put `Chunk` and `SinkConsumer` in `node_type.hpp` and the adapter in `node_host.hpp`): `Chunk`, `SinkConsumer` (public virtual destructor, D-M5), `SinkShape`, `ChunkStamp`, `SinkTap`, `SinkBinding`, `Sink`, `SinkAdapter` | L-4b |
 | `src/core/include/ear/core/type_spec.hpp` | `SpecConfig::make`, `SpecInstance`, the class's static checks (5.9); `StartResult` construction from a spec code kept for `NodeCode` | L-4a |
 | `src/core/include/ear/core/settings_table.hpp` | `Row`'s consteval constructor refuses the key `disabled` ("disabled is the framework's key: no type may declare it"), beside "a setting's key is empty" (`settings_table.hpp:104-108` [V]) | L-5 |
 | `src/core/include/ear/core/graph_spec.hpp` | `NodeSpec::disabled` (`bool`, default false), compared by `operator==`; erratum in `m1-white-to-file.md` | L-5 |
@@ -825,13 +827,14 @@ a node; empty means "between calls" (or, revision 2.8, unknown: a reader yields 
 | `src/nodes/sendspin` | nothing (5.10) | — |
 | `src/config/graph_file_model.cpp`, `.hpp` | the reserved key read and written (8): `readNode`, `addNode`, `updateNode` leaving `disabled` alone, `disableNode`, `enableNode`, `dropBlock` | L-5 |
 | `src/config/keeper.cpp`, `keeper.hpp`, `main_loop_side.cpp`, `.hpp` | `DisableNode` and `EnableNode` as edits (L-6, with `ear_control`'s `Command`s they carry; L-5 built the model's `disableNode` and `enableNode` they call); `StartNode`, `StopNode`, `RestartNode` as a new step kind needing no file (D-L19), answered by `NodeOperations` through `MainLoopSide`, which maps `LifecycleApplied` and `LifecycleRefusal` to the wire's values (L-6) | L-5, L-6 |
+| `src/control/include/ear/control/lifecycle_wire.hpp` (new) | as built (node-lifecycle-modules.md D-M4's twin for the wire): `AppliedKind`, `Applied`, `NodeDisabled`, `NotRestartable`, `ControlRefusal`, `LifecycleVerb`, `ActionRecord`, `ActionListener` | L-6 |
 | `src/control/` | `StatusLog`: the new diagnostics and the node-less `diagnostic` record (L-3c); `node` records with `phase` and `cause`, the new sentences, `still`, `LogEntry::run`'s line removed (L-3d); `ear.hook-slow` (L-4a); commands, results with `applied`, the two new refusal codes, `node.state`'s members, `node.updated`'s `applied` and `disabled`, `node.gone`, the protocol frame, `action` records (L-6); the stall records (L-7) | L-3c to L-7 |
 | `test/protocol/` | each fixture changes in the step that changes its encoder (9): `output-records.json`'s diagnostics (L-3c), its `node` records and `"run": 2` removed (L-3d), `ear.hook-slow` (L-4a), `action` records (L-6), stall records (L-7); `lifecycle.json`, `unknown-values.json`, `errors.json`, `snapshot.json`, `edits.json` (L-6) | L-3c to L-7 |
-| `test/system/` | the seven removal lines and `sendspin_connections_test.cpp:334`'s search (11.7) | L-3d |
+| `test/system/` | the seven removal lines and `sendspin_connections_test.cpp:334`'s search (11.7) (L-3d); stop and start, disable and enable through the port (`control_port_test.cpp`, L-6); 11.7's remaining tests (`lifecycle_test.cpp`, L-8) | L-3d, L-6, L-8 |
 | `src/main.cpp` | `leaked()` (L-3c); the sink adapter (L-4b); `NodeOperations` to `MainLoopSide` (L-6); `StallWatch` and its `where` lambda (L-7) | L-3c, L-4b, L-6, L-7 |
 | `web/src/protocol.ts`, `graph.ts`, `components/EarNode.tsx`, `editor.css`, `health.ts` (new), `components/Panels.tsx` | open enums, the new members, `node.gone`, the new states' styles, the phase line and Stop, Start, Restart, Disable and Enable (control-plane.md 8.6 is the home) | L-6 |
 | `scripts/rpc-call.mjs`, `scripts/image-smoke.sh` | `--until`; `protocol` and `features` checked | L-6 |
-| `AGENTS.md`, `.claude/skills/pipewire-engine`, `control-port` | the new states, records, methods and traps | L-8 |
+| `AGENTS.md`, `.claude/skills/pipewire-engine`, `control-port`, `sendspin`, `ear-on-talos` | the new states, records, methods and traps (`control-port` with L-6) | L-6, L-8 |
 
 ## 7. The types, before and after
 
@@ -1830,3 +1833,20 @@ each a minimal edit or recorded here:
   `nodeGone`), told first when it is superseded, so `StatusLog` keeps it apart from the newer node of its name.
 - `sendspin_streams_test.cpp`'s `CHECK_FALSE(ear.hasLine("node ma stopping"))` matched the whole line, so the new
   `stopping: <cause>` would pass it vacuously; it checks the prefix now.
+
+### Revision 2.10 (2026-11-09, steps L-4a, L-4b, L-6 and L-8)
+
+Steps L-4a (the type's class), L-4b (the interim sink) and L-6 (the wire) were built to
+`docs/design/node-lifecycle-modules.md`, the module design beneath this page, and what building and reviewing each
+settled is recorded there (its section 11: "Found building" and "After review" for each step), with its decisions
+D-M1 to D-M22 (section 8). Two of them change this page: D-L40 is superseded by D-M3 (its row says so: nothing a type
+does is thrown out of `NodeHost`, every broken rule fails the node `start-failed`), and section 6's table now carries
+`sink.hpp` and `lifecycle_wire.hpp` (D-M4) in place of the first plan's placing. Step L-8 closed the slice: 11.7's
+remaining system tests (`test/system/lifecycle_test.cpp`: a stop forgotten by a restart of ear, a disable surviving one
+with no record of the node before `disabled`, a disable of one of two nodes sharing `disabled $quiet;`, a restart of a
+card node on the test card, an `rtp` node on a held UDP port saying `still configuring` and showing `waitingFor`, and a
+hand-written `node white noise disabled;` booting nothing with the hint); `AGENTS.md`, the `pipewire-engine`,
+`sendspin` and `ear-on-talos` skills (`control-port` was L-6's); `docs/design/node-framework.md`'s "Slice 3a as built"
+and status; and node-primitives.md 6.6's erratum (D-M5). What L-8 found in the code that no page said is in that
+record. Open items (16) stand as written: 3b's two facts (cut-short cycles, positions stepping back), the bounds against
+CI's stalls [U], and the legacy `sendspin` feed's leftover after a stop.

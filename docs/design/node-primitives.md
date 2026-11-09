@@ -832,13 +832,15 @@ the one home of `SinkConsumer` and `SinkControl`, declared whole here; the frame
 ```cpp
 class SinkConsumer {                                   // a loop state's member, or given whole: consumedBy (6.10)
 public:
+	/// Public and virtual (erratum, slice 3a: node-lifecycle-modules.md D-M5, as `sink.hpp` builds it): consumedBy
+	/// takes a std::unique_ptr<SinkConsumer> and frees it through the base, which a protected non-virtual
+	/// destructor does not compile with.
+	virtual ~SinkConsumer() = default;
 	/// The sink's thread, once, before any consume and before the node is `configured` (readiness step 4'). Open what
 	/// the consumer writes to (file's WAV, a socket). A failure is handle.lost(detail): the node fails `start-failed`.
 	virtual void begin() {}
 	virtual void consume(const Chunk& chunk) = 0;      // in order; may block on I/O; framework page 9.6
 	virtual void finish() = 0;                         // once, after the last consume (I5 step 3)
-protected:
-	~SinkConsumer() = default;
 };
 class SinkControl {                                    // cx.sink(...).control(): a loop's state keeps it
 public:

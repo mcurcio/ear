@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent or stays starting, or when a sendspin node in the pod is not found or loses its pairing.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent or stays starting (configuring), or when a sendspin node in the pod is not found or loses its pairing.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -64,10 +64,13 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
 - The kernel validates every rate a MOTU (USB vendor 0x07fd) reports
   (`QUIRK_FLAG_VALIDATE_RATES`, `sound/usb/quirks.c`; the quirk flags below turn it off), so a graph frequency the card is not set
   to fails the card when it opens: the node is `failed engine-refused: <detail>`, and every other
-  node keeps running on ear's internal clock, which drives the graph whether or not a card works. Fix the rate, then restart the pod, or change a setting of the card node
-  with `node.update` (an update with the same settings changes nothing; no retry happens by
-  itself; issue #19). A `node.update` on the card node has also hung until the
-  pod was restarted (issue #18).
+  node keeps running on ear's internal clock, which drives the graph whether or not a card works. Fix the rate, then retry the card node with `node.restart` (or `node.start`:
+  `node scripts/rpc-call.mjs ws://<address>:7777/rpc node.restart '{"name":"motu"}' --until 'motu running'`), which opens the
+  card afresh; no retry happens by itself (slice 8). An update with the same settings changes nothing. A
+  `node.update` on the card node has hung until the pod was restarted (issue #18): if a restart hangs the
+  same way, ear's main-loop watchdog now says so (`ear.main-loop-stalled: no main-loop heartbeat for <ms>
+  ms, in <call> motu`), which tells a card blocking ALSA on the main loop from a quiet ear (ALSA's
+  open, drop and close run there; opening cards off the main loop is a later slice).
 - Power-cycled, the MOTU comes up at 192 kHz unless its rate was set on the device, so check the
   rate after every power-cycle. With the quirk flags below it stays at the rate set (48 kHz seen,
   2026-11-01).
@@ -122,7 +125,10 @@ always the graph frequency (`graph_frequency` in `ear.conf`), never a setting.
   group. With the MOTU off, EAR still starts: the card node is `failed engine-refused` and the
   control port answers. A container sees only the device files present when it starts, so after
   the MOTU comes on, restart the pod (`kubectl rollout restart -n audio deploy/ear`); no `node.update`
-  can see a card the container never got.
+  or `node.restart` can see a card the container never got. To keep the card off across restarts
+  (the MOTU switched off for a season), Disable its node (`node.disable`, or `disabled true;` in its
+  braces in `ear.conf`): a disabled node opens nothing and fails nothing at boot. `node.stop` is
+  silence for now only: it keeps the card open and is forgotten when the pod restarts.
 - Out of the box `/dev/snd/*` is `root:root 0600` on the node (seen on the owner's node
   2026-10-31): the kernel gives sound devices no mode. Talos runs udevd with
   `--resolve-names=never`, so systemd's stock `SUBSYSTEM=="sound", GROUP="audio"` rule (a named
@@ -202,7 +208,7 @@ machine:
 3. A wrong rate fails only the card node (section 3), and unplugging the card or switching it
    off fails it too while the rest keeps running. There is no hotplug, and in a pod the card's
    device files are fixed when the container starts: plug it back or switch it on, then restart
-   the pod (`kubectl rollout restart -n audio deploy/ear`), not just `node.update`.
+   the pod (`kubectl rollout restart -n audio deploy/ear`), not just `node.update` or `node.restart`.
    After the node reboots, the MOTU may fail USB enumeration (`-71` in the kernel log) until it
    is power-cycled; nothing in the node's roll notices the card is missing.
 4. The MOTU freezes on Linux (2026-10-31 to 2026-11-01, cause unknown): front panel and web
@@ -254,6 +260,13 @@ machine:
      in the graph shows a frozen follower yet (the follower watchdog is slice 8), so watch the
      card's own state: `cat /proc/asound/<card>/pcm0p/sub0/status` on the node, a `hw_ptr` that
      stops moving while `state: RUNNING`.
+   - A wedged MOTU and ear's main loop: record whether a frozen or unplugged MOTU blocks
+     `node.stop`, `node.restart` or the pod's stop. If ALSA's drop or close blocks, ear's log shows
+     `ear.main-loop-stalled ... in destroy outside node motu` (or `make outside node motu`) and no
+     `ear.main-loop-resumed`; if the data loop stops answering, `ear.barrier-overdue` and then
+     `ear.data-loop-wedged`. Either answers the open question of `docs/design/node-framework.md`
+     6.8 and 15 (whether a wedged card blocks those calls), which decides the slice that opens
+     cards off the main loop.
 
 ## 6. FPP's audio over RTP
 
@@ -283,8 +296,10 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   of section 4 must allow it too, and port 7777 and the RTP port are then the node's own ports.
   Not tested anywhere yet, not even in CI.
 - **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
-  already holds the UDP port, the node stays `starting` with silent outputs, and only PipeWire's
-  log says why (`bind() failed: Address already in use`). Pick another port.
+  already holds the UDP port, the node stays `configuring` (state `starting`) with silent outputs:
+  PipeWire's log says why (`bind() failed: Address already in use`), and after 2 s ear says
+  `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get`'s `waitingFor`). Pick
+  another port.
 - **The sender: FPP's own PipeWire, `libpipewire-module-rtp-sink`** (if FPP's audio runs through
   PipeWire **[check]**). Its arguments must match the node: `destination.ip` = the Service's
   address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its

@@ -1,6 +1,8 @@
 # Slice 3a's remaining steps, module by module: the interfaces implementers build behind
 
-Status: proposal, revision 1, 2026-11-09, not reviewed. Written by the slice's architect at the owner's direction of
+Status: built, 2026-11-09: L-4a, L-4b and L-6 are built to this page, each reviewed after its commit (section 11 records
+what building and review settled), and L-8 closed slice 3a (section 6; `docs/design/node-framework.md` section 13's
+"Slice 3a as built" is the record). Revision 1 (2026-11-09) was not reviewed before building. Written by the slice's architect at the owner's direction of
 2026-11-09 ("At the top of each workflow slice, have a dedicated software architect review the high level doc and
 produce a more granular module level design. It should produce explicit interfaces and signatures of the core
 components, so that implementers can fill in implementation around the coherent module proposal."), after reading
@@ -1322,3 +1324,23 @@ An independent review of the L-6 commit asked for these; each is built, and the 
    (`main_loop_side_test.cpp`), node.disable and node.enable through the real ear (`ear.conf`'s text, `node.updated`
    then `stopping` (disabling) before the reply, then `disabled`; the enable back), the stop and start test finding
    the `running` after the start rather than the boot's, a snapshot node's unknown member dropped (vitest).
+
+### Built in L-8 (2026-11-09)
+
+Step L-8 closed slice 3a as section 6 lists. The system tests are `test/system/lifecycle_test.cpp` (tag
+`[lifecycle]`, with L-6's two in `control_port_test.cpp`): a stop forgotten by a restart of ear; a disable surviving a
+restart of ear (`node noise disabled` the node's first record at boot) and the enable giving `node white noise;` back;
+a disable of one of two nodes sharing `disabled $quiet;` editing only its line while the other plays on (a whole level
+window with the disabled node's input at zero and the other's at noise); `node.restart` of a card node on the test card
+(`action`, `stopping: restarting (restart invoked)`, `configuring`, `running`, its route still linked, no
+`graphFile.changed` or `node.updated`); an `rtp` node on a UDP port held without `SO_REUSEADDR` on 0.0.0.0 saying `still
+configuring after <s>s: waiting for fpp.rtp` and showing `waitingFor` `companion` `fpp.rtp` in `graph.get`; and a
+hand-written `node white noise disabled;` booting nothing, its `ear/bad-directive` at 3:1 carrying the hint. Nothing in
+the code changed. What the docs said against the code, each fixed in this step: `AGENTS.md` had an `rtp` node on a held
+port `starting` for good (it is `configuring`, with a `still` record), a failed card retried only by a changed setting
+or a restart of ear (and the `sendspin` paragraph likewise; `node.restart` and `node.start` retry), ear's stop ending
+each node `stopped` (it ends `removed dropped=<n>`), no `ear.hook-slow` in its record table, no `disabled` in its graph
+file section and "a restart verb on the control port" still not built; the `sendspin` skill released a held pairing
+only by a changed setting or a restart of ear (and `node.restart` does, `node.stop` does not); the `ear-on-talos`
+skill had the busy RTP port `starting` and a card retried only by `node.update`; node-primitives.md 6.6 still gave
+`SinkConsumer` a protected non-virtual destructor (D-M5's erratum, now written there).
