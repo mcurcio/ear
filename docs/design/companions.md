@@ -1,10 +1,11 @@
 # Companions: slice 3b of the node framework
 
-Status: design, not built. Slice 3b follows slice 3a (the lifecycle, built 2026-11-09) and comes before slice 3c (node
-primitives, `node-primitives.md`), because companions remove two of 3c's would-be primitives (feeds and late handoffs)
-and a third's use (sendspin's bell). The built system this page changes is described in `docs/architecture.md`,
-`docs/engine.md`, `docs/writing-a-node-type.md`, `docs/control-port.md` and `docs/output-records.md`; this page cites
-them for what exists and says only what 3b adds or changes.
+Status: design, not built; module design in section 8 (2026-11-09), its headers landed as declarations. Slice 3b follows
+slice 3a (the lifecycle, built 2026-11-09) and comes before slice 3c (node primitives, `node-primitives.md`), because
+companions remove two of 3c's would-be primitives (feeds and late handoffs) and a third's use (sendspin's bell). The
+built system this page changes is described in `docs/architecture.md`, `docs/engine.md`,
+`docs/writing-a-node-type.md`, `docs/control-port.md` and `docs/output-records.md`; this page cites them for what exists
+and says only what 3b adds or changes.
 
 [V] = verified in the code or PipeWire source named, as of this page's writing (2026-11-09); [U] = unverified, with the
 test that checks it.
@@ -15,11 +16,11 @@ The R numbers are the register the node framework's design used (kept so commits
 
 | # | The owner's words | Date | What it means here |
 |---|---|---|---|
-| R6 | "in a general purpose sources-and-sinks graph, its always just 'running'" | 2026-10-29 | A companion never makes a block stop processing; every ring companion processes from creation, linked or not |
+| R6 | "in a general purpose sources-and-sinks graph, its always just 'running'" | 2026-10-29 | A companion never makes a block stop processing; the block runs from creation, with or without companions |
 | R14 | "G4 is asking the wrong question. The node audio threads should be concerned with reading inputs and writing outputs. The framework should provide the necessary primitives to connect inputs/outputs across nodes AND anytime a node needs to cross inputs/outputs to non-realtime code (eg pipe outputs through a mailbox?)" | 2026-11-08 | A type's realtime code reads `Io` inputs and writes `Io` outputs, nothing else; every crossing to or from non-realtime code is the framework's |
 | R16 | "I like the basic shape of the state machine proposal. And most importantly: it should be per-node. Some node stopping/reconfiguring/failing does not effect the graph globally" | 2026-11-08 | A companion's failure fails only its node; its barrier is its own |
-| R18 | "crossing to a non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing graph" | 2026-11-08 | Companions: hidden engine nodes linked to a node's inside banks |
-| Q28 (gate C2) | Asked what the editor shows of a node's hidden helpers: "(a)", as recommended: small badges in the node's box, one per helper, its kind and a dot for ready, its drop count on hover | 2026-11-08 | 3.8 |
+| R18 | "crossing to a non-rat [non-realtime] thread could be managed by allowing a node to internally pipe its inputs/outputs to a hidden node, to maintain the integrity and consistency of the processing graph" | 2026-11-08 | Companions: hidden helpers on a node's inside banks, owned by the framework. Cards and RTP receivers are hidden engine nodes; a sink or a source is served by the node's own block in its cycle (3.4 says why) |
+| Q28 (gate C2) | Asked what the editor shows of a node's hidden helpers: "(a)", as recommended: small badges in the node's box, one per helper, its kind and a dot for ready, its drop count on hover | 2026-11-08 | 3.7 |
 
 ## 2. What slice 3a left
 
@@ -28,16 +29,17 @@ Slice 3a built the lifecycle with exact interim calls for everything 3b makes re
 
 | Interim, as built | Where | What 3b does |
 |---|---|---|
-| The sink's realtime side is inside the block: the block writes each sink's inside output bank into a `FrameRing` after the code, from `SinkTap`s carried in the drive request (`DriveRequest::sinks`) | `port_blocks.cpp`, `ThreadSinks` (`handoffs.cpp`, a `pw_thread_loop` per sink) | moves behind a ring companion's own `pw_filter`; `DriveRequest` loses `sinks` |
-| Every drive and silence is applied inside its data-loop invoke, between two cycles, and the block publishes `takenAt`, the next expected position | `PortBlock::drive`, `takenAt()` | a block with a companion defers take-up to a published cycle (3.4) |
-| `Chunk::upstreamFrames` is always 0 | `sink.hpp` | sampled from the block's carried latency |
-| `cx.soundCard(bank, SoundCardRequest)` and `cx.rtpReceiver(bank, RtpReceiverRequest)`, the bank filled from the handle | `lifecycle.hpp` | take shapes (`SoundCardShape`, `RtpReceiverShape`) and become companion kinds |
-| `rtp` declares `latencyMs` itself with `cx.declareLatency(fromRtp, stream, ...)` | `src/nodes/rtp/rtp.cpp` | the receiver kind declares it on its link; `rtp`'s line goes |
-| A card whose PCM never runs, or an RTP receiver on a port another program holds, leaves its node `configuring` for good (`waitingFor` `companion` after 2 s, a `still` record every 10 s) | `NodeHost` | each engine companion kind gets a readiness deadline; missing it is a loss |
-| No source companion: `sendspin`'s feed, mailboxes and bell are its own realtime code, behind the legacy adapter | `src/nodes/sendspin/` | the source companion is built and tested here; `sendspin` moves onto it in 3c |
-| A barrier overdue at 5 s marks the data loop wedged at once (a barrier is applied in its invoke, so an unapplied one means the invoke never ran) | `NodeHost` 5 s bound | with take-up deferred to a cycle, a barrier can be pending without the loop being stuck: a no-op probe invoke confirms the wedge (3.4) |
-| `quantum-limit` is `max(block, 8192)` and companions may carry `node.force-quantum` and friends | `engine.cpp` | the limit at the block size; force properties stripped (3.6) |
+| The sink's realtime side is inside the block: the block writes each sink's inside output bank into a `FrameRing` after the code, from `SinkBinding`s carried in the drive request (`DriveRequest::sinks`), and `ThreadSinks` (`handoffs.cpp`, a `pw_thread_loop` per sink) drains it | `port_blocks.cpp`, `handoffs.cpp` | keeps it (3.4): this is the ring companions' shape. The source joins it, played by the block before the code (`DriveRequest::sources`) |
+| Every drive and silence is applied inside its data-loop invoke, between two cycles, and the block publishes `takenAt`, the next expected position | `PortBlock::drive`, `takenAt()` | unchanged: ring companions are bound and unbound in that same invoke (3.4) |
+| `Chunk::upstreamFrames` is always 0 | `sink.hpp` | the upstream latency the block tells on the sink's bank, sampled per cycle |
+| `cx.soundCard(bank, SoundCardRequest)` and `cx.rtpReceiver(bank, RtpReceiverRequest)`, the bank filled from the handle; the legacy `StartContext` can acquire both too (only `node_host_test.cpp` does) | `lifecycle.hpp`, `node_type.hpp` | take shapes (`SoundCardShape`, `RtpReceiverShape`) and become companion kinds; the legacy acquires go |
+| `rtp` declares `latencyMs` itself with `cx.declareLatency(fromRtp, stream, ...)` | `src/nodes/rtp/rtp_spec.hpp` | the framework declares it upstream of the receiver's bank (`LatencyPlan::beyond`); `rtp`'s line goes |
+| A card whose PCM never runs, or an RTP receiver on a port another program holds, leaves its node `configuring` for good (`waitingFor` `companion` after 2 s) | `NodeHost` | each kind gets a readiness deadline; missing it fails the node |
+| No source: `sendspin`'s feed, mailboxes and bell are its own realtime code, and its `to` bank goes out through a legacy handoff, all behind the legacy adapter | `src/nodes/sendspin/` | the source is built and tested here; `sendspin` moves onto it and onto a sink in 3c |
+| A barrier overdue at 5 s marks the data loop wedged at once (a barrier is applied in its invoke, so an unapplied one means the invoke never ran) | `NodeHost` 5 s bound | unchanged: nothing is deferred to a cycle, so the one-stage judgement still holds |
+| `quantum-limit` is `max(block, 8192)`; nothing keeps an engine companion from carrying `node.force-quantum` and friends | `engine.cpp` | the limit at the block size; force properties never set (3.6) |
 | Companions are invisible on the wire and in the editor | `ear_control`, `web/` | feature `companions` (3.7) |
+| The outside nodes' interfaces are `OutsideNode`, `OutsideNodeEvents`, `OutsideTarget`, `OutsideAdapter<Request>`, joined by `joinOutsideNode` | `node_host.hpp`, `outside_nodes.hpp` | renamed engine companions (`companions.hpp`, section 8) |
 
 ## 3. The design
 
@@ -45,56 +47,62 @@ Slice 3a built the lifecycle with exact interim calls for everything 3b makes re
 
 A type's realtime code reads `io[input]` and writes `io[output]` (R14). When audio must leave the realtime thread (to a
 file, a network library) or come in from a non-realtime thread (a decoder, a program), the type declares an inside
-bank and asks in `configure` for a **companion** on it. The framework makes a hidden engine node, links it to that
-bank's ports channel for channel, inside the processing graph, and owns its realtime side, its ring and its wakes. The
-type's code is a `passThrough` between its public banks and its inside banks (or its own code for audio it makes or
-changes); it never touches a ring. Cards and RTP receivers already work this way since slice 2 (the framework's
-pass-through between inside and public banks); 3b makes them, the sink and the new source one concept with one join.
+bank and asks in `configure` for a **companion** on it. The type's code is a `passThrough` between its public banks
+and its inside banks (or its own code for audio it makes or changes); it never touches a ring, a wake or a device.
+
+There are two families. An **engine companion** (a sound card, an RTP receiver) is a hidden PipeWire node, linked to
+the bank's ports channel for channel; it is built (slice 2's outside nodes) and 3b renames it and gives it a deadline.
+A **ring companion** (a sink, a source) is a ring between the block and an ordinary thread, which the block itself
+serves in its own cycle: it plays a source into the bank's input spans before the code and taps a sink's bank after
+it. Both are hidden (never in the desired graph, never routed, never metered), both are the framework's, and both
+appear under their node on the wire.
 
 ```mermaid
 flowchart LR
   R1["routes in"] --> TO["kitchen: to.left/right"]
-  subgraph B["port block 'kitchen' (one pw_filter)"]
+  subgraph B["port block 'kitchen' (one pw_filter, one cycle)"]
+    SR["source kitchen.from_server<br/>(ring, played before the code)"] --> FS["from_server (inside in)"]
+    FS -- passThrough --> FR["from.left/right"]
     TO -- passThrough --> TS["to_server (inside out)"]
-    FS["from_server (inside in)"] -- passThrough --> FR["from.left/right"]
+    TS --> SK["sink kitchen.to_server<br/>(ring, tapped after the code)"]
   end
-  TS -- link --> SK["kitchen.to_server<br/>sink companion"]
+  W["writer (a library's thread)"] -. ring .-> SR
   SK -. "ring, stamped chunks" .-> C["consumer on the sink's thread"]
-  W["writer (a library's thread)"] -. ring .-> SR["kitchen.from_server<br/>source companion"]
-  SR -- link --> FS
   FR --> R2["routes out"]
 ```
 
 ### 3.2 The kinds, a closed list
 
-A kind changes what the framework promises, so the list is a closed `std::variant` in core; each kind has one adapter
-in `ear_pipewire`.
+A kind changes what the framework promises, so the list is closed (`CompanionKind`, `companions.hpp`); each kind has one
+adapter in `ear_pipewire`.
 
-| Kind | Family | Joins | Engine name | Realtime side | Non-realtime side | Ring | Drops | Latency it declares on its link | Asked by |
+| Kind | Family | Joins | Name | Realtime side | Non-realtime side | Ring | Drops | Latency it adds beyond its bank | Asked by |
 |---|---|---|---|---|---|---|---|---|---|
-| Sound card playback, capture | engine | an inside output (playback) or input (capture) bank | `<node>.playback`, `<node>.capture` | PipeWire's ALSA adapter | the card | the card's buffer | the card's | what the adapter reports | `cx.soundCard(bank, SoundCardShape{card, direction})` |
-| RTP receiver | engine | an inside input bank | `<node>.rtp` | `libpipewire-module-rtp-source` | the network | rtp-source's | rtp-source's | `latencyMs` (rtp-source reports none) | `cx.rtpReceiver(bank, RtpReceiverShape{...})` |
-| Sink | ring | an inside output bank | `<node>.<bank>` | ear's `pw_filter`: copies each cycle into its ring, interleaved, with the cycle's stamp | a `SinkConsumer` on the sink's own thread, which may block on I/O | frames the type gives (`file`: 2 s) | a full ring drops frames and counts them (the node's `dropped=`) | none | `cx.sink(bank, SinkShape{frames}).consumedBy(...)` (unchanged from 3a) |
-| Source | ring | an inside input bank | `<node>.<bank>` | ear's `pw_filter`: plays its ring into its output, zeros when empty | a `SourceWriter` held by a loop's state or a library's thread; it may wait for room | frames the type gives | an empty ring plays zeros and counts the frames short (`shortfall`) | `[0, capacity]` | `cx.source(bank, SourceShape{frames})` |
+| Sound card playback, capture | engine | an inside output (playback) or input (capture) bank | `<node>.playback`, `<node>.capture` (its engine node) | PipeWire's ALSA adapter | the card | the card's buffer | the card's | what the adapter reports | `cx.soundCard(bank, SoundCardShape{card})` |
+| RTP receiver | engine | an inside input bank | `<node>.rtp` (its engine node) | `libpipewire-module-rtp-source` | the network | rtp-source's | rtp-source's | `latencyMs` (rtp-source reports none) | `cx.rtpReceiver(bank, RtpReceiverShape{...})` |
+| Sink | ring | an inside output bank | `<node>.<bank>` (its thread's) | the block, after the code: copies the bank into its ring with the cycle's stamp | a `SinkConsumer` on the sink's own thread, which may block on I/O | frames the type gives (`file`: 2 s) | a full ring drops frames and counts them (the node's `dropped=`) | none | `cx.sink(bank, SinkShape{frames}).consumedBy(...)` (unchanged from 3a) |
+| Source | ring | an inside input bank | `<node>.<bank>` | the block, before the code: plays its ring into the bank, zeros when empty | a `SourceWriter` held by a loop's state or a library's thread; it may wait for room | frames the type gives | an empty ring plays zeros and counts the frames short (`shortfall`) | `[0, capacity]` | `cx.source(bank, SourceShape{frames})` |
 
-Later kinds, each designed with its slice: the paced source (`programs.md`, slice 9), an RTP sender and a
-PipeWire-socket program's nodes (engine companions, not designed).
+Later kinds, each designed with its slice: the paced source (`programs.md`, slice 9: a source with a resampler, a ring
+kind), an RTP sender and a PipeWire-socket program's nodes (engine kinds, not designed).
 
 - **Names.** Engine companions by kind, ring companions by their inside bank. A node's name has no `.`, so a companion's
   name never equals a node's, and `LiveGraph`'s lookups by node name for routes never match one. One configuration
-  names each engine object once (built: `NodeHost` checks it).
+  names each companion once (built: `NodeHost` checks it), and from 3b a bank has at most one companion (a second on
+  a bank is a `std::logic_error`, as every broken configure rule).
 - **Hidden, not secret.** A companion is never in the desired graph, never named by a route, and not metered (only
   public ports are). The wire lists it under its node (3.7).
-- **One lifecycle for every kind** (built for cards and receivers as `joinOutsideNode`, `outside_nodes.cpp`): asked
-  for in `configure`, made once the block is ready, running alone until its body says it runs, then one link per
-  channel joins it by global id to the block's inside ports; ready once every link is active; on any failure its links
-  and node are torn down before it is reported lost, so the node fails `engine-refused: <detail>` and keeps its block
-  and wires. A ring companion's `pw_filter` is made as a block is (in `ear.graph`, always processing), so the dummy
-  driver drives it from creation and it reaches RUNNING unlinked, which is what lets the one join join it [U: 3.9's
-  test].
-- **Teardown.** Destroyed at the teardown's second step (after the barrier, which disarms it by position, 3.4); a sink
-  then drains its ring to its consumer and calls `finish` on its own thread (third step); its ring is freed on the main
-  loop last. The order is the built teardown's (`docs/architecture.md`), with companions where outside nodes are now.
+- **An engine companion's lifecycle** (built as `joinOutsideNode`, `outside_nodes.cpp`): asked for in `configure`, made
+  once the block is ready, running alone until its body says it runs, then one link per channel joins it by global id
+  to the block's inside ports; ready once every link is active; on any failure its links and node are torn down before
+  it is reported lost, so the node fails `engine-refused: <detail>` and keeps its block and wires.
+- **A ring companion's lifecycle**: made at once in `configure` (a sink's thread starts; a source has no thread),
+  ready when its sink's consumer began (built) or at once (a source), bound to the block by every drive of its
+  configuration and unbound by the silence that follows, freed with the configuration.
+- **Teardown** (the built order, `docs/architecture.md#teardown-by-dependency`, with companions where outside nodes
+  are now): at step 1 every source's writer is closed and the barrier unbinds every ring companion; at step 2 engine
+  companions are destroyed; at step 3 each sink drains its ring to its consumer and calls `finish` on its own thread;
+  at step 5, on the main loop, the sinks and sources are freed after the instance (whose threads may hold a writer).
 
 ### 3.3 The ring companions' contract
 
@@ -107,237 +115,681 @@ class SinkConsumer { public: virtual ~SinkConsumer() = default; virtual void beg
                      virtual void consume(const Chunk&) = 0; virtual void finish() = 0; };
 ```
 
-From 3b `upstreamFrames` is real: the latency upstream of the node's public input bank that feeds the sink, which the
-block already carries per bank pair, sampled per cycle. So a consumer dates what it got without a mailbox: the instant
-the chunk's first frame entered the graph is `startRawNs - upstreamFrames * 1e9 / rate`. `discontinuity` keeps its
-built meaning (the first cycle after any drive, a new driver, a position jump, or a cycle too large to run); a
-consumer that must tell a real gap from a re-drive compares `position` with the last chunk's end. `begin` runs once on
-the sink's thread before the node is `configured` (built, readiness step 4').
+From 3b `upstreamFrames` is real: the most upstream (capture) latency the block tells on the sink's bank, which is what
+reaches the input banks paired with it plus what the configuration declared on it, read in the cycle the chunk was
+taken. So a consumer dates what it got without a mailbox: the instant the chunk's first frame entered the graph is
+`startRawNs - upstreamFrames * 1e9 / rate`. `discontinuity` keeps its built meaning (the first cycle after any drive,
+a new driver, a position jump, or a cycle too large to run); a consumer that must tell a real gap from a re-drive
+compares `position` with the last chunk's end. `begin` runs once on the sink's thread before the node is `configured`
+(built, readiness step 4').
 
 **A source plays what its writer gives, and keeps time.** Its writer is the framework's (3c's loops and library threads
-call it); this page is its home:
-
-```cpp
-// ear/core/source.hpp (3b)
-struct SourceShape { std::uint32_t frames; };
-struct Played { std::uint64_t totalFrames; std::int64_t heardRawNs; };
-class Wake { public: virtual void ring() noexcept = 0; protected: ~Wake() = default; };   // 3c's loops watch it
-class SourceWriter {
-public:
-	/// One writing thread at a time (3c's hand-over rule): a dedicated loop or a library's thread, never a strand. Up to
-	/// `frames` frames; with no room waits up to `patience`. Returns frames accepted.
-	virtual std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
-	                            std::chrono::milliseconds patience) = 0;
-	/// The same thread: waits `patience`, accepting nothing (a writer with nothing to give that must not spin).
-	virtual void idle(std::chrono::milliseconds patience) = 0;
-	/// Any ordinary thread: what was written so far is gone at the next cycle, not counted played.
-	virtual void clear() noexcept = 0;
-	virtual bool closed() const noexcept = 0;
-	virtual std::uint32_t capacityFrames() const noexcept = 0;
-	virtual Played played() const noexcept = 0;
-	virtual Wake& playedWake() noexcept = 0;
-protected:
-	~SourceWriter() = default;
-};
-```
+call it); `source.hpp` is its home (section 8 lists it): `SourceShape{frames}`, `Played{totalFrames, heardRawNs}`,
+`Wake` (`ring`, `descriptor`, `answer`), and `SourceWriter` (`write(interleaved, frames, patience)`,
+`idle(patience)`, `clear()`, `closed()`, `capacityFrames()`, `played()`, `playedWake()`).
 
 - **Keeping time** (decided, D-C4). On a cycle whose position jumped ahead of the last one's end by no more than its
   capacity, a source skips that many frames and counts them played, so the audio moves on with the graph (sendspin's
   rule today, `sendspin_code.cpp`). A larger jump is a new clock, not a skip. Since `engine.conf`'s `resync.ms`
-  (2026-11-09) the position never steps back; a stall's catch-up skips whole blocks forward, which this rule absorbs.
-- **Fades at its edges, without a lookahead** (D-R11). It keeps no audio back, so its declared latency stays
+  (2026-11-09) the position never steps back; a stall's catch-up skips whole blocks forward, which this rule absorbs. A
+  cycle an xrun cut short before the block ran is one such jump at the next cycle.
+- **Fades at its edges, without a lookahead** (D-R11). It keeps no audio back, so the latency it adds stays
   `[0, capacity]`. After `clear` it plays the next 5 ms of what its ring holds, faded to zero, counts those frames
   played, and drops the rest. At an underrun (the ring dry, the writer not idle) it decays from the last sample it
   played to zero over 5 ms. When audio comes back it fades in over 5 ms. So sendspin's stream ending (`clear` on
   `on_stream_end`) fades out, in framework code (R14).
 - **Says what played.** After each cycle that played or skipped frames it publishes `Played{totalFrames, heardRawNs}`,
-  `heardRawNs` being the cycle's `startRawNs` plus the frames it played and the most downstream latency of its link,
-  and rings its played wake, at most once until answered. The downstream latency is what the block's pass-through
-  carries back from the node's public bank: a following card's buffer reaches sendspin's dating with no code of
-  sendspin's. See 3.4 for when a cycle counts as played.
+  `heardRawNs` being the cycle's `startRawNs` plus the frames it played and the most downstream latency of the output
+  banks its bank is paired with, and rings its played wake, at most once until answered. The downstream latency is what
+  the block's pass-through carries back from the node's public bank: a following card's buffer reaches sendspin's
+  dating with no code of sendspin's. **`Played` says the graph's clock moved past those frames** (D-C4), not that a
+  device sounded them: a cycle an xrun cuts short after the block and before the card loses frames the block played,
+  and no node can see that (3.4).
 - **Closing.** The framework closes the writer at the teardown's first step. A `write` or `idle` already waiting wakes
   and returns 0 at once; one that begins after the close accepts nothing and waits out its whole patience, so a library
   thread that calls in a loop (sendspin-cpp's sync thread, 20 ms) sleeps between calls and never spins. The wait is a
   `poll` on an eventfd nothing writes after the close.
-- **Stopped.** A stop disarms the source (3.4) and clears its ring (counted as dropped), so a start never plays audio
-  written before it; its writer waits for room or idles as at a full ring.
+- **Stopped.** A stop's silence unbinds the source; once it completed the framework drops what its ring holds (counted
+  dropped, not played), so a start never plays audio written before it; its writer waits for room or idles as at a
+  full ring.
 - **Wakes.** A sink wakes its thread when its ring holds frames, at most once per cycle (`pw_loop_signal_event`, as
-  built); a source wakes a writer waiting for room. `Wake` is declared in core in 3b; its eventfd implementation lives
-  with the source in `ear_pipewire` until 3c's `ear_runtime` has `EventWake` and `Loop::onWake` to watch it. No type
-  uses a source before `sendspin` moves in 3c, so the played wake needs no interim descriptor.
+  built); a source wakes a writer waiting for room (an eventfd write, only when one waits). `Wake` is declared in core
+  in 3b; its eventfd implementation lives with the source in `ear_pipewire` until 3c's `ear_runtime` has `EventWake`
+  and `Loop::onWake` to watch it. No type uses a source before `sendspin` moves in 3c, so only tests watch the played
+  wake in 3b (by `poll` on its descriptor).
 - **The sink's thread stays where it is.** `ThreadSinks`' `pw_thread_loop` per sink (`ear_pipewire`) keeps draining
-  the ring; only the writing side moves into the companion's `pw_filter`. (The framework design put the sink's thread
-  in a new `ear_runtime` package from 3b; as built the thread is a `pw_thread_loop` and works, so 3b does not create the
-  package. `ear_runtime` arrives with 3c's loops, and the source's eventfd moves there then.)
+  the ring. `ear_runtime` arrives with 3c's loops, and the source's eventfd moves there then.
 
-### 3.4 Arming by graph position
+### 3.4 Ring companions are served by their block (decided)
 
-A cycle is not one dispatch: each client-node follower is woken by its own eventfd, so an invoke can run after the
-block processed a cycle and before its sink did. So no invoke arms a companion (D-R3). Instead the block takes up every
-change of what it drives (a code at a start, a swap in 3d, a silence at a stop or a teardown) one cycle after it sees
-it: seeing it while processing the cycle at position `P - 1`, it publishes `P` (one atomic word per block, written
-after its `process`) and applies the change at `P`. Every companion compares its own cycle's `clock.position` with
-what the block published:
+**The open point.** The design proposed until now made a ring companion an engine node of its own (a hidden
+`pw_filter` linked to the inside bank) and armed it by graph position: the block would defer every change to a cycle
+it published, and each companion would compare its own cycle's position with the block's. 3a's spike S2 found (step
+L-0, 2026-11-08, `src/pipewire/tests/spikes_test.cpp`) that in every cycle a block, its upstream and its downstream all
+ran, they saw one position and ran in link order, but **a cycle an xrun cuts short is run by an upstream prefix of the
+graph only** (1 to 17 cycles a run on an idle host, 500 to 4,600 on a loaded one). A sink downstream of its block never
+runs a cycle its block skipped; a source upstream of its block can. The page proposed "provisional play" (a source
+counts a chunk played only once it sees the block ran that position) with the fallback D-L25 (the ring companions'
+realtime side stays inside the block), to be settled by a spike.
 
-- a **sink**, which runs after the block, takes a cycle's frames only when the block drove that position (`drivenAt`,
-  published per cycle); at a swap (3d) the replaced sink takes positions below the swap's `P`, its replacement those
-  from it;
-- a **source**, which runs before the block, plays and reports `Played` only for positions inside the window the block
-  published (`armedFrom`, `armedUntil`); outside it, it consumes nothing, plays zeros and says nothing played.
+**Decision: the fallback, adopted as the design (D-3b1).** A ring companion's realtime side is the block's own code:
+the block plays each bound source into its inside input bank before the code and taps each bound sink after the code
+(the sink as 3a built it), and both are bound by the drive's invoke with the code itself. Why, against provisional play:
 
-So a sink records exactly the cycles the code drove (no leading loss, no trailing zeros), and a time filter is never
-told of frames nobody heard. A start costs one cycle more than 3a's in-invoke take-up, about 5 ms.
+- **It is exact by construction.** The source, the code and the sink run in one `process`, at one position, and are
+  swapped together between two cycles by the invoke 3a already proved (S1, S2). A cycle the block does not run, none of
+  them runs; the next cycle's position jump is the keep-time skip. There is no position arming, no deferred take-up, no
+  one-cycle start penalty, and no second stage for the wedge judgement (D-L30 is withdrawn: a pending barrier still
+  means the loop ran no invoke).
+- **Provisional play would not buy what it was for.** Its aim was that no frame nobody heard is counted played. But
+  under D-C4 a skipped frame is counted played anyway, and a cycle cut short after the block and before a following
+  card loses frames the block played, which no node can see. So `Played` can only mean "the graph's clock moved past
+  these frames" (3.3), which the block-served source gives exactly. What provisional play would add is a one-cycle
+  delay in `Played` and a per-block "last position run" word.
+- **It is unproven, and its unknowns are PipeWire's.** Besides the prefix, nobody has measured what a node reads after
+  its upstream ran a cycle it did not: the upstream's frames of the cut cycle (a stale buffer still marked as data, so a
+  lasting one-cycle shift) or the current cycle's. An engine-node source would depend on the answer; a block-served one
+  does not.
+- **It is cheaper.** No engine node, eventfd wake or graph recalculation per crossing: a stereo copy (about 1 µs at
+  48 kHz and 256 frames) per ring companion per cycle. `file` stays one engine node and `sendspin` will be one too.
+- **Nobody sees the difference.** The API is the same (`cx.sink`, `cx.source`, `SinkConsumer`, `SourceWriter`), the
+  wire lists the same entries with the same names (`rec.writer`), and the editor the same badges. ear runs PipeWire
+  in-process with no external tools, so whether a ring companion is its own engine node is invisible outside ear's
+  code. R18's aim ("maintain the integrity and consistency of the processing graph") holds: the type's code still reads
+  and writes only its banks, and the crossing is the framework's.
+- **It leaves 3d simpler.** A make-before-break replacement of a ring companion is a new binding handed over in the
+  commit point's invoke with the code (`reconfigure.md` 5), never two sources mixing into one bank.
 
-**What 3a's spike S2 found, and the rule it forces** (step L-0, 2026-11-08, `src/pipewire/tests/spikes_test.cpp`):
-in every cycle that a block, its upstream and its downstream all ran, they saw one position and ran in link order; the
-take-up was exact sample for sample under an invoke storm of about 490,000 a second. But **a cycle an xrun cuts short
-is run by an upstream prefix of the graph only**: 1 to 17 cycles a run on an idle host, 500 to 4,600 on a loaded one,
-were run by the upstream probe alone, or by it and the block, never by a downstream node without its upstream. A sink
-is downstream of its block, so it is safe: it never runs a cycle its block skipped. **A source is upstream of its
-block, so it can run a cycle its block never runs.** 3b therefore either:
+**The spike, S5** (3b's first step, 3b.0; `spikes_test.cpp` on S2's harness, tagged `[s2]` so it runs serial, kept as a
+regression). Its method: S2's three filters U (upstream probe), B and D (downstream probe), linked U → B → D at a
+64-frame block, under S2's invoke storm, once on an idle host and once beside a load of its own (S2 met its loaded
+runs by chance, under ctest's parallel suites; S5 starts one busy thread per core for its loaded run), until at least
+500 cycles cut short have been seen (a 60 s deadline fails the test naming how many it saw). B is a test-only filter that plays a
+position-stamped ramp from a ring of its own before its code, keeping time as 3.3 says, and counts `totalFrames` as a
+source would; U writes each cycle's position into every frame it outputs.
 
-1. **(proposed)** makes a source's play provisional: it plays cycle `P` and holds `P`'s frame count; it commits them
-   to `Played` (and rings its wake) only once it sees, in a later cycle, that the block ran `P` (the block publishes the
-   last position it ran, one more atomic word); if the block did not, those frames were heard by nobody and are
-   counted as skipped, not played. The time filter is then never told of a cycle the block dropped, at the cost of one
-   cycle's delay in `Played`; or
-2. takes the fallback D-L25: ring companions keep their realtime side inside the block (the sink as 3a built it, the
-   source as framework code inside the block's `process`), and arming by position is dropped. The API does not change.
-
-3b's first step is a spike of (1) on S2's harness (a source's ramp under an invoke storm and on a loaded host, every
-cycle its block did not run counted as skipped); if it fails, (2).
-
-The second fact S2 found, `clock.position` stepping back after the dummy driver's reset, is settled: `engine.conf`'s
-`resync.ms` keeps the driver from resetting, so the position only ever moves forward. A pause of tens of seconds or
-more still slews the graph for minutes (`docs/engine.md`), which this slice does not change.
-
-**From 3b, take-up is deferred for a block with a companion.** Its drive's invoke records the request and the next
-`process` publishes `P` and applies at `P`. A block leaving STREAMING with a change deferred applies it at once by an
-invoke the main loop posts on that transition, so no request waits for a cycle that never comes (3a's guarantee kept).
-And because a barrier can now be pending without its invoke having failed to run, the wedge is judged in two stages:
-a barrier overdue at 5 s posts a no-op probe invoke, and the loop is wedged only if the probe has not run within a
-further 1 s (D-L30). Every bound still calls `PortBlock::settle()` first. `PortBlock`'s interface does not change.
+- **A, the gate: `Played` keeps to the clock.** Across every cycle B ran, `totalFrames - (position - firstPosition)`
+  stays constant (no drift across a cut-short cycle), and every frame D received after a cycle both B and D ran is the
+  ramp frame of that position. Pass: both hold, idle and loaded. On a pass, 3b.2 builds the source as designed and
+  repeats A on the real block (`port_block_test.cpp`). On a fail (drift: a position jump larger than the capacity, or
+  one not a whole number of cycles, after a cut-short cycle), the source re-anchors `totalFrames` at every
+  discontinuity instead of summing frames (a change inside `SourceRing` only, written into 3.3's keeping time), and A
+  is rerun with that rule; nothing else in the design moves.
+- **B, recorded: what a downstream node reads after a cut-short cycle.** In each cycle that U ran and B did not, record
+  the position stamped in the frames B reads at its next cycle. "Current" (U's frames of the cycle B runs) or "stale"
+  (U's frames of the cut cycle, a lasting one-cycle shift). Either result is written into
+  `docs/engine.md#the-one-data-loop-and-invokes`; "stale" also goes into `docs/engine.md#known-limits` as a limit of
+  routes between blocks after an xrun. Neither changes 3b. B only says whether an engine-node ring companion could
+  ever be revisited for a later kind ("current": possible, with provisional play; "stale": ruled out).
 
 ### 3.5 Engine companions: shapes and readiness deadlines
 
-- `cx.soundCard(bank, SoundCardShape{.card, .direction})` and `cx.rtpReceiver(bank, RtpReceiverShape{...})` replace
-  3a's calls over the requests. The bank handle names the bank (as built), the direction is checked against the bank's
-  at compile time (an inside output bank takes playback, an inside input bank capture or a receiver), and a companion
-  on a public bank does not compile (as built).
-- **Readiness deadlines** (I3, "never ready, never lost" cannot last; D-R12): a sound card 10 s, an RTP receiver 5 s, a
-  ring companion 5 s, each from its request. A companion past it is lost with its kind's reason, and the node fails
-  `engine-refused`: `the RTP receiver never ran (port 5004 held?)`, `the card never started: <card id>`, `the sink
-  <bank> never became ready`. The `waitingFor` `companion` member (built) shows the wait meanwhile. This turns
-  `docs/node-types.md#rtp`'s "a port another program holds leaves the node configuring for good" into a failure after 5 s (a better reason for a held port
-  comes with 3c's UDP claim and probe).
-- **Latency.** Each companion declares its own latency on its link (the receiver its `latencyMs`, a source
-  `[0, capacity]`, a card what its adapter reports), and the block's pass-through carries it to the public bank, as a
-  card's is carried today. `cx.declareLatency` is left for a type's own code (a delay line). `rtp`'s call goes.
+- `cx.soundCard(bank, SoundCardShape{.card})` and `cx.rtpReceiver(bank, RtpReceiverShape{...})` replace 3a's calls over
+  the requests. The bank handle names the bank (as built), and its direction is the card's: an inside output bank takes
+  playback, an inside input bank capture or a receiver, checked at compile time; a companion on a public bank does not
+  compile (as built).
+- **Readiness deadlines** (I3, "never ready, never lost" cannot last; D-R12), each from the request, on the main
+  loop's timers: a sound card 10 s, an RTP receiver 5 s, a sink's consumer 5 s (`cardReadinessBound` and friends,
+  `companions.hpp`); a source is ready at once. Past it, an engine companion is destroyed and the node fails
+  `engine-refused`: `the RTP receiver never ran (UDP port 5004 held?)`, `the card never started: <card id>`; a sink
+  whose consumer has not begun fails it `start-failed: the sink <bank>'s consumer did not begin within 5 s` (its
+  `begin` is the type's code). The `waitingFor` members `companion` and `consumer` (built) show the wait meanwhile.
+  This turns `docs/node-types.md#rtp`'s "a port another program holds leaves the node configuring for good" into a
+  failure after 5 s (a better reason for a held port comes with 3c's UDP claim and probe).
+- **Latency.** A companion's latency beyond its bank enters the configuration's latency plan as `LatencyPlan::beyond`,
+  combined with what the bank's ports' peers report as if one more peer reported it: an RTP receiver's `latencyMs`, a
+  source's `[0, capacity]`. A card reports its own through its links, as built. The block's pass-through carries each to
+  the public bank. `cx.declareLatency` is left for a type's own code (a delay line); `rtp`'s call goes.
 
 ### 3.6 The quantum guard
 
 The graph has one quantum and one rate, the driver's. The engine pins `min-quantum` = `max-quantum` = the block size
-already; 3b also sets `quantum-limit` to the block size (built: `max(block, 8192)`, `engine.cpp`), and the companion
-adapters strip `node.force-quantum`, `node.force-rate`, `node.lock-quantum` and `node.lock-rate` from every companion's
-properties, so no node can change `clock.duration` for every block (whose `frames > maxBlock` path would write zeros)
-(D-R10). [U: that cards and rtp-source run with `quantum-limit` at the block size; 3.9. If not, the limit stays and the
-stripped properties are the guard.]
+already; 3b also sets `quantum-limit` to the block size (built: `max(block, 8192)`, `engine.cpp`), and no engine
+companion carries `node.force-quantum`, `node.force-rate`, `node.lock-quantum` or `node.lock-rate`: ear builds every
+property it gives one from closed grammars and sets none of these, and the card adapter's test seam (`extra`
+properties) refuses them. So no node can change `clock.duration` for every block (whose `frames > maxBlock` path would
+write zeros) (D-R10). [U: that cards and rtp-source run with `quantum-limit` at the block size, a 44.1 kHz sender
+included; 3b.4's tests. If not, the limit stays and the absent properties are the guard.]
 
-### 3.7 On the wire and in the editor (feature `companions`)
+### 3.7 On the wire and in the editor
 
 The wire's frame (protocol 1, `features`) is built (`docs/control-port.md`). 3b adds the feature `companions`:
 
-- **Each node** in snapshots and `node.added` carries `companions: [...]` (`[]` before it is configuring, or for a
-  type with none). An entry: `name` (the engine node's), `kind` (an open set: `card-playback`, `card-capture`,
-  `rtp-receiver`, `sink`, `source`; slice 9 adds `paced-source`), `bank` (the inside bank it joins; inside banks appear
-  nowhere else on the wire), `ready`, and by kind `dropped` (a sink: frames its ring had no room for since the node was
-  configured) or `shortfall` (a source: frames played as zeros while its writer was not idle). 3d adds `retiring`.
+- **Each node** in snapshots and `node.added` carries `companions: [...]` (`[]` before it is configuring, or for a type
+  with none, and for a legacy type: `sendspin` until 3c). An entry: `name`, `kind` (an open set: `card-playback`,
+  `card-capture`, `rtp-receiver`, `sink`, `source`; slice 9 adds `paced-source`), `bank` (the inside bank it joins;
+  inside banks appear nowhere else on the wire), `ready`, and by kind `dropped` (a sink: frames its ring had no room for
+  since this configuration was made) or `shortfall` (a source: frames played as zeros while its writer was not idle).
+  3d adds `retiring`.
 - **`node.companionsChanged {name, companions}`**, the whole list, whenever an entry is added or removed or its `ready`
-  changes, and when a counter changed, sampled at most once a second per node (K1). A teardown empties the list. Order:
-  a list that shows a companion ready precedes the `node.state` its readiness allowed; a `node.state` is never held
-  back for it (a failure is told at once).
+  changes, and when a counter changed, sampled at most once a second per node (K1). Order: a list that shows a
+  companion ready precedes the `node.state` its readiness allowed; a `node.state` is never held back for it (a failure is
+  told at once); the empty list of a teardown follows the `node.state` that began it.
 - **Never**: a route naming a companion is refused (`invalid-name`, as built for a name with `.`); levels never carry
   one; `graph.get`'s `nodes` never lists one.
 - **Standard output** has no record per companion: a lost one fails its node, whose `node` record names it in the
   failure's detail. Two new observation diagnostics (`diagnostic` records; on the wire only once slice 5 adds
-  `node.diagnostic`): `ear.sink-dropped` (subject the companion, `frames` since the last, `totalFrames`) and
+  `node.diagnostic`): `ear.sink-dropped` (detail names the companion, fields `frames` since the last, `totalFrames`) and
   `ear.source-shortfall` (the same), each at most once per 10 s per companion while it drops (K2). The `removed`
   record's `dropped=` stays the sum over the node's sinks (built).
 - **The editor** (the owner's Q28): a badge per companion along the box's bottom edge, its kind as a short word (`card
-  out`, `card in`, `rtp`, `sink`, `source`) and a dot filled when `ready`, hollow when not, with "ready" or "not ready"
-  as its accessible text; the tooltip and panel give the engine name, the bank and the counter ("rec.writer: 4096
-  frames dropped since it was made"), and a counter above zero puts a small warning mark on the badge. No companions,
-  no strip (`white`). A failed or disabled node's strip is empty (its configuration was torn down); a stopped node's
-  stays (it keeps its companions). Companions never take part in selection, dragging, deletion or route-making.
+  out`, `card in`, `rtp`, `sink`, `source`; an unknown kind its own text) and a dot filled when `ready`, hollow when not,
+  with "ready" or "not ready" as its accessible text; the tooltip and panel give the name, the bank and the counter
+  ("rec.writer: 4096 frames dropped since it was made"), and a counter above zero puts a small warning mark on the
+  badge. No companions, no strip (`white`). A failed or disabled node's strip is empty (its configuration was torn
+  down); a stopped node's stays (it keeps its companions). Companions never take part in selection, dragging, deletion
+  or route-making.
 
 ## 4. What it changes in the built system
 
 | Built piece | Change |
 |---|---|
-| `PortBlock` (`node_host.hpp`), `FilterPortBlocks` | deferred take-up for a block with a companion: `drivenAt`, `armedFrom`/`armedUntil`, the last position run (3.4); the pending request applied on leaving STREAMING; `DriveRequest::sinks` and the block's sink writes go |
-| `SinkTap`, `SinkBinding` (`sink.hpp`) | go with the in-block writes; `Chunk`, `SinkConsumer`, `SinkShape`, `cx.sink`, `consumedBy` unchanged |
-| `ThreadSinks` (`handoffs.cpp`) | its ring is written by the sink companion's `pw_filter` instead of the block; its thread and drain stay |
-| `joinOutsideNode`, `AlsaSoundCards`, `RtpReceivers` | kept; renamed to companions; a ring companion's `pw_filter` joins by the same code; adapters strip force properties; `RtpReceivers` declares `latencyMs` |
-| `SoundCardRequest`, `RtpReceiverRequest`, `OutsideAdapter`, `OutsideNode`, `OutsideNodeEvents` | become the engine companions' shapes and adapters (`Companion*`) |
-| `ResourceRegistry` | gains the source adapter |
-| `NodeHost` | readiness deadlines per kind; the wedge's probe stage; companions' view for the wire; sink counters sampled |
+| `PortBlock` (`node_host.hpp`), `FilterPortBlocks` | `DriveRequest::sources`, played before the code each cycle; each sink's stamp carries its bank's upstream latency; `LatencyPlan::beyond`; the interface and the take-up are otherwise unchanged |
+| `SinkTap`, `SinkBinding`, `ChunkStamp`, `Sink` (`sink.hpp`) | kept; `ChunkStamp::upstreamFrames`, `Sink::droppedFrames()`; `Chunk`, `SinkConsumer`, `SinkShape`, `cx.sink`, `consumedBy` unchanged |
+| `ThreadSinks` (`handoffs.cpp`) | fills `upstreamFrames`, counts drops readable at any time; its thread and drain stay |
+| `OutsideAdapter`, `OutsideNode`, `OutsideNodeEvents`, `OutsideTarget`, `joinOutsideNode`, `AlsaSoundCards`, `RtpReceivers` | renamed engine companions over shapes (`companions.hpp`); the join's code kept |
+| `SoundCardRequest`, `RtpReceiverRequest`, the legacy card and receiver acquires | removed |
+| `ResourceRegistry` | engine companion adapters over shapes; gains the source adapter |
+| `NodeHost` | sources; readiness deadlines per kind; companions' lists for the wire; counters sampled and their diagnostics |
 | `card`, `rtp` | their `configure` calls change (shapes); `rtp`'s `declareLatency` line goes. `file` and `white` do not change |
-| `engine.conf`, `engine.cpp` | `quantum-limit` at the block size |
-| `TypeHarness` | the companion fake gains a source ring (`h.feed(bank, interleaved)`, `h.companion(bank).played`), readiness deadlines on the harness's clock; sinks' chunks carry `upstreamFrames` |
+| `engine.cpp` | `quantum-limit` at the block size |
+| `TypeHarness` | the companion fake gains a source (`h.feed(bank, interleaved)`, `h.played(bank)`), readiness deadlines on the harness's clock; sinks' chunks carry `upstreamFrames` |
 | `ear_control`, `web/` | feature `companions`; `companions` on nodes, `node.companionsChanged`; badges |
 | `sendspin` | unchanged: it stays on the legacy adapter until 3c moves it onto a source and a sink |
 
 ## 5. Tests
 
-- **The same-cycle ramp** (`ear_pipewire_tests`): a ramp written to a source arrives at the node's public output with
-  no offset in position, and a ramp at the node's input reaches the sink's chunk stamped with the position it was
-  played at, so a companion adds no quantum of latency [U until this test passes].
-- **Arming under an invoke storm** (S2's harness, kept `RUN_SERIAL`): a source and a sink across 1,000 starts and
-  stops, the ramp exact at every take-up, and the provisional-play rule of 3.4 counting every cycle the block did not
-  run as skipped.
-- **The source** on real threads: shortfall counted, time kept across a skip, played reports dated by downstream
-  latency, the fade at an underrun and at a clear, a closed writer's caller sleeping (under 1% of a core over 2 s).
-- **Scale**: 48 test companions beside a running ramp: the cost of one eventfd wake per client node per cycle, and a
-  graph recalculation (a companion added and removed) never costing another block a cycle [U].
-- **A ring companion reaches RUNNING unlinked** and is joined by `joinOutsideNode` [U].
-- **Cards and rtp-source with `quantum-limit` at the block size** [U].
-- **Readiness deadlines**: in `ear_core_tests` on the fake clock (each kind's bound, the node's failure text); a system
-  test: an `rtp` node on a UDP port another socket holds fails `engine-refused` after 5 s (today it waits for good).
-- **Wire**: `test/protocol/companions.json` (a snapshot with each kind; `node.companionsChanged` as companions become
-  ready; counters moving; the list emptied by a teardown; kept across a stop and a start); `ear_core_tests` (a list per
-  readiness change, `ready` before `running`, counters sampled not pushed, a closed configuration's list never sent); a
-  system test: `graph.get` lists `rec.writer` ready while `rec` records, and a route naming `rec.writer` is refused;
-  vitest for the badges.
-- **Kept**: `file`'s exact-samples test, now through a real sink companion; `sink_test.cpp`'s ramp across a stop and a
-  start.
+The test plan is section 8.9, per executable.
 
 ## 6. Decisions already taken
 
 | # | Decision | Why |
 |---|---|---|
-| D-R3 | Companions are armed by graph position, never by invoke | An invoke can land between a block and its sink within one cycle; the position is the one fact every node of a cycle shares |
-| D-R4 | Every output the code writes is faded before a planned silence, inside banks feeding an engine companion included (built in 3a); a sink's bank is never faded, a recording is cut by position | A card's own speaker never clicks; a recording keeps exact samples |
-| D-R10 | `quantum-limit` at the block size; force properties stripped from companions | One node's forced quantum would change every block's cycle |
+| D-R3 | Ring companions are bound by the drive's invoke with the code, never by a separate invoke (restated by D-3b1: there is no arming by position) | An invoke can land between a block and another node within one cycle; inside one `process` nothing can |
+| D-R4 | Every output the code writes is faded before a planned silence, inside banks feeding an engine companion included (built in 3a); a sink's bank is never faded, a recording is cut by the drive | A card's own speaker never clicks; a recording keeps exact samples |
+| D-R10 | `quantum-limit` at the block size; no force properties on companions | One node's forced quantum would change every block's cycle |
 | D-R11 | A source fades without a lookahead | No standing latency; `Played` stays the frames actually played |
-| D-R12 | Readiness deadlines: card 10 s, RTP receiver 5 s, ring companion 5 s | I3: a node never waits for good on something that will never be ready |
+| D-R12 | Readiness deadlines: card 10 s, RTP receiver 5 s, a sink's consumer 5 s | I3: a node never waits for good on something that will never be ready |
 | D-C4 | A source keeps time by default (skips what a stalled graph missed, counting it played) | Every network source wants it; written once |
-| D-L25 | If arming by position fails for sources, ring companions' realtime side stays inside the block | The API does not change; 3a is unaffected |
-| D-L30 | From 3b a barrier overdue posts a probe invoke and judges the loop wedged only if the probe has not run in a further 1 s | Deferred take-up means a pending barrier is not proof the loop is stuck |
+| D-L25 | Ring companions' realtime side stays inside the block: adopted as the design (D-3b1), no longer a fallback | 3.4 |
+| ~~D-L30~~ | Withdrawn: the wedge stays judged in one stage | Nothing is deferred to a cycle (3.4) |
 | K1 | `companions` under each node, `node.companionsChanged`, counters sampled once a second; no framework status fields | Counts belong to the crossing that drops |
 | K2 | `ear.sink-dropped`, `ear.source-shortfall` at most once per 10 s per companion | The operator learns of drops while they happen, at a bounded rate |
 | C2 (owner, Q28) | Badges in the box, never boxes or handles | The owner's answer |
 | new | The sink's thread stays `ThreadSinks`' `pw_thread_loop` in `ear_pipewire`; `ear_runtime` starts with 3c | It works as built; a package with one thread in it is not worth a slice of its own |
 
+The module design's own decisions are in 8.11.
+
 ## 7. Open questions and risks
 
-- **The xrun prefix** (3.4): the provisional-play rule is unproven; the fallback is D-L25. 3b's first step decides.
-- **Cost of engine nodes.** Each crossing is one engine node and one copy of each sample per cycle: `file` runs two
-  engine nodes, and `sendspin` will run three from 3c. A stereo copy is about 1 µs at 48 kHz and 256 frames; PipeWire's
-  per-node scheduling costs more [U: measured here with 48 test companions, again in 3c with 16 `sendspin` nodes, and
-  on the Talos CPU once known].
-- **A start costs one more cycle** (about 5 ms) under deferred take-up.
-- **Two sources into one inside input** (3d's make-before-break) rely on PipeWire's port mixer loading for DSP client
-  nodes through its `library.name` fallback, since `engine.conf` maps no `audio.mixer*`; 3d checks it, but 3b's ring
-  companions should not preclude it.
+- **Cards and rtp-source at `quantum-limit` = block size** (3.6): unproven; the fallback keeps the limit.
+- **What a node reads after a cut-short cycle** (S5's part B): recorded, not 3b's to fix.
 - **The readiness deadlines** are first choices: a USB card that takes longer than 10 s to start fails, and is retried
   only by `node.start`, `node.restart` or a change until slice 8's recovery.
+- **Churn of the rename** (step 3b.3): mechanical, but it touches every outside-node test; done in one step of its own.
+
+## 8. Module design
+
+How 3b is built, module by module: what changes where, on which thread, behind which declarations. The new headers are
+landed as declarations (they compile under `VERIFY_INTERFACE_HEADER_SETS` and nothing calls them yet); each is the text
+of record for its declarations and their contracts, and 8.2 lists them. Changes to existing headers are old → new
+tables (8.3), applied by the step that builds them (8.10).
+
+### 8.1 Module map
+
+| Package | File | What | Thread | Calls / called by |
+|---|---|---|---|---|
+| `ear_core` | `ear/core/source.hpp` (new, landed) | `SourceShape`, `Played`, `Wake`, `SourceWriter`; `SourceCycle`, `SourceTap`, `SourceBinding`, `Source`, `SourceAdapter` | writer: the type's thread; tap: realtime; `Source`: main | the type → `SourceWriter`; the block → `SourceTap`; `NodeHost` → `Source`, `SourceAdapter` |
+| `ear_core` | `ear/core/source_ring.hpp`, `source_ring.cpp` (new; header landed) | `SourceRing`: every source rule, pure | realtime (`play`), writer (`offer`, `markIdle`), main (`dropForStop`, `close`), any (counters) | wrapped by `EventSources` and the harness's fake source |
+| `ear_core` | `ear/core/companions.hpp`, `companions.cpp` (new; header landed) | the shapes, `CompanionKind`, the readiness bounds, `CompanionView`, `NodeCompanionsListener`, `EngineCompanion*`, `CompanionTarget` | main | `NodeHost` → engine adapters; `NodeHost` → listeners |
+| `ear_core` | `sink.hpp` (changed) | `ChunkStamp::upstreamFrames`, `Sink::droppedFrames()` | as built | the block, `ThreadSinks`, `NodeHost` |
+| `ear_core` | `lifecycle.hpp` (changed) | `CreateContext`/`CreateOf`: `soundCard` and `rtpReceiver` on shapes, `source` | main, inside `configure` | the type → `NodeHost` |
+| `ear_core` | `node_type.hpp`, `sound_card.hpp`, `rtp_receiver.hpp` (changed) | the requests and the legacy card and receiver acquires go | — | — |
+| `ear_core` | `node_host.hpp`, `node_host.cpp` (changed) | `DriveRequest::sources`, `LatencyPlan::beyond`, the `Outside*` interfaces go, `ResourceRegistry`, `NodeHost::subscribeCompanions` and `companionsOf`; inside: companion slots, readiness timers, counter sampling, drop diagnostics | main | the aggregate's actions → adapters, the block, listeners |
+| `ear_core` | `graph_view.hpp`, `graph_status.cpp` (changed) | `NodeView::companions` | main | `GraphStatus::read` → `NodeHost::companionsOf` |
+| `ear_type_harness` | `node_harness.hpp`, `type_harness.hpp`, `node_harness.cpp` (changed) | the companion fake over shapes, a fake source over `SourceRing`, deadlines on the fake clock | the test's | a type's tests |
+| `ear_pipewire` | `port_blocks.cpp` (changed) | plays bound sources before the code; stamps sinks with upstream latency; tells `beyond`; publishes each port's told latency for the realtime side | realtime, main | `NodeHost` → `PortBlock`; the block → `SourceTap`, `SinkTap` |
+| `ear_pipewire` | `ear/pipewire/sources.hpp`, `sources.cpp` (new; header landed) | `EventSources`: `SourceRing` plus the room eventfd and the played `Wake` | as `Source`'s | `NodeHost` via `ResourceRegistry` |
+| `ear_pipewire` | `handoffs.hpp`, `handoffs.cpp` (changed) | `ThreadSink`: `upstreamFrames` into each `Chunk`; `droppedFrames()` | as built | as built |
+| `ear_pipewire` | `outside_nodes.*` → `engine_companions.hpp`, `engine_companions.cpp` (private, renamed) | `joinEngineCompanion`, `CompanionJoin`, `CompanionBody`, `CompanionBodyEvents` | main | `AlsaSoundCards`, `RtpReceivers` |
+| `ear_pipewire` | `sound_cards.*`, `rtp_receivers.*` (changed) | adapters over `SoundCardShape`, `RtpReceiverShape`; the seam refuses force properties | main | `NodeHost` via `ResourceRegistry` |
+| `ear_pipewire` | `engine.cpp` (changed) | `default.clock.quantum-limit` = the block size | main, at boot | — |
+| `ear_control` | `ear/control/companions_wire.hpp` (new, landed), `events.*`, `graph_json.cpp`, `commands.hpp`, `gateway.*` (changed) | `NodeCompanionsChanged`, the encoders, `wireFeatures` gains `companions`, `MainLoopGateway` hears companions | main (gateway's listener side), control (encoders) | `NodeHost` → gateway → sessions |
+| `ear` | `src/main.cpp` (changed) | `EventSources` into the registry; the gateway subscribed to companions | main | — |
+| `web` | `protocol.ts`, `graph.ts`, `companions.ts` (new), `components/EarNode.tsx`, `components/Panels.tsx` | the types, the reducer, the badges | browser | — |
+| nodes | `card_spec.hpp`, `rtp_spec.hpp` (changed) | shapes; `rtp`'s `declareLatency` goes | main | — |
+
+Dependencies keep `docs/architecture.md#packages`' rules: `source_ring.cpp` and `companions.cpp` are pure core; only
+`ear_pipewire` makes descriptors; no PipeWire, Boost or knobly type appears in any header above.
+
+### 8.2 The new headers (landed)
+
+Each declaration's contract, thread and errors are its header's comment; this is the list.
+
+`src/core/include/ear/core/source.hpp`:
+
+```cpp
+struct SourceShape { std::uint32_t frames; };
+struct Played { std::uint64_t totalFrames = 0; std::int64_t heardRawNs = 0; };
+class Wake { public: virtual void ring() noexcept = 0;               // any thread, realtime included
+                     virtual int descriptor() const noexcept = 0;    // the one watcher
+                     virtual void answer() noexcept = 0;             // the watcher: drain, then clear
+             protected: ~Wake() = default; };
+class SourceWriter { public:
+	virtual std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
+	                            std::chrono::milliseconds patience) = 0;   // one writing thread
+	virtual void idle(std::chrono::milliseconds patience) = 0;            // the writing thread
+	virtual void clear() noexcept = 0;                                    // any ordinary thread
+	virtual bool closed() const noexcept = 0;                             // any thread
+	virtual std::uint32_t capacityFrames() const noexcept = 0;            // any thread
+	virtual Played played() const noexcept = 0;                           // any thread
+	virtual Wake& playedWake() noexcept = 0;                              // the one watcher
+protected: ~SourceWriter() = default; };
+struct SourceCycle { std::uint64_t position; std::uint32_t frames; std::int64_t startRawNs; bool discontinuity;
+                     Latency downstream; };
+class SourceTap { public: virtual void play(std::span<const std::span<float>> bank,
+                                            const SourceCycle& cycle) noexcept = 0;   // realtime only
+                  protected: ~SourceTap() = default; };
+struct SourceBinding { SourceTap* tap; std::size_t firstInput; std::size_t channels; };
+class Source { public: virtual ~Source() = default;                  // main, teardown step 5
+	virtual SourceWriter& writer() noexcept = 0;  virtual SourceTap& tap() noexcept = 0;
+	virtual void stopped() noexcept = 0;          virtual void close() noexcept = 0;            // main
+	virtual std::uint64_t shortfallFrames() const noexcept = 0;
+	virtual std::uint64_t droppedFrames() const noexcept = 0; };                              // any thread
+class SourceAdapter { public:
+	virtual std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+	                                     std::uint32_t capacityFrames, std::uint32_t rate) = 0;    // main
+protected: ~SourceAdapter() = default; };
+```
+
+`src/core/include/ear/core/source_ring.hpp`: `class SourceRing final : public SourceTap` with
+`Signals { roomFreed() noexcept; playedChanged() noexcept; }` (called inside `play`), the constructor
+`(channels, capacityFrames, rate, Signals&)`, `play`, `offer(interleaved, frames) noexcept` (never waits),
+`markIdle()`, `clear()`, `dropForStop()`, `close()`, and the counters `closed()`, `capacityFrames()`, `played()`,
+`shortfallFrames()`, `droppedFrames()`; its state behind a pointer made at construction, so `play` allocates nothing.
+
+`src/core/include/ear/core/companions.hpp`:
+
+```cpp
+struct SoundCardShape { CardId card; };
+struct RtpReceiverShape { RtpAddress address; std::uint16_t port; RtpEncoding encoding; std::uint32_t rate;
+                          std::uint32_t latencyMs; };
+using EngineCompanionShape = std::variant<SoundCardShape, RtpReceiverShape>;
+enum class CompanionKind { cardPlayback, cardCapture, rtpReceiver, sink, source };
+std::string_view companionKindName(CompanionKind kind) noexcept;
+constexpr bool isEngineKind(CompanionKind kind) noexcept;
+inline constexpr std::chrono::milliseconds cardReadinessBound{10'000}, rtpReceiverReadinessBound{5'000},
+                                           sinkReadinessBound{5'000};          // three declarations in the header
+std::optional<std::chrono::milliseconds> readinessBound(CompanionKind kind) noexcept;   // nullopt: a source
+inline constexpr std::chrono::milliseconds companionCounterPace{1'000}, companionDropDiagnosticPace{10'000};
+struct CompanionView { NodeName name; CompanionKind kind; std::string bank; bool ready = false;
+                       std::optional<std::uint64_t> dropped{}; std::optional<std::uint64_t> shortfall{}; };
+class NodeCompanionsListener { public:
+	virtual void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) = 0;  // main
+protected: ~NodeCompanionsListener() = default; };
+class EngineCompanion { public: virtual ~EngineCompanion() = default; };               // was OutsideNode
+class EngineCompanionEvents { public: virtual void ready() = 0; virtual void lost(std::string detail) = 0;
+                              protected: ~EngineCompanionEvents() = default; };      // was OutsideNodeEvents
+struct CompanionTarget { NodeName engineNode; NodeName blockNode; Direction bank; std::vector<PortName> blockPorts;
+                         AudioFormat format; std::uint32_t blockId = 0xFFFFFFFFU; };   // was OutsideTarget
+template <class Shape> class EngineCompanionAdapter { public:
+	virtual std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const Shape& shape,
+	                                              EngineCompanionEvents& events) = 0;   // main, in the flush
+protected: ~EngineCompanionAdapter() = default; };                                     // was OutsideAdapter
+using SoundCardCompanions = EngineCompanionAdapter<SoundCardShape>;
+using RtpReceiverCompanions = EngineCompanionAdapter<RtpReceiverShape>;
+```
+
+`src/pipewire/include/ear/pipewire/sources.hpp`: `class EventSources final : public SourceAdapter` with
+`make(node, bank, channels, capacityFrames, rate)`, throwing `std::system_error` when it cannot make an eventfd.
+
+`src/control/include/ear/control/companions_wire.hpp`: `companionsFeature = "companions"`,
+`struct NodeCompanionsChanged { NodeName node; std::vector<CompanionView> companions; }`,
+`nlohmann::json encodeCompanion(const CompanionView&)`, `nlohmann::json encodeCompanions(std::span<const CompanionView>)`.
+
+What implementers replace: the step that builds each header removes what it supersedes (8.3): `companions.hpp`'s
+engine interfaces replace `node_host.hpp`'s `OutsideNode`, `OutsideNodeEvents`, `OutsideTarget`, `OutsideAdapter`,
+`SoundCardAdapter` and `RtpReceiverAdapter` (3b.3); the shapes replace `SoundCardRequest` and `RtpReceiverRequest`
+(3b.3); `companions_wire.hpp`'s struct joins `GraphEvent` (3b.6). Until then both sets compile side by side.
+
+### 8.3 Changes to existing headers, old → new
+
+**`ear/core/sink.hpp`** (3b.1)
+
+| Old | New |
+|---|---|
+| `struct ChunkStamp { std::uint64_t position; std::int64_t startNs; std::int64_t startRawNs; bool discontinuity; };` | `struct ChunkStamp { std::uint64_t position; std::int64_t startNs; std::int64_t startRawNs; bool discontinuity; std::uint32_t upstreamFrames; };` the most upstream latency the block tells on the sink's bank in that cycle |
+| `Chunk::upstreamFrames`: "always 0 until slice 3b" | the stamp's `upstreamFrames` (3.3) |
+| `class Sink` (no counter) | adds `virtual std::uint64_t droppedFrames() const noexcept = 0;` any thread: frames the tap refused since the sink was made |
+| `SinkTap`, `SinkBinding`, `SinkAdapter`, `SinkConsumer`, `SinkShape` | unchanged |
+
+**`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
+
+| Old | New |
+|---|---|
+| `virtual void soundCard(std::string_view bank, SoundCardRequest request) = 0;` (CreateContext) | `virtual void soundCard(std::string_view bank, SoundCardShape shape) = 0;` playback on an inside output bank, capture on an inside input bank (NodeHost re-checks the reach and direction, a std::logic_error naming the bank otherwise) |
+| `virtual void rtpReceiver(std::string_view bank, RtpReceiverRequest request) = 0;` | `virtual void rtpReceiver(std::string_view bank, RtpReceiverShape shape) = 0;` and its `latencyMs` into `LatencyPlan::beyond` |
+| — | `virtual SourceWriter& source(std::string_view bank, SourceShape shape) = 0;` main, inside configure: a source on an inside input bank, made at once; `beyond` gets `{bank, {0, capacity}}`; a second companion on the bank, `frames == 0`, or a call outside configure is a std::logic_error; the adapter's throw fails the node start-failed |
+| `template <class Bank> void soundCard(Bank, SoundCardRequest request)` (CreateOf) | `template <class Bank> void soundCard(Bank, SoundCardShape shape)`: `static_assert(ownBank<Bank>)`, `static_assert(Bank::reach == PortBank::Reach::inside, "a sound card joins an inside bank of the spec")` |
+| `template <class Bank> void rtpReceiver(Bank, RtpReceiverRequest request)` | `template <class Bank> void rtpReceiver(Bank, RtpReceiverShape shape)`, the same asserts as built |
+| — | `template <class Bank> SourceWriter& source(Bank, SourceShape shape)`: `static_assert(ownBank<Bank>)`, `static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input, "a source plays into an inside input bank of the spec")`; returns `context_->source(Bank::name, shape)` |
+| `#include "ear/core/sink.hpp"` | adds `ear/core/companions.hpp`, `ear/core/source.hpp` |
+
+**`ear/core/node_type.hpp`, `sound_card.hpp`, `rtp_receiver.hpp`** (3b.3)
+
+| Old | New |
+|---|---|
+| `using ResourceRequest = std::variant<SoundCardRequest, RtpReceiverRequest, HandoffRequest, RecordingRequest>;` | `using ResourceRequest = std::variant<HandoffRequest, RecordingRequest>;` (until 3c removes the legacy SPI) |
+| `StartContext::acquire(const SoundCardRequest&)`, `acquire(const RtpReceiverRequest&)` | removed (no legacy type uses them; `node_host_test.cpp`'s legacy card and receiver configs become classes) |
+| `struct SoundCardRequest`, `enum class CardDirection` | removed: `SoundCardShape` and the bank's `Direction` |
+| `struct RtpReceiverRequest` | removed: `RtpReceiverShape` |
+
+**`ear/core/node_host.hpp`** (the step in brackets)
+
+| Old | New |
+|---|---|
+| `struct DriveRequest { AudioCode* code; std::span<const bool> faded; std::span<const SinkBinding> sinks{}; };` | adds `std::span<const SourceBinding> sources{};` [3b.2]: bound in the invoke that applies the request, with the code and the sinks; each cycle the code runs the block plays each into its bank before the code; unbound by the next request's invoke (a silence binds none). Outlives the completion or the block |
+| `struct LatencyPlan { std::vector<BankPair> pairs; std::vector<std::pair<std::string, Latency>> internal; };` | adds `std::vector<std::pair<std::string, Latency>> beyond;` [3b.1]: what a companion adds beyond an inside bank, combined with the bank's peers as one more peer; at most once per bank |
+| `PortBlock` | unchanged; its `drive` comment names sources beside sinks [3b.2] |
+| `class OutsideNode`, `OutsideNodeEvents`, `struct OutsideTarget`, `template <typename Request> class OutsideAdapter`, `SoundCardAdapter`, `RtpReceiverAdapter` | removed: `companions.hpp`'s [3b.3] |
+| `ResourceRegistry(SoundCardAdapter&, RtpReceiverAdapter&, HandoffAdapter&, SinkAdapter&, RecordingAdapter&)` and the four-argument form | `ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs, SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept` and the form without recordings [3b.2 adds `sources`; 3b.3 the engine adapters] |
+| `adapterFor(const SoundCardRequest&)`, `adapterFor(const RtpReceiverRequest&)` | `SoundCardCompanions& adapterFor(const SoundCardShape&) const noexcept`, `RtpReceiverCompanions& adapterFor(const RtpReceiverShape&) const noexcept` [3b.3]; adds `SourceAdapter& sources() const noexcept` [3b.2] |
+| `NodeHost` | adds `void subscribeCompanions(NodeCompanionsListener& listener);` (main, before the first node) and `std::vector<CompanionView> companionsOf(const NodeName& node) const;` (main: the newest node of the name's list, empty when none or not configured) [3b.5] |
+| `NodeDiagnosticListener`'s codes | adds `ear.sink-dropped`, `ear.source-shortfall` (fields `frames`, `totalFrames`) [3b.5] |
+| `WaitingFor` | unchanged: `companion` names an engine companion, `consumer` a sink's consumer |
+
+**`ear/core/graph_view.hpp`** (3b.6): `NodeView` adds `std::vector<CompanionView> companions{};`, filled by
+`GraphStatus::read` from `NodeHost::companionsOf`.
+
+**`ear/pipewire/sound_cards.hpp`, `rtp_receivers.hpp`** (3b.3)
+
+| Old | New |
+|---|---|
+| `class AlsaSoundCards final : public SoundCardAdapter` / `make(const OutsideTarget&, const SoundCardRequest&, OutsideNodeEvents&)` | `: public SoundCardCompanions` / `std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const SoundCardShape& shape, EngineCompanionEvents& events) override;` playback when `target.bank` is output |
+| `explicit AlsaSoundCards(Engine& engine, Properties extra = {});` | the same; throws `std::invalid_argument` when `extra` names `node.force-quantum`, `node.force-rate`, `node.lock-quantum` or `node.lock-rate` |
+| `class RtpReceivers final : public RtpReceiverAdapter` / `make(const OutsideTarget&, const RtpReceiverRequest&, OutsideNodeEvents&)` | `: public RtpReceiverCompanions` / `std::unique_ptr<EngineCompanion> make(const CompanionTarget&, const RtpReceiverShape&, EngineCompanionEvents&) override;` |
+
+**`src/pipewire/outside_nodes.hpp`** (private, 3b.3): renamed `engine_companions.hpp`; `OutsideJoin` →
+`CompanionJoin`, `OutsideBodyEvents` → `CompanionBodyEvents`, `OutsideBody` → `CompanionBody`, `OutsideBodyMaker` →
+`CompanionBodyMaker`, `joinOutsideNode(Engine&, OutsideJoin, OutsideNodeEvents&, OutsideBodyMaker)` →
+`std::unique_ptr<EngineCompanion> joinEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
+CompanionBodyMaker makeBody);` `ChannelFlow` stays, worked out from `CompanionTarget::bank`. Behaviour unchanged.
+
+**`ear/pipewire/handoffs.hpp`**: no declaration changes; `ThreadSink` implements `Sink::droppedFrames` and passes the
+stamp's `upstreamFrames` into each `Chunk` [3b.1]. **`ear/pipewire/port_blocks.hpp`**: no declaration changes.
+
+**`ear/control/events.hpp`, `commands.hpp`, `gateway.hpp`** (3b.6)
+
+| Old | New |
+|---|---|
+| `using GraphEvent = std::variant<NodeAdded, ..., RouteChanged>;` | adds `NodeCompanionsChanged` (`companions_wire.hpp`); `encodeEvent` writes `node.companionsChanged` |
+| `struct NodeAdded { NodeSpec node; Ports ports; NodeHealth health; ... since; }` | adds `std::vector<CompanionView> companions;` (always empty at an add; written as `"companions": []`) |
+| `inline constexpr std::array<std::string_view, 1> wireFeatures{"lifecycle"};` | `inline constexpr std::array<std::string_view, 2> wireFeatures{"lifecycle", companionsFeature};` |
+| `class MainLoopGateway final : public GraphGateway, ..., public SnapshotStamp` | adds `public NodeCompanionsListener` and `void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override;` (main: copies and posts `NodeCompanionsChanged`, in order with health) |
+| `encodeGraph`: each node with its health | each node also `"companions": encodeCompanions(view.companions)` |
+
+**`ear/testing/node_harness.hpp`, `type_harness.hpp`** (3b.2, 3b.3, 3b.4)
+
+| Old | New |
+|---|---|
+| `struct CompanionFake { enum class Kind { soundCard, rtpReceiver, sink }; Kind kind; ...; std::variant<SoundCardRequest, RtpReceiverRequest, SinkShape> request; ... }` | `struct CompanionFake { CompanionKind kind; std::string bank; NodeName name; std::variant<SoundCardShape, RtpReceiverShape, SinkShape, SourceShape> shape; bool made; bool ready; bool destroyed; std::vector<SeenChunk> chunks; }` (`engineName` becomes `name`) |
+| — | `void feed(std::string_view bank, std::span<const float> interleaved);` the source's writer, never waiting (what fits is taken); `Played played(std::string_view bank) const;` `std::uint64_t shortfall(std::string_view bank) const;` `const std::vector<CompanionView>& companionList() const noexcept;` the last list told; `TypeHarness` adds `feed(Bank, ...)`, `played(Bank)`, `shortfall(Bank)` for inside input banks |
+| `process()` | plays each bound fake source (a real `SourceRing`) into its bank before the code, with a `SourceCycle` from the harness's cycle and the plan's latency; each sink chunk's stamp carries the upstream latency the plan gives its bank |
+| `advance(ms)` | also fires the readiness deadlines and the counter sampling |
+
+### 8.4 Threads
+
+| Thread | What it may call |
+|---|---|
+| main loop | every `NodeHost`, `Source` (but its counters), `Sink`, adapter and `PortBlock` call; `SourceRing::dropForStop`, `close` |
+| data loop (realtime) | `SourceTap::play` (the block, before the code), `SinkTap::write` (after it), the codes; nothing that blocks, locks or allocates; at most an eventfd write per wake |
+| a source's writing thread (a library's or 3c's loop) | `SourceWriter::write`, `idle`; any ordinary thread `clear`; any thread `closed`, `capacityFrames`, `played` |
+| a sink's thread (`ThreadSinks`' `pw_thread_loop`) | `SinkConsumer::begin`, `consume`, `finish` (as built) |
+| the watcher of a played wake (tests in 3b; 3c's loop) | `Wake::descriptor`, `answer` |
+| control thread | the encoders in `companions_wire.hpp` |
+
+### 8.5 The block's cycle
+
+`FilterPortBlock::processCycle` from 3b (data loop; additions marked new):
+
+1. Input spans from PipeWire, zeros for a port with no buffer (built).
+2. New: for each bound source, its bank's input spans are replaced by the block's own scratch (one `maxBlock` buffer
+   per inside input port, made at the block's making), and `tap->play(scratch spans, SourceCycle{position, frames,
+   startRawNs, discontinuity, downstream})` fills them, `downstream` being the latency the block last told on the
+   source's bank as playback latency (beyond its paired outputs, plus what the configuration declared on it), published
+   by the main loop's `retell()` per input port as one packed atomic, as `downstream_` is per output.
+3. The code, or zeros when none is driven (built).
+4. The fade on the faded outputs (built).
+5. Each bound sink's tap, with `ChunkStamp{position, startNs, startRawNs, discontinuity, upstreamFrames}`, new
+   `upstreamFrames` being the latency the block last told on the sink's bank as capture latency, published per output
+   port likewise.
+6. Metering of the public ports (built).
+
+A cycle too large to run plays no source and taps no sink (built for sinks): the next cycle's position jump is a skip
+the source keeps time over. The storage for bindings is sized at the block's making: one source per inside input bank,
+one sink per inside output bank. `retell()` also combines each bank's `beyond` entry with its peers (new), so a source's
+`[0, capacity]` and a receiver's `latencyMs` reach the paired public bank.
+
+### 8.6 Call sequences
+
+Threads: [M] main loop, [D] data loop, [S] a sink's thread, [W] a source's writer, [T] a timer on the main loop.
+
+**Create** (T2, inside `configure`):
+
+1. [M] `NodeHost` makes the instance and calls `configure(CreateOf&)`.
+2. [M] `cx.source(bank, shape)` → `CreateContext::source`: checks configuring and that the bank has no companion yet,
+   `resources.sources().make(node, bank, channels, frames, rate)` → `Source`; the slot keeps it with
+   `SourceBinding{&tap, bank.first, size}`; `beyond += {bank, {0, capacity}}`; returns `source.writer()`.
+3. [M] `cx.sink(bank, shape)`: as built (its thread starts).
+4. [M] `cx.soundCard(bank, shape)` / `cx.rtpReceiver(bank, shape)`: recorded with its `CompanionTarget` (the bank's
+   direction, ports, engine name); a receiver's `latencyMs * rate / 1000` into `beyond`.
+5. [M] `configure` returns `applied`: the built checks; each sink's consumer handed over (`Sink::begin`, [S] runs
+   `begin`); a readiness timer armed per engine companion and per sink (`readinessBound`); the companions' list told
+   (`companionsChanged`: sources ready, the rest not), before the health of `configuring` is told further.
+
+**Ready**:
+
+1. [M] the block is ready (built) → the turn's flush makes each engine companion (`adapterFor(shape).make(target,
+   shape, slot)`), in request order.
+2. [M] an engine companion's `ready()`, or a sink's `begun` posted from [S]: its slot ready, its timer cancelled, the
+   list told, then readiness judged (`checkReady`); all ready → `resourcesReady` (T3) → prepare → drive.
+
+**Drive** (T5, and every start after a stop):
+
+1. [M] `carryLatency(LatencyPlan{pairs, internal, beyond})`; `drive(DriveRequest{code, faded, sinks, sources}, done)`.
+2. [D] the invoke binds the code, the sink taps and the source taps into storage sized at making, between two cycles;
+   from the next cycle 8.5 runs with them.
+3. [M] `done(P)` → `driven` → `start()` (built).
+
+**Stop**: [M] `stop()`; fade; silence `drive(DriveRequest{nullptr})`. [D] the invoke unbinds everything. [M] its
+completion: each source's `stopped()` (its ring dropped and counted), then the aggregate hears `silencedForStop`. The
+companions and their list stay (a stopped node keeps them). [W] a writer meanwhile waits for room or idles.
+
+**Start** after a stop: the drive above, with the same bindings; the source fades in as audio arrives.
+
+**Restart, disable, failure** (a teardown, built order):
+
+1. [M] the `node.state` that begins it (`stopping`, or `failed`) is told; then every source's `close()` ([W] a waiting
+   `write` or `idle` returns 0 at once), the channel closing (built), the companions' list told empty.
+2. [M] `stop()` if started; the fade; the barrier (a silence: [D] unbinds every ring companion); `release`.
+3. [M] the flush destroys each engine companion (step 2); each sink's `close` ([S] drains, `finish`, posts `closed`).
+4. [M] the legacy close (step 4); then the code, the instance, the sinks and sources, the recordings, the config
+   (step 5). A restart then configures afresh, telling a new list.
+
+**Remove**: as a teardown, then the block's destruction (built). `nodeGone`'s dropped frames sum every configuration's
+sinks (built).
+
+**An engine companion lost** (before or after ready): [M] its `lost(detail)` (built) → the node fails
+`engine-refused: <detail>` → a teardown, as above.
+
+**Readiness deadline expiry**: [T] the companion's timer fires; if its configuration is current, still readying and
+the companion not ready: an engine companion is marked lost and the aggregate hears the fault `engine-refused` with its
+kind's text (3.5); a sink's, the fault `start-failed` with its text. The teardown destroys the engine companion in the
+flush (its `lost` is never told: destroying it tells nothing) and closes the sink (a `begin` still running finishes
+first; the close deadline, 10 s, covers a `begin` that never returns, leaking the configuration as built). A companion
+ready in the same turn the timer fired wins: the timer checks readiness when it runs, never before.
+
+**Counters**: [T] every `companionCounterPace` while a configuration has a sink or a source: each sink's
+`droppedFrames()` and each source's `shortfallFrames()` are read (atomics); a change tells the list; a sink whose count
+grew and that said nothing for `companionDropDiagnosticPace` says `ear.sink-dropped` (detail `<name> dropped <n>
+frames`, fields `frames` since its last diagnostic, `totalFrames`); a source likewise `ear.source-shortfall`. The timer
+is cancelled at the teardown's start.
+
+**A cycle an xrun cuts short**: [D] the block either runs the cycle (its sources played, code run, sinks tapped) or does
+not (none of them). If not, the next cycle's position jumped: each source skips up to its capacity, counted played; each
+sink's next chunk has `discontinuity` set and a gap in `position` (built). Engine companions are other nodes: a capture
+card or a receiver upstream may have run the cycle, as any route's upstream (S5's part B says what the block reads
+next). Nothing reaches the main loop.
+
+**Wedge**: unchanged from 3a. A barrier overdue at 5 s is `ear.barrier-overdue` and `ear.data-loop-wedged`; a leaked
+configuration keeps its sources and sinks (the block may still play or tap them) and its engine companions are leaked
+with their links; its writer stays closed, so a library thread calling `write` sleeps through its patience. 3b adds no
+PipeWire call that could reach a wedged loop: sources and sinks make none, and the companions' list and counters are
+main-loop state.
+
+### 8.7 The wire, and the editor's signatures
+
+The shapes (3.7), in `test/protocol/companions.json` (3b.6):
+
+```json
+{"jsonrpc": "2.0", "method": "node.companionsChanged", "params": {"name": "rec", "companions": [
+  {"name": "rec.writer", "kind": "sink", "bank": "writer", "ready": true, "dropped": 0}]}}
+{"jsonrpc": "2.0", "method": "node.companionsChanged", "params": {"name": "desk", "companions": [
+  {"name": "desk.playback", "kind": "card-playback", "bank": "to_card", "ready": true},
+  {"name": "desk.capture", "kind": "card-capture", "bank": "from_card", "ready": false}]}}
+{"jsonrpc": "2.0", "method": "node.companionsChanged", "params": {"name": "fpp", "companions": [
+  {"name": "fpp.rtp", "kind": "rtp-receiver", "bank": "from_rtp", "ready": true}]}}
+```
+
+A node in a snapshot or `node.added` carries `"companions": [...]` beside its health members. The fixture holds: a
+snapshot with every kind (a source through a test type in the system test only, since no shipped type has one in 3b);
+`rec`'s life (`node.added` with `[]`, `configuring`, the list with `rec.writer` not ready, then ready, then
+`configured`, `starting`, `running`); a counter moving (`dropped` 0 then 4096); a stop and a start (no list change); a
+restart (`stopping`, `[]`, then the list again); a failure after a deadline (`failed`, then `[]`); `unknown-values.json`
+gains an unknown `kind`. A client without the feature never sees `companions` or the notification.
+
+`web/src/protocol.ts` (3b.6, with the fixture):
+
+```ts
+export type CompanionKind = "card-playback" | "card-capture" | "rtp-receiver" | "sink" | "source" | (string & {});
+/** A node's hidden helper (feature companions). */
+export interface Companion {
+  name: string;
+  kind: CompanionKind;
+  /** The inside bank it joins. */
+  bank: string;
+  ready: boolean;
+  /** A sink: frames its ring had no room for, this configuration. */
+  dropped?: number;
+  /** A source: frames played as zeros while its writer was not idle. */
+  shortfall?: number;
+}
+// GraphNode gains:  companions?: Companion[];   (feature companions)
+// Notifications gains:  "node.companionsChanged": { name: string; companions: Companion[] };
+```
+
+`web/src/graph.ts`: `reduce` replaces the named node's `companions` on `node.companionsChanged` (ignored for a node it
+does not hold). `web/src/companions.ts` (3b.7, new):
+
+```ts
+export interface CompanionBadge {
+  key: string;            // the companion's name
+  label: string;          // "card out" | "card in" | "rtp" | "sink" | "source" | the kind's own text
+  ready: boolean;
+  readyText: "ready" | "not ready";
+  warning: boolean;       // dropped or shortfall above 0
+  title: string;          // companionDetail
+}
+export function companionLabel(kind: CompanionKind): string;
+/** "rec.writer (sink on writer): ready; 4096 frames dropped since it was made". */
+export function companionDetail(companion: Companion): string;
+/** In list order; [] for a node with none, or failed or disabled. */
+export function companionBadges(node: GraphNode): CompanionBadge[];
+```
+
+`EarNode.tsx` draws the strip from `companionBadges` along the box's bottom edge, outside every handle and drag area;
+`Panels.tsx` lists `companionDetail` per companion in the node's panel.
+
+### 8.8 The types
+
+- **`file`** (sink): no code change. Its sink is listed as `rec.writer` (kind `sink`, bank `writer`); its chunks carry
+  `upstreamFrames` (the latency upstream of `record`, which `WavWriter` ignores); its consumer's `begin` has 5 s
+  (`sf_open_fd` on a descriptor the framework already opened). Its exact-samples test now also checks `upstreamFrames`.
+- **`card`**: `cx.soundCard(toCard, SoundCardShape{.card = s.get<cardRow>()})` and the same on `fromCard`.
+- **`rtp`**: `cx.rtpReceiver(fromRtp, RtpReceiverShape{...})`; its `declareLatency` line goes (the plan's `beyond`
+  carries `latencyMs` to `stream`, with the same value its tests check now).
+- **`sendspin`** (source, still on the legacy adapter until 3c): nothing changes in what it does or shows; its wire
+  list is `[]` (a legacy run's feed and handoff are not companions). What 3b gives it for 3c, tested in 3b without it:
+  `SourceRing` holds `SendspinCode::missedFrames`' keep-time rule and `PlayProgress`'s dating
+  (`heardRawNs` = start + (played + downstream max) × 1e9 / rate, as `sendspin_code.cpp` computes it today), so
+  `code_test.cpp`'s and `feed_test.cpp`'s skip and dating cases move to `source_ring_test.cpp` in 3c; `SourceWriter`
+  replaces `Feed`'s writer side (`write` with 20 ms patience from the sync thread, `clear` on stream end); `Played` and
+  `playedWake()` replace `Mailbox<PlayProgress>` and the bell; a sink's `upstreamFrames` replaces `CaptureAnchor`.
+
+### 8.9 Test plan, per executable
+
+| Executable | New or changed tests |
+|---|---|
+| `ear_core_tests` | new `source_ring_test.cpp`: a ramp played exactly; a jump of at most the capacity skipped and counted played, a larger one a new clock; the fades at a clear, an underrun and a return, sample for sample; shortfall only while not idle; `dropForStop` counts and plays nothing; `Played` dated by downstream latency; a closed ring accepts nothing; positions wrapping 2^32 in the ring. `node_host_test.cpp`: sources bound in every drive and none in a silence; a stop drops the ring; teardown closes the writer at step 1 and frees the source after the instance; readiness deadlines per kind on the fake clock (texts and codes; a companion ready in the same turn wins); the list told before the health its readiness allowed, empty after the `node.state` that began a teardown, kept across a stop; counters sampled once a second and `ear.sink-dropped` once per 10 s; `companionsOf`; `beyond` for a receiver and a source; one companion per bank. `graph_status_test.cpp`: `NodeView::companions`. `compile_fail/type_spec_bad.cpp`: a source on an output bank, on a routable bank; an RTP receiver on an output bank (and the built card cases on shapes). |
+| `ear_pipewire_tests` | new `source_test.cpp` (`EventSources` on real threads): a write waits for room and is woken by play; idle waits its patience; a close wakes a waiting write at once and a later one sleeps its whole patience (under 1% of a core over 2 s); the played wake rings once until answered. `port_block_test.cpp`: a bound source's ramp reaches the public output in the same cycle (no offset in position); unbound after a silence; no allocation on the data thread (`allocation_count`); `beyond` told on the paired output; the published downstream reaches the tap; S5's part A on the real block. `sink_test.cpp`: `upstreamFrames` equals what the block tells; `droppedFrames()` read while running. `spikes_test.cpp`: S5. `sound_card_test.cpp`, `rtp_receiver_test.cpp`: shapes; each companion's info carries no force property; both run at `quantum-limit` = the block size, a 44.1 kHz sender included. `engine_test.cpp`: the limit. |
+| `ear_control_tests` | `events_test.cpp`: `node.companionsChanged`, `companions` on `node.added`. `graph_json_test.cpp`: a snapshot's `companions`. `gateway_test.cpp`: the order rules. `commands_test.cpp`: `features`. The fixture tests over `companions.json`. `status_log_test.cpp`: the two diagnostics' records. |
+| nodes' tests (`ear_node_card_tests`, `ear_node_rtp_tests`, `ear_node_file_tests`) | the shapes in the harness; `rtp`'s plan has `beyond` and no `internal`; `file`'s chunks carry `upstreamFrames` |
+| `ear_system_tests` | an `rtp` node on a UDP port another socket holds fails `engine-refused` after 5 s; `graph.get` lists `rec.writer` ready while `rec` records; a route naming `rec.writer` is refused; the list across a stop and a start |
+| web (vitest) | `protocol.test.ts` over `companions.json`; `graph.test.ts`: the reducer; new `companions.test.ts`: labels, readiness text, the warning mark, an unknown kind drawn neutrally, no strip for failed or disabled |
+
+Kept, unchanged: `file`'s exact-samples test, `sink_test.cpp`'s ramp across a stop and a start, S1 to S3.
+
+### 8.10 Build steps
+
+Each step is one mergeable change, green on every test and on `make format-check`, and changes the library pages it
+makes stale (the rule in `AGENTS.md`).
+
+| Step | What | Risk |
+|---|---|---|
+| **3b.0 Spike S5** | `spikes_test.cpp` only (3.4), and the result of its part B in `docs/engine.md` | Low: test-only. A fail of part A changes `SourceRing`'s counting rule before 3b.2 |
+| **3b.1 Sinks' upstream, `beyond`, drop counts** | `ChunkStamp::upstreamFrames`; the block publishes each port's told latency for the realtime side and combines `LatencyPlan::beyond`; `Sink::droppedFrames`; `ThreadSink` fills `upstreamFrames`; the harness stamps from the plan; `docs/engine.md#sinks`, `docs/writing-a-node-type.md#sinks` | Low |
+| **3b.2 The source** | `source.hpp`, `source_ring.*`, `sources.*`; `DriveRequest::sources`; the block plays sources (8.5); `CreateContext::source`, `CreateOf::source`; `NodeHost`'s source slots (bind, `stopped`, `close` at step 1, freed at step 5, `beyond`); `ResourceRegistry::sources` (main.cpp, the harness, tests' registries); the harness's `feed`, `played`, `shortfall`; `docs/writing-a-node-type.md` gains Sources | Medium: realtime code. No type uses it yet; S5 part A on the real block gates it |
+| **3b.3 Engine companions on shapes** | `companions.hpp`'s engine interfaces replace the `Outside*` ones; shapes replace requests; the legacy acquires go (`node_host_test.cpp`'s legacy card and receiver configs become classes); `engine_companions.*`; `AlsaSoundCards`, `RtpReceivers`; `card`, `rtp`; `docs/engine.md#outside-nodes` becomes Engine companions, `docs/writing-a-node-type.md` | Churn: mechanical, but every card and receiver test moves |
+| **3b.4 Readiness deadlines, the quantum guard** | `NodeHost`'s timers per kind and their texts; the harness's clock; `quantum-limit` at the block size; the card seam's refusal; `docs/node-types.md#rtp` (a held port fails after 5 s), `docs/engine.md` | The [U] of 3.6: if cards or rtp-source will not run at the limit, the limit stays `max(block, 8192)` and the step keeps only the refusal |
+| **3b.5 Companions in core's view** | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json` | Low |
+| **3b.6 The wire** | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit | Low; the order rules are the subtle part (`gateway_test.cpp`) |
+| **3b.7 The editor's badges** | `companions.ts`, `graph.ts`, `EarNode.tsx`, `Panels.tsx`; `docs/editor.md` | Low |
+| **3b.8 Words** | what lasts of this page moved into the library docs (most already moved step by step), the `pipewire-engine` and `control-port` skills updated, this page deleted and `docs/design/README.md`'s row removed | — |
+
+### 8.11 Decided
+
+- **D-3b1** Ring companions are served by their block (D-L25 adopted; provisional play dropped): exact by construction,
+  cheaper, unproven alternatives avoided, and nobody outside ear's code sees the difference (3.4).
+- **D-3b2** No arming by position and no deferred take-up; D-L30 withdrawn: the drive's invoke binds ring companions
+  with the code, so the built one-stage wedge judgement still holds.
+- **D-3b3** `Played` means the graph's clock moved past the frames, not that a device sounded them: no node can know the
+  latter, and D-C4 already counts skips as played.
+- **D-3b4** Every source rule lives in core's pure `SourceRing`; `EventSources` and the harness only wrap it: a type's
+  tests and the engine cannot disagree.
+- **D-3b5** `SoundCardShape` has no direction: the bank's is it, checked at compile time; `CardDirection` goes.
+- **D-3b6** A companion's latency enters the plan as `LatencyPlan::beyond`, combined as a peer: one mechanism for the
+  receiver and the source, and `rtp` declares nothing.
+- **D-3b7** A sink whose consumer misses its 5 s fails `start-failed`, not `engine-refused`: `begin` is the type's code.
+- **D-3b8** The outside-node interfaces are renamed engine companions, and their private join with them: one concept,
+  one vocabulary, done in one step of its own (3b.3).
+- **D-3b9** The legacy `StartContext` loses its card and receiver acquires: no legacy type uses them.
+- **D-3b10** Order: a list showing readiness precedes the health it allowed; a teardown's empty list follows the
+  `node.state` that began it: a client never sees a running node with companions it believes not ready, and never
+  waits for the list to learn of a failure.
+- **D-3b11** Counters count per configuration; `node.gone`'s `droppedFrames` stays the node's sum.
+- **D-3b12** No companion carries a force property: ear sets none and the card's test seam refuses them, rather than
+  stripping after the fact.
+- **D-3b13** Ring banks keep their engine ports (unlinked): no change to `Ports` or the block's port list; the block
+  plays a source into scratch of its own.
+- **D-3b14** One companion per inside bank (a new check beside the built one-name check): one source per inside input
+  bank, one sink per inside output bank, so binding storage is sized at the block's making; 3d's replacements are
+  handed over in one invoke, never held two at once.
+- **D-3b15** A legacy run's handoff and feed are not companions: `sendspin`'s list is `[]` until 3c.
+- **D-3b16** The spike is S5 (S4 is `reconfigure.md`'s).
+
+### 8.12 Questions for the owner
+
+None. The open point (3.4) is settled without changing what a type author writes or what an operator sees: the same
+calls, the same wire entries and names, the same badges. R18's "hidden node" is read as the framework's hidden helper:
+cards and receivers stay hidden engine nodes, and a sink or a source is served by the node's own block, which keeps
+the processing graph whole (R18's aim) without the cost and the unproven timing of an engine node per crossing.

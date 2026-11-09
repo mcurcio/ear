@@ -220,7 +220,7 @@ private:
 }
 ```
 
-Neither `start()` nor `stop()` is written: the sink's arming by position starts and stops the sending, and the socket
+Neither `start()` nor `stop()` is written: the drives that bind and unbind the sink start and stop the sending, and the socket
 stays open while stopped. The SSRC file is `rtpsend-<node>.ssrc`, created with `newSsrc()` on first configure; a
 corrupt one fails the node `start-failed: rtpsend-<node>.ssrc: malformed: ...` and is not replaced. A second node on the
 same source port fails `start-failed: cannot bind UDP port 5006: held by node <n>`; removing one node and adding
@@ -458,7 +458,7 @@ The writer's interface and closing contract are `companions.md` 3.3's. This slic
 `SinkConsumer` (`begin`, `consume`, `finish`) is built (`sink.hpp`). This slice adds `consumedBy(loop, &State::member)`
 and `consumedBy(loop)`, so a consumer may be a member of a loop's state (sendspin's `ToServer`, which then reaches the
 library's source role on the worker's state) or the state itself (the RTP sender). The consumer's `begin` still runs on
-the sink's thread before the node is configured, and a stop's silence still disarms it by position without telling it
+the sink's thread before the node is configured, and a stop's silence still unbinds it without telling it
 (it sees the gap in positions). `SinkControl` (`pause`, `resume`) is 3d's (`reconfigure.md` 6.4).
 
 ### 6.6 The I/O executor
@@ -607,7 +607,7 @@ another thread is asynchronous; the main loop never joins a thread that has not 
 
 | Step | What | Threads it waits on |
 |---|---|---|
-| 1 | `stop()` if `start()` was called and not answered (built); the fade and ear's barrier (built), at whose position every companion disarms; `release`; every source writer closed; every loop closed to others (queued actions answered); if the node is not configured yet: its claim waits leave the queue, its pending opens are orphaned (6.6), and readiness steps it had not reached never start | the data loop, asynchronously, within the built bounds |
+| 1 | `stop()` if `start()` was called and not answered (built); the fade and ear's barrier (built), which unbinds every ring companion; `release`; every source writer closed; every loop closed to others (queued actions answered); if the node is not configured yet: its claim waits leave the queue, its pending opens are orphaned (6.6), and readiness steps it had not reached never start | the data loop, asynchronously, within the built bounds |
 | 2 | Companions destroyed | none |
 | 3 | Sinks drained: each hands what its ring holds to its consumer and calls `finish` on its own thread | sinks' threads |
 | 4 | Each loop closes: it takes no new work, runs the work already posted (`stop()`'s goodbye), destroys its state on its own thread (where a library's threads are joined), cancels and counts any source still armed (`ear.loop-source-left`), and reports | loop threads, and the threads a state joins |

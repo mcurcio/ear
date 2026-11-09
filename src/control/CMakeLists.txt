@@ -18,6 +18,7 @@ add_library(ear_control STATIC
 # Header set and its standalone compile check: see src/core/CMakeLists.txt.
 target_sources(ear_control PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/control/commands.hpp
+	include/ear/control/companions_wire.hpp
 	include/ear/control/events.hpp
 	include/ear/control/gateway.hpp
 	include/ear/control/graph_file_state.hpp

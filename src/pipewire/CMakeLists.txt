@@ -26,7 +26,8 @@ target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/pipewire/main_loop_executor.hpp
 	include/ear/pipewire/port_blocks.hpp
 	include/ear/pipewire/rtp_receivers.hpp
-	include/ear/pipewire/sound_cards.hpp)
+	include/ear/pipewire/sound_cards.hpp
+	include/ear/pipewire/sources.hpp)
 set_target_properties(ear_pipewire PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
 target_link_libraries(ear_pipewire PUBLIC ear_core PRIVATE PkgConfig::PIPEWIRE)
 

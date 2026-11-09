@@ -220,7 +220,7 @@ how its node is made and heard from (its own proxy) and what fails it:
    `node.driver = false` either: the ALSA node publishes `node.driver = true` again (the spike).
 2. **Linking.** When the node reports RUNNING (its PCM runs), the card makes one link per
    channel through `link-factory` (`link.output.node`, `link.output.port`, `link.input.node`,
-   `link.input.port`): the adapter named by its global id, the block by its node name, ports by
+   `link.input.port`): the adapter and the block each named by its global id, ports by
    name: block port `to_card.<i>` to the adapter's `playback_AUX<i-1>`, or the adapter's
    `capture_AUX<j-1>` to `from_card.<j>`. By id, because a node of the same name that is still
    going (a restart's old node) would otherwise match first.

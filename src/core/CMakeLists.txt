@@ -26,6 +26,7 @@ add_library(ear_core STATIC
 # test executable depends on that target, so "make test" builds it.
 target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/command_error.hpp
+	include/ear/core/companions.hpp
 	include/ear/core/desired_graph.hpp
 	include/ear/core/executor.hpp
 	include/ear/core/frame_ring.hpp
@@ -46,6 +47,8 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/settings_table.hpp
 	include/ear/core/sink.hpp
 	include/ear/core/sound_card.hpp
+	include/ear/core/source.hpp
+	include/ear/core/source_ring.hpp
 	include/ear/core/timers.hpp
 	include/ear/core/type_spec.hpp)
 set_target_properties(ear_core PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)

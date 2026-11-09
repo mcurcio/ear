@@ -195,13 +195,15 @@ cursors) or anything the old code's `process` reads (D-R13).
 3. **New acquisitions are readied beside the old ones**, in readiness order: claims first (a refusal ends the change,
    T11), then files, then companions. Each old resource being replaced is marked **retiring** at once: its loss is a
    diagnostic (`ear.retiring-lost`), never a failure of the node (a kept resource's loss still fails it). A replacement
-   companion is linked to the same inside bank as the one it replaces; two sources into one inside input mix for a
-   moment, which a hold covers [U: the port mixer loads, 13].
+   engine companion is linked to the same inside bank as the one it replaces; two capture cards into one inside input
+   mix for a moment, which a hold covers [U: the port mixer loads, 13]. A replacement ring companion (a sink or a
+   source) is served by the block itself and swapped in the commit point's invoke (`companions.md` 3.4), so two never
+   play into one bank.
 4. **The commit point** (T10), when the hook's work is done (`applied`, or the continuation's `done`) and every new
    resource is ready: the staged posts are released to their loops; in one data-loop invoke (if the node is driving)
-   the new code and its layout are handed to the block, which takes them up at a position it publishes, so a replaced
-   sink takes the cycles before it and its replacement the cycles from it, and a replaced source likewise
-   (`companions.md` 3.4): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
+   the new code, its layout and its ring companions' bindings are handed to the block, which applies them together
+   between two cycles, so a replaced sink takes the cycles before it and its replacement the cycles from it, and a
+   replaced source likewise (`companions.md` 3.4): no chunk lost or doubled at the swap; the latency plan is carried; the old code released.
    Then the retiring resources are released by the teardown's order for those resources only (a replaced source's
    writer closed; replaced companions destroyed; replaced sinks drained to their own consumers and finished; replaced
    recordings closed; `unclaim`ed claims released, last); then holds fade back in over 5 ms; the node is back in

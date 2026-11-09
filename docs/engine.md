@@ -257,9 +257,9 @@ the two kinds; both share one lifecycle (`NodeHost` in `ear_core`, `joinOutsideN
 
 1. **Alone.** The outside node is made and runs on its own until it reports RUNNING.
 2. **Linked.** One link per channel through `link-factory` (`link.output.node`, `link.output.port`,
-   `link.input.node`, `link.input.port`): the outside node by its **global id**, the block by its
-   node name, ports by name. *Why by id:* a node of the same name still going (a restart's old one)
-   would otherwise match first, and `link-factory` matches a name against nick, description and
+   `link.input.node`, `link.input.port`): the outside node and the block each by its **global id**
+   (the block's is `PortBlock::blockId`), ports by name. *Why by id:* a node of the same name still
+   going (a restart's old one, or an older block of a name added back) would otherwise match first, and `link-factory` matches a name against nick, description and
    object path too (`module-link-factory.c`).
 3. **Ready** once every link is active; the node is `running` only then.
 4. **Lost.** Any failure first destroys the links and the outside node, waits for a `pw_core_sync`
