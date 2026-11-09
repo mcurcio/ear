@@ -369,7 +369,7 @@ CI's tests use a sender thread on 127.0.0.1 (`test/support/rtp_tone.hpp`), never
 
 ## The one data loop and invokes
 
-Verified by `spikes_test.cpp` (S1 to S3) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
+Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.c`, `context.c` and `filter.c`:
 
 - **Asynchronous `pw_loop_invoke` from the main loop** runs on the data thread in posting order,
   never inside any `process`, and the post returns the async code, never the function's result. A
@@ -382,6 +382,12 @@ Verified by `spikes_test.cpp` (S1 to S3) against 1.4.2's `loop.c`, `context.c` a
   and nodes enter in link order in every cycle they all run. But a cycle an xrun cuts short is run by
   an upstream prefix of the graph only, never by a downstream node without its upstream; so cycles
   are told apart by the order they ran in, never by position alone.
+- **What a node reads after a cut-short cycle** (S5). In the first cycle a node runs after its
+  upstream ran one it did not, it reads the upstream's frames of the cycle it runs, never those of
+  the cut one: no stale buffer, no lasting shift. The cut cycle's frames are lost downstream, and
+  a route between blocks keeps in step across an xrun. Measured with the upstream stamping every
+  frame with its cycle's position: 3,491 such cycles over ten idle and ten loaded runs, every
+  one current.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.

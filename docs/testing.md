@@ -26,8 +26,8 @@ Catch2 v2 (`vendor/catch`). Each package has one test executable, and `ear_catch
 Catch's `--warn NoTests`, so `ctest --parallel` runs them side by side. Keep `;` out of test names:
 CMake splits a name at it. A test case whose load would starve the realtime-timed tests beside it
 is named by tag in `ear_catch_tests(<target> SERIAL <tag>)`, which gives it CTest's `RUN_SERIAL`
-(only the `[s2]` spike in `ear_pipewire_tests`). `test/main.cpp` turns off Catch's POSIX signal
-handlers, which do not compile against glibc 2.34 and newer (Catch 2.13.5 fixes it).
+(only the `[s2]` spikes in `ear_pipewire_tests`: S2 and S5). `test/main.cpp` turns off Catch's
+POSIX signal handlers, which do not compile against glibc 2.34 and newer (Catch 2.13.5 fixes it).
 
 Beside the executables, `test/CMakeLists.txt` runs `ear --help` (the binary loads its shared
 libraries), `ear_carried_patch_check` runs what configure asks of a tree that must carry a patch,

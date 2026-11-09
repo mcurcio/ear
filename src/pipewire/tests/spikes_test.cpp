@@ -7,15 +7,19 @@
 //    (not yet entered, or stopped) runs the function inline on the caller. A function may run before its post returns.
 //  - S2: take-up by position (docs/engine.md#drive-and-fade) under an invoke storm: a block and its peers see one
 //    clock.position per cycle, in link order, and a ramp switched on and off by position arrives sample-exact. An xrun
-//    cuts a cycle short: only a prefix of the graph runs it. Positions can step back (the dummy driver's reset onto the
-//    raw clock), so cycles are told apart by the order they ran in, never by position.
+//    cuts a cycle short: only a prefix of the graph runs it. Positions no longer step back (engine.conf's resync.ms),
+//    but cycles are still told apart by the order they ran in, never by position.
 //  - S3: one data loop: context.num-data-loops = 1 in engine.conf, and every engine node on that loop. A
 //    pw_filter's node info names no loop (node.loop.name is only what its maker set), so its loop is read in-process.
-// Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), and S2's
+//  - S5: a source served by its block, as slice 3b designs it (docs/design/companions.md), on S2's harness, idle and
+//    beside a busy thread per core: its played count keeps to the clock across cycles an xrun cuts short, and the node after it hears its
+//    frame of each position. And what a node reads after its upstream ran a cycle it did not: the upstream's frames of
+//    the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
+// Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), S2's
 // take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
-// docs/engine.md#drive-and-fade). Every wait is event-gated: the main loop runs until the events a test waits for have
-// arrived; a deadline only fails the test. Measurements are printed on standard output (run the binary, or ctest -V, to
-// see them).
+// docs/engine.md#drive-and-fade), and S5's source keeps its ring itself. Every wait is event-gated: the main loop runs
+// until the events a test waits for have arrived; a deadline only fails the test. Measurements are printed on standard
+// output (run the binary, or ctest -V, to see them).
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -401,15 +405,17 @@ std::uint64_t rawFramesNow() noexcept {
 	       static_cast<std::uint64_t>(now.tv_nsec) * kRate / 1'000'000'000U;
 }
 
-/// U: records its cycles, with the raw clock on entry, and writes zeros.
+/// U: records its cycles, with the raw clock on entry, and stamps every frame it writes with its cycle's position
+/// (rampAt(position)), so a node downstream can tell which of U's cycles it reads (S5's part B; S2's B ignores it).
 class Upstream final : public ProbeCode {
 public:
-	explicit Upstream(Shared& shared) : shared_(shared), log(kS2Capacity), rawAtEntry(kS2Capacity) {}
+	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity)
+		: shared_(shared), log(capacity), rawAtEntry(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
 		const std::uint64_t raw = rawFramesNow();
-		std::fill_n(outputs[0], frames, 0.0F);
+		std::fill_n(outputs[0], frames, rampAt(clock.position));
 		if (!shared_.recording.load(std::memory_order_acquire)) return;
 		if (const auto n = log.add(clock.position, sequence)) {
 			rawAtEntry[*n] = raw;
@@ -595,6 +601,15 @@ struct Timeline {
 	std::uint64_t largestBack = 0; // frames, the largest step back
 	std::size_t tooFarAhead = 0;   // cycles more than 10 ms ahead of the raw clock, where the driver puts none
 	std::string firstTooFarAhead;  // the first of those, described
+	/// Every cycle U ran while recording, in the order they ran: its position and the index of B's and D's entry in
+	/// their logs, kNone where that node did not run it.
+	struct Run {
+		static constexpr std::size_t kNone = SIZE_MAX;
+		std::uint64_t position;
+		std::size_t b = kNone;
+		std::size_t d = kNone;
+	};
+	std::vector<Run> runs;
 };
 
 Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
@@ -640,6 +655,7 @@ Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
 					std::to_string(e.position) + " with the raw clock at " + std::to_string(u.rawAtEntry[e.index]);
 			closeCycle();
 			++result.cycles;
+			result.runs.push_back(Timeline::Run{e.position});
 			cycleU = e;
 			cycleB.reset();
 			cycleD = false;
@@ -650,17 +666,229 @@ Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
 			else if (e.sequence != cycleU->sequence + 1) broke(e, "not straight after U");
 			else if (e.position != cycleU->position) broke(e, "not at U's position");
 			cycleB = e;
+			result.runs.back().b = e.index;
 		} else {
 			if (!cycleB) broke(e, "D without B in its cycle");
 			else if (cycleD) broke(e, "D twice in one cycle");
 			else if (e.sequence != cycleB->sequence + 1) broke(e, "not straight after B");
 			else if (e.position != cycleB->position) broke(e, "not at B's position");
 			cycleD = true;
+			if (cycleB) result.runs.back().d = e.index;
 		}
 	}
 	closeCycle();
 	return result;
 }
+
+/// What S2's storm counts. Declared before the engine, so a storm invoke still queued when a test leaves never touches a
+/// freed counter.
+struct StormCounts {
+	bool drained() const { return ran.load() == posts.load(); }
+	std::atomic<std::uint64_t> posts{0};
+	std::atomic<std::uint64_t> ran{0};
+	std::atomic<std::uint64_t> refused{0};
+};
+
+/// The storm: no-op invokes into the data loop from a second thread, for as long as it lives, as fast as the data loop
+/// takes them: bursts of 100, at most kBacklog outstanding, with a 50 us pause after each burst. Unpaced ("as fast as it
+/// can"), one thread wedges PipeWire 1.4.2's data loop for good: loop.c's flush_all_queues runs until every queue is
+/// empty and scans every overflow queue for each item, so once the poster gets ahead the data loop only flushes, never
+/// processes again, and the overflow queues grow without bound (the first run of S2). Declared after the engine, so it
+/// stops posting before the loop goes.
+class InvokeStorm {
+public:
+	InvokeStorm(pw_loop* dataLoop, StormCounts& counts)
+		: thread_([this, dataLoop, &counts] {
+			  const auto noop = [](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* userData) {
+				  static_cast<std::atomic<std::uint64_t>*>(userData)->fetch_add(1, std::memory_order_relaxed);
+				  return 0;
+			  };
+			  while (on_.load(std::memory_order_relaxed)) {
+				  for (int i = 0; i < 100; ++i) {
+					  if (counts.posts.load(std::memory_order_relaxed) - counts.ran.load(std::memory_order_relaxed) >=
+				          kBacklog)
+						  break;
+					  if (pw_loop_invoke(dataLoop, noop, SPA_ID_INVALID, nullptr, 0, false, &counts.ran) < 0)
+						  counts.refused.fetch_add(1, std::memory_order_relaxed);
+					  counts.posts.fetch_add(1, std::memory_order_relaxed);
+				  }
+				  const timespec pause{0, 50'000};
+				  nanosleep(&pause, nullptr);
+			  }
+		  }) {}
+	~InvokeStorm() { stop(); }
+	InvokeStorm(const InvokeStorm&) = delete;
+	InvokeStorm& operator=(const InvokeStorm&) = delete;
+	void stop() {
+		on_.store(false);
+		if (thread_.joinable()) thread_.join();
+	}
+
+private:
+	static constexpr std::uint64_t kBacklog =
+		2000; // under one queue's worth of overflow chains: about 4 queues of 32 KiB
+	std::atomic<bool> on_{true};
+	std::thread thread_; // last: it starts once on_ is made
+};
+
+// ---------------------------------------------------------------------------------------------------------------------
+// S5
+
+/// S5's B keeps time as a source would with sendspin's feed at 48 kHz (feedFramesFor: 40 ms rounded up to a power of
+/// two): a forward jump of at most this many frames is skipped and counted played; a larger one is a new clock.
+constexpr std::uint32_t kS5Capacity = 2048;
+/// Cut-short cycles S5's loaded run waits for, and how long it waits for them. An idle host cuts few cycles short (S2:
+/// 1 to 17 in 25 s; S5 met 187 in 60 s beside a parallel build), so the idle run takes what kS5IdleWindow brings.
+constexpr std::size_t kS5CutShort = 500;
+constexpr std::chrono::seconds kS5Deadline{60};
+constexpr std::chrono::seconds kS5IdleWindow{20};
+/// Cycles a log holds: the driver starts 750 a second at 64 frames, and its catch-up after a stall only makes up the
+/// ones it missed.
+constexpr std::size_t kS5Log = 750 * 80;
+
+/// B: a test-only source served by its block. Before its code (which here does nothing more) it plays a ring of
+/// kS5Capacity frames into its output and keeps time as slice 3b's source will: a cycle whose position
+/// jumped ahead of the last one's end by at most the capacity skips that many frames and counts them played; any other
+/// jump is a new clock, played on from where the ring is. `total` counts frames played and skipped, as a source's
+/// totalFrames. The ring's frame k is rampAt(k), and the writer side is not under test: the ring is kept full, each
+/// frame consumed replaced by the one kS5Capacity later. It also records the stamp of what it read from U.
+class RingSource final : public ProbeCode {
+public:
+	RingSource(Shared& shared, Waiter& waiter)
+		: shared_(shared), waiter_(waiter), ring_(kS5Capacity), log(kS5Log), totalBefore(kS5Log), stamp(kS5Log),
+		  uniform(kS5Log) {
+		for (std::uint32_t k = 0; k < kS5Capacity; ++k) ring_[k] = rampAt(k);
+	}
+	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_acquire); }
+	std::uint64_t cycles() const { return cycles_.load(std::memory_order_acquire); }
+	std::uint64_t newClocks() const { return newClocks_.load(std::memory_order_acquire); }
+
+	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		const std::uint64_t at = clock.position;
+		const bool recording = shared_.recording.load(std::memory_order_acquire);
+		if (!started_ && !recording) {
+			// Bound once recording begins, as a drive binds a source: so its first played frame is the first recorded.
+			std::fill_n(outputs[0], frames, 0.0F);
+			cycles_.fetch_add(1, std::memory_order_release);
+			waiter_.wake();
+			return;
+		}
+		if (!started_) {
+			started_ = true;
+			firstPosition_.store(at, std::memory_order_relaxed);
+			started.store(true, std::memory_order_release);
+		} else if (at != next_) {
+			if (at > next_ && at - next_ <= kS5Capacity) consume(at - next_);
+			else newClocks_.fetch_add(1, std::memory_order_relaxed);
+		}
+		next_ = at + frames;
+		const std::uint64_t before = total_;
+		if (frames <= kS5Capacity) {
+			for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = ring_[(total_ + i) & (kS5Capacity - 1)];
+			consume(frames);
+		}
+		const float* in = inputs[0];
+		bool same = true;
+		for (std::uint32_t i = 1; i < frames; ++i) same = same && in[i] == in[0];
+		if (recording) {
+			if (const auto n = log.add(at, sequence)) {
+				totalBefore[*n] = before;
+				stamp[*n] = in[0];
+				uniform[*n] = same ? 1 : 0;
+				log.commit(*n);
+			}
+		}
+		cycles_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+
+private:
+	/// Frames played or skipped: each slot freed takes the frame kS5Capacity later, so the ring stays full.
+	void consume(std::uint64_t frames) noexcept {
+		for (std::uint64_t k = total_; k < total_ + frames; ++k) ring_[k & (kS5Capacity - 1)] = rampAt(k + kS5Capacity);
+		total_ += frames;
+	}
+
+	Shared& shared_;
+	Waiter& waiter_;
+	// Data thread only.
+	std::vector<float> ring_;
+	std::uint64_t total_ = 0;
+	std::uint64_t next_ = 0;
+	bool started_ = false;
+	// Read elsewhere.
+	std::atomic<std::uint64_t> firstPosition_{0};
+	std::atomic<std::uint64_t> cycles_{0};
+	std::atomic<std::uint64_t> newClocks_{0};
+
+public:
+	std::atomic<bool> started{false}; // bound: firstPosition() holds
+	CycleLog log;
+	std::vector<std::uint64_t> totalBefore; // per cycle: `total` before it played, the index of its first frame
+	std::vector<float> stamp;               // per cycle: the first frame read from U
+	std::vector<std::uint8_t> uniform;      // per cycle: every frame read from U was that one
+};
+
+/// S5's D: per cycle, whether every frame is B's ring frame of that position, rampAt(position - B's first position + i).
+class RampListener final : public ProbeCode {
+public:
+	RampListener(Shared& shared, const RingSource& source)
+		: shared_(shared), source_(source), log(kS5Log), exact(kS5Log), firstWrong(kS5Log) {}
+	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
+	           std::uint32_t frames) noexcept override {
+		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
+		if (!shared_.recording.load(std::memory_order_acquire)) return;
+		if (!source_.started.load(std::memory_order_acquire)) return; // a cycle before B's first recorded one
+		const auto n = log.add(clock.position, sequence);
+		if (!n) return;
+		const std::uint64_t index = clock.position - source_.firstPosition();
+		std::uint32_t wrong = frames;
+		for (std::uint32_t i = 0; i < frames && wrong == frames; ++i) {
+			if (inputs[0][i] != rampAt(index + i)) wrong = i;
+		}
+		exact[*n] = wrong == frames ? 1 : 0;
+		firstWrong[*n] = wrong;
+		log.commit(*n);
+	}
+
+private:
+	Shared& shared_;
+	const RingSource& source_;
+
+public:
+	CycleLog log;
+	std::vector<std::uint8_t> exact;
+	std::vector<std::uint32_t> firstWrong;
+};
+
+/// One thread per core spinning at normal priority for as long as it lives: S5's load of its own.
+class BusyCores {
+public:
+	BusyCores() {
+		const unsigned cores = std::max(1U, std::thread::hardware_concurrency());
+		for (unsigned i = 0; i < cores; ++i) {
+			threads_.emplace_back([this] {
+				std::uint64_t spin = 0;
+				while (on_.load(std::memory_order_relaxed)) spin = spin * 6364136223846793005ULL + 1;
+				sink_.fetch_add(spin, std::memory_order_relaxed);
+			});
+		}
+	}
+	~BusyCores() {
+		on_.store(false);
+		for (std::thread& thread : threads_) thread.join();
+	}
+	BusyCores(const BusyCores&) = delete;
+	BusyCores& operator=(const BusyCores&) = delete;
+	std::size_t count() const { return threads_.size(); }
+
+private:
+	std::atomic<bool> on_{true};
+	std::atomic<std::uint64_t> sink_{0};
+	std::vector<std::thread> threads_;
+};
 
 // ---------------------------------------------------------------------------------------------------------------------
 // S3
@@ -885,10 +1113,7 @@ TEST_CASE(
 	"short only by a prefix of the graph, and a ramp taken up by position arrives sample-exact across 1000 requests",
 	"[spike][s2]") {
 	// Declared before the engine, so a storm invoke still queued when the test leaves never touches a freed counter.
-	std::atomic<bool> stormOn{true};
-	std::atomic<std::uint64_t> stormPosts{0};
-	std::atomic<std::uint64_t> stormRan{0};
-	std::atomic<std::uint64_t> stormRefused{0};
+	StormCounts stormCounts;
 	auto engine = engineAt(kS2Block);
 	Waiter waiter(*engine);
 	Wiring wiring(*engine, waiter);
@@ -905,37 +1130,7 @@ TEST_CASE(
 	pw_loop* dataLoop = contextDataLoop(*engine);
 	REQUIRE(block.dataLoop() == dataLoop);
 
-	// The storm: no-op invokes into the data loop from a second thread, for the whole test, as fast as the data loop
-	// takes them: bursts of 100, at most kBacklog outstanding, with a 50 us pause after each burst. Unpaced ("as fast
-	// as it can"), one thread wedges PipeWire 1.4.2's data loop for good: loop.c's flush_all_queues runs until every
-	// queue is empty and scans every overflow queue for each item, so once the poster gets ahead the data loop only
-	// flushes, never processes again, and the overflow queues grow without bound (the first run of this spike).
-	constexpr std::uint64_t kBacklog = 2000; // under one queue's worth of overflow chains: about 4 queues of 32 KiB
-	std::thread storm([&] {
-		const auto noop = [](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* userData) {
-			static_cast<std::atomic<std::uint64_t>*>(userData)->fetch_add(1, std::memory_order_relaxed);
-			return 0;
-		};
-		while (stormOn.load(std::memory_order_relaxed)) {
-			for (int i = 0; i < 100; ++i) {
-				if (stormPosts.load(std::memory_order_relaxed) - stormRan.load(std::memory_order_relaxed) >= kBacklog)
-					break;
-				if (pw_loop_invoke(dataLoop, noop, SPA_ID_INVALID, nullptr, 0, false, &stormRan) < 0)
-					stormRefused.fetch_add(1, std::memory_order_relaxed);
-				stormPosts.fetch_add(1, std::memory_order_relaxed);
-			}
-			const timespec pause{0, 50'000};
-			nanosleep(&pause, nullptr);
-		}
-	});
-	struct StopStorm {
-		std::atomic<bool>& on;
-		std::thread& thread;
-		~StopStorm() {
-			on.store(false);
-			if (thread.joinable()) thread.join();
-		}
-	} stopStorm{stormOn, storm};
+	InvokeStorm storm(dataLoop, stormCounts);
 
 	shared.recording.store(true);
 	const std::uint64_t armed = blockCode.cycles();
@@ -973,10 +1168,9 @@ TEST_CASE(
 	const std::uint64_t last = blockCode.cycles();
 	REQUIRE(waiter.until([&] { return blockCode.cycles() > last + 2; }));
 	shared.recording.store(false);
-	stormOn.store(false);
-	storm.join();
+	storm.stop();
 	REQUIRE(finished);
-	REQUIRE(waiter.until([&] { return stormRan.load() == stormPosts.load(); }));
+	REQUIRE(waiter.until([&] { return stormCounts.drained(); }));
 
 	// Every log complete: a cycle dropped from a full log would void what follows.
 	REQUIRE_FALSE(upCode.log.full.load());
@@ -1059,17 +1253,186 @@ TEST_CASE(
 	            "wrong (%zu "
 	            "neither zeros nor the ramp)\n",
 	            taken.size(), seconds, nd, rampCycles, late, blockCode.jumps(), blockCode.backwardJumps(),
-	            stormPosts.load(), static_cast<double>(stormPosts.load()) / seconds, stormRefused.load(),
-	            timeline.cycles, timeline.whole, timeline.onlyU, timeline.onlyUB, timeline.broken, timeline.stepsBack,
-	            timeline.largestBack, timeline.tooFarAhead, publishSeen, missedPublish, wrongCycles, otherCycles);
+	            stormCounts.posts.load(), static_cast<double>(stormCounts.posts.load()) / seconds,
+	            stormCounts.refused.load(), timeline.cycles, timeline.whole, timeline.onlyU, timeline.onlyUB,
+	            timeline.broken, timeline.stepsBack, timeline.largestBack, timeline.tooFarAhead, publishSeen,
+	            missedPublish, wrongCycles, otherCycles);
 	INFO(firstWrong);
 	CHECK(refusedPosts == 0);
-	CHECK(stormRefused.load() == 0);
-	CHECK(stormPosts.load() > 0);
+	CHECK(stormCounts.refused.load() == 0);
+	CHECK(stormCounts.posts.load() > 0);
 	CHECK(wrongFrames == 0);
 	CHECK(wrongCycles == 0);
 	CHECK(missedPublish == 0);
 	CHECK(rampCycles > 0);
+}
+
+namespace {
+
+/// S5, on S2's harness: U → B → D at S2's block under its storm, for kS5IdleWindow
+/// idle, or beside a busy thread per core until kS5CutShort cycles have been cut short. Part A, the gate: across every cycle B ran, `total -
+/// (position - first position)` stays what it was (no drift across a cut-short cycle), and in every cycle B and D both
+/// ran D heard B's ring frame of that position, sample for sample. Part B, recorded only: in B's first cycle after one
+/// U ran and B did not, whether B read U's frames of its own cycle ("current") or of the cut one ("stale").
+void spikeS5(bool loaded) {
+	StormCounts stormCounts; // before the engine, as S2's
+	auto engine = engineAt(kS2Block);
+	Waiter waiter(*engine);
+	Wiring wiring(*engine, waiter);
+	Shared shared;
+	Upstream upCode(shared, kS5Log);
+	RingSource sourceCode(shared, waiter);
+	RampListener downCode(shared, sourceCode);
+	Probe up(*engine, waiter, "u", 0, 1, upCode);
+	Probe block(*engine, waiter, "b", 1, 1, sourceCode);
+	Probe down(*engine, waiter, "d", 1, 0, downCode);
+	REQUIRE(waiter.until([&] { return up.streaming() && block.streaming() && down.streaming(); }));
+	REQUIRE(wiring.link(waiter, {"u", "out.1"}, {"b", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"b", "out.1"}, {"d", "in.1"}));
+	pw_loop* dataLoop = contextDataLoop(*engine);
+	REQUIRE(block.dataLoop() == dataLoop);
+	InvokeStorm storm(dataLoop, stormCounts);
+	std::optional<BusyCores> busy;
+	if (loaded) busy.emplace();
+	const std::uint64_t settled = sourceCode.cycles();
+	REQUIRE(waiter.until([&] { return sourceCode.cycles() > settled + 4; }));
+
+	// Recording binds B's source. Every graph cycle has U's entry and the whole ones D's too (S2: only a prefix of the
+	// graph runs a cut-short cycle), so U's count less D's is the cycles cut short so far, give or take the one running.
+	shared.recording.store(true);
+	const auto start = std::chrono::steady_clock::now();
+	const auto cutSoFar = [&] { return upCode.log.count.load() - downCode.log.count.load(); };
+	waiter.until([&] { return (loaded && cutSoFar() >= kS5CutShort + 2) || upCode.log.full.load(); },
+	             loaded ? kS5Deadline : kS5IdleWindow);
+	const double seconds = millisecondsSince(start) / 1000.0;
+	const std::size_t busyThreads = busy ? busy->count() : 0;
+	const std::uint64_t last = sourceCode.cycles();
+	REQUIRE(waiter.until([&] { return sourceCode.cycles() > last + 2; }));
+	shared.recording.store(false);
+	busy.reset();
+	storm.stop();
+	REQUIRE(waiter.until([&] { return stormCounts.drained(); }));
+	REQUIRE_FALSE(upCode.log.full.load());
+	REQUIRE_FALSE(sourceCode.log.full.load());
+	REQUIRE_FALSE(downCode.log.full.load());
+
+	const Timeline timeline = readTimeline(upCode, sourceCode.log, downCode.log);
+	INFO("first broken cycle: " << timeline.firstBroken);
+	CHECK(timeline.broken == 0);
+
+	// In the order the cycles ran (never by position: S2).
+	const std::uint64_t first = sourceCode.firstPosition();
+	std::size_t drifts = 0, bCycles = 0, both = 0, dWrong = 0;
+	std::size_t jumps = 0, notWhole = 0, beyond = 0, back = 0, afterCut = 0, driftsAfterCut = 0;
+	std::uint64_t largestJump = 0;
+	std::string firstDrift, firstWrong;
+	// Part B: what B read in its first cycle after a cut one, and in its cycles after one it ran.
+	std::size_t current = 0, stale = 0, same = 0, none = 0, other = 0, mixed = 0;
+	std::size_t steadyCurrent = 0, steadyPrevious = 0, steadyOther = 0, nextCurrent = 0, nextOther = 0;
+	std::string firstOther;
+	std::optional<std::int64_t> lastOffset;
+	std::optional<std::uint64_t> lastEnd, previousRun;
+	bool cutSinceB = false, lastWasAfterCut = false;
+	std::uint64_t cutAt = 0;
+	for (const Timeline::Run& run : timeline.runs) {
+		if (run.b == Timeline::Run::kNone) {
+			cutSinceB = true;
+			cutAt = run.position;
+			previousRun = run.position;
+			continue;
+		}
+		++bCycles;
+		const std::uint64_t at = sourceCode.log.position[run.b];
+		const auto offset =
+			static_cast<std::int64_t>(sourceCode.totalBefore[run.b]) - static_cast<std::int64_t>(at - first);
+		if (lastOffset && offset != *lastOffset) {
+			if (drifts++ == 0)
+				firstDrift = "B at " + std::to_string(at) + ": offset " + std::to_string(*lastOffset) + " to " +
+				             std::to_string(offset) + (cutSinceB ? ", after a cut-short cycle" : "");
+			if (cutSinceB) ++driftsAfterCut;
+		}
+		lastOffset = offset;
+		if (lastEnd && at != *lastEnd) {
+			++jumps;
+			if (at < *lastEnd) {
+				++back;
+			} else {
+				largestJump = std::max(largestJump, at - *lastEnd);
+				if ((at - *lastEnd) % kS2Block != 0) ++notWhole;
+				if (at - *lastEnd > kS5Capacity) ++beyond;
+			}
+		}
+		lastEnd = at + kS2Block;
+		const float read = sourceCode.stamp[run.b];
+		if (sourceCode.uniform[run.b] == 0) ++mixed;
+		if (cutSinceB) {
+			++afterCut;
+			if (rampAt(cutAt) == rampAt(at)) ++same; // a cut cycle at the position B runs: the two cannot be told apart
+			else if (read == rampAt(at)) ++current;
+			else if (read == rampAt(cutAt)) ++stale;
+			else if (read == 0.0F) ++none;
+			else if (other++ == 0)
+				firstOther = "read " + std::to_string(read) + " at " + std::to_string(at) + " after a cut at " +
+				             std::to_string(cutAt);
+		} else if (read == rampAt(at)) {
+			++steadyCurrent;
+			if (lastWasAfterCut) ++nextCurrent;
+		} else {
+			if (previousRun && read == rampAt(*previousRun)) ++steadyPrevious;
+			else ++steadyOther;
+			if (lastWasAfterCut) ++nextOther;
+		}
+		lastWasAfterCut = cutSinceB;
+		cutSinceB = false;
+		previousRun = run.position;
+		if (run.d != Timeline::Run::kNone) {
+			++both;
+			if (downCode.exact[run.d] == 0 && dWrong++ == 0)
+				firstWrong = "D at " + std::to_string(downCode.log.position[run.d]) + ": first wrong frame " +
+				             std::to_string(downCode.firstWrong[run.d]);
+		}
+	}
+	const std::size_t cutShort = timeline.onlyU + timeline.onlyUB;
+	std::printf(
+		"S5 %s (%zu busy threads): %.1f s, %zu cycles started, %zu run by every node, %zu cut short after U "
+		"and %zu after B; %" PRIu64 " storm invokes. A: B ran %zu cycles, %zu position jumps (largest %" PRIu64
+		" frames, %zu not whole cycles, %zu beyond its capacity of %u, %zu backwards; %" PRIu64
+		" new clocks), %zu drifts of total - (position - first) (%zu after a cut-short cycle); D heard %zu "
+		"cycles B ran too, %zu not B's ramp frame of that position. B: after %zu cut cycles B read current %zu, "
+		"stale %zu, none %zu, other %zu, cut at its own position %zu; in its next cycle current %zu, other %zu; "
+		"after cycles it ran, current %zu, the previous cycle's %zu, other %zu; %zu reads not one stamp\n",
+		loaded ? "loaded" : "idle", busyThreads, seconds, timeline.cycles, timeline.whole, timeline.onlyU,
+		timeline.onlyUB, stormCounts.posts.load(), bCycles, jumps, largestJump, notWhole, beyond, kS5Capacity, back,
+		sourceCode.newClocks(), drifts, driftsAfterCut, both, dWrong, afterCut, current, stale, none, other, same,
+		nextCurrent, nextOther, steadyCurrent, steadyPrevious, steadyOther, mixed);
+	INFO("cut-short cycles seen in " << seconds << " s: " << cutShort);
+	if (loaded) REQUIRE(cutShort >= kS5CutShort);
+	// A, the gate.
+	INFO(firstDrift);
+	INFO(firstWrong);
+	CHECK(stormCounts.refused.load() == 0);
+	CHECK(both > 0);
+	CHECK(drifts == 0);
+	CHECK(notWhole == 0);
+	CHECK(beyond == 0);
+	CHECK(back == 0);
+	CHECK(dWrong == 0);
+	INFO(firstOther);
+	CHECK(mixed == 0);
+}
+
+} // namespace
+
+TEST_CASE("S5: a source served by its block keeps its played count on the clock across cycles an xrun cuts short, "
+          "idle",
+          "[spike][s2][s5]") {
+	spikeS5(false);
+}
+
+TEST_CASE("S5: a source served by its block keeps its played count on the clock across cycles an xrun cuts short, "
+          "beside a busy thread per core",
+          "[spike][s2][s5]") {
+	spikeS5(true);
 }
 
 TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blocks, a sound card and an RTP receiver "

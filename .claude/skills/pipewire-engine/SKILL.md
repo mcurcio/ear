@@ -385,7 +385,7 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
 - **One invoke in flight per block is a requirement** (S1 below): an unbounded producer of
   invokes wedges the data loop. Never post invokes to the data loop in a loop of your own.
 
-## What the slice 3a spikes proved (S1 to S3, `spikes_test.cpp`)
+## What the spikes proved (S1 to S3 in slice 3a, S5 in 3b; `spikes_test.cpp`)
 
 Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sources (`loop.c`, `context.c`,
 `filter.c`):
@@ -411,6 +411,11 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   thread, and a filter's `pw_filter_get_data_loop` is that loop. Adapters and the rtp module name
   `data-loop.0` in their info, while `pw_filter`s name no loop (`node.loop.name` is set only by a
   node's maker).
+- **S5 (slice 3b.0, tag `[s2]`, so serial)**: a source served by its block, on S2's harness, idle
+  for 20 s and beside a busy thread per core until 500 cycles are cut short. Its played count keeps
+  to the clock across cut-short cycles (the skip-up-to-capacity rule absorbs every jump), and after
+  a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
+  never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
   resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 

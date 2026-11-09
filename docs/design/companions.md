@@ -204,10 +204,19 @@ the block plays each bound source into its inside input bank before the code and
 **The spike, S5** (3b's first step, 3b.0; `spikes_test.cpp` on S2's harness, tagged `[s2]` so it runs serial, kept as a
 regression). Its method: S2's three filters U (upstream probe), B and D (downstream probe), linked U → B → D at a
 64-frame block, under S2's invoke storm, once on an idle host and once beside a load of its own (S2 met its loaded
-runs by chance, under ctest's parallel suites; S5 starts one busy thread per core for its loaded run), until at least
-500 cycles cut short have been seen (a 60 s deadline fails the test naming how many it saw). B is a test-only filter that plays a
-position-stamped ramp from a ring of its own before its code, keeping time as 3.3 says, and counts `totalFrames` as a
-source would; U writes each cycle's position into every frame it outputs.
+runs by chance, under ctest's parallel suites; S5 starts one busy thread per core for its loaded run). The loaded run
+goes until at least 500 cycles cut short have been seen (a 60 s deadline fails the test naming how many it saw); the
+idle run takes what 20 s bring, since an idle host cuts few cycles short (S2: 1 to 17 in 25 s). B is a test-only
+filter that plays a position-stamped ramp from a ring of its own (2,048 frames, sendspin's feed at 48 kHz) before its
+code, keeping time as 3.3 says, and counts `totalFrames` as a source would; U writes each cycle's position into every
+frame it outputs.
+
+**Result (2026-11-09): A passes, B reads "current".** Ten runs of each: idle, 800 cycles cut short (704
+after U, 96 after B) in 200 s; loaded, 5,032 (3,227 after U, 1,805 after B), the 500 reached in 8 to 20 s. B's
+position jumps (1,308 idle, 4,878 loaded) were all forward, whole cycles, at most 832 frames, so within its capacity:
+no new clock and no drift of `totalFrames - (position - firstPosition)` in 242,228 cycles B ran, and D heard B's ramp
+frame of its position in all 240,327 cycles both ran. In all 3,491 cycles B ran straight after one cut before it, it
+read U's frames of its own cycle. So 3b.2 builds the source as designed, and the counting rule stays a sum.
 
 - **A, the gate: `Played` keeps to the clock.** Across every cycle B ran, `totalFrames - (position - firstPosition)`
   stays constant (no drift across a cut-short cycle), and every frame D received after a cycle both B and D ran is the
@@ -324,7 +333,8 @@ The module design's own decisions are in 8.11.
 ## 7. Open questions and risks
 
 - **Cards and rtp-source at `quantum-limit` = block size** (3.6): unproven; the fallback keeps the limit.
-- **What a node reads after a cut-short cycle** (S5's part B): recorded, not 3b's to fix.
+- **What a node reads after a cut-short cycle** (S5's part B): answered, the upstream's frames of the cycle it runs
+  (`docs/engine.md#the-one-data-loop-and-invokes`); nothing for 3b to fix.
 - **The readiness deadlines** are first choices: a USB card that takes longer than 10 s to start fails, and is retried
   only by `node.start`, `node.restart` or a change until slice 8's recovery.
 - **Churn of the rename** (step 3b.3): mechanical, but it touches every outside-node test; done in one step of its own.
@@ -639,8 +649,8 @@ is cancelled at the teardown's start.
 **A cycle an xrun cuts short**: [D] the block either runs the cycle (its sources played, code run, sinks tapped) or does
 not (none of them). If not, the next cycle's position jumped: each source skips up to its capacity, counted played; each
 sink's next chunk has `discontinuity` set and a gap in `position` (built). Engine companions are other nodes: a capture
-card or a receiver upstream may have run the cycle, as any route's upstream (S5's part B says what the block reads
-next). Nothing reaches the main loop.
+card or a receiver upstream may have run the cycle, as any route's upstream (S5's part B: the block reads that
+upstream's frames of the cycle it runs, never the cut one's). Nothing reaches the main loop.
 
 **Wedge**: unchanged from 3a. A barrier overdue at 5 s is `ear.barrier-overdue` and `ear.data-loop-wedged`; a leaked
 configuration keeps its sources and sinks (the block may still play or tap them) and its engine companions are leaked
