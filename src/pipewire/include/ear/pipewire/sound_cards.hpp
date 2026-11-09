@@ -21,11 +21,15 @@ namespace ear::pipewire {
 ///   linking --every link ACTIVE--> ready (events.ready)
 ///   any state --node ERROR, proxy error, node removed, a link failed or gone--> destroy the
 ///     links, destroy the adapter proxy, then events.lost(detail)
+/// A card whose PCM never runs tells nothing here: NodeHost's readiness deadline (10 s) fails its node engine-refused
+/// and destroys it (docs/engine.md#readiness-deadlines).
 /// channelPorts: "playback_AUX<i>" / "capture_AUX<i>".
 class AlsaSoundCards final : public SoundCardCompanions {
 public:
 	using Properties = std::vector<std::pair<std::string, std::string>>;
 	/// `extra`: adapter properties added to every card's, after its own (a test seam: clocklessCardProperties).
+	/// std::invalid_argument when it names node.force-quantum, node.force-rate, node.lock-quantum or node.lock-rate:
+	/// no companion may change every block's clock (docs/engine.md#the-quantum-guard).
 	explicit AlsaSoundCards(Engine& engine, Properties extra = {}); // engine outlives it
 	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const SoundCardShape& shape,
 	                                      EngineCompanionEvents& events) override;

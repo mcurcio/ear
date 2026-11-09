@@ -5,8 +5,9 @@
 // engine companions' adapter interface.
 //
 // Built so far: the shapes and the engine companions' interfaces (docs/engine.md#engine-companions), which NodeHost
-// and ear_pipewire's adapters use; the kinds, the readiness bounds and the wire's view are declarations until the
-// slice's later steps build them. Pure: nothing but the standard library and ear_core.
+// and ear_pipewire's adapters use, and the kinds' readiness bounds, which NodeHost's deadlines use
+// (docs/engine.md#readiness-deadlines); the counters' paces and the wire's view are declarations until the slice's
+// later steps build them. Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
 #include <cstdint>

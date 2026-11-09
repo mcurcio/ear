@@ -164,7 +164,7 @@ private:
 enum class Fact {
 	engine,          // a sound card or RTP receiver refused or lost; the block refused or lost; the loop wedged
 	configureFailed, // configure answered failed(d)
-	consumerLost,    // a sink consumer's begin said lost
+	consumerLost,    // a sink's consumer did not begin within its readiness deadline
 	recipeFailed,    // a legacy recipe failed
 	nodeLost,        // lost(detail) from the node's handle
 	hookThrew,       // configure, start() or stop() threw

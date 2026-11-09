@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring or is silent, a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -94,8 +94,12 @@ blocking invoke made right after `pw_context_new` meets the same race.
 
 `Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates`
 (only the graph frequency), `default.clock.quantum`, `min-quantum` and `max-quantum` (all the
-block size), `clock.power-of-two-quantum = false`, and widens `default.clock.quantum-floor`
-(default 4) and `quantum-limit` (default 8192) so the block size fits. A port block sees
+block size), `clock.power-of-two-quantum = false`, widens `default.clock.quantum-floor`
+(default 4) so the block size fits, and sets `quantum-limit` (default 8192) to the block size: PipeWire
+clamps a node's `node.force-quantum` to `[floor, limit]`, not to `max-quantum`, so with 8192 one forcing
+node made every cycle longer than a block's `maxBlock` and every block wrote zeros (`engine_test.cpp`'s
+"The quantum limit is the block size", `docs/engine.md#the-quantum-guard`). No engine companion sets
+a force or lock property, and `AlsaSoundCards`' `extra` seam refuses them. A port block sees
 `position->clock.duration == blockSize` and `clock.rate.denom == graphFrequency`; the test
 "Blocks process at the graph frequency and block size" checks it with 44100 Hz and 256.
 
@@ -311,8 +315,11 @@ What PipeWire 1.4.2 does that ear cannot see or change:
   stream's error is set, but the node is not put in ERROR, not removed, the module not destroyed.
   With always-process the node then never reaches RUNNING, so the `rtp` node stays `configuring`
   (state `starting`) with silent outputs, waiting for its companion: after 2 s ear says `node <n> still
-  configuring after 2s: waiting for <n>.rtp` (`lifecycle_test.cpp` holds the port to check it). The module sets `SO_REUSEADDR`, so two receivers on one port both bind
-  (unicast then reaches only one); a port held by a program without it fails.
+  configuring after 2s: waiting for <n>.rtp`, and at the receiver's 5 s readiness deadline the node
+  fails `engine-refused: the RTP receiver never ran (UDP port <port> held?)`
+  (`docs/engine.md#readiness-deadlines`; `lifecycle_test.cpp` holds the port to check both). The module
+  sets `SO_REUSEADDR`, so two receivers on one port both bind (unicast then reaches only one); a port
+  held by a program without it fails.
 - **No packets is not a failure.** The module never destroys itself. After `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (true again on the next packet); a
   bound node proxy sees it, the registry does not. ear does not read it: the node stays

@@ -21,7 +21,9 @@ namespace ear::pipewire {
 /// linked; node ERROR, the node's global removed or the module destroyed fail it; a module that
 /// will not load fails it (told later, never inside make()). A socket that cannot be bound
 /// gives no event on PipeWire 1.4.2: the node never runs, so it is never linked or ready, and
-/// the EAR node stays starting (docs/engine.md#rtp-receivers, finding g).
+/// the EAR node stays starting until NodeHost's readiness deadline (5 s) fails it engine-refused
+/// (docs/engine.md#rtp-receivers, docs/engine.md#readiness-deadlines). It never sets a property
+/// that forces or locks the graph's quantum or rate (docs/engine.md#the-quantum-guard).
 class RtpReceivers final : public RtpReceiverCompanions {
 public:
 	explicit RtpReceivers(Engine& engine); // engine outlives it

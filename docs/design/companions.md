@@ -343,7 +343,9 @@ The module design's own decisions are in 8.11.
 
 ## 7. Open questions and risks
 
-- **Cards and rtp-source at `quantum-limit` = block size** (3.6): unproven; the fallback keeps the limit.
+- **Cards and rtp-source at `quantum-limit` = block size** (3.6): proven on the test card and on receivers at 44.1 and
+  96 kHz (3b.4); a real USB card at that limit is still to be checked on the hardware, and the fallback keeps the
+  limit.
 - **What a node reads after a cut-short cycle** (S5's part B): answered, the upstream's frames of the cycle it runs
   (`docs/engine.md#the-one-data-loop-and-invokes`); nothing for 3b to fix.
 - **The readiness deadlines** are first choices: a USB card that takes longer than 10 s to start fails, and is retried
@@ -562,6 +564,33 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
 - The flush's activity names follow the vocabulary: `make engine companion`, `destroy engine companion` (were
   `... outside node`), the one text an operator can see change (`ear.main-loop-stalled`'s `in`, while a flush item
   runs).
+
+**Found building 3b.4.** The deadlines and the guard are built on the declared interfaces with no declaration of
+`companions.hpp` changed (what lasts is `docs/engine.md#readiness-deadlines` and `docs/engine.md#the-quantum-guard`):
+
+- The deadlines are armed at configure's applied return, after each sink's `begin` is handed over (8.6's create step
+  5), so an engine companion's wait counts the time its block took to be ready too: an RTP receiver whose block never
+  became ready fails at 5 s like one made and never run. Each timer is an input of its own and judges then (current
+  generation, not `tearing`, not failed, readying, the companion not ready); a companion's readiness resets its timer,
+  and the teardown clears them all.
+- A sink's expiry is fed as `lc::Fact::consumerLost`, the fact 3a declared for a consumer and never used (it maps to
+  `start-failed` in every phase); its comment now says what it is for. An engine companion's is `Fact::engine`.
+- The texts are 3.5's with the shape's values: `the card never started: <card id>` (one text for either direction,
+  since a card's id is the same on both banks), `the RTP receiver never ran (UDP port <port> held?)`, `the sink
+  <bank>'s consumer did not begin within 5 s` (the seconds from `sinkReadinessBound`).
+- `companions.cpp` is new with `readinessBound` and `companionKindName` (the second is 3b.5's and 3b.6's, built here
+  because it is one switch beside the first).
+- The harness needed a way to hold a sink's `begin`, else the consumer deadline could not be reached in a type's tests:
+  `HarnessOptions::holdSinks` (consumers begin only at `ready(bank)`). `ready(bank)` now takes any companion's bank:
+  a held sink begins, a sink that began or a source is ready already (nothing happens); `lose(bank)` on a sink or a
+  source is a `std::logic_error` (the framework never loses a ring companion: its type's code says lost through the
+  handle). `advance` already ran every timer NodeHost arms, so the deadlines needed nothing more there.
+- 3.6's [U] is answered yes: with `quantum-limit` at the block size the test card plays its ramp bit-exact and
+  follows, and receivers fed at 44.1 kHz and at 96 kHz into a 48 kHz graph are resampled (a sender faster than the
+  graph needs more input than one block a cycle, so it was added to 3.6's 44.1 kHz case). `engine_test.cpp` forces a
+  quantum four blocks long on a node in the group: with the old limit (8192) every block stopped running, with the
+  limit at the block size every cycle stays one block. A real card (a USB MOTU) at that limit is the `ear-on-talos`
+  skill's check, not run; the fallback stays 3.6's (the limit back to `max(block, 8192)`, the refusal kept).
 
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
 

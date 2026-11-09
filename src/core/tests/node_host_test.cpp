@@ -4687,3 +4687,185 @@ TEST_CASE("A source on a bank that is no inside input, a second companion on its
 		CHECK(f.allGone == 1);
 	}
 }
+
+// docs/engine.md#readiness-deadlines: each engine companion and each sink's consumer has its kind's deadline from its
+// request, on the main loop's timers; past it the node fails with the kind's text.
+
+TEST_CASE("A card that never starts fails its node engine-refused at 10 s naming the card, and the teardown destroys "
+          "every card it made",
+          "[node_host][deadline]") {
+	Fixture f;
+	f.add("desk", withCards(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.cards.events.size() == 2);
+	f.cards.events[0]->ready(); // the playback card runs; the capture card never does
+	f.settle();
+	f.timers.advance(cardReadinessBound - std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(f.host.health().at(0).phase == NodePhase::configuring);
+	CHECK(failureOf(f, "desk").empty());
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(1));
+	CHECK(f.log == Log{"node desk failed engine-refused: the card never started: Pro24"});
+	f.settle();
+	CHECK(countOf(f.log, "card desk.playback destroyed") == 1);
+	CHECK(countOf(f.log, "card desk.capture destroyed") == 1);
+	CHECK(countOf(f.log, "drive code") == 0);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("An RTP receiver that never runs fails its node engine-refused at 5 s naming its UDP port, counted from its "
+          "request even while the block is not ready",
+          "[node_host][deadline][rtp]") {
+	Fixture f;
+	f.add("fpp", withReceiver(f.log));
+	SECTION("its block ready, the receiver made and never ready") {
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		REQUIRE(f.receivers.events.size() == 1);
+	}
+	SECTION("its block never ready, so the receiver is never made") {}
+	f.timers.advance(rtpReceiverReadinessBound - std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "fpp").empty());
+	f.timers.advance(std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	CHECK(f.host.health().at(0).state == NodeState::failed);
+	CHECK(countOf(f.log, "receiver fpp.rtp destroyed") == f.receivers.events.size());
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Companions ready before their deadlines cancel them: the node runs and later deadlines fail nothing",
+          "[node_host][deadline]") {
+	Fixture f;
+	auto config = std::make_shared<TestConfig>(f.log);
+	config->cards = {motuOut};
+	config->receivers = {{"cap", fppStream}};
+	f.add("mix", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.cards.events.size() == 1);
+	REQUIRE(f.receivers.events.size() == 1);
+	f.timers.advance(std::chrono::milliseconds(4'000));
+	f.receivers.events[0]->ready();
+	f.timers.advance(std::chrono::milliseconds(5'000));
+	f.cards.events[0]->ready();
+	f.settle();
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.timers.advance(std::chrono::milliseconds(60'000));
+	f.settle();
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	CHECK(failureOf(f, "mix").empty());
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A companion ready in the turn its deadline comes due wins over the deadline", "[node_host][deadline]") {
+	Fixture f;
+	// Armed before the node's own deadline, so it runs first when the clock reaches them both.
+	const auto readyFirst = f.timers.after(rtpReceiverReadinessBound, [&f] { f.receivers.events.at(0)->ready(); });
+	f.add("fpp", withReceiver(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(rtpReceiverReadinessBound);
+	f.settle();
+	CHECK(failureOf(f, "fpp").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A restart gives the new configuration's companions deadlines of their own, and the old ones fail nothing",
+          "[node_host][deadline][rtp]") {
+	Fixture f;
+	f.add("fpp", withReceiver(f.log));
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(std::chrono::milliseconds(4'000));
+	REQUIRE(f.host.restart("fpp"));
+	f.settle();
+	REQUIRE(f.receivers.events.size() == 2); // the old one destroyed, a new one made
+	f.timers.advance(std::chrono::milliseconds(2'000));
+	f.settle();
+	CHECK(failureOf(f, "fpp").empty());
+	f.timers.advance(std::chrono::milliseconds(3'000));
+	f.settle();
+	CHECK(failureOf(f, "fpp") == "engine-refused: the RTP receiver never ran (UDP port 5004 held?)");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A sink whose consumer has not begun within 5 s fails its node start-failed naming its bank, and the "
+          "teardown closes the sink with no finish",
+          "[node_host][deadline][sink]") {
+	Fixture f;
+	f.sinks.holdBegin = true;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	f.add("rec", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(sinkReadinessBound - std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "rec").empty());
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(1));
+	f.settle();
+	CHECK(failureOf(f, "rec") == "start-failed: the sink pb's consumer did not begin within 5 s");
+	CHECK(countOf(f.log, "sink rec.pb close") == 1);
+	CHECK(countOf(f.log, "consumer finish") == 0);
+	CHECK(countOf(f.log, "drive code") == 0);
+	CHECK(countOf(f.log, "sink rec.pb destroyed") == 1); // freed once closed: its begin never runs
+	CHECK(f.host.health().at(0).state == NodeState::failed);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A sink's consumer that began in time cancels its deadline, and a source has none",
+          "[node_host][deadline][sink]") {
+	Fixture f;
+	f.sinks.holdBegin = true;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&log = f.log](InstanceContexts& cx) {
+		cx.create.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log));
+		static_cast<void>(cx.create.source("cap", SourceShape{.frames = 64}));
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+	f.add("rec", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	f.timers.advance(std::chrono::milliseconds(4'999));
+	f.sinks.made.at(0)->runBegin();
+	f.settle();
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	f.timers.advance(std::chrono::milliseconds(60'000));
+	f.settle();
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	CHECK(failureOf(f, "rec").empty());
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Each kind's readiness bound is the one the design gives, and a source has none", "[node_host][deadline]") {
+	CHECK(readinessBound(CompanionKind::cardPlayback) == cardReadinessBound);
+	CHECK(readinessBound(CompanionKind::cardCapture) == cardReadinessBound);
+	CHECK(readinessBound(CompanionKind::rtpReceiver) == rtpReceiverReadinessBound);
+	CHECK(readinessBound(CompanionKind::sink) == sinkReadinessBound);
+	CHECK_FALSE(readinessBound(CompanionKind::source).has_value());
+	CHECK(cardReadinessBound == std::chrono::milliseconds(10'000));
+	CHECK(rtpReceiverReadinessBound == std::chrono::milliseconds(5'000));
+	CHECK(sinkReadinessBound == std::chrono::milliseconds(5'000));
+	CHECK(companionKindName(CompanionKind::rtpReceiver) == "rtp-receiver");
+}

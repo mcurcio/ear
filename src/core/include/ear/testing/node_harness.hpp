@@ -5,7 +5,9 @@
 // realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
-// build them (docs/design/). The sink fake runs a consumer on the test's thread: begin at configure's return, each
+// build them (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's
+// readiness deadline included (docs/engine.md#readiness-deadlines). The sink fake runs a consumer on the test's
+// thread: begin at configure's return (or, with holdSinks, at ready(bank)), each
 // chunk at once from the tap written after the fade in process(), stamped with the upstream latency the latency plan
 // gives its bank (the harness has no peers), finish at the close. The source fake is core's own SourceRing (every
 // source rule), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the code,
@@ -70,6 +72,7 @@ struct HarnessOptions {
 	NodeName node = "node";
 	RecordingAdapter* recordings = nullptr; // null: every recording is refused ("no recordings folder"); until 3c
 	bool autoComplete = true;               // fades acknowledged and barriers completed as soon as posted
+	bool holdSinks = false; // each sink's consumer begins only at ready(bank), not at configure's return
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -104,15 +107,19 @@ public:
 	void blockReady();
 	/// The fake block's PortBlockEvents::lost: T13.
 	void blockLost(std::string detail);
-	/// The engine companion on `bank` becomes ready; std::logic_error when none was made for it.
+	/// The newest companion on `bank` becomes ready: an engine companion is told ready; a sink held by holdSinks has
+	/// its consumer begin; a sink that began, or a source (ready when made), is ready already. std::logic_error when
+	/// no companion was made on `bank`, or the one made is no longer alive.
 	void ready(std::string_view bank);
-	/// The engine companion on `bank` is lost: the node fails engine-refused with `detail`.
+	/// The engine companion on `bank` is lost: the node fails engine-refused with `detail`. std::logic_error for a sink
+	/// or a source, which the framework never loses (their type's code says lost through the node's handle).
 	void lose(std::string_view bank, std::string detail);
 	/// With autoComplete off: the fade-out posted is acknowledged; the request posted (a drive or a silence) completes.
 	/// std::logic_error when none is pending.
 	void acknowledgeFade();
 	void completeBarrier();
-	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s).
+	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, and each
+	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s).
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances, each bound source first played into its bank's input buffers (its

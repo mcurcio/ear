@@ -80,11 +80,31 @@ as a live port.
 
 `Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates` (only
 the graph frequency); `default.clock.quantum`, `min-quantum` and `max-quantum` (all the block size);
-`clock.power-of-two-quantum = false`; and widens `default.clock.quantum-floor` (default 4) and
-`quantum-limit` (default 8192) so the block size fits. A block sees `clock.duration == block size`
-and `clock.rate.denom == graph frequency`. Both are fixed for the engine's life: `main.cpp` reads
+`clock.power-of-two-quantum = false`; widens `default.clock.quantum-floor` (default 4) so the block
+size fits; and sets `default.clock.quantum-limit` (default 8192) to the block size itself
+([the quantum guard](#the-quantum-guard)). A block sees `clock.duration == block size` and
+`clock.rate.denom == graph frequency`. Both are fixed for the engine's life: `main.cpp` reads
 `ear.conf` once before `Engine::create` and takes both values when both lines read, else the flags
 ([graph-file.md](graph-file.md#settings-applied-only-at-restart)).
+
+### The quantum guard
+
+The graph has one quantum and one rate, the driver's, and every block is made for at most the block
+size (`maxBlock`): a cycle longer than that the block cannot run, so it writes zeros. A node that
+carries `node.force-quantum` (or `node.force-rate`, `node.lock-quantum`, `node.lock-rate`) asks the
+driver for its own, and PipeWire clamps a forced quantum to `[quantum-floor, quantum-limit]`, not to
+`min-quantum`/`max-quantum`. So two guards keep every cycle at the block size:
+
+- **`quantum-limit` is the block size**, so even a forced quantum is clamped back to it
+  (`engine_test.cpp` forces four blocks on a node in the group: with the old limit of 8192 every
+  block stopped running; with the limit at the block size every cycle stays one block).
+- **No engine companion carries a force property.** ear builds every property it gives a card or a
+  receiver from closed grammars and sets none of these; `AlsaSoundCards`' test seam (its `extra`
+  properties) refuses each with `std::invalid_argument` rather than stripping it after the fact.
+
+Cards (the test card) and RTP receivers run at that limit, a receiver whose sender is at 44.1 kHz
+or 96 kHz into a 48 kHz graph included (`sound_card_test.cpp`, `rtp_receiver_test.cpp`). A real
+card's buffer at that limit is checked only on the hardware (the `ear-on-talos` skill).
 
 ### The internal clock
 
@@ -332,6 +352,30 @@ Engine companions are named `<node>.playback`, `<node>.capture` and `<node>.rtp`
 receiver's `latencyMs` enters the configuration's latency plan as `beyond` its bank
 ([latency](#latency-per-bank-pair)); a card reports its own through its links.
 
+### Readiness deadlines
+
+A node never waits for good on something that will never be ready. Each engine companion and each
+sink's consumer has a deadline from its request (configure's applied return), on the main loop's
+timers (`companions.hpp`: `cardReadinessBound` and friends, `readinessBound(kind)`); a source is
+ready when made and has none. The wait counts from the request, so time the block took to be ready
+counts too.
+
+| Kind | Deadline | Past it, the node fails |
+|---|---|---|
+| Sound card (either direction) | 10 s | `engine-refused: the card never started: <card id>` |
+| RTP receiver | 5 s | `engine-refused: the RTP receiver never ran (UDP port <port> held?)` |
+| A sink's consumer | 5 s | `start-failed: the sink <bank>'s consumer did not begin within 5 s` (its `begin` is the type's code) |
+
+Each deadline is an input of its own when its timer fires, and judges then: if its configuration is
+still the current one, still readying (not torn down, not failed) and the companion not ready, the
+node fails. Readiness heard first, even in the same main-loop turn, wins, and a companion's
+readiness cancels its timer. The failure tears the configuration down as any other: the flush
+destroys an engine companion made or not (destroying one tells nothing, so its `lost` never comes),
+and a sink is closed (a `begin` still running finishes first; the close deadline covers one that
+never returns). Meanwhile `waitingFor` shows `companion` or `consumer` after 2 s. A failed node is
+retried only by `node.start`, `node.restart` or a change until recovery is built; a USB card that
+takes longer than 10 s to start fails.
+
 ### Sound cards
 
 `AlsaSoundCards` makes one ALSA adapter node per direction:
@@ -410,8 +454,10 @@ because the engine may reuse the id.
 - **A port that cannot be bound is only logged** (`bind() failed: Address already in use`): the node
   is not put in ERROR, not removed, the module not destroyed (`module-rtp-source.c:369-386`,
   `module-rtp/stream.c:228-251`). With always-process the node never reaches RUNNING, so the `rtp`
-  node stays `configuring`, waiting for its companion. The module sets `SO_REUSEADDR`, so two receivers
-  on one port both bind.
+  node stays `configuring`, waiting for its companion, until the receiver's 5 s deadline fails it
+  `engine-refused: the RTP receiver never ran (UDP port <port> held?)`
+  ([readiness deadlines](#readiness-deadlines)). The module sets `SO_REUSEADDR`, so two receivers on
+  one port both bind.
 - **No packets is not a failure.** The module never destroys itself; after `cleanup.sec` without
   packets it sets the node property `rtp.receiving = false` (a bound node proxy sees it, the registry
   does not; `module-rtp-source.c:456-481`). ear does not read it.

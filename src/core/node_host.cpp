@@ -9,8 +9,10 @@
 // (legacy_instance.hpp). Its configure acquires only, through CreateContext (the class) or StartContext (the
 // legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
 // the return, and a configure that throws, fail the node start-failed. The engine companions it asked for are made
-// once the block is ready; once every resource is ready a legacy recipe builds the run object (T3), the code is
-// prepared, and once the block is ready it is driven by an asynchronous drive (T5), whose completion the block
+// once the block is ready; each of them and each sink's consumer has its kind's readiness deadline from the request,
+// past which the node fails (docs/engine.md#readiness-deadlines); once every resource is ready a legacy recipe
+// builds the run object (T3), the code is prepared, and once the block is ready it is driven by an asynchronous
+// drive (T5), whose completion the block
 // posts and NodeHost checks against the node's serial, its configuration's generation and the barrier number
 // before the machine hears it; then the instance's start() runs. Its stop() runs once before each silence that follows
 // a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). A configuration is silenced the
@@ -116,6 +118,19 @@ std::string_view engineSuffix(const SoundCardShape&, Direction bank) noexcept {
 	return bank == Direction::output ? "playback" : "capture";
 }
 std::string_view engineSuffix(const RtpReceiverShape&, Direction) noexcept { return "rtp"; }
+
+/// An engine companion's kind: a card's by its bank's direction.
+CompanionKind engineKind(const SoundCardShape&, Direction bank) noexcept {
+	return bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
+}
+CompanionKind engineKind(const RtpReceiverShape&, Direction) noexcept { return CompanionKind::rtpReceiver; }
+
+/// Why an engine companion that missed its readiness deadline failed its node (engine-refused,
+/// docs/engine.md#readiness-deadlines).
+std::string neverReady(const SoundCardShape& shape) { return "the card never started: " + shape.card.text(); }
+std::string neverReady(const RtpReceiverShape& shape) {
+	return "the RTP receiver never ran (UDP port " + std::to_string(shape.port) + " held?)";
+}
 
 /// The inside bank of this direction a companion joins; std::logic_error (a type bug) otherwise.
 const Ports::Bank& insideBank(const Ports& ports, const std::string& name, Direction direction, std::string_view what) {
@@ -566,6 +581,7 @@ struct NodeHost::Impl {
 					    index >= node.config_->engineCompanions.size())
 						return;
 					node.config_->engineCompanions[index]->isReady = true;
+					if (index < node.config_->engineDeadlines.size()) node.config_->engineDeadlines[index].reset();
 					node.checkReady(generation);
 					node.refreshWaiting();
 				});
@@ -701,9 +717,10 @@ struct NodeHost::Impl {
 			std::string bank;
 			std::unique_ptr<Sink> sink;
 			SinkBinding binding{};
-			bool given = false;  // consumedBy was called
-			bool begun = false;  // its consumer began (readiness 4')
-			bool closed = false; // its close reported
+			bool given = false;              // consumedBy was called
+			bool begun = false;              // its consumer began (readiness 4')
+			bool closed = false;             // its close reported
+			std::unique_ptr<Timer> deadline; // its consumer's readiness deadline, until it began
 
 		private:
 			Node* node_;
@@ -747,6 +764,7 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
+			std::vector<std::unique_ptr<Timer>> engineDeadlines; // per ask, until it is ready (null once it is)
 			std::unique_ptr<Timer> deadline;
 			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
 			std::chrono::steady_clock::time_point postedAt; // when that request was posted
@@ -1162,7 +1180,59 @@ struct NodeHost::Impl {
 			c.sourceBindings.reserve(c.sources.size());
 			for (const auto& slot : c.sources) c.sourceBindings.push_back(slot.binding);
 			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel->sinkBegunCall(i));
+			armReadinessDeadlines();
 			askResources();
+		}
+
+		/// Each engine companion and each sink's consumer has its kind's readiness deadline from its request
+		/// (docs/engine.md#readiness-deadlines); a source is ready when made. Each timer is an input of its own when it
+		/// fires and judges readiness then, so a ready heard first wins.
+		void armReadinessDeadlines() {
+			Configuration& c = *config_;
+			c.engineDeadlines.clear();
+			for (std::size_t i = 0; i < c.engineAsks.size(); ++i) {
+				const EngineAsk& asked = c.engineAsks[i];
+				const CompanionKind kind =
+					std::visit([&](const auto& shape) { return engineKind(shape, asked.target.bank); }, asked.shape);
+				c.engineDeadlines.push_back(host_.timers.after(*readinessBound(kind), [&host = host_, serial = serial_,
+				                                                                       generation = c.generation, i] {
+					host.inputFor(serial, [generation, i](Node& node) { node.engineDeadlinePassed(generation, i); });
+				}));
+			}
+			for (std::size_t i = 0; i < c.sinks.size(); ++i)
+				c.sinks[i]->deadline =
+					host_.timers.after(*readinessBound(CompanionKind::sink), [&host = host_, serial = serial_,
+				                                                              generation = c.generation, i] {
+						host.inputFor(serial, [generation, i](Node& node) { node.sinkDeadlinePassed(generation, i); });
+					});
+		}
+
+		/// The configuration of `generation` is the current one and still waits for its resources.
+		bool stillReadying(std::uint64_t generation) const {
+			return current(generation) && !config_->startFailed && !config_->tearing && !config_->recipeRan &&
+			       aggregate_.configuration().state() == lc::ConfigState::readying;
+		}
+
+		/// Engine companion `index` missed its deadline: unless it became ready meanwhile, the node fails
+		/// engine-refused with its kind's text, and the teardown destroys it in the flush, made or not (destroying it
+		/// tells nothing, so its lost() never comes).
+		void engineDeadlinePassed(std::uint64_t generation, std::size_t index) {
+			if (!stillReadying(generation) || index >= config_->engineAsks.size()) return;
+			Configuration& c = *config_;
+			if (index < c.engineCompanions.size() && c.engineCompanions[index]->isReady) return;
+			std::string detail =
+				std::visit([](const auto& shape) { return neverReady(shape); }, c.engineAsks[index].shape);
+			feed(aggregate_.fault(lc::Fact::engine, std::move(detail)));
+		}
+
+		/// Sink `index`'s consumer has not begun within its deadline: the node fails start-failed (its begin is the
+		/// type's code); the teardown closes the sink, which lets a begin still running finish first.
+		void sinkDeadlinePassed(std::uint64_t generation, std::size_t index) {
+			if (!stillReadying(generation) || index >= config_->sinks.size() || config_->sinks[index]->begun) return;
+			const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(sinkReadinessBound).count();
+			feed(aggregate_.fault(lc::Fact::consumerLost, "the sink " + config_->sinks[index]->bank +
+			                                                  "'s consumer did not begin within " +
+			                                                  std::to_string(seconds) + " s"));
 		}
 
 		/// A sink's consumer began (readiness 4'): with every engine companion ready too, every resource is.
@@ -1172,6 +1242,7 @@ struct NodeHost::Impl {
 				    index >= node.config_->sinks.size())
 					return;
 				node.config_->sinks[index]->begun = true;
+				node.config_->sinks[index]->deadline.reset();
 				node.checkReady(generation);
 				node.refreshWaiting();
 			});
@@ -1510,6 +1581,8 @@ struct NodeHost::Impl {
 					});
 			c.engineCompanions.clear();
 			c.engineAsks.clear();
+			c.engineDeadlines.clear();
+			for (auto& slot : c.sinks) slot->deadline.reset();
 			c.deadline =
 				host_.timers.after(host_.closeDeadline, [&host = host_, serial = serial_, generation = c.generation] {
 					host.inputFor(serial, [generation](Node& node) {

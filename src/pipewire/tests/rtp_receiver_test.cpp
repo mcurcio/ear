@@ -317,6 +317,29 @@ TEST_CASE("L16 sent at 44100 into the 48000 graph is resampled", "[rtp][channels
 	checkTwoTones(RtpPcm::l16, RtpEncoding::l16, 44100);
 }
 
+// docs/engine.md#the-quantum-guard: the quantum limit is the block size, so a receiver whose sender runs faster than
+// the graph must still fit a whole cycle's input in its buffers.
+TEST_CASE("L24 sent at 96000 into the 48000 graph is resampled with the quantum limit at the block size",
+          "[rtp][channels][quantum]") {
+	checkTwoTones(RtpPcm::l24, RtpEncoding::l24, 96000);
+}
+
+TEST_CASE("A receiver's engine node carries no property that forces or locks the graph's quantum or rate",
+          "[rtp][quantum]") {
+	Graph graph;
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, 44100, events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	REQUIRE(graph.registry.reread({"fpp.rtp"}));
+	const auto* props = graph.registry.props("fpp.rtp");
+	REQUIRE(props != nullptr);
+	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate"}) {
+		INFO(key);
+		CHECK_FALSE(props->contains(key));
+	}
+}
+
 TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]") {
 	Graph graph;
 	ReceiverEvents events(graph.waiter, graph.registry);

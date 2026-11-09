@@ -1,6 +1,6 @@
 ---
 name: ear-on-talos
-description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent or stays starting (configuring), or when a sendspin node in the pod is not found or loses its pairing.
+description: Running EAR's run image on a Talos Linux Kubernetes node with a USB sound card (the owner's MOTU 24Ao): the usb-audio-drivers extension and loading snd_usb_audio, Pod Security and SYS_NICE, /dev/snd and containerd's device ownership, CAP_SYS_NICE for realtime priority, the writable graph file volume and seeding ear.conf, setting the MOTU's rate and channel count, its Linux quirks (quirk flags, the playback channels rotated by 8, freezes), finding the card id, the checks to run on the hardware, getting FPP's RTP audio into the pod (a UDP Service for unicast, hostNetwork for multicast, PipeWire's module-rtp-sink as the sender), and a sendspin node in the pod (its key file under fsGroup, dialling, listening and mDNS). Use when deploying EAR to the cluster, when a card node fails on the hardware, when graph.get says "realtime": false in the pod, when an rtp node in the pod is silent, stays starting (configuring) or fails "never ran", or when a sendspin node in the pod is not found or loses its pairing.
 ---
 
 # EAR on Talos with a MOTU 24Ao
@@ -247,6 +247,14 @@ machine:
      playback. If they come, raise `api.alsa.headroom` (frames of extra buffer) or the period size
      (`api.alsa.period-size`) on the card's adapter; both are adapter properties, so a change is a
      code change to `AlsaCardBody` (`sound_cards.cpp`), not a graph setting yet.
+   - The quantum limit at the block size (`docs/engine.md#the-quantum-guard`; CI checks only the
+     test card): the MOTU opens, follows and plays with no more resyncs than before, and its playback
+     node's reported latency (one quantum plus headroom) is unchanged. ALSA sizes its buffer partly
+     from the limit, so a USB card is where a smaller limit could show. If it does not hold, the
+     fallback the design names is `max(block, 8192)` with only the force properties refused. NOT RUN.
+   - The card's readiness deadline: the MOTU must open, run and link within 10 s of its node's
+     configure (`docs/engine.md#readiness-deadlines`), or the node fails `engine-refused: the card
+     never started: <id>`. Time it from ear's records on a cold start. NOT RUN.
    - CPU: 24 resampled channels at 48 kHz on the node's CPU (`top -H` in the pod: the data thread),
      with and without the card linked.
    - Playback and capture of one card follow with two loops: their relative latency jitters by
@@ -297,9 +305,10 @@ owner, 2026-10-30: "If 100ms is the best rep can do, then so be it").
   Not tested anywhere yet, not even in CI.
 - **A busy port.** If another program on the same network (the node's, with `hostNetwork`)
   already holds the UDP port, the node stays `configuring` (state `starting`) with silent outputs:
-  PipeWire's log says why (`bind() failed: Address already in use`), and after 2 s ear says
-  `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get`'s `waitingFor`). Pick
-  another port.
+  PipeWire's log says why (`bind() failed: Address already in use`), after 2 s ear says
+  `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get`'s `waitingFor`), and after
+  5 s the node fails `engine-refused: the RTP receiver never ran (UDP port <port> held?)`. Pick
+  another port, or free it and `node.restart` the node.
 - **The sender: FPP's own PipeWire, `libpipewire-module-rtp-sink`** (if FPP's audio runs through
   PipeWire **[check]**). Its arguments must match the node: `destination.ip` = the Service's
   address (its default, `224.0.0.56`, is multicast), `destination.port` = the node's `port` (its

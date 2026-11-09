@@ -6,12 +6,14 @@
 #include <unistd.h>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <variant>
 #include <vector>
@@ -351,4 +353,40 @@ TEST_CASE("File: a restart finishes the old WAV and opens the new one", "[file]"
 	harness->remove();
 	checkFrames(readWav(dir.path() / "b.wav"), leftB, rightB);
 	CHECK(harness->droppedFrames() == 0);
+}
+
+// docs/engine.md#readiness-deadlines, on the harness's clock: with holdSinks the consumer begins only at ready(bank).
+TEST_CASE("File: a sink whose consumer has not begun within 5 s fails the node start-failed, and one that begins in "
+          "time runs",
+          "[file][deadline]") {
+	TempFolder dir{"deadline"};
+	Recordings recordings(dir.path());
+	auto harness = std::make_unique<Harness>(Harness::Options{.format = {.rate = 48000, .maxBlock = 256},
+	                                                          .node = "rec",
+	                                                          .recordings = recordings.adapter.get(),
+	                                                          .holdSinks = true});
+	REQUIRE_FALSE(harness->parse({{"path", "rec.wav"}}));
+	harness->add();
+	harness->blockReady();
+	CHECK(harness->phase() == "configuring");
+	CHECK_FALSE(harness->companion(file::writer).ready);
+	harness->node().advance(std::chrono::milliseconds(4'999));
+	CHECK(harness->phase() == "configuring");
+	SECTION("its consumer begins in time") {
+		harness->ready(file::writer);
+		CHECK(harness->companion(file::writer).ready);
+		CHECK(harness->phase() == "running");
+		harness->node().advance(std::chrono::milliseconds(10'000));
+		CHECK(harness->phase() == "running");
+	}
+	SECTION("its consumer never begins") {
+		harness->node().advance(std::chrono::milliseconds(1));
+		CHECK(harness->phase() == "failed");
+		REQUIRE(harness->health().reason);
+		CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+		CHECK(harness->health().reason->detail == "the sink writer's consumer did not begin within 5 s");
+		CHECK(harness->companion(file::writer).destroyed);
+	}
+	// A sink is never lost by the framework.
+	CHECK_THROWS_AS(harness->node().lose("writer", "x"), std::logic_error);
 }

@@ -5,6 +5,7 @@
 # headers declare.
 add_library(ear_core STATIC
 	command_error.cpp
+	companions.cpp
 	desired_graph.cpp
 	graph_status.cpp
 	legacy_instance.cpp

@@ -21,6 +21,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -342,6 +343,27 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 	CHECK(breaks == 0);
 	CHECK(rampSamples >= 16 * kBlock);
 	CHECK(samples[first] >= Code::kStep);
+}
+
+// docs/engine.md#the-quantum-guard: ear sets no force property on a card, and its test seam may not either.
+TEST_CASE("A card's engine node carries no property that forces or locks the graph's quantum or rate, and the extra "
+          "properties refuse each one",
+          "[cards][quantum]") {
+	Graph graph;
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	const auto card = graph.makeCard(cardId("Test"), events);
+	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	REQUIRE(graph.registry.reread({"card.playback"}));
+	const auto* props = graph.registry.props("card.playback");
+	REQUIRE(props != nullptr);
+	for (const char* key : {"node.force-quantum", "node.force-rate", "node.lock-quantum", "node.lock-rate"}) {
+		INFO(key);
+		CHECK_FALSE(props->contains(key));
+		CHECK_THROWS_AS(AlsaSoundCards(*graph.engine, AlsaSoundCards::Properties{{key, "1024"}}),
+		                std::invalid_argument);
+	}
+	CHECK_NOTHROW(AlsaSoundCards(*graph.engine, clocklessCardProperties()));
 }
 
 TEST_CASE("A card that cannot open is lost after make returns, its node already gone, and the "

@@ -389,6 +389,54 @@ TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
 	CHECK(recorder.samples().size() == recorder.calls() * kBlock);
 }
 
+// docs/engine.md#the-quantum-guard: the limit is the block size, so a node that forces a larger quantum cannot change
+// every block's cycle (one longer than a block's maxBlock would play as zeros).
+TEST_CASE("The quantum limit is the block size: a node forcing a larger quantum leaves every cycle at the block size",
+          "[engine][quantum]") {
+	auto engine = makeEngine();
+	const spa_dict* context = &pw_context_get_properties(engine->context())->dict;
+	REQUIRE(spa_dict_lookup(context, "default.clock.quantum-limit") != nullptr);
+	CHECK(std::string(spa_dict_lookup(context, "default.clock.quantum-limit")) == std::to_string(kBlock));
+
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Recorder recorder(waiter);
+	BlockEvents events(waiter);
+	auto sink = makeDriven(blocks, "rec", Ports{{{Direction::input, "record", {"left"}}}}, recorder, events);
+
+	struct Clock {
+		Waiter* waiter;
+		std::atomic<std::uint64_t> longest{0};
+		std::atomic<std::uint64_t> cycles{0};
+	} clock{&waiter};
+	pw_filter_events probeEvents{};
+	probeEvents.version = PW_VERSION_FILTER_EVENTS;
+	probeEvents.process = [](void* data, spa_io_position* position) {
+		auto* seen = static_cast<Clock*>(data);
+		if (position->clock.duration > seen->longest.load()) seen->longest.store(position->clock.duration);
+		seen->cycles.fetch_add(1);
+		seen->waiter->wake();
+	};
+	// What a companion must never carry (ear sets none): a forced quantum four blocks long, in the graph's group.
+	const std::string forced = std::to_string(4 * kBlock);
+	pw_filter* probe = pw_filter_new(engine->core(), "forcing-probe",
+	                                 pw_properties_new(PW_KEY_NODE_ALWAYS_PROCESS, "true", "node.force-quantum",
+	                                                   forced.c_str(), PW_KEY_NODE_GROUP, "ear.graph", nullptr));
+	REQUIRE(probe != nullptr);
+	spa_hook probeHook{};
+	pw_filter_add_listener(probe, &probeHook, &probeEvents, &clock);
+	REQUIRE(pw_filter_connect(probe, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) == 0);
+
+	const auto before = recorder.calls();
+	const bool ran = waiter.until(
+		[&] { return clock.cycles.load() >= 64 && events.readyCount > 0 && recorder.calls() >= before + 64; });
+	pw_filter_destroy(probe);
+	REQUIRE(ran);
+	CHECK(clock.longest.load() == kBlock);
+	CHECK(recorder.wrongFrames() == 0);
+}
+
 TEST_CASE("Destroying a sink block removes its ports and link, and it never processes again", "[engine]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);

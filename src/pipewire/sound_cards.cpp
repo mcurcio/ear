@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -147,7 +148,20 @@ private:
 
 } // namespace
 
-AlsaSoundCards::AlsaSoundCards(Engine& engine, Properties extra) : engine_(engine), extra_(std::move(extra)) {}
+namespace {
+/// The properties that would let one node change every block's quantum or rate (docs/engine.md#the-quantum-guard): ear
+/// sets none on a companion, and its test seam may not either.
+AlsaSoundCards::Properties refuseForceProperties(AlsaSoundCards::Properties extra) {
+	for (const auto& [key, value] : extra)
+		if (key == "node.force-quantum" || key == "node.force-rate" || key == "node.lock-quantum" ||
+		    key == "node.lock-rate")
+			throw std::invalid_argument("a sound card may not carry " + key + ": it would change every block's clock");
+	return extra;
+}
+} // namespace
+
+AlsaSoundCards::AlsaSoundCards(Engine& engine, Properties extra)
+	: engine_(engine), extra_(refuseForceProperties(std::move(extra))) {}
 
 AlsaSoundCards::Properties clocklessCardProperties() { return {{"clock.name", internalClockName}}; }
 

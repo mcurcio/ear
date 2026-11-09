@@ -249,29 +249,37 @@ TEST_CASE("node.restart of a card node on the test card brings it back without a
 	CHECK(out.find("node out running\n", stoppingLine) != std::string::npos);
 }
 
-TEST_CASE("An rtp node on a UDP port another socket holds writes a still record, and graph.get shows waitingFor",
+TEST_CASE("An rtp node on a UDP port another socket holds writes a still record, then fails engine-refused at its "
+          "receiver's readiness deadline",
           "[system][lifecycle][rtp]") {
 	TempDirectory directory;
 	const HeldUdpPort held;
-	writeGraphFile(directory, graphFileText("node rtp fpp { address \"0.0.0.0\"; port " + std::to_string(held.port()) +
+	const std::string port = std::to_string(held.port());
+	writeGraphFile(directory, graphFileText("node rtp fpp { address \"0.0.0.0\"; port " + port +
 	                                        "; format \"L24\"; channels 2; }\n"));
-	// The node configures for good: PipeWire only logs the failed bind, and its receiver never runs.
+	// PipeWire only logs the failed bind, and the receiver never runs: the node waits for it, says so after 2 s, and
+	// fails once the receiver's 5 s deadline passed (docs/engine.md#readiness-deadlines).
 	Ear ear(directory, {"node fpp still configuring after ", true});
-	const std::string& out = ear.process().output();
-	INFO("ear printed:\n" << out);
 	const auto still = ear.process().lineStartingWith("node fpp still configuring after ");
 	REQUIRE(still);
 	CHECK(still->ends_with("s: waiting for fpp.rtp"));
 	CHECK(std::stoi(still->substr(std::string("node fpp still configuring after ").size())) >= 2);
+	const auto failed = ear.process().waitForLineStartingWith("node fpp failed ", deadline);
+	const std::string& out = ear.process().output();
+	INFO("ear printed:\n" << out);
+	REQUIRE(failed);
+	const std::string reason = "the RTP receiver never ran (UDP port " + port + " held?)";
+	CHECK(*failed == "node fpp failed engine-refused: " + reason);
 	CHECK(out.find("node fpp running") == std::string::npos);
+	CHECK(out.find("node fpp still configuring after ") < out.find("node fpp failed "));
 
 	Rpc rpc(ear.port());
 	const json graph = rpc.call("graph.get")["result"];
 	INFO(graph.dump());
 	const json fpp = nodeNamed(graph, "fpp");
-	CHECK(fpp["state"] == "starting");
-	CHECK(fpp["phase"] == "configuring");
-	CHECK(fpp["waitingFor"] == json::array({{{"kind", "companion"}, {"name", "fpp.rtp"}}}));
+	CHECK(fpp["state"] == "failed");
+	CHECK(fpp["reason"] == json{{"code", "engine-refused"}, {"detail", reason}});
+	CHECK_FALSE(fpp.contains("waitingFor"));
 	CHECK(ear.stop(rpc) == 0);
 }
 

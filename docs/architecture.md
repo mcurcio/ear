@@ -228,8 +228,8 @@ or its removal). Recovery that retries by itself is not built yet.
 
 | Code | When |
 |---|---|
-| `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), or the data loop is wedged |
-| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin, its insides said `lost`, or a hook threw |
+| `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), an engine companion was not ready by its deadline (a card that never started, an RTP receiver on a held UDP port), or the data loop is wedged |
+| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin or did not begin within 5 s, its insides said `lost`, or a hook threw |
 | `lost` | After that: its insides said `lost`, or a hook threw |
 
 A lost **block** is final (`blockLost: true`): the node cannot be restarted (`not-restartable`,
@@ -253,6 +253,7 @@ Every wait the framework makes on another thread has a bound, so no node can hol
 | A configuration's teardown (sinks drained, threads stopped) | 10 s | `ear.close-overdue`; the configuration is leaked, never freed, and the node moves on |
 | A hook (`configure`, `start()`, `stop()`) on the main loop | 20 ms | `ear.hook-slow`, once per node and hook (a report only) |
 | A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`) |
+| An engine companion's or a sink's consumer's readiness, from its request | a card 10 s, an RTP receiver 5 s, a sink's consumer 5 s | The node fails: `engine-refused` for a card or receiver, `start-failed` for a consumer ([engine.md](engine.md#readiness-deadlines)) |
 
 **A wedged data loop.** Once ear judges the data loop wedged it makes no PipeWire call that could
 wait on it: no block, engine companion or link is made or destroyed, and no latency is told. A new
@@ -384,8 +385,7 @@ card does.
 
 These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
 settings in place without a restart (a type's change version of `configure` compiles but is
-never called); a sink's realtime side as its own engine node, readiness deadlines for cards and
-RTP receivers, and companions on the wire; `sendspin` on the type's class (it still runs through
+never called); a sink's realtime side as its own engine node, and companions on the wire; `sendspin` on the type's class (it still runs through
 the legacy adapter); recovery of failed nodes; sound cards opened off the main loop; an internal
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph

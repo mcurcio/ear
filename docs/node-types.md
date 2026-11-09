@@ -53,7 +53,8 @@ node file rec { path "take1.wav"; }
 - **How it writes.** It writes no audio code: the framework's pass-through copies `record` to its
   inside bank `writer`, whose sink holds 2 s of ring. The WAV is opened on the sink's own thread,
   never the main loop or the realtime thread; if libsndfile refuses it, the node fails
-  `start-failed: cannot open <path>: <reason>` before it is configured.
+  `start-failed: cannot open <path>: <reason>` before it is configured, and if the open has not
+  finished within 5 s, `start-failed: the sink writer's consumer did not begin within 5 s`.
 - **What it records.** Every cycle its code drove, sample for sample (its bank is never faded), and
   none while it is stopped: a stop closes nothing, a start appends again. The file is complete once
   its configuration is torn down (a restart, a disable, a removal, or ear stopping). A restart
@@ -90,7 +91,8 @@ node card mic  { card USB2; capture 1; }
 - The node is `running` once the card's PCM runs and every channel is linked. A card that cannot
   open, or is lost later (unplugged, a rate the kernel refuses, a link that fails), makes the node
   `failed engine-refused: <detail>`; its block and routes stay, and the rest of the graph keeps its
-  clock. There is no automatic retry: `node.restart` or `node.start` opens the card afresh, as
+  clock. A card that opens but whose PCM has not run within 10 s fails it `engine-refused: the card
+  never started: <card id>` ([engine.md](engine.md#readiness-deadlines)). There is no automatic retry: `node.restart` or `node.start` opens the card afresh, as
   does `node.update` with changed settings; an update with the same settings changes nothing.
 - A **stopped** card keeps its device open and plays the block's silence; a **disabled** one
   releases the device, so another program may use it.
@@ -131,10 +133,13 @@ node rtp fpp { address "0.0.0.0"; port 5004; format "L24"; channels 2; rate 4800
   A host name is refused because looking it up blocks the main loop (15 s for `fpp.local` once).
 - **No packets is not a failure.** With no sender the node is `running` and silent (its meters show
   it). A sender that restarts (a new SSRC) is heard again.
-- **A port another program holds** leaves the node `configuring` (state `starting`) for good with
-  silent outputs: PipeWire only logs the failed bind. After 2 s the node says `node fpp still
-  configuring after 2s: waiting for fpp.rtp`, and `graph.get` shows `waitingFor` `companion`
-  `fpp.rtp`. Two `rtp` nodes on one port both bind, and unicast packets reach only one.
+- **A port another program holds fails the node after 5 s.** PipeWire only logs the failed bind, so
+  the receiver never runs: the node stays `configuring` (state `starting`) with silent outputs, says
+  after 2 s `node fpp still configuring after 2s: waiting for fpp.rtp` (`graph.get` shows
+  `waitingFor` `companion` `fpp.rtp`), and once the receiver's 5 s readiness deadline passed it
+  fails `node fpp failed engine-refused: the RTP receiver never ran (UDP port 5004 held?)`
+  ([engine.md](engine.md#readiness-deadlines)). Free the port, then `node.start` or `node.restart`
+  retries it. Two `rtp` nodes on one port both bind, and unicast packets reach only one.
 - **A packet lost or out of order** resets the receiver, so about `latencyMs` of silence follows.
   Even one sending thread over loopback reorders packets under load.
 - **Channel limits:** a datagram longer than 1280 bytes is cut short and garbled, so 1 ms packets

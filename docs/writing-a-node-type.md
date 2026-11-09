@@ -194,7 +194,9 @@ cx.use(passThrough({bankPair(play, toCard), bankPair(fromRtp, stream)}));
 - The framework makes each one once the node's block is ready, in the order asked, and joins its
   channels to the bank's ports ([engine.md](engine.md#engine-companions)). The node is `running`
   only once every companion is ready; one that is lost, before or after, fails the node
-  `engine-refused: <detail>`, and the teardown removes it after the code's silence.
+  `engine-refused: <detail>`, and the teardown removes it after the code's silence. One not ready
+  within its kind's deadline (a card 10 s, a receiver 5 s, from the request) fails it too, with the
+  kind's text ([engine.md](engine.md#readiness-deadlines)); a type writes nothing for it.
 - A playback card's bank fades with the public outputs; a capture card's or receiver's input is
   never faded.
 - An inside bank has at most one companion of any kind (an engine companion, a sink, a source);
@@ -218,7 +220,9 @@ cx.use(passThrough({bankPair(record, writer)}));
   latency) beside them, and wakes the sink's own thread.
 - The `SinkConsumer` is called on the sink's own thread only, one call at a time: `begin()` once,
   before the node is `configured` (open what it writes to; a failure is `handle().lost(detail)`,
-  which fails the node `start-failed`); `consume(const Chunk&)` for each chunk in order;
+  which fails the node `start-failed`; one that has not returned within 5 s of configure's return
+  fails it `start-failed: the sink <bank>'s consumer did not begin within 5 s`,
+  [engine.md](engine.md#readiness-deadlines)); `consume(const Chunk&)` for each chunk in order;
   `finish()` once at the teardown, after the last chunk. None may throw. Each may block on I/O.
 - A sink takes exactly the cycles its code drove: a stop's silence ends them, a start begins them
   again; a stop closes nothing. A gap shows only in `Chunk::position`; `discontinuity` is set on the
@@ -355,11 +359,12 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete`, and `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
-| `h.ready(bank)`, `h.lose(bank, detail)` | The engine companion on `bank` becomes ready, or is lost |
+| `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
+| `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
 | `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the downstream latency the plan gives its bank), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |

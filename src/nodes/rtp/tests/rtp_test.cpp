@@ -2,6 +2,7 @@
 // receiver it asks for (docs/node-types.md#rtp;
 // docs/writing-a-node-type.md#testing-a-type: its class, over a real NodeHost). The engine side of a receiver
 // (RtpReceivers) is tested in src/pipewire/tests/rtp_receiver_test.cpp.
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -214,4 +215,27 @@ TEST_CASE("Rtp writes no audio code: the framework's pass-through carries from_r
 			for (std::uint32_t f = 0; f < frames; ++f) CHECK(out[f] == ramp(c, f));
 		}
 	}
+}
+
+// docs/engine.md#readiness-deadlines, on the harness's clock.
+TEST_CASE("Rtp: a receiver that never runs fails the node engine-refused after 5 s, naming its UDP port",
+          "[rtp][deadline]") {
+	auto harness = addedOk(settingsWith({{"port", 6000}}));
+	harness->advance(std::chrono::milliseconds(4'999));
+	CHECK(harness.phase() == "configuring");
+	harness->advance(std::chrono::milliseconds(1));
+	CHECK(harness.phase() == "failed");
+	REQUIRE(harness.health().reason);
+	CHECK(harness.health().reason->code == ear::FailureReason::Code::engineRefused);
+	CHECK(harness.health().reason->detail == "the RTP receiver never ran (UDP port 6000 held?)");
+	CHECK(harness.companion(rtp::fromRtp).destroyed);
+}
+
+TEST_CASE("Rtp: a receiver ready within 5 s keeps the node running past its deadline", "[rtp][deadline]") {
+	auto harness = addedOk(settingsWith());
+	harness->advance(std::chrono::milliseconds(4'999));
+	harness.ready(rtp::fromRtp);
+	CHECK(harness.phase() == "running");
+	harness->advance(std::chrono::milliseconds(60'000));
+	CHECK(harness.phase() == "running");
 }

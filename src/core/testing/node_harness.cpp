@@ -181,17 +181,26 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 
 	/// A sink whose consumer runs on the test's thread (docs/writing-a-node-type.md#testing-a-type): begin calls the
-	/// consumer's begin at once, then posts `begun`; the tap copies each chunk into its companion and hands it to the
-	/// consumer at once; close finishes a consumer that began, marks the companion destroyed and posts `closed(0)`.
+	/// consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap copies each chunk
+	/// into its companion and hands it to the consumer at once; close finishes a consumer that began, marks the
+	/// companion destroyed and posts `closed(0)`.
 	struct FakeSink final : Sink, SinkTap {
-		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {}
+		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {
+			harness.sinkFakes[index] = this;
+		}
+		~FakeSink() override { harness.sinkFakes.erase(index); }
 		SinkTap& tap() noexcept override { return *this; }
-		void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> begun) override {
+		void begin(std::unique_ptr<SinkConsumer> c, std::move_only_function<void()> b) override {
 			consumer = std::move(c);
+			begun = std::move(b);
+			if (!harness.options.holdSinks) runBegin();
+		}
+		/// The sink's thread runs the consumer's begin, then posts `begun`.
+		void runBegin() {
 			consumer->begin();
 			began = true;
 			harness.companionList.at(index).ready = true;
-			harness.executor.post(std::move(begun));
+			harness.executor.post(std::exchange(begun, nullptr));
 		}
 		void close(std::move_only_function<void(std::uint64_t)> closed) override {
 			if (began) consumer->finish();
@@ -219,6 +228,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::size_t index;
 		std::size_t channels;
 		std::unique_ptr<SinkConsumer> consumer;
+		std::move_only_function<void()> begun; // until its consumer begins
 		bool began = false;
 	};
 	struct FakeSinks final : SinkAdapter {
@@ -608,6 +618,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<CompanionFake> companionList;
 	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
 	std::vector<FakeSource*> sourceList;              // every source made, in order (a freed one dangles: unused)
+	std::map<std::size_t, FakeSink*> sinkFakes;       // each sink alive, by its companion's index
 	std::vector<std::uint64_t> handoffCounts;
 	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
@@ -677,6 +688,14 @@ void NodeHarness::blockLost(std::string detail) {
 void NodeHarness::ready(std::string_view bank) {
 	CompanionFake& fake = companion(bank);
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
+	if (fake.kind == CompanionKind::sink) {
+		const auto alive = impl_->sinkFakes.find(index);
+		if (alive == impl_->sinkFakes.end()) throw std::logic_error("no sink on " + std::string(bank) + " is alive");
+		if (!alive->second->began) alive->second->runBegin();
+		impl_->executor.pump();
+		return;
+	}
+	if (fake.kind == CompanionKind::source) return; // ready when made
 	EngineCompanionEvents* events = impl_->engineEvents.at(index);
 	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
 	fake.ready = true;
@@ -686,6 +705,9 @@ void NodeHarness::ready(std::string_view bank) {
 
 void NodeHarness::lose(std::string_view bank, std::string detail) {
 	CompanionFake& fake = companion(bank);
+	if (!isEngineKind(fake.kind))
+		throw std::logic_error("the " + std::string(companionKindName(fake.kind)) + " on " + std::string(bank) +
+		                       " is never lost by the framework: its type's code says lost through the node's handle");
 	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
 	EngineCompanionEvents* events = impl_->engineEvents.at(index);
 	if (events == nullptr) throw std::logic_error("no engine companion on " + std::string(bank) + " is alive");
