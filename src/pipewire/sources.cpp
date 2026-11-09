@@ -115,6 +115,7 @@ public:
 				writerWaits_.store(false, std::memory_order_relaxed);
 				return 0;
 			}
+			waiting();
 			room_.waitUntil(until);
 			writerWaits_.store(false, std::memory_order_relaxed);
 			// Closed while it waited: at once, accepting nothing (the loop's next look returns).
@@ -130,13 +131,19 @@ public:
 		ring_.markIdle();
 		// Nothing but a close writes the room descriptor while no writer says it waits; a stale write from before
 		// wakes it early once, and it waits again.
-		while (!ring_.closed() && std::chrono::steady_clock::now() < until) room_.waitUntil(until);
+		while (!ring_.closed() && std::chrono::steady_clock::now() < until) {
+			waiting();
+			room_.waitUntil(until);
+		}
 	}
 	void clear() noexcept override { ring_.clear(); }
 	bool closed() const noexcept override { return ring_.closed(); }
 	std::uint32_t capacityFrames() const noexcept override { return ring_.capacityFrames(); }
 	Played played() const noexcept override { return ring_.played(); }
 	Wake& playedWake() noexcept override { return playedWake_; }
+
+	/// EventSources::waitsBegun.
+	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
 
 private:
 	// SourceRing::Signals, inside play() on the realtime thread: at most one eventfd write each.
@@ -149,12 +156,19 @@ private:
 	/// A call after the close: accepts nothing and sleeps its whole patience, so a library thread calling in a loop
 	/// never spins. Only close() wrote the descriptor after the close, once; it is drained and slept on again.
 	std::uint32_t sleepClosed(std::chrono::steady_clock::time_point until) const noexcept {
-		while (std::chrono::steady_clock::now() < until) room_.waitUntil(until);
+		while (std::chrono::steady_clock::now() < until) {
+			waiting();
+			room_.waitUntil(until);
+		}
 		return 0;
 	}
+	/// The writer's thread, just before it waits on the room descriptor: past its last look at the ring, so only a
+	/// write of the descriptor (play freeing room, or the close) or its patience ends the wait.
+	void waiting() const noexcept { waitsBegun_.fetch_add(1, std::memory_order_release); }
 
 	EventFd room_;
 	std::atomic<bool> writerWaits_{false};
+	mutable std::atomic<std::uint64_t> waitsBegun_{0}; // a test seam: EventSources::waitsBegun
 	EventWake playedWake_;
 	SourceRing ring_; // last: its Signals are the members above
 };
@@ -166,6 +180,11 @@ std::unique_ptr<Source> EventSources::make(const NodeName& node, std::string_vie
 	static_cast<void>(node);
 	static_cast<void>(bank);
 	return std::make_unique<EventSource>(channels, capacityFrames, rate);
+}
+
+std::uint64_t EventSources::waitsBegun(const Source& source) noexcept {
+	const auto* made = dynamic_cast<const EventSource*>(&source);
+	return made != nullptr ? made->waitsBegun() : 0;
 }
 
 } // namespace ear::pipewire

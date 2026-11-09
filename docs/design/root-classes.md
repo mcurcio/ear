@@ -1,8 +1,9 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
 Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R4a built (section 4.5 says what
-changed from 4.3) and R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4); the rest designed, not
-built. Its steps are taken between slice 3b.4 and slice 3c
+changed from 4.3), R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4) and R5b built
+(`ear_pipewire_tests` audited, section 5.5); the rest designed, not built. Its steps are taken between slice 3b.4 and
+slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
 
@@ -443,6 +444,41 @@ each program proves keeps its rows.
   `src/core/include/ear/testing/` and `test/support/sendspin_server.py`; and `ear_output_tests`
   (`output_writer_test.cpp`'s 50 ms, the stall watch's) and `ear_folder_tests` (a skip under root) have entries the
   table lacks: they are given to R5d. `sleeps.txt` is the inventory; this table is not kept in step with it.
+
+### 5.5 Found building R5b
+
+`ear_pipewire_tests` has no `luck` or `owed` entry left in `test/sleeps.txt`; what each test now waits for or judges is
+in `docs/testing.md#making-the-rare-event`.
+
+- **S5 counted the source rule as a fault.** Under load (5 to 6 on 4 cores) it failed 2 runs in 20: a host stall over
+  42 ms made a position jump beyond B's 2,048-frame ring, which the source rule makes a new clock (nothing skipped,
+  played on from where the ring is), and the test counted that as drift and as a forbidden jump. B now records each new
+  clock, the model re-anchors there, D judges the frame B played at its position in that cycle, and the gate is that
+  every jump beyond the capacity, and nothing else, was a new clock to B. A planned stall cannot make such a jump on
+  every host (a fast one catches up by running every missed cycle: `port_block_test.cpp`'s stall test), so new clocks
+  are recorded, never required.
+- **"The clock did not jump here" is read from the cycles, three ways.** The sink's take-up compares the block's own
+  `xruns` at the code's first cycle with its last before the stop (the block counts them with no code driven); the
+  port block's take-ups ask whether the listener downstream heard consecutive positions there; the engine's ramp test
+  judges across a cycle boundary only on its recorder's clean cycles. Each repeats to a planned count of judged
+  take-ups or cycles (2, 1 and 5, 32), and what holds across a jump too is checked every time. The sink's two `WARN`s
+  became one stronger check: the sink's contiguous stretches equal the code's ledger's, jumps included.
+- **The hold ends on the test's release.** `Holding` held 8 ms at most ("under max_resync's 10 ms"); engine.conf's
+  resync.ms already lies beyond any stall, so the cap guarded nothing and only made the retry. It now holds until
+  released (5 s only fails the test); a hold or a host past the next cycle's start makes a jump, judged as above.
+- **"Stopped for a while" needed a second block.** A stopped block runs no code to count cycles with, so a block of
+  its own counts 8 graph cycles; the gap keeps the rounds' stretches apart in position.
+- **The writer's wait needed a product seam.** Nothing outside `EventSources` could see that a writer was waiting.
+  `EventSources::waitsBegun(source)` (the only product change) counts the waits begun, each past the writer's last
+  look at the ring; `source_test.cpp` waits for it before it plays or closes. Its three sleeps are gone (none is left
+  as a negative: once the writer waits, only a play, the close or its patience can end it), and so are the checks that
+  leaned on them (`took >= 40ms`, `>= 150ms`).
+- **More than the table named.** `port_block_test.cpp`'s first fade-in read `*frameAt(...)` for a position a jump can
+  skip (undefined behaviour, not a failure); it is judged as the second is.
+- **Left for later.** `source_test.cpp`'s "S5 part A on the real block" holds the same root class at a larger size:
+  `largestJump <= 8192` and no drift fail when a host stalls past its 8,192-frame ring (170 ms), and its
+  `shortfallFrames() == 0` and listener need the writer thread to keep up. It was not seen failing here; it takes the
+  same re-anchoring and a writer judged by its own progress, and is R5c's or a follow-up's.
 
 ## 6. Class 4: PipeWire properties
 

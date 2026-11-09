@@ -30,6 +30,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
+#include "inducers.hpp"
 
 namespace {
 using namespace ear;
@@ -470,31 +471,50 @@ namespace {
 /// One value per frame of the graph clock, nonzero and exact as a float.
 float rampAt(std::uint64_t frame) noexcept { return static_cast<float>((frame & 0xFFFFFFU) + 1U); }
 
-/// Writes rampAt(position + i) to every output (the sink's bank among them).
+/// Writes rampAt(position + i) to every output (the sink's bank among them), and records every cycle it runs in its
+/// ledger: the frames the sink must get are exactly those of these cycles.
 class PositionRamp final : public AudioCode {
 public:
-	explicit PositionRamp(ear::pipewire::testing::Waiter& waiter) : waiter_(waiter) {}
+	explicit PositionRamp(ear::pipewire::testing::Waiter& waiter, std::size_t capacity = 0)
+		: waiter_(waiter), ledger_(capacity) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs)
 			for (std::uint32_t i = 0; i < frames; ++i) out[i] = rampAt(cycle.position + i);
-		if (armed_.exchange(false, std::memory_order_acq_rel))
-			firstPosition_.store(cycle.position, std::memory_order_relaxed);
+		ledger_.record(cycle, frames); // a full ledger takes no more and says so: overflowed()
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
-	/// The next cycle records its position as the first after a take-up (read once calls() moved past it).
-	void arm() { armed_.store(true, std::memory_order_release); }
-	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_relaxed); }
+	/// The cycles it ran, up to the capacity it was made with.
+	const ear::test::CycleLedger& ledger() const { return ledger_; }
+
+private:
+	ear::pipewire::testing::Waiter& waiter_;
+	ear::test::CycleLedger ledger_;
+	std::atomic<std::uint64_t> calls_{0};
+};
+
+/// Silence on every output, counting the cycles it runs: the graph's cycles, seen by a block of its own while the
+/// block under test runs none of its code.
+class CycleCount final : public AudioCode {
+public:
+	explicit CycleCount(ear::pipewire::testing::Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		calls_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
 
 private:
 	ear::pipewire::testing::Waiter& waiter_;
 	std::atomic<std::uint64_t> calls_{0};
-	std::atomic<bool> armed_{false};
-	std::atomic<std::uint64_t> firstPosition_{0};
 };
 
 /// Records every chunk (on the sink's thread), and wakes the waiter.
@@ -529,15 +549,22 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
           "start, under an invoke storm",
           "[sink][blocks]") {
 	using ear::pipewire::testing::kFormat;
+	// The take-ups judged exactly, each a start after a stop whose first cycle the clock reached without a jump. A host
+	// that stalls the data thread across a take-up makes another round, never a pass or a failure.
+	constexpr std::size_t kJudgedStarts = 2;
+	constexpr std::size_t kMostRounds = 40; // only fails the test
+	/// Graph cycles a stop lasts, counted by a block of its own.
+	constexpr std::uint64_t kStoppedCycles = 8;
 	auto engine = ear::pipewire::testing::makeEngine();
 	ear::pipewire::testing::Waiter waiter(*engine);
 	ear::pipewire::testing::NoBell bell;
 	FilterPortBlocks blocks(*engine, bell);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
-	ear::pipewire::testing::BlockEvents events(waiter);
+	ear::pipewire::testing::BlockEvents events(waiter), clockEvents(waiter);
 	const Ports ports{{{Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
+	auto clock = blocks.make("clock", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, clockEvents);
 	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate, kFormat.rate);
 	auto owned = std::make_unique<RampConsumer>(waiter);
 	RampConsumer& consumer = *owned;
@@ -546,11 +573,13 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		begun = true;
 		waiter.wake();
 	});
-	REQUIRE(waiter.until([&] { return begun && events.isReady; }));
+	REQUIRE(waiter.until([&] { return begun && events.isReady && clockEvents.isReady; }));
+	CycleCount counting(waiter);
+	REQUIRE(ear::testing::driveNow(*clock, &counting));
 	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 2}};
-	PositionRamp ramp(waiter);
+	PositionRamp ramp(waiter, std::size_t{1} << 16);
 
-	std::vector<std::uint64_t> takens; // start, stop, start, stop
+	std::vector<std::uint64_t> takens; // per round: its start's position, then its stop's
 	std::size_t completed = 0;
 	const auto record = [&](bool keep) {
 		return [&, keep](std::uint64_t taken) {
@@ -569,18 +598,19 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 			if (i % 20 == 0) block->fadeOut([&] { waiter.wake(); });
 		}
 	};
-	// The position of the code's first cycle after each start, as the code itself saw it. Round 0 is the block's first
-	// drive with no cycle run before it (its takenAt says 0); round 1 follows a stop.
-	std::array<std::uint64_t, 2> firstRun{};
-	for (int round = 0; round < 2; ++round) {
-		INFO("round " << round);
-		ramp.arm();
+	// The ledger index of each round's first cycle: the code runs in no other block and not while stopped, so its next
+	// cycle after a start is that one. Round 0 is the block's first drive (its takenAt says where the block was, not
+	// judged); each later one follows a stop.
+	std::vector<std::size_t> firstCycle;
+	std::size_t judged = 0;
+	for (std::size_t round = 0; round < 2 || judged < kJudgedStarts; ++round) {
+		INFO("round " << round << ", " << judged << " take-ups judged so far");
+		REQUIRE(round < kMostRounds);
+		firstCycle.push_back(ramp.ledger().count());
 		block->drive(DriveRequest{&ramp, {}, bindings}, record(true));
 		++asked;
 		REQUIRE(waiter.until([&] { return completed == asked; }));
-		const std::uint64_t calls = ramp.calls();
-		REQUIRE(waiter.until([&] { return ramp.calls() >= calls + 4; }));
-		firstRun[static_cast<std::size_t>(round)] = ramp.firstPosition();
+		REQUIRE(waiter.until([&] { return ramp.calls() >= firstCycle.back() + 4; }));
 		storm();
 		REQUIRE(waiter.until([&] { return completed == asked; }, 20s));
 		const std::uint64_t later = ramp.calls();
@@ -588,9 +618,17 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		block->drive(DriveRequest{nullptr, {}}, record(true));
 		++asked;
 		REQUIRE(waiter.until([&] { return completed == asked; }));
-		// Stopped for a while: the block runs silent, the sink unbound.
-		std::this_thread::sleep_for(50ms);
+		// Stopped for kStoppedCycles of the graph's: the block runs silent, the sink unbound.
+		const std::uint64_t counted = counting.calls();
+		REQUIRE(waiter.until([&] { return counting.calls() >= counted + kStoppedCycles; }));
+		// The block counts a cycle that starts ahead of where its last one ended as an xrun, code or none: the same
+		// count at a round's first cycle as at the last before its stop means the clock reached the take-up without a
+		// jump.
+		const ear::test::CycleLedger& ledger = ramp.ledger();
+		REQUIRE_FALSE(ledger.overflowed());
+		if (round > 0 && ledger[firstCycle[round]].xruns == ledger[firstCycle[round] - 1].xruns) ++judged;
 	}
+	REQUIRE(ear::testing::driveNow(*clock, nullptr));
 	bool closed = false;
 	std::uint64_t dropped = ~0ULL;
 	sink->close([&](std::uint64_t d) {
@@ -601,13 +639,23 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	REQUIRE(waiter.until([&] { return closed; }));
 	CHECK(dropped == 0);
 	block.reset();
+	clock.reset();
 
-	REQUIRE(takens.size() == 4);
+	const std::size_t rounds = firstCycle.size();
+	REQUIRE(takens.size() == 2 * rounds);
+	REQUIRE_FALSE(ramp.ledger().overflowed());
+	const std::span<const ear::test::LedgerCycle> cycles = ramp.ledger().cycles();
 	const std::scoped_lock lock(consumer.mutex);
 	REQUIRE_FALSE(consumer.chunks.empty());
-	// Every frame the sink got is the ramp at its position, contiguous within each run, and each run is exactly
-	// [start's position, stop's position).
-	std::vector<std::pair<std::uint64_t, std::uint64_t>> runs; // [first, end) of each contiguous stretch
+	// Every frame the sink got is the ramp at its position, and its contiguous stretches are exactly those of the
+	// cycles the code ran: no cycle of the code's is lost or added across a stop, a start, a storm of drives, or a
+	// jump of the clock the host made (which splits both alike).
+	using Stretches = std::vector<std::pair<std::uint64_t, std::uint64_t>>; // [first, end) of each
+	const auto extend = [](Stretches& stretches, std::uint64_t position, std::uint64_t frames) {
+		if (!stretches.empty() && stretches.back().second == position) stretches.back().second += frames;
+		else stretches.emplace_back(position, position + frames);
+	};
+	Stretches heard, ran;
 	for (const Got& chunk : consumer.chunks) {
 		INFO("chunk at " << chunk.position);
 		REQUIRE(chunk.interleaved.size() == static_cast<std::size_t>(chunk.frames) * 2);
@@ -615,44 +663,29 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 			REQUIRE(chunk.interleaved[f * 2] == rampAt(chunk.position + f));
 			REQUIRE(chunk.interleaved[f * 2 + 1] == rampAt(chunk.position + f));
 		}
-		if (!runs.empty() && runs.back().second == chunk.position) runs.back().second += chunk.frames;
-		else runs.emplace_back(chunk.position, chunk.position + chunk.frames);
+		extend(heard, chunk.position, chunk.frames);
 	}
-	INFO("starts and stops taken at " << takens[0] << ", " << takens[1] << ", " << takens[2] << ", " << takens[3]
-	                                  << "; the code's first cycles at " << firstRun[0] << ", " << firstRun[1]);
-	if (runs.size() != 2) {
-		// The clock jumped (an xrun) inside a run: say so; the bounds below still hold.
-		WARN("the sink's frames came in " << runs.size() << " stretches: the graph clock jumped while it ran");
-	}
-	// None before the code's first cycle after a start, none after a stop's position.
-	for (const auto& [first, end] : runs) {
-		const bool inFirst = first >= firstRun[0] && end <= takens[1];
-		const bool inSecond = first >= firstRun[1] && end <= takens[3];
-		CHECK((inFirst || inSecond));
-	}
-	for (std::size_t round = 0; round < 2; ++round) {
+	for (const ear::test::LedgerCycle& cycle : cycles) extend(ran, cycle.position, cycle.frames);
+	INFO(rounds << " rounds, " << judged << " take-ups judged; the sink heard " << heard.size()
+	            << " stretches, the code ran " << ran.size());
+	CHECK(heard == ran);
+	for (std::size_t round = 0; round < rounds; ++round) {
 		INFO("round " << round);
-		const std::uint64_t stop = takens[2 * round + 1];
-		std::optional<std::uint64_t> first;
-		std::uint64_t end = 0;
-		for (const auto& [from, to] : runs)
-			if (from >= firstRun[round] && to <= stop) {
-				if (!first) first = from;
-				end = std::max(end, to);
-			}
-		REQUIRE(first.has_value());
-		// The sink's first frame is the code's first cycle after the start, always: the tap is bound in the same
-		// invoke as the code, so no cycle of it is lost or added.
-		CHECK(*first == firstRun[round]);
-		// Its last frame is the last the code wrote before its silence took effect, always.
-		CHECK(end == stop);
-		// The start's reported position is that first cycle's, unless the block had run no cycle yet (round 0) or the
-		// clock jumped right at the take-up (an xrun under load): the only excusable comparison.
+		const std::size_t first = firstCycle[round];
+		const std::size_t last = (round + 1 < rounds ? firstCycle[round + 1] : cycles.size()) - 1;
+		REQUIRE(first <= last);
 		const std::uint64_t start = takens[2 * round];
-		if (round == 1 && start != firstRun[round])
-			WARN("an xrun at the take-up: the start taken at " << start << ", its code's first cycle at "
-			                                                   << firstRun[round]);
-		if (round == 1) CHECK(start <= firstRun[round]);
+		const std::uint64_t stop = takens[2 * round + 1];
+		INFO("start taken at " << start << ", stop at " << stop << "; the code's first cycle at "
+		                       << cycles[first].position << ", its last ending at "
+		                       << cycles[last].position + cycles[last].frames);
+		// The stop's position is where the code's last cycle ended, always: the tap is unbound in the same invoke.
+		CHECK(cycles[last].position + cycles[last].frames == stop);
+		if (round == 0) continue;
+		// The start's position is its first cycle's when the clock reached it without a jump; a jump there (a stall
+		// the host made) only puts the first cycle later.
+		CHECK(start <= cycles[first].position);
+		if (cycles[first].xruns == cycles[first - 1].xruns) CHECK(start == cycles[first].position);
 	}
 }
 

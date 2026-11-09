@@ -1101,10 +1101,7 @@ public:
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
-		if (calls_.load(std::memory_order_relaxed) == 0) {
-			first_.store(cycle.position, std::memory_order_relaxed);
-			firstXruns_.store(cycle.xruns, std::memory_order_relaxed);
-		}
+		if (calls_.load(std::memory_order_relaxed) == 0) first_.store(cycle.position, std::memory_order_relaxed);
 		for (const std::span<float> out : outputs) {
 			for (std::uint32_t i = 0; i < frames; ++i) out[i] = rampAt(cycle.position + i);
 		}
@@ -1114,13 +1111,11 @@ public:
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
 	std::uint64_t first() const { return first_.load(std::memory_order_relaxed); }
-	std::uint64_t firstXruns() const { return firstXruns_.load(std::memory_order_relaxed); }
 
 private:
 	Waiter& waiter_;
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<std::uint64_t> first_{0};
-	std::atomic<std::uint64_t> firstXruns_{0};
 };
 
 /// Writes `value` to every output; once armed, sleeps 150 ms inside one process(), so requests made meanwhile reach the
@@ -1155,13 +1150,14 @@ private:
 /// A probe downstream of a block: records every frame its inputs received, with the frame's clock position.
 class Listener final : public ear::pipewire::testing::ProbeCode {
 public:
-	static constexpr std::size_t kCapacity = 6 * kRate;
-	Listener(Waiter& waiter, std::size_t inputs)
-		: waiter_(waiter), positions_(kCapacity), samples_(inputs, std::vector<float>(kCapacity)) {}
+	/// `capacity` frames: by default 6 s of them; a test that repeats a take-up until it has the clean ones it planned
+	/// gives itself more.
+	Listener(Waiter& waiter, std::size_t inputs, std::size_t capacity = 6 * kRate)
+		: waiter_(waiter), capacity_(capacity), positions_(capacity), samples_(inputs, std::vector<float>(capacity)) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
 	           std::uint32_t frames) noexcept override {
 		std::size_t n = count_.load(std::memory_order_relaxed);
-		for (std::uint32_t i = 0; i < frames && n < kCapacity; ++i, ++n) {
+		for (std::uint32_t i = 0; i < frames && n < capacity_; ++i, ++n) {
 			positions_[n] = clock.position + i;
 			for (std::size_t c = 0; c < samples_.size(); ++c) samples_[c][n] = inputs[c][i];
 		}
@@ -1172,20 +1168,21 @@ public:
 	std::uint64_t position(std::size_t n) const { return positions_[n]; }
 	float sample(std::size_t input, std::size_t n) const { return samples_[input][n]; }
 
+	/// Whether the frames recorded at [from, to] are at consecutive positions: the listener heard every cycle between
+	/// them, with no jump of the clock and none cut short before it.
+	bool contiguous(std::size_t from, std::size_t to) const {
+		for (std::size_t n = from; n < to; ++n)
+			if (positions_[n + 1] != positions_[n] + 1) return false;
+		return true;
+	}
+
 private:
 	Waiter& waiter_;
+	const std::size_t capacity_;
 	std::vector<std::uint64_t> positions_;
 	std::vector<std::vector<float>> samples_;
 	std::atomic<std::size_t> count_{0};
 };
-
-/// The first recorded frame at or after `from` whose position is `position`, or none.
-std::optional<std::size_t> frameAt(const Listener& listener, std::uint64_t position, std::size_t from = 0) {
-	for (std::size_t n = from; n < listener.count(); ++n) {
-		if (listener.position(n) == position) return n;
-	}
-	return std::nullopt;
-}
 
 const Ports oneOutput{{{Direction::output, "out", {"a"}}}};
 
@@ -1434,9 +1431,9 @@ TEST_CASE("A cycle too large to run counts as one that ended at zero", "[blocks]
 	CHECK(done.order == std::vector<int>{0, 1, 2, 3});
 }
 
-/// Writes `value` to every output; once armed, holds the data thread inside one process() until released or for 8 ms at
-/// most (under max_resync's 10 ms, so the driver does not resync and every cycle reaches the probes downstream), so
-/// requests made meanwhile reach the data loop together, in one invoke, before any further cycle.
+/// Writes `value` to every output; once armed, holds the data thread inside one process() until the test releases it
+/// (an event: once it has made its requests), so requests made meanwhile reach the data loop together, in one invoke,
+/// before any further cycle. Held 5 s unreleased, it lets go and says it overran, which only fails the test.
 class Holding final : public AudioCode {
 public:
 	Holding(Waiter& waiter, float value) : waiter_(waiter), value_(value) {}
@@ -1447,7 +1444,7 @@ public:
 		if (armed.exchange(false, std::memory_order_acq_rel)) {
 			holding.store(true, std::memory_order_release);
 			waiter_.wake();
-			const auto until = std::chrono::steady_clock::now() + 8ms;
+			const auto until = std::chrono::steady_clock::now() + 5s;
 			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until) {
 			}
 			overran.store(!released.load(std::memory_order_acquire), std::memory_order_release);
@@ -1459,7 +1456,7 @@ public:
 	std::atomic<bool> armed{false};
 	std::atomic<bool> holding{false};
 	std::atomic<bool> released{false};
-	std::atomic<bool> overran{false}; // the hold ended before the main thread released it
+	std::atomic<bool> overran{false}; // the hold ended unreleased: the test never released it
 
 private:
 	Waiter& waiter_;
@@ -1476,32 +1473,55 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 	Constant one(waiter, 1.0F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1);
+	Listener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("fader", oneOutput, kFormat, events);
 	const bool faded[] = {true};
 	REQUIRE(wiring.link(waiter, {"fader", "out.a"}, {"listener", "in.1"}));
 	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; })); // silent so far
 
-	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output.
-	block->drive(DriveRequest{&half, faded}, done.drive(1));
-	REQUIRE(waiter.until([&] { return done.has(1); }));
-	const std::uint64_t firstTaken = done.takens[0];
-	REQUIRE(waiter.until([&] { return frameAt(listener, firstTaken + kFade + kBlock).has_value(); }));
-	const std::size_t from = *frameAt(listener, firstTaken);
-	CHECK(listener.sample(0, from - 1) == 0.0F);
-	for (std::uint32_t k = 0; k <= kFade; ++k) {
-		INFO("fade-in frame " << k);
-		CHECK(listener.sample(0, from + k) == 0.5F * fadeGain(k));
+	// A drive fades in from 0: frame k after its position carries k / kFade of the code's output. Judged on a take-up
+	// the listener heard with no jump of the clock around it (see below); after a jump, silence and again.
+	int tag = 1;
+	for (int attempt = 0;; ++attempt) {
+		INFO("first fade-in, attempt " << attempt);
+		REQUIRE(attempt < 20); // only fails the test
+		block->drive(DriveRequest{&half, faded}, done.drive(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		const std::uint64_t firstTaken = done.takens.back();
+		REQUIRE(waiter.until([&] {
+			return listener.count() > 0 && listener.position(listener.count() - 1) > firstTaken + kFade + kBlock;
+		}));
+		std::size_t from = 0;
+		while (listener.position(from) < firstTaken) ++from;
+		if (from > 0 && listener.contiguous(from - 1, from + kFade + 1)) {
+			CHECK(listener.position(from) == firstTaken);
+			CHECK(listener.sample(0, from - 1) == 0.0F);
+			for (std::uint32_t k = 0; k <= kFade; ++k) {
+				INFO("fade-in frame " << k);
+				CHECK(listener.sample(0, from + k) == 0.5F * fadeGain(k));
+			}
+			CHECK(listener.sample(0, from + kFade + 1) == 0.5F);
+			break;
+		}
+		block->drive(DriveRequest{nullptr, {}}, done.drive(tag++));
+		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
+		const std::size_t silentFrom = listener.count();
+		REQUIRE(waiter.until([&] { return listener.count() >= silentFrom + 2 * kBlock; }));
 	}
-	CHECK(listener.sample(0, from + kFade + 1) == 0.5F);
 
-	// A fade-out and then a drive reach the data loop in one invoke, while it is held in one process(): the drive
-	// cancels the fade-out (its done never runs) and fades in from 0 again, whatever gain the fade-out had reached. A
-	// hold the main loop was too slow to use (a loaded host) is tried again.
-	int tag = 2;
-	bool held = false;
-	for (int attempt = 0; attempt < 10 && !held; ++attempt) {
+	// A fade-out and then a drive reach the data loop in one invoke, while it is held in one process() until both are
+	// made: the drive cancels the fade-out (its done never runs) and fades in from 0 again, whatever gain the fade-out
+	// had reached. Where the take-up falls and the fade-in's samples are judged when the listener heard the cycles
+	// around the take-up with no jump of the clock between them; a hold or a host that held the data thread past the
+	// next cycle's start makes such a jump, and another attempt, never a pass or a failure. The cancelled done is judged
+	// every time.
+	constexpr int kJudged = 1;
+	constexpr int kMostAttempts = 20; // only fails the test
+	int judged = 0;
+	for (int attempt = 0; judged < kJudged; ++attempt) {
+		INFO("attempt " << attempt);
+		REQUIRE(attempt < kMostAttempts);
 		half.released.store(false);
 		block->drive(DriveRequest{&half, faded}, done.drive(tag++));
 		REQUIRE(waiter.until([&] { return done.has(tag - 1); }));
@@ -1516,22 +1536,24 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 		block->drive(DriveRequest{&one, faded}, done.drive(driveTag));
 		half.released.store(true);
 		REQUIRE(waiter.until([&] { return done.has(driveTag); }));
-		if (half.overran.load()) {
-			WARN("the hold ended before both requests were made; again");
-			continue;
-		}
-		held = true;
+		REQUIRE_FALSE(half.overran.load());
 		const std::uint64_t taken = done.takens.back();
 		std::size_t again = heldAt;
 		REQUIRE(waiter.until([&] {
 			while (again < listener.count() && listener.sample(0, again) == 0.5F) ++again;
 			return again + kFade + kBlock < listener.count();
 		}));
-		CHECK(listener.position(again) == taken);
-		CHECK(listener.sample(0, again - 1) == 0.5F); // the old code at full gain up to the drive
-		for (std::uint32_t k = 0; k <= kFade; ++k) {
-			INFO("second fade-in frame " << k);
-			CHECK(listener.sample(0, again + k) == fadeGain(k));
+		REQUIRE(again > 0);
+		if (listener.contiguous(again - 1, again + kFade + 1)) {
+			++judged;
+			CHECK(listener.position(again) == taken);
+			CHECK(listener.sample(0, again - 1) == 0.5F); // the old code at full gain up to the drive
+			for (std::uint32_t k = 0; k <= kFade; ++k) {
+				INFO("second fade-in frame " << k);
+				CHECK(listener.sample(0, again + k) == fadeGain(k));
+			}
+		} else {
+			CHECK(listener.position(again) >= taken); // a jump only puts the first frame later
 		}
 		// The cancelled fade-out's done is dropped; a later fade-out is acknowledged as usual.
 		block->fadeOut(done.fade(tag++));
@@ -1539,10 +1561,13 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 		CHECK_FALSE(done.has(fadeTag));
 		CHECK(done.order.back() == tag - 1);
 	}
-	CHECK(held);
 }
 
 TEST_CASE("The published position is where the new code's first sample is", "[blocks][drive][async]") {
+	// Take-ups judged exactly: those the listener heard with no jump of the clock just before the code's first frame.
+	// A jump there (a host's stall) makes another round, never a pass or a failure.
+	constexpr int kJudged = 5;
+	constexpr int kMostRounds = 40; // only fails the test
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
@@ -1550,32 +1575,36 @@ TEST_CASE("The published position is where the new code's first sample is", "[bl
 	Wiring wiring(*engine, waiter);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1);
+	Listener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("source", oneOutput, kFormat, events);
 	REQUIRE(wiring.link(waiter, {"source", "out.a"}, {"listener", "in.1"}));
 	REQUIRE(waiter.until([&] { return listener.count() >= 4 * kBlock; }));
 
 	// Several take-ups, each a fresh code (a ramp by position), each between silences.
-	for (int round = 0; round < 5; ++round) {
-		INFO("round " << round);
+	int judged = 0;
+	for (int round = 0; judged < kJudged; ++round) {
+		INFO("round " << round << ", " << judged << " judged so far");
+		REQUIRE(round < kMostRounds);
 		PositionRamp ramp(waiter);
 		block->drive(DriveRequest{&ramp, {}}, done.drive(round * 2 + 1));
 		REQUIRE(waiter.until([&] { return done.has(round * 2 + 1) && ramp.calls() >= 2; }));
 		const std::uint64_t taken = done.takens.back();
 		CHECK(block->takenAt() == taken);
-		// The code's first cycle is at the published position, unless the clock jumped (an xrun) right there.
-		if (ramp.firstXruns() == 0 || ramp.first() == taken) {
+		// Downstream, the first frame heard from the code's first cycle on is the ramp's at its position.
+		REQUIRE(waiter.until(
+			[&] { return listener.count() > 0 && listener.position(listener.count() - 1) >= ramp.first(); }));
+		std::size_t first = 0;
+		while (listener.position(first) < ramp.first()) ++first;
+		CHECK(listener.sample(0, first) == rampAt(listener.position(first)));
+		if (listener.position(first) == ramp.first() && first > 0 && listener.contiguous(first - 1, first)) {
+			// No jump just before it: the code's first cycle is at the published position, and the frame before it
+			// is silent.
+			++judged;
 			CHECK(ramp.first() == taken);
+			CHECK(listener.sample(0, first - 1) == 0.0F);
 		} else {
-			WARN("an xrun at the take-up: first cycle at " << ramp.first() << ", published " << taken);
-		}
-		// Downstream, the first frame of the ramp is at the published position, and the frame before it is silent.
-		std::optional<std::size_t> first;
-		REQUIRE(waiter.until([&] { return (first = frameAt(listener, ramp.first())).has_value(); }));
-		CHECK(listener.sample(0, *first) == rampAt(ramp.first()));
-		if (*first > 0 && listener.position(*first - 1) + 1 == ramp.first()) {
-			CHECK(listener.sample(0, *first - 1) == 0.0F);
+			CHECK(ramp.first() >= taken); // a jump only puts the first cycle later
 		}
 		block->drive(DriveRequest{nullptr, {}}, done.drive(round * 2 + 2));
 		REQUIRE(waiter.until([&] { return done.has(round * 2 + 2); }));

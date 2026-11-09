@@ -290,7 +290,9 @@ with a writer waiting and the wake ringing. Once a stop's silence completed, `No
 source `stopped()` (its ring dropped); at a teardown's first step it closes each writer, and frees
 the sources after the instance. The rules a source plays by are
 [writing-a-node-type.md](writing-a-node-type.md#sources)'s; `EventSources` adds only the writer's
-wait (`poll` on an eventfd) and the played wake's eventfd.
+wait (`poll` on an eventfd) and the played wake's eventfd, and one test seam:
+`EventSources::waitsBegun(source)` counts the waits a writer began, each past its last look at the
+ring, so a test waits for "the writer is waiting" as an event ([testing.md](testing.md#the-tools)).
 
 ## Latency, per bank pair
 

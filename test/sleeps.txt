@@ -21,14 +21,6 @@
 induce | src/pipewire/tests/engine_test.cpp | while (!flag->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); | the wedge itself: an invoke that holds the data loop until the test lets it go
 induce | src/pipewire/tests/main_loop_executor_test.cpp | std::this_thread::sleep_for(std::chrono::milliseconds(900)); | the main-loop stall the watchdog must see, made on purpose
 induce | src/pipewire/tests/port_block_test.cpp | nanosleep(&stall, nullptr); | a 150 ms hold inside one process(), so the requests made meanwhile reach the data loop together
-luck | src/pipewire/tests/port_block_test.cpp | WARN("the hold ended before both requests were made; again"); | retries until the host was quick enough inside the hold; R5b: the hold ends on the test's release (an event), never a time
-luck | src/pipewire/tests/port_block_test.cpp | WARN("an xrun at the take-up: first cycle at " << ramp.first() << ", published " << taken); | an xrun at the take-up skips the check; R5b: judge over the ledger's clean cycles, to a planned count of take-ups
-luck | src/pipewire/tests/sink_test.cpp | std::this_thread::sleep_for(50ms); | 50 ms standing for the cycles a stopped block runs; R5b: wait for N cycles in the ledger
-luck | src/pipewire/tests/sink_test.cpp | WARN("the sink's frames came in " << runs.size() << " stretches: the graph clock jumped while it ran"); | tells of an xrun and goes on; R5b: judge over clean cycles, fail naming the event
-luck | src/pipewire/tests/sink_test.cpp | WARN("an xrun at the take-up: the start taken at " << start << ", its code's first cycle at " | an xrun at the take-up skips the check; R5b: judge over clean cycles, to a planned count
-negative | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(50ms); // the writer waits meanwhile | a write into a full ring must not return; R5b: taken after N cycles ran, not wall time
-luck | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(50ms); | stands in for "the writer is waiting" before the close; R5b: wait for the writer's own wait (an event), as feed_test.cpp does
-luck | src/pipewire/tests/source_test.cpp | std::this_thread::sleep_for(200ms); // it waits meanwhile, its deadline a year away | stands in for "the writer is waiting" before the close; R5b: wait for the writer's own wait (an event)
 induce | src/pipewire/tests/spikes_test.cpp | nanosleep(&twoSeconds, nullptr); | S2's 2 s data-loop stall, made on purpose
 pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | the invoke storm's rate between bursts of posts (the storm is the load S2 and S5 make on purpose)
 pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | S2's posts 200 us apart during the stall, so 3,000 of them span 0.6 s inside it

@@ -81,6 +81,18 @@ bool readable(int fd) {
 	return ::poll(&ready, 1, 0) == 1 && (ready.revents & POLLIN) != 0;
 }
 
+/// Until a writer of `source` has begun its first wait on the room (EventSources::waitsBegun): past its last look at
+/// the ring, so only a play that frees room, the close or its patience ends that wait. The writer's own event, where a
+/// sleep would only guess it had come; false past 10 s, which only fails the test.
+bool writerWaiting(const Source& source) {
+	const auto until = Clock::now() + 10s;
+	while (EventSources::waitsBegun(source) == 0) {
+		if (Clock::now() >= until) return false;
+		std::this_thread::yield();
+	}
+	return true;
+}
+
 std::int64_t threadCpuNs() {
 	timespec now{};
 	::clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
@@ -105,13 +117,12 @@ TEST_CASE("A source's write waits for room and is woken by play, and takes what 
 		took = Clock::now() - began;
 		returned.store(true);
 	});
-	std::this_thread::sleep_for(50ms); // the writer waits meanwhile
+	REQUIRE(writerWaiting(*source)); // the write found the ring full and waits for room
 	CHECK_FALSE(returned.load());
 	Bank bank(16);
 	source->tap().play(bank.view(), cycleAt(0, 16));
 	writing.join();
 	CHECK(accepted == 16);
-	CHECK(took >= 40ms);
 	CHECK(took < 5s); // woken by play, not by its patience
 }
 
@@ -145,7 +156,7 @@ TEST_CASE("A close wakes a waiting write at once, and a write or idle after it s
 		accepted = writer.write(ramp(64, 16), 16, 10s);
 		took = Clock::now() - began;
 	});
-	std::this_thread::sleep_for(50ms);
+	REQUIRE(writerWaiting(*source));
 	source->close();
 	writing.join();
 	CHECK(accepted == 0);
@@ -199,11 +210,11 @@ TEST_CASE("A write or an idle waiting with a patience of milliseconds::max() is 
 			took = Clock::now() - began;
 			cpuNs = threadCpuNs() - cpuBefore;
 		});
-		std::this_thread::sleep_for(200ms); // it waits meanwhile, its deadline a year away
+		REQUIRE(writerWaiting(*source)); // it waits, its deadline a year away
 		source->close();
 		waiting.join();
 		if (!idling) CHECK(accepted == 0);
-		CHECK(took >= 150ms);
+		CHECK(EventSources::waitsBegun(*source) == 1); // one wait, which the close ended
 		CHECK(took < 5s);
 		CHECK(cpuNs < 20'000'000);
 	}

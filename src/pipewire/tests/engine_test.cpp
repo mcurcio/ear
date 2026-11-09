@@ -37,6 +37,7 @@
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "inducers.hpp"
 
 namespace {
 using namespace ear;
@@ -113,15 +114,22 @@ private:
 	bool timedOut_ = false;
 };
 
-/// Records its first input's samples (up to a fixed capacity) and every block's frame count.
+/// Records its first input's samples (up to a fixed capacity) and every block's frame count, and each cycle whose
+/// samples it recorded whole in its ledger, with the index of its first sample.
 class Recorder final : public AudioCode {
 public:
-	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate) : waiter_(waiter), samples_(capacity) {}
+	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate)
+		: waiter_(waiter), samples_(capacity), ledger_(capacity / kBlock), cycleStart_(capacity / kBlock) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
-		std::size_t at = recorded_.load(std::memory_order_relaxed);
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		const std::size_t from = recorded_.load(std::memory_order_relaxed);
+		std::size_t at = from;
 		for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
+		if (at == from + frames && ledger_.count() < ledger_.capacity()) {
+			cycleStart_[ledger_.count()] = from; // before record() publishes the cycle
+			ledger_.record(cycle, frames);
+		}
 		recorded_.store(at, std::memory_order_release);
 		if (frames != kBlock) wrongFrames_.store(frames, std::memory_order_relaxed);
 		calls_.fetch_add(1, std::memory_order_release);
@@ -133,10 +141,15 @@ public:
 	std::uint32_t wrongFrames() const { return wrongFrames_.load(std::memory_order_relaxed); }
 	/// The recorded samples so far.
 	std::span<const float> samples() const { return {samples_.data(), recorded_.load(std::memory_order_acquire)}; }
+	/// The cycles recorded whole, and where cycle `n`'s samples begin in samples().
+	const ear::test::CycleLedger& ledger() const { return ledger_; }
+	std::size_t cycleStart(std::size_t n) const { return cycleStart_[n]; }
 
 private:
 	Waiter& waiter_;
 	std::vector<float> samples_;
+	ear::test::CycleLedger ledger_;
+	std::vector<std::size_t> cycleStart_;
 	std::atomic<std::size_t> recorded_{0};
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<std::uint32_t> wrongFrames_{0};
@@ -330,17 +343,35 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 	REQUIRE(pair.linkLog.failed.empty());
 	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink});
 
-	constexpr std::size_t kWanted = 32 * kBlock;
-	REQUIRE(waiter.until([&] {
-		const auto samples = pair.recorder.samples();
-		return samples.size() - std::min(firstSound(samples), samples.size()) >= kWanted;
-	}));
+	// The ramp counts its own cycles, so a cycle it ran and the recorder did not (cut short between them, which a host
+	// that stalls the data thread makes) moves the ramp on unheard: the recorder judges across a cycle boundary only
+	// where it ran the cycle straight after its last with nothing lost (its ledger's clean cycles), to a planned count
+	// of them. Within every cycle it heard, the ramp is whole.
+	constexpr std::size_t kWanted = 32; // clean cycles judged, after the first sound
+	const ear::test::CycleLedger& ledger = pair.recorder.ledger();
+	const auto judged = [&] {
+		const std::size_t first = firstSound(pair.recorder.samples());
+		std::size_t clean = 0;
+		for (std::size_t n = 0; n < ledger.count(); ++n)
+			if (ledger[n].clean && pair.recorder.cycleStart(n) > first) ++clean;
+		return clean;
+	};
+	REQUIRE(waiter.until([&] { return judged() >= kWanted; }, 30s));
 	const auto samples = pair.recorder.samples();
 	const std::size_t first = firstSound(samples);
-	std::size_t breaks = 0;
-	for (std::size_t i = first + 1; i < samples.size(); ++i) {
-		if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+	REQUIRE(first < samples.size());
+	std::size_t breaks = 0, unjudged = 0;
+	for (std::size_t n = 0; n < ledger.count(); ++n) {
+		const std::size_t start = pair.recorder.cycleStart(n);
+		const std::size_t end = start + ledger[n].frames;
+		if (end <= first + 1) continue;
+		for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
+			if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+		if (start <= first) continue;
+		if (!ledger[n].clean) ++unjudged; // a cycle lost before it: the boundary is not the ramp's to keep
+		else if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
 	}
+	INFO(unjudged << " cycle boundaries after a lost cycle, not judged");
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
 }

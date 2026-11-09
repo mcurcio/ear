@@ -55,6 +55,22 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   and waits until `clean()` reaches the number it planned.
 - **`StallingCode`** is an `AudioCode` that writes silence, records into its ledger and stalls at
   its plan's cycles (by ledger index).
+- **Judged to a planned count.** A check that holds only where the clock did not jump (a take-up's
+  first cycle at the published position, a ramp continuing across a cycle boundary) is judged where
+  the cycles themselves say so: a ledger's clean cycles, the block's own `xruns` unchanged since its
+  last cycle before the take-up, or a probe downstream that heard consecutive positions there. The
+  test repeats until it has judged the number it planned; a jump the host made is recorded and only
+  makes another round, and what holds across a jump too (a start never later than its first cycle,
+  a sink's stretches exactly the code's) is checked every time. A model of a rule the design defines
+  over jumps applies the rule: S5's source takes a jump beyond its capacity as a new clock and
+  re-anchors, as the source rule says, instead of counting a drift.
+
+### A writer's own event
+
+A test that needs a thread of ear's to be waiting waits for that thread's own signal, never a sleep
+that guesses it has started: `EventSources::waitsBegun(source)` counts the waits a source's writer
+began, each past its last look at the ring, so only a play, the close or its patience ends it
+([engine.md](engine.md#sources)). `source_test.cpp` waits for it before it plays or closes.
 
 ### A settled engine
 
