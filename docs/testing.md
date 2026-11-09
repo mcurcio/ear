@@ -63,14 +63,19 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   makes another round, and what holds across a jump too (a start never later than its first cycle,
   a sink's stretches exactly the code's) is checked every time. A model of a rule the design defines
   over jumps applies the rule: S5's source takes a jump beyond its capacity as a new clock and
-  re-anchors, as the source rule says, instead of counting a drift.
+  re-anchors, as the source rule says, instead of counting a drift. What excuses a jump is checked
+  against the engine, never taken from it: each jump must be time the raw clock shows was lost (within
+  two cycles and the driver's 1 ms clamp), so a host's stall is excused and an engine that jumps
+  further than time went fails.
 
 ### A writer's own event
 
 A test that needs a thread of ear's to be waiting waits for that thread's own signal, never a sleep
 that guesses it has started: `EventSources::waitsBegun(source)` counts the waits a source's writer
-began, each past its last look at the ring, so only a play, the close or its patience ends it
-([engine.md](engine.md#sources)). `source_test.cpp` waits for it before it plays or closes.
+began, each past its last look at the ring, so only a play, the close or its patience ends it, and
+`waitsWoken(source)` how many of them a play or the close ended rather than the patience
+([engine.md](engine.md#sources)). `source_test.cpp` waits for it before it plays or closes, and
+checks `waitDeadline(milliseconds::max())` is a year away.
 
 ### A settled engine
 

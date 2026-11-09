@@ -292,7 +292,9 @@ the sources after the instance. The rules a source plays by are
 [writing-a-node-type.md](writing-a-node-type.md#sources)'s; `EventSources` adds only the writer's
 wait (`poll` on an eventfd) and the played wake's eventfd, and one test seam:
 `EventSources::waitsBegun(source)` counts the waits a writer began, each past its last look at the
-ring, so a test waits for "the writer is waiting" as an event ([testing.md](testing.md#the-tools)).
+ring, `waitsWoken(source)` how many of them the room descriptor ended (a play or the close, not the
+patience), and `waitDeadline(patience)` is when a wait of that patience ends, so a
+test waits for "the writer is waiting" as an event ([testing.md](testing.md#a-writers-own-event)).
 
 ## Latency, per bank pair
 

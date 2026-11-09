@@ -46,13 +46,16 @@ public:
 		std::uint64_t rings = 0;
 		[[maybe_unused]] const auto ignored = ::read(fd_, &rings, sizeof rings);
 	}
-	/// Waits until it is written or `until` passes (at most `until`, whatever wakes it early), then drains it.
-	void waitUntil(std::chrono::steady_clock::time_point until) const noexcept {
+	/// Waits until it is written or `until` passes (at most `until`, whatever wakes it early), then drains it. True
+	/// if it was written.
+	bool waitUntil(std::chrono::steady_clock::time_point until) const noexcept {
 		const auto left = std::chrono::ceil<std::chrono::milliseconds>(until - std::chrono::steady_clock::now());
-		if (left.count() <= 0) return;
+		if (left.count() <= 0) return false;
 		pollfd ready{fd_, POLLIN, 0};
-		::poll(&ready, 1, static_cast<int>(std::min<std::chrono::milliseconds::rep>(left.count(), INT_MAX)));
+		const int got =
+			::poll(&ready, 1, static_cast<int>(std::min<std::chrono::milliseconds::rep>(left.count(), INT_MAX)));
 		drain();
+		return got == 1 && (ready.revents & POLLIN) != 0;
 	}
 
 private:
@@ -115,8 +118,7 @@ public:
 				writerWaits_.store(false, std::memory_order_relaxed);
 				return 0;
 			}
-			waiting();
-			room_.waitUntil(until);
+			waitRoom(until);
 			writerWaits_.store(false, std::memory_order_relaxed);
 			// Closed while it waited: at once, accepting nothing (the loop's next look returns).
 			if (ring_.closed()) return 0;
@@ -132,8 +134,7 @@ public:
 		// Nothing but a close writes the room descriptor while no writer says it waits; a stale write from before
 		// wakes it early once, and it waits again.
 		while (!ring_.closed() && std::chrono::steady_clock::now() < until) {
-			waiting();
-			room_.waitUntil(until);
+			waitRoom(until);
 		}
 	}
 	void clear() noexcept override { ring_.clear(); }
@@ -142,8 +143,9 @@ public:
 	Played played() const noexcept override { return ring_.played(); }
 	Wake& playedWake() noexcept override { return playedWake_; }
 
-	/// EventSources::waitsBegun.
+	/// EventSources::waitsBegun and waitsWoken.
 	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
+	std::uint64_t waitsWoken() const noexcept { return waitsWoken_.load(std::memory_order_acquire); }
 
 private:
 	// SourceRing::Signals, inside play() on the realtime thread: at most one eventfd write each.
@@ -157,18 +159,21 @@ private:
 	/// never spins. Only close() wrote the descriptor after the close, once; it is drained and slept on again.
 	std::uint32_t sleepClosed(std::chrono::steady_clock::time_point until) const noexcept {
 		while (std::chrono::steady_clock::now() < until) {
-			waiting();
-			room_.waitUntil(until);
+			waitRoom(until);
 		}
 		return 0;
 	}
-	/// The writer's thread, just before it waits on the room descriptor: past its last look at the ring, so only a
-	/// write of the descriptor (play freeing room, or the close) or its patience ends the wait.
-	void waiting() const noexcept { waitsBegun_.fetch_add(1, std::memory_order_release); }
+	/// The writer's thread: waits on the room descriptor, past its last look at the ring, so only a write of the
+	/// descriptor (play freeing room, or the close) or its patience ends the wait; counted for the test seams.
+	void waitRoom(std::chrono::steady_clock::time_point until) const noexcept {
+		waitsBegun_.fetch_add(1, std::memory_order_release);
+		if (room_.waitUntil(until)) waitsWoken_.fetch_add(1, std::memory_order_release);
+	}
 
 	EventFd room_;
 	std::atomic<bool> writerWaits_{false};
-	mutable std::atomic<std::uint64_t> waitsBegun_{0}; // a test seam: EventSources::waitsBegun
+	mutable std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: EventSources::waitsBegun and waitsWoken
+	mutable std::atomic<std::uint64_t> waitsWoken_{0};
 	EventWake playedWake_;
 	SourceRing ring_; // last: its Signals are the members above
 };
@@ -185,6 +190,15 @@ std::unique_ptr<Source> EventSources::make(const NodeName& node, std::string_vie
 std::uint64_t EventSources::waitsBegun(const Source& source) noexcept {
 	const auto* made = dynamic_cast<const EventSource*>(&source);
 	return made != nullptr ? made->waitsBegun() : 0;
+}
+
+std::uint64_t EventSources::waitsWoken(const Source& source) noexcept {
+	const auto* made = dynamic_cast<const EventSource*>(&source);
+	return made != nullptr ? made->waitsWoken() : 0;
+}
+
+std::chrono::steady_clock::time_point EventSources::waitDeadline(std::chrono::milliseconds patience) noexcept {
+	return deadlineAfter(patience);
 }
 
 } // namespace ear::pipewire

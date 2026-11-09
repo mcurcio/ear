@@ -1445,8 +1445,10 @@ public:
 			holding.store(true, std::memory_order_release);
 			waiter_.wake();
 			const auto until = std::chrono::steady_clock::now() + 5s;
-			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until) {
-			}
+			// Yields as it spins: a realtime data thread on one or two cores would otherwise keep the main thread, which
+			// releases it, from running at all.
+			while (!released.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < until)
+				std::this_thread::yield();
 			overran.store(!released.load(std::memory_order_acquire), std::memory_order_release);
 			holding.store(false, std::memory_order_release);
 		}

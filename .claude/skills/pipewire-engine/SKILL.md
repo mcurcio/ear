@@ -431,7 +431,9 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   after B, by planned overruns of 1.5 cycles inside the probe's `process` (`StallPlan` and
   `Stalls`, `docs/testing.md#making-the-rare-event`; never wait for a host to cut cycles short: a
   GitHub runner cut 9 in 60 s under the same load). Its played count keeps
-  to the clock across cut-short cycles (the skip-up-to-capacity rule absorbs every jump), and after
+  to the clock across cut-short cycles (a jump of at most the ring's capacity is skipped and counted;
+  one beyond it, which only a host's stall past 42 ms makes, is a new clock, where the test's model
+  re-anchors; each jump must be time the graph really lost, never an engine miscount), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then

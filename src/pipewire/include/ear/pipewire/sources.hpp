@@ -3,6 +3,7 @@
 // thread and its reader the port block's process (SourceTap::play). The eventfd wake moves to ear_runtime's EventWake
 // in slice 3c.
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -19,7 +20,13 @@ public:
 	                             std::uint32_t capacityFrames, std::uint32_t rate) override;
 	/// A test seam, any thread: how many waits on its room a writer of `source` (made by an EventSources; 0 for any
 	/// other) has begun, in write(), in idle() or after the close. A test waits for it to move, the writer's own event,
-	/// instead of sleeping for a time it guesses is long enough (docs/testing.md#the-rules).
+	/// instead of sleeping for a time it guesses is long enough (docs/testing.md#a-writers-own-event).
 	static std::uint64_t waitsBegun(const Source& source) noexcept;
+	/// A test seam, any thread: how many of those waits the room descriptor ended (a play that freed room, or the
+	/// close), not the patience.
+	static std::uint64_t waitsWoken(const Source& source) noexcept;
+	/// A test seam: when a wait of `patience` begun now ends (the patience clamped to [0, a year], so
+	/// milliseconds::max() is a year away, never an overflow).
+	static std::chrono::steady_clock::time_point waitDeadline(std::chrono::milliseconds patience) noexcept;
 };
 } // namespace ear::pipewire

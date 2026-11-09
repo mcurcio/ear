@@ -356,7 +356,9 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 			if (ledger[n].clean && pair.recorder.cycleStart(n) > first) ++clean;
 		return clean;
 	};
-	REQUIRE(waiter.until([&] { return judged() >= kWanted; }, 30s));
+	REQUIRE(waiter.until([&] { return judged() >= kWanted || ledger.full(); }, 30s));
+	INFO("the recorder filled its " << ledger.capacity() << " cycles before " << kWanted << " clean ones came");
+	REQUIRE_FALSE(ledger.full());
 	const auto samples = pair.recorder.samples();
 	const std::size_t first = firstSound(samples);
 	REQUIRE(first < samples.size());

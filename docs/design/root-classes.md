@@ -482,6 +482,12 @@ in `docs/testing.md#making-the-rare-event`.
   writer had not written them by the cycle before, by its own count of frames written, which the block's code logs.
   The listener is judged on the cycles the source played whole and unfaded, against the stream frames its count says
   it played, to a planned 1,000 of them. No item of the audit is left unowned.
+- **What excuses a jump is checked against the raw clock (review).** Re-anchoring alone gated only the test's own
+  arithmetic: a driver that jumped 64 cycles after a cut-short cycle would have passed as a "new clock". S5 and part A
+  now record each cycle's raw time (B's own read at entry; the block's `startRawNs`) and require every forward jump to
+  be time the raw clock shows was lost since the last cycle's end, within two cycles and the driver's 1 ms clamp
+  (idle: 0 and 5 frames at most). The writer's wait ended by the close is now told apart from one ended by its
+  patience (`waitsWoken`), and the year-long patience is checked directly (`waitDeadline`).
 
 ## 6. Class 4: PipeWire properties
 

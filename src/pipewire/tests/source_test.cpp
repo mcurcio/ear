@@ -214,10 +214,22 @@ TEST_CASE("A write or an idle waiting with a patience of milliseconds::max() is 
 		source->close();
 		waiting.join();
 		if (!idling) CHECK(accepted == 0);
-		CHECK(EventSources::waitsBegun(*source) == 1); // one wait, which the close ended
+		// One wait, and the close (the descriptor), not its patience, ended it.
+		CHECK(EventSources::waitsBegun(*source) == 1);
+		CHECK(EventSources::waitsWoken(*source) == 1);
 		CHECK(took < 5s);
 		CHECK(cpuNs < 20'000'000);
 	}
+}
+
+TEST_CASE("A wait's patience of milliseconds::max() ends a year away, never sooner and never by overflow", "[source]") {
+	const auto now = Clock::now();
+	const auto longest = EventSources::waitDeadline(std::chrono::milliseconds::max());
+	CHECK(longest - now >= std::chrono::hours(24 * 364));
+	CHECK(longest - now <= std::chrono::hours(24 * 366));
+	const auto none = EventSources::waitDeadline(std::chrono::milliseconds(-5)); // clamped to no patience
+	CHECK(none <= Clock::now());
+	CHECK(EventSources::waitDeadline(20ms) - now >= 20ms);
 }
 
 TEST_CASE("A source's played wake rings once until answered, and Played says what played", "[source]") {
@@ -728,7 +740,10 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	REQUIRE(waiter.until([&] { return driven; }));
 
 	struct Judged {
-		std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0;
+		std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0,
+					unlost = 0;
+		std::int64_t mostOverLost = std::numeric_limits<std::int64_t>::min();
+		std::string firstUnlost;
 		std::size_t shortWrong = 0, heard = 0, judged = 0, wrong = 0;
 		std::uint64_t largestJump = 0, excusedDry = 0;
 		std::string firstDrift, firstWrong;
@@ -750,6 +765,17 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 				++j.jumps;
 				jump = c.position - p->position - p->frames;
 				j.largestJump = std::max(j.largestJump, jump);
+				// The jump is time the graph really lost: the raw clock at this cycle's start had passed the last
+				// one's end by as much, within two cycles and the driver's 1 ms error clamp. A host's stall is
+				// excused that way; an engine that jumped further than time went is not.
+				const auto rawFrames =
+					static_cast<std::int64_t>(static_cast<__int128>(c.startRawNs) * kRate / 1'000'000'000);
+				const std::int64_t lost = rawFrames - static_cast<std::int64_t>(p->position + p->frames);
+				const std::int64_t over = static_cast<std::int64_t>(jump) - lost;
+				j.mostOverLost = std::max(j.mostOverLost, over);
+				if (over > static_cast<std::int64_t>(2 * kBlock + kRate / 1000) && j.unlost++ == 0)
+					j.firstUnlost = "at " + std::to_string(c.position) + ": jumped " + std::to_string(jump) +
+					                ", the raw clock " + std::to_string(lost) + " past the last end";
 			}
 			const bool beyond = jump > capacity;
 			if (beyond) ++j.beyond;
@@ -819,19 +845,23 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 		if (at >= first && at <= last && !std::ranges::binary_search(ran, at)) ++cutAfterUpstream;
 	std::printf("S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
 	            " frames, %zu beyond the ring's %u: %zu new clocks), %zu cut short after the upstream; %zu cycles the "
-	            "writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong\n",
+	            "writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong; jumps outran lost "
+	            "time by %" PRId64 " frames at most\n",
 	            j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.clocks, cutAfterUpstream,
-	            j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
+	            j.lagged, j.excusedDry, j.heard, j.judged, j.wrong, j.mostOverLost);
 	INFO(j.jumps << " jumps (largest " << j.largestJump << "), " << cutAfterUpstream
 	             << " cut short after the upstream, " << upstreamCode.slept() << " sleeps");
 	INFO(j.firstDrift);
+	INFO(j.firstUnlost << " (the most a jump outran lost time: " << j.mostOverLost << " frames)");
 	INFO(j.firstWrong);
 	REQUIRE(upstreamCode.slept() >= kCycles / 50 - 2);
 	// The block missed cycles its upstream ran (cut short after it, 2026-11-09: one per sleep), which is what this
 	// test is about.
 	CHECK(cutAfterUpstream > 0);
 	CHECK(j.jumps > 0);
-	// Every jump past the capacity, and nothing else, was a new clock to the source.
+	// Every jump was time the graph lost, and every jump past the capacity, and nothing else, was a new clock to the
+	// source.
+	CHECK(j.unlost == 0);
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);
