@@ -1,8 +1,8 @@
-// What a node type writes (docs/design/node-framework.md sections 7.1, 7.2 and 9.2, slice 2): one constexpr TypeSpec
-// (its settings table and its banks, each a compile-time constant with its name and direction) and one plain behaviour
-// class, made a NodeType by makeNodeType<spec, Behaviour>() from the type's one named function. The spec and the
-// behaviour live in the type's private header, src/nodes/<type>/<type>_spec.hpp, in its own named namespace, so its
-// tests run it through ear::testing::TypeHarness<spec, Behaviour> by the same bank handles:
+// What a node type writes, the spec half (docs/design/node-framework.md sections 7.1, 7.2 and 9.2, slice 2): one
+// constexpr TypeSpec (its settings table and its banks, each a compile-time constant with its name and direction), the
+// bank handles, Members for a class's ports(), Io for its code and bankPair for the framework's pass-through. The class
+// half (configure, its contexts, makeNodeType) is lifecycle.hpp's (docs/design/node-lifecycle-modules.md 3.6, D-M1),
+// which includes this header; a type's private header, src/nodes/<type>/<type>_spec.hpp, includes that one:
 //
 //   namespace ear::nodes::white {
 //   inline constexpr auto noise = bank::output<"noise">;
@@ -10,19 +10,24 @@
 //   struct WhiteCode { void process(Io<spec> io, const GraphCycle&) noexcept { for (auto ch : io[noise]) ...; } };
 //   struct White {
 //   	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
-//   	static StartResult start(StartContext&, const CheckedOf<spec>&) { return WhiteCode{}; }
+//   	Configured configure(CreateOf<spec>& cx, const CheckedOf<spec>&) {
+//   		cx.use(WhiteCode{});
+//   		return Configured::applied();
+//   	}
 //   };
 //   }
 //   std::unique_ptr<const NodeType> makeWhiteNodeType() { return makeNodeType<white::spec, white::White>(); }
 //
-// The behaviour may add `static std::expected<void, std::string> check(const CheckedOf<spec>&)`, a rule across
-// settings, which parse runs after the table's walk (a refusal is invalid-settings). Its code reads and writes only
-// through Io<spec>, which takes only the spec's bank handles: an output bank gives std::span<float> members, an input
-// bank std::span<const float> members, so a bank the spec lacks, a misspelt bank or a write into an input does not
-// compile. A bank handle is its name, direction and reach, nothing more: another type's bank with the same three is the
-// same handle, and Io resolves it by name against this node's ports, so it is sound. A code written against another
-// type's spec compiles but is refused at start (std::logic_error). A check, prepare or release is found by its name and
-// must then have exactly that signature. Every spec, row and bank list is declared in a named namespace (see TypeSpec).
+// Its code reads and writes only through Io<spec>, which takes only the spec's bank handles: an output bank gives
+// std::span<float> members, an input bank std::span<const float> members, so a bank the spec lacks, a misspelt bank or
+// a write into an input does not compile. A bank handle is its name, direction and reach, nothing more: another type's
+// bank with the same three is the same handle, and Io resolves it by name against this node's ports, so it is sound. A
+// code written against another type's spec compiles but is refused at `use` (the node fails). A prepare or release is
+// found by its name and must then have exactly that signature. Every spec, row and bank list is declared in a named
+// namespace (see TypeSpec).
+//
+// Interim until step L-4b: makeLegacyNodeType, the slice 2 maker of a spec type whose behaviour has a static start, kept
+// for `file` alone until it moves onto the sink (node-lifecycle-modules.md 4.5); it runs through the legacy adapter.
 // Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <algorithm>
@@ -65,7 +70,7 @@ template <std::size_t Count> consteval bool uniqueNames(const std::array<std::st
 }
 } // namespace spec_detail
 
-/// One bank's members, for a behaviour's ports(): numbered ("1".."n") or named.
+/// One bank's members, for a type's ports(): numbered ("1".."n") or named.
 struct MemberList {
 	std::vector<std::string> names;
 };
@@ -158,11 +163,11 @@ struct TypeSpec {
 };
 
 template <const auto& Spec> using SettingsOf = std::remove_cvref_t<decltype(Spec.settings)>;
-/// The settings a spec's table passed: what ports(), check() and start() read, by row (`s.get<row>()`).
+/// The settings a spec's table passed: what ports(), check() and configure() read, by row (`s.get<row>()`).
 template <const auto& Spec> using CheckedOf = typename SettingsOf<Spec>::Checked;
 template <const auto& Spec> using BanksOf = std::remove_cvref_t<decltype(Spec.banks)>;
 
-/// Every bank of a spec with its members: what a behaviour's ports() returns, {stream(members(n)), from(members(n))}.
+/// Every bank of a spec with its members: what a type's ports() returns, {stream(members(n)), from(members(n))}.
 /// Each bank of the spec once, in any order; a bank of another spec, or one left out, does not compile.
 template <const auto& Spec> class Members {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
@@ -267,7 +272,8 @@ template <class Process> struct ProcessOf {
 template <class Code, const auto& S> struct ProcessOf<void (Code::*)(Io<S>, const GraphCycle&) noexcept> {
 	static constexpr const auto& spec = S;
 };
-/// A code whose layout the type's config hands over: SpecConfig binds it to the node's ports after start.
+/// A code whose layout the type's config hands over: CreateOf::use binds it to the node's ports (and the legacy
+/// config, after its start).
 class BankBoundCode : public AudioCode {
 public:
 	virtual void bindPorts(const Ports& ports) noexcept = 0;
@@ -315,9 +321,10 @@ private:
 	typename Io<Spec>::Layout layout_;
 };
 
-template <const auto& Spec, class Behaviour> class SpecConfig final : public NodeConfig {
+/// The config makeLegacyNodeType's type makes (interim until step L-4b): slice 2's, whose start is the behaviour's.
+template <const auto& Spec, class Behaviour> class LegacySpecConfig final : public NodeConfig {
 public:
-	explicit SpecConfig(const CheckedOf<Spec>& settings)
+	explicit LegacySpecConfig(const CheckedOf<Spec>& settings)
 		: settings_(settings), ports_(Behaviour::ports(settings_).ports()) {}
 	const Ports& ports() const override { return ports_; }
 	StartResult start(StartContext& context) const override {
@@ -337,11 +344,9 @@ private:
 	Ports ports_;
 };
 
-/// The type makeNodeType makes. It derives from NodeType itself, handing it the spec's table at run time, not from
-/// NodeTypeOf<Spec.settings>: GCC 14 gives a template argument that names a subobject (or a variable template's
-/// specialization) external linkage whatever its object's, so two types' `spec.settings`, each in its own file's
-/// unnamed namespace, became one symbol and the linker kept one type's table for both.
-template <const auto& Spec, class Behaviour> class SpecNodeType final : public NodeType {
+/// The type makeLegacyNodeType makes (interim until step L-4b): slice 2's SpecNodeType over a behaviour with a static
+/// start, run through the legacy adapter. It derives from NodeType itself, as lifecycle.hpp's SpecNodeType does.
+template <const auto& Spec, class Behaviour> class LegacySpecNodeType final : public NodeType {
 	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
 #ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
 	static_assert(Spec.settings.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
@@ -357,7 +362,7 @@ template <const auto& Spec, class Behaviour> class SpecNodeType final : public N
 		}, "a behaviour has static StartResult start(StartContext&, const CheckedOf<spec>&)");
 
 public:
-	SpecNodeType() noexcept : NodeType(Spec.settings) {}
+	LegacySpecNodeType() noexcept : NodeType(Spec.settings) {}
 
 private:
 	/// The table's walk passed: the behaviour's check, a rule across settings, then the config.
@@ -371,7 +376,7 @@ private:
 				"a behaviour's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
 			if (auto checked = Behaviour::check(settings); !checked) return std::unexpected(std::move(checked.error()));
 		}
-		return std::make_unique<const SpecConfig<Spec, Behaviour>>(settings);
+		return std::make_unique<const LegacySpecConfig<Spec, Behaviour>>(settings);
 	}
 };
 } // namespace spec_detail
@@ -381,9 +386,10 @@ template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code) {
 	return std::make_unique<spec_detail::ErasedSpecCode<Process::spec, Code>>(std::move(code));
 }
 
-/// The type `Behaviour` gives `Spec`, called from the type's one named function. Its name, setting kinds and checks are
-/// the spec's table's, and (in a type's own library) the table must be named for the type's folder.
-template <const auto& Spec, class Behaviour> std::unique_ptr<const NodeType> makeNodeType() {
-	return std::make_unique<const spec_detail::SpecNodeType<Spec, Behaviour>>();
+/// Interim until step L-4b (`file` alone): the type a behaviour with a static StartResult start(StartContext&, const
+/// CheckedOf<spec>&) gives `Spec`, run through the legacy adapter (node-lifecycle.md 5.10). lifecycle.hpp's makeNodeType
+/// makes every other spec type, from its class.
+template <const auto& Spec, class Behaviour> std::unique_ptr<const NodeType> makeLegacyNodeType() {
+	return std::make_unique<const spec_detail::LegacySpecNodeType<Spec, Behaviour>>();
 }
 } // namespace ear

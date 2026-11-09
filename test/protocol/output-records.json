@@ -642,6 +642,20 @@
         ],
         "msg": "node fpp still configuring after 12s: waiting for the previous fpp, its consumer"
       }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a hook (configure, start or stop, named in its detail) ran past 20 ms on the main loop, said once per node and hook",
+      "record": {
+        "v": 1,
+        "seq": 76,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.hook-slow",
+        "ms": 31,
+        "detail": "configure ran 31 ms",
+        "msg": "node rec ear.hook-slow: configure ran 31 ms"
+      }
     }
   ]
 }

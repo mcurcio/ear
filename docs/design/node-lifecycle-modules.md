@@ -456,7 +456,7 @@ Each is a CTest case in `src/core/CMakeLists.txt` with this regex (GCC 14's word
 | `stop-wrong-signature` | `void stop(int)` | `a type's stop is void stop\(\)` |
 | `constructor-neither` | `explicit Type(int)` only | `a type's class is constructed from NodeOf<spec>& or from nothing` |
 | `legacy-start-on-spec-type` | `static StartResult start(StartContext&, const Checked&)` | `writes configure, not a static start` |
-| `change-version-before-3d` | `Changed configure(ChangeOf<spec>&, const Checked&, const Checked&)` | `the change version of configure is slice 3d's` |
+| `change-version-wrong-signature` | `Changed configure(ChangeOf<spec>&, Checked, Checked)` (D-M2 as amended: the right shape compiles, and the control writes it) | `a type's change version is Changed configure` |
 | `create-has-no-hold` | `cx.hold(out)` | `has no member named 'hold'` |
 | `create-has-no-when-ready` | `cx.whenReady(...)` | `has no member named 'whenReady'` |
 | `create-has-no-unclaim` | `cx.unclaim(...)` | `has no member named 'unclaim'` |
@@ -1089,3 +1089,47 @@ translation unit (not committed) compiled `white`, `card`, `rtp` and `file` as 3
 `lifecycle.hpp`, instantiated each `SpecInstance` and `TypeHarness`'s typed calls, and saw 3.10's refusals fire for a
 static `start`, the change version, a `configure` taking its settings by value, `int start()`, a constructor of neither
 kind, a sink on an input bank, `hold`, `Configured::restart` and a backwards `declareLatency`.
+
+### Found building L-4a (2026-11-09)
+
+What step L-4a had to change or decide beyond the declarations above, each the smallest change that works, with its
+reason. Nothing here changes a rule of a higher page.
+
+1. **`NodeHost::subscribeLog(LogSink&)`** (`node_host.hpp`, new). node-lifecycle.md 5.9's edge (D-L45) makes a `stop()`
+   that throws during a teardown a `log` record from source `ear`; `NodeHost` had no log seam, only its listeners.
+   `main.cpp` subscribes `StatusLog`; a test subscribes a sink of its own.
+2. **`makeLegacyNodeType<Spec, Behaviour>()`, `spec_detail::LegacySpecConfig` and `LegacySpecNodeType`**
+   (`type_spec.hpp`, interim, with their friend declarations in `node_type.hpp` and `settings_table.hpp`). `file` stays on
+   the legacy path until L-4b, but D-M1 moves `makeNodeType` to the class and `SpecInstance` refuses a static `start`;
+   these are slice 2's `SpecConfig`, `SpecNodeType` and `makeNodeType` renamed, run through the legacy adapter. L-4b
+   deletes them with `file`'s move.
+3. **`NodeHarness::latencyPlan()`** (`node_harness.hpp`, new): the fake block's last `LatencyPlan`. 3.8's harness had no
+   way to show what a configuration declared (slice 2's harness had `declaredLatency()`), so `rtp`'s latency test would
+   have lost its check.
+4. **`LegacyInstance::runObject()`** (private): the harness's `runObject()` reads it; the harness wraps each config it
+   parses so it sees the instance each configuration makes and when it goes (it observes no hook, D-M14).
+5. **`CreateContext::sink` before L-4b** refuses (`sink on bank "<bank>" is not built before step L-4b`, so a type that
+   asks fails `start-failed: configure threw: ...`): no `SinkAdapter` is in `ResourceRegistry` until L-4b, and no type
+   asks for a sink before it. `CompanionFake::Kind::sink` and `SeenChunk` stay declared, unused until then.
+6. **3.10's change-version row** was stale after D-M2's amendment (it still refused the right shape). Built as
+   `change-version-wrong-signature`, above; `type_spec_test.cpp` runs a class with the change version and sees a change
+   restart it.
+7. **3.4's example record** gave `msg` as `node rec ear.hook-slow ms=31: configure ran 31 ms`. `StatusLog`'s
+   `diagnostic` record puts no field in its `msg` and carries `detail` (as `ear.fade-unacknowledged` does), so the
+   fixture's case is `"ms":31,"detail":"configure ran 31 ms","msg":"node rec ear.hook-slow: configure ran 31 ms"`.
+8. **The rules' texts.** 3.3 has a context throw `"<node>: <call> outside configure"`, 3.2's table gives the failure's
+   detail as `<hook> threw: <call> outside configure`. Built as 3.2 says (no node name in the text: the record already
+   names the node). A failure from a hook is `<hook> threw: <what>` with the hook `configure`, `start` or `stop`; the
+   teardown's log text is 5.9's, `stop() threw: <what>`. A card's request naming another bank than its handle's:
+   `a sound card's request names bank "<x>", not "<bank>"`.
+9. **`NodeContext`'s name is a copy**, not a reference to the node's: a leaked configuration (I5a) may outlive its node,
+   and its instance's `NodeOf` with it.
+10. **Behaviour that changed, by D-M3.** A legacy type's bug at configure (a second engine object of a name, a bank of
+    the wrong kind, latency twice for a bank, a pass-through the ports refuse) was a `std::logic_error` thrown out of
+    `NodeHost`; it now fails the node `start-failed` (`configure threw: ...`, or `configure gave a pass-through: ...`),
+    and `node_host_test.cpp`'s cases say so. D-L40 (a legacy recipe beside an outside node) still throws, as built.
+11. **A configure that failed or threw keeps its recordings until step 5**, freed after its instance (5.9's edge), where
+    the slice 2 path closed them at once; its handoffs still go at once (their consumers may have gone with a legacy
+    start's result).
+12. **A `start()` that threw** is a fault carried out once its batch was: the `Tell` of `running` that batch held is
+    not told (4.2: it never reached running), so the node never shows `running` before `failed`.

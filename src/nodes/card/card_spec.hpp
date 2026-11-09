@@ -1,5 +1,5 @@
-// The "card" node type's spec and behaviour (docs/design/batch2.md section 4.4; docs/design/node-framework.md sections
-// 7.1, 7.6 and 11): private to the type, shared by card.cpp and its tests, which run it through
+// The "card" node type's spec and class (docs/design/batch2.md section 4.4; docs/design/node-framework.md sections
+// 6.10, 7.1, 7.6 and 11; docs/design/node-lifecycle-modules.md 3.9): private to the type, shared by card.cpp and its tests, which run it through
 // ear::testing::TypeHarness<spec, Card> by the same bank handles. In the type's own named namespace, never an unnamed
 // one (type_spec.hpp says why). Inputs "play.1".."play.N" pass straight through to the inside bank "to_card", which the
 // framework joins to the playback card's channels; the capture card's channels arrive on the inside bank "from_card"
@@ -10,7 +10,7 @@
 #include <expected>
 #include <string>
 
-#include "ear/core/type_spec.hpp"
+#include "ear/core/lifecycle.hpp"
 
 namespace ear::nodes::card {
 
@@ -40,14 +40,13 @@ struct Card {
 		return {};
 	}
 
-	static StartResult start(StartContext& context, const Checked& s) {
+	Configured configure(CreateOf<spec>& cx, const Checked& s) {
 		if (s.get<playbackRow>() > 0)
-			context.acquire(SoundCardRequest{
-				.card = s.get<cardRow>(), .direction = CardDirection::playback, .bank = std::string(toCard.name)});
+			cx.soundCard(toCard, SoundCardRequest{.card = s.get<cardRow>(), .direction = CardDirection::playback});
 		if (s.get<captureRow>() > 0)
-			context.acquire(SoundCardRequest{
-				.card = s.get<cardRow>(), .direction = CardDirection::capture, .bank = std::string(fromCard.name)});
-		return passThrough({bankPair(play, toCard), bankPair(fromCard, capture)});
+			cx.soundCard(fromCard, SoundCardRequest{.card = s.get<cardRow>(), .direction = CardDirection::capture});
+		cx.use(passThrough({bankPair(play, toCard), bankPair(fromCard, capture)}));
+		return Configured::applied();
 	}
 };
 

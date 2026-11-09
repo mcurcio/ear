@@ -1,126 +1,149 @@
-// Running a node type without PipeWire (docs/design/node-framework.md section 7.6, slice 2): the one way a type's own
-// tests and the all-type tests run it. NodeHarness takes any NodeType (the all-type tests get theirs from the generated
-// list, typeless); TypeHarness (type_harness.hpp) adds the spec's bank handles. On one thread, the test's, standing in
-// for the main loop and the realtime thread both: it parses settings and shows each refusal's text, calls start with
-// fake resources (outside nodes that become ready or are lost when the test says, handoffs that hand each write
-// straight to their consumer, recordings from a RecordingAdapter the test gives), builds the run object once every
-// resource is ready, steps the run's code over buffers it owns, captures the run's notes and facts, and closes the run
-// as the framework does (I5: release, outside nodes, handoffs, the run object).
+// Running a node type without PipeWire (docs/design/node-framework.md 7.6, the class's home;
+// docs/design/node-lifecycle-modules.md 3.8, the home of these declarations, step L-4a): one real NodeHost over in-memory
+// fakes (D-L11), so a type's tests and NodeHost cannot disagree on any rule. NodeHarness takes any NodeType by names (the
+// all-type tests get theirs from the generated list, typeless; the legacy types run through the legacy adapter);
+// TypeHarness (type_harness.hpp) adds the spec's bank handles. The test's thread stands in for the main loop and the
+// realtime thread both: every call pumps the harness's manual executor until nothing is queued, so each returns with the
+// transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and stop()
+// (D-M14): their pairing is node_host_test.cpp's. Differences from 7.6, each because 3a lacks the thing: no feed, held
+// or runLoops (3b, 3c, 3d); the sink fake arrives with step L-4b.
 #pragma once
-#include <condition_variable>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <variant>
 #include <vector>
+#include "ear/core/desired_graph.hpp"
 #include "ear/core/node_host.hpp"
-#include "ear/core/node_type.hpp"
+#include "ear/core/node_lifecycle.hpp"
+#include "ear/core/sink.hpp"
 namespace ear::testing {
-class NodeHarness final : private StartContext, private Ready {
+
+/// One chunk a sink's fake handed its consumer (on the test's thread, at once), copied. From step L-4b.
+struct SeenChunk {
+	std::vector<float> interleaved;
+	std::uint32_t frames;
+	ChunkStamp stamp;
+};
+
+/// What the fakes made for one engine object or sink the configuration asked for, by bank, in request order.
+struct CompanionFake {
+	enum class Kind { soundCard, rtpReceiver, sink };
+	Kind kind;
+	std::string bank;
+	NodeName engineName; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's "<node>.<bank>"
+	std::variant<SoundCardRequest, RtpReceiverRequest, SinkShape> request;
+	bool made = false;             // an outside node: the flush made it (the block was ready); a sink: at once
+	bool ready = false;            // an outside node: ready(bank) told it; a sink: its consumer began
+	bool destroyed = false;        // an outside node destroyed, or a sink closed (its consumer finished)
+	std::vector<SeenChunk> chunks; // a sink's, in order
+};
+
+/// One framework diagnostic the node got (NodeDiagnosticListener), in order.
+struct SeenDiagnostic {
+	std::string code;
+	std::string detail;
+	std::vector<std::pair<std::string, std::int64_t>> fields;
+};
+
+/// How a harness runs (outside the class, so a default argument can use its member initializers).
+struct HarnessOptions {
+	AudioFormat format = {.rate = 48000, .maxBlock = 256};
+	NodeName node = "node";
+	RecordingAdapter* recordings = nullptr; // null: every recording is refused ("no recordings folder"); until 3c
+	bool autoComplete = true;               // fades acknowledged and barriers completed as soon as posted
+};
+/// How add() adds the node.
+struct AddOptions {
+	bool disabled = false;
+};
+
+/// Any NodeType, by names.
+class NodeHarness {
 public:
-	enum class State { unparsed, parsed, starting, running, failed, closed };
-	/// `type` and `recordings` (null: every recording is refused, "no recordings folder") outlive the harness.
-	explicit NodeHarness(const NodeType& type, AudioFormat format = {.rate = 48000, .maxBlock = 256},
-	                     RecordingAdapter* recordings = nullptr, NodeName node = "node");
-	/// Closes a run left open.
+	using Options = HarnessOptions;
+	/// `type` and `options.recordings` outlive the harness.
+	explicit NodeHarness(const NodeType& type, Options options = {});
+	/// Removes a node left in the graph and runs its teardown to the end (completing what autoComplete left), so no
+	/// thread of a sink or a legacy run outlives the harness.
 	~NodeHarness();
 	NodeHarness(const NodeHarness&) = delete;
 	NodeHarness& operator=(const NodeHarness&) = delete;
 
 	// Settings.
-	/// The type's parse: nothing, or the refusal's whole text (InvalidSettings' detail, the node named).
-	std::expected<void, std::string> parse(const NodeSettings& settings);
-	/// The parsed node's ports, inside banks included. Only after a parse that passed (else std::logic_error).
+	/// The type's parse: nothing, or the refusal's whole text. The settings add() and change() use.
+	std::optional<std::string> parse(const NodeSettings& settings);
+	/// The parsed node's ports, inside banks included; std::logic_error before a parse that passed.
 	const Ports& ports() const;
 
-	// The run.
-	/// start() with this harness as its StartContext. A failure is returned (and is failure()); else the code is
-	/// prepared and, with no outside resource asked for, the recipe runs at once. Once per parse.
-	std::expected<void, FailureReason> start();
-	/// Every request start made, in order.
-	const std::vector<ResourceRequest>& requests() const noexcept { return requests_; }
-	/// Every latency start declared (StartContext::declareLatency), by bank, in order; refused as NodeHost refuses.
-	const std::vector<std::pair<std::string, Latency>>& declaredLatency() const noexcept { return latency_; }
-	/// The outside resources (sound cards, RTP receivers) among them, in order.
-	std::size_t outsideCount() const noexcept { return outside_.size(); }
-	/// The engine name the framework would give outside resource `index` ("<node>.<suffix>").
-	const NodeName& outsideName(std::size_t index) const { return outside_.at(index).name; }
-	/// Outside resource `index` runs: once every one does, the recipe builds the run object.
-	void ready(std::size_t index);
-	/// Outside resource `index` is lost: the node fails engine-refused with `detail`.
-	void lose(std::size_t index, std::string detail);
-	State state() const;
-	/// Why the node failed, while state() is failed.
-	std::optional<FailureReason> failure() const;
-	/// The run object the recipe built; null with none.
-	RunObject* runObject() const noexcept { return object_.get(); }
+	// Operations and the lifecycle's steps (node-framework.md 6.3), one call per transition.
+	using AddOptions = ear::testing::AddOptions;
+	/// T1 and, once the fake block is made, T2: NodeHost::nodeAdded; the instance made, configure called, readiness as
+	/// far as the fakes allow. {.disabled = true}: T19, nothing configured. std::logic_error after no or a refused parse.
+	void add(AddOptions options = {});
+	/// The fake block's PortBlockEvents::ready: T5 follows when wanted running (the drive, then start()).
+	void blockReady();
+	/// The fake block's PortBlockEvents::lost: T13.
+	void blockLost(std::string detail);
+	/// The outside node on `bank` becomes ready; std::logic_error when none was made for it.
+	void ready(std::string_view bank);
+	/// The outside node on `bank` is lost: the node fails engine-refused with `detail`.
+	void lose(std::string_view bank, std::string detail);
+	/// With autoComplete off: the fade-out posted is acknowledged; the request posted (a drive or a silence) completes.
+	/// std::logic_error when none is pending.
+	void acknowledgeFade();
+	void completeBarrier();
+	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s).
+	void advance(std::chrono::milliseconds by);
+	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
+	/// with a GraphCycle the harness advances; then the fade's gain on the faded outputs, as a real block applies it
+	/// (a 5 ms ramp from each drive, and to zero before each silence).
+	void process(std::uint32_t frames = 0);
+	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
+	/// stored on a disabled node). std::logic_error for settings the type refuses.
+	NodeOutcome change(const NodeSettings& settings);
+	LifecycleReply stop();    // NodeOperations::stop
+	LifecycleReply start();   // NodeOperations::start
+	LifecycleReply restart(); // NodeOperations::restart
+	void disable();           // nodeChanged, outcome disable (spec.disabled true)
+	void enable();            // nodeChanged, outcome enable
+	void remove();            // nodeRemoved
 
-	// Audio.
-	/// A port's buffer (public or inside), maxBlock frames: an input's to fill (zeros until written: an unlinked input),
-	/// an output's to read after process(). Throws std::logic_error for a port the node lacks.
+	// What the node shows.
+	NodeHealth health() const;           // as last told; std::logic_error before anything was told
+	std::string_view phase() const;      // phaseName of the last told health
+	bool gone() const noexcept;          // nodeGone was told
+	std::uint64_t droppedFrames() const; // nodeGone's count
+	const std::vector<std::string>& notes() const noexcept;
+	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
+
+	// Buffers and fakes.
+	/// A port's buffer (public or inside), maxBlock frames; std::logic_error for a port the node lacks.
 	std::span<float> input(std::string_view port);
 	std::span<const float> output(std::string_view port) const;
-	/// One cycle of `frames` (at most maxBlock) through the run's code. Every output is first filled with NaN, so
-	/// unwritten() shows a sample the code did not write.
-	void process(const GraphCycle& cycle, std::uint32_t frames);
 	/// Output samples of the last process() left unwritten (NaN), over every output port.
 	std::size_t unwritten() const;
-	/// Frames handed through handoff `index` (in request order) to its consumer.
+	/// The fade gain the fake block applied to `port` at the last sample of the last process() (1 when none).
+	float lastFadeGain(std::string_view port) const;
+	/// The latency plan the fake block was last given (PortBlock::carryLatency, with each drive; cleared at a
+	/// release): the pass-through's pairs and what configure declared. Empty before the first drive.
+	const LatencyPlan& latencyPlan() const noexcept;
+	const std::vector<CompanionFake>& companions() const noexcept;
+	/// The newest companion on `bank`; std::logic_error when none.
+	CompanionFake& companion(std::string_view bank);
+	/// Legacy only: frames handed through handoff `index` to its consumer, and the run object its recipe built.
 	std::uint64_t handoffFrames(std::size_t index) const;
-
-	// What the run tells, from any thread.
-	/// The run's notes (InsidesEvents::say), in order.
-	std::vector<std::string> notes() const;
-
-	/// The framework's teardown (I5): release(), the outside resources, each handoff's consumer finished, then the run
-	/// object closed and waited for (std::runtime_error past 10 s), then the code, the run object and the recordings
-	/// freed. Nothing of the run is heard after.
-	void close();
+	RunObject* runObject() const noexcept;
 
 private:
-	struct Outside {
-		NodeName name;
-		bool ready = false;
-	};
-	struct Handoff;
-	class Events;
-
-	// StartContext and Ready.
-	AudioFormat format() const override { return format_; }
-	const NodeName& node() const override { return node_; }
-	InsidesEvents& events() override;
-	Acquired acquireResource(const ResourceRequest& request) override;
-	void declareLatency(const std::string& bank, Latency internal) override;
-
-	void buildIfAllReady();
-	void fail(FailureReason reason);
-	void applyFacts();
-
-	const NodeType& type_;
-	AudioFormat format_;
-	RecordingAdapter* recordings_;
-	NodeName node_;
-	std::shared_ptr<const NodeConfig> config_;
-	State state_ = State::unparsed;
-	std::optional<FailureReason> failure_;
-	bool inStart_ = false;
-	bool inRecipe_ = false;
-	std::vector<ResourceRequest> requests_;
-	std::vector<std::pair<std::string, Latency>> latency_;
-	std::vector<Outside> outside_;
-	std::vector<std::unique_ptr<RecordingFile>> recordingFiles_;
-	std::vector<std::unique_ptr<Handoff>> handoffs_;
-	std::unique_ptr<AudioCode> code_;
-	RunRecipe recipe_;
-	std::unique_ptr<RunObject> object_;
-	std::shared_ptr<Events> events_;
-	std::vector<std::vector<float>> inputs_;  // inputs then inside inputs
-	std::vector<std::vector<float>> outputs_; // outputs then inside outputs
-	std::uint32_t lastFrames_ = 0;
+	struct Impl;
+	std::unique_ptr<Impl> impl_;
 };
+
 } // namespace ear::testing

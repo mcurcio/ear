@@ -26,7 +26,7 @@ enum class CardDirection { playback, capture };
 struct SoundCardRequest {
 	CardId card;
 	CardDirection direction;
-	std::string bank; // the inside bank it joins, channel i <-> the bank's port i: an inside output bank (playback)
-					  // or an inside input bank (capture) of this node; the bank's size is the channel count
+	std::string bank{}; // the inside bank it joins, channel i <-> the bank's port i: an inside output bank (playback)
+						// or an inside input bank (capture) of this node; the bank's size is the channel count
 };
 } // namespace ear

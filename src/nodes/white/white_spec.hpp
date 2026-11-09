@@ -1,18 +1,19 @@
-// The "white" node type's spec and behaviour (docs/design/m1-white-to-file.md section 2; docs/design/node-framework.md
-// sections 7.1 and 7.6): private to the type, shared by white.cpp and its tests, which run it through
-// ear::testing::TypeHarness<spec, White> by the same bank handles. In the type's own named namespace, never an unnamed
-// one (type_spec.hpp says why).
+// The "white" node type's spec and class (docs/design/m1-white-to-file.md section 2; docs/design/node-framework.md
+// sections 6.4, 6.10, 7.1 and 7.6; docs/design/node-lifecycle-modules.md 3.9): private to the type, shared by white.cpp
+// and its tests, which run it through ear::testing::TypeHarness<spec, White> by the same bank handles. In the type's
+// own named namespace, never an unnamed one (type_spec.hpp says why).
 #pragma once
 #include <cstdint>
 #include <random>
 #include <span>
 
-#include "ear/core/type_spec.hpp"
+#include "ear/core/lifecycle.hpp"
 
 namespace ear::nodes::white {
 
 inline constexpr auto noise = bank::output<"noise">;
 inline constexpr TypeSpec spec{.settings = SettingsTable<>{"white"}, .banks = Banks<noise>{}};
+using Checked = CheckedOf<spec>;
 
 struct WhiteCode {
 	std::mt19937 generator{std::random_device{}()};
@@ -33,8 +34,11 @@ struct WhiteCode {
 };
 
 struct White {
-	static Members<spec> ports(const CheckedOf<spec>&) { return {noise(members("mono"))}; }
-	static StartResult start(StartContext&, const CheckedOf<spec>&) { return WhiteCode{}; }
+	static Members<spec> ports(const Checked&) { return {noise(members("mono"))}; }
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		cx.use(WhiteCode{});
+		return Configured::applied();
+	}
 };
 
 } // namespace ear::nodes::white

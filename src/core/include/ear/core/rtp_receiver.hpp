@@ -38,7 +38,7 @@ struct RtpReceiverRequest {
 	std::uint32_t rate;      // the sender's rate, 8000-192000 Hz; resampled to the
 							 // graph frequency when it differs
 	std::uint32_t latencyMs; // target receive buffer, 1-1000
-	std::string bank;        // the inside input bank it joins, channel i <-> the bank's port i; the bank's size is the
+	std::string bank{};      // the inside input bank it joins, channel i <-> the bank's port i; the bank's size is the
 							 // stream's channel count, 1-64
 };
 } // namespace ear

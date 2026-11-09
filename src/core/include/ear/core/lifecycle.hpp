@@ -21,16 +21,18 @@
 //   static std::expected<void, std::string> check(const CheckedOf<spec>&);               optional, at parse
 //   explicit Type(NodeOf<spec>&);  or  Type();                                           one of the two
 //   Configured configure(CreateOf<spec>&, const CheckedOf<spec>&);                       required
-//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  slice 3d (refused until then)
+//   Changed configure(ChangeOf<spec>&, const CheckedOf<spec>&, const CheckedOf<spec>&);  optional; slice 3d's
 //   void start();  void stop();                                                          optional
 //
-// Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
-// returned is a std::logic_error naming the node and the call, thrown by NodeHost); NodeOf is valid for the instance's
-// life. The bodies in this header are forwarding and compile-time checks only; NodeHost implements the erased contexts.
+// The change version compiles (its signature checked) but slice 3a never calls it: every change of settings restarts
+// the node (node-lifecycle-modules.md D-M2, the owner's answer to Q1).
 //
-// Until step L-4a lands, nothing includes this header: type_spec.hpp's SpecConfig, SpecNodeType and makeNodeType still
-// run the slice 2 behaviour (a static start). L-4a moves those three here, after SpecInstance, rewritten as
-// node-lifecycle-modules.md 3.6 says, and gives NodeConfig its make (3.5).
+// Every call here is on the main loop. CreateOf is valid only inside the configure it is handed to (a call after it
+// returned is a std::logic_error naming the call, "<call> outside configure", thrown by NodeHost); NodeOf is valid for
+// the instance's life. A rule the type breaks at a call or at configure's return fails the node start-failed with the
+// rule's text, never escaping NodeHost (D-M3). The bodies in this header are forwarding and compile-time checks only;
+// NodeHost implements the erased contexts. SpecConfig, SpecNodeType and makeNodeType, at the end, make a type of the
+// class (node-lifecycle-modules.md 3.6, D-M1).
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -46,11 +48,6 @@
 #include "ear/core/sink.hpp"
 #include "ear/core/type_spec.hpp"
 namespace ear {
-
-/// The node's code, as `cx.use` takes it: a type's own (an AudioCode, or a code written against its spec) or the
-/// framework's passThrough. L-4a renames node_type.hpp's RunCode to NodeCode and keeps `using RunCode = NodeCode;`
-/// there for sendspin's legacy start until slice 3c (D-L13); this alias goes then.
-using NodeCode = RunCode;
 
 // ---- Answers ----
 
@@ -237,8 +234,9 @@ private:
 	CreateContext* context_;
 };
 
-/// configure for a change (T9; node-framework.md 6.10). Slice 3d defines it; in 3a every change restarts, and a class
-/// that writes the change version does not compile (node-lifecycle-modules.md D-M2, question Q1).
+/// configure for a change (T9; node-framework.md 6.10). Slice 3d defines it. In 3a a class may write the change
+/// version (its signature is checked), and it is never called: every change restarts the node
+/// (node-lifecycle-modules.md D-M2, the owner's answer to Q1).
 template <const auto& Spec> class ChangeOf;
 
 // ---- The erased instance ----
@@ -298,10 +296,19 @@ template <const auto& Spec, class Type> class SpecInstance final : public Erased
 	static_assert(
 		requires { static_cast<Configured (Type::*)(CreateOf<Spec>&, const Checked&)>(&Type::configure); },
 		"a type's class has Configured configure(CreateOf<spec>&, const CheckedOf<spec>&)");
-	static_assert(
-		!requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
-			type.configure(change, settings, settings);
-		}, "the change version of configure is slice 3d's: in 3a every change restarts the node");
+	// The change version: optional, never called in 3a (D-M2); once it is callable, its signature is exactly this.
+	static constexpr bool hasChange = requires(Type& type, ChangeOf<Spec>& change, const Checked& settings) {
+		type.configure(change, settings, settings);
+	};
+	static consteval bool changesExactly() {
+		if constexpr (hasChange)
+			return requires {
+				static_cast<Changed (Type::*)(ChangeOf<Spec>&, const Checked&, const Checked&)>(&Type::configure);
+			};
+		else return true;
+	}
+	static_assert(changesExactly(), "a type's change version is Changed configure(ChangeOf<spec>&, const "
+	                                "CheckedOf<spec>&, const CheckedOf<spec>&)");
 	static constexpr bool hasStart = requires { &Type::start; };
 	static constexpr bool hasStop = requires { &Type::stop; };
 	static consteval bool startsExactly() {
@@ -337,6 +344,58 @@ private:
 	const Checked& settings_;
 	Type type_; // after node_, which it may keep
 };
+
+/// The config makeNodeType's type makes (node-lifecycle-modules.md 3.6): the checked settings and the ports, and an
+/// instance of the class for each configuration. It has no start: NodeConfig's default throws, and nothing calls it.
+template <const auto& Spec, class Type> class SpecConfig final : public NodeConfig {
+public:
+	explicit SpecConfig(const CheckedOf<Spec>& settings)
+		: settings_(settings), ports_(Type::ports(settings_).ports()) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
+		return std::make_unique<SpecInstance<Spec, Type>>(node, settings_);
+	}
+
+private:
+	CheckedOf<Spec> settings_;
+	Ports ports_;
+};
+
+/// The type makeNodeType makes. It derives from NodeType itself, handing it the spec's table at run time, not from
+/// NodeTypeOf<Spec.settings>: GCC 14 gives a template argument that names a subobject (or a variable template's
+/// specialization) external linkage whatever its object's, so two types' `spec.settings`, each in its own file's
+/// unnamed namespace, became one symbol and the linker kept one type's table for both.
+template <const auto& Spec, class Type> class SpecNodeType final : public NodeType {
+	static_assert(linkage::named<Spec>, "a spec is declared in a named namespace, never an unnamed one");
+#ifdef EAR_NODE_TYPE_NAME // ear_node_type() (cmake/NodeType.cmake) gives a type's library its folder's name
+	static_assert(Spec.settings.name() == EAR_NODE_TYPE_NAME, "a type's table is named for its folder");
+#endif
+	using Checked = CheckedOf<Spec>;
+	static_assert(sizeof(SpecInstance<Spec, Type>) > 0); // the class's checks, at makeNodeType
+
+public:
+	SpecNodeType() noexcept : NodeType(Spec.settings) {}
+
+private:
+	/// The table's walk passed: the class's check, a rule across settings, then the config.
+	MadeConfig makeConfig(const NodeName&, CheckedSettings walked) const override {
+		const Checked settings(std::move(walked));
+		// Found by name, then held to its exact signature, so a check taking its settings by another type is refused
+		// rather than never run.
+		if constexpr (requires { &Type::check; }) {
+			static_assert(std::same_as<decltype(&Type::check), std::expected<void, std::string> (*)(const Checked&)>,
+			              "a type's check is static std::expected<void, std::string> check(const CheckedOf<spec>&)");
+			if (auto checked = Type::check(settings); !checked) return std::unexpected(std::move(checked.error()));
+		}
+		return std::make_unique<const SpecConfig<Spec, Type>>(settings);
+	}
+};
 } // namespace spec_detail
+
+/// The type the class `Type` gives `Spec`, called from the type's one named function. Its name, setting kinds and checks
+/// are the spec's table's, and (in a type's own library) the table must be named for the type's folder.
+template <const auto& Spec, class Type> std::unique_ptr<const NodeType> makeNodeType() {
+	return std::make_unique<const spec_detail::SpecNodeType<Spec, Type>>();
+}
 
 } // namespace ear

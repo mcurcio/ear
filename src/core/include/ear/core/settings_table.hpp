@@ -254,7 +254,8 @@ public:
 		explicit Checked(CheckedSettings settings) noexcept : settings_(std::move(settings)) {}
 		friend SettingsTable;
 		template <const auto& Table> friend class NodeTypeOf;
-		template <const auto& Spec, class Behaviour> friend class spec_detail::SpecNodeType;
+		template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
+		template <const auto& Spec, class Behaviour> friend class spec_detail::LegacySpecNodeType; // until step L-4b
 		CheckedSettings settings_;
 	};
 	/// The walk with no node type around it, for tests; production goes through NodeType::parse.

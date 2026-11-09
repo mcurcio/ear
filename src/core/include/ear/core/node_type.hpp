@@ -4,7 +4,8 @@
 // named inside banks, the pass-through, the two-phase start and the run object by docs/design/node-framework.md
 // sections 7.2 and 7.3, slice 1; StartResult, the recording file and codes written against a spec by its slice 2;
 // GraphCycle's clock facts and downstream latency, which replace delayFrames, Latency and declareLatency by its
-// sections 9.3 and 9.4, slice 7). Change it only through a design page and a re-cut, never a local edit.
+// sections 9.3 and 9.4, slice 7; NodeCode and NodeConfig::make by docs/design/node-lifecycle-modules.md 3.5, step
+// L-4a). Change it only through a design page and a re-cut, never a local edit.
 #pragma once
 #include <concepts>
 #include <cstdint>
@@ -256,28 +257,30 @@ struct BankPair {
 template <class Code>
 concept SpecCode = requires { &Code::process; } && !std::derived_from<Code, AudioCode> && std::move_constructible<Code>;
 template <SpecCode Code> std::unique_ptr<AudioCode> eraseSpecCode(Code code);
-/// What runs on the realtime thread for one run: a type's own code (an AudioCode, or a code written against its spec),
-/// or the framework's pass-through between banks (outputs no pair names are silent). The pass-through is resolved
-/// against the node's ports when the run starts; a pair naming a bank the node lacks, of the wrong direction or of
-/// another size throws std::logic_error there.
-class RunCode {
+/// What runs on the realtime thread for one configuration (docs/design/node-lifecycle-modules.md 3.5): a type's own code
+/// (an AudioCode, or a code written against its spec), or the framework's pass-through between banks (outputs no pair
+/// names are silent). The pass-through is resolved against the node's ports when configure returns; a pair naming a
+/// bank the node lacks, of the wrong direction or of another size fails the node there.
+class NodeCode {
 public:
-	template <std::derived_from<AudioCode> Code> RunCode(std::unique_ptr<Code> code) noexcept
+	template <std::derived_from<AudioCode> Code> NodeCode(std::unique_ptr<Code> code) noexcept
 		: code_(std::move(code)) {} // NOLINT: implicit on purpose
-	template <SpecCode Code> RunCode(Code code)
+	template <SpecCode Code> NodeCode(Code code)
 		: code_(eraseSpecCode(std::move(code))) {} // NOLINT: implicit on purpose
-	static RunCode passThrough(std::vector<BankPair> pairs);
+	static NodeCode passThrough(std::vector<BankPair> pairs);
 	/// The type's own code; null for a pass-through.
 	std::unique_ptr<AudioCode>& own() noexcept { return code_; }
 	const std::vector<BankPair>& pairs() const noexcept { return pairs_; }
 
 private:
-	RunCode() = default;
+	NodeCode() = default;
 	std::unique_ptr<AudioCode> code_;
 	std::vector<BankPair> pairs_;
 };
+/// The old SPI's name for it, kept for sendspin's legacy start until slice 3c (D-L13).
+using RunCode = NodeCode;
 /// The framework's pass-through between banks, one pair or more: `card` and `rtp` write no audio code.
-inline RunCode passThrough(std::vector<BankPair> pairs) { return RunCode::passThrough(std::move(pairs)); }
+inline NodeCode passThrough(std::vector<BankPair> pairs) { return NodeCode::passThrough(std::move(pairs)); }
 /// Builds the run object once every resource is ready, or fails the node (startFailed).
 using RunRecipe = std::move_only_function<std::expected<std::unique_ptr<RunObject>, FailureReason>(Ready&)>;
 /// What `start` returns (docs/design/node-framework.md section 7.2): a failure (the node fails startFailed with its
@@ -285,36 +288,43 @@ using RunRecipe = std::move_only_function<std::expected<std::unique_ptr<RunObjec
 /// every resource is ready; the node is running once it returned.
 class StartResult {
 public:
-	StartResult(RunCode code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
+	StartResult(NodeCode code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
 		: started_(Started{std::move(code), std::move(recipe)}) {}
 	template <std::derived_from<AudioCode> Code>
 	StartResult(std::unique_ptr<Code> code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
-		: StartResult(RunCode(std::move(code)), std::move(recipe)) {}
+		: StartResult(NodeCode(std::move(code)), std::move(recipe)) {}
 	template <SpecCode Code> StartResult(Code code, RunRecipe recipe = nullptr) // NOLINT: implicit on purpose
-		: StartResult(RunCode(std::move(code)), std::move(recipe)) {}
+		: StartResult(NodeCode(std::move(code)), std::move(recipe)) {}
 	StartResult(std::unexpected<FailureReason> failure) : started_(std::move(failure)) {} // NOLINT: implicit on purpose
 	bool failed() const noexcept { return !started_.has_value(); }
 	/// Only when failed().
 	FailureReason& failure() { return started_.error(); }
 	/// Only when not failed().
-	RunCode& code() { return started_->code; }
+	NodeCode& code() { return started_->code; }
 	RunRecipe& recipe() { return started_->recipe; }
 
 private:
 	struct Started {
-		RunCode code;
+		NodeCode code;
 		RunRecipe recipe;
 	};
 	std::expected<Started, FailureReason> started_;
 };
+class ErasedInstance; // lifecycle.hpp
+class NodeContext;    // lifecycle.hpp
 /// One node's checked settings; made only by its type's parse().
 class NodeConfig {
 public:
 	virtual ~NodeConfig() = default;
 	virtual const Ports& ports() const = 0; // pure; the only place this node's ports are declared
-	/// Main thread; acquires only (docs/design/node-framework.md section 7.2). Error: the node becomes failed with this
-	/// reason (startFailed).
-	virtual StartResult start(StartContext& context) const = 0;
+	/// The old SPI (docs/design/node-lifecycle.md 5.10): main thread; acquires only (docs/design/node-framework.md
+	/// section 7.2). Error: the node becomes failed with this reason (startFailed). The default throws
+	/// std::logic_error ("a type on the new SPI has no start"): a type made by makeNodeType writes configure instead.
+	virtual StartResult start(StartContext& context) const;
+	/// Main thread, at T2: one configuration's instance, which NodeHost drives (lifecycle.hpp); `node` outlives it. The
+	/// default is the legacy adapter over start() (node-lifecycle.md 5.10), for sendspin's NodeTypeOf and hand-made
+	/// configs until slice 3c; makeNodeType's config makes the type's class instead.
+	virtual std::unique_ptr<ErasedInstance> make(NodeContext& node) const;
 };
 /// How one setting is written in the graph file: the keeper reads it with knobly's reader of this
 /// kind and writes a JSON value of this kind back. The one home of each key's kind.
@@ -328,8 +338,9 @@ struct SettingDeclaration {
 };
 class AnySettingsTable; // settings_table.hpp
 namespace spec_detail {
-template <const auto& Spec, class Behaviour> class SpecNodeType; // type_spec.hpp
-}
+template <const auto& Spec, class Type> class SpecNodeType;            // lifecycle.hpp
+template <const auto& Spec, class Behaviour> class LegacySpecNodeType; // type_spec.hpp, file's until step L-4b
+} // namespace spec_detail
 class CheckedSettings; // settings_table.hpp
 /// What a type makes of one node's checked settings: its config, or the whole text of a refusal. parse names the node.
 using MadeConfig = std::expected<std::unique_ptr<const NodeConfig>, std::string>;
@@ -350,7 +361,8 @@ public:
 
 private:
 	template <const auto& Table> friend class NodeTypeOf; // nothing else can derive, but makeNodeType's type
-	template <const auto& Spec, class Behaviour> friend class spec_detail::SpecNodeType;
+	template <const auto& Spec, class Type> friend class spec_detail::SpecNodeType;
+	template <const auto& Spec, class Behaviour> friend class spec_detail::LegacySpecNodeType;
 	explicit NodeType(const AnySettingsTable& table) noexcept;
 	/// The one customisation point. Called only with what the table's walk made.
 	virtual MadeConfig makeConfig(const NodeName& node, CheckedSettings settings) const = 0;

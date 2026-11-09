@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
 
@@ -1115,29 +1116,45 @@ TEST_CASE("An outside node lost before the node ran fails it with engine-refused
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("One run names each engine object once: a second of a name, or a bank of the wrong kind, is a type bug "
-          "(I9)",
+/// The failure a node's configure gave, "<code>: <detail>", or "" while it has none.
+std::string failureOf(const Fixture& f, const NodeName& node) {
+	for (const NodeHealth& health : f.host.health())
+		if (health.name == node && health.reason)
+			return std::string(failureCode(health.reason->code)) + ": " + health.reason->detail;
+	return {};
+}
+
+TEST_CASE("One configuration names each engine object once: a second of a name, or a bank of the wrong kind, is a "
+          "type bug that fails the node start-failed (I9, D-M3)",
           "[node_host][rtp]") {
 	Fixture f;
 	auto twice = std::make_shared<TestConfig>(f.log);
 	twice->receivers = {fppStream, fppStream};
-	CHECK_THROWS_AS(f.add("fpp", twice), std::logic_error);
+	f.add("fpp", twice); // never thrown out of NodeHost: one type's bug never takes ear down (node-framework.md 6.4)
+	CHECK(failureOf(f, "fpp") == "start-failed: configure threw: a second resource named fpp.rtp in one configuration");
 
 	auto twoPlayback = std::make_shared<TestConfig>(f.log);
 	twoPlayback->cards = {motuOut, motuOut};
-	CHECK_THROWS_AS(f.add("motu", twoPlayback), std::logic_error);
+	f.add("motu", twoPlayback);
+	CHECK(failureOf(f, "motu") ==
+	      "start-failed: configure threw: a second resource named motu.playback in one configuration");
 
 	auto routable = std::make_shared<TestConfig>(f.log);
 	routable->receivers = {RtpReceiverRequest{fppStream.address, 5004, RtpEncoding::l24, 44100, 100, "record"}};
-	CHECK_THROWS_AS(f.add("routable", routable), std::logic_error);
+	f.add("routable", routable);
+	CHECK(failureOf(f, "routable") ==
+	      "start-failed: configure threw: an RTP receiver joins an inside input bank, not \"record\"");
 
 	auto wrongWay = std::make_shared<TestConfig>(f.log);
 	wrongWay->cards = {SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback, "cap"}};
-	CHECK_THROWS_AS(f.add("wrongway", wrongWay), std::logic_error);
+	f.add("wrongway", wrongWay);
+	CHECK(failureOf(f, "wrongway") ==
+	      "start-failed: configure threw: a playback card joins an inside output bank, not \"cap\"");
 
 	auto missing = std::make_shared<TestConfig>(f.log);
 	missing->cards = {SoundCardRequest{*CardId::parse("Pro24"), CardDirection::capture, "nope"}};
-	CHECK_THROWS_AS(f.add("missing", missing), std::logic_error);
+	f.add("missing", missing);
+	CHECK(failureOf(f, "missing").starts_with("start-failed: configure threw: "));
 
 	// A configuration a type bug was thrown out of asks for nothing more.
 	for (auto* events : f.blocks.events) events->ready();
@@ -1302,12 +1319,20 @@ TEST_CASE("A configuration's latency plan reaches its block with its drive: the 
 	f.settle();
 }
 
-TEST_CASE("Latency declared twice for a bank, or for a bank the node lacks, is a type bug", "[node_host][latency]") {
+TEST_CASE("Latency declared twice for a bank, or for a bank the node lacks, is a type bug that fails the node",
+          "[node_host][latency]") {
 	for (const std::string bank : {"capture", "nowhere"}) {
 		Fixture f;
 		auto config = std::make_shared<LatencyConfig>();
 		config->extra = {{bank, Latency{1, 1}}};
-		CHECK_THROWS_AS(f.add("card", config), std::logic_error);
+		f.add("card", config);
+		CHECK(failureOf(f, "card").starts_with("start-failed: configure threw: "));
+		if (bank == "capture") CHECK(failureOf(f, "card").ends_with("latency declared twice for bank capture"));
+		f.blocks.events.at(0)->ready();
+		CHECK(f.blocks.plans.at(0).empty()); // never driven
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
 	}
 }
 
@@ -1324,7 +1349,13 @@ TEST_CASE("A pass-through between banks of different sizes, the wrong way or of 
 	Fixture f;
 	auto config = std::make_shared<PassConfig>();
 	config->pairs = bad.at(static_cast<std::size_t>(which));
-	CHECK_THROWS_AS(f.add("card", config), std::logic_error);
+	f.add("card", config); // checked at configure's return (node-lifecycle-modules.md 3.3), never thrown out
+	CHECK(failureOf(f, "card").starts_with("start-failed: configure gave a pass-through: "));
+	f.blocks.events.at(0)->ready();
+	CHECK(f.blocks.driven.at(0) == nullptr);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 // The asynchronous barrier (docs/design/node-lifecycle.md sections 4.2, 5.3 and 5.6).
@@ -3436,4 +3467,322 @@ TEST_CASE("A port-caused replace's new node reports its older node's dropped fra
 		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
 		CHECK(f.allGone == 1);
 	}
+}
+
+// The type's class, configure and its contexts, and the hooks (docs/design/node-lifecycle-modules.md section 3, step
+// L-4a): an instance a config makes (NodeConfig::make), the rules a type breaks failing its node start-failed (D-M3),
+// start() and stop() paired (node-framework.md 6.4; tested here with a probe, D-M14), and every hook timed
+// (ear.hook-slow, D-M7).
+
+namespace {
+
+/// Log entries NodeHost writes (subscribeLog).
+struct TestLog final : LogSink {
+	std::vector<LogEntry> entries;
+	void log(const LogEntry& entry) override { entries.push_back(entry); }
+};
+
+/// An instance whose hooks log themselves and do what the test says: what NodeHost drives for the new SPI.
+struct ProbeInstance final : ErasedInstance {
+	Log& log;
+	std::function<Configured(InstanceContexts&)> onConfigure;
+	std::function<void()> onStart;
+	std::function<void()> onStop;
+	CreateContext** kept;
+	ProbeInstance(Log& l, std::function<Configured(InstanceContexts&)> c, std::function<void()> s,
+	              std::function<void()> t, CreateContext** k)
+		: log(l), onConfigure(std::move(c)), onStart(std::move(s)), onStop(std::move(t)), kept(k) {}
+	~ProbeInstance() override { log.push_back("instance destroyed"); }
+	Configured configure(InstanceContexts& cx) override {
+		log.push_back("configure");
+		*kept = &cx.create;
+		if (onConfigure) return onConfigure(cx);
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	}
+	void start() override {
+		log.push_back("start()");
+		if (onStart) onStart();
+	}
+	void stop() override {
+		log.push_back("stop()");
+		if (onStop) onStop();
+	}
+};
+
+/// A config of the new SPI: it makes a ProbeInstance per configuration and has no start.
+struct ProbeConfig final : NodeConfig {
+	Log& log;
+	Ports ports_ = testPorts();
+	std::function<Configured(InstanceContexts&)> onConfigure;
+	std::function<void()> onStart;
+	std::function<void()> onStop;
+	mutable CreateContext* kept = nullptr; // the context configure was handed, kept to misuse it later
+	explicit ProbeConfig(Log& l) : log(l) {}
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		return std::make_unique<ProbeInstance>(log, onConfigure, onStart, onStop, &kept);
+	}
+};
+
+std::size_t countOf(const Log& log, const std::string& line) {
+	return static_cast<std::size_t>(std::ranges::count(log, line));
+}
+
+} // namespace
+
+TEST_CASE("A config of the new SPI makes an instance per configuration: configure, start() once driven, stop() before "
+          "each silence after a start() that returned",
+          "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	addRunning(f, "probe", config);
+	CHECK(countOf(f.log, "configure") == 1);
+	CHECK(countOf(f.log, "start()") == 1);
+	CHECK(countOf(f.log, "stop()") == 0);
+	CHECK(indexOf(f.log, "start()") > indexOf(f.log, "drive code"));
+
+	// A stop: stop() before its fade, and the instance kept; a start: start() again, once driven.
+	f.log.clear();
+	REQUIRE(f.host.stop("probe"));
+	f.settle();
+	CHECK(f.log.at(0) == "stop()");
+	CHECK(indexOf(f.log, "stop()") < indexOf(f.log, "fade"));
+	CHECK(countOf(f.log, "instance destroyed") == 0);
+	REQUIRE(f.host.start("probe"));
+	f.settle();
+	CHECK(countOf(f.log, "start()") == 1);
+
+	// A restart: stop(), the teardown (the code freed before the instance), a new instance configured and started.
+	f.log.clear();
+	REQUIRE(f.host.restart("probe"));
+	f.settle();
+	CHECK(f.log.at(0) == "stop()");
+	CHECK(indexOf(f.log, "release") < indexOf(f.log, "instance destroyed"));
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "configure"));
+	CHECK(countOf(f.log, "start()") == 1);
+
+	// A stop of a stopped node calls no stop(); a removal of a running one calls it once.
+	REQUIRE(f.host.stop("probe"));
+	f.settle();
+	f.log.clear();
+	REQUIRE(f.host.stop("probe"));
+	f.settle();
+	CHECK(countOf(f.log, "stop()") == 0);
+	REQUIRE(f.host.start("probe"));
+	f.settle();
+	f.log.clear();
+	f.host.nodeRemoved("probe");
+	f.settle();
+	CHECK(countOf(f.log, "stop()") == 1);
+	CHECK(countOf(f.log, "instance destroyed") == 1);
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("stop() pairs only with a start() that returned: a failure stops a started node once, and a start() that "
+          "threw gets none",
+          "[node_host][class]") {
+	SECTION("a card lost while running") {
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = [&](InstanceContexts& cx) {
+			cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			cx.create.use(std::make_unique<TestAudioCode>(f.log));
+			return Configured::applied();
+		};
+		addRunning(f, "probe", config);
+		f.log.clear();
+		f.cards.events.at(0)->lost("unplugged");
+		f.settle();
+		CHECK(countOf(f.log, "stop()") == 1);
+		CHECK(failureOf(f, "probe") == "engine-refused: unplugged");
+		f.stopAll();
+		f.settle();
+		CHECK(countOf(f.log, "stop()") == 1); // nothing more to pair
+	}
+	SECTION("a start() that threw: start-failed, not lost (it never reached running), and no stop()") {
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onStart = [] { throw std::runtime_error("no device"); };
+		f.add("probe", config);
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(failureOf(f, "probe") == "start-failed: start threw: no device");
+		CHECK(countOf(f.log, "stop()") == 0);
+		CHECK(countOf(f.log, "node probe running") == 0); // the running its batch would have told was never told
+		CHECK(countOf(f.log, "instance destroyed") == 1); // torn down at once
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
+TEST_CASE("A stop() that throws during a stop is a fault held until the node rests, and during a teardown a log "
+          "record and the teardown goes on",
+          "[node_host][class]") {
+	SECTION("during a stop") {
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onStop = [] { throw std::runtime_error("stuck"); };
+		addRunning(f, "probe", config);
+		REQUIRE(f.host.stop("probe"));
+		f.settle();
+		CHECK(failureOf(f, "probe") == "lost: stop threw: stuck"); // it had rested: lost (4.2's code by fact)
+		f.stopAll();
+		f.settle();
+	}
+	SECTION("during a removal") {
+		Fixture f;
+		TestLog logs;
+		f.host.subscribeLog(logs);
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onStop = [] { throw std::runtime_error("stuck"); };
+		addRunning(f, "probe", config);
+		f.host.nodeRemoved("probe");
+		f.settle();
+		CHECK(countOf(f.log, "node probe gone dropped=0") == 1);
+		REQUIRE(logs.entries.size() == 1);
+		CHECK(logs.entries[0].level == LogLevel::error);
+		CHECK(logs.entries[0].source == "ear");
+		CHECK(logs.entries[0].text == "stop() threw: stuck");
+		CHECK(logs.entries[0].node == NodeName("probe"));
+		f.stopAll();
+	}
+}
+
+TEST_CASE("A hook past 20 ms on the main loop is ear.hook-slow, naming the hook, once per node and hook",
+          "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) {
+		f.timers.advance(std::chrono::milliseconds(31)); // the hook takes 31 ms of the main loop's clock
+		cx.create.use(std::make_unique<TestAudioCode>(f.log));
+		return Configured::applied();
+	};
+	config->onStart = [&] { f.timers.advance(std::chrono::milliseconds(20)); }; // at the bound: not slow
+	addRunning(f, "rec", config);
+	CHECK(countOf(f.log, "diagnostic rec ear.hook-slow ms=31") == 1);
+	CHECK(f.diagnostics.details == std::vector<std::string>{"configure ran 31 ms"});
+
+	// Slow again after a restart: said once for the node's life.
+	REQUIRE(f.host.restart("rec"));
+	f.settle();
+	CHECK(f.diagnostics.details.size() == 1);
+
+	// Another hook is its own.
+	config->onStop = [&] { f.timers.advance(std::chrono::milliseconds(25)); };
+	REQUIRE(f.host.restart("rec")); // the instance it stops was made with no onStop; the next one has it
+	f.settle();
+	REQUIRE(f.host.stop("rec"));
+	f.settle();
+	CHECK(countOf(f.log, "diagnostic rec ear.hook-slow ms=25") == 1);
+	CHECK(f.diagnostics.details.back() == "stop ran 25 ms");
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("Every rule a type breaks at a call or at configure's return fails its node start-failed with the rule's "
+          "text, never thrown out of NodeHost",
+          "[node_host][class]") {
+	using Configure = std::function<Configured(InstanceContexts&)>;
+	Log codes; // the codes' own log, apart from f.log's order
+	const std::vector<std::pair<Configure, std::string>> cases{
+		{[&](InstanceContexts& cx) {
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: use called twice"},
+		{[](InstanceContexts&) { return Configured::applied(); }, "start-failed: configure gave no code"},
+		{[](InstanceContexts&) { return Configured::failed("cannot open /nope"); }, "start-failed: cannot open /nope"},
+		{[](InstanceContexts&) -> Configured { throw std::runtime_error("bad state"); },
+	     "start-failed: configure threw: bad state"},
+		{[](InstanceContexts&) -> Configured { throw 7; },
+	     "start-failed: configure threw: an exception that is no "
+	     "std::exception"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.soundCard("cap", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback});
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: a playback card joins an inside output bank, not \"cap\""},
+		{[&](InstanceContexts& cx) {
+			 cx.create.soundCard("pb", SoundCardRequest{*CardId::parse("Pro24"), CardDirection::playback, "elsewhere"});
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: a sound card's request names bank \"elsewhere\", not \"pb\""},
+		{[&](InstanceContexts& cx) {
+			 cx.create.declareLatency("record", "pb", Latency{1, 1});
+			 cx.create.declareLatency("cap", "pb", Latency{2, 2});
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: latency declared twice for bank pb"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.declareLatency("pb", "record", Latency{1, 1});
+			 cx.create.use(std::make_unique<TestAudioCode>(codes));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure threw: declareLatency names a pair: an input bank, then an output bank"},
+		{[](InstanceContexts& cx) {
+			 cx.create.use(passThrough({{"record", "pb"}, {"record", "pb"}}));
+			 return Configured::applied();
+		 },
+	     "start-failed: configure gave a pass-through: "},
+	};
+	for (std::size_t which = 0; which < cases.size(); ++which) {
+		INFO("case " << which);
+		Fixture f;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = cases[which].first;
+		f.add("probe", config);
+		CHECK(failureOf(f, "probe").starts_with(cases[which].second));
+		CHECK(countOf(f.log, "instance destroyed") == 1); // its configuration torn down at once, the block kept
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.blocks.driven.at(0) == nullptr);
+		CHECK(f.cards.events.empty());
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
+TEST_CASE("A context kept past its configure is refused at the call: from start() the node fails",
+          "[node_host][class]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onStart = [&] { config->kept->use(std::make_unique<TestAudioCode>(f.log)); };
+	f.add("probe", config);
+	REQUIRE(config->kept != nullptr);
+	CHECK_THROWS_WITH(config->kept->openRecording(RecordingRequest{"x.wav"}), "openRecording outside configure");
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(failureOf(f, "probe") == "start-failed: start threw: use outside configure");
+	f.stopAll();
+	f.settle();
+}
+
+TEST_CASE("A configure that threw after it opened a recording closes the recording after its instance",
+          "[node_host][class][recording]") {
+	RecordingFixture f;
+	TestListener listener{f.log};
+	f.host.subscribe(listener);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = [&](InstanceContexts& cx) -> Configured {
+		const auto fd = cx.create.openRecording(RecordingRequest{"take.wav"});
+		REQUIRE(fd);
+		f.log.push_back("descriptor " + std::to_string(*fd));
+		throw std::runtime_error("after the recording");
+	};
+	f.host.nodeAdded(NodeSpec{"rec", "test", {}}, config);
+	f.mainLoop.settle();
+	CHECK(indexOf(f.log, "descriptor 42") < indexOf(f.log, "instance destroyed"));
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "recording closed"));
+	CHECK(std::ranges::count(f.log,
+	                         std::string("node rec failed start-failed: configure threw: after the recording")) == 1);
+	f.host.stopAll(f.graph.close(), [] {});
+	f.mainLoop.settle();
 }

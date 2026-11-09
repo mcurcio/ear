@@ -8,7 +8,10 @@
 // turn, T1's wait for an older block and OutsideTarget::blockId by its step L-3b; the fade before every planned silence,
 // the fade's and the barrier's bounds, the wedged data loop, EngineDiagnosticListener, structured diagnostic fields and
 // leaked() by its step L-3c; NodeHealth's lifecycle members, NodeOperations, the superseded node's listeners and the
-// plan's outcomes honoured by its step L-3d). Change it only through a design page and a re-cut, never a local edit.
+// plan's outcomes honoured by its step L-3d; the type's class, configure and its contexts on one set of internals, hooks
+// timed (hookSlowBound) and a stop() that threw in a teardown logged (subscribeLog) by
+// docs/design/node-lifecycle-modules.md section 3, step L-4a). Change it only through a design page and a re-cut, never
+// a local edit.
 #pragma once
 #include <chrono>
 #include <cstdint>
@@ -22,6 +25,7 @@
 #include <vector>
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
+#include "ear/core/log.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
@@ -102,8 +106,10 @@ struct DiagnosticField {
 /// What the framework itself observes about a node (docs/design/node-framework.md section 8.1; control-plane.md 4.6),
 /// by code: "ear.close-overdue" (a configuration that did not close within the close deadline, leaked: I5a; no
 /// field), "ear.fade-unacknowledged" (a planned silence's fade not acknowledged within 100 ms, so the barrier was taken
-/// unfaded; `ms`) and "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block
-/// are leaked; `ms`). `fields` lives only for the call.
+/// unfaded; `ms`), "ear.barrier-overdue" (a barrier not completed within 5 s: the node's configuration and block
+/// are leaked; `ms`) and "ear.hook-slow" (a hook, named in the detail, "configure ran 31 ms", ran past hookSlowBound on
+/// the main loop; `ms`; once per node and hook for the node's life: node-lifecycle-modules.md 3.4, D-M7). `fields` lives
+/// only for the call.
 class NodeDiagnosticListener {
 public:
 	virtual void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
@@ -314,6 +320,8 @@ inline constexpr std::chrono::milliseconds barrierCompletionBound{5'000};
 /// 4.8, node-lifecycle.md 4.5, D-L42).
 inline constexpr std::chrono::milliseconds waitingForDelay{2'000};
 inline constexpr std::chrono::milliseconds waitingForPace{1'000};
+/// A hook that ran longer than this on the main loop is ear.hook-slow (node-framework.md 6.4, I11; control-plane.md 4.6).
+inline constexpr std::chrono::milliseconds hookSlowBound{20};
 class NodeHost final : public DesiredNodeListener, public NodeOperations {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
@@ -325,13 +333,23 @@ public:
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
-	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration (docs/design/node-lifecycle.md section 4; through the legacy
-	/// adapter, its section 5.10): config.start(context) acquires only (a recipe beside an outside node is a
-	/// std::logic_error, D-L40); the outside nodes it asked for are made once the block is ready, in request order,
+	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw during
+	/// a teardown, whose fault is dropped (docs/design/node-lifecycle.md 5.9's edges, D-L45). Main thread, before the
+	/// first node.
+	void subscribeLog(LogSink& sink);
+	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
+	/// (docs/design/node-lifecycle.md section 4; node-lifecycle-modules.md 3.3): config.make(context) makes its instance
+	/// (the type's class, or the legacy adapter over config.start, 5.10), whose configure acquires only, through
+	/// CreateContext or StartContext on one set of internals, and gives the code (a recipe beside an outside node is a
+	/// std::logic_error, D-L40; every other rule the type breaks, and a configure that throws, fail the node
+	/// start-failed); the outside nodes it asked for are made once the block is ready, in request order,
 	/// named "<node>.<suffix>" ("playback" / "capture" for cards, "rtp" for the receiver); once every resource is ready
-	/// the recipe builds the run object and the code is prepared; once the block is ready the code drives it
+	/// a legacy recipe builds the run object and the code is prepared; once the block is ready the code drives it
 	/// (PortBlock's asynchronous drive, fading in every output the code writes: public outputs and inside outputs, which
-	/// feed a card), and the node is running once that drive completed. Every planned silence (a restart, a removal, a
+	/// feed a card), and the node is running once that drive completed, when the instance's start() is called; its stop()
+	/// is called once before each silence that follows a start() that returned (node-framework.md 6.4). The making and
+	/// configure (timed together as `configure`), start() and stop() are each timed: one past hookSlowBound is
+	/// ear.hook-slow, once per node and hook. Every planned silence (a restart, a removal, a
 	/// failure, stopAll) first fades those outputs out over 5 ms (unacknowledged within 100 ms: ear.fade-unacknowledged
 	/// and the silence unfaded); a drive or silence not completed within 5 s marks the data loop wedged
 	/// (ear.barrier-overdue, then ear.data-loop-wedged once): from then on NodeHost makes no PipeWire call, every

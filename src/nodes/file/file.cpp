@@ -90,6 +90,7 @@ StartResult File::start(StartContext& context, const Checked& s) {
 
 namespace ear::nodes {
 
-std::unique_ptr<const NodeType> makeFileNodeType() { return makeNodeType<file::spec, file::File>(); }
+// On the legacy path (a static start, through the legacy adapter) until step L-4b moves it onto the interim sink.
+std::unique_ptr<const NodeType> makeFileNodeType() { return makeLegacyNodeType<file::spec, file::File>(); }
 
 } // namespace ear::nodes

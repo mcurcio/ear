@@ -1,7 +1,9 @@
 // The "file" node type's spec and behaviour (docs/design/m1-white-to-file.md section 2; docs/design/node-framework.md
 // sections 7.1 to 7.3 and 7.6): private to the type, shared by file.cpp and its tests, which run it through
-// ear::testing::TypeHarness<spec, File> by the same bank handles. In the type's own named namespace, never an unnamed
-// one (type_spec.hpp says why). start is file.cpp's, the only file that sees libsndfile.
+// ear::testing::NodeHarness by the same bank names. In the type's own named namespace, never an unnamed one
+// (type_spec.hpp says why). start is file.cpp's, the only file that sees libsndfile. Until step L-4b it is slice 2's
+// behaviour with a static start, made by makeLegacyNodeType and run through the legacy adapter
+// (docs/design/node-lifecycle-modules.md 4.5 moves it onto the interim sink as a class).
 #pragma once
 #include <cstdint>
 #include <expected>

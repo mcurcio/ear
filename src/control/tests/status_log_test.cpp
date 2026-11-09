@@ -273,6 +273,10 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			again.wanted = ear::Wanted::stopped; // another member changed: a tell with the same list
 			log.nodeChanged(again);
 		},
+		[](StatusLog& log, Lines&) {
+			const std::array fields{ear::DiagnosticField{"ms", 31}};
+			log.nodeDiagnostic("rec", "ear.hook-slow", "configure ran 31 ms", fields);
+		},
 	};
 }
 

@@ -302,7 +302,8 @@ int main(int argc, char** argv) {
 	nodes.subscribe(log);
 	nodes.subscribe(gateway);
 	nodes.subscribeNotes(log);
-	nodes.subscribeDiagnostics(log);       // ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue
+	nodes.subscribeDiagnostics(log); // ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue, ear.hook-slow
+	nodes.subscribeLog(log);         // a stop() that threw during a teardown
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
 	WedgeMarker wedgeMarker(*engine);
 	nodes.subscribeEngineDiagnostics(wedgeMarker); // then the engine's adapters stop calling into the loop

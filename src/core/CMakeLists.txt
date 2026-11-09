@@ -7,6 +7,7 @@ add_library(ear_core STATIC
 	command_error.cpp
 	desired_graph.cpp
 	graph_status.cpp
+	legacy_instance.cpp
 	levels.cpp
 	log.cpp
 	main_loop_activity.cpp
@@ -17,7 +18,6 @@ add_library(ear_core STATIC
 	ports.cpp
 	reconciler.cpp
 	rtp_receiver.cpp
-	run_requests.cpp
 	settings_table.cpp
 	sound_card.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
@@ -43,7 +43,6 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/pass_through.hpp
 	include/ear/core/reconciler.hpp
 	include/ear/core/rtp_receiver.hpp
-	include/ear/core/run_requests.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sink.hpp
 	include/ear/core/sound_card.hpp
@@ -59,7 +58,6 @@ if(BUILD_TESTS)
 	add_library(ear_type_harness STATIC testing/node_harness.cpp)
 	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 		include/ear/testing/drive_now.hpp
-		include/ear/testing/lifecycle_harness.hpp
 		include/ear/testing/node_harness.hpp
 		include/ear/testing/type_harness.hpp)
 	set_target_properties(ear_type_harness PROPERTIES VERIFY_INTERFACE_HEADER_SETS ON)
@@ -131,7 +129,8 @@ if(BUILD_TESTS)
 	ear_settings_table_compile_fail(only-without-a-required "cannot name a required row")
 	ear_settings_table_compile_fail(table-not-named-for-folder "a type's table is named for its folder")
 
-	# What must not compile about a type spec, Io and the harness (docs/design/node-framework.md sections 7.1 and 9.2):
+	# What must not compile about a type spec, its class, the contexts its configure is handed, Io and the harness
+	# (docs/design/node-framework.md sections 6.10, 7.1 and 9.2; docs/design/node-lifecycle-modules.md 3.10):
 	# tests/compile_fail/type_spec_bad.cpp says what each case is.
 	set(bad_spec "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/type_spec_bad.cpp")
 	ear_compile_check(ear_type_spec_compile_fail_control "${bad_spec}")
@@ -149,9 +148,8 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(bank-name-invalid "a bank's name is 1 or more of")
 	ear_type_spec_compile_fail(banks-named-twice "a type's banks have unique names")
 	ear_type_spec_compile_fail(process-may-throw "a code's process is void process")
-	ear_type_spec_compile_fail(behaviour-without-ports "a behaviour has static Members<spec> ports")
-	ear_type_spec_compile_fail(check-wrong-result "a behaviour's check is static std::expected")
-	ear_type_spec_compile_fail(check-takes-mutable-settings "a behaviour's check is static std::expected")
+	ear_type_spec_compile_fail(check-wrong-result "a type's check is static std::expected")
+	ear_type_spec_compile_fail(check-takes-mutable-settings "a type's check is static std::expected")
 	ear_type_spec_compile_fail(prepare-wrong-signature "a code's prepare is void prepare")
 	ear_type_spec_compile_fail(release-may-throw "a code's release is void release\\(\\) noexcept")
 	ear_type_spec_compile_fail(spec-in-unnamed-namespace "a spec is declared in a named namespace")
@@ -159,4 +157,24 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(spec-not-named-for-folder "a type's table is named for its folder")
 	ear_type_spec_compile_fail(harness-bank-the-spec-lacks "the harness takes only its spec's banks")
 	ear_type_spec_compile_fail(harness-output-as-input "input\\(\\) takes an input bank")
+	# The class (node-lifecycle-modules.md 3.10): its members' shapes, then what its configure's context offers.
+	ear_type_spec_compile_fail(class-without-ports "a type's class has static Members<spec> ports")
+	ear_type_spec_compile_fail(configure-wrong-signature "a type's class has Configured configure")
+	ear_type_spec_compile_fail(configure-not-a-member "a type's class has Configured configure")
+	ear_type_spec_compile_fail(start-wrong-signature "a type's start is void start\\(\\)")
+	ear_type_spec_compile_fail(stop-wrong-signature "a type's stop is void stop\\(\\)")
+	ear_type_spec_compile_fail(constructor-neither "a type's class is constructed from NodeOf<spec>& or from nothing")
+	ear_type_spec_compile_fail(legacy-start-on-spec-type "writes configure, not a static start")
+	# The change version compiles in 3a (D-M2, the owner's answer to Q1: the control writes one); of the wrong shape, not.
+	ear_type_spec_compile_fail(change-version-wrong-signature "a type's change version is Changed configure")
+	ear_type_spec_compile_fail(create-has-no-hold "has no member named 'hold'")
+	ear_type_spec_compile_fail(create-has-no-when-ready "has no member named 'whenReady'")
+	ear_type_spec_compile_fail(create-has-no-unclaim "has no member named 'unclaim'")
+	ear_type_spec_compile_fail(configured-has-no-restart "'restart' is not a member of 'ear::Configured'")
+	ear_type_spec_compile_fail(sound-card-on-public-bank "a sound card joins an inside bank of the spec")
+	ear_type_spec_compile_fail(rtp-receiver-on-output-bank "an RTP receiver joins an inside input bank of the spec")
+	ear_type_spec_compile_fail(sink-on-input-bank "a sink reads an inside output bank of the spec")
+	ear_type_spec_compile_fail(declare-latency-bank-the-spec-lacks "declareLatency takes its spec's banks")
+	ear_type_spec_compile_fail(declare-latency-backwards "declareLatency names a pair: an input bank, then an output bank")
+	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")
 endif()

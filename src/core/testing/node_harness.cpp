@@ -1,301 +1,612 @@
-// The node harness (ear/testing/node_harness.hpp): NodeHost's run, on the test's one thread, with fake resources.
+// The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
+// (docs/design/node-lifecycle-modules.md 3.8). Each fake is private to this file.
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
+#include <deque>
+#include <functional>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <stdexcept>
 #include <utility>
-#include <variant>
 
-#include "ear/core/pass_through.hpp"
-#include "ear/core/run_requests.hpp"
+#include "../legacy_instance.hpp"
+#include "ear/core/lifecycle.hpp"
 
 namespace ear::testing {
+namespace {
 
-/// A handoff whose writes go straight to its consumer, on the writing thread (the test's).
-struct NodeHarness::Handoff final : RtWriter {
-	Handoff(HandoffConsumer& consumer, std::size_t channels) : consumer(&consumer), channels(channels) {}
-	std::uint32_t write(std::span<const std::span<const float>> planar, std::uint32_t count) noexcept override {
-		interleaved.assign(static_cast<std::size_t>(count) * channels, 0.0F);
-		for (std::size_t channel = 0; channel < channels && channel < planar.size(); ++channel)
-			for (std::uint32_t frame = 0; frame < count; ++frame)
-				interleaved[frame * channels + channel] = planar[channel][frame];
-		consumer->consume(interleaved, count);
-		frames += count;
-		return count;
-	}
-	HandoffConsumer* consumer;
-	std::size_t channels;
-	std::vector<float> interleaved;
-	std::uint64_t frames = 0;
-};
-
-/// The run's events, from any thread: held under a lock, read by the test.
-class NodeHarness::Events final : public InsidesEvents {
+/// The main loop: queues posts, from any thread; the harness runs them on the test's thread until none is left.
+class ManualExecutor final : public Executor {
 public:
-	void say(std::string text) override {
-		const std::scoped_lock lock(mutex);
-		if (!detached) notes.push_back(std::move(text));
+	void post(std::move_only_function<void()> work) override {
+		const std::scoped_lock lock(mutex_);
+		queue_.push_back(std::move(work));
 	}
-	void lost(std::string detail) override {
-		const std::scoped_lock lock(mutex);
-		if (!detached && !closing && !lostDetail) lostDetail = std::move(detail);
+	/// Runs everything posted, and what that posts, until nothing is left.
+	void pump() {
+		for (;;) {
+			std::move_only_function<void()> next;
+			{
+				const std::scoped_lock lock(mutex_);
+				if (queue_.empty()) return;
+				next = std::move(queue_.front());
+				queue_.pop_front();
+			}
+			next();
+		}
 	}
-	mutable std::mutex mutex;
-	std::condition_variable closedSignal;
-	std::vector<std::string> notes;
-	std::optional<std::string> lostDetail;
-	bool closing = false;
-	bool detached = false;
-	bool closed = false;
+
+private:
+	std::mutex mutex_;
+	std::deque<std::move_only_function<void()>> queue_;
 };
 
-NodeHarness::NodeHarness(const NodeType& type, AudioFormat format, RecordingAdapter* recordings, NodeName node)
-	: type_(type), format_(format), recordings_(recordings), node_(std::move(node)) {}
+/// Main-loop timers on a clock the test moves.
+class FakeClock final : public Timers {
+public:
+	explicit FakeClock(ManualExecutor& executor) : executor_(executor) {}
+	std::unique_ptr<Timer> after(std::chrono::milliseconds delay, std::move_only_function<void()> due) override {
+		auto armed = std::make_shared<Armed>(Armed{now_ + delay, std::move(due)});
+		armed_.push_back(armed);
+		return std::make_unique<Handle>(armed);
+	}
+	std::chrono::steady_clock::time_point now() const override { return std::chrono::steady_clock::time_point{now_}; }
+	/// Moves the clock and runs what came due, in due order, pumping between.
+	void advance(std::chrono::milliseconds by) {
+		const auto until = now_ + by;
+		for (;;) {
+			std::shared_ptr<Armed> next;
+			for (const auto& armed : armed_)
+				if (!armed->cancelled && armed->due && armed->at <= until && (!next || armed->at < next->at))
+					next = armed;
+			if (!next) break;
+			now_ = std::max(now_, next->at);
+			auto call = std::move(next->due);
+			next->due = nullptr;
+			call();
+			executor_.pump();
+		}
+		now_ = until;
+		std::erase_if(armed_, [](const auto& armed) { return armed->cancelled || !armed->due; });
+	}
+
+private:
+	struct Armed {
+		std::chrono::milliseconds at;
+		std::move_only_function<void()> due;
+		bool cancelled = false;
+	};
+	struct Handle final : Timer {
+		explicit Handle(std::shared_ptr<Armed> a) : armed(std::move(a)) {}
+		~Handle() override { armed->cancelled = true; }
+		std::shared_ptr<Armed> armed;
+	};
+	ManualExecutor& executor_;
+	std::chrono::milliseconds now_{0};
+	std::vector<std::shared_ptr<Armed>> armed_;
+};
+
+/// A request a fake block was asked, completed at once (autoComplete) or when the test says.
+struct PendingRequest {
+	bool fade;
+	std::move_only_function<void()> done;
+};
+
+} // namespace
+
+struct NodeHarness::Impl final : NodeHealthListener,
+								 NodeNoteListener,
+								 NodeDiagnosticListener,
+								 EngineDiagnosticListener {
+	// ---- The fakes ----
+
+	/// The node's one block: a drive applies its code at once (and resets the fade-in), a fade-out silences the faded
+	/// outputs from the next cycle; each request completes on the main loop, at once (autoComplete) or when the test
+	/// says, in the order asked.
+	struct FakeBlock final : PortBlock {
+		explicit FakeBlock(Impl& h) : harness(h) {}
+		~FakeBlock() override { harness.block = nullptr; }
+		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
+			harness.driven = request.code;
+			std::ranges::fill(harness.fadeMask, false);
+			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
+				harness.fadeMask[i] = request.faded[i];
+			harness.fade = std::ranges::any_of(harness.fadeMask, std::identity{}) ? Fade::in : Fade::none;
+			harness.fadeAt = 0;
+			const std::uint64_t taken = harness.position;
+			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
+		}
+		void fadeOut(std::move_only_function<void()> done) override {
+			harness.request(true, [&h = harness, done = std::move(done)]() mutable {
+				// Acknowledged: the faded outputs are at zero from here on.
+				h.fade = Fade::out;
+				h.fadeAt = 0;
+				done();
+			});
+		}
+		void carryLatency(const LatencyPlan& plan) override { harness.plan = plan; }
+		void settle() override {}
+		std::uint64_t takenAt() const noexcept override { return harness.position; }
+		std::uint32_t blockId() const noexcept override { return 7; }
+		Impl& harness;
+	};
+	struct FakeBlocks final : PortBlockFactory {
+		explicit FakeBlocks(Impl& h) : harness(h) {}
+		std::unique_ptr<PortBlock> make(const NodeName&, const Ports&, const AudioFormat&,
+		                                PortBlockEvents& events) override {
+			harness.blockEvents = &events;
+			auto made = std::make_unique<FakeBlock>(harness);
+			harness.block = made.get();
+			return made;
+		}
+		Impl& harness;
+	};
+
+	/// An outside node: its companion is marked destroyed with it.
+	struct FakeOutsideNode final : OutsideNode {
+		FakeOutsideNode(Impl& h, std::size_t i) : harness(h), index(i) {}
+		~FakeOutsideNode() override {
+			harness.companionList.at(index).destroyed = true;
+			harness.outsideEvents.at(index) = nullptr;
+		}
+		Impl& harness;
+		std::size_t index;
+	};
+	template <typename Request> struct FakeOutside final : OutsideAdapter<Request> {
+		explicit FakeOutside(Impl& h) : harness(h) {}
+		std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const Request& request,
+		                                  OutsideNodeEvents& events) override {
+			CompanionFake fake{std::is_same_v<Request, SoundCardRequest> ? CompanionFake::Kind::soundCard
+			                                                             : CompanionFake::Kind::rtpReceiver,
+			                   request.bank,
+			                   target.engineNode,
+			                   request,
+			                   false,
+			                   false,
+			                   false,
+			                   {}};
+			fake.made = true;
+			harness.companionList.push_back(std::move(fake));
+			harness.outsideEvents.push_back(&events);
+			return std::make_unique<FakeOutsideNode>(harness, harness.companionList.size() - 1);
+		}
+		Impl& harness;
+	};
+
+	/// A legacy handoff whose writes go straight to its consumer, on the writing thread (the test's).
+	struct FakeHandoff final : Handoff, RtWriter {
+		FakeHandoff(Impl& h, std::size_t i, HandoffConsumer& c, std::size_t n)
+			: harness(h), index(i), consumer(c), channels(n) {}
+		RtWriter& writer() noexcept override { return *this; }
+		std::uint32_t write(std::span<const std::span<const float>> planar, std::uint32_t count) noexcept override {
+			interleaved.assign(static_cast<std::size_t>(count) * channels, 0.0F);
+			for (std::size_t channel = 0; channel < channels && channel < planar.size(); ++channel)
+				for (std::uint32_t frame = 0; frame < count; ++frame)
+					interleaved[frame * channels + channel] = planar[channel][frame];
+			consumer.consume(interleaved, count);
+			harness.handoffCounts.at(index) += count;
+			return count;
+		}
+		void close(std::move_only_function<void(std::uint64_t)> closed) override {
+			consumer.finish();
+			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
+		}
+		Impl& harness;
+		std::size_t index;
+		HandoffConsumer& consumer;
+		std::size_t channels;
+		std::vector<float> interleaved;
+	};
+	struct FakeHandoffs final : HandoffAdapter {
+		explicit FakeHandoffs(Impl& h) : harness(h) {}
+		std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t channels, std::uint32_t,
+		                              HandoffConsumer& consumer) override {
+			harness.handoffCounts.push_back(0);
+			return std::make_unique<FakeHandoff>(harness, harness.handoffCounts.size() - 1, consumer, channels);
+		}
+		Impl& harness;
+	};
+
+	/// Every config the type parses, wrapped so the harness sees the instance each configuration makes (a legacy run
+	/// object, for runObject()) and when it goes.
+	struct SeenInstance final : ErasedInstance {
+		SeenInstance(Impl& h, std::unique_ptr<ErasedInstance> i) : harness(h), inner(std::move(i)) {
+			harness.instance = this;
+		}
+		~SeenInstance() override {
+			if (harness.instance == this) harness.instance = nullptr;
+		}
+		Configured configure(InstanceContexts& cx) override { return inner->configure(cx); }
+		bool hasRecipe() const noexcept override { return inner->hasRecipe(); }
+		std::expected<void, FailureReason> ready(Ready& ready) override { return inner->ready(ready); }
+		void start() override { inner->start(); }
+		void stop() override { inner->stop(); }
+		void close(std::move_only_function<void()> closed) override { inner->close(std::move(closed)); }
+		Impl& harness;
+		std::unique_ptr<ErasedInstance> inner;
+	};
+	struct SeenConfig final : NodeConfig {
+		SeenConfig(Impl& h, std::unique_ptr<const NodeConfig> c) : harness(h), inner(std::move(c)) {}
+		const Ports& ports() const override { return inner->ports(); }
+		StartResult start(StartContext& context) const override { return inner->start(context); }
+		std::unique_ptr<ErasedInstance> make(NodeContext& node) const override {
+			return std::make_unique<SeenInstance>(harness, inner->make(node));
+		}
+		Impl& harness;
+		std::unique_ptr<const NodeConfig> inner;
+	};
+
+	enum class Fade { none, in, out };
+
+	Impl(const NodeType& t, Options o)
+		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
+		  handoffs(*this),
+		  registry(options.recordings != nullptr ? ResourceRegistry(cards, receivers, handoffs, *options.recordings)
+	                                             : ResourceRegistry(cards, receivers, handoffs)),
+		  graph(catalogue), host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
+		host->subscribe(*this);
+		host->subscribeNotes(*this);
+		host->subscribeDiagnostics(*this);
+		host->subscribeEngineDiagnostics(*this);
+	}
+
+	// ---- Listeners ----
+	void nodeChanged(const NodeHealth& h) override { told = h; }
+	void nodeGone(const NodeName&, std::uint64_t dropped) override {
+		wentAway = true;
+		dropped_ = dropped;
+	}
+	void nodeSays(const NodeName&, const std::string& text) override { noteList.push_back(text); }
+	void nodeDiagnostic(const NodeName&, std::string_view code, const std::string& detail,
+	                    std::span<const DiagnosticField> fields) override {
+		SeenDiagnostic seen{std::string(code), detail, {}};
+		for (const DiagnosticField& field : fields) seen.fields.emplace_back(std::string(field.key), field.value);
+		diagnosticList.push_back(std::move(seen));
+	}
+	void engineDiagnostic(const EngineDiagnostic& diagnostic) override {
+		SeenDiagnostic seen{std::string(diagnostic.code), diagnostic.detail, {}};
+		for (const DiagnosticField& field : diagnostic.fields)
+			seen.fields.emplace_back(std::string(field.key), field.value);
+		diagnosticList.push_back(std::move(seen));
+	}
+
+	// ---- Requests ----
+	void request(bool isFade, std::move_only_function<void()> done) {
+		if (options.autoComplete) executor.post(std::move(done));
+		else pending.push_back(PendingRequest{isFade, std::move(done)});
+	}
+	void completeOldest(bool isFade) {
+		const auto found = std::ranges::find_if(pending, [&](const auto& one) { return one.fade == isFade; });
+		if (found == pending.end())
+			throw std::logic_error(isFade ? "no fade-out is pending" : "no drive or silence is pending");
+		auto done = std::move(found->done);
+		pending.erase(found);
+		executor.post(std::move(done));
+		executor.pump();
+	}
+
+	// ---- The node ----
+	NodeSpec spec(bool disabled) const { return NodeSpec{options.node, std::string(type.name()), settings, disabled}; }
+	void requireParsed() const {
+		if (!config) throw std::logic_error("the harness has no parsed settings");
+	}
+	void requireAdded() const {
+		if (!added) throw std::logic_error("the harness has added no node");
+	}
+	void buffers() {
+		const Ports& ports = config->ports();
+		inputNames.clear();
+		outputNames.clear();
+		for (const auto* names : {&ports.inputs(), &ports.insideInputs()})
+			inputNames.insert(inputNames.end(), names->begin(), names->end());
+		for (const auto* names : {&ports.outputs(), &ports.insideOutputs()})
+			outputNames.insert(outputNames.end(), names->begin(), names->end());
+		inputs.assign(inputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
+		lastGain.assign(outputNames.size(), 1.0F);
+		fadeMask.assign(outputNames.size(), false);
+	}
+	static std::size_t indexOf(const std::vector<PortName>& names, std::string_view port) {
+		const auto found = std::ranges::find(names, port);
+		if (found == names.end()) throw std::logic_error("the node has no port " + std::string(port));
+		return static_cast<std::size_t>(found - names.begin());
+	}
+	/// Teardown to the end: remove the node (stopAll), completing every request the test left pending.
+	void finish() {
+		if (!added || stopped) return;
+		stopped = true;
+		host->stopAll(graph.close(), [] {});
+		executor.pump();
+		for (int rounds = 0; rounds < 1000 && !pending.empty(); ++rounds) {
+			auto done = std::move(pending.front().done);
+			pending.pop_front();
+			executor.post(std::move(done));
+			executor.pump();
+		}
+		clock.advance(defaultCloseDeadline); // a legacy run past its close deadline is leaked, never waited for
+	}
+
+	const NodeType& type;
+	Options options;
+	ManualExecutor executor;
+	FakeClock clock;
+	FakeBlocks blocks;
+	FakeOutside<SoundCardRequest> cards;
+	FakeOutside<RtpReceiverRequest> receivers;
+	FakeHandoffs handoffs;
+	ResourceRegistry registry;
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph; // only for close(), the proof stopAll takes
+
+	NodeSettings settings;
+	std::shared_ptr<const NodeConfig> config;
+	bool added = false;
+	bool disabled = false;
+	bool stopped = false;
+	SeenInstance* instance = nullptr;
+
+	FakeBlock* block = nullptr;
+	PortBlockEvents* blockEvents = nullptr;
+	AudioCode* driven = nullptr;
+	LatencyPlan plan;
+	std::deque<PendingRequest> pending;
+	std::vector<bool> fadeMask;
+	Fade fade = Fade::none;
+	std::uint32_t fadeAt = 0;
+	std::uint64_t position = 0;
+	bool firstCycle = true;
+
+	std::vector<CompanionFake> companionList;
+	std::vector<OutsideNodeEvents*> outsideEvents; // per companion; null once destroyed
+	std::vector<std::uint64_t> handoffCounts;
+
+	std::optional<NodeHealth> told;
+	bool wentAway = false;
+	std::uint64_t dropped_ = 0;
+	std::vector<std::string> noteList;
+	std::vector<SeenDiagnostic> diagnosticList;
+
+	std::vector<PortName> inputNames;
+	std::vector<PortName> outputNames;
+	std::vector<std::vector<float>> inputs;
+	std::vector<std::vector<float>> outputs;
+	std::vector<float> lastGain;
+	std::uint32_t lastFrames = 0;
+	// Last, so it goes first: its nodes' blocks, outside nodes and instances tell the members above as they go.
+	std::unique_ptr<NodeHost> host;
+};
+
+NodeHarness::NodeHarness(const NodeType& type, Options options)
+	: impl_(std::make_unique<Impl>(type, std::move(options))) {}
 
 NodeHarness::~NodeHarness() {
-	if (state_ == State::starting || state_ == State::running || state_ == State::failed) {
-		try {
-			close();
-		} catch (...) { // NOLINT(bugprone-empty-catch): a destructor reports nothing; the test's own close() would
-		}
+	try {
+		impl_->finish();
+	} catch (...) {
+		// A type bug thrown while tearing down: the test already failed on it, or will on what it checks.
 	}
 }
 
-std::expected<void, std::string> NodeHarness::parse(const NodeSettings& settings) {
-	if (state_ != State::unparsed && state_ != State::parsed)
-		throw std::logic_error("the harness parses before its run starts");
-	auto parsed = type_.parse(node_, settings);
-	if (!parsed) {
-		config_.reset();
-		state_ = State::unparsed;
-		return std::unexpected(std::move(parsed.error().detail));
-	}
-	config_ = std::move(*parsed);
-	state_ = State::parsed;
-	const Ports& ports = config_->ports();
-	inputs_.assign(ports.inputs().size() + ports.insideInputs().size(), std::vector<float>(format_.maxBlock, 0.0F));
-	outputs_.assign(ports.outputs().size() + ports.insideOutputs().size(),
-	                std::vector<float>(format_.maxBlock, std::numeric_limits<float>::quiet_NaN()));
-	return {};
+std::optional<std::string> NodeHarness::parse(const NodeSettings& settings) {
+	auto parsed = impl_->type.parse(impl_->options.node, settings);
+	if (!parsed) return parsed.error().detail;
+	impl_->settings = settings;
+	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
+	impl_->buffers();
+	return std::nullopt;
 }
 
 const Ports& NodeHarness::ports() const {
-	if (!config_) throw std::logic_error("the harness has no parsed node");
-	return config_->ports();
+	impl_->requireParsed();
+	return impl_->config->ports();
 }
 
-std::expected<void, FailureReason> NodeHarness::start() {
-	if (state_ != State::parsed) throw std::logic_error("the harness starts once, after a parse that passed");
-	state_ = State::starting;
-	events_ = std::make_shared<Events>();
-	inStart_ = true;
-	StartResult started = [&] {
-		try {
-			return config_->start(*this);
-		} catch (...) {
-			inStart_ = false;
-			throw;
-		}
-	}();
-	inStart_ = false;
-	if (started.failed()) {
-		handoffs_.clear();
-		recordingFiles_.clear();
-		outside_.clear();
-		fail(started.failure());
-		return std::unexpected(started.failure());
+void NodeHarness::add(AddOptions options) {
+	impl_->requireParsed();
+	if (impl_->added) throw std::logic_error("the harness adds one node");
+	impl_->added = true;
+	impl_->disabled = options.disabled;
+	impl_->host->nodeAdded(impl_->spec(options.disabled), impl_->config);
+	impl_->executor.pump();
+}
+
+void NodeHarness::blockReady() {
+	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
+	impl_->blockEvents->ready();
+	impl_->executor.pump();
+}
+
+void NodeHarness::blockLost(std::string detail) {
+	if (impl_->blockEvents == nullptr) throw std::logic_error("no block was made");
+	impl_->blockEvents->lost(std::move(detail));
+	impl_->executor.pump();
+}
+
+void NodeHarness::ready(std::string_view bank) {
+	CompanionFake& fake = companion(bank);
+	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
+	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
+	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	fake.ready = true;
+	events->ready();
+	impl_->executor.pump();
+}
+
+void NodeHarness::lose(std::string_view bank, std::string detail) {
+	CompanionFake& fake = companion(bank);
+	const auto index = static_cast<std::size_t>(&fake - impl_->companionList.data());
+	OutsideNodeEvents* events = impl_->outsideEvents.at(index);
+	if (events == nullptr) throw std::logic_error("the outside node on " + std::string(bank) + " is destroyed");
+	events->lost(std::move(detail));
+	impl_->executor.pump();
+}
+
+void NodeHarness::acknowledgeFade() { impl_->completeOldest(true); }
+
+void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
+
+void NodeHarness::advance(std::chrono::milliseconds by) {
+	impl_->clock.advance(by);
+	impl_->executor.pump();
+}
+
+void NodeHarness::process(std::uint32_t frames) {
+	impl_->requireParsed();
+	Impl& h = *impl_;
+	if (frames == 0) frames = h.options.format.maxBlock;
+	if (frames > h.options.format.maxBlock) throw std::logic_error("a cycle is at most maxBlock frames");
+	std::vector<std::span<const float>> in;
+	std::vector<std::span<float>> out;
+	for (auto& buffer : h.inputs) in.emplace_back(buffer.data(), frames);
+	for (auto& buffer : h.outputs) {
+		std::fill_n(buffer.begin(), frames, std::numeric_limits<float>::quiet_NaN());
+		out.emplace_back(buffer.data(), frames);
 	}
-	recipe_ = std::move(started.recipe());
-	code_ = started.code().own() ? std::move(started.code().own()) : makePassThrough(ports(), started.code().pairs());
-	code_->prepare(format_);
-	buildIfAllReady();
-	if (state_ == State::failed) return std::unexpected(*failure_);
-	return {};
+	const auto rate = static_cast<std::int64_t>(h.options.format.rate);
+	const auto at = static_cast<std::int64_t>(h.position) * 1'000'000'000 / rate;
+	const GraphCycle cycle{.startNs = at,
+	                       .position = h.position,
+	                       .startRawNs = at,
+	                       .nextNs = static_cast<std::int64_t>(h.position + frames) * 1'000'000'000 / rate,
+	                       .discontinuity = h.firstCycle};
+	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
+	else
+		for (auto& span : out) std::ranges::fill(span, 0.0F);
+	// The fade, as the real block applies it (port_blocks.cpp): sample by sample, exact at both ends.
+	const std::uint32_t fadeFrames = std::max(h.options.format.rate * 5 / 1000, 1U);
+	for (std::uint32_t i = 0; i < frames; ++i) {
+		if (h.fade == Impl::Fade::none) break;
+		const float gain = static_cast<float>(h.fadeAt) / static_cast<float>(fadeFrames);
+		for (std::size_t o = 0; o < out.size(); ++o)
+			if (h.fadeMask[o]) {
+				out[o][i] = h.fadeAt == 0 ? 0.0F : out[o][i] * gain;
+				if (i + 1 == frames) h.lastGain[o] = gain;
+			}
+		if (h.fade == Impl::Fade::in && ++h.fadeAt >= fadeFrames) {
+			h.fade = Impl::Fade::none;
+			for (std::size_t o = 0; o < out.size(); ++o)
+				if (h.fadeMask[o]) h.lastGain[o] = 1.0F;
+		}
+	}
+	h.position += frames;
+	h.firstCycle = false;
+	h.lastFrames = frames;
 }
 
-void NodeHarness::ready(std::size_t index) {
-	outside_.at(index).ready = true;
-	buildIfAllReady();
+NodeOutcome NodeHarness::change(const NodeSettings& settings) {
+	impl_->requireAdded();
+	auto parsed = impl_->type.parse(impl_->options.node, settings);
+	if (!parsed) throw std::logic_error("change() with settings the type refuses: " + parsed.error().detail);
+	std::vector<std::string> keys;
+	for (const auto& [key, value] : settings.items())
+		if (!impl_->settings.contains(key) || impl_->settings.at(key) != value) keys.push_back(key);
+	for (const auto& [key, value] : impl_->settings.items())
+		if (!settings.contains(key)) keys.push_back(key);
+	std::ranges::sort(keys);
+	impl_->settings = settings;
+	impl_->config = std::make_shared<const Impl::SeenConfig>(*impl_, std::move(*parsed));
+	impl_->buffers();
+	const NodeOutcome outcome = impl_->disabled ? NodeOutcome::stored : NodeOutcome::restart;
+	impl_->host->nodeChanged(impl_->spec(impl_->disabled), impl_->config, NodeChange{outcome, keys});
+	impl_->executor.pump();
+	return outcome;
 }
 
-void NodeHarness::lose(std::size_t index, std::string detail) {
-	static_cast<void>(outside_.at(index));
-	fail({FailureReason::Code::engineRefused, std::move(detail)});
+LifecycleReply NodeHarness::stop() {
+	impl_->requireAdded();
+	const LifecycleReply reply = impl_->host->stop(impl_->options.node);
+	impl_->executor.pump();
+	return reply;
 }
 
-NodeHarness::State NodeHarness::state() const {
-	const_cast<NodeHarness*>(this)->applyFacts(); // NOLINT: a fact told from a run's thread lands when looked at
-	return state_;
+LifecycleReply NodeHarness::start() {
+	impl_->requireAdded();
+	const LifecycleReply reply = impl_->host->start(impl_->options.node);
+	impl_->executor.pump();
+	return reply;
 }
 
-std::optional<FailureReason> NodeHarness::failure() const {
-	const_cast<NodeHarness*>(this)->applyFacts(); // NOLINT: as state()
-	return failure_;
+LifecycleReply NodeHarness::restart() {
+	impl_->requireAdded();
+	const LifecycleReply reply = impl_->host->restart(impl_->options.node);
+	impl_->executor.pump();
+	return reply;
 }
+
+void NodeHarness::disable() {
+	impl_->requireAdded();
+	impl_->disabled = true;
+	impl_->host->nodeChanged(impl_->spec(true), impl_->config, NodeChange{NodeOutcome::disable, {}});
+	impl_->executor.pump();
+}
+
+void NodeHarness::enable() {
+	impl_->requireAdded();
+	impl_->disabled = false;
+	impl_->host->nodeChanged(impl_->spec(false), impl_->config, NodeChange{NodeOutcome::enable, {}});
+	impl_->executor.pump();
+}
+
+void NodeHarness::remove() {
+	impl_->requireAdded();
+	impl_->host->nodeRemoved(impl_->options.node);
+	impl_->executor.pump();
+}
+
+NodeHealth NodeHarness::health() const {
+	if (!impl_->told) throw std::logic_error("nothing was told of the node");
+	return *impl_->told;
+}
+
+std::string_view NodeHarness::phase() const { return phaseName(health().phase); }
+
+bool NodeHarness::gone() const noexcept { return impl_->wentAway; }
+
+std::uint64_t NodeHarness::droppedFrames() const { return impl_->dropped_; }
+
+const std::vector<std::string>& NodeHarness::notes() const noexcept { return impl_->noteList; }
+
+const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { return impl_->diagnosticList; }
 
 std::span<float> NodeHarness::input(std::string_view port) {
-	const Ports& known = ports();
-	const auto at = [&](const std::vector<PortName>& names) { return std::ranges::find(names, port) - names.begin(); };
-	if (const auto index = static_cast<std::size_t>(at(known.inputs())); index < known.inputs().size())
-		return inputs_[index];
-	if (const auto index = static_cast<std::size_t>(at(known.insideInputs())); index < known.insideInputs().size())
-		return inputs_[known.inputs().size() + index];
-	throw std::logic_error("node " + node_ + " has no input " + std::string(port));
+	return impl_->inputs.at(Impl::indexOf(impl_->inputNames, port));
 }
 
 std::span<const float> NodeHarness::output(std::string_view port) const {
-	const Ports& known = ports();
-	const auto at = [&](const std::vector<PortName>& names) { return std::ranges::find(names, port) - names.begin(); };
-	if (const auto index = static_cast<std::size_t>(at(known.outputs())); index < known.outputs().size())
-		return outputs_[index];
-	if (const auto index = static_cast<std::size_t>(at(known.insideOutputs())); index < known.insideOutputs().size())
-		return outputs_[known.outputs().size() + index];
-	throw std::logic_error("node " + node_ + " has no output " + std::string(port));
-}
-
-void NodeHarness::process(const GraphCycle& cycle, std::uint32_t frames) {
-	if (!code_) throw std::logic_error("the harness processes only a started run");
-	if (frames > format_.maxBlock) throw std::logic_error("a cycle is at most maxBlock frames");
-	std::vector<std::span<const float>> in;
-	for (const auto& buffer : inputs_) in.emplace_back(std::span<const float>(buffer).first(frames));
-	std::vector<std::span<float>> out;
-	for (auto& buffer : outputs_) {
-		std::ranges::fill(buffer, std::numeric_limits<float>::quiet_NaN());
-		out.emplace_back(std::span<float>(buffer).first(frames));
-	}
-	code_->process(in, out, frames, cycle);
-	lastFrames_ = frames;
+	return impl_->outputs.at(Impl::indexOf(impl_->outputNames, port));
 }
 
 std::size_t NodeHarness::unwritten() const {
 	std::size_t count = 0;
-	for (const auto& buffer : outputs_)
-		count += static_cast<std::size_t>(std::ranges::count_if(std::span<const float>(buffer).first(lastFrames_),
-		                                                        [](float sample) { return std::isnan(sample); }));
+	for (const auto& buffer : impl_->outputs)
+		count += static_cast<std::size_t>(
+			std::count_if(buffer.begin(), buffer.begin() + impl_->lastFrames, [](float s) { return std::isnan(s); }));
 	return count;
 }
 
-std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return handoffs_.at(index)->frames; }
-
-std::vector<std::string> NodeHarness::notes() const {
-	if (!events_) return {};
-	const std::scoped_lock lock(events_->mutex);
-	return events_->notes;
+float NodeHarness::lastFadeGain(std::string_view port) const {
+	return impl_->lastGain.at(Impl::indexOf(impl_->outputNames, port));
 }
 
-void NodeHarness::close() {
-	if (state_ != State::starting && state_ != State::running && state_ != State::failed)
-		throw std::logic_error("the harness closes only a started run");
-	{
-		const std::scoped_lock lock(events_->mutex);
-		events_->closing = true;
-	}
-	if (code_) code_->release();
-	outside_.clear();
-	for (const auto& handoff : handoffs_) handoff->consumer->finish();
-	handoffs_.clear();
-	if (object_) {
-		std::weak_ptr<Events> weak = events_;
-		object_->close([weak] {
-			if (const auto events = weak.lock()) {
-				const std::scoped_lock lock(events->mutex);
-				events->closed = true;
-				events->closedSignal.notify_all();
-			}
-		});
-		std::unique_lock lock(events_->mutex);
-		if (!events_->closedSignal.wait_for(lock, std::chrono::seconds(10), [&] { return events_->closed; }))
-			throw std::runtime_error("node " + node_ + ": the run object did not close within 10 s");
-	}
-	{
-		const std::scoped_lock lock(events_->mutex);
-		events_->detached = true;
-	}
-	code_.reset();
-	object_.reset();
-	recipe_ = nullptr;
-	recordingFiles_.clear();
-	state_ = State::closed;
+const LatencyPlan& NodeHarness::latencyPlan() const noexcept { return impl_->plan; }
+
+const std::vector<CompanionFake>& NodeHarness::companions() const noexcept { return impl_->companionList; }
+
+CompanionFake& NodeHarness::companion(std::string_view bank) {
+	for (auto it = impl_->companionList.rbegin(); it != impl_->companionList.rend(); ++it)
+		if (it->bank == bank) return *it;
+	throw std::logic_error("no companion was made on bank " + std::string(bank));
 }
 
-InsidesEvents& NodeHarness::events() {
-	if (!inStart_ && !inRecipe_)
-		throw std::logic_error("node " + node_ + ": events were asked for outside start() and its recipe");
-	return *events_;
-}
+std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return impl_->handoffCounts.at(index); }
 
-void NodeHarness::declareLatency(const std::string& bank, Latency internal) {
-	if (!inStart_) throw std::logic_error("node " + node_ + ": latency was declared outside start()");
-	static_cast<void>(ports().bank(bank)); // throws for a bank the node lacks, as NodeHost does
-	if (std::ranges::any_of(latency_, [&](const auto& declared) { return declared.first == bank; }))
-		throw std::logic_error("node " + node_ + ": latency declared twice for bank \"" + bank + "\"");
-	latency_.emplace_back(bank, internal);
-}
-
-StartContext::Acquired NodeHarness::acquireResource(const ResourceRequest& request) {
-	if (!inStart_) throw std::logic_error("node " + node_ + ": a resource was asked for outside start()");
-	requests_.push_back(request);
-	// NodeHost's own checks and names (run_requests.hpp), so the harness accepts what NodeHost accepts.
-	const Ports::Bank* bank = requestedBank(ports(), node_, request);
-	if (const auto suffix = outsideSuffix(request)) {
-		NodeName name = node_ + "." + std::string(*suffix);
-		if (std::ranges::any_of(outside_, [&](const Outside& known) { return known.name == name; }))
-			throw std::logic_error("node " + node_ + ": a second resource named " + name + " in one run");
-		outside_.push_back({std::move(name)});
-		return std::monostate{};
-	}
-	if (const auto* handoff = std::get_if<HandoffRequest>(&request)) {
-		RtWriter* writer =
-			handoffs_.emplace_back(std::make_unique<Handoff>(*handoff->consumer, bank->ports.size())).get();
-		return writer;
-	}
-	const auto& recording = std::get<RecordingRequest>(request);
-	if (recordings_ == nullptr) return std::unexpected(std::string("no recordings folder"));
-	auto opened = recordings_->open(node_, recording.path);
-	if (!opened) return std::unexpected(std::move(opened.error()));
-	return (*recordingFiles_.emplace_back(std::move(*opened))).descriptor();
-}
-
-void NodeHarness::buildIfAllReady() {
-	applyFacts();
-	if (state_ != State::starting || !std::ranges::all_of(outside_, &Outside::ready)) return;
-	if (recipe_) {
-		inRecipe_ = true;
-		auto made = [&] {
-			try {
-				return recipe_(*this);
-			} catch (...) {
-				inRecipe_ = false;
-				throw;
-			}
-		}();
-		inRecipe_ = false;
-		if (!made) {
-			fail(std::move(made.error()));
-			return;
-		}
-		object_ = std::move(*made);
-	}
-	state_ = State::running;
-}
-
-void NodeHarness::fail(FailureReason reason) {
-	if (state_ == State::failed || state_ == State::closed) return;
-	failure_ = std::move(reason);
-	state_ = State::failed;
-}
-
-void NodeHarness::applyFacts() {
-	if (!events_ || (state_ != State::starting && state_ != State::running)) return;
-	std::optional<std::string> lost;
-	{
-		const std::scoped_lock lock(events_->mutex);
-		lost = std::exchange(events_->lostDetail, std::nullopt);
-	}
-	if (lost) fail({FailureReason::Code::startFailed, std::move(*lost)});
+RunObject* NodeHarness::runObject() const noexcept {
+	if (impl_->instance == nullptr) return nullptr;
+	const auto* legacy = dynamic_cast<const detail::LegacyInstance*>(impl_->instance->inner.get());
+	return legacy != nullptr ? legacy->runObject() : nullptr;
 }
 
 } // namespace ear::testing

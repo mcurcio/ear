@@ -38,8 +38,8 @@ private:
 
 } // namespace
 
-RunCode RunCode::passThrough(std::vector<BankPair> pairs) {
-	RunCode code;
+NodeCode NodeCode::passThrough(std::vector<BankPair> pairs) {
+	NodeCode code;
 	code.pairs_ = std::move(pairs);
 	return code;
 }

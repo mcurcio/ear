@@ -1,8 +1,9 @@
-// The "file" node type through its type harness, by the bank its spec declares (file_spec.hpp), whose synchronous handoff stands in for the framework's and whose
-// recordings are made beneath a real recordings folder, as main.cpp's adapter makes them (docs/design/m1-white-to-file.md
-// section 3, slice S5 criteria 2 and 3; docs/design/node-framework.md sections 7.3 and 7.6). The WAV files are read back
-// with libsndfile. Paths are relative to a recordings folder and never lead out of it (docs/design/batch2.md section
-// 4.4).
+// The "file" node type through the node harness (a real NodeHost over fakes), by the bank its spec declares
+// (file_spec.hpp), whose synchronous handoff stands in for the framework's and whose recordings are made beneath a real
+// recordings folder, as main.cpp's adapter makes them (docs/design/m1-white-to-file.md section 3, slice S5 criteria 2
+// and 3; docs/design/node-framework.md sections 7.3 and 7.6). Until step L-4b `file` is a legacy type
+// (makeLegacyNodeType), so it runs through NodeHarness by names, not TypeHarness. The WAV files are read back with
+// libsndfile. Paths are relative to a recordings folder and never lead out of it (docs/design/batch2.md section 4.4).
 #include <sndfile.h>
 
 #include <cstdint>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <stdexcept>
 #include <span>
 #include <string>
 #include <variant>
@@ -19,17 +21,16 @@
 #include "confined_recordings.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/nodes/file.hpp"
-#include "ear/testing/type_harness.hpp"
+#include "ear/testing/node_harness.hpp"
 #include "file_spec.hpp"
 #include "temp_folder.hpp"
 
 namespace {
 
 namespace file = ear::nodes::file;
-using Harness = ear::testing::TypeHarness<file::spec, file::File>;
+using Harness = ear::testing::NodeHarness;
 
 using ear::test::TempFolder;
-using State = ear::testing::NodeHarness::State;
 
 const ear::NodeType& fileType() {
 	static const auto type = ear::nodes::makeFileNodeType();
@@ -48,11 +49,17 @@ struct Recordings {
 };
 
 /// A harness on a node named "rec" recording to `path`, its settings parsed.
-Harness parsed(Recordings& recordings, const std::string& path,
-               ear::AudioFormat format = {.rate = 48000, .maxBlock = 256}) {
-	Harness harness(format, recordings.adapter.get(), "rec");
-	REQUIRE(harness->parse({{"path", path}}));
+std::unique_ptr<Harness> parsed(Recordings& recordings, const std::string& path,
+                                ear::AudioFormat format = {.rate = 48000, .maxBlock = 256}) {
+	auto harness = std::make_unique<Harness>(
+		fileType(), Harness::Options{.format = format, .recordings = recordings.adapter.get()});
+	REQUIRE_FALSE(harness->parse({{"path", path}}));
 	return harness;
+}
+
+/// Member `member` of the record bank.
+std::span<float> record(Harness& harness, std::size_t member) {
+	return harness.input(harness.ports().bank(file::record.name).ports.at(member));
 }
 
 std::string contents(const std::filesystem::path& path) {
@@ -60,12 +67,14 @@ std::string contents(const std::filesystem::path& path) {
 	return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
-/// The requests that are handoffs.
-std::vector<ear::HandoffRequest> handoffsOf(const ear::testing::NodeHarness& harness) {
-	std::vector<ear::HandoffRequest> handoffs;
-	for (const auto& request : harness.requests())
-		if (const auto* handoff = std::get_if<ear::HandoffRequest>(&request)) handoffs.push_back(*handoff);
-	return handoffs;
+/// Whether the node made a handoff.
+bool madeHandoff(const Harness& harness) {
+	try {
+		static_cast<void>(harness.handoffFrames(0));
+		return true;
+	} catch (const std::out_of_range&) {
+		return false;
+	}
 }
 
 } // namespace
@@ -85,10 +94,10 @@ TEST_CASE("File settings need exactly a non-empty string path", "[file]") {
 	      ear::NodeSettings{{"path", 7}}, ear::NodeSettings{{"path", "a.wav"}, {"gain", 1}},
 	      ear::NodeSettings("a.wav")}) {
 		INFO(settings.dump());
-		Harness harness;
-		const auto parse = harness->parse(settings);
-		REQUIRE_FALSE(parse);
-		CHECK_FALSE(parse.error().empty());
+		Harness harness(fileType());
+		const auto refused = harness.parse(settings);
+		REQUIRE(refused);
+		CHECK_FALSE(refused->empty());
 	}
 }
 
@@ -109,7 +118,7 @@ TEST_CASE("File refuses an absolute path or a .. component as invalid settings",
 	}
 }
 
-TEST_CASE("File refuses at start a symlink in the folder that leads outside it", "[file]") {
+TEST_CASE("File fails its configure on a symlink in the folder that leads outside it", "[file]") {
 	TempFolder dir{"symlink"};
 	const auto outside = dir.path() / "outside.wav";
 	std::ofstream(outside, std::ios::binary) << "keep";
@@ -121,13 +130,13 @@ TEST_CASE("File refuses at start a symlink in the folder that leads outside it",
 		INFO(path);
 		auto harness = parsed(recordings, path);
 
-		const auto started = harness->start();
+		harness->add();
 
-		REQUIRE_FALSE(started);
-		CHECK(started.error().code == ear::FailureReason::Code::startFailed);
-		CHECK(started.error().detail == "cannot open " + path + ": it leads outside the folder");
-		CHECK(handoffsOf(harness.node()).empty());
-		CHECK(harness->state() == State::failed);
+		CHECK(harness->phase() == "failed");
+		REQUIRE(harness->health().reason);
+		CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+		CHECK(harness->health().reason->detail == "cannot open " + path + ": it leads outside the folder");
+		CHECK_FALSE(madeHandoff(*harness));
 	}
 	CHECK(contents(outside) == "keep");
 	CHECK_FALSE(std::filesystem::exists(dir.path() / "new.wav"));
@@ -146,32 +155,30 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	Recordings recordings(dir.path());
 	auto harness = parsed(recordings, "rec.wav", format);
 
-	REQUIRE(harness->start());
-	REQUIRE(harness->requests().size() == 2);
-	CHECK(std::get<ear::RecordingRequest>(harness->requests()[0]).path == "rec.wav");
-	const auto handoffs = handoffsOf(harness.node());
-	REQUIRE(handoffs.size() == 1);
-	CHECK(handoffs[0].bank == file::record.name);
-	CHECK(handoffs[0].capacityFrames == 2 * format.rate); // 2 s ring
-	CHECK(harness->state() == State::running);
+	harness->add();
+	harness->blockReady();
+	CHECK(harness->phase() == "running");
+	CHECK(madeHandoff(*harness));
 	CHECK(harness->runObject() != nullptr); // the open file
 
 	std::vector<float> left;
 	std::vector<float> right;
 	for (std::uint32_t block = 0; block < blocks; ++block) {
-		const std::span<float> fl = harness.input(file::record, 0);
-		const std::span<float> fr = harness.input(file::record, 1);
+		const std::span<float> fl = record(*harness, 0);
+		const std::span<float> fr = record(*harness, 1);
 		for (std::uint32_t i = 0; i < format.maxBlock; ++i) {
 			const auto n = static_cast<float>(block * format.maxBlock + i);
 			fl[i] = n / 1024.0F;
 			fr[i] = -n / 2048.0F - 0.25F;
 		}
-		harness->process(ear::GraphCycle{0, 0}, format.maxBlock);
+		harness->process();
 		left.insert(left.end(), fl.begin(), fl.end());
 		right.insert(right.end(), fr.begin(), fr.end());
 	}
 	CHECK(harness->handoffFrames(0) == blocks * format.maxBlock);
-	harness->close(); // the handoff's consumer finishes the file
+	harness->remove(); // the handoff's consumer finishes the file
+	CHECK(harness->gone());
+	CHECK(harness->droppedFrames() == 0);
 
 	SF_INFO info{};
 	SNDFILE* file = sf_open(wav.c_str(), SFM_READ, &info);
@@ -191,23 +198,24 @@ TEST_CASE("File records record.left and record.right as a 32-bit float stereo WA
 	}
 }
 
-TEST_CASE("File fails to start on a path it cannot open, and asks for no handoff", "[file]") {
+TEST_CASE("File fails its configure on a path it cannot open, and asks for no handoff", "[file]") {
 	TempFolder dir{"unopenable"};
 	Recordings recordings(dir.path());
 	auto harness = parsed(recordings, "missing-dir/rec.wav");
 
-	const auto started = harness->start();
+	harness->add();
 
-	REQUIRE_FALSE(started);
-	CHECK(started.error().code == ear::FailureReason::Code::startFailed);
-	CHECK(started.error().detail.find("cannot open missing-dir/rec.wav: ") == 0);
-	CHECK(handoffsOf(harness.node()).empty());
+	CHECK(harness->phase() == "failed");
+	REQUIRE(harness->health().reason);
+	CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
+	CHECK(harness->health().reason->detail.starts_with("cannot open missing-dir/rec.wav: "));
+	CHECK_FALSE(madeHandoff(*harness));
 }
 
-TEST_CASE("File fails to start when the host has no recordings folder", "[file]") {
-	Harness harness;
-	REQUIRE(harness->parse({{"path", "rec.wav"}}));
-	const auto started = harness->start();
-	REQUIRE_FALSE(started);
-	CHECK(started.error().detail == "cannot open rec.wav: no recordings folder");
+TEST_CASE("File fails its configure when the host has no recordings folder", "[file]") {
+	Harness harness(fileType());
+	REQUIRE_FALSE(harness.parse({{"path", "rec.wav"}}));
+	harness.add();
+	REQUIRE(harness.health().reason);
+	CHECK(harness.health().reason->detail == "cannot open rec.wav: no recordings folder");
 }
