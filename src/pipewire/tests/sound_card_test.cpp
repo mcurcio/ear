@@ -483,7 +483,7 @@ TEST_CASE("A card that loses a link while it follows is lost with its node gone,
 	CHECK(graph.bothRun(16));
 	CHECK(graph.cardCode.driver() == graph.dummy);
 	CHECK(graph.otherCode.driver() == graph.dummy);
-	// A loaded host's stall makes the internal clock resync, which is a discontinuity of its own (rtp.md erratum 3);
+	// A loaded host's stall makes the internal clock skip blocks to catch up, a discontinuity of its own (rtp.md erratum 3);
 	// the card's loss makes none.
 	CHECK(graph.cardCode.discontinuities() == 0);
 	CHECK(graph.otherCode.discontinuities() == 0);

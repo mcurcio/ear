@@ -108,8 +108,8 @@ struct GraphCycle {
 	/// Cycles this block saw start ahead of where the last one ended, on the same driver: the graph lost time (a
 	/// stall). PipeWire gives a block no xrun count of its own, so the framework counts these.
 	std::uint64_t xruns = 0;
-	/// The first cycle the block runs, the first after the driver changed, or one whose position jumped (the dummy's
-	/// resync after a stall): the clock did not move on by the last cycle's frames.
+	/// The first cycle the block runs, the first after the driver changed, or one whose position jumped (a stall the
+	/// driver caught up by whole blocks): the clock did not move on by the last cycle's frames.
 	bool discontinuity = false;
 	/// One per output port (outputs then insideOutputs, as AudioCode::process's spans): the latency downstream of the
 	/// port's bank, what the ports linked to the bank report (a following card: its buffer), combined over them. Empty

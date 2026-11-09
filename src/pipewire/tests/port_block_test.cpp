@@ -787,8 +787,8 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 		if (i > 0 && seen.cycle.position > log.at(i - 1).cycle.position + log.at(i - 1).frames) ++forward;
 		if (i > 0) CHECK(seen.cycle.xruns >= log.at(i - 1).cycle.xruns);
 	}
-	// A loaded host's stall makes the internal clock resync (a jump, and an xrun when it is forward); a quiet one
-	// makes none. A backward resync is a discontinuity but no xrun.
+	// A loaded host's stall makes the internal clock skip blocks to catch up (each a jump forward, and an xrun); a quiet
+	// one makes none. The position never steps back (engine.conf's resync.ms; the stall test below).
 	CHECK(forward <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
 	CHECK(jumps <= 2);
 
@@ -1652,4 +1652,99 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 	for (std::size_t n = heard; n < listener.count(); ++n) notNewer += listener.sample(0, n) != 0.5F ? 1 : 0;
 	CHECK(notNewer == 0);
 	pw_proxy_destroy(link);
+}
+
+namespace {
+
+/// Records each cycle's position and raw start, and stalls the data thread once for each of `stalls` (cycle, ms).
+class StallingLog final : public AudioCode {
+public:
+	struct Stall {
+		std::size_t atCycle;
+		std::chrono::milliseconds length;
+	};
+	StallingLog(Waiter& waiter, std::size_t capacity, std::vector<Stall> stalls)
+		: waiter_(waiter), position_(capacity), startRawNs_(capacity), stalls_(std::move(stalls)) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at < position_.size()) {
+			position_[at] = cycle.position;
+			startRawNs_[at] = cycle.startRawNs;
+			count_.store(at + 1, std::memory_order_release);
+			for (const Stall& stall : stalls_) {
+				if (stall.atCycle == at) std::this_thread::sleep_for(stall.length); // the data thread stalls
+			}
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::size_t count() const { return count_.load(std::memory_order_acquire); }
+	std::size_t capacity() const { return position_.size(); }
+	/// Where the graph's position lies against the raw clock, in frames, at cycle `i` (a constant while it tracks it).
+	double phase(std::size_t i) const {
+		return static_cast<double>(position_[i]) - static_cast<double>(startRawNs_[i]) * kRate / 1e9;
+	}
+	/// The phase averaged over cycles [from, to).
+	double phase(std::size_t from, std::size_t to) const {
+		double sum = 0.0;
+		for (std::size_t i = from; i < to; ++i) sum += phase(i) - phase(0);
+		return sum / static_cast<double>(to - from);
+	}
+	std::vector<std::uint64_t> position_;
+	std::vector<std::int64_t> startRawNs_;
+
+private:
+	Waiter& waiter_;
+	std::vector<Stall> stalls_;
+	std::atomic<std::size_t> count_{0};
+};
+
+} // namespace
+
+// node-driver.c (PipeWire 1.4.2), tracking the raw clock, resets clock.position to raw time past resync.ms, but leaves
+// its CLOCK_MONOTONIC timer where it was: the timeouts it then fires back to back, to catch up, each add a block while raw
+// time barely moves, stepping the position back by the next reset, and leave it up to resync.ms ahead of the raw clock.
+// There its error is clamped to 1 ms a cycle, and the loop slews the whole graph by hundreds of ppm for tens of seconds
+// to work it off (-230 ppm 9 s after one 20 ms stall). engine.conf sets resync.ms beyond any stall, so the driver never
+// resets: it catches up on its own timer, by whole blocks, and the phase it held against the raw clock is kept
+// (docs/design/node-framework.md section 10, "Slice 7 as built").
+TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up by whole blocks, never steps back, and "
+          "keeps its phase to the raw clock",
+          "[port_blocks][clock]") {
+	using Stall = StallingLog::Stall;
+	const std::vector<Stall> stalls{{200, 30ms}, {600, 60ms}, {1000, 120ms}};
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingLog log(waiter, 1400, stalls);
+	BlockEvents events(waiter);
+	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &log));
+	REQUIRE(waiter.until([&] { return log.count() == log.capacity(); }, 30s));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+
+	std::size_t back = 0, notWhole = 0, jumps = 0;
+	for (std::size_t i = 1; i < log.capacity(); ++i) {
+		const std::uint64_t before = log.position_[i - 1], now = log.position_[i];
+		if (now <= before) ++back;
+		else if ((now - before) % kBlock != 0) ++notWhole;
+		else if (now - before > kBlock) ++jumps;
+	}
+	INFO("jumps " << jumps);
+	CHECK(back == 0);
+	CHECK(notWhole == 0);
+	CHECK(jumps >= stalls.size()); // each stall lost time: the graph skipped blocks to catch up
+	for (const Stall& stall : stalls) {
+		// Before: the cycles just ahead of the stall. After: a second on, when the catching up is long over. The loop's own
+		// wander over that second is a few frames (140 ppm at worst, before it has settled: 7 frames).
+		const double before = log.phase(stall.atCycle - 60, stall.atCycle - 10);
+		const double after = log.phase(stall.atCycle + 190, stall.atCycle + 240);
+		INFO("stall of " << stall.length.count() << " ms at cycle " << stall.atCycle << ": phase " << before
+		                 << " frames before, " << after << " after");
+		CHECK(std::abs(after - before) < 48.0); // 1 ms: the driver's own error clamp, well under one block
+	}
 }

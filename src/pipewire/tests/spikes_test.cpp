@@ -387,7 +387,8 @@ std::unique_ptr<Engine> engineAt(std::uint32_t block) {
 /// (under load the driver starts cycles faster than the graph finishes them).
 constexpr std::size_t kS2Capacity = kS2Requests * 80 + 8000;
 
-/// The dummy driver's resync.ms (node-driver.c's default, 10 ms; engine.conf leaves it) in frames.
+/// 10 ms in frames: node-driver.c's default resync.ms. engine.conf sets resync.ms beyond any stall, so the driver never
+/// resets, and its loop keeps the position within its 1 ms error clamp of the raw clock: never this far ahead of it.
 constexpr std::uint64_t kResyncFrames = kRate / 100;
 
 /// CLOCK_MONOTONIC_RAW now, in frames of the graph frequency: the clock the dummy driver tracks (engine.conf's
@@ -580,7 +581,8 @@ public:
 
 /// The three logs read as one timeline of graph cycles. U, B and D all run on the one data thread and each takes the
 /// shared entry sequence number on entry, so a graph cycle is a run of consecutive numbers: U's, then B's, then D's, all
-/// at one clock.position. Cycles are told apart by sequence, never by position: positions can repeat and step back.
+/// at one clock.position. Cycles are told apart by sequence, never by position: with the driver's default resync.ms
+/// positions repeated and stepped back, and the check that they no longer do must not rest on them.
 struct Timeline {
 	std::size_t cycles = 0;        // U's entries: the cycles the driver started while recording
 	std::size_t whole = 0;         // cycles all three ran
@@ -590,7 +592,7 @@ struct Timeline {
 	std::string firstBroken;       // the first of those, described
 	std::size_t stepsBack = 0;     // cycles whose position is not above the previous cycle's
 	std::uint64_t largestBack = 0; // frames, the largest step back
-	std::size_t tooFarAhead = 0;   // cycles more than resync.ms ahead of the raw clock, where the driver puts none
+	std::size_t tooFarAhead = 0;   // cycles more than 10 ms ahead of the raw clock, where the driver puts none
 	std::string firstTooFarAhead;  // the first of those, described
 };
 
@@ -630,8 +632,8 @@ Timeline readTimeline(const Upstream& u, const CycleLog& b, const CycleLog& d) {
 				++result.stepsBack;
 				result.largestBack = std::max(result.largestBack, cycleU->position - e.position);
 			}
-			// node-driver.c on_timeout resets clock.position to the raw clock (as it reads it, before U enters)
-			// whenever it would lie more than resync.ms from it: no cycle starts further ahead than that.
+			// The driver's loop holds clock.position on the raw clock (as it reads it, before U enters), and a stall
+			// only puts it behind: no cycle starts 10 ms ahead of it.
 			if (e.position > u.rawAtEntry[e.index] + kResyncFrames && result.tooFarAhead++ == 0)
 				result.firstTooFarAhead =
 					std::to_string(e.position) + " with the raw clock at " + std::to_string(u.rawAtEntry[e.index]);
@@ -984,18 +986,20 @@ TEST_CASE(
 	// link order. A cycle the data thread cannot finish before the driver starts the next (the graph's xrun: a loaded
 	// host) is abandoned part way: only a prefix of the graph in link order runs it (U, or U and B) and its audio never
 	// reaches the rest. So such a cycle is counted and printed, and fails only if a node ran it without every node
-	// upstream of it straight before, at the same position. Positions may step back: a starved data loop reads the
-	// driver's timer late, so the driver resets clock.position forward to the raw clock (node-driver.c on_timeout, past
-	// resync.ms), but its next timeout is still due at once, and the timeouts it then fires back to back each add a block
-	// until the position is resync.ms ahead of the raw clock, when it resets back to it: the whole graph then runs again
-	// positions it has already run. So a step back is counted, and every cycle fails only if it starts more than
-	// resync.ms ahead of the raw clock, where the driver puts none.
+	// upstream of it straight before, at the same position. Positions never step back: a starved data loop reads the
+	// driver's timer late, and the driver, which engine.conf's resync.ms keeps from resetting to the raw clock, fires the
+	// timeouts it missed back to back, a block each, until it has caught up (node-driver.c on_timeout). With the default
+	// resync.ms (10 ms) it reset the position forward to the raw clock, then stepped it back by up to about 440 frames
+	// once its back-to-back timeouts had put it 10 ms ahead, and the graph ran positions again. No cycle starts more than
+	// 10 ms ahead of the raw clock either.
 	const Timeline timeline = readTimeline(upCode, blockCode.log, downCode.log);
 	INFO("first broken cycle: " << timeline.firstBroken);
 	INFO("first cycle too far ahead of the raw clock: " << timeline.firstTooFarAhead);
 	CHECK(timeline.whole > 0);
 	CHECK(timeline.broken == 0);
 	CHECK(timeline.tooFarAhead == 0);
+	INFO("largest step back: " << timeline.largestBack << " frames");
+	CHECK(timeline.stepsBack == 0);
 
 	// Every request taken up once, in order, alternating; takenAt published one cycle before.
 	const auto taken = blockCode.taken();

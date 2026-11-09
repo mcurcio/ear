@@ -228,7 +228,7 @@ struct Rig {
 		std::erase(code, '-');
 		server.send("code " + code);
 		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
-		// Not a check: on a loaded host the data thread's stalls make the clock resync, which restarts its loop, and the
+		// Not a check: on a loaded host the data thread's stalls can keep two seconds without a jump from coming, and the
 		// test then judges what it can (the rtp.md erratum 3 trap).
 		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
 			WARN("the graph did not settle on the raw clock's rate within 20 s");
@@ -447,8 +447,9 @@ private:
 		++errors.afterFirst3s;
 		if (lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000) return;
 		++errors.judged;
-		// Judged as the timing is: not within 1.5 s of a skip, where the internal clock resyncs (its position jumps and
-		// its loop starts again from CLOCK_MONOTONIC's rate) and the library interpolates frames to follow it.
+		// Judged as the timing is: not within 1.5 s of a skip, a stall the internal clock caught up by whole blocks
+		// (engine.conf's resync.ms: it keeps its phase to the raw clock), after which the feed may have run dry and the
+		// library catches up with its clock.
 		if (!cycle.ramp) ++errors.badCycles;
 		if (std::abs(errorUs) < 1000.0) ++errors.within;
 		if (std::abs(errorUs) > std::abs(errors.worstUs)) errors.worstUs = errorUs;

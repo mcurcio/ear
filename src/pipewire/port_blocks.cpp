@@ -530,7 +530,7 @@ private:
 		auto* self = static_cast<FilterPortBlock*>(data);
 		const spa_io_clock& clock = position->clock;
 		const auto frames = static_cast<std::uint32_t>(clock.duration);
-		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a resync.
+		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a stall caught up.
 		const bool sameDriver = self->cycles_ > 0 && clock.id == self->lastDriver_;
 		// A new code's first cycle, and the cycle after one too large to run, are discontinuities to the code too.
 		const bool discontinuity =

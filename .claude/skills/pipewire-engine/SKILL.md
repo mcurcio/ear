@@ -125,13 +125,21 @@ to 83,333 ppm), and timerfd cannot arm `CLOCK_MONOTONIC_RAW` (`EINVAL`). With `c
 monotonic-raw` the driver runs in its tracking mode (`node-driver.c`): its timer stays on
 `CLOCK_MONOTONIC`, a delay-locked loop steers it so `clock.position` follows raw time, and
 `rate_diff` is the loop's correction. `clock.nsec` and `next_nsec` stay `CLOCK_MONOTONIC`. Its
-error is clamped at 1 ms a cycle; past `resync.ms` (10 ms, e.g. after a data-thread stall) the
-position jumps to raw time. It can jump *back*: a starved data loop reads the timer late, the
-reset puts the position forward on raw time, the next timeouts (computed from the late one) fire
-back to back, a block each, until the position is `resync.ms` ahead, and the next reset steps it
-back by up to about 440 frames. The whole graph then runs positions it already ran, so a test or
-a type must never treat `clock.position` as unique or tell cycles apart by it (node-lifecycle.md
-10.5; S2 in `spikes_test.cpp` tells them apart by entry order). Its `clock.name` is
+error is clamped at 1 ms a cycle. **`engine.conf` sets `resync.ms` beyond any stall (1e9 ms), so
+the driver never resets.** With the default (10 ms), past it after a data-thread stall,
+`on_timeout` puts the position on raw time but leaves its timer where it was: the timeouts it
+then fires back to back (the timer catching up) each add a block while raw time barely moves, so
+the next reset steps the position *back* by up to about 440 frames, and the burst leaves it up to
+10 ms ahead of raw time. There the error sits in the clamp, and the loop, at its least
+bandwidth, slews the whole graph by hundreds of ppm for tens of seconds to work it off (measured:
++190 frames and -230 ppm 9 s after one 20 ms stall; a sendspin stream then interpolates frames,
+and a reset's forward jump is any number of frames, not whole blocks). Without the reset the
+driver catches up on its own timer: the blocks see forward jumps of whole blocks (every other
+cycle of the burst; each an xrun), the position never steps back, and the phase to the raw clock
+is kept to within a frame (the test "After data-thread stalls past 10 ms ...", and S2's
+`stepsBack == 0`). PipeWire's non-tracking driver never resets either. A cycle is still told
+apart by entry order where it matters, not by position (node-lifecycle.md 10.5; S2 in
+`spikes_test.cpp`). Its `clock.name` is
 `clock.system.monotonic-raw` (`internalClockName`).
 Whether it follows a host slewed at chrony's worst case is untested; the fallback is chrony's
 `maxslewrate` (the `ear-on-talos` skill).
@@ -142,8 +150,8 @@ difference added to `clock.nsec`, so a late wake cancels out), `rateDiff` (`cloc
 `driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`), `xruns` and
 `discontinuity`. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA
 node), so the block counts cycles that start ahead of where the last one ended on the same driver
-(a backward resync is no xrun); `discontinuity` marks the block's first cycle, a new code's first
-cycle, a new driver, any position jump (the dummy's resync), and the cycle after one too large for
+(the blocks a stall's catching up skipped); `discontinuity` marks the block's first cycle, a new code's first
+cycle, a new driver, any position jump (a stall's catching up), and the cycle after one too large for
 the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
 `node-driver.c` does. `downstream` is the latency downstream of each output (below). The dummy's
 `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into its own
@@ -513,7 +521,10 @@ Nothing like WirePlumber runs. Two things make that work:
   dummy driver's missed cycles back to back while the late nodes' own process time is
   microseconds, so nothing ear runs is slow. Run the same test on the unchanged code in the same
   conditions; if that fails too, the host cannot judge it and CI's runner is the gate
-  (`docs/design/rtp.md` erratum 3).
+  (`docs/design/rtp.md` erratum 3). A stall never resets the internal clock (`resync.ms`,
+  above): a `spa.driver ... err ... > max_resync ..., resetting` warning in a test's output means
+  `engine.conf`'s `resync.ms` was lost, and the graph is then slewed off the raw clock for tens of
+  seconds after it.
 - **Tests and the environment.** `engine_test.cpp` unsets `XDG_RUNTIME_DIR`,
   `PIPEWIRE_RUNTIME_DIR`, `PIPEWIRE_REMOTE` and the D-Bus addresses, so it proves the engine
   needs none of them. Its `Waiter` runs the main loop until the awaited events have arrived; a
@@ -535,7 +546,9 @@ pins the base image by digest, not the packages. To move to another PipeWire:
    `link-factory` behaviour (link by name and by id), the adapter's port configuration (whether
    `adapter.auto-port-config` now works), `node.driver-id` events, the registry's key
    whitelist, and module-rtp-source: its arguments, whether a failed bind is now reported, the
-   SSRC lock, the resync on a sequence mismatch, and the `rtp.receiving` property.
+   SSRC lock, the resync on a sequence mismatch, and the `rtp.receiving` property. And
+   `node-driver.c`'s tracking mode: whether `resync.ms` is still read, and whether a reset now
+   moves its timer too (then the default could come back; the stall test says either way).
 3. Check each module named in `engine.conf`, and `libpipewire-module-rtp-source`, still exists:
    `scripts/dev.sh bash -c 'ls /usr/lib/*/pipewire-0.3/'`.
 4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover the engine facts (`[rtp]` the

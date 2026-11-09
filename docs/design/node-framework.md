@@ -1967,9 +1967,11 @@ and every card follows it.**
   tracking mode: its timer stays on `CLOCK_MONOTONIC` and a delay-locked loop steers it so `clock.position` follows raw
   time; `rate_diff` is that loop's correction [V: spike, PipeWire 1.4.2]. `clock.nsec` and `next_nsec` stay in
   `CLOCK_MONOTONIC`, so the framework still makes `startRawNs` itself by sampling both clocks (9.3), and takes `rateDiff`
-  from `clock.rate_diff`. When the graph and the raw clock disagree by more than `resync.ms` (10 ms by default, e.g. after
-  a data-thread stall), the position jumps to raw time: the framework flags that cycle as a `discontinuity`. The loop
-  clamps its error at 1 ms a cycle, so whether it follows a host slewing at chrony's worst case is untested [U]. The
+  from `clock.rate_diff`. After a data-thread stall the driver catches up on its own timer, by whole blocks (each a
+  `discontinuity` and an xrun to the blocks), and keeps its phase to the raw clock: `engine.conf` sets `resync.ms` beyond
+  any stall, because the driver's reset past it (10 ms by default) left the graph slewed off the raw clock for tens of
+  seconds ("Slice 7 as built"). The loop clamps its error at 1 ms a cycle, so whether it follows a host slewing at
+  chrony's worst case is untested [U]. The
   framework hands every type both domains (9.3). Sendspin's time filter is already on the raw clock: it converts the
   cycle's start each cycle (`sendspin_code.cpp:33-35`) and the notifier reports `finishRawNs` (`worker.cpp:318`); that
   conversion moves into the framework, so it is never applied twice. **Fallback**, if the spike finds the driver cannot
@@ -2348,8 +2350,9 @@ sections above, and why:
 - **9.3: the xrun count is the framework's.** PipeWire gives a filter no xrun count: `spa_io_clock.xrun` is set only by a
   driving ALSA node, and a node's activation (where `xrun_count` lives) is private [V: `alsa-pcm.c`, `impl-node.c`]. So
   `GraphCycle::xruns` counts the cycles a block saw start ahead of where its last one ended on the same driver: the graph
-  lost time (with the tracking dummy, a resync after a stall past `resync.ms`; a shorter stall is caught up without a
-  jump and is not counted; a backward resync, which `node-driver.c` can also make, is a discontinuity but no xrun).
+  lost time (with the tracking dummy, the blocks a stall's catching up skipped; a stall shorter than a block is caught up
+  without a jump and is not counted; a backward resync, which `node-driver.c` made before `resync.ms` was set, is a
+  discontinuity but no xrun).
   `discontinuity` marks the block's first cycle, a new code's first cycle (each `drive`), a cycle on a new driver
   (`clock.id` changed), any position jump, and the cycle after one too large for the block (which runs no code). The driver's identity is `driverId`, its global id (`clock.id`); the clock's name is not carried.
   `delayFrames` is gone: the dummy's delay is always 0, so it is replaced, not kept beside the latency. **A merge hazard:**
@@ -2405,9 +2408,34 @@ sections above, and why:
   the engine saw the graph off by that much, and the library corrected by interpolating frames (one in twenty cycles,
   failing the 1 ms test's bound on bad cycles in two runs of five). In ear the engine runs for hours, so only the first
   seconds after boot are affected; the sendspin clock tests wait until two seconds of cycles ran within 20 ppm of the
-  rate on the raw clock before they play (at most 20 s, then they play with a warning: on a loaded host the data
-  thread's stalls make the clock resync past `resync.ms`, which restarts its loop). Before slice 7 the graph followed `CLOCK_MONOTONIC` for good, so on such a host
-  the same test would have seen the full offset all along.
+  rate on the raw clock before they play (at most 20 s, then they play with a warning). Before slice 7 the graph followed
+  `CLOCK_MONOTONIC` for good, so on such a host the same test would have seen the full offset all along.
+- **Section 10: a stall never resets the internal clock** (`engine.conf`, `resync.ms = 1000000000`; added after slice 7,
+  2026-11-09). With the default `resync.ms` (10 ms), "Through a following test card ..." failed about one run in ten even
+  alone, the stream averaging 47988 to 47994 Hz on the raw clock for seconds after a stall. Not a clock-domain mismatch:
+  `startRawNs` and `clock.position` were both on the raw clock throughout; the graph's real rate was off. The mechanism,
+  `node-driver.c` 1.4.2, `on_timeout` [V]: past `max_resync` it sets `position = current_position` (raw time read at the
+  late wake) but leaves `next_time`, the CLOCK_MONOTONIC timer, where the stall left it, in the past; the timeouts then
+  fire back to back to catch up, each adding a block while raw time barely moves, so the next reset steps the position
+  back (about -245 frames each time), and the cycle after the burst leaves it anywhere up to `max_resync` ahead of raw
+  time. Between `max_error` (1 ms) and `max_resync` the error is clamped to 1 ms and fed to the DLL at its least bandwidth
+  (`spa_dll_set_bw` on a reset changes only the coefficients), which slews the whole graph to work it off: measured with
+  a block that sleeps on the data thread, a 20 ms stall left the position +215 frames ahead and the graph's rate on the
+  raw clock -65 ppm after 0.5 s, -150 after 2 s and -230 after 9 s, still falling; a 50 ms stall the same; a 100 ms one,
+  by luck, ended on a reset and was clean. A reset's forward jump is also any number of frames, which sendspin skips as
+  played: not a whole block. With the reset out of reach the driver behaves as its non-tracking mode always does: the
+  missed timeouts fire back to back, the blocks see every other one (a jump of one block each), the position never steps
+  back, and the phase to the raw clock is the same to within a frame after stalls of 30, 60, 120 and 200 ms (rate within
+  20 ppm a second on, as before the stall after). The cost: a stall of any length is caught up by a burst of its missed
+  cycles, as with any PipeWire driver that does not track. Pinned by `port_block_test.cpp` ("After data-thread stalls
+  past 10 ms ...": no step back, every jump whole blocks, phase within 1 ms; it fails on the default every run with the
+  phase +180 to +190 frames after a 30 ms stall) and S2's `stepsBack == 0`. Before and after, alternating the two `engine.conf`s
+  with busy loops beside them (load 2.5 to 8): the card test passed 13 of 15 on the default, both reds the runs where the
+  driver logged resets (4 and 6) and no green one did, with p50 1013 and 1034 us against the 1 ms bound and 21 and 27 bad
+  cycles; 15 of 15 with the setting, and 30 of 30 alone. The system test `A server pairs and plays beside two silent
+  sockets renewed from its own address`, whose CI reds had bad steps and zeros inside the ramp, passed 18 of 20 on the
+  default (each red one bad step and 529 to 675 zero frames: a reset's skip of any number of frames, then a dry feed)
+  and 20 of 20 with it.
 - **Section 10: denormals.** `Engine::create` sets FTZ and DAZ on x86 and FZ on arm64 with a blocking invoke on the
   context's data loop right after `pw_context_new`; a test reads the MXCSR from `process` and checks the main thread's is
   untouched. `cpu.zero.denormals` stays unset. **The invoke races the data thread's start** [V: review, 11 failures in
