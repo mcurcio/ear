@@ -316,7 +316,7 @@ struct TestCard {
 		passThrough = makePassThrough(ports, pairs);
 		passThrough->prepare(kFormat);
 		block = rig.blocks.make("card", ports, kFormat, blockEvents);
-		block->carryLatency(LatencyPlan{pairs, {}});
+		block->carryLatency(LatencyPlan{.pairs = pairs});
 		REQUIRE(ear::testing::driveNow(*block, passThrough.get()));
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
 		card = cards.make(

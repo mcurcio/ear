@@ -242,7 +242,8 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	// The plan carries latency from `record` to the sink's bank and adds none of file's own, so a chunk's upstreamFrames
 	// is what lies upstream of `record` (docs/engine.md#sinks).
 	CHECK((*harness)->latencyPlan().pairs == std::vector<ear::BankPair>{{"record", "writer"}});
-	CHECK((*harness)->latencyPlan().internal.empty());
+	CHECK((*harness)->latencyPlan().onPair.empty());
+	CHECK((*harness)->latencyPlan().onBank.empty());
 	CHECK((*harness)->latencyPlan().beyond.empty());
 	harness->remove(); // the sink's close finishes the WAV
 	CHECK(harness->gone());

@@ -131,7 +131,15 @@ struct NodeHarness::Impl final : NodeHealthListener,
 				done();
 			});
 		}
-		void carryLatency(const LatencyPlan& plan) override { harness.plan = plan; }
+		void carryLatency(const LatencyPlan& plan) override {
+			// As the real block: worked out at once (a plan that does not fit the ports throws here), with no peer on
+			// any port, since nothing is linked to the harness's block.
+			const Ports& ports = harness.config->ports();
+			const std::vector<std::optional<Latency>> inputs(ports.inputs().size() + ports.insideInputs().size());
+			const std::vector<std::optional<Latency>> outputs(ports.outputs().size() + ports.insideOutputs().size());
+			harness.facts = workOut(ports, plan, inputs, outputs);
+			harness.plan = plan;
+		}
 		void settle() override {}
 		std::uint64_t takenAt() const noexcept override { return harness.position; }
 		std::uint32_t blockId() const noexcept override { return 7; }
@@ -502,59 +510,15 @@ struct NodeHarness::Impl final : NodeHealthListener,
 					return bank.name;
 		throw std::logic_error("an engine companion joins ports of no inside bank of the node");
 	}
-	/// The capture latency the real block would tell on the output bank whose first port is `firstOutput`
-	/// (port_blocks.cpp, docs/engine.md#latency-per-bank-pair), from the plan alone: the harness has no peers, so what
-	/// lies beyond each paired input bank is its `beyond` entry, added in series to its peers' none, or nothing; the
-	/// least and the most across the pairs, plus what the configuration declared on the bank.
-	Latency toldUpstream(std::size_t firstOutput) const {
-		const auto& banks = config->ports().banks();
-		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {
-			return bank.direction == Direction::output && bank.first == firstOutput;
-		});
-		if (found == banks.end()) return {};
-		const auto entry = [](const std::vector<std::pair<std::string, Latency>>& entries, const std::string& bank) {
-			const auto at = std::ranges::find(entries, bank, &std::pair<std::string, Latency>::first);
-			return at == entries.end() ? Latency{} : at->second;
-		};
-		std::optional<Latency> upstream;
-		for (const BankPair& pair : plan.pairs) {
-			if (pair.to != found->name) continue;
-			const Latency beyond = entry(plan.beyond, pair.from);
-			upstream = upstream ? Latency{std::min(upstream->minFrames, beyond.minFrames),
-			                              std::max(upstream->maxFrames, beyond.maxFrames)}
-			                    : beyond;
-		}
-		const Latency internal = entry(plan.internal, found->name);
-		const Latency combined = upstream.value_or(Latency{});
-		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
+	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
+	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
+	/// (docs/engine.md#latency-per-bank-pair).
+	Latency toldOnOutput(std::size_t output) const {
+		const Ports& ports = config->ports();
+		return facts.told.empty() ? Latency{}
+		                          : facts.told.at(ports.inputs().size() + ports.insideInputs().size() + output);
 	}
-	/// The playback latency the real block would tell on the input bank whose first port is `firstInput`, likewise:
-	/// what lies beyond each paired output bank is its `beyond` entry or nothing, plus what the configuration declared
-	/// on that output; the least and the most across the pairs, plus what it declared on the bank itself.
-	Latency toldDownstream(std::size_t firstInput) const {
-		const auto& banks = config->ports().banks();
-		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {
-			return bank.direction == Direction::input && bank.first == firstInput;
-		});
-		if (found == banks.end()) return {};
-		const auto entry = [](const std::vector<std::pair<std::string, Latency>>& entries, const std::string& bank) {
-			const auto at = std::ranges::find(entries, bank, &std::pair<std::string, Latency>::first);
-			return at == entries.end() ? Latency{} : at->second;
-		};
-		std::optional<Latency> downstream;
-		for (const BankPair& pair : plan.pairs) {
-			if (pair.from != found->name) continue;
-			const Latency beyondOut = entry(plan.beyond, pair.to);
-			const Latency through = entry(plan.internal, pair.to);
-			const Latency beyond{beyondOut.minFrames + through.minFrames, beyondOut.maxFrames + through.maxFrames};
-			downstream = downstream ? Latency{std::min(downstream->minFrames, beyond.minFrames),
-			                                  std::max(downstream->maxFrames, beyond.maxFrames)}
-			                        : beyond;
-		}
-		const Latency internal = entry(plan.internal, found->name);
-		const Latency combined = downstream.value_or(Latency{});
-		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
-	}
+	Latency toldOnInput(std::size_t input) const { return facts.told.empty() ? Latency{} : facts.told.at(input); }
 	/// The newest source made on `bank`.
 	FakeSource& sourceOn(std::string_view bank) const {
 		for (auto it = sourceList.rbegin(); it != sourceList.rend(); ++it)
@@ -608,6 +572,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::vector<SinkBinding> bound;          // the taps the last drive bound (none for a silence)
 	std::vector<SourceBinding> boundSources; // the sources the last drive bound (none for a silence)
 	LatencyPlan plan;
+	LatencyFacts facts; // workOut's for `plan`, with no peers; empty before the first plan
 	std::deque<PendingRequest> pending;
 	std::vector<bool> fadeMask;
 	Fade fade = Fade::none;
@@ -753,7 +718,7 @@ void NodeHarness::process(std::uint32_t frames) {
 			                                    .frames = frames,
 			                                    .startRawNs = cycle.startRawNs,
 			                                    .discontinuity = cycle.discontinuity,
-			                                    .downstream = h.toldDownstream(binding.firstInput)});
+			                                    .downstream = h.toldOnInput(binding.firstInput)});
 		}
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
@@ -785,7 +750,7 @@ void NodeHarness::process(std::uint32_t frames) {
 			                              .startNs = cycle.startNs,
 			                              .startRawNs = cycle.startRawNs,
 			                              .discontinuity = cycle.discontinuity,
-			                              .upstreamFrames = h.toldUpstream(binding.firstOutput).maxFrames});
+			                              .upstreamFrames = h.toldOnOutput(binding.firstOutput).maxFrames});
 		}
 	h.position += frames;
 	h.firstCycle = false;

@@ -574,7 +574,7 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	const std::vector<BankPair> pairs{{"play", "to_card"}};
 	RecordingPassThrough pass(cardPorts, pairs, graph.waiter);
 	pass.prepare(kFormat);
-	graph.cardBlock->carryLatency(LatencyPlan{pairs, {}});
+	graph.cardBlock->carryLatency(LatencyPlan{.pairs = pairs});
 	REQUIRE(ear::testing::driveNow(*graph.cardBlock, &pass));
 	struct Silenced { // before `pass` goes, however the test ends
 		PortBlock& block;

@@ -1442,10 +1442,12 @@ struct LatencyConfig final : NodeConfig {
 } // namespace
 
 TEST_CASE("A configuration's latency plan reaches its block with its drive: the pass-through's pairs and what start "
-          "declared, cleared at its teardown",
+          "declared, by role, cleared at its teardown",
           "[node_host][latency]") {
 	Fixture f;
 	auto config = std::make_shared<LatencyConfig>();
+	// Besides "capture" (the end of the pair in -> capture): an output no pair ends at, and an input a pair starts at.
+	config->extra = {{"spare", Latency{1, 2}}, {"play", Latency{3, 4}}};
 	f.add("card", config);
 	CHECK(f.blocks.plans.at(0).empty()); // nothing is carried before the drive
 	CHECK_THROWS_AS(config->context->declareLatency("spare", Latency{1, 1}), std::logic_error); // outside start()
@@ -1453,17 +1455,25 @@ TEST_CASE("A configuration's latency plan reaches its block with its drive: the 
 	REQUIRE(f.blocks.plans.at(0).size() == 1);
 	const LatencyPlan& plan = f.blocks.plans.at(0).at(0);
 	CHECK(plan.pairs == config->pass.pairs);
-	REQUIRE(plan.internal.size() == 1);
-	CHECK(plan.internal[0].first == "capture");
-	CHECK(plan.internal[0].second == Latency{100, 200});
+	// Declared on an output a pair ends at: the code's delay on that pair's path, counted both ways on it.
+	REQUIRE(plan.onPair.size() == 1);
+	CHECK(plan.onPair[0].first == BankPair{"in", "capture"});
+	CHECK(plan.onPair[0].second == Delay{{100, 200}});
+	// Declared on an output no pair ends at, or on an input: what that bank alone tells.
+	REQUIRE(plan.onBank.size() == 2);
+	CHECK(plan.onBank[0] == std::pair<std::string, Delay>{"spare", Delay{{1, 2}}});
+	CHECK(plan.onBank[1] == std::pair<std::string, Delay>{"play", Delay{{3, 4}}});
+	CHECK(plan.beyond.empty());
 	f.settle();
 
 	f.update("card", std::make_shared<LatencyConfig>());
 	f.settle();
 	REQUIRE(f.blocks.plans.at(0).size() == 3); // cleared by the teardown, then the new configuration's
 	CHECK(f.blocks.plans.at(0).at(1).pairs.empty());
-	CHECK(f.blocks.plans.at(0).at(1).internal.empty());
-	CHECK(f.blocks.plans.at(0).at(2).internal.size() == 1);
+	CHECK(f.blocks.plans.at(0).at(1).onPair.empty());
+	CHECK(f.blocks.plans.at(0).at(1).onBank.empty());
+	CHECK(f.blocks.plans.at(0).at(2).onPair.size() == 1);
+	CHECK(f.blocks.plans.at(0).at(2).onBank.empty());
 	f.stopAll();
 	f.settle();
 }
@@ -4539,7 +4549,7 @@ TEST_CASE("A source is ready at once, every drive binds it with its capacity bey
 	const LatencyPlan& plan = f.blocks.plans.at(0).back();
 	REQUIRE(plan.beyond.size() == 1);
 	CHECK(plan.beyond[0].first == "cap");
-	CHECK(plan.beyond[0].second == Latency{0, 1024});
+	CHECK(plan.beyond[0].second == Delay{{0, 1024}});
 
 	// Written, then stopped: the silence binds none, and once it completed the ring is dropped and writes wait.
 	const std::vector<float> frames(300, 0.5F);

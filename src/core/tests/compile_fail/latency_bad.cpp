@@ -21,7 +21,7 @@ void control() {
 // A companion's buffer beyond a bank lies in series with the bank's peers; combined as one more peer, peers reporting
 // zero would make its least zero (the 3b.3 regression).
 void bad() {
-	latency_model::LatencyPlan plan{.beyond = {{"from_rtp", Delay{Latency{480, 480}}}}};
+	LatencyPlan plan{.beyond = {{"from_rtp", Delay{Latency{480, 480}}}}};
 	Paths peers;
 	peers.add(plan.beyond.front().second);
 }

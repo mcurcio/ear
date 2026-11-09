@@ -1,6 +1,7 @@
 # Root classes: the architecture behind slice 3's fix clusters
 
-Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R4a built (section 4.5 says what
+Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R2 built (the block and the
+harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R4a built (section 4.5 says what
 changed from 4.3), R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4) and R5b built
 (`ear_pipewire_tests` audited, section 5.5); the rest designed, not built. Its steps are taken between slice 3b.4 and
 slice 3c
@@ -188,6 +189,38 @@ What R1 built differs from 3.3 where 3.3 could not work as declared; the library
   output side's.
 - **`FrameClock`** divides the whole frame count once, truncating toward zero (`enteredRawNs` is
   `startRawNs + ns(offset - upstream.max)`), which is what each of today's four sites computes, so R3 changes no date.
+
+### 3.6 Found building R2
+
+What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pair` describes it.
+
+- **One namespace, one signature.** `LatencyPlan`, `LatencyFacts` and `workOut` are in `ear` (`ear::latency_model` is
+  gone, and so is `node_host.hpp`'s plan with `internal`); `node_host.hpp` includes `latency.hpp`. `workOut` keeps
+  3.3's one signature: the harness passes none for every port rather than gain an overload.
+- **NodeHost keeps declarations by bank and maps them at each drive.** What configure declared stays one entry per
+  bank (a second still fails the node), and `drive()` makes the plan by 3.5's mapping: `onPair` on the pair that ends
+  at the bank, `onBank` otherwise. A pass-through writes each output bank once, so at most one pair ends at a bank and
+  the mapping is exact; a typed `declareLatency(from, to)` counts on the pair into `to`, whatever `from` it names (a
+  literal `onPair{from, to}` naming no pair would be `workOut`'s error). No behaviour changes.
+- **The block works out first, then keeps.** `carryLatency` calls `workOut` before it stores the plan, so a plan that
+  does not fit throws to `NodeHost` on the main loop and is never kept; `param_changed` only changes a peer. Today's
+  block silently ignored a `beyond` naming no bank; it now throws there (only a framework bug can make one). The
+  block keeps peers as `std::optional<Latency>` (converted by `fromSpa` as heard) and what each port last told in
+  frames; it tells a port only when that changes, so a port that tells zero still sends nothing, as before.
+- **Peers told in rate units** (the one change 8 allows): the block told its peers' units through, combined field by
+  field; now `toSpa`'s rate units only, and a bank's paths combined in frames, so a sink's `upstreamFrames` is the
+  exact most where peers mixed units (`docs/engine.md#sinks` says so).
+- **The table is shared.** The rows moved from `latency_test.cpp` to `test/support/latency_table.hpp`
+  (`ear_latency_table`), which `ear_core_tests` runs through `workOut` and `ear_pipewire_tests` through a real block.
+  The conformance test's peers are bare `pw_filter`s, one port each, telling in mixed units (the least in ns, the most
+  in quanta and frames) and recording what PipeWire sets on their port, so it reads both bounds of every told latency
+  on the wire and that it is in rate units only; a port the row gives no peer stays unlinked, so its told latency is
+  read only through the model (and, for outputs, the code's downstream). Every row runs, "two pairs into one output"
+  included, though a pass-through refuses that shape: the block's rule holds for any plan.
+- **The harness's side of section 7's comparison** is by construction now (it calls `workOut`); R7 keeps the sink
+  delivery and companion-bank rules.
+- **No other hand combine was found.** Outside the model, latency is only converted: `NodeHost`'s RTP receiver
+  `latencyMs * rate / 1000` (milliseconds to frames, kept) and the four dating sites (R3).
 
 ## 4. Class 2: exceptions at the C boundary
 

@@ -1430,16 +1430,27 @@ struct NodeHost::Impl {
 			Configuration& c = *config_;
 			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play;
 			// and an RTP receiver's buffer, which its ports report as zero (docs/engine.md#latency-per-bank-pair).
-			std::vector<std::pair<std::string, Latency>> beyond;
+			LatencyPlan plan{.pairs = c.pairs};
 			for (const SourceSlot& slot : c.sources)
-				beyond.emplace_back(slot.bank, Latency{0, slot.source->writer().capacityFrames()});
+				plan.beyond.emplace_back(slot.bank, Delay{Latency{0, slot.source->writer().capacityFrames()}});
 			for (const EngineAsk& asked : c.engineAsks)
 				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
 					const auto buffered =
 						static_cast<std::uint32_t>(std::uint64_t{receiver->latencyMs} * host_.format.rate / 1000);
-					beyond.emplace_back(asked.bank, Latency{buffered, buffered});
+					plan.beyond.emplace_back(asked.bank, Delay{Latency{buffered, buffered}});
 				}
-			block_->carryLatency(LatencyPlan{c.pairs, c.latency, std::move(beyond)});
+			// What configure declared, by role: on an output bank a pair ends at, the code's delay on that pair's path
+			// (counted both ways on it); on a bank in no pair's end, that bank's alone.
+			for (const auto& [bank, latency] : c.latency) {
+				bool paired = false;
+				for (const BankPair& pair : c.pairs)
+					if (pair.to == bank) {
+						plan.onPair.emplace_back(pair, Delay{latency});
+						paired = true;
+					}
+				if (!paired) plan.onBank.emplace_back(bank, Delay{latency});
+			}
+			block_->carryLatency(plan);
 			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
 			                           c.sourceBindings},
 			              completion(barrier, &lc::NodeAggregate::driven));

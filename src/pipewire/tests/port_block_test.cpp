@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <ctime>
 #include <functional>
@@ -22,6 +23,8 @@
 
 #include <pipewire/pipewire.h>
 #include <spa/node/command.h>
+#include <spa/param/latency-utils.h>
+#include <spa/pod/builder.h>
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
@@ -33,6 +36,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "inducers.hpp"
+#include "latency_table.hpp"
 #include "probes.hpp"
 #include "quiescence.hpp"
 
@@ -859,13 +863,13 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	                              {Direction::output, "thru", {"1", "2"}},
 	                              {Direction::output, "side", {"1"}}}},
 	                       kFormat, midEvents);
-	mid->carryLatency(LatencyPlan{{{"in", "thru"}}, {{"in", Latency{10, 20}}}});
+	mid->carryLatency(LatencyPlan{.pairs = {{"in", "thru"}}, .onBank = {{"in", Delay{{10, 20}}}}});
 	REQUIRE(ear::testing::driveNow(*mid, &midProbe));
 	auto sink = blocks.make("sink", Ports{{{Direction::input, "in", {"1", "2"}}}}, kFormat, sinkEvents);
-	sink->carryLatency(LatencyPlan{{}, {{"in", Latency{300, 300}}}});
+	sink->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{300, 300}}}}});
 	REQUIRE(ear::testing::driveNow(*sink, &sinkProbe));
 	auto other = blocks.make("other", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, otherEvents);
-	other->carryLatency(LatencyPlan{{}, {{"in", Latency{900, 900}}}});
+	other->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{900, 900}}}}});
 	REQUIRE(ear::testing::driveNow(*other, &otherProbe));
 	// side is linked first, so whatever source hears after thru is linked already holds side's 900 if it leaked.
 	REQUIRE(wiring.link(waiter, {"source", "out.1"}, {"mid", "in.1"}));
@@ -885,7 +889,7 @@ TEST_CASE("Latency is carried per bank pair: through a pass-through's pair to th
 	CHECK(sourceProbe.downstream(1) == Latency{});
 
 	// A new plan replaces the last at once: mid unpaired carries nothing through, only its own.
-	mid->carryLatency(LatencyPlan{{}, {{"in", Latency{10, 20}}}});
+	mid->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{10, 20}}}}});
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{10, 20}; }));
 	mid->carryLatency({});
 	CHECK(waiter.until([&] { return sourceProbe.downstream(0) == Latency{}; }));
@@ -937,12 +941,12 @@ TEST_CASE("A companion's latency beyond an inside bank is added in series to tha
 		"rx",
 		Ports{{{Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside}, {Direction::output, "stream", {"1"}}}},
 		kFormat, rxEvents);
-	rx->carryLatency(LatencyPlan{{{"from_rtp", "stream"}}, {}, {{"from_rtp", Latency{480, 960}}}});
+	rx->carryLatency(LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{480, 960}}}}});
 	REQUIRE(ear::testing::driveNow(*rx, &rxProbe));
 	auto rec = blocks.make(
 		"rec", Ports{{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
 		kFormat, recEvents);
-	rec->carryLatency(LatencyPlan{{{"in", "writer"}}, {}, {}});
+	rec->carryLatency(LatencyPlan{.pairs = {{"in", "writer"}}});
 	UpstreamTap tap(waiter);
 	const std::vector<SinkBinding> bindings{SinkBinding{&tap, 0, 1}};
 	bool driven = false;
@@ -965,14 +969,14 @@ TEST_CASE("A companion's latency beyond an inside bank is added in series to tha
 		"card",
 		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}},
 		kFormat, cardEvents);
-	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {{"to_card", Latency{256, 256}}}});
+	card->carryLatency(LatencyPlan{.pairs = {{"play", "to_card"}}, .beyond = {{"to_card", Delay{{256, 256}}}}});
 	REQUIRE(ear::testing::driveNow(*card, &cardProbe));
 	CHECK(waiter.until([&] { return cardProbe.downstream(0) == Latency{256, 256}; }));
 	REQUIRE(wiring.link(waiter, {"feed", "out.1"}, {"card", "play.1"}));
 	CHECK(waiter.until([&] { return feedProbe.downstream(0) == Latency{256, 256}; }));
 	// A plan without it carries nothing, to card's code and, once the retell reached it, to feed's: read once the
 	// engine has settled and each has run a whole cycle since.
-	card->carryLatency(LatencyPlan{{{"play", "to_card"}}, {}, {}});
+	card->carryLatency(LatencyPlan{.pairs = {{"play", "to_card"}}});
 	REQUIRE(settled.quiesce({[&] { return feedProbe.cycles(); }, [&] { return cardProbe.cycles(); }}));
 	CHECK(feedProbe.downstream(0) == Latency{});
 	CHECK(cardProbe.downstream(0) == Latency{});
@@ -981,6 +985,161 @@ TEST_CASE("A companion's latency beyond an inside bank is added in series to tha
 	REQUIRE(ear::testing::driveNow(*rec, nullptr));
 	REQUIRE(ear::testing::driveNow(*feed, nullptr));
 	REQUIRE(ear::testing::driveNow(*card, nullptr));
+}
+
+namespace {
+
+/// A peer of one port of the block under test, as an engine node is one: a bare pw_filter under custom latency, in the
+/// graph group, with one port ("p.1") of `direction`. It tells `latency` on its port in mixed units (the least in ns,
+/// the most in quanta and frames, as PipeWire's own nodes may), and keeps the newest far-side latency PipeWire sets on
+/// its port: what the port it is linked to told.
+class LatencyPeer {
+public:
+	LatencyPeer(Engine& engine, Waiter& waiter, const std::string& name, pw_direction direction, Latency latency)
+		: waiter_(waiter), direction_(direction) {
+		filter_ = pw_filter_new(engine.core(), name.c_str(),
+		                        pw_properties_new(PW_KEY_NODE_NAME, name.c_str(), PW_KEY_MEDIA_TYPE, "Audio",
+		                                          PW_KEY_NODE_GROUP, "ear.graph", PW_KEY_NODE_ALWAYS_PROCESS, "true",
+		                                          nullptr));
+		REQUIRE(filter_ != nullptr);
+		pw_filter_add_listener(filter_, &listener_, &events(), this);
+		port_ = pw_filter_add_port(
+			filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+			pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio", PW_KEY_PORT_NAME, "p.1", nullptr), nullptr,
+			0);
+		REQUIRE(port_ != nullptr);
+		REQUIRE(pw_filter_connect(
+					filter_, static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY),
+					nullptr, 0) >= 0);
+		spa_latency_info info{};
+		info.direction = direction == PW_DIRECTION_OUTPUT ? SPA_DIRECTION_OUTPUT : SPA_DIRECTION_INPUT;
+		info.min_ns = std::llround(static_cast<double>(latency.minFrames) * 1e9 / kRate);
+		info.max_quantum = static_cast<float>(latency.maxFrames / kBlock);
+		info.max_rate = static_cast<std::int32_t>(latency.maxFrames % kBlock);
+		std::uint8_t buffer[256];
+		spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
+		const spa_pod* params[1] = {static_cast<const spa_pod*>(spa_latency_build(&builder, SPA_PARAM_Latency, &info))};
+		pw_filter_update_params(filter_, port_, params, 1);
+	}
+	~LatencyPeer() {
+		spa_hook_remove(&listener_);
+		pw_filter_destroy(filter_);
+	}
+	LatencyPeer(const LatencyPeer&) = delete;
+	LatencyPeer& operator=(const LatencyPeer&) = delete;
+
+	/// The newest latency PipeWire set on the port from its peer; none before the first.
+	const std::optional<spa_latency_info>& heard() const { return heard_; }
+
+private:
+	static const pw_filter_events& events() {
+		static const pw_filter_events table = [] {
+			pw_filter_events events{};
+			events.version = PW_VERSION_FILTER_EVENTS;
+			events.param_changed = &LatencyPeer::onParamChanged;
+			events.process = &LatencyPeer::onProcess;
+			return events;
+		}();
+		return table;
+	}
+	static void onParamChanged(void* data, void* port, std::uint32_t id, const spa_pod* param) {
+		auto* self = static_cast<LatencyPeer*>(data);
+		if (id != SPA_PARAM_Latency || port == nullptr || param == nullptr) return;
+		const spa_direction farSide =
+			self->direction_ == PW_DIRECTION_OUTPUT ? SPA_DIRECTION_INPUT : SPA_DIRECTION_OUTPUT;
+		spa_latency_info info{};
+		if (spa_latency_parse(param, &info) < 0 || info.direction != farSide) return;
+		self->heard_ = info;
+		self->waiter_.wake();
+	}
+	static void onProcess(void* data, spa_io_position* position) {
+		auto* self = static_cast<LatencyPeer*>(data);
+		if (self->direction_ != PW_DIRECTION_OUTPUT) return;
+		const auto frames = static_cast<std::uint32_t>(position->clock.duration);
+		if (auto* out = static_cast<float*>(pw_filter_get_dsp_buffer(self->port_, frames)); out != nullptr)
+			std::fill_n(out, frames, 0.0F);
+	}
+
+	Waiter& waiter_;
+	pw_direction direction_;
+	pw_filter* filter_ = nullptr;
+	void* port_ = nullptr;
+	spa_hook listener_{};
+	std::optional<spa_latency_info> heard_;
+};
+
+} // namespace
+
+// The conformance test of the latency model (docs/engine.md#latency-per-bank-pair): every row of the model's table
+// (test/support/latency_table.hpp, which ear_core_tests runs through workOut) through a real block, each peer the row
+// gives a real engine node linked to the port and telling it, so the block's own telling cannot drift from the model.
+TEST_CASE("The latency model's table through a real block: each port tells its peer workOut's latency, in rate units "
+          "only, and each output's code reads workOut's downstream",
+          "[port_blocks][latency]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	const std::vector<ear::test::LatencyRow> rows = ear::test::latencyRows();
+	for (std::size_t r = 0; r < rows.size(); ++r) {
+		const ear::test::LatencyRow& row = rows[r];
+		INFO(row.what);
+		const Ports ports(row.banks);
+		const LatencyFacts model = workOut(ports, row.plan, row.inputPeers, row.outputPeers);
+		const std::string name = "conform" + std::to_string(r);
+		std::vector<PortName> inputs = ports.inputs();
+		inputs.insert(inputs.end(), ports.insideInputs().begin(), ports.insideInputs().end());
+		std::vector<PortName> outputs = ports.outputs();
+		outputs.insert(outputs.end(), ports.insideOutputs().begin(), ports.insideOutputs().end());
+
+		LatencyProbe probe(waiter, outputs.size());
+		BlockEvents events(waiter);
+		auto block = blocks.make(name, ports, kFormat, events);
+		block->carryLatency(row.plan);
+		REQUIRE(ear::testing::driveNow(*block, &probe));
+		// A peer on each port the row gives one; a port with none stays unlinked: no path.
+		struct Linked {
+			std::unique_ptr<LatencyPeer> peer;
+			std::size_t told; // the port's index in workOut's told
+		};
+		std::vector<Linked> linked;
+		for (std::size_t i = 0; i < inputs.size(); ++i) {
+			if (!row.inputPeers[i]) continue;
+			const std::string peer = name + "up" + std::to_string(i);
+			linked.push_back(
+				{std::make_unique<LatencyPeer>(*engine, waiter, peer, PW_DIRECTION_OUTPUT, *row.inputPeers[i]), i});
+			REQUIRE(wiring.link(waiter, {peer, "p.1"}, {name, inputs[i]}));
+		}
+		for (std::size_t o = 0; o < outputs.size(); ++o) {
+			if (!row.outputPeers[o]) continue;
+			const std::string peer = name + "down" + std::to_string(o);
+			linked.push_back(
+				{std::make_unique<LatencyPeer>(*engine, waiter, peer, PW_DIRECTION_INPUT, *row.outputPeers[o]),
+			     inputs.size() + o});
+			REQUIRE(wiring.link(waiter, {name, outputs[o]}, {peer, "p.1"}));
+		}
+		// Read once every retell has reached every node and the block's code has run a whole cycle since.
+		REQUIRE(settled.quiesce({[&] { return probe.cycles(); }}));
+		for (std::size_t o = 0; o < outputs.size(); ++o) {
+			INFO("downstream of " << outputs[o]);
+			CHECK(probe.downstream(o) == model.downstream[o]);
+		}
+		for (const Linked& each : linked) {
+			INFO("told on port " << each.told << " (inputs, then outputs)");
+			REQUIRE(each.peer->heard());
+			const spa_latency_info& heard = *each.peer->heard();
+			// Frames at the graph's rate only: the peers' quanta and ns were converted at the port.
+			CHECK(heard.min_quantum == 0.0F);
+			CHECK(heard.max_quantum == 0.0F);
+			CHECK(heard.min_ns == 0);
+			CHECK(heard.max_ns == 0);
+			CHECK(Latency{static_cast<std::uint32_t>(heard.min_rate), static_cast<std::uint32_t>(heard.max_rate)} ==
+			      model.told[each.told]);
+		}
+		REQUIRE(ear::testing::driveNow(*block, nullptr));
+	}
 }
 
 #if defined(__x86_64__) || defined(__i386__)
@@ -1740,7 +1899,7 @@ TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate noth
 		"quiet",
 		Ports{{{Direction::output, "out", {"a", "b"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
 		kFormat, events);
-	block->carryLatency(LatencyPlan{{}, {{"writer", Latency{3, 5}}}, {}}); // a told latency for the stamps to read
+	block->carryLatency(LatencyPlan{.onBank = {{"writer", Delay{{3, 5}}}}}); // a told latency for the stamps to read
 	CountingTap tap;
 	const std::vector<SinkBinding> sinks{SinkBinding{&tap, 2, 1}};
 	const bool faded[] = {true, false};

@@ -365,7 +365,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
-| `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the downstream latency the plan gives its bank), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
+| `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)) |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |

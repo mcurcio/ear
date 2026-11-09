@@ -16,7 +16,7 @@ class Ports;
 
 /// One pair of a pass-through: each port of `from` (an input bank, routable or inside) copied to the port of `to` (an
 /// output bank) at the same member index. The banks have as many ports as each other. Also a path latency crosses a
-/// block by (latency_model::LatencyPlan).
+/// block by (LatencyPlan).
 struct BankPair {
 	std::string from;
 	std::string to;
@@ -103,10 +103,9 @@ private:
 	std::uint32_t rate_;
 };
 
-/// The plan and the rules by role, beside node_host.hpp's ear::LatencyPlan until step R2 of
-/// docs/design/root-classes.md moves the block and the harness onto them (and this namespace's names into ear).
-namespace latency_model {
-/// What a configuration declares, by role (docs/engine.md#latency-per-bank-pair). Each delay lies in series.
+/// How one configuration's latency crosses its block, by role (docs/engine.md#latency-per-bank-pair): NodeHost makes it
+/// with each drive (PortBlock::carryLatency), and the block and the type harness hand it to workOut, its only reader.
+/// Each delay lies in series.
 struct LatencyPlan {
 	std::vector<BankPair> pairs{};                       // the paths the block carries, input bank to output bank
 	std::vector<std::pair<BankPair, Delay>> onPair{};    // a code's delay on a pair's path: counts both ways on it
@@ -125,8 +124,8 @@ struct LatencyFacts {
 /// An output bank tells the paths from its paired inputs (each: beyond the input plus the pair's delay) as Paths, none
 /// (no pair) zero, plus its `onBank`; an input bank likewise over the pairs it feeds. Each output port's downstream is
 /// what lies beyond its bank. Throws std::logic_error for a plan that does not fit `ports` (a bank it lacks, a pair
-/// backwards or not in `pairs`, an entry twice) or peers of the wrong count: a caller's bug.
+/// backwards or not in `pairs`, an entry twice) or peers of the wrong count: a caller's bug. The type harness, whose
+/// block has no peers, passes none for every port.
 LatencyFacts workOut(const Ports& ports, const LatencyPlan& plan, std::span<const std::optional<Latency>> inputPeers,
                      std::span<const std::optional<Latency>> outputPeers);
-} // namespace latency_model
 } // namespace ear

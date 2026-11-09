@@ -587,14 +587,15 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
 	// The node after rx tells 960 frames of playback latency on its input, as a card's buffer would be told.
 	auto dst = blocks.make("dst", Ports{{{Direction::input, "in", {"1"}}}}, kFormat, dstEvents);
-	dst->carryLatency(LatencyPlan{{}, {{"in", Latency{0, 960}}}, {}});
+	dst->carryLatency(LatencyPlan{.onBank = {{"in", Delay{{0, 960}}}}});
 	REQUIRE(waiter.until([&] { return events.isReady && dstEvents.isReady; }));
 	REQUIRE(ear::testing::driveNow(*dst, &listening));
 	REQUIRE(wiring.link(waiter, {"rx", "out.1"}, {"dst", "in.1"}));
 	RampWriter writer(*source, waiter);
 	REQUIRE(waiter.until([&] { return writer.written.load() >= 8192; }));
 	// The code's own latency, declared as a type does, on the output it lands on: 4800 frames.
-	block->carryLatency(LatencyPlan{{{"from_writer", "out"}}, {{"out", Latency{0, 4800}}}, {}});
+	block->carryLatency(
+		LatencyPlan{.pairs = {{"from_writer", "out"}}, .onPair = {{{"from_writer", "out"}, Delay{{0, 4800}}}}});
 	const std::vector<SourceBinding> bound{SourceBinding{&source->tap(), kInside, 1}};
 	bool driven = false;
 	block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {

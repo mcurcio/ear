@@ -611,7 +611,8 @@ TEST_CASE("A real receiver's buffer beyond from_rtp reaches stream whole: the to
           "[rtp][latency]") {
 	Graph graph;
 	constexpr std::uint32_t buffered = 100 * kRate / 1000; // latencyMs 100
-	graph.block->carryLatency(LatencyPlan{{{"from_rtp", "stream"}}, {}, {{"from_rtp", Latency{buffered, buffered}}}});
+	graph.block->carryLatency(
+		LatencyPlan{.pairs = {{"from_rtp", "stream"}}, .beyond = {{"from_rtp", Delay{{buffered, buffered}}}}});
 	CaptureLatencyWatch stream(*graph.engine, graph.waiter, graph.block->blockId(), "stream.1");
 	REQUIRE(graph.waiter.until([&] { return stream.told() == Latency{buffered, buffered}; }));
 

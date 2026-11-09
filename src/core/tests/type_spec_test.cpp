@@ -268,7 +268,7 @@ TEST_CASE("The harness plays what a test feeds a source into its bank before the
 	harness.blockReady();
 	REQUIRE(harness.phase() == "running");
 	REQUIRE(harness->latencyPlan().beyond.size() == 1);
-	CHECK(harness->latencyPlan().beyond[0] == std::pair<std::string, Latency>{"from_device", Latency{0, 1024}});
+	CHECK(harness->latencyPlan().beyond[0] == std::pair<std::string, Delay>{"from_device", Delay{{0, 1024}}});
 	std::vector<float> interleaved;
 	for (int frame = 0; frame < 24; ++frame) {
 		interleaved.push_back(static_cast<float>(frame + 1));

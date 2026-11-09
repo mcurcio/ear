@@ -259,10 +259,11 @@ the bank's at the cycle the chunk was taken. So a consumer dates a chunk without
 first frame entered the graph at `startRawNs - upstreamFrames * 1e9 / rate`. A chunk that wraps the
 ring's end is handed in two calls, and the second's `position`, `startNs` and `startRawNs` are
 advanced by the first's frames at the graph's rate (the adapter is given it), so the rule holds for
-each call. PipeWire combines latencies field by field (the least of each minimum, the most of each
-maximum, in quanta, frames and ns apart), so when a bank's paths differ the value is an upper bound
-on the longest, not one path's. A wedged data loop stops the telling to peers, but the block still
-works its latency out and publishes it, so chunks follow a new plan.
+each call. The block converts each peer's latency to frames at its port before it combines any
+([below](#latency-per-bank-pair)), so when a bank's paths differ the value is the exact most over
+them, not PipeWire's field-by-field bound (quanta, frames and ns apart). A wedged data loop stops
+the telling to peers, but the block still works its latency out and publishes it, so chunks follow
+a new plan.
 
 ### Sources
 
@@ -309,8 +310,13 @@ it on the port; the filter stores it and emits `param_changed` and nothing else 
 The block then tells its ports' latency itself with `pw_filter_update_params`, which the engine hands
 to the peers.
 
-The block's rule, from its configuration's latency plan (given before the code drives, cleared at
-its teardown):
+The rules are written once, as a pure model in `ear_core` (`ear/core/latency.hpp`), in frames at
+the graph's rate. The block works its latency out by it and nothing else: at `carryLatency` (the
+configuration's plan, given before its code drives, cleared at its teardown) and at each peer's
+report, it hands the plan and each port's peer to `workOut`, publishes what comes back to the
+realtime side and tells each port's latency to its peers. The type harness calls the same
+`workOut` with no peer on any port ([writing-a-node-type.md](writing-a-node-type.md#testing-a-type)).
+By the plan, which names roles:
 
 - What lies **beyond** a bank is its ports' peers combined (only ports whose peers reported one),
   plus the plan's `beyond` entry for the bank **added in series** (to the least and to the most):
@@ -321,17 +327,21 @@ its teardown):
   neither comes to zero.
 - Each output bank's **downstream** latency is what lies beyond it, published to the realtime side
   as `GraphCycle::downstream`.
-- An output bank tells upstream (**capture**) latency: what lies beyond the input banks paired with
-  it, plus what the configuration declared on it. A sink on the bank stamps its chunks with the
-  most of it ([sinks](#sinks)).
-- An input bank tells downstream (**playback**) latency: for each output bank paired with it, what
-  lies beyond that output plus what the configuration declared on it (the code's own delay counts
-  both ways, as PipeWire adds a node's process latency to both), the most across the pairs; plus
-  what was declared on the input bank itself. A source on the bank dates its `Played` with the most
-  of it ([sources](#sources)).
+- An output bank tells upstream (**capture**) latency: over the pairs that end at it, what lies
+  beyond the pair's input bank plus the pair's `onPair` delay, combined; plus its own `onBank`. A
+  sink on the bank stamps its chunks with the most of it ([sinks](#sinks)).
+- An input bank tells downstream (**playback**) latency: over the pairs that start at it, what lies
+  beyond the pair's output bank plus the pair's `onPair` delay, combined; plus its own `onBank`. A
+  source on the bank dates its `Played` with the most of it ([sources](#sources)).
+- A bank in no pair tells its `onBank` alone. A paired bank with no peer is a zero path through its
+  pair (an empty combination finishes at zero), so it lowers the least of what the pair's other side
+  tells.
 
-These rules are written once, as a pure model in `ear_core` (`ear/core/latency.hpp`), in frames at
-the graph's rate:
+`NodeHost` makes the plan with each drive: `pairs` are the pass-through's; `beyond` holds each
+source's ring and each RTP receiver's `latencyMs`; and what configure declared with
+`declareLatency` is `onPair` on the pair that ends at the declared bank (a code's delay counts both
+ways on its path, as PipeWire adds a node's process latency to both) or, on a bank no pair ends at,
+`onBank`.
 
 - **Series and parallel are different types.** `Latency` adds only in series (`+`, saturating).
   Side by side, paths combine only through `Paths`, PipeWire's rule (`spa_latency_info_combine`:
@@ -339,35 +349,35 @@ the graph's rate:
   zero, and only `orZero()` (what `spa_latency_info_combine_finish` does) makes it zero. What lies
   in series on every path (a `beyond` entry, a code's delay) is a `Delay`, which `Paths` refuses at
   compile time, so a buffer combined as one more peer does not compile.
-- **The plan by role.** `latency_model::LatencyPlan` names `pairs`, `onPair` (a code's delay on a
-  pair's path, counted both ways on it), `onBank` (declared on one bank, counted on what that bank
-  tells and nothing else) and `beyond`; `latency_model::workOut` takes the ports, the plan and each
-  port's peer (none where no peer reported) and returns every port's told latency and every output
-  port's downstream, by the rules above. A paired bank with no peer is a zero path through its pair
-  (an empty combination finishes at zero), so it lowers the least of what the pair's other side
-  tells.
-- **One unit.** A peer's `{quantum, rate, ns}` converts to frames at the port, once, in
-  `ear_pipewire`'s private `latency_spa.hpp` (`fromSpa`: a quantum is the block size, ns are at the
-  graph frequency, rounded to the nearest frame; an unfinished empty combination is no path), and
-  what a block tells goes back in rate units (`toSpa`). Combined in frames, peers in mixed units
-  give the exact least and most, inside PipeWire's per-unit bound; in one unit the two agree, which
-  `ear_pipewire_tests` checks against PipeWire's own functions.
+- **One unit.** A peer's `{quantum, rate, ns}` converts to frames at the port, once, as the block
+  hears it, in `ear_pipewire`'s private `latency_spa.hpp` (`fromSpa`: a quantum is the block size,
+  ns are at the graph frequency, rounded to the nearest frame; an unfinished empty combination is no
+  path), and what a block tells goes back in rate units only (`toSpa`). Combined in frames, peers in
+  mixed units give the exact least and most, inside PipeWire's per-unit bound; in one unit the two
+  agree, which `ear_pipewire_tests` checks against PipeWire's own functions.
+- **A plan that does not fit** the block's ports (a bank it lacks, a pair backwards, a pair delay
+  off the plan's pairs, an entry twice) is `workOut`'s `std::logic_error`, thrown at `carryLatency`
+  on the main loop. After it only the peers change, so no peer's report meets a bad plan inside a
+  callback.
 - **Dating.** `FrameClock` turns frames into ns at the graph's rate, by one division of the whole
   count, truncated toward zero; `heardRawNs` (a frame heard once its downstream's most has played)
-  and `enteredRawNs` (a frame entered its upstream's most before) are the two dating rules.
+  and `enteredRawNs` (a frame entered its upstream's most before) are the two dating rules. The four
+  dating sites (a sink chunk's split, `SourceRing`'s `Played`, `sendspin`'s progress) still carry
+  their own copies of the formula, which the model's tests pin; they move onto it next
+  ([root-classes.md](design/root-classes.md), step R3).
 
-The port block (`FilterPortBlock::retell`), the type harness (`toldUpstream`, `toldDownstream`) and
-the four dating sites (a sink chunk's split, `SourceRing`'s `Played`, `sendspin`'s progress) still
-carry their own copies of these rules, which the model's tests pin; they move onto it next
-([root-classes.md](design/root-classes.md), steps R2 and R3).
+The model's table of bank shapes (`test/support/latency_table.hpp`) is run through `workOut` in
+`ear_core_tests` and through a real block in `ear_pipewire_tests`, each peer a real engine node
+telling in mixed units, so the block cannot drift from the model
+([testing.md](testing.md#what-each-test-program-proves)).
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. An RTP receiver's
 `latencyMs` is its `beyond` entry on `from_rtp` (rtp-source's ports report zero, not the buffer),
-which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its own with
-`declareLatency`: `sendspin` its feed on `from`. Frames are at the graph frequency. ALSA's
-playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`, `alsa-pcm.c`): 256 frames
-on the test card at a 256 quantum.
+which the framework adds and `rtp`'s pass-through carries to `stream`. A configuration declares its
+own with `declareLatency`: `sendspin` its feed on `from` (in no pair: `onBank`). Frames are at the
+graph frequency. ALSA's playback node reports one quantum plus its headroom (`alsa-pcm-sink.c`,
+`alsa-pcm.c`): 256 frames on the test card at a 256 quantum.
 
 **Trap: the last link going is never told.** When a port loses its last peer the engine sets a null
 Latency param, and `handle_latency` returns on null before it emits anything, so a block keeps the

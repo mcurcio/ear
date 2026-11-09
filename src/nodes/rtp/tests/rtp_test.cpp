@@ -107,11 +107,12 @@ TEST_CASE("Rtp's receive buffer is latency beyond its from_rtp bank, in frames o
 	CHECK(harness->latencyPlan().beyond.empty()); // carried with the drive, not before
 	harness.ready(rtp::fromRtp);
 	CHECK(harness.phase() == "running");
-	CHECK(harness->latencyPlan().internal.empty()); // the type declares nothing
+	CHECK(harness->latencyPlan().onPair.empty()); // the type declares nothing
+	CHECK(harness->latencyPlan().onBank.empty());
 	const auto& beyond = harness->latencyPlan().beyond;
 	REQUIRE(beyond.size() == 1);
 	CHECK(beyond[0].first == rtp::fromRtp.name);
-	CHECK(beyond[0].second == ear::Latency{11025, 11025}); // 250 ms at the graph's 44100 Hz
+	CHECK(beyond[0].second == ear::Delay{{11025, 11025}}); // 250 ms at the graph's 44100 Hz
 	REQUIRE(harness->latencyPlan().pairs.size() == 1);
 	CHECK(harness->latencyPlan().pairs[0] == ear::BankPair{"from_rtp", "stream"});
 }

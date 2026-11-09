@@ -87,7 +87,7 @@ if(BUILD_TESTS)
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
 		tests/type_spec_test.cpp)
-	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_catch_main)
+	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
 

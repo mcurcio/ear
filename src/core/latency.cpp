@@ -8,7 +8,7 @@
 
 #include "ear/core/node_type.hpp"
 
-namespace ear::latency_model {
+namespace ear {
 namespace {
 
 /// The one entry for `key` in `entries`, if any. Entries are unique (checked first).
@@ -91,4 +91,4 @@ LatencyFacts workOut(const Ports& ports, const LatencyPlan& plan, std::span<cons
 	return facts;
 }
 
-} // namespace ear::latency_model
+} // namespace ear

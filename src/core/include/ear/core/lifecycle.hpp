@@ -155,8 +155,10 @@ public:
 	/// configure is a std::logic_error; an adapter that cannot make it fails the node start-failed. The writer is valid
 	/// until the configuration is freed (teardown step 5), closed at teardown step 1.
 	virtual SourceWriter& source(std::string_view bank, SourceShape shape) = 0;
-	/// The type's own code's latency (docs/engine.md#latency-per-bank-pair): `latency` on the pair's output bank `to`,
-	/// in the configuration's LatencyPlan::internal. At most once per output bank (a second is a std::logic_error).
+	/// The type's own code's latency (docs/engine.md#latency-per-bank-pair): `latency` declared on the pair's output
+	/// bank `to`, which the plan counts on the path of the pass-through's pair into `to` (LatencyPlan::onPair), or on
+	/// `to` alone when no pair ends there (LatencyPlan::onBank). At most once per output bank (a second is a
+	/// std::logic_error).
 	virtual void declareLatency(std::string_view from, std::string_view to, Latency latency) = 0;
 	/// A rule CreateOf finds broken before it reaches a call above (a code written against another type's spec): records
 	/// it on the configuration, so the node fails with it whatever configure does next, and throws std::logic_error(rule).

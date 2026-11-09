@@ -723,7 +723,8 @@ TEST_CASE("A sink's chunks carry the capture latency its block tells on the sink
 	};
 
 	// The configuration's own latency on the sink's bank.
-	block->carryLatency(LatencyPlan{{{"record", "writer"}}, {{"writer", Latency{7, 9}}}, {}});
+	block->carryLatency(
+		LatencyPlan{.pairs = {{"record", "writer"}}, .onPair = {{{"record", "writer"}, Delay{{7, 9}}}}});
 	bool driven = false;
 	block->drive(DriveRequest{&ramp, {}, bindings}, [&](std::uint64_t) {
 		driven = true;
@@ -733,9 +734,10 @@ TEST_CASE("A sink's chunks carry the capture latency its block tells on the sink
 	CHECK(waiter.until([&] { return latest() == 9U; }));
 	// A receiver's 480 to 960 beyond `from_rtp`, paired with `writer` too: the most upstream is 960 + 9, though nothing
 	// reaches `record`.
-	block->carryLatency(LatencyPlan{{{"record", "writer"}, {"from_rtp", "writer"}},
-	                                {{"writer", Latency{7, 9}}},
-	                                {{"from_rtp", Latency{480, 960}}}});
+	block->carryLatency(
+		LatencyPlan{.pairs = {{"record", "writer"}, {"from_rtp", "writer"}},
+	                .onPair = {{{"record", "writer"}, Delay{{7, 9}}}, {{"from_rtp", "writer"}, Delay{{7, 9}}}},
+	                .beyond = {{"from_rtp", Delay{{480, 960}}}}});
 	CHECK(waiter.until([&] { return latest() == 969U; }));
 	// An empty plan: nothing upstream at all.
 	block->carryLatency({});
