@@ -28,6 +28,7 @@
 #include <spa/pod/builder.h>
 #include <spa/utils/result.h>
 
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
 #include "level_mailbox.hpp"
 
@@ -91,7 +92,7 @@ class FilterPortBlock final : public PortBlock {
 public:
 	FilterPortBlock(Engine& engine, std::shared_ptr<Levels> levels, const NodeName& node, const Ports& ports,
 	                const AudioFormat& format, PortBlockEvents& events)
-		: events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
+		: engine_(engine), events_(events), loop_(engine.mainLoop()), maxBlock_(format.maxBlock),
 		  windowFrames_(std::max(levelWindowFrames(format.rate), 1U)), zeros_(format.maxBlock, 0.0f),
 		  inputs_(ports.inputs().size() + ports.insideInputs().size()),
 		  outputs_(ports.outputs().size() + ports.insideOutputs().size()), publicInputs_(ports.inputs().size()),
@@ -343,7 +344,8 @@ private:
 	/// Main thread: works out every bank's latency afresh from what the peers report and the plan, publishes each
 	/// output's downstream latency to the realtime side, and tells each port's new latency to its peers.
 	void retell() {
-		if (filter_ == nullptr) return;
+		// On a wedged data loop no latency is told (data_loop_wedge.hpp): nothing more reaches the engine.
+		if (filter_ == nullptr || dataLoopWedged(engine_)) return;
 		for (const Ports::Bank& bank : ports_.banks()) {
 			const BankSpan at{bank.first, bank.ports.size()};
 			const Latency internal = internalOf(bank.name);
@@ -594,6 +596,7 @@ private:
 	}
 
 	std::atomic<AudioCode*> code_{nullptr}; // nullptr: every output silent
+	Engine& engine_;
 	PortBlockEvents& events_;
 	pw_loop* loop_;
 	std::uint32_t maxBlock_;

@@ -16,6 +16,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -33,6 +34,7 @@ public:
 
 	~JoinedOutsideNode() override {
 		silence();
+		if (dataLoopWedged(engine_)) leakEngineObjects();
 		links_.clear();
 		body_.reset();
 		if (later_ != nullptr) pw_loop_destroy_source(engine_.mainLoop(), later_);
@@ -64,6 +66,7 @@ private:
 	/// block's node.name: an older block of the name may still be going, node-lifecycle.md 5.7),
 	/// each port by name, owned by EAR's connection.
 	void link(std::uint32_t nodeId) {
+		if (dataLoopWedged(engine_)) return; // linking would wait on the wedged loop: it stays opening
 		state_ = State::linking;
 		if (join_.blockId == SPA_ID_INVALID) {
 			fail("the " + join_.kind + "'s port block has no engine id");
@@ -121,6 +124,11 @@ private:
 		auto* self = static_cast<JoinedOutsideNode*>(data);
 		if (self->state_ != State::failing || self->syncing_) return;
 		self->syncing_ = true;
+		if (dataLoopWedged(self->engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
+			self->leakEngineObjects();
+			self->tellLost();
+			return;
+		}
 		self->links_.clear();
 		self->body_.reset();
 		self->syncSeq_ = pw_core_sync(self->engine_.core(), PW_ID_CORE, 0);
@@ -139,6 +147,16 @@ private:
 		state_ = State::lost;
 		silence();
 		events_.lost(detail_);
+	}
+
+	/// On a wedged data loop (data_loop_wedge.hpp): the links and the body are kept for good, never destroyed.
+	void leakEngineObjects() {
+		for (auto& link : links_) {
+			link->silence();
+			static_cast<void>(link.release());
+		}
+		links_.clear();
+		static_cast<void>(body_.release());
 	}
 
 	void silence() {

@@ -7,6 +7,7 @@
 #include <atomic>
 #include <csignal>
 #include <ctime>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -21,6 +22,8 @@
 
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
+
+#include "ear/pipewire/data_loop_wedge.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -211,7 +214,19 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
 
 Engine::Engine(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 
-Engine::~Engine() = default;
+namespace {
+/// The engines whose data loop was judged wedged (data_loop_wedge.hpp). Main thread only.
+std::set<const Engine*>& wedgedEngines() {
+	static std::set<const Engine*> engines;
+	return engines;
+}
+} // namespace
+
+void markDataLoopWedged(const Engine& engine) { wedgedEngines().insert(&engine); }
+
+bool dataLoopWedged(const Engine& engine) noexcept { return wedgedEngines().contains(&engine); }
+
+Engine::~Engine() { wedgedEngines().erase(this); }
 
 void Engine::run() { pw_main_loop_run(impl_->loop); }
 

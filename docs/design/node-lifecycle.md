@@ -525,7 +525,14 @@ had come first. Only what is still not done is judged.
   flush does nothing; every configuration and block in a teardown, and every one after, is leaked (counted in
   `leaked()`, renamed from `leakedRuns`); rule 1 configures nothing; a node added afterwards is checked before T1 and
   fails `engine-refused: the data loop is wedged` without a block (4.1, D-L10); edits still commit and the keeper
-  still writes. `stopAll` reaches `allGone` at once for leaked nodes, and `main.cpp` already leaves through
+  still writes. NodeHost is not the only caller: making or destroying a route's link, an outside node tearing itself
+  down and a latency update also reach the data loop through a blocking invoke (PipeWire 1.4.2's `impl-port.c`
+  `port_set_io` releases a mix with `pw_loop_invoke(..., true)`), so `main.cpp` marks the engine when
+  `ear.data-loop-wedged` is said (`ear/pipewire/data_loop_wedge.hpp`) and `ear_pipewire`'s adapters stop too: `Links`
+  makes no link (each is refused "the data loop is wedged", so a route added or relinked after the wedge is `refused`
+  with that detail; the wire's statuses are unchanged) and leaks every link proxy it would destroy, an outside node
+  leaks its links and body, and a port block tells no latency. Levels, live ports, handoffs and the control thread make
+  no call that waits on the data loop (revision 2.7). `stopAll` reaches `allGone` at once for leaked nodes, and `main.cpp` already leaves through
   `std::_Exit` once anything is leaked, after the keeper's last write (`main.cpp:307-315` [V]). From 3b, whose
   companions defer take-up to a cycle, a barrier overdue first posts a no-op probe invoke and judges the loop wedged
   only if the probe has not run within a further 1 s; 3a does not need it (13).
@@ -1661,7 +1668,10 @@ the barrier's (5 s) and the close's (10 s, as before) are `Timers`, each judging
 `ear.barrier-overdue` and node-less `ear.data-loop-wedged` with their `output-records.json` cases. `node_host_test.cpp`
 has 68 cases: the 59 kept (a node with an output now logs its fade before its silence) and nine new (the faded flags, a
 fade unacknowledged, M1's completion settled from a bound after a 6 s stall, B1's block leaving STREAMING, the wedge, a
-node added after it, `stopAll` after it, 16 fades at once, a factory or adapter throwing in the flush).
+node added after it, `stopAll` after it, 16 fades at once, a factory or adapter throwing in the flush); review added
+four (the grace after a settle that ran a completion, the grace after a late timer, a leaked block's node kept, a card's
+playback bank faded at a restart and a removal), and the B1 case is renamed for what the fake can show, pointing to
+`port_block_test.cpp`'s real ones.
 `sound_card_test.cpp` follows to_card's fade-in and its last 5 ms to the card's samples. What building it settled, each
 a minimal edit or recorded here:
 
@@ -1671,6 +1681,18 @@ a minimal edit or recorded here:
 - 5.4's bound, as built: when its timer fires the block is settled in an input of its own and the request judged in the
   input behind whatever that settle ran, so a completion the settle found is heard first (M1); the judgement also
   checks the configuration and the barrier number, since the fade's bound must not judge the silence posted after it.
+  After review: when that settle ran a `done` of the block (it may then have posted the request's invoke only now,
+  behind a completion whose event had not been dispatched), or the timer fired more than 250 ms past its due time (the
+  whole process was stalled, frozen or paused, not the data loop alone), the request gets a grace (1 s for a barrier,
+  100 ms for a fade) instead of a judgement, and its diagnostic's `ms` counts the whole wait.
+- 5.4's wedge beyond NodeHost (review): `Links`, the outside nodes and the port blocks consult the engine's mark, as 5.4
+  now says. Without it a route removed after the wedge hung the main loop for good, SIGTERM included (an engine test
+  without the mark hangs and ignores SIGTERM; with it the removal returns and the loop turns). A `Node` whose block was
+  leaked is never freed (the block still holds it as its `PortBlockEvents`), and `~NodeHost` leaks its whole state on a
+  wedged loop.
+- 11.6: `engine_test.cpp`'s "Stopping 16 nodes costs about one fade, one cycle and one batch of destroys" runs the real
+  `NodeHost` over the real engine (12 to 17 ms here, bounded at 2 s); the bounds against CI's stalls stay [U] until CI
+  has run it under load.
 - 5.4's wedge, as built: `ear.barrier-overdue` (with `ms`), then `ear.data-loop-wedged` once (with `ms`, its detail
   naming the node); then every node hears it as an input of its own, and nothing is settled again (`settle()` may post
   an invoke). A configuration `readying` or `prepared` fails `engine-refused: the data loop is wedged` and tears down

@@ -17,6 +17,7 @@ add_library(ear_pipewire STATIC
 # Header set and its standalone compile check: see src/core/CMakeLists.txt. The headers
 # declare PipeWire's types they name, so PipeWire's own headers stay private to this package.
 target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+	include/ear/pipewire/data_loop_wedge.hpp
 	include/ear/pipewire/engine.hpp
 	include/ear/pipewire/engine_log.hpp
 	include/ear/pipewire/handoffs.hpp

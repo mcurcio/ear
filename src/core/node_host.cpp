@@ -141,6 +141,9 @@ struct NodeHost::Impl {
 		/// waits for that).
 		void markGone() noexcept { gone_ = true; }
 		bool holdsBlock() const noexcept { return block_ != nullptr || makePending_ || destroyPending_; }
+		/// Its block was leaked on a wedged loop: the block still holds this node as its PortBlockEvents, so the node is
+		/// never freed either (5.4).
+		bool blockLeaked() const noexcept { return blockLeaked_; }
 		/// Its block waits for an older block of its name (T1).
 		bool blockWaiting() const noexcept { return aggregate_.block().state() == lc::BlockState::waiting; }
 		/// No longer wanted: removed by an edit or by stopAll, still stopping or gone.
@@ -207,6 +210,7 @@ struct NodeHost::Impl {
 				makePending_ = false;
 			} else if (host_.wedged && block_) {
 				static_cast<void>(block_.release()); // leaked: destroying it waits on the wedged loop (5.4)
+				blockLeaked_ = true;
 				++host_.leaked;
 			} else {
 				block_.reset();
@@ -746,6 +750,7 @@ struct NodeHost::Impl {
 		std::move_only_function<void(std::uint64_t)>
 		completion(std::uint64_t barrier, lc::Actions (lc::NodeAggregate::*event)(std::uint64_t)) {
 			return [&host = host_, serial = serial_, generation = config_->generation, barrier, event](std::uint64_t) {
+				if (Node* node = host.find(serial)) ++node->completionsRun_;
 				host.inputFor(serial, [generation, barrier, event](Node& node) {
 					if (!node.current(generation)) return;
 					if (node.aggregate_.configuration().barrier() == barrier) node.config_->bound.reset();
@@ -757,34 +762,53 @@ struct NodeHost::Impl {
 		/// Which bound a request has (5.4): the fade's acknowledgement, or the barrier's completion.
 		enum class Bound { fade, barrier };
 
-		/// Arms the bound of the request just posted. When it fires the block is settled first, as an input of its own,
-		/// and the request judged in the input behind whatever that settle ran (D-L30): a completion a stalled main loop
-		/// had not dispatched yet is heard first, and then nothing is judged.
+		/// How late past its due time a bound's timer may fire before NodeHost takes the main loop to have stalled too.
+		static constexpr std::chrono::milliseconds lateSlack{250};
+		/// The grace a bound gets instead of its judgement when the data loop had no fair chance (below).
+		static constexpr std::chrono::milliseconds graceOf(Bound bound) {
+			return bound == Bound::fade ? fadeAcknowledgeBound : std::chrono::milliseconds(1'000);
+		}
+
+		/// Arms the bound of the request just posted.
 		void arm(std::uint64_t barrier, Bound bound) {
+			config_->postedAt = host_.timers.now();
+			armTimer(barrier, bound, bound == Bound::fade ? fadeAcknowledgeBound : barrierCompletionBound);
+		}
+
+		/// When the bound's timer fires the block is settled first, as an input of its own, and the request judged in
+		/// the input behind whatever that settle ran (D-L30): a completion a stalled main loop had not dispatched yet is
+		/// heard first, and then nothing is judged. The data loop had no fair chance, so the request gets a grace
+		/// instead of a judgement, when the settle ran a `done` of this block (it may then have posted the request's
+		/// invoke only now, behind a completion whose event had not been dispatched) or when the timer fired late (the
+		/// whole process was stalled, frozen or paused, not the data loop alone).
+		void armTimer(std::uint64_t barrier, Bound bound, std::chrono::milliseconds delay) {
 			Configuration& c = *config_;
-			c.postedAt = host_.timers.now();
-			c.bound =
-				host_.timers.after(bound == Bound::fade ? fadeAcknowledgeBound : barrierCompletionBound,
-			                       [&host = host_, serial = serial_, generation = c.generation, barrier, bound] {
-									   host.inputFor(serial, [generation, barrier, bound](Node& node) {
-										   if (!node.current(generation) || node.host_.wedged) return;
-										   if (node.block_) node.block_->settle();
-										   node.host_.inputFor(node.serial_, [generation, barrier, bound](Node& later) {
-											   later.judge(generation, barrier, bound);
-										   });
-									   });
-								   });
+			const auto due = host_.timers.now() + delay;
+			c.bound = host_.timers.after(
+				delay, [&host = host_, serial = serial_, generation = c.generation, barrier, bound, due] {
+					host.inputFor(serial, [generation, barrier, bound, due](Node& node) {
+						if (!node.current(generation) || node.host_.wedged) return;
+						const std::uint64_t before = node.completionsRun_;
+						if (node.block_) node.block_->settle();
+						const bool unfair = node.completionsRun_ != before || node.host_.timers.now() - due > lateSlack;
+						node.host_.inputFor(node.serial_, [generation, barrier, bound, unfair](Node& later) {
+							later.judge(generation, barrier, bound, unfair);
+						});
+					});
+				});
 		}
 
 		/// The bound of request `barrier` passed and its completion was not heard after the block settled.
-		void judge(std::uint64_t generation, std::uint64_t barrier, Bound bound) {
+		void judge(std::uint64_t generation, std::uint64_t barrier, Bound bound, bool unfair) {
 			if (!current(generation) || aggregate_.configuration().barrier() != barrier) return;
 			const lc::ConfigState state = aggregate_.configuration().state();
+			const bool pending = bound == Bound::fade
+			                         ? state == lc::ConfigState::fading
+			                         : state == lc::ConfigState::silencing || state == lc::ConfigState::arming;
+			if (!pending) return;
+			if (unfair) return armTimer(barrier, bound, graceOf(bound));
 			judgedMs_ = millisecondsBetween(config_->postedAt, host_.timers.now());
-			if (bound == Bound::fade && state == lc::ConfigState::fading) feed(aggregate_.fadeBound());
-			else if (bound == Bound::barrier &&
-			         (state == lc::ConfigState::silencing || state == lc::ConfigState::arming))
-				feed(aggregate_.barrierBound());
+			feed(bound == Bound::fade ? aggregate_.fadeBound() : aggregate_.barrierBound());
 		}
 
 		/// On a wedged loop a request is never posted (5.4): it is judged overdue at once, as an input of its own, saying
@@ -970,12 +994,14 @@ struct NodeHost::Impl {
 		bool building_ = false;
 		bool closingHandoffs_ = false;
 		bool runClosing_ = false;
-		bool makePending_ = false;    // the block's making is queued in the flush
-		bool destroyPending_ = false; // the block's destruction is queued in the flush
-		bool goneWaiting_ = false;    // removed, told gone once its block's destruction ran
-		bool gone_ = false;           // told gone
-		bool synthetic_ = false;      // a bound judged at once on a wedged loop: its diagnostics are not said
-		std::int64_t judgedMs_ = 0;   // how long the judged request waited, for its diagnostics
+		bool makePending_ = false;         // the block's making is queued in the flush
+		bool destroyPending_ = false;      // the block's destruction is queued in the flush
+		bool goneWaiting_ = false;         // removed, told gone once its block's destruction ran
+		bool gone_ = false;                // told gone
+		bool blockLeaked_ = false;         // its block was leaked on a wedged loop: never freed, nor is this node
+		bool synthetic_ = false;           // a bound judged at once on a wedged loop: its diagnostics are not said
+		std::uint64_t completionsRun_ = 0; // `done`s its block ran, by event or settle(): a bound sees one it settled
+		std::int64_t judgedMs_ = 0;        // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
 	};
 
@@ -1067,9 +1093,9 @@ struct NodeHost::Impl {
 	/// returned; what they queue runs behind the snapshot, in this flush. An item or input that throws (a type bug)
 	/// strands nothing: the flush ends, then the first exception is rethrown.
 	void runFlush() {
+		flushPosted = false; // a later change posts a flush of its own, even past the throw below
 		if (handling || inItem || flushing)
 			throw std::logic_error("the flush ran inside an input or another flush: the executor ran a post inline");
-		flushPosted = false;
 		flushing = true;
 		std::exception_ptr thrown;
 		std::deque<FlushItem> pending;
@@ -1090,11 +1116,7 @@ struct NodeHost::Impl {
 				} catch (...) {
 					if (!thrown) thrown = std::current_exception();
 				}
-				try {
-					item.run = nullptr; // a destroy's object goes inside its activity, whether or not the item threw
-				} catch (...) {
-					if (!thrown) thrown = std::current_exception();
-				}
+				item.run = nullptr; // a destroy's object goes inside its activity, whether or not the item threw
 			}
 			inItem = false;
 			if (std::exception_ptr caused = drain(); caused && !thrown) thrown = caused;
@@ -1190,7 +1212,11 @@ NodeHost::NodeHost(AudioFormat format, PortBlockFactory& blocks, ResourceRegistr
                    Timers& timers, std::chrono::milliseconds closeDeadline)
 	: impl_(std::make_unique<Impl>(format, blocks, resources, mainLoop, timers, closeDeadline)) {}
 
-NodeHost::~NodeHost() = default;
+NodeHost::~NodeHost() {
+	// On a wedged loop, leaked blocks, outside nodes and configurations still point into the host: it is never freed
+	// (main.cpp ends through std::_Exit before this runs; a test's host is kept for good).
+	if (impl_->wedged) static_cast<void>(impl_.release());
+}
 
 void NodeHost::subscribe(NodeHealthListener& listener) { impl_->listeners.push_back(&listener); }
 
@@ -1206,7 +1232,11 @@ void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->requireOpen("nodeAdded", node.name);
-	std::erase_if(impl_->nodes, [](const auto& known) { return known->removed(); });
+	std::erase_if(impl_->nodes, [](auto& known) {
+		if (!known->removed()) return false;
+		if (known->blockLeaked()) static_cast<void>(known.release()); // its leaked block may still tell it (5.4)
+		return true;
+	});
 	const std::uint64_t serial = ++impl_->serials;
 	impl_->nodes.emplace_back(std::make_unique<Impl::Node>(*impl_, node.name, serial));
 	impl_->inputFor(serial, [impl = impl_.get(), config = std::move(config)](Impl::Node& added) mutable {

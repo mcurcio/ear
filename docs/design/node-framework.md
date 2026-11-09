@@ -2243,7 +2243,7 @@ from the sections above, and why:
   handoff thread may still write its descriptor of the recording while the next run truncates and writes the same path.
   A run leaked during step 3 (a handoff still open) is never told to close: its run object, and any connection it
   holds (a `sendspin` client to Music Assistant), stays as it is until ear exits. Once any run was leaked, ear ends
-  with `std::_Exit(0)` after the keeper's last write of `ear.conf` (`NodeHost::leakedRuns`), since a leaked thread may
+  with `std::_Exit(0)` after the keeper's last write of `ear.conf` (`NodeHost::leaked`, renamed from `leakedRuns` in node-lifecycle.md's step L-3c), since a leaked thread may
   still post to the main loop or signal an engine source that `main` would otherwise destroy under it.
 - **6, I9:** one run names each outside node once (`<node>.<suffix>`; a second is a `std::logic_error` at `acquire`),
   which replaces the old "one RTP receiver per start" rule. Handoffs make no engine object.

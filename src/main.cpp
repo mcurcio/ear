@@ -39,6 +39,7 @@
 #include "ear/folder/confined_folder.hpp"
 #include "ear/output/descriptor_capture.hpp"
 #include "ear/output/output_writer.hpp"
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/engine_log.hpp"
 #include "ear/pipewire/handoffs.hpp"
@@ -112,6 +113,20 @@ public:
 
 private:
 	ear::output::DescriptorCapture& capture_;
+};
+
+/// The glue between NodeHost's judgement and the engine's adapters (docs/design/node-lifecycle.md 5.4): once
+/// ear.data-loop-wedged is said, the engine is marked, so Links, the outside nodes and the port blocks make no call that
+/// would wait on the wedged data loop (ear/pipewire/data_loop_wedge.hpp). Main thread, before any later input.
+class WedgeMarker final : public ear::EngineDiagnosticListener {
+public:
+	explicit WedgeMarker(const ear::pipewire::Engine& engine) : engine_(engine) {}
+	void engineDiagnostic(const ear::EngineDiagnostic& diagnostic) override {
+		if (diagnostic.code == "ear.data-loop-wedged") ear::pipewire::markDataLoopWedged(engine_);
+	}
+
+private:
+	const ear::pipewire::Engine& engine_;
 };
 
 } // namespace
@@ -262,6 +277,8 @@ int main(int argc, char** argv) {
 	nodes.subscribeNotes(log);
 	nodes.subscribeDiagnostics(log);       // ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
+	WedgeMarker wedgeMarker(*engine);
+	nodes.subscribeEngineDiagnostics(wedgeMarker); // then the engine's adapters stop calling into the loop
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);

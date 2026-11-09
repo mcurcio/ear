@@ -225,6 +225,7 @@ struct TestBlocks final : PortBlockFactory {
 	Held held;
 	std::vector<std::string> activities; // MainLoopActivity::current() inside each make
 	bool throwInMake = false;            // make() throws, as a factory with a bug
+	std::vector<TestBlock*> made;        // every block made, in make order (a destroyed one dangles: unused)
 	TestBlocks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports& ports, const AudioFormat&,
 	                                PortBlockEvents& e) override {
@@ -232,8 +233,17 @@ struct TestBlocks final : PortBlockFactory {
 		log.push_back("make " + node + " " + std::to_string(ports.inputs().size()) + " inputs");
 		activities.push_back(MainLoopActivity::current());
 		events.push_back(&e);
-		return std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back(), mainLoop, modes,
-		                                   held);
+		auto block = std::make_unique<TestBlock>(log, &driven.emplace_back(nullptr), &plans.emplace_back(), mainLoop,
+		                                         modes, held);
+		made.push_back(block.get());
+		return block;
+	}
+	/// The held completion `index` was completed by the data loop, its event not yet dispatched: block `block`'s
+	/// settle() runs it.
+	void applyHeld(std::size_t index, std::size_t block) {
+		auto done = std::move(held.at(index));
+		held.erase(held.begin() + static_cast<std::ptrdiff_t>(index));
+		made.at(block)->applied.push_back(std::move(done));
 	}
 	/// Runs the held completion `index`, as the block's event would on the main loop.
 	void complete(std::size_t index) {
@@ -2682,8 +2692,11 @@ TEST_CASE("A bound that fires before its completion was dispatched completes it 
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A block that leaves STREAMING with a drive or a fade in flight still completes it, and the loop is not "
-          "judged wedged",
+// The fake cannot model STREAMING: a block that leaves it completes by signal, which port_block_test.cpp's "A block that
+// is PAUSED takes a drive in its invoke and completes it" and "A fade-out on a block that is not processing, or that
+// leaves STREAMING mid-fade, is acknowledged by signal" show on the real engine (B1). Here: such completions, late but
+// inside their bounds, judge nothing.
+TEST_CASE("A drive or a fade completed late but inside its bound judges nothing, and the loop is not judged wedged",
           "[node_host][fade]") {
 	Fixture f;
 	f.blocks.hold = true;
@@ -2872,4 +2885,105 @@ TEST_CASE("A factory or an adapter that throws inside the flush fails its node a
 		f.settle();
 		CHECK(f.allGone == 1);
 	}
+}
+
+TEST_CASE("A bound whose settle ran an earlier completion gives the request a grace instead of a judgement",
+          "[node_host][wedge]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.hold = true;
+	f.host.nodeRemoved("amp");
+	f.timers.advance(std::chrono::milliseconds(100)); // the fade unacknowledged: the silence posted behind it
+	REQUIRE(f.blocks.held.size() == 2);               // the fade, then the silence
+	// The fade's invoke ran late, its event not yet dispatched: the silence's invoke is posted only by the settle
+	// the barrier's bound makes, so the data loop has had no chance at it.
+	f.blocks.applyHeld(0, 0);
+	f.log.clear();
+	SECTION("the silence completes within the grace") {
+		f.timers.advance(std::chrono::milliseconds(5'000));
+		CHECK(f.log.empty());
+		f.timers.advance(std::chrono::milliseconds(900));
+		f.blocks.complete(0);
+		f.endTurn();
+		CHECK(f.log == Log{"release", "block destroyed", "node amp gone dropped=0"});
+		CHECK(f.host.leaked() == 0);
+	}
+	SECTION("it does not: judged at the grace's end, with the whole wait") {
+		f.timers.advance(std::chrono::milliseconds(5'000));
+		f.timers.advance(std::chrono::milliseconds(1'000));
+		CHECK(f.log ==
+		      Log{"diagnostic amp ear.barrier-overdue ms=6000", "engine diagnostic ear.data-loop-wedged ms=6000"});
+	}
+	f.stopAll();
+	f.endTurn();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A bound whose timer fires late (the whole process stalled) gives the request a grace instead of a judgement",
+          "[node_host][wedge]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.hold = true;
+	f.host.nodeRemoved("amp");
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(6'000)); // frozen 6 s: the fade's timer fires 5.9 s late
+	CHECK(f.log.empty());
+	f.timers.advance(std::chrono::milliseconds(100)); // then on time, after its grace
+	CHECK(f.log == Log{"diagnostic amp ear.fade-unacknowledged ms=6100", "drive nothing"});
+	f.log.clear();
+	f.timers.advance(std::chrono::milliseconds(7'000)); // frozen again past the barrier's bound
+	CHECK(f.log.empty());                               // no wedge: the data loop was frozen with the rest
+	f.blocks.complete(1);                               // the silence, inside its grace
+	f.endTurn();
+	CHECK(f.log == Log{"release", "block destroyed", "node amp gone dropped=0"});
+	CHECK(f.diagnostics.details.size() == 1);
+	f.blocks.complete(0); // the late fade's acknowledgement finds nothing
+	f.stopAll();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A node whose block was leaked on a wedged loop is never freed: the block may still tell it",
+          "[node_host][wedge]") {
+	Fixture f;
+	addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+	f.blocks.hold = true;
+	f.host.nodeRemoved("amp");
+	f.timers.advance(std::chrono::milliseconds(100));
+	f.timers.advance(std::chrono::milliseconds(5'000));
+	f.endTurn();
+	REQUIRE(f.host.health().empty());
+	f.add("next", std::make_shared<OutputConfig>(f.log)); // prunes removed nodes, but keeps amp's for its block
+	f.blocks.events.at(0)->lost("the engine removed it"); // amp's leaked block tells it: nothing is freed, nothing told
+	f.blocks.events.at(0)->ready();
+	REQUIRE(f.host.health().size() == 1);
+	CHECK(f.host.health()[0].name == "next");
+	f.stopAll();
+	f.endTurn();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A card's playback bank, an inside output, fades in at every drive and out before a restart's and a "
+          "removal's silence",
+          "[node_host][fade]") {
+	Fixture f;
+	addRunning(f, "desk", withPlayback(f.log, "A"));
+	REQUIRE(f.blocks.modes.faded.size() == 1);
+	CHECK(f.blocks.modes.faded[0] == std::vector<bool>{true, true}); // pb.1 and pb.2, which feed desk.playback
+	f.log.clear();
+	f.update("desk", withPlayback(f.log, "B"));
+	CHECK(f.log.at(1) == "fade");
+	f.settle();
+	CHECK(indexOf(f.log, "fade") < indexOf(f.log, "drive nothing"));
+	f.cards.events.back()->ready();
+	f.settle();
+	REQUIRE(f.blocks.modes.faded.size() == 2);
+	CHECK(f.blocks.modes.faded[1] == std::vector<bool>{true, true});
+	f.log.clear();
+	f.host.nodeRemoved("desk");
+	CHECK(f.log == Log{"node desk stopping", "fade"});
+	f.settle();
+	CHECK(f.log.at(2) == "drive nothing");
+	CHECK(f.log.back() == "node desk gone dropped=0");
+	f.stopAll();
+	CHECK(f.allGone == 1);
 }

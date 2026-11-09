@@ -137,6 +137,8 @@ graph-file               graph-file <edit|disk|write> <version> running=<version
 graph-file-written       graph-file written <version>
 graph-file-write-failed  graph-file write-failed <detail>
 log                      [node <name> ]<source>[ <topic>] <level>: <text>
+diagnostic               node <name> <code>: <detail>   (ear.close-overdue, ear.fade-unacknowledged, ear.barrier-overdue)
+                         <code>: <detail>               (no node field: ear.data-loop-wedged)
 exit                     ear: <reason>
 ```
 
@@ -174,6 +176,16 @@ client with WebSocket code 1001, writes the last accepted version of `ear.conf` 
 written yet (a failure is printed as a `graph-file-write-failed` record, and reaches nowhere
 else), writes every record still queued and exits 0. Bad flags, a folder it cannot make or open, folders that overlap, an engine
 that does not start, a folder watch it cannot arm, or a control port it cannot bind exits 1.
+A node with an output (every type but `file`) fades its outputs, a card's playback included, in over 5 ms at every
+start and out over 5 ms before every restart, removal, failure and stop; a fade not acknowledged in 100 ms is
+`ear.fade-unacknowledged` and the silence is taken unfaded (`docs/design/node-lifecycle.md` sections 5.3 and 5.4). A
+drive or silence the data loop has not completed in 5 s (after a grace when the whole process stalled) is
+`ear.barrier-overdue` and then, once, `ear.data-loop-wedged`: from then on ear makes no PipeWire call that could wait
+on the data loop (no block, outside node or link is made or destroyed, no latency is told; a new node fails
+`engine-refused: the data loop is wedged`, a new route is `refused` with that detail), what it would destroy is
+leaked, and ear's stop still writes `ear.conf` and every record, then leaves through `std::_Exit(0)` (as it does
+whenever anything was leaked, a run past its close deadline included).
+
 There is no lint config.
 
 ## Control port and graph editor
