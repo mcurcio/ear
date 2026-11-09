@@ -15,6 +15,7 @@
 
 #include "../legacy_instance.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/source_ring.hpp"
 
 namespace ear::testing {
 namespace {
@@ -113,6 +114,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
+			harness.boundSources.assign(request.sources.begin(), request.sources.end());
 			std::ranges::fill(harness.fadeMask, false);
 			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
 				harness.fadeMask[i] = request.faded[i];
@@ -238,6 +240,59 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		Impl& harness;
 	};
 
+	/// A source over core's own SourceRing, so a type's tests play by the engine's rules
+	/// (docs/writing-a-node-type.md#sources): its writer offers what fits and never waits, an idle returns at once, and
+	/// nobody watches its played wake (it is never rung: the ring's signals are ignored).
+	struct FakeSource final : Source, SourceWriter, SourceRing::Signals, Wake {
+		FakeSource(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
+			: harness(h), index(i), rules(channels, frames, rate, *this) {}
+		~FakeSource() override { harness.companionList.at(index).destroyed = true; }
+		SourceWriter& writer() noexcept override { return *this; }
+		SourceTap& tap() noexcept override { return rules; }
+		void stopped() noexcept override { rules.dropForStop(); }
+		void close() noexcept override { rules.close(); }
+		std::uint64_t shortfallFrames() const noexcept override { return rules.shortfallFrames(); }
+		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
+		std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames,
+		                    std::chrono::milliseconds) override {
+			return rules.offer(interleaved, frames);
+		}
+		void idle(std::chrono::milliseconds) override { rules.markIdle(); }
+		void clear() noexcept override { rules.clear(); }
+		bool closed() const noexcept override { return rules.closed(); }
+		std::uint32_t capacityFrames() const noexcept override { return rules.capacityFrames(); }
+		Played played() const noexcept override { return rules.played(); }
+		Wake& playedWake() noexcept override { return *this; }
+		void ring() noexcept override {}
+		int descriptor() const noexcept override { return -1; }
+		void answer() noexcept override {}
+		void roomFreed() noexcept override {}
+		void playedChanged() noexcept override {}
+		Impl& harness;
+		std::size_t index;
+		SourceRing rules;
+	};
+	struct FakeSources final : SourceAdapter {
+		explicit FakeSources(Impl& h) : harness(h) {}
+		std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+		                             std::uint32_t capacityFrames, std::uint32_t rate) override {
+			harness.companionList.push_back(CompanionFake{CompanionFake::Kind::source,
+			                                              std::string(bank),
+			                                              node + "." + std::string(bank),
+			                                              SourceShape{.frames = capacityFrames},
+			                                              true,
+			                                              true,
+			                                              false,
+			                                              {}});
+			harness.outsideEvents.push_back(nullptr); // a source has no outside events
+			auto made =
+				std::make_unique<FakeSource>(harness, harness.companionList.size() - 1, channels, capacityFrames, rate);
+			harness.sourceList.push_back(made.get());
+			return made;
+		}
+		Impl& harness;
+	};
+
 	/// A legacy handoff whose writes go straight to its consumer, on the writing thread (the test's).
 	struct FakeHandoff final : Handoff, RtWriter {
 		FakeHandoff(Impl& h, std::size_t i, HandoffConsumer& c, std::size_t n)
@@ -294,6 +349,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			return create.openRecording(request);
 		}
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override { return create.sink(bank, shape); }
+		SourceWriter& source(std::string_view bank, SourceShape shape) override { return create.source(bank, shape); }
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			create.declareLatency(from, to, latency);
 		}
@@ -367,10 +423,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
-		  handoffs(*this), sinks(*this),
+		  handoffs(*this), sinks(*this), sources(*this),
 		  registry(options.recordings != nullptr
-	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, *options.recordings)
-	                   : ResourceRegistry(cards, receivers, handoffs, sinks)),
+	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, sources, *options.recordings)
+	                   : ResourceRegistry(cards, receivers, handoffs, sinks, sources)),
 		  graph(catalogue), host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
@@ -460,6 +516,37 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		const Latency combined = upstream.value_or(Latency{});
 		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
 	}
+	/// The playback latency the real block would tell on the input bank whose first port is `firstInput`, likewise:
+	/// what lies beyond each paired output bank is its `beyond` entry or nothing; the least and the most across the
+	/// pairs, plus what the configuration declared on the bank.
+	Latency toldDownstream(std::size_t firstInput) const {
+		const auto& banks = config->ports().banks();
+		const auto found = std::ranges::find_if(banks, [&](const Ports::Bank& bank) {
+			return bank.direction == Direction::input && bank.first == firstInput;
+		});
+		if (found == banks.end()) return {};
+		const auto entry = [](const std::vector<std::pair<std::string, Latency>>& entries, const std::string& bank) {
+			const auto at = std::ranges::find(entries, bank, &std::pair<std::string, Latency>::first);
+			return at == entries.end() ? Latency{} : at->second;
+		};
+		std::optional<Latency> downstream;
+		for (const BankPair& pair : plan.pairs) {
+			if (pair.from != found->name) continue;
+			const Latency beyond = entry(plan.beyond, pair.to);
+			downstream = downstream ? Latency{std::min(downstream->minFrames, beyond.minFrames),
+			                                  std::max(downstream->maxFrames, beyond.maxFrames)}
+			                        : beyond;
+		}
+		const Latency internal = entry(plan.internal, found->name);
+		const Latency combined = downstream.value_or(Latency{});
+		return {combined.minFrames + internal.minFrames, combined.maxFrames + internal.maxFrames};
+	}
+	/// The newest source made on `bank`.
+	FakeSource& sourceOn(std::string_view bank) const {
+		for (auto it = sourceList.rbegin(); it != sourceList.rend(); ++it)
+			if (companionList.at((*it)->index).bank == bank) return **it;
+		throw std::logic_error("no source was made on bank " + std::string(bank));
+	}
 	static std::size_t indexOf(const std::vector<PortName>& names, std::string_view port) {
 		const auto found = std::ranges::find(names, port);
 		if (found == names.end()) throw std::logic_error("the node has no port " + std::string(port));
@@ -489,6 +576,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeOutside<RtpReceiverRequest> receivers;
 	FakeHandoffs handoffs;
 	FakeSinks sinks;
+	FakeSources sources;
 	ResourceRegistry registry;
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph; // only for close(), the proof stopAll takes
@@ -503,7 +591,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	FakeBlock* block = nullptr;
 	PortBlockEvents* blockEvents = nullptr;
 	AudioCode* driven = nullptr;
-	std::vector<SinkBinding> bound; // the taps the last drive bound (none for a silence)
+	std::vector<SinkBinding> bound;          // the taps the last drive bound (none for a silence)
+	std::vector<SourceBinding> boundSources; // the sources the last drive bound (none for a silence)
 	LatencyPlan plan;
 	std::deque<PendingRequest> pending;
 	std::vector<bool> fadeMask;
@@ -514,6 +603,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 
 	std::vector<CompanionFake> companionList;
 	std::vector<OutsideNodeEvents*> outsideEvents; // per companion; null once destroyed
+	std::vector<FakeSource*> sourceList;           // every source made, in order (a freed one dangles: unused)
 	std::vector<std::uint64_t> handoffCounts;
 	std::vector<SeenHandoff> handoffList;
 	std::vector<RecordingRequest> recordingList;
@@ -627,6 +717,18 @@ void NodeHarness::process(std::uint32_t frames) {
 	                       .startRawNs = at,
 	                       .nextNs = static_cast<std::int64_t>(h.position + frames) * 1'000'000'000 / rate,
 	                       .discontinuity = h.firstCycle};
+	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
+	if (h.driven != nullptr)
+		for (const SourceBinding& binding : h.boundSources) {
+			std::vector<std::span<float>> bank;
+			for (std::size_t c = 0; c < binding.channels && binding.firstInput + c < h.inputs.size(); ++c)
+				bank.emplace_back(h.inputs[binding.firstInput + c].data(), frames);
+			binding.tap->play(bank, SourceCycle{.position = cycle.position,
+			                                    .frames = frames,
+			                                    .startRawNs = cycle.startRawNs,
+			                                    .discontinuity = cycle.discontinuity,
+			                                    .downstream = h.toldDownstream(binding.firstInput)});
+		}
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
@@ -768,6 +870,18 @@ CompanionFake& NodeHarness::companion(std::string_view bank) {
 		if (it->bank == bank) return *it;
 	throw std::logic_error("no companion was made on bank " + std::string(bank));
 }
+
+std::uint32_t NodeHarness::feed(std::string_view bank, std::span<const float> interleaved) {
+	Impl::FakeSource& source = impl_->sourceOn(bank);
+	const std::size_t channels = ports().bank(bank).ports.size();
+	return source.write(interleaved,
+	                    static_cast<std::uint32_t>(interleaved.size() / std::max<std::size_t>(channels, 1)),
+	                    std::chrono::milliseconds(0));
+}
+
+Played NodeHarness::played(std::string_view bank) const { return impl_->sourceOn(bank).played(); }
+
+std::uint64_t NodeHarness::shortfall(std::string_view bank) const { return impl_->sourceOn(bank).shortfallFrames(); }
 
 std::uint64_t NodeHarness::handoffFrames(std::size_t index) const { return impl_->handoffCounts.at(index); }
 

@@ -227,6 +227,34 @@ maximum, in quanta, frames and ns apart), so when a bank's paths differ the valu
 on the longest, not one path's. A wedged data loop stops the telling to peers, but the block still
 works its latency out and publishes it, so chunks follow a new plan.
 
+### Sources
+
+A drive carries the source bindings of its configuration too, bound and unbound in the same invoke
+as the code and the sinks, into storage sized when the block was made (one source per inside input
+bank). Each cycle the block runs a code:
+
+1. Each port's input span: PipeWire's buffer, or zeros for a port with none.
+2. Each bound source plays into scratch of the block's own (one `maxBlock` buffer per inside input
+   port, made with the block; the bank's engine ports stay, unlinked), and the code reads that
+   scratch for the bank. Its `SourceCycle` is the cycle's position, frames, raw start,
+   `discontinuity` and the playback latency the block last told on the bank (published per input
+   port as a packed atomic, as each output's is for sinks).
+3. The code (or zeros, when none is driven).
+4. The fade on the faded outputs.
+5. Each bound sink's tap ([above](#sinks)).
+6. Metering of the public ports.
+
+A cycle too large to run plays no source and taps no sink; the next cycle's position jump is a skip
+the source keeps time over. The source, the code and its sinks run in one `process`, at one
+position, swapped together between two cycles, so a cycle the block does not run none of them runs.
+`SourceTap::play` makes no system call but its wakes, each at most one eventfd write and only when
+someone waits (a writer for room; the played wake once until answered); tested to allocate nothing
+with a writer waiting and the wake ringing. Once a stop's silence completed, `NodeHost` tells each
+source `stopped()` (its ring dropped); at a teardown's first step it closes each writer, and frees
+the sources after the instance. The rules a source plays by are
+[writing-a-node-type.md](writing-a-node-type.md#sources)'s; `EventSources` adds only the writer's
+wait (`poll` on an eventfd) and the played wake's eventfd.
+
 ## Latency, per bank pair
 
 A port block connects with `PW_FILTER_FLAG_CUSTOM_LATENCY`. *Why:* without it `pw_filter` merges
@@ -245,15 +273,16 @@ its teardown):
 
 - What lies **beyond** a bank is its ports' peers combined (only ports whose peers reported one),
   plus the plan's `beyond` entry for the bank as one more peer: what a companion adds beyond an
-  inside bank, such as a receiver's buffer, which no engine node reports. A bank with neither comes
-  to zero.
+  inside bank, such as a receiver's buffer or a source's ring (`[0, capacity]`), which no engine
+  node reports. A bank with neither comes to zero.
 - Each output bank's **downstream** latency is what lies beyond it, published to the realtime side
   as `GraphCycle::downstream`.
 - An output bank tells upstream (**capture**) latency: what lies beyond the input banks paired with
   it, plus what the configuration declared on it. A sink on the bank stamps its chunks with the
   most of it ([sinks](#sinks)).
 - An input bank tells downstream (**playback**) latency: what lies beyond the output banks paired
-  with it, plus what the configuration declared.
+  with it, plus what the configuration declared. A source on the bank dates its `Played` with the
+  most of it ([sources](#sources)).
 
 The pairs are the pass-through's, so a card block forwards the card's playback latency from
 `to_card` to `play`, and its capture latency from `from_card` to `capture`. A configuration declares
@@ -415,6 +444,13 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
   wake then finds it no longer triggered. S5 makes both shapes this way (U overruns, and B), since
   a host cuts cycles short only by chance (a GitHub runner: 9 in 60 s beside a busy thread per
   core). The driver may cut a cycle or two more catching up.
+- **A source keeps to the clock across them** (S5's part A, on a test filter, then on the real block
+  in `source_test.cpp`). An upstream probe sleeping 12 ms past the 5.3 ms quantum every 50th cycle
+  cuts that cycle short after itself, as above: the block does not run it, and the next cycle's
+  position has jumped by whole blocks within the source's capacity. Across every cycle the block
+  ran, the source's `Played` count equals the frames since its first position, and the node after
+  the block hears each position's frame of the stream. So the source keeps time by summing what it
+  played and skipped.
 - **One data loop.** `context.num-data-loops` reads 1, the process has one `data-loop.0` thread, and
   a filter's `pw_filter_get_data_loop` is that loop. Adapters and the RTP module name `data-loop.0`
   in their info; `pw_filter`s name no loop.

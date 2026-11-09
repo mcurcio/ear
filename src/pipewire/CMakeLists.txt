@@ -13,7 +13,8 @@ add_library(ear_pipewire STATIC
 	outside_nodes.cpp
 	port_blocks.cpp
 	rtp_receivers.cpp
-	sound_cards.cpp)
+	sound_cards.cpp
+	sources.cpp)
 # Header set and its standalone compile check: see src/core/CMakeLists.txt. The headers
 # declare PipeWire's types they name, so PipeWire's own headers stay private to this package.
 target_sources(ear_pipewire PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
@@ -47,6 +48,7 @@ if(BUILD_TESTS)
 		tests/rtp_receiver_test.cpp
 		tests/sink_test.cpp
 		tests/sound_card_test.cpp
+		tests/source_test.cpp
 		tests/spikes_test.cpp)
 	# PipeWire directly: the tests drive the engine's loops and sync with its core themselves.
 	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders;

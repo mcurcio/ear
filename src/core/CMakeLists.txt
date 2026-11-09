@@ -19,7 +19,8 @@ add_library(ear_core STATIC
 	reconciler.cpp
 	rtp_receiver.cpp
 	settings_table.cpp
-	sound_card.cpp)
+	sound_card.cpp
+	source_ring.cpp)
 # The public headers as a header set: its base directory is the include path of ear_core and
 # of everything that links it, and VERIFY_INTERFACE_HEADER_SETS adds a target that compiles
 # each header on its own, so none depends on what an includer happened to include first. The
@@ -80,6 +81,7 @@ if(BUILD_TESTS)
 		tests/rtp_receiver_test.cpp
 		tests/settings_table_test.cpp
 		tests/sound_card_test.cpp
+		tests/source_ring_test.cpp
 		tests/type_spec_test.cpp)
 	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
@@ -185,6 +187,8 @@ if(BUILD_TESTS)
 	ear_type_spec_compile_fail(sound-card-on-public-bank "a sound card joins an inside bank of the spec")
 	ear_type_spec_compile_fail(rtp-receiver-on-output-bank "an RTP receiver joins an inside input bank of the spec")
 	ear_type_spec_compile_fail(sink-on-input-bank "a sink reads an inside output bank of the spec")
+	ear_type_spec_compile_fail(source-on-output-bank "a source plays into an inside input bank of the spec")
+	ear_type_spec_compile_fail(source-on-routable-bank "a source plays into an inside input bank of the spec")
 	ear_type_spec_compile_fail(declare-latency-bank-the-spec-lacks "declareLatency takes its spec's banks")
 	ear_type_spec_compile_fail(declare-latency-backwards "declareLatency names a pair: an input bank, then an output bank")
 	ear_type_spec_compile_fail(context-bank-the-spec-lacks "a context takes only its spec's banks")

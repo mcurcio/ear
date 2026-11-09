@@ -51,6 +51,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/pipewire/sources.hpp"
 #include "ear/server/control_port.hpp"
 #include "ear/server/control_thread.hpp"
 
@@ -279,6 +280,7 @@ int main(int argc, char** argv) {
 	ear::pipewire::FilterPortBlocks blocks(*engine, bell);
 	ear::pipewire::ThreadHandoffs handoffs(engine->mainLoop());
 	ear::pipewire::ThreadSinks sinks(mainLoop); // a sink's begun and closed post where the nodes' events do
+	ear::pipewire::EventSources sources;
 	ear::pipewire::AlsaSoundCards cards(*engine);
 	ear::pipewire::RtpReceivers receivers(*engine);
 	ear::pipewire::Links links(*engine);
@@ -287,7 +289,7 @@ int main(int argc, char** argv) {
 	ear::DesiredGraph graph(catalogue);
 	ear::Reconciler reconciler(links);
 	ConfinedRecordings recordingFiles(std::move(*recordings));
-	ear::ResourceRegistry resources(cards, receivers, handoffs, sinks, recordingFiles);
+	ear::ResourceRegistry resources(cards, receivers, handoffs, sinks, sources, recordingFiles);
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
 	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
 	                              reconciler);

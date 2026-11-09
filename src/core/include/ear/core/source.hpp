@@ -1,11 +1,10 @@
-// The source companion of slice 3b (docs/design/companions.md#8-module-design; this header is its home until the slice
-// is built, then docs/writing-a-node-type.md#sources): audio a type's ordinary thread writes, played into one of the
-// node's inside input banks by the port block in its own cycle, before the code. One home for the source: what a type
-// writes against (SourceShape, Played, Wake, SourceWriter) and what the framework runs a source with (SourceCycle,
-// SourceTap, SourceBinding, Source, SourceAdapter). NodeHost implements CreateOf::source on it, ResourceRegistry takes a
-// SourceAdapter, DriveRequest carries SourceBindings, and ear_pipewire implements SourceAdapter as EventSources
-// (ear/pipewire/sources.hpp). Declarations only until slice 3b's step 3b.2 builds them. Pure: nothing but the standard
-// library and ear_core.
+// The source (docs/writing-a-node-type.md#sources, the home of its rules; docs/engine.md#sources, how the block plays it):
+// audio a type's ordinary thread writes, played into one of the node's inside input banks by the port block in its own
+// cycle, before the code. One home for the source: what a type writes against (SourceShape, Played, Wake,
+// SourceWriter) and what the framework runs a source with (SourceCycle, SourceTap, SourceBinding, Source,
+// SourceAdapter). NodeHost implements CreateOf::source on it, ResourceRegistry takes a SourceAdapter, DriveRequest
+// carries SourceBindings, core's SourceRing holds every rule, and ear_pipewire implements SourceAdapter as EventSources
+// (ear/pipewire/sources.hpp). Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -25,8 +24,8 @@ struct SourceShape {
 	std::uint32_t frames;
 };
 
-/// What a source has played (docs/design/companions.md#33-the-ring-companions-contract "Says what played"), published
-/// after each cycle that played or skipped frames.
+/// What a source has played (docs/writing-a-node-type.md#sources), published after each cycle that played or skipped
+/// frames.
 struct Played {
 	/// Frames played or skipped since the source was made; a skip (the graph lost time) counts as played, so the count
 	/// moves with the graph's clock. Frames cleared or dropped at a stop are not counted.
@@ -70,7 +69,7 @@ public:
 	/// `patience`, accepting nothing; woken early by a close. The next write ends the idle.
 	virtual void idle(std::chrono::milliseconds patience) = 0;
 	/// Any ordinary thread: what was written so far is gone at the next cycle, not counted played; the next 5 ms of it
-	/// is played faded to zero (docs/design/companions.md#33-the-ring-companions-contract).
+	/// is played faded to zero, counted played (docs/writing-a-node-type.md#sources).
 	virtual void clear() noexcept = 0;
 	/// Any thread: whether teardown closed the writer.
 	virtual bool closed() const noexcept = 0;
@@ -136,7 +135,7 @@ public:
 	virtual void close() noexcept = 0;
 	/// Any thread: frames played as zeros while the writer was not idle, since the source was made.
 	virtual std::uint64_t shortfallFrames() const noexcept = 0;
-	/// Any thread: frames written and never played (cleared at a stop), since the source was made.
+	/// Any thread: frames written and never played (dropped by a clear or a stop), since the source was made.
 	virtual std::uint64_t droppedFrames() const noexcept = 0;
 };
 

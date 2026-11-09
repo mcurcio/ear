@@ -7,7 +7,9 @@
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
 // build them (docs/design/). The sink fake runs a consumer on the test's thread: begin at configure's return, each
 // chunk at once from the tap written after the fade in process(), stamped with the upstream latency the latency plan
-// gives its bank (the harness has no peers), finish at the close.
+// gives its bank (the harness has no peers), finish at the close. The source fake is core's own SourceRing (every
+// source rule), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the code,
+// and the test reads what it played (played, shortfall).
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -24,6 +26,7 @@
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
+#include "ear/core/source.hpp"
 namespace ear::testing {
 
 /// One chunk a sink's fake handed its consumer (on the test's thread, at once), copied.
@@ -33,16 +36,16 @@ struct SeenChunk {
 	ChunkStamp stamp;
 };
 
-/// What the fakes made for one engine object or sink the configuration asked for, by bank, in request order.
+/// What the fakes made for one engine object, sink or source the configuration asked for, by bank, in request order.
 struct CompanionFake {
-	enum class Kind { soundCard, rtpReceiver, sink };
+	enum class Kind { soundCard, rtpReceiver, sink, source };
 	Kind kind;
 	std::string bank;
-	NodeName engineName; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's "<node>.<bank>"
-	std::variant<SoundCardRequest, RtpReceiverRequest, SinkShape> request;
-	bool made = false;             // an outside node: the flush made it (the block was ready); a sink: at once
-	bool ready = false;            // an outside node: ready(bank) told it; a sink: its consumer began
-	bool destroyed = false;        // an outside node destroyed, or a sink closed (its consumer finished)
+	NodeName engineName; // "<node>.playback", "<node>.capture", "<node>.rtp"; a sink's or source's "<node>.<bank>"
+	std::variant<SoundCardRequest, RtpReceiverRequest, SinkShape, SourceShape> request;
+	bool made = false;      // an outside node: the flush made it (the block was ready); a sink, a source: at once
+	bool ready = false;     // an outside node: ready(bank) told it; a sink: its consumer began; a source: at once
+	bool destroyed = false; // an outside node destroyed, a sink closed (its consumer finished), a source freed
 	std::vector<SeenChunk> chunks; // a sink's, in order
 };
 
@@ -111,7 +114,9 @@ public:
 	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s).
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
-	/// with a GraphCycle the harness advances; then the fade's gain on the faded outputs, as a real block applies it
+	/// with a GraphCycle the harness advances, each bound source first played into its bank's input buffers (its
+	/// SourceCycle's downstream the most playback latency the plan gives its bank: each paired output bank's `beyond`,
+	/// plus what the configuration declared on the bank); then the fade's gain on the faded outputs, as a real block applies it
 	/// (a 5 ms ramp from each drive, and to zero before each silence); then each bound sink's tap, its stamp's
 	/// upstreamFrames the most capture latency the plan gives its bank (each paired input bank's `beyond`, plus what
 	/// the configuration declared on the bank), as a real block with no peers would tell.
@@ -149,6 +154,11 @@ public:
 	const std::vector<CompanionFake>& companions() const noexcept;
 	/// The newest companion on `bank`; std::logic_error when none.
 	CompanionFake& companion(std::string_view bank);
+	/// The newest source on `bank` (std::logic_error when none): its writer takes what fits of `interleaved` (whole
+	/// frames of the bank's channels) at once, never waiting; returns the frames taken. played and shortfall read it.
+	std::uint32_t feed(std::string_view bank, std::span<const float> interleaved);
+	Played played(std::string_view bank) const;
+	std::uint64_t shortfall(std::string_view bank) const;
 	/// Legacy only: frames handed through handoff `index` to its consumer, and the run object its recipe built.
 	std::uint64_t handoffFrames(std::size_t index) const;
 	RunObject* runObject() const noexcept;

@@ -159,8 +159,8 @@ std::string_view waitingKindName(WaitingFor::Kind kind) noexcept {
 }
 
 ResourceRegistry::ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-                                   SinkAdapter& sinks) noexcept
-	: ResourceRegistry(cards, receivers, handoffs, sinks, noRecordings) {}
+                                   SinkAdapter& sinks, SourceAdapter& sources) noexcept
+	: ResourceRegistry(cards, receivers, handoffs, sinks, sources, noRecordings) {}
 
 struct NodeHost::Impl {
 	/// PipeWire's object changes a turn queues, in the order a flush runs them: destroys (outside nodes, then
@@ -463,6 +463,35 @@ struct NodeHost::Impl {
 				return slot;
 			});
 		}
+		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound by
+		/// every drive of the configuration; its capacity declared beyond the bank. An adapter that cannot make it (no
+		/// eventfd) fails the node through configure, recorded so a type that catches it still fails.
+		SourceWriter& source(std::string_view bank, SourceShape shape) override {
+			return guarded([&]() -> SourceWriter& {
+				requireConfiguring("source");
+				const std::string name(bank);
+				const Ports::Bank& found = insideBank(ports_, name, Direction::input, "a source");
+				if (shape.frames == 0) throw std::logic_error("a source on bank " + found.name + " holds no frames");
+				requireOneName(name_ + "." + found.name);
+				requireFreeBank(found);
+				Configuration& c = *config_;
+				std::unique_ptr<Source> made;
+				try {
+					made = host_.resources.sources().make(name_, found.name,
+					                                      static_cast<std::uint32_t>(found.ports.size()), shape.frames,
+					                                      host_.format.rate);
+				} catch (const std::logic_error&) {
+					throw;
+				} catch (...) {
+					if (!brokenRule_) brokenRule_ = whatOf(std::current_exception());
+					throw;
+				}
+				if (!made) throw std::logic_error("the source adapter made no source for bank " + found.name);
+				auto& slot = c.sources.emplace_back(SourceSlot{found.name, std::move(made), {}});
+				slot.binding = SourceBinding{&slot.source->tap(), found.first, found.ports.size()};
+				return slot.source->writer();
+			});
+		}
 		void declareLatency(std::string_view from, std::string_view to, Latency latency) override {
 			guarded([&] {
 				requireConfiguring("declareLatency");
@@ -686,6 +715,13 @@ struct NodeHost::Impl {
 			std::unique_ptr<SinkConsumer> consumer_; // until Sink::begin takes it
 		};
 
+		/// One cx.source call (docs/writing-a-node-type.md#sources): the source, its bank, and what a drive binds.
+		struct SourceSlot {
+			std::string bank;
+			std::unique_ptr<Source> source;
+			SourceBinding binding{};
+		};
+
 		/// One configuration (docs/architecture.md#the-node-lifecycle,
 		/// docs/writing-a-node-type.md#configure-and-createof), from configure to the end of its close. Members in
 		/// reverse teardown order.
@@ -700,8 +736,11 @@ struct NodeHost::Impl {
 			// Each sink's consumer may write a recording above; freed after the code and instance (teardown step 5).
 			std::vector<std::unique_ptr<SinkSlot>> sinks;
 			std::vector<SinkBinding> bindings; // every sink's, built at the return checks; every drive points at it
-			std::unique_ptr<ErasedInstance> instance; // the legacy recipe and run object inside it
-			std::unique_ptr<AudioCode> code;          // may read the instance, so goes first
+			// Each source's writer may be held by the instance's threads; freed after the instance (teardown step 5).
+			std::vector<SourceSlot> sources;
+			std::vector<SourceBinding> sourceBindings; // every source's, built at the return checks, likewise
+			std::unique_ptr<ErasedInstance> instance;  // the legacy recipe and run object inside it
+			std::unique_ptr<AudioCode> code;           // may read the instance, so goes first
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::pair<OutsideRequest, OutsideTarget>> outsideRequests;
 			std::vector<std::unique_ptr<Outside>> outside;
@@ -734,6 +773,8 @@ struct NodeHost::Impl {
 			std::vector<std::unique_ptr<RecordingFile>> recordings;
 			std::vector<std::unique_ptr<SinkSlot>> sinks;
 			std::vector<SinkBinding> bindings;
+			std::vector<SourceSlot> sources; // the block may still play them
+			std::vector<SourceBinding> sourceBindings;
 			std::vector<std::unique_ptr<Handoff>> handoffs;
 			std::vector<std::unique_ptr<Outside>> outside; // a wedged loop's, never destroyed
 			std::unique_ptr<bool[]> faded;
@@ -990,6 +1031,8 @@ struct NodeHost::Impl {
 		void askOutside(OutsideRequest request, const Ports::Bank& bank, std::string_view suffix) {
 			const NodeName engineNode = name_ + "." + std::string(suffix);
 			requireOneName(engineNode);
+			if (std::ranges::any_of(config_->sources, [&](const auto& slot) { return slot.bank == bank.name; }))
+				throw std::logic_error("a second companion on bank " + bank.name);
 			config_->outsideRequests.emplace_back(std::move(request),
 			                                      OutsideTarget{engineNode, name_, bank.ports, host_.format});
 		}
@@ -1001,8 +1044,23 @@ struct NodeHost::Impl {
 				std::ranges::any_of(config_->outsideRequests,
 			                        [&](const auto& asked) { return asked.second.engineNode == engineNode; }) ||
 				std::ranges::any_of(config_->sinks,
-			                        [&](const auto& slot) { return name_ + "." + slot->bank == engineNode; });
+			                        [&](const auto& slot) { return name_ + "." + slot->bank == engineNode; }) ||
+				std::ranges::any_of(config_->sources,
+			                        [&](const auto& slot) { return name_ + "." + slot.bank == engineNode; });
 			if (taken) throw std::logic_error("a second resource named " + engineNode + " in one configuration");
+		}
+
+		/// One companion per inside bank: a source's bank has no outside node, and an outside node's no source, so the
+		/// block's storage for bindings, one per inside bank, always holds them all.
+		void requireFreeBank(const Ports::Bank& bank) const {
+			const bool taken =
+				std::ranges::any_of(config_->outsideRequests,
+			                        [&](const auto& asked) {
+										return std::visit([](const auto& request) { return request.bank; },
+				                                          asked.first) == bank.name;
+									}) ||
+				std::ranges::any_of(config_->sources, [&](const auto& slot) { return slot.bank == bank.name; });
+			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
 		}
 
 		/// A request's bank, filled from the handle's name: one already given must be that one.
@@ -1112,6 +1170,8 @@ struct NodeHost::Impl {
 			// Every drive of this configuration binds these taps; then each consumer begins on its sink's thread.
 			c.bindings.reserve(c.sinks.size());
 			for (const auto& slot : c.sinks) c.bindings.push_back(slot->binding);
+			c.sourceBindings.reserve(c.sources.size());
+			for (const auto& slot : c.sources) c.sourceBindings.push_back(slot.binding);
 			for (std::size_t i = 0; i < c.sinks.size(); ++i) c.sinks[i]->begin(c.channel->sinkBegunCall(i));
 			askResources();
 		}
@@ -1149,6 +1209,7 @@ struct NodeHost::Impl {
 			Configuration& c = *config_;
 			c.handoffs.clear();
 			c.sinks.clear();
+			closeSources(); // freed at step 5, after the instance that may hold their writers
 			c.outsideRequests.clear();
 			c.channel->detach();
 			host_.inputFor(serial_, [generation = c.generation, fact, detail = std::move(detail)](Node& node) mutable {
@@ -1177,6 +1238,7 @@ struct NodeHost::Impl {
 		/// logged (docs/writing-a-node-type.md#rules-the-framework-enforces).
 		void stopHook() {
 			if (!config_ || !config_->instance) return;
+			if (aggregate_.intent() != lc::Intent::stop) closeSources(); // teardown step 1 begins
 			const MainLoopActivity::Scope activity("stop", name_);
 			brokenRule_.reset();
 			std::optional<std::string> what;
@@ -1253,8 +1315,13 @@ struct NodeHost::Impl {
 		void drive(std::uint64_t barrier) {
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
 			Configuration& c = *config_;
-			block_->carryLatency(LatencyPlan{c.pairs, c.latency, {}}); // no companion adds latency yet
-			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings},
+			// What each source's ring may hold is latency beyond its bank: the most its frames wait before they play.
+			std::vector<std::pair<std::string, Latency>> beyond;
+			for (const SourceSlot& slot : c.sources)
+				beyond.emplace_back(slot.bank, Latency{0, slot.source->writer().capacityFrames()});
+			block_->carryLatency(LatencyPlan{c.pairs, c.latency, std::move(beyond)});
+			block_->drive(DriveRequest{c.code.get(), std::span<const bool>(c.faded.get(), c.fadedCount), c.bindings,
+			                           c.sourceBindings},
 			              completion(barrier, &lc::NodeAggregate::driven));
 			arm(barrier, Bound::barrier);
 		}
@@ -1262,6 +1329,7 @@ struct NodeHost::Impl {
 		/// Before a planned silence: every faded output ramps to zero over 5 ms; its acknowledgement's bound
 		/// (100 ms) armed.
 		void fade(std::uint64_t barrier) {
+			if (aggregate_.intent() != lc::Intent::stop) closeSources();
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::fade);
 			block_->fadeOut([faded = completion(barrier, &lc::NodeAggregate::faded)]() mutable { faded(0); });
 			arm(barrier, Bound::fade);
@@ -1270,21 +1338,39 @@ struct NodeHost::Impl {
 		/// The barrier on the block's data loop: from its completion no process() of the code runs. A teardown's
 		/// silence ends what the configuration's threads can tell. Its bound (5 s) armed.
 		void silence(std::uint64_t barrier) {
-			if (aggregate_.intent() != lc::Intent::stop) config_->channel->closing();
+			if (aggregate_.intent() != lc::Intent::stop) {
+				config_->channel->closing();
+				closeSources();
+			}
 			if (host_.wedged) return overdueAtOnce(barrier, Bound::barrier);
-			block_->drive(DriveRequest{nullptr, {}}, completion(barrier, &lc::NodeAggregate::silenced));
+			block_->drive(DriveRequest{nullptr, {}}, completion(barrier, &lc::NodeAggregate::silenced, true));
 			arm(barrier, Bound::barrier);
+		}
+
+		/// Teardown step 1: every source's writer closed (a write or idle waiting returns at once). Idempotent.
+		void closeSources() noexcept {
+			if (!config_) return;
+			for (SourceSlot& slot : config_->sources) slot.source->close();
 		}
 
 		/// A completion as the block runs it on the main loop: an input of its own, heard only by the configuration and
 		/// the request it was made for; the aggregate drops an older barrier's. The request's bound goes with it.
-		std::move_only_function<void(std::uint64_t)>
-		completion(std::uint64_t barrier, lc::Actions (lc::NodeAggregate::*event)(std::uint64_t)) {
-			return [&host = host_, serial = serial_, generation = config_->generation, barrier, event](std::uint64_t) {
+		/// A silence's (`unbound`) also ends its sources' cycles until the next drive: once it completed, and no later
+		/// request was posted, each source's ring is dropped (Source::stopped), so a start never plays what was written
+		/// before it.
+		std::move_only_function<void(std::uint64_t)> completion(std::uint64_t barrier,
+		                                                        lc::Actions (lc::NodeAggregate::*event)(std::uint64_t),
+		                                                        bool unbound = false) {
+			return [&host = host_, serial = serial_, generation = config_->generation, barrier, event,
+			        unbound](std::uint64_t) {
 				if (Node* node = host.find(serial)) ++node->completionsRun_;
-				host.inputFor(serial, [generation, barrier, event](Node& node) {
+				host.inputFor(serial, [generation, barrier, event, unbound](Node& node) {
 					if (!node.current(generation)) return;
-					if (node.aggregate_.configuration().barrier() == barrier) node.config_->bound.reset();
+					if (node.aggregate_.configuration().barrier() == barrier) {
+						node.config_->bound.reset();
+						if (unbound)
+							for (SourceSlot& slot : node.config_->sources) slot.source->stopped();
+					}
 					node.feed((node.aggregate_.*event)(barrier));
 				});
 			};
@@ -1406,6 +1492,7 @@ struct NodeHost::Impl {
 		void teardown() {
 			Configuration& c = *config_;
 			c.channel->closing();
+			closeSources();
 			for (auto& outside : c.outside)
 				host_.queue(FlushKind::destroyOutside, name_, [&host = host_, outside = std::move(outside)]() mutable {
 					if (!host.wedged) {
@@ -1493,7 +1580,8 @@ struct NodeHost::Impl {
 			c.channel->detach();
 			c.code.reset();
 			c.instance.reset();
-			c.sinks.clear(); // each closed (its thread idle) or never begun
+			c.sinks.clear();   // each closed (its thread idle) or never begun
+			c.sources.clear(); // after the instance, whose threads may hold a writer
 			c.recordings.clear();
 			config_.reset();
 		}
@@ -1519,8 +1607,9 @@ struct NodeHost::Impl {
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
 			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
-			                             std::move(c.sinks), std::move(c.bindings), std::move(c.handoffs),
-			                             std::move(c.outside), std::move(c.faded)});
+			                             std::move(c.sinks), std::move(c.bindings), std::move(c.sources),
+			                             std::move(c.sourceBindings), std::move(c.handoffs), std::move(c.outside),
+			                             std::move(c.faded)});
 			++host_.leaked;
 			config_.reset();
 			runClosing_ = false;

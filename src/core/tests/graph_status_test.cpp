@@ -183,6 +183,14 @@ struct NoSinks final : SinkAdapter {
 	}
 };
 
+/// No node here asks for a source.
+struct NoSources final : SourceAdapter {
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
+	                             std::uint32_t) override {
+		throw std::logic_error("no source in these tests");
+	}
+};
+
 struct Fixture {
 	NodeCatalogue catalogue{types()};
 	DesiredGraph graph{catalogue};
@@ -194,7 +202,8 @@ struct Fixture {
 	Turns mainLoop;
 	NoTimers timers;
 	NoSinks sinks;
-	ResourceRegistry resources{cards, receivers, handoffs, sinks};
+	NoSources sources;
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
 	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};

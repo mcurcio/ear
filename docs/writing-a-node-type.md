@@ -128,6 +128,7 @@ optional row read as a plain value does not compile.
 | `cx.rtpReceiver(bank, RtpReceiverRequest{...})` | An RTP receiver joined to an inside input bank, `<node>.rtp` | Inside input banks only |
 | `cx.openRecording(RecordingRequest{path})` | A file created or truncated beneath the recordings folder; its descriptor, or why not. The framework closes it after the instance | Answer `Configured::failed("cannot open " + path + ": " + error)` on a refusal |
 | `cx.sink(bank, SinkShape{.frames = n}).consumedBy(std::make_unique<Consumer>(...))` | An interim sink on an inside output bank ([sinks](#sinks)) | Inside output banks only; exactly one consumer |
+| `SourceWriter& w = cx.source(bank, SourceShape{.frames = n})` | A source on an inside input bank ([sources](#sources)): what the type's own thread writes, played into the bank before the code | Inside input banks only (compile time); `n > 0`; one companion per bank |
 | `cx.declareLatency(from, to, Latency{min, max})` | The code's own latency, from an input bank to an output bank, in frames | At most once per output bank |
 
 Then answer `Configured::applied()`, or `Configured::failed(detail)` for what only the type can see
@@ -204,6 +205,67 @@ cx.use(passThrough({bankPair(record, writer)}));
   counted (readable at any time by the framework) and reported as the node's `dropped=` at removal.
 - A sink's bank is never faded, so a recording keeps exact samples.
 
+## Sources
+
+A source brings audio onto the realtime thread from an ordinary one (a decoder, a network library's
+thread). The type asks for one on an inside input bank and passes it on:
+
+```cpp
+SourceWriter& writer = cx.source(fromServer, SourceShape{.frames = 2048});
+cx.use(passThrough({bankPair(fromServer, from)}));
+// the type's thread, later: writer.write(interleaved, frames, 20ms); writer.idle(20ms); writer.clear();
+```
+
+The source is made at once and is ready at once (nothing to wait for). Each cycle the code runs,
+before the code, the block plays the source's ring into the bank, so the code reads the bank as it
+would a linked input. Its rules, all in core's `SourceRing` (`ear/core/source_ring.hpp`), which the
+engine and the harness both run, so a type's tests and the engine never disagree:
+
+- **The writer.** `write(interleaved, frames, patience)` takes what fits (whole frames, interleaved
+  over the bank's members) and, with no room, waits up to `patience` for the block to play some; it
+  returns the frames taken. One writing thread at a time. `idle(patience)` says the writer has
+  nothing to give (an empty ring is then no shortfall) and waits `patience`; the next write ends the
+  idle. `clear()` (any ordinary thread) drops what was written so far at the next cycle. A writer
+  starts idle. The ring holds `frames` rounded up to a power of two (`capacityFrames()`).
+- **It keeps time.** A cycle whose position jumped ahead of the last one's end by at most the
+  capacity (the graph lost time: an xrun, a stall caught up, a cycle cut short before the block)
+  skips that many frames of the stream and counts them played, so the audio moves on with the
+  graph. Any other jump (back, or more than the capacity) is a new clock: nothing is skipped.
+- **It fades at its edges, with no lookahead**, so the latency it adds stays `[0, capacity]`: audio
+  that starts or comes back fades in over 5 ms; at an underrun (the ring dry) it decays from the
+  last frame it played to zero over 5 ms; after `clear()` it plays the next 5 ms of what was
+  written before the clear, faded to zero (counted played), drops the rest (counted dropped), and
+  only then fades the new audio in. A source's bank is never faded by the drive: its fades are its
+  own.
+- **The shortfall.** Frames played as zeros (or as an underrun's decay) while the writer was not
+  idle are counted, readable at any time (`Source::shortfallFrames()`).
+- **`Played` says what played.** After each cycle that played or skipped frames,
+  `writer.played()` gives `Played{totalFrames, heardRawNs}`: the frames played or skipped since the
+  source was made, and when the last of them is heard on `CLOCK_MONOTONIC_RAW` (the cycle's start,
+  plus the frames it played, plus the most playback latency the block told on the bank: what lies
+  downstream of the outputs it is paired with, a following card's buffer included, plus what the
+  configuration declared on it). It means the graph's clock moved past those frames, not that a
+  device sounded them: a cycle cut short after the block loses frames it played, and no node can
+  see that. `writer.playedWake()` is rung after each new `Played`, at most once until answered: its
+  `descriptor()` is readable while rung, and its one watcher calls `answer()` before it looks.
+- **A stop** unbinds the source with the code; once the silence completed, what its ring holds is
+  dropped (counted, never played), so a start never plays audio written before it. Meanwhile a
+  write waits as at a full ring; the first cycle after the next start lets it go, with no shortfall
+  counted for that cycle.
+- **Closing.** At the teardown's first step the framework closes the writer: a `write` or `idle`
+  already waiting returns at once, and one that begins after the close accepts nothing and sleeps
+  its whole patience (a library thread calling in a loop never spins). The writer stays valid
+  until the configuration is freed, after the instance, so a thread the instance owns may hold it.
+- **Latency.** The ring's capacity is latency beyond the bank, `Latency{0, capacity}`, in the
+  configuration's plan as one more peer of the bank ([engine.md](engine.md#latency-per-bank-pair)),
+  so the public bank paired with it tells it upstream.
+- One companion per inside bank: a source on a bank that has a receiver or another source is a
+  rule broken (`start-failed`), and so is `frames == 0` or a source on any other bank (which does
+  not compile).
+
+No shipped type uses a source yet: `sendspin`'s feed moves onto one when its node moves off the old
+interface.
+
 ## Latency
 
 A type declares only **its own** latency: how long its code holds audio between an input bank and
@@ -262,12 +324,13 @@ fakes allow. Banks are named by the spec's handles.
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | An outside node on `bank` becomes ready, or is lost |
-| `h.process(frames)` | One cycle: outputs NaN-filled first, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
+| `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the downstream latency the plan gives its bank), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the upstream latency the latency plan gives its bank (nothing peers in the harness) |
+| `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |
 | `h->unwritten()`, `h->notes()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness` |
-| `h.companion(bank)` | What was made on a bank: a card's or receiver's request, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them |
+| `h.companion(bank)` | What was made on a bank: a card's or receiver's request (a sink's or source's shape), `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them |
 | `h.recordingRequests()` | Every recording asked for |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

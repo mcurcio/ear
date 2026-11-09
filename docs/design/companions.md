@@ -494,6 +494,34 @@ are its own first frame's. The harness's sink never splits a chunk and ignores t
 has a `{}` default member initializer, so the existing two-member `LatencyPlan{pairs, internal}` still compiles; and
 `carryLatency` does not check `beyond`'s bank names (it is framework-filled; a name matching no bank adds nothing).
 
+**Found building 3b.2.** The source is built as declared, with these changes and readings (the rules are now
+`docs/writing-a-node-type.md#sources`, the block's cycle `docs/engine.md#sources`):
+
+- `FrameRing` gains `readPosition()` (any thread, acquire). Why: a clear asked at the writer's position must play the
+  next 5 ms of what was written *before* it and drop the rest exactly, so the reader must know how many frames lie
+  before that position; `writePosition()` alone cannot say.
+- A writer starts idle (an empty ring before the first write is no shortfall), and a stop's silence leaves it idle;
+  the first cycle after a stop counts no shortfall either (the writer was held back until it). Underrun decay frames
+  count as shortfall (they are not the writer's); a clear's fade does not.
+- "Stopped: waits for room as at a full ring" is `SourceRing::offer` accepting nothing from `dropForStop` until the
+  next cycle plays, which wakes a waiting writer and drops whatever a writer slipped in meanwhile (counted). The
+  keep-time state restarts at that cycle, so the stop's position jump is no skip.
+- `Source::droppedFrames` counts frames dropped by a clear as well as a stop ("written and never played").
+- `beyond` gets `{bank, {0, capacityFrames()}}`, the ring's real capacity (`SourceShape::frames` rounded up to a power
+  of two), since that is the most its frames can wait.
+- `NodeHost` tells every source `stopped()` on any silence's completion that is still its configuration's current
+  barrier (a teardown's too: harmless, the writer is closed), never when a later request was posted, since the block
+  may then play it again.
+- Teardown step 1's close is at the first of the type's `stop()`, the fade, the silence or the teardown proper, on any
+  intent but a stop (and at a failed configure); all idempotent.
+- One companion per bank is checked for sources against outside nodes by the request's bank name (3b.3's reshape
+  keeps it).
+- The harness's `CompanionFake` gains `Kind::source` and `SourceShape` in its variant (3b.3 reshapes it as 8.3 says);
+  its fake source plays into the test's own input buffers of the bank, so `input(port)` shows what played.
+- S5's part A on the real block is `source_test.cpp`'s, not `port_block_test.cpp`'s: an upstream probe sleeping 12 ms
+  past the quantum every 50th cycle cuts that cycle short after itself (the block never runs it), so the test meets
+  cut-short cycles at will instead of by load.
+
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
 
 | Old | New |

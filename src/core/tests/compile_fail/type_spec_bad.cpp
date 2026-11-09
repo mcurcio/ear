@@ -112,6 +112,12 @@ Configured configure(CreateOf<spec>& cx, const Checked&) {
 #ifdef EAR_CASE_sink_on_input_bank
 		static_cast<void>(cx.sink(in, SinkShape{.frames = 64}));
 #endif
+#ifdef EAR_CASE_source_on_output_bank
+		static_cast<void>(cx.source(insideOut, SourceShape{.frames = 64}));
+#endif
+#ifdef EAR_CASE_source_on_routable_bank
+		static_cast<void>(cx.source(in, SourceShape{.frames = 64}));
+#endif
 #ifdef EAR_CASE_declare_latency_bank_the_spec_lacks
 		cx.declareLatency(in, otherOut, Latency{});
 #endif

@@ -285,15 +285,17 @@ own outside nodes' links. What is shared and how it is kept safe:
 Tearing a configuration down (a restart, a failure, a disable, a removal) goes by dependency, and
 the main loop never joins a thread:
 
-1. The type's `stop()` if its `start()` ran; the fade; the barrier, a drive of no code (after it
-   completes, no `process` of the code runs, so nothing the realtime thread can reach is freed
-   while it can reach it); the code's `release`.
+1. Every source's writer closed (a write waiting returns at once); the type's `stop()` if its
+   `start()` ran; the fade; the barrier, a drive of no code (after it completes, no `process` of
+   the code runs, so nothing the realtime thread can reach is freed while it can reach it); the
+   code's `release`.
 2. Outside nodes destroyed (and, for a removal, the block, only after the barrier).
 3. Sinks and handoffs drained and finished, each on its own thread.
 4. A legacy run object closed, off the main loop (a `sendspin` node's worker says goodbye on its
    own thread).
-5. On the main loop: the code, then the instance (or run object) and its config freed, and
-   recordings closed after them.
+5. On the main loop: the code, then the instance (or run object), then its sinks and sources
+   (whose writers the instance's threads may hold) and its config freed, and recordings closed
+   after them.
 
 Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
 A restart or retry completes the teardown before the

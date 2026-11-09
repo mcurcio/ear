@@ -87,6 +87,11 @@ public:
 			cx.declareLatency(in, toDevice, Latency{30, 40});
 			return Configured::applied();
 		}
+		if (mode == "source") {
+			cx.source(fromDevice, SourceShape{.frames = 1000});
+			cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+			return Configured::applied();
+		}
 		if (mode == "fail") return Configured::failed("asked to");
 		if (mode == "say") node_.handle().say("configured at " + std::to_string(cx.format().rate));
 		cx.use(Doubler{&prepares});
@@ -250,6 +255,49 @@ TEST_CASE("The harness stamps each sink chunk with the most capture latency the 
 	REQUIRE(harness.companion(toDevice).chunks.size() == 2);
 	CHECK(harness.companion(toDevice).chunks[0].stamp.upstreamFrames == 40);
 	CHECK(upstreams == std::vector<std::uint32_t>{40, 40}); // the consumer's chunks carry the stamp's
+}
+
+TEST_CASE("The harness plays what a test feeds a source into its bank before the code, by the source's own rules",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames and a frame lasts 1 ms.
+	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}});
+	REQUIRE_FALSE(harness.parse({{"mode", "source"}, {"channels", 2}}));
+	harness.add();
+	CHECK(harness.companion(fromDevice).kind == testing::CompanionFake::Kind::source);
+	CHECK(harness.companion(fromDevice).ready);
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	REQUIRE(harness->latencyPlan().beyond.size() == 1);
+	CHECK(harness->latencyPlan().beyond[0] == std::pair<std::string, Latency>{"from_device", Latency{0, 1024}});
+	std::vector<float> interleaved;
+	for (int frame = 0; frame < 24; ++frame) {
+		interleaved.push_back(static_cast<float>(frame + 1));
+		interleaved.push_back(-static_cast<float>(frame + 1));
+	}
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness.process(16);
+	// The source fades in over 5 frames (and the drive fades `out` in over the same 5), then exact, through the
+	// pass-through.
+	CHECK(harness.output(out, 0)[0] == 0.0F);
+	for (std::uint32_t i = 5; i < 16; ++i) {
+		CHECK(harness.output(out, 0)[i] == static_cast<float>(i + 1));
+		CHECK(harness.output(out, 1)[i] == -static_cast<float>(i + 1));
+	}
+	CHECK(harness.played(fromDevice) == Played{16, 16'000'000});
+	harness.process(16); // 8 frames, then dry
+	CHECK(harness.output(out, 0)[7] == 24.0F);
+	CHECK(harness.played(fromDevice).totalFrames == 24);
+	CHECK(harness.shortfall(fromDevice) == 8);
+	// A stop drops what the ring holds; the writer waits as at a full ring until the next cycle after a start.
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	REQUIRE(harness.stop());
+	CHECK(harness.feed(fromDevice, interleaved) == 0);
+	REQUIRE(harness.start());
+	harness.process(16);
+	CHECK(harness.played(fromDevice).totalFrames == 24);
+	CHECK(harness.feed(fromDevice, interleaved) == 24);
+	harness.remove();
+	CHECK(harness.companion(fromDevice).destroyed);
 }
 
 TEST_CASE("A configure that answers failed fails the node start-failed with its detail", "[type-spec]") {

@@ -29,6 +29,7 @@
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/core/source_ring.hpp"
 
 using namespace ear;
 
@@ -172,8 +173,9 @@ struct BlockModes {
 	bool hold = false;  // completions wait in TestBlocks::held until the test runs them
 	bool stall = false; // completions wait in the block until its settle()
 	std::size_t settles = 0;
-	std::vector<std::vector<bool>> faded;        // each drive's faded flags, in order
-	std::vector<std::vector<SinkBinding>> sinks; // each drive's taps (a silence's none), in order
+	std::vector<std::vector<bool>> faded;            // each drive's faded flags, in order
+	std::vector<std::vector<SinkBinding>> sinks;     // each drive's taps (a silence's none), in order
+	std::vector<std::vector<SourceBinding>> sources; // each drive's sources (a silence's none), in order
 };
 
 /// A block as docs/engine.md#drive-and-fade has it: a drive is applied at once (the code it runs is recorded) and its
@@ -196,6 +198,7 @@ struct TestBlock final : PortBlock {
 		log.push_back(request.code != nullptr ? "drive code" : "drive nothing");
 		if (request.code != nullptr) modes.faded.emplace_back(request.faded.begin(), request.faded.end());
 		modes.sinks.emplace_back(request.sinks.begin(), request.sinks.end());
+		modes.sources.emplace_back(request.sources.begin(), request.sources.end());
 		complete([done = std::move(done)]() mutable { done(0); });
 	}
 	void fadeOut(std::move_only_function<void()> done) override {
@@ -372,6 +375,57 @@ struct TestSinks final : SinkAdapter {
 	}
 };
 
+/// Sources over core's SourceRing (docs/writing-a-node-type.md#sources), logging what NodeHost does to them: stopped,
+/// closed, destroyed. The writer never waits: it offers what fits.
+struct TestSource final : Source, SourceWriter, SourceRing::Signals {
+	Log& log;
+	std::string name;
+	SourceRing ring;
+	TestSource(Log& l, std::string n, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
+		: log(l), name(std::move(n)), ring(channels, frames, rate, *this) {}
+	~TestSource() override { log.push_back("source " + name + " destroyed"); }
+	SourceWriter& writer() noexcept override { return *this; }
+	SourceTap& tap() noexcept override { return ring; }
+	void stopped() noexcept override {
+		log.push_back("source " + name + " stopped");
+		ring.dropForStop();
+	}
+	void close() noexcept override {
+		log.push_back("source " + name + " close");
+		ring.close();
+	}
+	std::uint64_t shortfallFrames() const noexcept override { return ring.shortfallFrames(); }
+	std::uint64_t droppedFrames() const noexcept override { return ring.droppedFrames(); }
+	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds) override {
+		return ring.offer(interleaved, frames);
+	}
+	void idle(std::chrono::milliseconds) override { ring.markIdle(); }
+	void clear() noexcept override { ring.clear(); }
+	bool closed() const noexcept override { return ring.closed(); }
+	std::uint32_t capacityFrames() const noexcept override { return ring.capacityFrames(); }
+	Played played() const noexcept override { return ring.played(); }
+	Wake& playedWake() noexcept override { std::terminate(); } // no test watches it here
+	void roomFreed() noexcept override {}
+	void playedChanged() noexcept override {}
+};
+
+struct TestSources final : SourceAdapter {
+	Log& log;
+	bool throwInMake = false;      // make() throws, as an adapter that cannot make an eventfd
+	std::vector<TestSource*> made; // every source made, in order (a destroyed one dangles: unused)
+	explicit TestSources(Log& l) : log(l) {}
+	std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
+	                             std::uint32_t capacityFrames, std::uint32_t rate) override {
+		if (throwInMake) throw std::system_error(EMFILE, std::generic_category(), "no eventfd for " + node);
+		const std::string name = node + "." + std::string(bank);
+		log.push_back("source " + name + " " + std::to_string(channels) + " channels " +
+		              std::to_string(capacityFrames) + " frames at " + std::to_string(rate));
+		auto source = std::make_unique<TestSource>(log, name, channels, capacityFrames, rate);
+		made.push_back(source.get());
+		return source;
+	}
+};
+
 struct TestOutside final : OutsideNode {
 	Log& log;
 	std::string what;
@@ -537,7 +591,8 @@ struct Fixture {
 	TestCards cards{log};
 	TestReceivers receivers{log};
 	TestSinks sinks{log, mainLoop};
-	ResourceRegistry resources{cards, receivers, handoffs, sinks};
+	TestSources sources{log};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue}; // only for close(), the proof stopAll takes
@@ -2037,7 +2092,8 @@ struct ThreadedFixture {
 	TestCards cards{log};
 	TestReceivers receivers{log};
 	TestSinks sinks{log, mainLoop};
-	ResourceRegistry resources{cards, receivers, handoffs, sinks};
+	TestSources sources{log};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
 	TestListener listener{log};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
@@ -2376,7 +2432,8 @@ struct RecordingFixture {
 	TestReceivers receivers{log};
 	TestRecordings recordings{log};
 	TestSinks sinks{log, mainLoop};
-	ResourceRegistry resources{cards, receivers, handoffs, sinks, recordings};
+	TestSources sources{log};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources, recordings};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
@@ -2683,7 +2740,8 @@ TEST_CASE("An outside node is made with its block's id, read once the block is r
 	TestCards cards{log};
 	TestReceivers receivers{log};
 	TestSinks sinks{log, mainLoop};
-	ResourceRegistry resources{cards, receivers, handoffs, sinks};
+	TestSources sources{log};
+	ResourceRegistry resources{cards, receivers, handoffs, sinks, sources};
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
@@ -4347,4 +4405,194 @@ TEST_CASE("A sink whose close never reports is said by ear.close-overdue, counte
 	f.sinks.made.at(0)->runClose();
 	f.settle();
 	CHECK(countOf(f.log, "node rec gone dropped=0") == 1);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Sources (docs/writing-a-node-type.md#sources): made at configure and ready at once, bound by every drive and by no
+// silence, their capacity declared beyond their bank, their ring dropped once a stop's silence completed, closed at the
+// teardown's first step and freed after the instance, and every rule about them a failure of the node.
+
+namespace {
+
+/// configure on the probe: a source on "cap" (one port, 1000 frames asked) and a code; the writer kept in `writer`.
+std::function<Configured(InstanceContexts&)> withSource(Log& log, SourceWriter** writer) {
+	return [&log, writer](InstanceContexts& cx) {
+		*writer = &cx.create.source("cap", SourceShape{.frames = 1000});
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+}
+
+} // namespace
+
+TEST_CASE("A source is ready at once, every drive binds it with its capacity beyond its bank, a stop's silence binds "
+          "none and drops its ring, and a start binds it again",
+          "[node_host][source]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	SourceWriter* writer = nullptr;
+	config->onConfigure = withSource(f.log, &writer);
+	f.add("rx", config);
+	CHECK(countOf(f.log, "source rx.cap 1 channels 1000 frames at 44100") == 1);
+	REQUIRE(writer != nullptr);
+	REQUIRE(f.sources.made.size() == 1);
+	CHECK(writer->capacityFrames() == 1024);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	// Nothing to wait for: driven and running.
+	CHECK(f.host.health()[0].state == NodeState::running);
+	REQUIRE_FALSE(f.blocks.modes.sources.empty());
+	REQUIRE(f.blocks.modes.sources.back().size() == 1);
+	const SourceBinding bound = f.blocks.modes.sources.back()[0];
+	CHECK(bound.tap == &f.sources.made.at(0)->tap());
+	CHECK(bound.firstInput == 2); // record.left, record.right, then cap.1
+	CHECK(bound.channels == 1);
+	REQUIRE_FALSE(f.blocks.plans.at(0).empty());
+	const LatencyPlan& plan = f.blocks.plans.at(0).back();
+	REQUIRE(plan.beyond.size() == 1);
+	CHECK(plan.beyond[0].first == "cap");
+	CHECK(plan.beyond[0].second == Latency{0, 1024});
+
+	// Written, then stopped: the silence binds none, and once it completed the ring is dropped and writes wait.
+	const std::vector<float> frames(300, 0.5F);
+	REQUIRE(writer->write(frames, 300, std::chrono::milliseconds(0)) == 300);
+	f.log.clear();
+	REQUIRE(f.host.stop("rx"));
+	f.settle();
+	CHECK(f.blocks.modes.sources.back().empty());
+	CHECK(indexOf(f.log, "drive nothing") < indexOf(f.log, "source rx.cap stopped"));
+	CHECK(f.sources.made.at(0)->droppedFrames() == 300);
+	CHECK(writer->write(frames, 300, std::chrono::milliseconds(0)) == 0);
+	CHECK_FALSE(writer->closed());
+	REQUIRE(f.host.start("rx"));
+	f.settle();
+	REQUIRE(f.blocks.modes.sources.back().size() == 1);
+	CHECK(f.blocks.modes.sources.back()[0].tap == bound.tap);
+	CHECK(f.sources.made.size() == 1);
+
+	// The teardown: the writer closed at its first step, before the type's stop(); the source freed after the
+	// instance.
+	f.log.clear();
+	f.stopAll();
+	f.settle();
+	CHECK(indexOf(f.log, "source rx.cap close") < indexOf(f.log, "stop()"));
+	CHECK(indexOf(f.log, "stop()") < indexOf(f.log, "drive nothing"));
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "source rx.cap destroyed"));
+	CHECK(countOf(f.log, "source rx.cap destroyed") == 1);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A restart closes its source, frees it after the instance and makes a new one", "[node_host][source]") {
+	Fixture f;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	SourceWriter* writer = nullptr;
+	config->onConfigure = withSource(f.log, &writer);
+	addRunning(f, "rx", config);
+	f.log.clear();
+	REQUIRE(f.host.restart("rx"));
+	f.settle();
+	CHECK(indexOf(f.log, "source rx.cap close") < indexOf(f.log, "release"));
+	CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "source rx.cap destroyed"));
+	CHECK(indexOf(f.log, "source rx.cap destroyed") < indexOf(f.log, "configure"));
+	REQUIRE(f.sources.made.size() == 2);
+	CHECK(writer == &f.sources.made.at(1)->writer()); // the new configuration's
+	CHECK(f.blocks.modes.sources.back().at(0).tap == &f.sources.made.at(1)->tap());
+	CHECK(f.host.health()[0].state == NodeState::running);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A source on a bank that is no inside input, a second companion on its bank, no frames, or no eventfd fails "
+          "the node start-failed, and a source made is closed and freed after the instance",
+          "[node_host][source]") {
+	using Configure = std::function<Configured(InstanceContexts&)>;
+	Log codes;
+	const auto source = [](InstanceContexts& cx, const char* bank, std::uint32_t frames = 1000) -> SourceWriter& {
+		return cx.create.source(bank, SourceShape{.frames = frames});
+	};
+	struct Case {
+		Configure configure;
+		std::string failure;
+		bool throwInMake = false;
+	};
+	const auto then = [&](InstanceContexts& cx) {
+		cx.create.use(std::make_unique<TestAudioCode>(codes));
+		return Configured::applied();
+	};
+	const std::vector<Case> cases{
+		{[&](InstanceContexts& cx) {
+			 source(cx, "record");
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a source joins an inside input bank, not \"record\""},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "pb");
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a source joins an inside input bank, not \"pb\""},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "cap", 0);
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a source on bank cap holds no frames"},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "cap");
+			 source(cx, "cap");
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a second resource named rx.cap in one configuration"},
+		{[&](InstanceContexts& cx) {
+			 cx.create.rtpReceiver("cap", fppStream);
+			 source(cx, "cap");
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a second companion on bank cap"},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "cap");
+			 cx.create.rtpReceiver("cap", fppStream);
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: a second companion on bank cap"},
+		{[&](InstanceContexts& cx) -> Configured {
+			 source(cx, "cap");
+			 throw std::runtime_error("after the source");
+		 },
+	     "start-failed: configure threw: after the source"},
+		{[&](InstanceContexts& cx) {
+			 source(cx, "cap");
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: no eventfd for rx", true},
+		{[&](InstanceContexts& cx) {
+			 try {
+				 source(cx, "cap");
+			 } catch (const std::exception&) {
+				 // swallowed: the type goes on with no source
+			 }
+			 return then(cx);
+		 },
+	     "start-failed: configure threw: no eventfd for rx", true},
+	};
+	for (std::size_t which = 0; which < cases.size(); ++which) {
+		INFO("case " << which);
+		Fixture f;
+		f.sources.throwInMake = cases[which].throwInMake;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		config->onConfigure = cases[which].configure;
+		f.add("rx", config);
+		f.settle();
+		CHECK(failureOf(f, "rx").starts_with(cases[which].failure));
+		CHECK(countOf(f.log, "source rx.cap destroyed") == f.sources.made.size());
+		if (!f.sources.made.empty()) {
+			CHECK(indexOf(f.log, "source rx.cap close") < indexOf(f.log, "instance destroyed"));
+			CHECK(indexOf(f.log, "instance destroyed") < indexOf(f.log, "source rx.cap destroyed"));
+		}
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		CHECK(f.blocks.driven.at(0) == nullptr);
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
 }

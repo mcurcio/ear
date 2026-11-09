@@ -47,6 +47,9 @@ public:
 	}
 	/// Any thread. How many frames were ever written, wrapping at 2^32: where a later skipTo() ends.
 	std::uint32_t writePosition() const noexcept { return written_.load(std::memory_order_acquire); }
+	/// Any thread. How many frames were ever read or discarded, wrapping at 2^32: writePosition() - readPosition() is
+	/// what the ring holds (exactly, on the reading thread).
+	std::uint32_t readPosition() const noexcept { return read_.load(std::memory_order_acquire); }
 
 	/// Reader. Deinterleaves up to `frames` frames into `channels` (one span per channel, each >= frames) and leaves the
 	/// rest of each span untouched. Returns frames read.

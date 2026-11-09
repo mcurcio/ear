@@ -14,6 +14,7 @@
 #include "ear/core/log.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
+#include "ear/core/source.hpp"
 #include "ear/core/timers.hpp"
 namespace ear {
 /// What a node still waits for, once its phase has lasted 2 s (docs/control-port.md#node-health; 3a's four kinds):
@@ -138,14 +139,17 @@ struct LatencyPlan {
 };
 /// What an asynchronous drive hands a block (docs/engine.md#drive-and-fade): the code (null: silence) and which outputs
 /// its fades touch, one flag per output in process()'s order (outputs, then inside outputs; a shorter span leaves the
-/// rest unfaded), and the interim sinks (docs/writing-a-node-type.md#sinks): the block writes each binding's tap after
-/// the code (and after the fade, which never touches a sink's bank), every cycle it runs that code, and unbinds them
-/// all in the invoke that applies the next request, so a sink takes exactly the cycles its code drove. All of it
+/// rest unfaded), and the ring companions: the sinks (docs/writing-a-node-type.md#sinks), whose taps the block writes
+/// after the code (and after the fade, which never touches a sink's bank), and the sources
+/// (docs/writing-a-node-type.md#sources), which it plays into their inside input banks before the code, every cycle it
+/// runs that code. All are bound in the invoke that applies the request, with the code, and unbound by the next
+/// request's (a silence binds none), so a sink takes and a source plays exactly the cycles its code drove. All of it
 /// outlives the drive's completion or the block.
 struct DriveRequest {
 	AudioCode* code = nullptr;
 	std::span<const bool> faded;
 	std::span<const SinkBinding> sinks{};
+	std::span<const SourceBinding> sources{};
 };
 /// Engine side of a port block. Silent until a drive applies a code. Destroying it removes its ports and their links;
 /// after the destructor returns, no process() of any code is running or will run, and no `done` of its requests runs.
@@ -157,7 +161,8 @@ public:
 	virtual void carryLatency(const LatencyPlan& plan) { static_cast<void>(plan); }
 	/// Main thread; returns at once (docs/engine.md#drive-and-fade). The data loop applies the
 	/// request inside an invoke, between two cycles, whatever the block's state (PAUSED, its driver gone, its engine
-	/// node destroyed): the code and a fade gain reset to the fade-in's start for the faded outputs together, any
+	/// node destroyed): the code, its sinks and sources, and a fade gain reset to the fade-in's start for the faded
+	/// outputs together, any
 	/// pending fade-out cancelled (its `done` is dropped, never run). From the next cycle no process() of the previous
 	/// code runs. `done(P)` then runs on the main loop, never inside this call, with P the position the request takes
 	/// effect from (the next cycle's expected position, as takenAt). A block with no data loop applies it on the main
@@ -291,24 +296,28 @@ class ResourceRegistry {
 public:
 	/// All outlive the registry.
 	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks, RecordingAdapter& recordings) noexcept
-		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), recordings_(&recordings) {}
+	                 SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept
+		: cards_(cards), receivers_(receivers), handoffs_(handoffs), sinks_(sinks), sources_(sources),
+		  recordings_(&recordings) {}
 	/// With no recordings folder: every recording is refused ("no recordings folder"). For hosts that run no "file"
 	/// node (tests).
 	ResourceRegistry(SoundCardAdapter& cards, RtpReceiverAdapter& receivers, HandoffAdapter& handoffs,
-	                 SinkAdapter& sinks) noexcept;
+	                 SinkAdapter& sinks, SourceAdapter& sources) noexcept;
 	SoundCardAdapter& adapterFor(const SoundCardRequest&) const noexcept { return cards_; }
 	RtpReceiverAdapter& adapterFor(const RtpReceiverRequest&) const noexcept { return receivers_; }
 	HandoffAdapter& adapterFor(const HandoffRequest&) const noexcept { return handoffs_; }
 	RecordingAdapter& adapterFor(const RecordingRequest&) const noexcept { return *recordings_; }
 	/// The interim sinks' adapter (CreateOf::sink; docs/writing-a-node-type.md#sinks).
 	SinkAdapter& sinks() const noexcept { return sinks_; }
+	/// The sources' adapter (CreateOf::source; docs/writing-a-node-type.md#sources).
+	SourceAdapter& sources() const noexcept { return sources_; }
 
 private:
 	SoundCardAdapter& cards_;
 	RtpReceiverAdapter& receivers_;
 	HandoffAdapter& handoffs_;
 	SinkAdapter& sinks_;
+	SourceAdapter& sources_;
 	RecordingAdapter* recordings_;
 };
 /// How long a run's teardown may wait on other threads (teardown steps 3 and 4) before the framework stops waiting.

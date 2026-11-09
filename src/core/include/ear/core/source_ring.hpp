@@ -1,8 +1,8 @@
-// The rules every source plays by, in one place (docs/design/companions.md#8-module-design): its ring, keeping time,
-// the fades at its edges, the shortfall, the frames dropped at a stop, and Played. Pure: no thread, no descriptor, no
-// wait; ear_pipewire's EventSources wraps it with the writer's wait for room and the played wake's eventfd, and the type
-// harness's fake source wraps it with a writer that never waits, so a type's tests and the engine play by the same
-// code. Declarations only until slice 3b's step 3b.2 builds it (source_ring.cpp).
+// The rules every source plays by, in one place (docs/writing-a-node-type.md#sources): its ring, keeping time, the
+// fades at its edges, the shortfall, the frames dropped at a clear or a stop, and Played. Pure: no thread, no
+// descriptor, no wait; ear_pipewire's EventSources wraps it with the writer's wait for room and the played wake's
+// eventfd, and the type harness's fake source wraps it with a writer that never waits, so a type's tests and the engine
+// play by the same code.
 #pragma once
 #include <cstdint>
 #include <memory>

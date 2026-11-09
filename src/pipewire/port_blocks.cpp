@@ -3,9 +3,11 @@
 // Each cycle's GraphCycle is made here, both clock domains sampled once (docs/engine.md#graphcycle), and latency is
 // carried per bank pair under PW_FILTER_FLAG_CUSTOM_LATENCY. The asynchronous drive and fade
 // (docs/engine.md#drive-and-fade): requests in a ring of eight, one invoke in flight per block, applied inside it,
-// completed through the block's own event source. The interim sinks' taps (docs/engine.md#sinks) ride in each drive and
-// are written after the code and the fade, every cycle that code runs, each stamped with the upstream latency the block
-// last told on its bank.
+// completed through the block's own event source. The ring companions ride in each drive, bound with the code in its
+// invoke: each source (docs/engine.md#sources) is played into the block's own scratch for its inside input bank before
+// the code, told the downstream latency the block last told on that bank, and each sink's tap (docs/engine.md#sinks) is
+// written after the code and the fade, stamped with the upstream latency the block last told on its bank; both every
+// cycle that code runs.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -104,10 +106,14 @@ public:
 		  outputHeard_(outputs_.size(), false), inputTold_(inputs_.size(), noLatency(SPA_DIRECTION_INPUT)),
 		  outputTold_(outputs_.size(), noLatency(SPA_DIRECTION_OUTPUT)),
 		  fadeFrames_(std::max(format.rate * 5 / 1000, 1U)), fadeMask_(outputs_.size(), 0),
-		  sinks_(insideOutputBanks(ports)), tapSpans_(outputs_.size()) {
+		  sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
+		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
 		}
+		// A source plays into scratch of the block's own, never into PipeWire's buffer of its (unlinked) port: one
+		// buffer per inside input port.
+		for (std::size_t i = publicInputs_; i < inputs_.size(); ++i) sourceScratch_.emplace_back(format.maxBlock, 0.0f);
 		{
 			const std::scoped_lock lock(levels_->mutex);
 			levels_->blocks.push_back(&registered_);
@@ -169,15 +175,17 @@ public:
 	FilterPortBlock& operator=(const FilterPortBlock&) = delete;
 
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
-		// A sink reads an inside output bank and NodeHost gives each bank at most one, so a drive binds at most one
-		// tap per such bank: the realtime storage is sized for that at make, and apply() binds no more than it holds.
-		// Nothing is thrown here: this runs on the main loop, inside PipeWire's C callbacks.
-		pending_.push_back(Pending{Kind::drive, request.code, request.faded, request.sinks, std::move(done), {}});
+		// A sink reads an inside output bank, a source plays into an inside input bank, and NodeHost gives each bank at
+		// most one companion, so a drive binds at most one tap per such bank: the realtime storage is sized for that at
+		// make, and apply() binds no more than it holds. Nothing is thrown here: this runs on the main loop, inside
+		// PipeWire's C callbacks.
+		pending_.push_back(
+			Pending{Kind::drive, request.code, request.faded, request.sinks, request.sources, std::move(done), {}});
 		pump();
 	}
 
 	void fadeOut(std::move_only_function<void()> done) override {
-		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, {}, std::move(done)});
+		pending_.push_back(Pending{Kind::fade, nullptr, {}, {}, {}, {}, std::move(done)});
 		pump();
 	}
 
@@ -233,10 +241,10 @@ private:
 		return table;
 	}
 
-	/// How many inside output banks the ports have: the most taps a drive can bind.
-	static std::size_t insideOutputBanks(const Ports& ports) {
-		return static_cast<std::size_t>(std::ranges::count_if(ports.banks(), [](const Ports::Bank& bank) {
-			return bank.reach == PortBank::Reach::inside && bank.direction == Direction::output;
+	/// How many inside banks of a direction the ports have: the most sinks (output) or sources (input) a drive binds.
+	static std::size_t insideBanks(const Ports& ports, Direction direction) {
+		return static_cast<std::size_t>(std::ranges::count_if(ports.banks(), [direction](const Ports::Bank& bank) {
+			return bank.reach == PortBank::Reach::inside && bank.direction == direction;
 		}));
 	}
 
@@ -400,7 +408,8 @@ private:
 			told.max_rate += static_cast<std::int32_t>(internal.maxFrames);
 			auto& ports = bank.direction == Direction::output ? outputPorts_ : inputPorts_;
 			auto& last = bank.direction == Direction::output ? outputTold_ : inputTold_;
-			// What the bank tells, for the realtime side: an output's capture latency stamps its sink's chunks.
+			// What the bank tells, for the realtime side: an output's capture latency stamps its sink's chunks, an
+			// input's playback latency dates what its source played.
 			auto& toldNow = bank.direction == Direction::output ? outputToldNow_ : inputToldNow_;
 			const std::uint64_t toldWord = packed(frames(told));
 			for (std::size_t i = at.first; i < at.first + at.count; ++i)
@@ -437,7 +446,9 @@ private:
 			                                 .faded = next.mask.data(),
 			                                 .fadedCount = next.mask.size(),
 			                                 .sinks = next.sinks.data(),
-			                                 .sinkCount = next.sinks.size()};
+			                                 .sinkCount = next.sinks.size(),
+			                                 .sources = next.sources.data(),
+			                                 .sourceCount = next.sources.size()};
 			++pushed_;
 		}
 		published_.store(pushed_, std::memory_order_release);
@@ -491,6 +502,8 @@ private:
 			// The taps change with the code, in this invoke: copied into storage sized at make.
 			sinkCount_ = std::min(request.sinkCount, sinks_.size());
 			std::copy_n(request.sinks, sinkCount_, sinks_.begin());
+			sourceCount_ = std::min(request.sourceCount, sources_.size());
+			std::copy_n(request.sources, sourceCount_, sources_.begin());
 			fresh_ = true; // the new code's first cycle is a discontinuity to it
 			bool anyFaded = false;
 			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
@@ -612,6 +625,26 @@ private:
 			                : static_cast<float*>(pw_filter_get_dsp_buffer(outputPorts_[i], frames));
 			outputs_[i] = std::span<float>(out != nullptr ? out : scratch_[i].data(), frames);
 		}
+		// Each source, before the code, into the block's scratch for its inside input bank, which the code then reads
+		// in place of the bank's ports; only while a code runs: a silence binds none.
+		for (std::size_t s = 0; s < sourceCount_; ++s) {
+			const SourceBinding& binding = sources_[s];
+			if (binding.tap == nullptr || binding.channels == 0 || binding.firstInput < publicInputs_ ||
+			    binding.firstInput + binding.channels > inputs_.size())
+				continue;
+			for (std::size_t c = 0; c < binding.channels; ++c)
+				sourceSpans_[c] =
+					std::span<float>(sourceScratch_[binding.firstInput + c - publicInputs_].data(), frames);
+			const Latency downstream =
+				unpacked(inputToldNow_[binding.firstInput].load(std::memory_order_acquire)); // the bank's told
+			binding.tap->play(std::span<const std::span<float>>(sourceSpans_.data(), binding.channels),
+			                  SourceCycle{.position = cycle.position,
+			                              .frames = frames,
+			                              .startRawNs = cycle.startRawNs,
+			                              .discontinuity = cycle.discontinuity,
+			                              .downstream = downstream});
+			for (std::size_t c = 0; c < binding.channels; ++c) inputs_[binding.firstInput + c] = sourceSpans_[c];
+		}
 		if (AudioCode* code = code_.load(std::memory_order_acquire)) {
 			code->process(inputs_, outputs_, frames, cycle);
 		} else {
@@ -712,6 +745,8 @@ private:
 		std::size_t fadedCount = 0;
 		const SinkBinding* sinks = nullptr; // a drive: the taps it binds
 		std::size_t sinkCount = 0;
+		const SourceBinding* sources = nullptr; // a drive: the sources it binds
+		std::size_t sourceCount = 0;
 		std::uint64_t takenAt = 0; // a drive: where it took effect
 		bool cancelled = false;    // a fade-out: a later drive cancelled it
 	};
@@ -721,15 +756,20 @@ private:
 		AudioCode* code;
 		std::span<const bool> mask;
 		std::span<const SinkBinding> sinks;
+		std::span<const SourceBinding> sources;
 		std::move_only_function<void(std::uint64_t)> driven;
 		std::move_only_function<void()> faded;
 	};
 	std::uint32_t fadeFrames_;
-	std::vector<std::uint8_t> fadeMask_;           // per output; data loop only
-	std::vector<SinkBinding> sinks_;               // the applied drive's taps, sized at make; data loop only
-	std::size_t sinkCount_ = 0;                    // how many of sinks_ are bound; data loop only
-	std::vector<std::span<const float>> tapSpans_; // one tap's bank, built per cycle; data loop only
-	Fade fade_ = Fade::none;                       // data loop only
+	std::vector<std::uint8_t> fadeMask_;            // per output; data loop only
+	std::vector<SinkBinding> sinks_;                // the applied drive's taps, sized at make; data loop only
+	std::size_t sinkCount_ = 0;                     // how many of sinks_ are bound; data loop only
+	std::vector<std::span<const float>> tapSpans_;  // one tap's bank, built per cycle; data loop only
+	std::vector<SourceBinding> sources_;            // the applied drive's sources, sized at make; data loop only
+	std::size_t sourceCount_ = 0;                   // how many of sources_ are bound; data loop only
+	std::vector<std::vector<float>> sourceScratch_; // per inside input port: what a source plays; data loop only
+	std::vector<std::span<float>> sourceSpans_;     // one source's bank, built per cycle; data loop only
+	Fade fade_ = Fade::none;                        // data loop only
 	std::uint32_t fadeAt_ = 0; // the fade's position, 0 (silent) to fadeFrames_ (full); data loop only
 	std::array<Request, kRing> ring_{};
 	std::atomic<std::uint64_t> published_{0}; // requests the main thread pushed into the ring

@@ -35,6 +35,7 @@
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
 
 namespace {
@@ -608,7 +609,8 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 	RtpReceivers receivers(*engine);
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
-	ResourceRegistry resources(cards, receivers, handoffs, sinks);
+	EventSources sources;
+	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
 	NodeCatalogue catalogue{{}};
 	DesiredGraph graph(catalogue);
 	HealthWake health(waiter);

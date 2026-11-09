@@ -67,6 +67,21 @@ public:
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		return node_->companion(Bank::name);
 	}
+	/// A source's bank (an inside input bank): what its writer takes, what it played, its shortfall.
+	template <class Bank> std::uint32_t feed(Bank, std::span<const float> interleaved) {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		static_assert(Bank::reach == PortBank::Reach::inside && Bank::direction == Direction::input,
+		              "a source plays into an inside input bank");
+		return node_->feed(Bank::name, interleaved);
+	}
+	template <class Bank> Played played(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->played(Bank::name);
+	}
+	template <class Bank> std::uint64_t shortfall(Bank) const {
+		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
+		return node_->shortfall(Bank::name);
+	}
 	template <class Bank> float lastFadeGain(Bank, std::size_t member = 0) const {
 		static_assert(ownBank<Bank>, "the harness takes only its spec's banks");
 		static_assert(Bank::direction == Direction::output, "a fade is on an output bank");
