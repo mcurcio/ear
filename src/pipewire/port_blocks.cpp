@@ -33,6 +33,7 @@
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
+#include "engine_properties.hpp"
 #include "latency_spa.hpp"
 #include "level_mailbox.hpp"
 
@@ -112,13 +113,12 @@ public:
 		}
 		refusal_ = addEvent(loop_, guarded<&FilterPortBlock::onRefusal>, this);
 		completion_ = addEvent(loop_, guarded<&FilterPortBlock::onCompletion>, this);
-		// pw_filter_new's name becomes media.name; node.name (how the registry, and so the live
-		// graph, names the node) defaults to the program's name unless set here. node.group puts
-		// every block in one group, so one driver clocks them all.
+		// Every key from the property table (docs/engine.md#properties-ear-sets says why each).
 		filter_ = pw_filter_new(engine.core(), node.c_str(),
-		                        pw_properties_new(PW_KEY_NODE_NAME, node.c_str(), PW_KEY_MEDIA_TYPE, "Audio",
-		                                          PW_KEY_NODE_GROUP, graphGroup, PW_KEY_NODE_ALWAYS_PROCESS, "true",
-		                                          nullptr));
+		                        pw_properties_new(property(Home::block, "node.name"), node.c_str(),
+		                                          property(Home::block, "media.type"), "Audio",
+		                                          property(Home::block, "node.group"), graphGroup,
+		                                          property(Home::block, "node.always-process"), "true", nullptr));
 		if (filter_ == nullptr) {
 			fail(std::string("cannot make the engine node: ") + spa_strerror(-errno));
 			return;
@@ -231,10 +231,11 @@ private:
 		// The handle is the port's (empty) user data, freed with the filter; a refused port (null)
 		// leaves its span on zeros or scratch.
 		for (const PortName& name : names) {
-			handles.push_back(pw_filter_add_port(filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
-			                                     pw_properties_new(PW_KEY_FORMAT_DSP, "32 bit float mono audio",
-			                                                       PW_KEY_PORT_NAME, name.c_str(), nullptr),
-			                                     nullptr, 0));
+			handles.push_back(
+				pw_filter_add_port(filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+			                       pw_properties_new(property(Home::blockPort, "format.dsp"), "32 bit float mono audio",
+			                                         property(Home::blockPort, "port.name"), name.c_str(), nullptr),
+			                       nullptr, 0));
 		}
 	}
 

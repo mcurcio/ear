@@ -1,6 +1,6 @@
 ---
 name: pipewire-engine
-description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), what src/pipewire/engine.conf sets and why, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
+description: How EAR runs PipeWire's engine inside its own process (no daemon, no session manager, no socket), the property table of every PipeWire property ear sets (engine.conf and code) and its four checks, the internal clock (the dummy driver, which always drives and tracks the raw clock) and the sound cards that follow it, the graph group, GraphCycle's clock facts, latency carried per bank pair, denormals, engine companions (sound cards and RTP receivers loaded from module-rtp-source), the asynchronous drive() and fadeOut() with their bounds and the wedged data loop, the interim sinks' taps, what the slice 3a spikes proved about invokes and the one data loop, level metering, realtime priority (CAP_SYS_NICE), the traps found while building it, telling xruns under host load from bugs, and how to bump the PipeWire version. Use when changing src/pipewire/ (engine, port blocks, links, live ports, handoffs, engine companions, sound cards, RTP receivers, the main-loop executor) or engine.conf, when adding or changing a PipeWire property, when a port block never processes, a link never goes active, a card never follows or never becomes ready, latency never arrives, an rtp node stays configuring, fails "the RTP receiver never ran" or is silent, a card fails "never started", a node never reaches running or a fade or barrier is overdue, ear says the data loop is wedged, a sink drops or misses cycles, levels stop, engine or RTP tests fail only on a loaded host, the data thread is not realtime, a stop signal kills the process, or the block size is not the one asked for, and before bumping the build image's PipeWire.
 ---
 
 # Running PipeWire's engine inside EAR
@@ -9,7 +9,7 @@ EAR does not connect to a PipeWire daemon: it is the PipeWire instance. `ear::pi
 (`src/pipewire/engine.cpp`) makes PipeWire's main loop and context in EAR's own process and
 connects to that context itself (`pw_context_connect_self`). Every other adapter in
 `src/pipewire/` works through that one connection. The PipeWire sources behind the claims here,
-with file and line numbers, are cited in `docs/engine.md` (its `engine.conf` keys, sound cards,
+with file and line numbers, are cited in `docs/engine.md` (its property table, sound cards,
 levels, the graph group and RTP receivers); the claims were checked by the tests in `src/pipewire/tests/` against PipeWire 1.4.2, the version
 Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 
@@ -36,51 +36,42 @@ Debian 13 (trixie) ships in the build image (`docker/Dockerfile`).
 file (`EAR_ENGINE_CONF`). `Engine` does no lookup of its own. The ctest
 `ear_engine_conf_beside_ear` fails if the copy beside the binary differs from the source.
 
-## engine.conf, key by key
+## Properties: one table
 
-`context.properties`:
-- `core.daemon = false`: no socket and no runtime directory. EAR's own connection is the only
-  client. Serving the socket (so shairport-sync can connect) is parked.
-- `core.name = ear`.
-- `support.dbus = false`: there is no D-Bus in the container.
-- `context.num-data-loops = 1`: one data loop runs every engine node's `process` (the blocks, the
-  cards' adapters, the RTP receivers). It is 1.4.2's default (`context.c`, `DEFAULT_DATA_LOOPS`),
-  pinned because the node framework relies on it: a block and the engine nodes beside it see one
-  `clock.position` per cycle, and a non-blocking invoke on that loop runs between any two of their
-  cycles (S3, below). A bump that changes the default must keep it.
-- Never `default.clock.*` or `clock.power-of-two-quantum`: `context.properties` from the file
-  overwrite the properties `Engine` passes to `pw_context_new`, which carry the clock.
+Every PipeWire property EAR sets, in `engine.conf` or in code, is one row of
+`src/pipewire/engine_properties.hpp`: its home (the object that carries it and the code or file
+that builds it), key, value, what it couples to, the `docs/engine.md` heading that says why, and
+the test that pins the coupling. The reason for each key lives in
+`docs/engine.md#properties-ear-sets` (the table, checked against the code), and what EAR never sets
+(`default.clock.*` and `clock.power-of-two-quantum` in `engine.conf`, whose `context.properties`
+overwrite `Engine`'s; `cpu.zero.denormals`; force and lock keys on any node; `node.group`,
+`node.driver` and `node.link-group` on a card) in `docs/engine.md#properties-ear-never-sets`. Read
+those before changing a property; `engine.conf`'s comments are only pointers to them.
 
-`context.spa-libs`: `support.* = support/libspa-support` (the loop, logging and the dummy driver);
-`api.alsa.* = alsa/libspa-alsa` (a sound card's ALSA PCM node); `audio.convert.* =
-audioconvert/libspa-audioconvert` (the converter the adapter wraps around it). Debian's
-`libspa-0.2-modules` holds all three.
+To add, change or remove a property:
 
-`context.modules`, each for one reason:
-- `libpipewire-module-rt` with `[ ifexists nofail ]`: realtime priority for the data thread
-  where the container allows it; a container without the privilege still starts.
-- `libpipewire-module-protocol-native`: the protocol EAR's own connection speaks, even with no
-  socket.
-- `libpipewire-module-client-node`: a `pw_filter` exports its node through it; without it no
-  port block appears.
-- `libpipewire-module-spa-node-factory`: makes the dummy driver below.
-- `libpipewire-module-link-factory`: makes the route links (by port global id) and each
-  engine companion's own links (by node and port).
-- `libpipewire-module-adapter`: makes a sound card, an ALSA PCM node wrapped in a converter
-  with one port per channel.
+1. Change its row in `engine_properties.hpp` and its row in `docs/engine.md`'s table in the same
+   change (the doc test compares where, key, value, couples to and pinned by, and wants the why to
+   link the row's heading).
+2. Build it with `property(Home::<home>, "<key>")`: a key the table does not list for that home
+   does not compile, and the table's `static_assert`s refuse a forbidden key, a duplicate, a key in
+   both `engine.conf` and `context`, and a card seam key a card already sets.
+3. In `engine.conf`, the conf test refuses a key without a row, a value other than the row's and a
+   forbidden key.
+4. The live test ("Every property ear sets is held by PipeWire as the property table says") reads
+   the row back from the object PipeWire holds; a row whose value is prose ("the block size") needs
+   that test's expected value for its instance. A key PipeWire consumes before the engine's node
+   (`adapter.auto-port-config` on the RTP stream) is listed as consumed there, with where its
+   effect is checked.
+5. Name the test that pins the coupling (`pinned::` in the header); a name no test has fails.
 
-`libpipewire-module-rtp-source` is not in `engine.conf`: `RtpReceivers` loads one per `rtp`
-node with `pw_context_load_module` (section "RTP receivers"). Debian's `libpipewire-0.3-modules`
-holds it.
+`engine.conf`'s `context.spa-libs` and `context.modules` (not properties) are in
+`docs/engine.md#modules-and-libraries`; `libpipewire-module-rtp-source` is not in `engine.conf`:
+`RtpReceivers` loads one per `rtp` node with `pw_context_load_module`. The internal clock is
+`engine.conf`'s one `context.objects` entry (its rows: home "internal clock"); it has no ports, so
+it never shows up as a live port.
 
-`context.objects`: one `spa-node-factory` object, `factory.name = support.node.driver`,
-`node.name = Dummy-Driver`, `priority.driver = 200000`, `node.group = ear.graph`, `clock.id =
-monotonic-raw`. It is ear's internal clock, the graph's one driver whatever links or fails
-(`docs/engine.md#the-internal-clock`, next section but one). It has no ports, so it never
-shows up as a live port. A card's `priority.driver` (`cardPriority` in `engine_names.hpp`, 1) must
-stay below it: that is what keeps the dummy the driver once a card is linked.
-
-Never `cpu.zero.denormals` in `context.properties`: on 1.4.2 it lands on the main thread in this
+`cpu.zero.denormals` is forbidden in `engine.conf`: on 1.4.2 it lands on the main thread in this
 engine (the data loop's setup runs inline there before the data thread enters) and leaks to every
 thread made later. `Engine::create` sets FTZ and DAZ (FZ on arm64) with a blocking invoke on the
 data loop instead (`flushDenormals`); "process() runs with denormals flushed to zero" reads the
@@ -92,20 +83,15 @@ blocking invoke made right after `pw_context_new` meets the same race.
 
 ## The clock
 
-`Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates`
-(only the graph frequency), `default.clock.quantum`, `min-quantum` and `max-quantum` (all the
-block size), `clock.power-of-two-quantum = false`, and sets `default.clock.quantum-floor` (default 4)
-and `quantum-limit` (default 8192) to the block size: PipeWire clamps a node's `node.force-quantum` to
-`[floor, limit]` (`context.c`), not to `[min, max]-quantum`, so with 8192 one forcing node made every
-cycle longer than a block's `maxBlock` and every block wrote zeros, and with a floor of 4 one could make
-it shorter (`engine_test.cpp`'s "The quantum floor and limit are the block size",
-`docs/engine.md#the-quantum-guard`). No engine companion sets a force, lock or driving property, and
-`AlsaSoundCards`' `extra` seam refuses them (`priority.driver`, `node.driver`, `node.group`,
-`node.link-group` too). **Trap:** `module-adapter` copies the limit into every adapter's
-`clock.quantum-limit`, and an ALSA node with no period count caps its buffer at 4 x that (1024 frames at
-a 256 block, `alsa-pcm.c`): every card is made with `api.alsa.period-size` and `api.alsa.period-num`
-(`cardPeriods`) so its buffer keeps the old size; `pw_context_update_properties` after creation does not
-change what `module-adapter` reads on 1.4.2. A port block sees
+`Engine` sets the clock as context properties (the table's `context` rows): the graph frequency
+as the one rate and the block size as every quantum, the floor and the limit included, because
+PipeWire clamps a node's `node.force-quantum` to `[floor, limit]` (`context.c`), not to
+`[min, max]-quantum` (`docs/engine.md#the-quantum-guard`). **Trap:** `module-adapter` copies the
+limit into every adapter's `clock.quantum-limit`, and an ALSA node with no period count caps its
+buffer at 4 x that (1024 frames at a 256 block, `alsa-pcm.c`): every card is made with
+`api.alsa.period-size` and `api.alsa.period-num` (`cardPeriods`) so its buffer keeps the old size;
+`pw_context_update_properties` after creation does not change what `module-adapter` reads on
+1.4.2. A port block sees
 `position->clock.duration == blockSize` and `clock.rate.denom == graphFrequency`; the test
 "Blocks process at the graph frequency and block size" checks it with 44100 Hz and 256.
 
@@ -211,15 +197,11 @@ the card's own links. A card is one kind of engine companion: the state machine 
 `joinEngineCompanion` (`engine_companions.cpp`), shared with RTP receivers; the card's body says only
 how its node is made and heard from (its own proxy) and what fails it:
 
-1. **Opening.** The adapter is made with `factory.name = api.alsa.pcm.sink` (playback) or
-   `.source` (capture), `api.alsa.path = hw:CARD=<card id>,DEV=0` (built in one place,
-   `alsaPath`; the card id's grammar, `CardId` in ear_core, keeps every other ALSA device form
-   out, because ALSA's `file` plugin can run commands), `audio.rate` = the graph frequency,
-   `audio.channels`, `audio.position = [ AUX0 AUX1 ... ]`, `node.always-process = true`,
-   `priority.driver = 1` and no `node.group`. So it runs alone, on its own clock, and holds no
-   port block while it opens. In the group it would follow the dummy from creation and never
-   start before it is linked, which this lifecycle (link once RUNNING) cannot do. Never mark it
-   `node.driver = false` either: the ALSA node publishes `node.driver = true` again (the spike).
+1. **Opening.** The adapter is made with the table's `card` rows and no `node.group`
+   (`docs/engine.md#properties-ear-sets` and `#properties-ear-never-sets` say why each). So it runs
+   alone, on its own clock, and holds no port block while it opens. `alsaPath` is the one home of
+   the device name; the card id's grammar (`CardId` in ear_core) keeps every other ALSA device form
+   out, because ALSA's `file` plugin can run commands.
 2. **Linking.** When the node reports RUNNING (its PCM runs), the card makes one link per
    channel through `link-factory` (`link.output.node`, `link.output.port`, `link.input.node`,
    `link.input.port`): the adapter and the block each named by its global id, ports by
@@ -264,36 +246,18 @@ An `rtp` node is a port block (public outputs `stream.1`..`stream.N`, inside inp
 `from_rtp.1`..`from_rtp.N`, passed straight through) plus one RTP receiver, engine node
 `<node>.rtp`, made by `RtpReceivers` (`rtp_receivers.cpp`). Its module arguments are built in one
 place, `moduleArguments`, from parsed values only (`RtpAddress`, an enum, ranged numbers, the
-engine node name); `docs/engine.md#rtp-receivers` has the full string. What each part is for:
+engine node name), each key from the table: the `RTP receiver` and `RTP stream` rows of
+`docs/engine.md#properties-ear-sets` say what each is for (`remote.name = "internal"`,
+`adapter.auto-port-config`, `node.always-process`, `sess.ignore-ssrc`, `source.ip`, ...). Beyond
+the table:
 
-- **`remote.name = "internal"`.** The module connects its own client to a core. After
-  `pw_context_connect_self` nothing registers the core object in the context, so the module calls
-  `pw_context_connect` with its `remote.name`; left unset that is the daemon's socket, which EAR
-  does not serve. `internal` is protocol-native's connection to the local
-  context. Each receiver is one more client in the engine.
-- **`stream.props = { adapter.auto-port-config = { mode = dsp ... } }`.** Without it the stream's
-  converter has no format and so **no ports at all**: the node appears, nothing can link. With it
-  the ports are `receive_AUX0`..`receive_AUX<N-1>` (a `node.network` stream's outputs are named
-  `receive_<position>`; ear passes `audio.position = [ AUX0 ... ]`). Unlike the card's adapter
-  (Traps), auto port config works here, because a stream's format is fixed.
-- **`node.always-process = true` in `stream.props`.** The receiver runs on the graph's driver
-  before it is linked, so its RUNNING proves the socket is bound: the module opens the socket when
-  the stream starts. The lifecycle links on that RUNNING, as it waits for a card's PCM.
-- **`sess.ignore-ssrc = true`.** By default the receiver locks onto the first packet's SSRC and
-  drops every other one for good, so a sender that restarts with a new SSRC (FPP restarting) is
-  never heard again.
-- **`source.ip`.** `0.0.0.0` binds any address and hears every sender. A multicast group is
-  joined on the default interface (`local.ifname` unset). Any other address does not mean "this
-  host's address": PipeWire binds any address and `connect()`s to `source.ip:source.port`, so it
-  hears only that sender, and only packets whose source port equals the receiving port.
-  `RtpAddress` therefore accepts only `0.0.0.0` and 224.0.0.0-239.255.255.255. A host name would
-  block the main loop in a name lookup (15 s for `fpp.local` in the spike) before the load fails.
-- **`audio.rate`** is the sender's rate (the graph frequency by default); another rate is
-  resampled. The receiver steers its resampler with a delay-locked loop from packet arrival, so
-  its rate wobbles by parts in ten thousand: a sine fit over a whole second fails while every
-  tenth of a second fits (docs/engine.md#rtp-receivers). Check a received tone window by window.
-- **`node.description` and `media.name`** = the engine node name, replacing the host name the
-  module would use (`link-factory` also matches by description, Traps).
+- **`source.ip`'s grammar.** `RtpAddress` accepts only `0.0.0.0` and 224.0.0.0-239.255.255.255,
+  because any other address makes PipeWire `connect()` to that sender. A host name would block the
+  main loop in a name lookup (15 s for `fpp.local` in the spike) before the load fails.
+- **`audio.rate`** is the sender's rate; another rate is resampled. The receiver steers its
+  resampler with a delay-locked loop from packet arrival, so its rate wobbles by parts in ten
+  thousand: a sine fit over a whole second fails while every tenth of a second fits
+  (docs/engine.md#rtp-receivers). Check a received tone window by window.
 - **Left at PipeWire's defaults:** `cleanup.sec` (60), `net.mtu` (1280), the packet times.
 
 How the body finds its node: the module makes the node through its own connection, so there is
@@ -481,7 +445,7 @@ Nothing like WirePlumber runs. Two things make that work:
   thread inherits the mask, and `onStopSignal` reads them through `pw_loop_add_signal` (a
   signalfd, which also reports a signal that arrived earlier).
 - **Block size silently rounded.** Without `clock.power-of-two-quantum = false` a block size of
-  480 runs as 256.
+  480 runs as 256 (its row in `docs/engine.md#properties-ear-sets`).
 - **`node.name` is not the filter's name.** `pw_filter_new`'s name becomes `media.name`;
   `node.name` defaults to the program's name. `port_blocks.cpp` sets `node.name` explicitly,
   because the live graph names nodes by it.
@@ -517,7 +481,7 @@ Nothing like WirePlumber runs. Two things make that work:
   session manager would: `pw_node_set_param(SPA_PARAM_PortConfig)` in dsp mode with 32-bit float
   planar and AUX positions, which names the ports `playback_AUX<n>` and `capture_AUX<n>`. On
   an RTP receiver's stream the same key works and is what gives it ports.
-- **`cpu.zero.denormals` sets the wrong thread.** See `engine.conf` above: the engine flushes
+- **`cpu.zero.denormals` sets the wrong thread.** See "Properties: one table": the engine flushes
   denormals with an invoke on the data loop.
 - **Custom latency is never told a lost last link.** See "Latency, per bank pair".
 - **`node.driver-id` changes reach no client on 1.4.2.** The engine sets a node's

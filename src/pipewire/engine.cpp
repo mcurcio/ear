@@ -1,4 +1,4 @@
-// PipeWire's engine inside EAR (docs/engine.md#engineconf-key-by-key; docs/engine.md#realtime-priority: CAP_SYS_NICE
+// PipeWire's engine inside EAR (docs/engine.md#properties-ear-sets; docs/engine.md#realtime-priority: CAP_SYS_NICE
 // and the scheduling report; docs/engine.md#denormals: denormals flushed on the data thread).
 #include "ear/pipewire/engine.hpp"
 
@@ -24,6 +24,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
+#include "engine_properties.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -129,23 +130,22 @@ bool flushDenormalsOnDataThread(pw_data_loop* dataLoop) {
 	return flush.done.load(std::memory_order_acquire);
 }
 
-/// The clock settings EngineSettings decides. pw_context_new reads them from its own
-/// properties; engine.conf's context.properties would overwrite them, so it sets none.
+/// The clock settings EngineSettings decides, each key from the property table (docs/engine.md#properties-ear-sets says
+/// why each). pw_context_new reads them from its own properties; engine.conf's context.properties would overwrite them,
+/// so it sets none.
 pw_properties* contextProperties(const EngineSettings& settings) {
 	const auto rate = std::to_string(settings.graphFrequency);
 	const auto block = std::to_string(settings.blockSize);
-	pw_properties* props = pw_properties_new(
-		PW_KEY_CONFIG_NAME, settings.configFile.c_str(), "default.clock.rate", rate.c_str(), "default.clock.quantum",
-		block.c_str(), "default.clock.min-quantum", block.c_str(), "default.clock.max-quantum", block.c_str(),
-		// The engine rounds the quantum down to a power of two unless told not to, so a block
-		// size such as 480 would otherwise run as 256.
-		"clock.power-of-two-quantum", "false", nullptr);
-	pw_properties_setf(props, "default.clock.allowed-rates", "[ %u ]", settings.graphFrequency);
-	// A forced quantum is clamped to [floor, limit] (defaults 4 and 8192), not to min/max-quantum: both are the block
-	// size, so no node can ask the graph for a cycle longer or shorter than every block was made for
-	// (docs/engine.md#the-quantum-guard).
-	pw_properties_setf(props, "default.clock.quantum-floor", "%u", settings.blockSize);
-	pw_properties_setf(props, "default.clock.quantum-limit", "%u", settings.blockSize);
+	pw_properties* props = pw_properties_new(property(Home::context, "config.name"), settings.configFile.c_str(),
+	                                         property(Home::context, "default.clock.rate"), rate.c_str(), nullptr);
+	pw_properties_setf(props, property(Home::context, "default.clock.allowed-rates"), "[ %u ]",
+	                   settings.graphFrequency);
+	for (const char* key :
+	     {property(Home::context, "default.clock.quantum"), property(Home::context, "default.clock.min-quantum"),
+	      property(Home::context, "default.clock.max-quantum"), property(Home::context, "default.clock.quantum-floor"),
+	      property(Home::context, "default.clock.quantum-limit")})
+		pw_properties_set(props, key, block.c_str());
+	pw_properties_set(props, property(Home::context, "clock.power-of-two-quantum"), "false");
 	return props;
 }
 

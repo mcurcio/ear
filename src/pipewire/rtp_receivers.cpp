@@ -20,6 +20,7 @@
 
 #include "callback_boundary.hpp"
 #include "engine_companions.hpp"
+#include "engine_properties.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -31,21 +32,33 @@ constexpr char kind[] = "RTP receiver"; // names it in failure details
 /// "receive_<position>" (impl-port.c), and its positions are AUX0...
 std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_string(channel); }
 
-/// The module's arguments (docs/engine.md#rtp-receivers): the one home of this form. Every value
-/// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
-/// user text reaches PipeWire's parsers.
+/// " <key> = <value>", one argument of the module's object.
+std::string argument(const char* key, const std::string& value) { return std::string(" ") + key + " = " + value; }
+
+/// The module's arguments, each key from the property table (docs/engine.md#properties-ear-sets says why each): the one
+/// home of this form. Every value is a number, a closed enum, an RtpAddress or the engine node's name
+/// ([A-Za-z0-9_.-]), so no user text reaches PipeWire's parsers.
 std::string moduleArguments(const NodeName& engineNode, const RtpReceiverShape& shape, std::size_t channels) {
 	const std::string name = "\"" + engineNode + "\"";
-	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + shape.address.text() + "\"" +
-	       " source.port = " + std::to_string(shape.port) + " sess.media = \"audio\"" +
-	       " sess.latency.msec = " + std::to_string(shape.latencyMs) + " sess.ignore-ssrc = true" +
-	       " audio.format = \"" + (shape.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
-	       " audio.rate = " + std::to_string(shape.rate) + " audio.channels = " + std::to_string(channels) +
-	       " audio.position = " + auxPositions(channels) + " node.name = " + name + " node.description = " + name +
-	       " media.name = " + name +
-	       " stream.props = { node.always-process = true"
-	       " adapter.auto-port-config = { mode = dsp monitor = false control = false position = "
-	       "preserve } } }";
+	const std::string stream = "{" + argument(property(Home::rtpStream, "node.always-process"), "true") +
+	                           argument(property(Home::rtpStream, "adapter.auto-port-config"),
+	                                    "{ mode = dsp monitor = false control = false position = preserve }") +
+	                           " }";
+	return "{" + argument(property(Home::rtpReceiver, "remote.name"), "\"internal\"") +
+	       argument(property(Home::rtpReceiver, "source.ip"), "\"" + shape.address.text() + "\"") +
+	       argument(property(Home::rtpReceiver, "source.port"), std::to_string(shape.port)) +
+	       argument(property(Home::rtpReceiver, "sess.media"), "\"audio\"") +
+	       argument(property(Home::rtpReceiver, "sess.latency.msec"), std::to_string(shape.latencyMs)) +
+	       argument(property(Home::rtpReceiver, "sess.ignore-ssrc"), "true") +
+	       argument(property(Home::rtpReceiver, "audio.format"),
+	                shape.encoding == RtpEncoding::l24 ? "\"S24BE\"" : "\"S16BE\"") +
+	       argument(property(Home::rtpReceiver, "audio.rate"), std::to_string(shape.rate)) +
+	       argument(property(Home::rtpReceiver, "audio.channels"), std::to_string(channels)) +
+	       argument(property(Home::rtpReceiver, "audio.position"), auxPositions(channels)) +
+	       argument(property(Home::rtpReceiver, "node.name"), name) +
+	       argument(property(Home::rtpReceiver, "node.description"), name) +
+	       argument(property(Home::rtpReceiver, "media.name"), name) +
+	       argument(property(Home::rtpReceiver, "stream.props"), stream) + " }";
 }
 
 /// One receiver's engine node: the rtp-source module loaded into the engine's context, its

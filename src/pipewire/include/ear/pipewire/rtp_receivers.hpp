@@ -4,13 +4,9 @@
 #include "ear/pipewire/engine.hpp"
 namespace ear::pipewire {
 /// One receiver = PipeWire's libpipewire-module-rtp-source loaded into the engine's context
-/// (pw_context_load_module) with the arguments docs/engine.md#rtp-receivers lists, every one
-/// built here from the shape (the one home of that form): remote.name = internal (the module
-/// finds no core in the context and would otherwise look for a daemon's socket), source.ip,
-/// source.port, sess.media audio, sess.latency.msec, sess.ignore-ssrc = true, audio.format
-/// S16BE or S24BE, audio.rate, audio.channels, audio.position AUX0.., node.name =
-/// node.description = media.name = engineNode, and stream.props { node.always-process = true,
-/// adapter.auto-port-config dsp }. Its node (Stream/Output/Audio, a pw_stream on the module's own
+/// (pw_context_load_module) with the RTP receiver's and RTP stream's rows of the property table as
+/// its arguments (docs/engine.md#properties-ear-sets), every one built here from the shape (the
+/// one home of that form). Its node (Stream/Output/Audio, a pw_stream on the module's own
 /// internal connection) has no node.group, never drives, and runs alone on the graph's driver
 /// until joined. Its ports: "receive_AUX<i>".
 /// Lifecycle: the one engine-companion lifecycle (engine_companions.hpp), with this kind's body: a

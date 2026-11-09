@@ -7,12 +7,10 @@
 #include "ear/core/companions.hpp"
 #include "ear/pipewire/engine.hpp"
 namespace ear::pipewire {
-/// One card = pw_core_create_object("adapter") with factory.name api.alsa.pcm.sink (playback: the bank is an output)
-/// or api.alsa.pcm.source (capture: an input), api.alsa.path = "hw:CARD=<id>,DEV=0" (built here from the CardId: the
-/// one home of that form), audio.channels, audio.rate = format.rate, audio.position AUX0.., node.name = engineNode,
-/// node.always-process = true, priority.driver = cardPriority, api.alsa.period-size = format.maxBlock and
-/// api.alsa.period-num = cardPeriods(format.maxBlock) (its buffer), no node.group, then the extra properties it was made
-/// with (a test seam, below, which refuses clock properties). It runs alone as its own driver until its PCM runs; once
+/// One card = pw_core_create_object("adapter") with the card's rows of the property table
+/// (docs/engine.md#properties-ear-sets; api.alsa.path "hw:CARD=<id>,DEV=0" is built here from the CardId, the one home
+/// of that form), then the extra properties it was made with (a test seam, below, which refuses clock properties). It
+/// runs alone as its own driver until its PCM runs; once
 /// linked it follows ear's internal clock, which always drives (docs/engine.md#the-internal-clock), and matches its rate
 /// to it. Its ports: a dsp
 /// PortConfig with AUX positions sent by pw_node_set_param, as a session manager does (adapter.auto-port-config leaves
@@ -31,8 +29,8 @@ class AlsaSoundCards final : public SoundCardCompanions {
 public:
 	using Properties = std::vector<std::pair<std::string, std::string>>;
 	/// `extra`: adapter properties added to every card's, after its own (a test seam: clocklessCardProperties).
-	/// std::invalid_argument when it names node.force-quantum, node.force-rate, node.lock-quantum or node.lock-rate:
-	/// no companion may change every block's clock (docs/engine.md#the-quantum-guard).
+	/// std::invalid_argument when it names a key the property table forbids on a card or one ear sets on every card: no
+	/// companion may change every block's clock or what drives it (docs/engine.md#properties-ear-never-sets).
 	explicit AlsaSoundCards(Engine& engine, Properties extra = {}); // engine outlives it
 	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const SoundCardShape& shape,
 	                                      EngineCompanionEvents& events) override;

@@ -1,9 +1,9 @@
 # ear_pipewire: PipeWire's engine inside EAR, and the adapters that implement ear_core's
 # interfaces with it: port blocks (with their levels), links, live ports, handoffs, sound cards,
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
-# engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp and callback_boundary.hpp (every C callback
-# ear gives PipeWire, docs/architecture.md#the-callback-boundary) are private to this package: its sources include them
-# by path.
+# engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp, engine_properties.hpp (every PipeWire
+# property ear sets, docs/engine.md#properties-ear-sets) and callback_boundary.hpp (every C callback ear gives PipeWire,
+# docs/architecture.md#the-callback-boundary) are private to this package: its sources include them by path.
 add_library(ear_pipewire STATIC
 	callback_boundary.cpp
 	engine.cpp
@@ -45,6 +45,7 @@ if(BUILD_TESTS)
 		tests/allocation_count.cpp
 		tests/callback_boundary_test.cpp
 		tests/engine_log_test.cpp
+		tests/engine_properties_test.cpp
 		tests/engine_test.cpp
 		tests/handoff_test.cpp
 		tests/latency_spa_test.cpp
@@ -64,9 +65,11 @@ if(BUILD_TESTS)
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main
 		PkgConfig::PIPEWIRE ear_rtp_tone ear_temp_folder ear_type_harness ear_output ear_inducers ear_latency_table)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
-	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it).
+	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it). The property table's tests read
+	# docs/engine.md, whose tables must list its rows.
 	target_compile_definitions(ear_pipewire_tests PRIVATE
 		EAR_ENGINE_CONF="${CMAKE_CURRENT_SOURCE_DIR}/engine.conf"
+		EAR_ENGINE_DOC="${PROJECT_SOURCE_DIR}/docs/engine.md"
 		EAR_ALSA_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/alsa")
 	add_dependencies(ear_pipewire_tests ear_pipewire_verify_interface_header_sets)
 	# S2 and S5 (spikes_test.cpp, docs/engine.md#the-one-data-loop-and-invokes, both tagged [s2]) keep the data thread
@@ -100,6 +103,17 @@ if(BUILD_TESTS)
 	ear_callback_boundary_compile_fail(realtime-in-guarded-entry "could not convert '[^']*realtime<.* to '[^']*GuardedSlot<")
 	ear_callback_boundary_compile_fail(raw-log-method "could not convert '[^']*logNoexcept' from")
 	ear_callback_boundary_compile_fail(log-method-not-noexcept "must be noexcept: the data loop never throws")
+	# What must not compile about the property table (docs/engine.md#properties-ear-sets):
+	# tests/compile_fail/engine_properties_bad.cpp says what each case is. The regex is the image's GCC's wording for a
+	# consteval call that is not a constant expression.
+	set(bad_properties "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/engine_properties_bad.cpp")
+	ear_compile_check(ear_engine_properties_compile_fail_control "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}")
+	foreach(case unlisted-key other-home forbidden-key)
+		string(MAKE_C_IDENTIFIER "${case}" macro)
+		set(name ear_engine_properties_compile_fail_${case})
+		ear_compile_check(${name} "${bad_properties}" "-I${CMAKE_CURRENT_SOURCE_DIR}" -DEAR_CASE_${macro})
+		set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "notInThePropertyTable")
+	endforeach()
 	add_test(NAME ear_engine_conf_beside_ear COMMAND ${CMAKE_COMMAND} -E compare_files
 		"${CMAKE_CURRENT_SOURCE_DIR}/engine.conf" "${PROJECT_BINARY_DIR}/engine.conf")
 endif()

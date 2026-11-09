@@ -422,6 +422,43 @@ TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {
 	CHECK(recorder.samples().size() == recorder.calls() * kBlock);
 }
 
+// docs/engine.md#properties-ear-sets: without clock.power-of-two-quantum = false the engine rounds the quantum down to a
+// power of two, so 480 would run as 256.
+TEST_CASE("A block size that is not a power of two runs as itself", "[engine]") {
+	constexpr std::uint32_t block = 480;
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto made = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, block});
+	if (!made) FAIL("Engine::create: " << made.error().detail);
+	auto engine = std::move(*made);
+	Waiter waiter(*engine);
+	struct Clock {
+		Waiter* waiter;
+		std::atomic<std::uint64_t> duration{0};
+		std::atomic<std::uint64_t> cycles{0};
+	} clock{&waiter};
+	pw_filter_events probeEvents{};
+	probeEvents.version = PW_VERSION_FILTER_EVENTS;
+	probeEvents.process = [](void* data, spa_io_position* position) {
+		auto* seen = static_cast<Clock*>(data);
+		seen->duration.store(position->clock.duration);
+		seen->cycles.fetch_add(1);
+		seen->waiter->wake();
+	};
+	pw_filter* probe =
+		pw_filter_new(engine->core(), "clock-probe", pw_properties_new(PW_KEY_NODE_ALWAYS_PROCESS, "true", nullptr));
+	REQUIRE(probe != nullptr);
+	spa_hook probeHook{};
+	pw_filter_add_listener(probe, &probeHook, &probeEvents, &clock);
+	REQUIRE(pw_filter_connect(probe, PW_FILTER_FLAG_RT_PROCESS, nullptr, 0) == 0);
+	const bool ran = waiter.until([&] { return clock.cycles.load() >= 8; });
+	pw_filter_destroy(probe);
+	REQUIRE(ran);
+	CHECK(clock.duration.load() == block);
+}
+
 // docs/engine.md#the-quantum-guard: the floor and the limit are the block size, so a node that forces another quantum
 // cannot change every block's cycle (a longer one would play as zeros, a shorter one break clock.duration == block).
 TEST_CASE("The quantum floor and limit are the block size: a node forcing a larger or a smaller quantum leaves every "

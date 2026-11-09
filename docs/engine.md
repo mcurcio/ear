@@ -33,29 +33,123 @@ changing this code.
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
 | The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C function ear gives PipeWire or alsa-lib, with no exception: `guarded<>` (caught, reported to the engine's `Faults`), `realtime<>` on the data loop (a `DataLoop` takes nothing else), `realtimeFunction<>` for the log and alsa-lib's handler ([architecture.md](architecture.md#the-callback-boundary)) |
 | Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's name |
+| The property table | `engine_properties.hpp` | Every PipeWire property ear sets, in `engine.conf` or in code, and every one it never sets ([below](#properties-ear-sets)) |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's
 file. The test `ear_engine_conf_beside_ear` fails if the copy beside the binary differs.
 
-## `engine.conf`, key by key
+## Properties ear sets
 
-`context.properties`:
+Every PipeWire property ear sets, in `engine.conf` or in code, is one row of
+`src/pipewire/engine_properties.hpp`, and this table is the home of each one's reason. Where says
+which object carries it and which code builds it: `engine.conf` (its `context.properties`),
+`context` (`contextProperties()` in `engine.cpp`, `pw_context_new`'s own properties), `internal
+clock` (`engine.conf`'s `context.objects`), `block` and `block port` (`port_blocks.cpp`), `card`
+(`sound_cards.cpp`), `card seam` (what `AlsaSoundCards`' test seam adds: `clocklessCardProperties()`
+alone), `RTP receiver` (`libpipewire-module-rtp-source`'s arguments, `rtp_receivers.cpp`), `RTP
+stream` (its `stream.props`), `route link` (`links.cpp`) and `companion link`
+(`engine_companions.cpp`). The table is checked four ways:
 
-- `core.daemon = false`: no socket and no runtime directory; ear's own connection is the only
-  client.
-- `core.name = ear`.
-- `support.dbus = false`: there is no D-Bus in the container (`context.c:315`).
-- `context.num-data-loops = 1`: one data loop runs every engine node's `process`. It is 1.4.2's
-  default (`context.c`, `DEFAULT_DATA_LOOPS`), pinned because the framework relies on it: a block
-  and the engine nodes beside it see one `clock.position` per cycle, and a non-blocking invoke on
-  that loop runs between any two of their cycles.
-- **Never** `default.clock.*` or `clock.power-of-two-quantum` here: `context.properties` from the
-  file overwrite the properties `Engine` passes to `pw_context_new`, which carry the clock
-  (`context.c:245`, `conf.c:986-990`).
-- **Never** `cpu.zero.denormals` ([denormals](#denormals)).
+- **At compile time.** Each builder takes its keys from `property(Home, "key")`, which does not
+  compile for a key the table does not list for that home (`ear_engine_properties_compile_fail_*`),
+  and the table's own `static_assert`s refuse a key listed twice, a row [ear never
+  sets](#properties-ear-never-sets), a key in both `engine.conf` and `context` (the file would
+  overwrite `Engine`'s) and a card seam key that a card already sets.
+- **Against the live engine.** "Every property ear sets is held by PipeWire as the property table
+  says" makes one of every object and reads each row's value as PipeWire holds it on that object,
+  through the context's own objects, so a PipeWire that drops or overrides one fails. "engine.conf
+  sets exactly the property table's engine.conf and internal clock rows, and nothing it forbids"
+  reads the file with PipeWire's own parser.
+- **Each coupling pinned.** Every row names the test that pins it ("Pinned by"); "Every row of the
+  property table is pinned by a test that exists" fails for a name no test has.
+- **Against this page.** "docs/engine.md lists the property table's rows and forbidden keys, each
+  row's why under a heading that exists" fails when the rows below (where, key, value, couples to,
+  pinned by) and the code's differ, when a why does not link its row's heading, and when the next
+  section's keys and the code's forbidden list differ.
 
-`context.spa-libs`: `support.*` (the loop, logging, the dummy driver), `api.alsa.*` (a card's ALSA
-PCM node), `audio.convert.*` (the converter the adapter wraps around it). Debian's
+A value in backticks is the value as set; prose says how it is computed.
+
+| Where | Key | Value | Why | Couples to | Pinned by |
+|---|---|---|---|---|---|
+| engine.conf | `core.daemon` | `false` | No socket and no runtime directory: ear's own connection is the only client. Serving the socket is parked ([here](#properties-ear-sets)) | no socket and no runtime directory | "The engine runs with no daemon, runtime directory or D-Bus, and an unlinked sink block processes zeros" |
+| engine.conf | `core.name` | `ear` | Names the context; nothing reads it ([here](#properties-ear-sets)) | nothing | "Every property ear sets is held by PipeWire as the property table says" |
+| engine.conf | `support.dbus` | `false` | There is no D-Bus in the container (`context.c:315`) ([here](#properties-ear-sets)) | no D-Bus connection | "The engine runs with no daemon, runtime directory or D-Bus, and an unlinked sink block processes zeros" |
+| engine.conf | `context.num-data-loops` | `1` | 1.4.2's default (`context.c`, `DEFAULT_DATA_LOOPS`), pinned because the node framework relies on it: a block and the engine nodes beside it see one `clock.position` per cycle, and a non-blocking invoke on that loop runs between any two of their cycles. A bump that changes the default must keep it ([the one data loop](#the-one-data-loop-and-invokes)) | one data loop runs every engine node, so one `clock.position` a cycle and invokes between cycles | "S3: the engine has one data loop, context.num-data-loops = 1, and blocks, a sound card and an RTP receiver all run on it" |
+| context | `config.name` | the engine.conf path EngineSettings names | `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`, the tests the source tree's; `Engine` does no lookup of its own. The file's `context.properties` overwrite `pw_context_new`'s own (`context.c:245`, `conf.c:986-990`), so the two homes share no key ([here](#properties-ear-sets)) | the file `pw_context_new` reads; its `context.properties` overwrite these | "Every property ear sets is held by PipeWire as the property table says" |
+| context | `default.clock.rate` | the graph frequency | The graph frequency, fixed for the engine's life ([the clock](#the-clock)) | `clock.rate.denom` every block sees | "Blocks process at the graph frequency and block size" |
+| context | `default.clock.allowed-rates` | [ the graph frequency ] | Only the graph frequency, so nothing switches the graph's rate ([the clock](#the-clock)) | the graph never switches rate | "Blocks process at the graph frequency and block size" |
+| context | `default.clock.quantum` | the block size | The block size, fixed for the engine's life ([the clock](#the-clock)) | `clock.duration` every block sees | "Blocks process at the graph frequency and block size" |
+| context | `default.clock.min-quantum` | the block size | The block size: the graph never picks another quantum ([the clock](#the-clock)) | the least quantum the graph picks | "Blocks process at the graph frequency and block size" |
+| context | `default.clock.max-quantum` | the block size | The block size: the graph never picks another quantum ([the clock](#the-clock)) | the most quantum the graph picks | "Blocks process at the graph frequency and block size" |
+| context | `clock.power-of-two-quantum` | `false` | Unset, the engine rounds the quantum down to a power of two, so a block size of 480 would run as 256 ([the clock](#the-clock)) | the quantum is not rounded down to a power of two | "A block size that is not a power of two runs as itself" |
+| context | `default.clock.quantum-floor` | the block size | PipeWire clamps a forced quantum to the floor and the limit (defaults 4 and 8192), not to the min and max ([the quantum guard](#the-quantum-guard)) | the least a forced quantum is clamped to | "The quantum floor and limit are the block size: a node forcing a larger or a smaller quantum leaves every cycle at the block size" |
+| context | `default.clock.quantum-limit` | the block size | As the floor; and `module-adapter` hands it to every adapter, so a card takes its ALSA buffer from a period count instead ([the quantum guard](#the-quantum-guard)) | the most a forced quantum is clamped to; module-adapter's `clock.quantum-limit`, which sizes an ALSA buffer without a period count | "The quantum floor and limit are the block size: a node forcing a larger or a smaller quantum leaves every cycle at the block size" |
+| internal clock | `factory.name` | `support.node.driver` | The dummy driver: ear's internal clock, the graph's one driver whatever links or fails ([the internal clock](#the-internal-clock)) | a driver on a timer, with no device | "Every block is in the ear.graph group and processes on the dummy driver alone" |
+| internal clock | `node.name` | `Dummy-Driver` | How the tests and the logs find it ([the internal clock](#the-internal-clock)) | nothing | "Every block is in the ear.graph group and processes on the dummy driver alone" |
+| internal clock | `priority.driver` | `200000` | The highest of every driver's, so the dummy collects the group and everything linked to it first ([the internal clock](#the-internal-clock)) | PipeWire walks drivers in its order: above a card's, so a linked card follows | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
+| internal clock | `node.group` | `ear.graph` | The port blocks' group (`graphGroup`, `engine_names.hpp`) ([the internal clock](#the-internal-clock)) | the blocks' group, so this driver drives them all | "Every block is in the ear.graph group and processes on the dummy driver alone" |
+| internal clock | `clock.id` | `monotonic-raw` | `CLOCK_MONOTONIC` is slewed by NTP and a timerfd cannot arm `CLOCK_MONOTONIC_RAW`, so the driver tracks raw time with a delay-locked loop ([the internal clock](#the-internal-clock)) | tracking mode on `CLOCK_MONOTONIC_RAW`; `clock.name` `clock.system.monotonic-raw` | "Each cycle carries its start on both clocks, the internal clock as its driver, its rate and the next cycle's start, and only the first is a discontinuity" |
+| internal clock | `resync.ms` | `1000000000` | About 11 days, beyond any stall: a reset steps the position back and slews the graph for tens of seconds ([the internal clock](#the-internal-clock)) | the driver never resets after a stall | "After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and keeps its phase to the raw clock" |
+| block | `node.name` | the node's name | `pw_filter_new`'s name becomes `media.name`; `node.name` would otherwise be the program's ([port blocks](#port-blocks)) | how the registry, the live graph and link-factory name the block | "Live ports name their node, port and direction" |
+| block | `media.type` | `Audio` | A filter's media type, as any audio filter's ([port blocks](#port-blocks)) | nothing | "Every property ear sets is held by PipeWire as the property table says" |
+| block | `node.group` | `ear.graph` | One group, so one driver clocks every block ([the internal clock](#the-internal-clock)) | the internal clock's group, so it drives every block | "Every block is in the ear.graph group and processes on the dummy driver alone" |
+| block | `node.always-process` | `true` | The graph always runs: an unlinked always-processing node is assigned to the first active driver ([port blocks](#port-blocks)) | an unlinked block still runs, on the first active driver | "The engine runs with no daemon, runtime directory or D-Bus, and an unlinked sink block processes zeros" |
+| block port | `format.dsp` | `32 bit float mono audio` | Every port is one 32-bit float mono channel ([port blocks](#port-blocks)) | a DSP port of one float channel | "A link carries a source block's ramp to a sink block sample for sample" |
+| block port | `port.name` | the port's name | `<bank>.<member>`, the name routes and companion links use ([port blocks](#port-blocks)) | how the live graph and companion links name the port | "Live ports name their node, port and direction" |
+| card | `factory.name` | `api.alsa.pcm.sink` or `api.alsa.pcm.source` | Playback on an inside output bank, capture on an inside input bank ([sound cards](#sound-cards)) | the ALSA PCM node module-adapter wraps in a converter | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
+| card | `api.alsa.path` | `hw:CARD=<card id>,DEV=0` | Built in one place from a `CardId`, whose grammar keeps every other ALSA device form out, because ALSA's `file` plugin can run commands ([sound cards](#sound-cards)) | device 0 of the card | "A card that cannot open is lost after make returns, its node already gone, and the blocks keep running" |
+| card | `audio.channels` | the bank's channel count | The bank's ports, channel for channel ([sound cards](#sound-cards)) | one adapter port per channel | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
+| card | `audio.rate` | the graph frequency | The card runs at the graph frequency; as a follower it is resampled all the time ([sound cards](#sound-cards)) | the rate the PCM opens at | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
+| card | `audio.position` | `[ AUX0 AUX1 ... ]` | AUX positions, so the ports the card configures itself are numbered ([sound cards](#sound-cards)) | the ports `playback_AUX<n>` and `capture_AUX<n>` | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
+| card | `node.name` | `<node>.playback` or `<node>.capture` | The engine companion's name ([engine companions](#engine-companions)) | how the lifecycle names its links' node | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| card | `node.always-process` | `true` | Alone, before it is linked, it runs as its own driver ([engine companions](#engine-companions)) | it runs alone before it is linked, so RUNNING means its PCM runs | "A card running alone holds no port block: they stay on the dummy until it is ready" |
+| card | `priority.driver` | `1` | `cardPriority` (`engine_names.hpp`) must stay below the internal clock's ([the internal clock](#the-internal-clock)) | below the internal clock's 200000, so linked it follows | "A playback card becomes ready, every channel's link active, and then follows: the internal clock drives it and every port block" |
+| card | `api.alsa.period-size` | the block size | With no period count `alsa-pcm.c` caps the buffer at 4 x `clock.quantum-limit`, 4 blocks ([the quantum guard](#the-quantum-guard)) | with `api.alsa.period-num`, the ALSA buffer | "A card's engine node carries no property that forces or locks the graph's quantum or rate, keeps the adapters' old quantum limit for its ALSA buffer, and the extra properties refuse every clock property" |
+| card | `api.alsa.period-num` | `cardPeriods(the block size)` | So the buffer stays what it was under the old limit of 8192 ([the quantum guard](#the-quantum-guard)) | the ALSA buffer, not 4 x `clock.quantum-limit` | "A card's engine node carries no property that forces or locks the graph's quantum or rate, keeps the adapters' old quantum limit for its ALSA buffer, and the extra properties refuse every clock property" |
+| card seam | `clock.name` | `clock.system.monotonic-raw` | `clocklessCardProperties()`, for CI's test card alone, which has no oscillator: matching would never settle. A real card keeps matching on ([sound cards](#sound-cards)) | a follower whose `clock.name` is its driver's turns rate matching off | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
+| RTP receiver | `remote.name` | `internal` | After `pw_context_connect_self` nothing registers the core object, so the module calls `pw_context_connect` with its `remote.name`; unset, that is the daemon's socket, which ear does not serve. `internal` is protocol-native's connection to the local context (`module-rtp-source.c:671-679`, `module-protocol-native.c:1336-1350`) ([RTP receivers](#rtp-receivers)) | the module's connection is to ear's own context | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
+| RTP receiver | `source.ip` | the rtp node's address | `0.0.0.0` binds any address. A multicast group is joined on the default interface. Any other address binds any address and `connect()`s to `source.ip:source.port`, so it hears only that sender, and only from a source port equal to the receiving port (`module-rtp-source.c:277-283, 314-319`) ([RTP receivers](#rtp-receivers)) | the address the socket binds or connects to | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `source.port` | the rtp node's port | The `rtp` node's port ([RTP receivers](#rtp-receivers)) | the UDP port the socket binds | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `sess.media` | `audio` | Audio ([RTP receivers](#rtp-receivers)) | nothing | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `sess.latency.msec` | the rtp node's latencyMs | The receive buffer, declared upstream of the bank as `beyond` it, since rtp-source reports none ([latency](#latency-per-bank-pair)) | the ring's target fill, rounded down to whole packets | "A real receiver's buffer beyond from_rtp reaches stream whole: the told capture latency's least and most are both the buffer once the receiver is linked and reports its own" |
+| RTP receiver | `sess.ignore-ssrc` | `true` | By default the receiver locks onto the first packet's SSRC and drops every other for good, so a sender that restarts (FPP) is never heard again (`module-rtp/audio.c:131-136, 199-206`) ([RTP receivers](#rtp-receivers)) | no lock on the first sender's SSRC | "A sender that restarts with a new SSRC is heard again" |
+| RTP receiver | `audio.format` | `S16BE` or `S24BE` | L16 or L24, big-endian on the wire ([RTP receivers](#rtp-receivers)) | the payload's sample format | "L16 sent at 44100 into the 48000 graph is resampled" |
+| RTP receiver | `audio.rate` | the rtp node's rate | The sender's rate ([RTP receivers](#rtp-receivers)) | the receiver resamples it to the graph's | "L16 sent at 44100 into the 48000 graph is resampled" |
+| RTP receiver | `audio.channels` | the bank's channel count | The bank's ports, channel for channel ([RTP receivers](#rtp-receivers)) | one port per channel | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `audio.position` | `[ AUX0 AUX1 ... ]` | AUX positions name the ports ([RTP receivers](#rtp-receivers)) | the ports `receive_AUX<n>` | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| RTP receiver | `node.name` | `<node>.rtp` | The module makes the node through its own connection, so ear finds it by name ([RTP receivers](#rtp-receivers)) | how ear finds the module's node in the registry | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
+| RTP receiver | `node.description` | `<node>.rtp` | Replaces the host name the module would use ([RTP receivers](#rtp-receivers)) | link-factory matches descriptions too | "A receiver joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| RTP receiver | `media.name` | `<node>.rtp` | Replaces the host name the module would use ([RTP receivers](#rtp-receivers)) | nothing | "A receiver joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| RTP receiver | `stream.props` | the RTP stream rows | The receiver's own node properties, the RTP stream rows ([RTP receivers](#rtp-receivers)) | the receiver node's own properties | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
+| RTP stream | `node.always-process` | `true` | The receiver runs on the graph's driver before it is linked, so its RUNNING proves its socket is bound (the module opens it when the stream starts); the lifecycle links on that RUNNING ([RTP receivers](#rtp-receivers)) | it runs before it is linked, so RUNNING means its socket is bound | "A receiver is ready once, every channel's link active, and it and the block follow the Dummy-Driver" |
+| RTP stream | `adapter.auto-port-config` | `{ mode = dsp monitor = false control = false position = preserve }` | Without it the stream's converter has no format and so no ports at all; with it the ports are `receive_AUX0`.. (`audioadapter.c:2164-2171`, `audioconvert.c:1606-1617`). It works here, unlike on a card's adapter, because a stream's format is fixed. The module's side consumes it: the engine's node never holds it ([RTP receivers](#rtp-receivers)) | the stream's converter makes its ports | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+| route link | `link.output.port` | the output port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
+| route link | `link.input.port` | the input port's global id | A route is made by port global id, from the live graph ([no session manager](#no-session-manager)) | link-factory finds the port by id alone | "A link carries a source block's ramp to a sink block sample for sample" |
+| companion link | `link.output.node` | `the block's` or `the companion's global id` | By id: a node of the same name still going would otherwise match first, and `link-factory` matches a name against nick, description and object path too ([engine companions](#engine-companions)) | never an older node of the same name | "A card joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| companion link | `link.output.port` | the output port's name | By name within that node; PipeWire then holds the port's id ([engine companions](#engine-companions)) | a port of that node, by name | "What a port block sends to inside output to_card.2 lands on the card's channel 2" |
+| companion link | `link.input.node` | `the companion's` or `the block's global id` | By id, as the output node ([engine companions](#engine-companions)) | never an older node of the same name | "A receiver joins its block by the block's id: beside an older block of the same name it reaches only the newer" |
+| companion link | `link.input.port` | the input port's name | By name within that node; PipeWire then holds the port's id ([engine companions](#engine-companions)) | a port of that node, by name | "L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2" |
+
+### Properties ear never sets
+
+`forbidden` in `engine_properties.hpp`: no row may set one (a `static_assert`), `engine.conf` may
+carry none, and `AlsaSoundCards`' test seam refuses each one on a card with
+`std::invalid_argument`, as it refuses a key every card already sets (`priority.driver` among
+them). A key ending in `.*` is every key under it.
+
+| Where | Key | Why |
+|---|---|---|
+| engine.conf | `default.clock.*`, `clock.power-of-two-quantum` | `context.properties` from the file overwrite the properties `Engine` passes to `pw_context_new`, which carry the clock (`context.c:245`, `conf.c:986-990`) |
+| engine.conf | `cpu.zero.denormals` | On 1.4.2 it lands on the main thread in this engine and leaks to every thread made later ([denormals](#denormals)) |
+| internal clock, block, card, card seam, RTP receiver, RTP stream | `node.force-quantum`, `node.force-rate`, `node.lock-quantum`, `node.lock-rate` | A node that carries one asks the driver for its own quantum or rate, and every block would run at it ([the quantum guard](#the-quantum-guard)) |
+| card | `node.group` | A card in the group would follow from creation and never start before it is linked, which a lifecycle that links once RUNNING cannot do ([sound cards](#sound-cards)) |
+| card | `node.driver` | `node.driver = false` would not hold: the ALSA node publishes `node.driver = true` again ([sound cards](#sound-cards)) |
+| card | `node.link-group` | It would join the card's driving to other nodes' and take it from the internal clock ([the internal clock](#the-internal-clock)) |
+
+## Modules and libraries
+
+`engine.conf`'s `context.spa-libs`: `support.*` (the loop, logging, the dummy driver), `api.alsa.*`
+(a card's ALSA PCM node), `audio.convert.*` (the converter the adapter wraps around it). Debian's
 `libspa-0.2-modules` holds all three.
 
 `context.modules`, each for one reason:
@@ -70,19 +164,14 @@ PCM node), `audio.convert.*` (the converter the adapter wraps around it). Debian
 | `libpipewire-module-adapter` | Makes a sound card: an ALSA PCM node wrapped in a converter |
 
 `libpipewire-module-rtp-source` is not listed: `RtpReceivers` loads one per `rtp` node with
-`pw_context_load_module`. Debian's `libpipewire-0.3-modules` holds it.
-
-`context.objects`: one `spa-node-factory` object, the internal clock: `factory.name =
-support.node.driver`, `node.name = Dummy-Driver`, `priority.driver = 200000`, `node.group =
-ear.graph`, `clock.id = monotonic-raw`, `resync.ms = 1000000000`. It has no ports, so it never shows
-as a live port.
+`pw_context_load_module`. Debian's `libpipewire-0.3-modules` holds it. The internal clock has no
+ports, so it never shows as a live port.
 
 ## The clock
 
-`Engine` sets, as context properties: `default.clock.rate` and `default.clock.allowed-rates` (only
-the graph frequency); `default.clock.quantum`, `min-quantum` and `max-quantum` (all the block size);
-`clock.power-of-two-quantum = false`; and sets `default.clock.quantum-floor` (default 4) and
-`default.clock.quantum-limit` (default 8192) to the block size itself
+`Engine` sets the clock as context properties (the `context` rows of
+[the table](#properties-ear-sets)): the graph frequency as the one rate, the block size as every
+quantum, never rounded to a power of two, and the floor and the limit at the block size too
 ([the quantum guard](#the-quantum-guard)). A block sees `clock.duration == block size` and
 `clock.rate.denom == graph frequency`. Both are fixed for the engine's life: `main.cpp` reads
 `ear.conf` once before `Engine::create` and takes both values when both lines read, else the flags
@@ -101,17 +190,18 @@ driver for its own, and PipeWire clamps a forced quantum to `[quantum-floor, qua
   the old limit of 8192 every block stopped running at four blocks; with both at the block size every
   cycle stays one block).
 - **No engine companion carries a clock property.** ear builds every property it gives a card or a
-  receiver from closed grammars and sets none of these; `AlsaSoundCards`' test seam (its `extra`
-  properties) refuses each with `std::invalid_argument` rather than stripping it after the fact, and
-  refuses as well what would take driving from the internal clock: `priority.driver` (ear sets it,
-  1), `node.driver`, `node.group` and `node.link-group`.
+  receiver from closed grammars and sets none of these ([never](#properties-ear-never-sets));
+  `AlsaSoundCards`' test seam (its `extra` properties) refuses each with `std::invalid_argument`
+  rather than stripping it after the fact, and refuses as well what would take driving from the
+  internal clock.
 
 **A card's ALSA buffer does not follow the limit.** `module-adapter` hands every node it makes the
 graph's limit as `clock.quantum-limit`, and an ALSA node with no period count caps its buffer at
 `min(hardware maximum, 4 x clock.quantum-limit)` (`alsa-pcm.c`, `spa_alsa_set_format`): at a
 256-frame block that is 1024 frames (about 21 ms, with `max_delay` half of it), where the old limit
 gave 32768. So `AlsaSoundCards` makes every card with `api.alsa.period-size` = the block size and
-`api.alsa.period-num` = `cardPeriods(block)`, which takes ALSA's period-count path instead. ALSA
+`api.alsa.period-num` = `cardPeriods(block)` ([the table](#properties-ear-sets)), which takes ALSA's
+period-count path instead. ALSA
 halves a batch card's period (a USB card such as the MOTU: block / 2, as before), so a batch card's
 buffer is again `min(hardware maximum, 4 x max(block, 8192))` frames, its period and headroom (and
 so its latency) unchanged; a card that is not batch gets periods of one block and twice that buffer,
@@ -458,16 +548,9 @@ takes longer than 10 s to start fails.
 
 `AlsaSoundCards` makes one ALSA adapter node per direction:
 
-- **Made** with `factory.name = api.alsa.pcm.sink` (playback) or `.source` (capture),
-  `api.alsa.path = hw:CARD=<card id>,DEV=0` (built in one place from a `CardId`, whose grammar keeps
-  every other ALSA device form out, because ALSA's `file` plugin can run commands), `audio.rate` =
-  the graph frequency, `audio.channels`, `audio.position = [ AUX0 AUX1 ... ]`,
-  `node.always-process = true`, `priority.driver = 1`, `api.alsa.period-size` = the block size and
-  `api.alsa.period-num` = `cardPeriods(block)` (its buffer, [the quantum guard](#the-quantum-guard)),
-  and **no `node.group`**. So it runs alone, on
-  its own clock, and holds no port block while it opens. In the group it would follow the dummy from
-  creation and never start before it is linked, which a lifecycle that links once RUNNING cannot do.
-  Never mark it `node.driver = false` either: the ALSA node publishes `node.driver = true` again.
+- **Made** with the `card` rows of [the table](#properties-ear-sets), which say why each, and **no
+  `node.group`** ([never](#properties-ear-never-sets)). So it runs alone, on its own clock, and holds
+  no port block while it opens.
 - **Ports.** `adapter.auto-port-config` fails on 1.4.2 for the card's adapter (one unconfigured port
   whose PCM fails to start, EINVAL), so the card sends the port configuration itself, as a session
   manager would: `pw_node_set_param(SPA_PARAM_PortConfig)` in dsp mode with 32-bit float planar and
@@ -500,28 +583,9 @@ are checked only on the hardware (the `ear-on-talos` skill).
 
 `RtpReceivers` loads `libpipewire-module-rtp-source` into the engine, one per `rtp` node. Its
 arguments are built in one place from parsed values only (an `RtpAddress`, an enum, ranged numbers,
-the engine node name):
-
-```
-{ remote.name = "internal"
-  source.ip = "<address>"  source.port = <port>
-  sess.media = "audio"  sess.latency.msec = <latencyMs>  sess.ignore-ssrc = true
-  audio.format = "S16BE" | "S24BE"  audio.rate = <rate>  audio.channels = <N>
-  audio.position = [ AUX0 AUX1 ... AUX<N-1> ]
-  node.name = "<node>.rtp"  node.description = "<node>.rtp"  media.name = "<node>.rtp"
-  stream.props = { node.always-process = true
-                   adapter.auto-port-config = { mode = dsp monitor = false control = false position = preserve } } }
-```
-
-| Argument | Why |
-|---|---|
-| `remote.name = "internal"` | After `pw_context_connect_self` nothing registers the core object, so the module calls `pw_context_connect` with its `remote.name`; unset, that is the daemon's socket, which ear does not serve. `internal` is protocol-native's connection to the local context (`module-rtp-source.c:671-679`, `module-protocol-native.c:1336-1350`) |
-| `adapter.auto-port-config` in `stream.props` | Without it the stream's converter has no format and so **no ports at all**. With it the ports are `receive_AUX0`.. (`audioadapter.c:2164-2171`, `audioconvert.c:1606-1617`). It works here, unlike on a card's adapter, because a stream's format is fixed |
-| `node.always-process = true` in `stream.props` | The receiver runs on the graph's driver before it is linked, so its RUNNING proves its socket is bound (the module opens it when the stream starts); the lifecycle links on that RUNNING |
-| `sess.ignore-ssrc = true` | By default the receiver locks onto the first packet's SSRC and drops every other for good, so a sender that restarts (FPP) is never heard again (`module-rtp/audio.c:131-136, 199-206`) |
-| `source.ip` | `0.0.0.0` binds any address. A multicast group is joined on the default interface. Any other address binds any address and `connect()`s to `source.ip:source.port`, so it hears only that sender, and only from a source port equal to the receiving port (`module-rtp-source.c:277-283, 314-319`) |
-| `node.description`, `media.name` | Replace the host name the module would use (`link-factory` matches descriptions too) |
-| left at defaults | `cleanup.sec` (60), `net.mtu` (1280), packet times, `local.ifname` |
+the engine node name): the `RTP receiver` and `RTP stream` rows of [the table](#properties-ear-sets),
+which say why each. `cleanup.sec` (60), `net.mtu` (1280), packet times and `local.ifname` are left at
+their defaults.
 
 **How ear finds its node.** The module makes the node through its own connection, so there is no
 proxy to watch. ear binds a registry on its own connection and sends a `pw_core_sync`; node globals
@@ -705,7 +769,8 @@ the base image by digest, not the packages).
    calls `spa_dll_init`, in which case the default could come back).
 3. Check every module `engine.conf` names, and `libpipewire-module-rtp-source`, still exists:
    `scripts/dev.sh bash -c 'ls /usr/lib/*/pipewire-0.3/'`.
-4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover these facts and `ear_system_tests` the
-   whole path.
+4. Run `scripts/dev.sh make test`: `ear_pipewire_tests` cover these facts (among them the property
+   table's live check, which fails for any property the new version drops or overrides,
+   [above](#properties-ear-sets)) and `ear_system_tests` the whole path.
 5. Update the version named in `engine.conf`'s header, the `pipewire-engine` skill, `AGENTS.md` and
    this page.

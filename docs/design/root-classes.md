@@ -2,8 +2,9 @@
 
 Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R2 built (the block and the
 harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R4a built (section 4.5 says what
-changed from 4.3), R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4) and R5b built
-(`ear_pipewire_tests` audited, section 5.5); the rest designed, not built. Its steps are taken between slice 3b.4 and
+changed from 4.3), R5a built (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built
+(`ear_pipewire_tests` audited, section 5.5) and R6 built (the property table: `docs/engine.md#properties-ear-sets`,
+section 6.5 says what changed from 6.3); the rest designed, not built. Its steps are taken between slice 3b.4 and
 slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
@@ -597,6 +598,44 @@ consteval const char* property(Home home, std::string_view key);
 **R6**, after 3b.4 (which settles `quantum-limit` and the seam's refusal): the table, the six builders onto
 `property()`, the live and doc checks, `docs/engine.md`'s section rewritten as the table, the `pipewire-engine` skill
 pointing at it, and the comments in `engine.conf` cut to a pointer per key.
+
+### 6.5 Found building R6
+
+The table is `src/pipewire/engine_properties.hpp`; how it is checked and why each key is set is
+`docs/engine.md#properties-ear-sets`. What changed from 6.3, and what building it found:
+
+- **No drift.** The live check reads every row back from the object PipeWire 1.4.2 holds (through the context's own
+  objects: `pw_context_get_properties`, `pw_impl_node_get_properties`, `pw_impl_port_get_properties`, a link's info,
+  the module's parsed arguments) and every value held as the table says. No behaviour changed. One key is consumed
+  rather than held: the RTP stream's `adapter.auto-port-config` is read by the stream's own adapter on the module's
+  connection and never reaches the engine's node, so the live check reads it from the module's `stream.props` and
+  checks its effect (the `receive_AUX0` port) on the node.
+- **Setters 6.1 missed.** Port properties (`format.dsp`, `port.name`, the `blockPort` home 6.3 already had), the card
+  seam's `clock.name` (`clocklessCardProperties()`, a test seam but a property ear sets), `config.name` among the
+  context's, and the RTP receiver's `stream.props` contents, which are the receiver node's own properties. The
+  internal clock's arguments are `engine.conf`'s `context.objects`, so `engineConf` is only its `context.properties`.
+  No setter outside `src/pipewire/` sets one.
+- **Three more homes.** `cardSeam` (what the seam may add: it refuses a key forbidden on a card or one ear sets on
+  every card, which is the old list of eight and every other card row too), `rtpStream` (the keys inside
+  `stream.props`) and `companionLink` beside `link`: a route link names ports by global id, a companion's link names
+  nodes by id and ports by name, the same keys with different values. `homeName()` and `allHomes` give the doc check
+  each home's name.
+- **`forbidden` holds `node.link-group` on a card** (the seam already refused it), and the force and lock keys on
+  each node home rather than on "any object". `priority.driver` is not forbidden on a card, since the card sets it;
+  the seam refuses it as a card row.
+- **`property()` fails by calling a function that is not `constexpr`**, so GCC names it in the error; four compile
+  checks (a control, an unlisted key, another home's key, a forbidden key) pin it. The table's `static_assert`s add
+  what a lookup cannot see: a key listed twice for one home, a row forbidden on its home, a key in both `engine.conf`
+  and the context (the file would overwrite `Engine`'s), a seam key a card sets.
+- **`engine.conf` is checked as a file too.** The live check proves the table's rows are held; the conf check reads
+  the file with PipeWire's own parser and fails for a key there the table lacks, a value it does not hold, a forbidden
+  key or a second `context.objects` entry.
+- **`clock.power-of-two-quantum` had no pinning test** (every engine test ran at 256): "A block size that is not a
+  power of two runs as itself" runs the engine at 480.
+- **The doc table's columns are checked except why.** Value, couples to and pinned by must equal the code's (with
+  backticks and quotes stripped); why must link its row's anchor, and every anchor must be a heading of the page. The
+  forbidden keys have their own table, "Properties ear never sets". `engine.conf`'s modules and libraries, which are
+  not properties, moved to `docs/engine.md#modules-and-libraries`.
 
 ## 7. Class 5: the harness re-implements the engine
 

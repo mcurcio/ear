@@ -18,6 +18,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
+#include "engine_properties.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -71,11 +72,12 @@ private:
 		for (std::size_t channel = 0; channel < join_.blockPorts.size(); ++channel) {
 			const std::string& nodePort = join_.nodePorts[channel];
 			const std::string& blockPort = join_.blockPorts[channel];
-			pw_properties* props =
-				pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, toNode ? block.c_str() : node.c_str(),
-			                      PW_KEY_LINK_OUTPUT_PORT, toNode ? blockPort.c_str() : nodePort.c_str(),
-			                      PW_KEY_LINK_INPUT_NODE, toNode ? node.c_str() : block.c_str(), PW_KEY_LINK_INPUT_PORT,
-			                      toNode ? nodePort.c_str() : blockPort.c_str(), nullptr);
+			pw_properties* props = pw_properties_new(
+				property(Home::companionLink, "link.output.node"), toNode ? block.c_str() : node.c_str(),
+				property(Home::companionLink, "link.output.port"), toNode ? blockPort.c_str() : nodePort.c_str(),
+				property(Home::companionLink, "link.input.node"), toNode ? node.c_str() : block.c_str(),
+				property(Home::companionLink, "link.input.port"), toNode ? nodePort.c_str() : blockPort.c_str(),
+				nullptr);
 			auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
 				engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
 			pw_properties_free(props);
