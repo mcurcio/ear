@@ -194,9 +194,10 @@ so a drive or fade never waits for a cycle that will not come.
   Each bound first runs every `done` the data loop already completed, and is judged after a grace
   when the whole process stalled, so a stalled main loop never blames the data loop. Once wedged,
   `Links` makes no link (each refused "the data loop is wedged") and leaks the proxies it would
-  destroy, an outside node leaks its links and body, and a block tells no latency, since each of
-  those reaches the data loop through a blocking invoke (`impl-port.c`'s mix release,
-  `port_set_io`) that would hang the main loop, SIGTERM included.
+  destroy, an outside node leaks its links and body, and a block tells its peers no latency (it
+  still publishes it to its own realtime side, only atomics), since each of those reaches the data
+  loop through a blocking invoke (`impl-port.c`'s mix release, `port_set_io`) that would hang the
+  main loop, SIGTERM included.
 - **One invoke in flight per block is a requirement.** An unbounded producer of invokes wedges the
   data loop ([below](#the-one-data-loop-and-invokes)).
 
@@ -218,8 +219,13 @@ from that drive's take-up position when no cycle ran before it.
 configuration declared on it. Each time the main loop works the block's latency out afresh it
 publishes every port's told latency, in frames, as one packed atomic per port, and the tap reads
 the bank's at the cycle the chunk was taken. So a consumer dates a chunk without a mailbox: its
-first frame entered the graph at `startRawNs - upstreamFrames * 1e9 / rate`. A wedged data loop
-stops the retelling, so chunks keep the last value told.
+first frame entered the graph at `startRawNs - upstreamFrames * 1e9 / rate`. A chunk that wraps the
+ring's end is handed in two calls, and the second's `position`, `startNs` and `startRawNs` are
+advanced by the first's frames at the graph's rate (the adapter is given it), so the rule holds for
+each call. PipeWire combines latencies field by field (the least of each minimum, the most of each
+maximum, in quanta, frames and ns apart), so when a bank's paths differ the value is an upper bound
+on the longest, not one path's. A wedged data loop stops the telling to peers, but the block still
+works its latency out and publishes it, so chunks follow a new plan.
 
 ## Latency, per bank pair
 

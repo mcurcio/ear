@@ -18,8 +18,9 @@ namespace ear {
 
 /// One cycle's frames of a sink's inside output bank, or what the ring held of it (docs/engine.md#sinks),
 /// stamped with that cycle's facts. `interleaved.size() == frames * channels`, channels the bank's size. A chunk that
-/// wraps the ring's end is consumed in two calls, the second with `position` advanced by the first's frames and
-/// `discontinuity` false. Valid only during the consume() it is handed to.
+/// wraps the ring's end is consumed in two calls, the second with `position`, `startNs` and `startRawNs` advanced by the
+/// first's frames (so each call's start is its own first frame's) and `discontinuity` false. Valid only during the
+/// consume() it is handed to.
 struct Chunk {
 	std::span<const float> interleaved;
 	std::uint32_t frames;
@@ -27,8 +28,9 @@ struct Chunk {
 	std::int64_t startNs;    // its cycle's start, CLOCK_MONOTONIC
 	std::int64_t startRawNs; // the same on CLOCK_MONOTONIC_RAW
 	/// The most upstream (capture) latency the block told on the sink's bank in the cycle the chunk was taken: what
-	/// reaches the input banks paired with it plus what the configuration declared on it (docs/engine.md#sinks). The
-	/// chunk's first frame entered the graph at startRawNs - upstreamFrames * 1e9 / rate.
+	/// reaches the input banks paired with it plus what the configuration declared on it (docs/engine.md#sinks): the
+	/// most of each part, so an upper bound when the bank mixes paths. The chunk's first frame entered the graph at
+	/// startRawNs - upstreamFrames * 1e9 / rate.
 	std::uint32_t upstreamFrames;
 	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
 	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
@@ -123,10 +125,11 @@ public:
 class SinkAdapter {
 public:
 	/// Main thread. A sink of `channels` channels and `capacityFrames` frames of ring for `node`'s inside output bank
-	/// `bank`, its thread started (named for "<node>.<bank>"). Never fails but by std::bad_alloc or std::system_error
-	/// (a thread it cannot start), which NodeHost treats as a type bug's throw would be: the node fails start-failed.
+	/// `bank`, its thread started (named for "<node>.<bank>"), at the graph's `rate` (a chunk handed in two calls dates
+	/// the second call's first frame by it). Never fails but by std::bad_alloc or std::system_error (a thread it cannot
+	/// start), which NodeHost treats as a type bug's throw would be: the node fails start-failed.
 	virtual std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                                   std::uint32_t capacityFrames) = 0;
+	                                   std::uint32_t capacityFrames, std::uint32_t rate) = 0;
 
 protected:
 	~SinkAdapter() = default;

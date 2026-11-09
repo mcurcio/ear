@@ -222,7 +222,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	struct FakeSinks final : SinkAdapter {
 		explicit FakeSinks(Impl& h) : harness(h) {}
 		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                           std::uint32_t capacityFrames) override {
+		                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override { // never splits
 			CompanionFake fake{CompanionFake::Kind::sink,
 			                   std::string(bank),
 			                   node + "." + std::string(bank),

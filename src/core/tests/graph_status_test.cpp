@@ -177,7 +177,8 @@ struct Links final : LinkMaker {
 
 /// No node here asks for a sink.
 struct NoSinks final : SinkAdapter {
-	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t) override {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
+	                           std::uint32_t) override {
 		throw std::logic_error("no sink in these tests");
 	}
 };

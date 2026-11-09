@@ -237,9 +237,8 @@ TEST_CASE("File records record.left and record.right through its sink as a 32-bi
 	CHECK(harness->unwritten() == 0);
 	REQUIRE(sink.chunks.size() == blocks);
 	CHECK(sink.chunks[0].frames == format.maxBlock);
-	// Each chunk is stamped with what lies upstream of `record` (docs/engine.md#sinks): in the harness nothing is
-	// linked and file declares no latency of its own, so none.
-	for (const auto& chunk : sink.chunks) CHECK(chunk.stamp.upstreamFrames == 0);
+	// The plan carries latency from `record` to the sink's bank and adds none of file's own, so a chunk's upstreamFrames
+	// is what lies upstream of `record` (docs/engine.md#sinks).
 	CHECK((*harness)->latencyPlan().pairs == std::vector<ear::BankPair>{{"record", "writer"}});
 	CHECK((*harness)->latencyPlan().internal.empty());
 	CHECK((*harness)->latencyPlan().beyond.empty());

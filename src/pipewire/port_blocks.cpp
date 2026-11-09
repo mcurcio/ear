@@ -214,7 +214,8 @@ public:
 			static_cast<void>(ports_.bank(pair.to));
 		}
 		for (const auto& entry : plan.internal) static_cast<void>(ports_.bank(entry.first));
-		for (const auto& entry : plan.beyond) static_cast<void>(ports_.bank(entry.first));
+		// `beyond` is the framework's, never a type's (NodeHost names only the configuration's inside banks): an entry
+		// naming no bank matches none in combined() and adds nothing, rather than throw out of this main-loop call.
 		plan_ = plan;
 		retell();
 	}
@@ -367,8 +368,9 @@ private:
 	/// output's downstream latency and each port's told latency to the realtime side, and tells each port's new latency
 	/// to its peers.
 	void retell() {
-		// On a wedged data loop no latency is told (data_loop_wedge.hpp): nothing more reaches the engine.
-		if (filter_ == nullptr || dataLoopWedged(engine_)) return;
+		// On a wedged data loop no latency is told to the peers (data_loop_wedge.hpp): nothing more reaches the
+		// engine. What the realtime side reads is still published: it is only atomics.
+		const bool tellPeers = filter_ != nullptr && !dataLoopWedged(engine_);
 		for (const Ports::Bank& bank : ports_.banks()) {
 			const BankSpan at{bank.first, bank.ports.size()};
 			const Latency internal = internalOf(bank.name);
@@ -404,7 +406,7 @@ private:
 			for (std::size_t i = at.first; i < at.first + at.count; ++i)
 				toldNow[i].store(toldWord, std::memory_order_release);
 			for (std::size_t i = at.first; i < at.first + at.count; ++i) {
-				if (ports[i] == nullptr || spa_latency_info_compare(&last[i], &told) == 0) continue;
+				if (!tellPeers || ports[i] == nullptr || spa_latency_info_compare(&last[i], &told) == 0) continue;
 				last[i] = told;
 				std::uint8_t buffer[256];
 				spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
@@ -620,7 +622,9 @@ private:
 		// spans (an unlinked one's scratch included); only while a code runs: a silence binds none.
 		for (std::size_t s = 0; s < sinkCount_; ++s) {
 			const SinkBinding& binding = sinks_[s];
-			if (binding.tap == nullptr || binding.firstOutput + binding.channels > outputs_.size()) continue;
+			if (binding.tap == nullptr || binding.channels == 0 ||
+			    binding.firstOutput + binding.channels > outputs_.size())
+				continue;
 			for (std::size_t c = 0; c < binding.channels; ++c) tapSpans_[c] = outputs_[binding.firstOutput + c];
 			const Latency upstream =
 				unpacked(outputToldNow_[binding.firstOutput].load(std::memory_order_acquire)); // the bank's told
@@ -680,6 +684,8 @@ private:
 	// input's playback latency, an output's capture latency.
 	std::vector<std::atomic<std::uint64_t>> inputToldNow_;
 	std::vector<std::atomic<std::uint64_t>> outputToldNow_;
+	static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+	              "the realtime side reads packed latencies lock-free");
 	std::vector<spa_latency_info> inputPeers_;  // upstream of each input
 	std::vector<spa_latency_info> outputPeers_; // downstream of each output
 	std::vector<bool> inputHeard_;              // whether each input has a peer that reported

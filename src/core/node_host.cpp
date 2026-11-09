@@ -445,8 +445,9 @@ struct NodeHost::Impl {
 				Configuration& c = *config_;
 				std::unique_ptr<Sink> made;
 				try {
-					made = host_.resources.sinks().make(name_, found.name,
-					                                    static_cast<std::uint32_t>(found.ports.size()), shape.frames);
+					made =
+						host_.resources.sinks().make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
+					                                 shape.frames, host_.format.rate);
 				} catch (const std::logic_error&) {
 					throw;
 				} catch (...) {

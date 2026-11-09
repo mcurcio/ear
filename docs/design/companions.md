@@ -119,7 +119,8 @@ class SinkConsumer { public: virtual ~SinkConsumer() = default; virtual void beg
 From 3b `upstreamFrames` is real: the most upstream (capture) latency the block tells on the sink's bank, which is what
 reaches the input banks paired with it plus what the configuration declared on it, read in the cycle the chunk was
 taken. So a consumer dates what it got without a mailbox: the instant the chunk's first frame entered the graph is
-`startRawNs - upstreamFrames * 1e9 / rate`. `discontinuity` keeps its built meaning (the first cycle after any drive,
+`startRawNs - upstreamFrames * 1e9 / rate`, for each call of a chunk split at the ring's end too (the second call's
+start times are advanced with its position; found building 3b.1, 8.3). `discontinuity` keeps its built meaning (the first cycle after any drive,
 a new driver, a position jump, or a cycle too large to run); a consumer that must tell a real gap from a re-drive
 compares `position` with the last chunk's end. `begin` runs once on the sink's thread before the node is `configured`
 (built, readiness step 4').
@@ -472,7 +473,16 @@ engine interfaces replace `node_host.hpp`'s `OutsideNode`, `OutsideNodeEvents`, 
 | `struct ChunkStamp { std::uint64_t position; std::int64_t startNs; std::int64_t startRawNs; bool discontinuity; };` | `struct ChunkStamp { std::uint64_t position; std::int64_t startNs; std::int64_t startRawNs; bool discontinuity; std::uint32_t upstreamFrames; };` the most upstream latency the block tells on the sink's bank in that cycle |
 | `Chunk::upstreamFrames`: "always 0 until slice 3b" | the stamp's `upstreamFrames` (3.3) |
 | `class Sink` (no counter) | adds `virtual std::uint64_t droppedFrames() const noexcept = 0;` any thread: frames the tap refused since the sink was made |
-| `SinkTap`, `SinkBinding`, `SinkAdapter`, `SinkConsumer`, `SinkShape` | unchanged |
+| `SinkTap`, `SinkBinding`, `SinkAdapter`, `SinkConsumer`, `SinkShape` | unchanged (but see the note below) |
+
+**Found building 3b.1.** `SinkAdapter::make(node, bank, channels, capacityFrames)` becomes `make(node, bank, channels,
+capacityFrames, std::uint32_t rate)` (NodeHost passes the graph's rate), as `SourceAdapter::make` already has it. Why:
+a chunk that wraps the ring's end is handed in two calls, and the second kept its cycle's `startNs` and `startRawNs`
+while its `position` moved on, so 3.3's dating rule dated that call's first frame early by the first call's frames.
+`ThreadSink` now advances both start times by `done * 1e9 / rate` with the position, so every `Chunk`'s start times
+are its own first frame's. The harness's sink never splits a chunk and ignores the rate. Also: `LatencyPlan::beyond`
+has a `{}` default member initializer, so the existing two-member `LatencyPlan{pairs, internal}` still compiles; and
+`carryLatency` does not check `beyond`'s bank names (it is framework-filled; a name matching no bank adds nothing).
 
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
 

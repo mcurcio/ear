@@ -196,8 +196,10 @@ cx.use(passThrough({bankPair(record, writer)}));
 - `Chunk::upstreamFrames` is the most capture latency the block told on the sink's bank in the
   cycle the chunk was taken: what lies upstream of the input banks paired with it, plus what the
   configuration declared on it ([engine.md](engine.md#sinks)). So the chunk's first frame entered the
-  graph at `startRawNs - upstreamFrames * 1e9 / rate`; a consumer that does not date audio ignores
-  it (`file`'s `WavWriter` does).
+  graph at `startRawNs - upstreamFrames * 1e9 / rate`, for each call of a chunk split at the ring's
+  end too (the second call's start times are its own first frame's). It is the most of each part,
+  as PipeWire combines latencies, so an upper bound when the bank's paths differ. A consumer that
+  does not date audio ignores it (`file`'s `WavWriter` does).
 - The frame ring and the stamp ring drop together (no frame without its stamp); dropped frames are
   counted (readable at any time by the framework) and reported as the node's `dropped=` at removal.
 - A sink's bank is never faded, so a recording keeps exact samples.

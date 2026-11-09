@@ -122,8 +122,8 @@ private:
 class ThreadSink final : public Sink, public SinkTap {
 public:
 	ThreadSink(Executor& mainLoop, const NodeName& node, std::string_view bank, std::uint32_t channels,
-	           std::uint32_t capacityFrames)
-		: mainLoop_(mainLoop), ring_(channels, capacityFrames),
+	           std::uint32_t capacityFrames, std::uint32_t rate)
+		: mainLoop_(mainLoop), rate_(std::max<std::uint32_t>(rate, 1)), ring_(channels, capacityFrames),
 		  stamps_(std::bit_ceil(std::max<std::uint32_t>(64, ring_.capacityFrames() / 32))) {
 		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
@@ -222,8 +222,9 @@ private:
 		}
 	}
 
-	/// One chunk, in two calls when its frames wrap the ring's end: the second's position advanced by the first's
-	/// frames and its discontinuity false (docs/engine.md#sinks).
+	/// One chunk, in two calls when its frames wrap the ring's end: the second's position and start times advanced by
+	/// the first's frames (at the graph's rate), so each call's start is its own first frame's, and its discontinuity
+	/// false (docs/engine.md#sinks).
 	void consume(const Stamped& stamped) {
 		std::uint32_t done = 0;
 		while (done < stamped.frames) {
@@ -234,13 +235,18 @@ private:
 			consumer_->consume(Chunk{.interleaved = run.first(static_cast<std::size_t>(frames) * ring_.channels()),
 			                         .frames = frames,
 			                         .position = stamped.stamp.position + done,
-			                         .startNs = stamped.stamp.startNs,
-			                         .startRawNs = stamped.stamp.startRawNs,
+			                         .startNs = stamped.stamp.startNs + framesNs(done),
+			                         .startRawNs = stamped.stamp.startRawNs + framesNs(done),
 			                         .upstreamFrames = stamped.stamp.upstreamFrames,
 			                         .discontinuity = done == 0 && stamped.stamp.discontinuity});
 			ring_.skip(frames);
 			done += frames;
 		}
+	}
+
+	/// How long `frames` frames last at the graph's rate, in ns.
+	std::int64_t framesNs(std::uint32_t frames) const noexcept {
+		return static_cast<std::int64_t>(frames) * 1'000'000'000 / rate_;
 	}
 
 	/// Stops the thread (joining it) before anything it reads goes.
@@ -253,6 +259,7 @@ private:
 	}
 
 	Executor& mainLoop_;
+	std::uint32_t rate_; // the graph's
 	FrameRing ring_;
 	std::vector<Stamped> stamps_; // a power of two entries
 	alignas(64) std::atomic<std::uint32_t> stampsWritten_{0};
@@ -281,8 +288,8 @@ std::unique_ptr<Handoff> ThreadHandoffs::make(const NodeName& node, std::uint32_
 ThreadSinks::ThreadSinks(Executor& mainLoop) : mainLoop_(mainLoop) {}
 
 std::unique_ptr<Sink> ThreadSinks::make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-                                        std::uint32_t capacityFrames) {
-	return std::make_unique<ThreadSink>(mainLoop_, node, bank, channels, capacityFrames);
+                                        std::uint32_t capacityFrames, std::uint32_t rate) {
+	return std::make_unique<ThreadSink>(mainLoop_, node, bank, channels, capacityFrames, rate);
 }
 
 } // namespace ear::pipewire

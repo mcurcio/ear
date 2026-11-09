@@ -1648,7 +1648,25 @@ TEST_CASE("A thousand requests to one block keep one invoke in flight", "[blocks
 	CHECK(std::ranges::is_sorted(done.takens));
 }
 
-TEST_CASE("Drives, fades and their completions allocate nothing on the data thread", "[blocks][drive][async]") {
+namespace {
+
+/// A sink's realtime end that only counts its writes: the block's tap path (the binding, the told latency's read, the
+/// stamp) runs in full before it.
+class CountingTap final : public SinkTap {
+public:
+	void write(std::span<const std::span<const float>>, std::uint32_t, const ChunkStamp&) noexcept override {
+		writes_.fetch_add(1, std::memory_order_relaxed);
+	}
+	std::uint64_t writes() const { return writes_.load(std::memory_order_relaxed); }
+
+private:
+	std::atomic<std::uint64_t> writes_{0};
+};
+
+} // namespace
+
+TEST_CASE("Drives, fades, their completions and a bound sink's tap allocate nothing on the data thread",
+          "[blocks][drive][async]") {
 	auto engine = makeEngine();
 	Waiter waiter(*engine);
 	Bell bell(waiter);
@@ -1656,9 +1674,15 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	Constant a(waiter, 0.5F), b(waiter, 0.25F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	auto block = blocks.make("quiet", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
+	auto block = blocks.make(
+		"quiet",
+		Ports{{{Direction::output, "out", {"a", "b"}}, {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}},
+		kFormat, events);
+	block->carryLatency(LatencyPlan{{}, {{"writer", Latency{3, 5}}}, {}}); // a told latency for the stamps to read
+	CountingTap tap;
+	const std::vector<SinkBinding> sinks{SinkBinding{&tap, 2, 1}};
 	const bool faded[] = {true, false};
-	block->drive(DriveRequest{&a, faded}, done.drive(0));
+	block->drive(DriveRequest{&a, faded, sinks}, done.drive(0));
 	REQUIRE(waiter.until([&] { return done.has(0) && a.calls() > 0; }));
 
 	// Every process() from here on turns counting on for the data thread, where the invokes run too.
@@ -1669,9 +1693,9 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	const std::uint64_t before = ear::pipewire::testing::countedAllocations();
 	int tag = 1;
 	for (int round = 0; round < 50; ++round) {
-		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded}, done.drive(tag++));
+		block->drive(DriveRequest{round % 2 == 0 ? &b : &a, faded, sinks}, done.drive(tag++));
 		block->fadeOut(done.fade(tag++));
-		block->drive(DriveRequest{round % 2 == 0 ? &a : &b, faded}, done.drive(tag++));
+		block->drive(DriveRequest{round % 2 == 0 ? &a : &b, faded, sinks}, done.drive(tag++));
 		const std::size_t want = done.order.size() + 2; // the fade between the two drives is cancelled, or acknowledged
 		REQUIRE(waiter.until([&] { return done.order.size() >= want && done.has(tag - 1); }));
 	}
@@ -1681,6 +1705,8 @@ TEST_CASE("Drives, fades and their completions allocate nothing on the data thre
 	const std::uint64_t calls = a.calls() + b.calls();
 	REQUIRE(waiter.until([&] { return a.calls() + b.calls() > calls + 1; }));
 	CHECK(counted == 0);
+	CHECK(tap.writes() > 0);
+	REQUIRE(ear::testing::driveNow(*block, nullptr)); // unbinds the tap before it goes
 }
 
 // Settled for slice 3b's design (docs/design/companions.md): pw_filter_get_node_id gives the block's global id once

@@ -361,7 +361,7 @@ struct TestSinks final : SinkAdapter {
 	std::vector<TestSink*> made; // every sink made, in order (a destroyed one dangles: unused)
 	TestSinks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-	                           std::uint32_t capacityFrames) override {
+	                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override {
 		if (throwInMake) throw std::system_error(EAGAIN, std::generic_category(), "no thread for " + node);
 		const std::string name = node + "." + std::string(bank);
 		log.push_back("sink " + name + " " + std::to_string(channels) + " channels " + std::to_string(capacityFrames) +

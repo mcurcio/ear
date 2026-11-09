@@ -37,6 +37,9 @@ using namespace ear::pipewire;
 using namespace std::chrono_literals;
 
 constexpr auto kDeadline = 5s;
+/// The rate the sinks run at off the engine: a frame lasts exactly 20,000 ns.
+constexpr std::uint32_t kTestRate = 50000;
+constexpr std::int64_t kFrameNs = 1'000'000'000 / kTestRate;
 
 /// PipeWire initialised for the test (pw_thread_loop needs it); no engine.
 struct PipeWire {
@@ -82,6 +85,7 @@ struct Got {
 	std::uint32_t frames;
 	std::uint64_t position;
 	std::int64_t startNs;
+	std::int64_t startRawNs;
 	std::uint32_t upstreamFrames;
 	bool discontinuity;
 	std::thread::id thread;
@@ -152,6 +156,7 @@ public:
 			                             chunk.frames,
 			                             chunk.position,
 			                             chunk.startNs,
+			                             chunk.startRawNs,
 			                             chunk.upstreamFrames,
 			                             chunk.discontinuity,
 			                             std::this_thread::get_id()});
@@ -245,7 +250,7 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 	Shared shared;
 	constexpr std::uint32_t kBlock = 64;
 	constexpr std::uint32_t kBlocks = 100;
-	auto sink = sinks.make("a-node-with-a-long-name", "writer", 2, kBlock * kBlocks);
+	auto sink = sinks.make("a-node-with-a-long-name", "writer", 2, kBlock * kBlocks, kTestRate);
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 
 	std::thread::id writerThread;
@@ -279,7 +284,8 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 	CHECK(sinkThread != std::this_thread::get_id());
 }
 
-TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the second advanced and not a discontinuity",
+TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the second advanced in position and start "
+          "times and not a discontinuity, so each call dates its own first frame",
           "[sink]") {
 	PipeWire pipewire;
 	TestLoop loop;
@@ -288,7 +294,7 @@ TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the secon
 	// A 256-frame ring and 100-frame chunks: reads split at its end at varying offsets.
 	constexpr std::uint32_t kBlock = 100;
 	constexpr std::uint32_t kBlocks = 50;
-	auto sink = sinks.make("rec", "writer", 2, 256);
+	auto sink = sinks.make("rec", "writer", 2, 256, kTestRate);
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	Signal signal(kBlock);
 	for (std::uint32_t b = 0; b < kBlocks; ++b) {
@@ -306,7 +312,16 @@ TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the secon
 	for (const Got& chunk : shared.chunks) {
 		const bool cycleStart = chunk.position % kBlock == 0;
 		CHECK(chunk.discontinuity == cycleStart); // only a cycle's first call carries its discontinuity
-		CHECK(chunk.upstreamFrames == stampAt(chunk.position - chunk.position % kBlock).upstreamFrames); // both calls
+		const ChunkStamp cycle = stampAt(chunk.position - chunk.position % kBlock);
+		CHECK(chunk.upstreamFrames == cycle.upstreamFrames); // both calls
+		// Each call's start is its first frame's: the cycle's start plus the frames before it in the chunk. So the
+		// instant its first frame entered the graph (Chunk::upstreamFrames' rule) is the cycle's first frame's plus
+		// those frames too.
+		const auto offset = static_cast<std::int64_t>(chunk.position % kBlock) * kFrameNs;
+		CHECK(chunk.startNs == cycle.startNs + offset);
+		CHECK(chunk.startRawNs == cycle.startRawNs + offset);
+		const std::int64_t entered = chunk.startRawNs - static_cast<std::int64_t>(chunk.upstreamFrames) * kFrameNs;
+		CHECK(entered == cycle.startRawNs - static_cast<std::int64_t>(cycle.upstreamFrames) * kFrameNs + offset);
 		if (!cycleStart) ++split;
 	}
 	CHECK(split == shared.chunks.size() - kBlocks);
@@ -321,7 +336,7 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 	Shared shared;
 	// A 4096-frame ring holds 128 stamps (4096 / 32), so 1-frame chunks run the stamp ring out first; 100-frame chunks
 	// run the frame ring out first.
-	auto sink = sinks.make("rec", "writer", 2, 4096);
+	auto sink = sinks.make("rec", "writer", 2, 4096, kTestRate);
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared, nullptr, true));
 	struct Release {
 		Gate& gate;
@@ -349,7 +364,7 @@ TEST_CASE("A sink's stamp ring and frame ring drop together: a full stamp ring d
 
 	// The frame ring: 100-frame chunks into a 256-frame ring while the consumer stalls on the first.
 	Shared second;
-	auto small = sinks.make("rec", "writer", 2, 256);
+	auto small = sinks.make("rec", "writer", 2, 256, kTestRate);
 	beginAndWait(loop, *small, std::make_unique<TestConsumer>(second, nullptr, true));
 	struct Release2 {
 		Gate& gate;
@@ -383,7 +398,7 @@ TEST_CASE("A sink's close drains what its ring holds, then finishes a consumer t
 	TestLoop loop;
 	ThreadSinks sinks(loop);
 	Shared shared;
-	auto sink = sinks.make("rec", "writer", 2, 1024);
+	auto sink = sinks.make("rec", "writer", 2, 1024, kTestRate);
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	Signal signal(64);
 	for (std::uint64_t at = 0; at < 512; at += 64) sink->tap().write(signal.block(at, 64), 64, stampAt(at));
@@ -398,7 +413,7 @@ TEST_CASE("A sink's close drains what its ring holds, then finishes a consumer t
 
 	// Never begun: written frames (none a block would write before begun, but a tap is a tap) are skipped, and close
 	// calls neither begin nor finish.
-	auto unbegun = sinks.make("rec", "other", 2, 1024);
+	auto unbegun = sinks.make("rec", "other", 2, 1024, kTestRate);
 	unbegun->tap().write(signal.block(0, 64), 64, stampAt(0));
 	CHECK(closeAndWait(loop, *unbegun) == 0);
 }
@@ -408,7 +423,7 @@ TEST_CASE("A lost said inside a sink consumer's begin lands on the main loop bef
 	TestLoop loop;
 	ThreadSinks sinks(loop);
 	Shared shared;
-	auto sink = sinks.make("rec", "writer", 2, 1024);
+	auto sink = sinks.make("rec", "writer", 2, 1024, kTestRate);
 	bool begun = false;
 	sink->begin(std::make_unique<TestConsumer>(shared, &loop), [&] {
 		const std::scoped_lock lock(shared.mutex);
@@ -428,7 +443,7 @@ TEST_CASE("A sink's tap allocates nothing", "[sink]") {
 	Shared shared;
 	constexpr std::uint32_t kBlock = 64;
 	constexpr std::uint32_t kBlocks = 50;
-	auto sink = sinks.make("rec", "writer", 2, kBlock * kBlocks);
+	auto sink = sinks.make("rec", "writer", 2, kBlock * kBlocks, kTestRate);
 	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(shared));
 	std::uint64_t allocations = ~0ULL;
 	std::thread writer([&] {
@@ -493,6 +508,7 @@ public:
 			                     chunk.frames,
 			                     chunk.position,
 			                     chunk.startNs,
+			                     chunk.startRawNs,
 			                     chunk.upstreamFrames,
 			                     chunk.discontinuity,
 			                     std::this_thread::get_id()});
@@ -522,7 +538,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	ear::pipewire::testing::BlockEvents events(waiter);
 	const Ports ports{{{Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
-	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate);
+	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate, kFormat.rate);
 	auto owned = std::make_unique<RampConsumer>(waiter);
 	RampConsumer& consumer = *owned;
 	bool begun = false;
@@ -656,7 +672,7 @@ TEST_CASE("A sink's chunks carry the capture latency its block tells on the sink
 	                   {Direction::input, "from_rtp", {"1"}, PortBank::Reach::inside},
 	                   {Direction::output, "writer", {"1"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
-	auto sink = sinks.make("rec", "writer", 1, 2 * kFormat.rate);
+	auto sink = sinks.make("rec", "writer", 1, 2 * kFormat.rate, kFormat.rate);
 	auto owned = std::make_unique<RampConsumer>(waiter);
 	RampConsumer& consumer = *owned;
 	bool begun = false;
@@ -724,7 +740,7 @@ TEST_CASE("A sink's dropped count is readable while its block writes it, and clo
 	const Ports ports{{{Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
 	// A ring of 1024 frames and a consumer that stalls in its first consume: the ring fills within a few cycles.
-	auto sink = sinks.make("rec", "writer", 2, 1024);
+	auto sink = sinks.make("rec", "writer", 2, 1024, kFormat.rate);
 	Shared shared;
 	struct Release {
 		Gate& gate;
