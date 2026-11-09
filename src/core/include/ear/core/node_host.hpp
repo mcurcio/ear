@@ -49,6 +49,9 @@ struct NodeHealth {
 	std::optional<NodeCause> cause{};
 	std::vector<WaitingFor> waitingFor{};
 	bool blockLost = false;
+	/// An older node of the name, still closing after a newer node of that name was added: told only to listeners that
+	/// hear a superseded node (NodeHealthListener::hearsSuperseded), first with the health it has when superseded.
+	bool superseded = false;
 	friend bool operator==(const NodeHealth&, const NodeHealth&) = default;
 };
 /// Told after every machine transition that changes any member of a node's health (node-lifecycle.md 5.2, D-L34), so
@@ -63,6 +66,8 @@ public:
 	/// the newer node, so the gateway does not; standard output does (node-lifecycle.md 5.7, D-L36). The older node of
 	/// a port-caused replace tells nobody: its successor carries one health stream for the name.
 	virtual bool hearsSuperseded() const noexcept { return true; }
+	/// A superseded node is gone (told only to listeners that hear one). The default tells nodeGone.
+	virtual void supersededGone(const NodeName& node, std::uint64_t droppedFrames) { nodeGone(node, droppedFrames); }
 
 protected:
 	~NodeHealthListener() = default;

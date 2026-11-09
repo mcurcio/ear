@@ -1536,6 +1536,12 @@ file capability (section 7).
   `node_host.hpp` gains `NodeOperations`, which `NodeHost` implements; `FailureReason::Code` gains `lost`.
   `DesiredNodeListener` gains `nodeReplacing` and `nodeReplaced`, through which `commit` tells a replaced node in
   `nodeRemoved`'s and `nodeAdded`'s places, defaulting to them, and `NodeChange` gains `portCaused`.
+  `NodeHealthListener` also gains `supersededGone` (defaulting to `nodeGone`) and `NodeHealth` `superseded`. On the
+  wire (section 6), `node.state`'s and the graph's `state` may now be `disabled` (a node `disabled true;` in
+  `ear.conf`), `stopped` (once `node.stop` reaches the wire, step L-6) or `stopping` during a restart (a settings change,
+  where `starting` was sent), and `reason.code` may be `lost` (a node that had run, or rested stopped, said it cannot
+  go on); `web/src/protocol.ts`'s `NodeState` and `FailureCode` gain them. The gateway sends `node.state` only when a
+  node's `state` or `reason` changes until step L-6 adds the other members.
 - **The plan's outcomes, 2026-11-08 (slice 3a step L-5, `docs/design/node-lifecycle.md` 8.4):** `desired_graph.hpp`
   gains `NodeOutcome` (`restart`, `disable`, `enable`, `stored`), `NodeChange {outcome, keys}`,
   `DesiredNodeListener::nodeChanged`, whose default tells `nodeUpdated` (so every listener written before it is

@@ -75,9 +75,9 @@ block, companion, consumer}; name}`, `NodeHealth {name, state, reason, phase, wa
 `NodeHealthListener::hearsSuperseded()`, `LifecycleApplied {start, stop, restart, retry, unchanged}`,
 `LifecycleRefusal {Code {unknownNode, nodeDisabled, notRestartable, stopping}; Reason {none, notStarted, blockLost}}`,
 `LifecycleReply = std::expected<LifecycleApplied, LifecycleRefusal>`, and `NodeOperations` with `start`, `stop` and
-`restart` (each `LifecycleReply (const NodeName&)`), implemented by `NodeHost`. Today's base has the machines' names in
-`ear::lifecycle` (`node_machines.hpp`); L-3d moves them into `ear`. The harness header spells
-`lifecycle::LifecycleReply` and follows L-3d's spelling at merge.
+`restart` (each `LifecycleReply (const NodeName&)`), implemented by `NodeHost`. L-3d moved the machines' names from
+`ear::lifecycle` (`node_machines.hpp`) into `ear` (`node_lifecycle.hpp`), and the harness header spells
+`LifecycleReply` (node-lifecycle.md revision 2.9).
 
 From L-5 (built): `NodeSpec::disabled`, `NodeOutcome {restart, disable, enable, stored}`, `NodeChange {outcome, keys}`
 (L-3d adds `portCaused`), `DesiredNodeListener::nodeChanged`, `Plan::outcomes()`, `GraphFileModel::disableNode` and

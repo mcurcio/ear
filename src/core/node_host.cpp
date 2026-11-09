@@ -1,5 +1,5 @@
 // The node framework (docs/design/node-framework.md sections 6, 7.2 and 7.3; node_host.hpp), on the node lifecycle's
-// two pure machines (docs/design/node-lifecycle.md section 4, node_machines.hpp; step L-3a of slice 3a). Each node is a
+// two pure machines (docs/design/node-lifecycle.md section 4, node_lifecycle.hpp; step L-3a of slice 3a). Each node is a
 // NodeAggregate: NodeHost feeds it every input (a commit, a block's or an outside node's event, a completion, a post
 // from the node's own threads, a timer) and carries out the actions it returns (5.2), never waiting for another thread.
 //
@@ -176,7 +176,12 @@ struct NodeHost::Impl {
 		/// The serial of the older node this one is the port-caused replace of, while that one is not gone; else 0.
 		std::uint64_t predecessor() const noexcept { return predecessor_; }
 		/// A newer node of this name was added while this one closes: only standard output hears it (D-L36).
-		void supersede() noexcept { superseded_ = true; }
+		/// From now on only the listeners that hear a superseded node hear this one, told its health at once, so they keep
+		/// it apart from the newer node told next.
+		void supersede() {
+			if (std::exchange(superseded_, true) || silent_) return;
+			tell(aggregate_.health());
+		}
 		bool superseded() const noexcept { return superseded_; }
 		/// The stop held, for a port-caused replace to carry (D-L36).
 		bool stopHeld() const noexcept { return aggregate_.stopHeld(); }
@@ -185,7 +190,8 @@ struct NodeHost::Impl {
 
 		/// What a port-caused replace carries from its older node (5.7, D-L36), or nothing.
 		struct Carried {
-			std::uint64_t predecessor = 0; // its serial
+			std::uint64_t predecessor = 0; // its serial: this node is gone only after it, and takes its dropped frames
+			bool stopping = false;         // shown stopping (restarting) until it is gone: this node is enabled
 			bool stopHeld = false;
 			std::vector<std::string> keys;
 		};
@@ -203,7 +209,7 @@ struct NodeHost::Impl {
 			feed(aggregate_.add(lc::AddFacts{.disabled = spec.disabled,
 			                                 .stopHeld = carried.stopHeld,
 			                                 .olderBlock = olderBlock,
-			                                 .predecessor = carried.predecessor != 0,
+			                                 .predecessor = carried.stopping,
 			                                 .olderNode = olderNode,
 			                                 .keys = std::move(carried.keys),
 			                                 .wedged = host_.wedged,
@@ -262,6 +268,7 @@ struct NodeHost::Impl {
 			predecessor_ = 0;
 			dropped_ += droppedFrames;
 			feed(aggregate_.predecessorGone());
+			tellGone();
 		}
 		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
 		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
@@ -298,7 +305,7 @@ struct NodeHost::Impl {
 				block_.reset();
 			}
 			host_.inputFor(serial_, [](Node& node) {
-				if (std::exchange(node.goneWaiting_, false)) node.host_.gone(node, node.dropped_);
+				node.tellGone();
 				node.host_.blockDestroyed(node.name_);
 			});
 		}
@@ -547,7 +554,8 @@ struct NodeHost::Impl {
 			                  health.wanted,
 			                  health.cause,
 			                  health.phase == wantedPhase_ ? waitingShown_ : std::vector<WaitingFor>{},
-			                  health.blockLost};
+			                  health.blockLost,
+			                  superseded_};
 		}
 
 		/// What the node waits for now, unpaced (4.5; 3a's kinds, D-L28): an older node of its name; its outside nodes
@@ -620,7 +628,7 @@ struct NodeHost::Impl {
 		/// resource ready at once, a run object closed inside close()) is queued behind them, never handled inside.
 		void feed(lc::Actions actions) {
 			// A removal that ends in its own input (nothing was configured, or its configuration was already gone) is
-			// told gone without a stopping before it (4.3's row 1); every removal says stopping first (revision 2.8).
+			// told gone without a stopping before it (4.3's row 1); every removal says stopping first (revision 2.9).
 			if (std::ranges::any_of(actions,
 			                        [](const auto& action) { return std::holds_alternative<lc::Gone>(action); }))
 				stopping();
@@ -630,9 +638,8 @@ struct NodeHost::Impl {
 							   [&](const lc::ConfigAction& config) { act(config); },
 							   [&](const lc::Tell& told) { tell(told.health); },
 							   [&](lc::Gone) {
-								   // Gone once its block's destruction ran in the flush (5.7), not when queued.
-								   if (destroyPending_) goneWaiting_ = true;
-								   else host_.gone(*this, dropped_);
+								   goneHeld_ = true;
+								   tellGone();
 							   },
 						   },
 				           action);
@@ -644,6 +651,14 @@ struct NodeHost::Impl {
 			    aggregate_.intent() != lc::Intent::none)
 				config_->channel->closing();
 			refreshWaiting();
+		}
+
+		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush (5.7), not when
+		/// queued, and, for a port-caused replace, once its older node is gone too, whose dropped frames it reports (5.7,
+		/// D-L36): everything of the name it stands for is gone only then.
+		void tellGone() {
+			if (!goneHeld_ || gone_ || destroyPending_ || predecessor_ != 0) return;
+			host_.gone(*this, dropped_);
 		}
 
 		void tell(const lc::Health& health) {
@@ -1155,7 +1170,7 @@ struct NodeHost::Impl {
 		bool runClosing_ = false;
 		bool makePending_ = false;         // the block's making is queued in the flush
 		bool destroyPending_ = false;      // the block's destruction is queued in the flush
-		bool goneWaiting_ = false;         // removed, told gone once its block's destruction ran
+		bool goneHeld_ = false;            // removed: told gone once its block and its predecessor are gone
 		bool gone_ = false;                // told gone
 		bool blockLeaked_ = false;         // its block was leaked on a wedged loop: never freed, nor is this node
 		bool synthetic_ = false;           // a bound judged at once on a wedged loop: its diagnostics are not said
@@ -1342,9 +1357,12 @@ struct NodeHost::Impl {
 				older = known.get();
 			}
 			Node::Carried carried;
-			if (change && change->portCaused && older != nullptr && older->silent() && !spec.disabled) {
+			// A disabled new node (D-L46) is not shown stopping, and carries no stop, but it still stands for its older
+			// node's removal and dropped frames (revision 2.9).
+			if (change && change->portCaused && older != nullptr && older->silent()) {
 				carried.predecessor = older->serial();
-				carried.stopHeld = older->stopHeld() && !older->disabled();
+				carried.stopping = !spec.disabled;
+				carried.stopHeld = !spec.disabled && older->stopHeld() && !older->disabled();
 				carried.keys = change->keys;
 			}
 			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
@@ -1399,8 +1417,10 @@ struct NodeHost::Impl {
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
 		if (!node.silent())
-			for (auto* listener : listeners)
-				if (!node.superseded() || listener->hearsSuperseded()) listener->nodeGone(node.name(), droppedFrames);
+			for (auto* listener : listeners) {
+				if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
+				else if (listener->hearsSuperseded()) listener->supersededGone(node.name(), droppedFrames);
+			}
 		const auto successor = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->predecessor() == node.serial() && !known->removed(); });
 		if (successor != nodes.end())

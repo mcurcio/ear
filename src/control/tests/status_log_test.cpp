@@ -261,12 +261,17 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 				health("fpp", NodePhase::configuring, {}, {}, {{ear::WaitingFor::Kind::companion, "fpp.rtp"}}));
 		},
 		[](StatusLog& log, Lines&) {
-			// A change within 10 s of the last still record writes none; one after writes the newest.
+			// A change within 10 s of the last still record writes none; the first tell after the pace writes the newest
+			// list if it differs from the one written, though the list itself did not change again.
+			const std::vector<ear::WaitingFor> newest{{ear::WaitingFor::Kind::olderNode, "fpp"},
+		                                              {ear::WaitingFor::Kind::consumer}};
 			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {},
 		                           {{ear::WaitingFor::Kind::block}, {ear::WaitingFor::Kind::companion, "fpp.rtp"}}));
+			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {}, newest));
 			paceNow += std::chrono::seconds(10);
-			log.nodeChanged(health("fpp", NodePhase::configuring, {}, {},
-		                           {{ear::WaitingFor::Kind::olderNode, "fpp"}, {ear::WaitingFor::Kind::consumer}}));
+			ear::NodeHealth again = health("fpp", NodePhase::configuring, {}, {}, newest);
+			again.wanted = ear::Wanted::stopped; // another member changed: a tell with the same list
+			log.nodeChanged(again);
 		},
 	};
 }
@@ -407,4 +412,24 @@ TEST_CASE("A source that floods its log is paced: node states, routes and notes 
 	const Json counted = Json::parse(lines.kept[0]);
 	CHECK(counted["heldBack"] == 10000 - StatusLog::logBurst);
 	CHECK(counted["msg"] == "stderr warn: still here (9968 more held back before this: over 32 at once)");
+}
+
+TEST_CASE("A superseded node's records are kept apart from the newer node of its name", "[status_log]") {
+	using ear::NodePhase;
+	Lines lines;
+	StatusLog log(lines, &fixedTime, &pacedTime);
+	const auto removing = cause(ear::NodeCause::Kind::removing);
+	log.nodeChanged(health("x", NodePhase::running));
+	ear::NodeHealth old = health("x", NodePhase::stopping, removing);
+	old.superseded = true;
+	log.nodeChanged(old);                                 // the older node stops (another type replaced it)
+	log.nodeChanged(health("x", NodePhase::added));       // the newer node
+	log.nodeChanged(old);                                 // the older node told again: nothing new
+	log.supersededGone("x", 3);                           // its removed, leaving the newer node's state alone
+	log.nodeChanged(health("x", NodePhase::configuring)); // still starting: no record
+	log.nodeChanged(health("x", NodePhase::running));
+	std::vector<std::string> msgs;
+	for (const std::string& line : lines.kept) msgs.push_back(Json::parse(line)["msg"]);
+	CHECK(msgs == std::vector<std::string>{"node x running", "node x stopping: removing", "node x starting",
+	                                       "node x removed dropped=3", "node x running"});
 }

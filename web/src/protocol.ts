@@ -10,9 +10,11 @@ export type JsonObject = { [key: string]: JsonValue };
 
 // ----- The graph -----
 
-export type NodeState = "starting" | "running" | "failed" | "stopping";
+// stopped and disabled, and the code lost, since slice 3a step L-3d (batch2.md section 11's lifecycle erratum); a
+// restart now shows stopping before starting. Step L-6 makes these open sets (node-lifecycle.md 9).
+export type NodeState = "starting" | "running" | "failed" | "stopping" | "stopped" | "disabled";
 export type RouteStatusName = "pending" | "linked" | "refused";
-export type FailureCode = "engine-refused" | "start-failed";
+export type FailureCode = "engine-refused" | "start-failed" | "lost";
 
 export interface FailureReason {
   code: FailureCode;

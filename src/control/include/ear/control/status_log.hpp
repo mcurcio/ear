@@ -82,6 +82,7 @@ public:
 	                   PaceClock pace = &std::chrono::steady_clock::now);
 	void nodeChanged(const NodeHealth& health) override;
 	void nodeGone(const NodeName& node, std::uint64_t droppedFrames) override;
+	void supersededGone(const NodeName& node, std::uint64_t droppedFrames) override;
 	void nodeSays(const NodeName& node, const std::string& text) override;
 	void nodeDiagnostic(const NodeName& node, std::string_view code, const std::string& detail,
 	                    std::span<const DiagnosticField> fields) override;
@@ -112,7 +113,10 @@ private:
 		NodeHealth health;
 		std::chrono::steady_clock::time_point since;
 		std::optional<std::chrono::steady_clock::time_point> still{};
+		std::vector<WaitingFor> written{}; // the list the last still record wrote, in this phase
 	};
+	/// A node's removed record.
+	void removed(const NodeName& node, std::uint64_t droppedFrames);
 	/// One node's or source's pace: tokens up to logBurst, one more a second.
 	struct Pace {
 		double tokens;
@@ -123,8 +127,9 @@ private:
 	OutputLines& out_;
 	WallClock clock_;
 	PaceClock pace_;
-	std::map<std::string, Pace, std::less<>> paces_; // under mutex_
-	std::map<NodeName, Seen, std::less<>> nodes_;    // under mutex_
+	std::map<std::string, Pace, std::less<>> paces_;   // under mutex_
+	std::map<NodeName, Seen, std::less<>> nodes_;      // under mutex_
+	std::map<NodeName, Seen, std::less<>> superseded_; // under mutex_: superseded nodes still closing
 	std::mutex mutex_;
 	std::uint64_t seq_ = 0;
 	std::uint64_t dropped_ = 0;

@@ -182,21 +182,30 @@ void StatusLog::nodeChanged(const NodeHealth& health) {
 	{
 		const std::scoped_lock lock(mutex_);
 		const auto now = pace_();
-		const auto known = nodes_.find(health.name);
-		const bool first = known == nodes_.end();
-		Seen& seen = first ? nodes_.emplace(health.name, Seen{health, now}).first->second : known->second;
+		// A superseded node (an older node of a name whose newer node was added) is kept apart from the newer one:
+		// its first superseded tell takes over what was seen of the name until then.
+		auto& seenOf = health.superseded ? superseded_ : nodes_;
+		if (health.superseded && !superseded_.contains(health.name)) {
+			if (auto held = nodes_.extract(health.name)) superseded_.insert(std::move(held));
+		}
+		const auto known = seenOf.find(health.name);
+		const bool first = known == seenOf.end();
+		Seen& seen = first ? seenOf.emplace(health.name, Seen{health, now}).first->second : known->second;
 		if (!first && seen.health.phase != health.phase) {
 			seen.since = now;
 			seen.still.reset();
+			seen.written.clear();
 		}
 		const bool colour = first || seen.health.state != health.state;
 		const bool reason = health.state == NodeState::failed && !first && seen.health.reason != health.reason;
 		if (colour || reason) {
 			write = Write::state;
-		} else if (!health.waitingFor.empty() && health.waitingFor != seen.health.waitingFor &&
+		} else if (!health.waitingFor.empty() && health.waitingFor != seen.written &&
 		           (!seen.still || now - *seen.still >= stillPace)) {
+			// A list told inside the pace is written by the first tell after it, if it still differs.
 			write = Write::still;
 			seen.still = now;
+			seen.written = health.waitingFor;
 			seconds = std::chrono::duration_cast<std::chrono::seconds>(now - seen.since).count();
 		}
 		seen.health = health;
@@ -250,6 +259,18 @@ void StatusLog::nodeGone(const NodeName& node, std::uint64_t droppedFrames) {
 		const std::scoped_lock lock(mutex_);
 		nodes_.erase(node);
 	}
+	removed(node, droppedFrames);
+}
+
+void StatusLog::supersededGone(const NodeName& node, std::uint64_t droppedFrames) {
+	{
+		const std::scoped_lock lock(mutex_);
+		superseded_.erase(node);
+	}
+	removed(node, droppedFrames);
+}
+
+void StatusLog::removed(const NodeName& node, std::uint64_t droppedFrames) {
 	emit("node",
 	     {{"node", json(node)},
 	      {"state", json(stateName(NodeState::stopping))},

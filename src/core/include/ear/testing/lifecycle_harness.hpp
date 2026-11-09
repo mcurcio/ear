@@ -7,8 +7,8 @@
 // INTERIM LOCATION. type_harness.hpp and node_harness.hpp still declare slice 2's harnesses, which today's tests use, so
 // these live in ear::testing::next until step L-4a: L-4a replaces node_harness.hpp's NodeHarness with this NodeHarness
 // and type_harness.hpp's TypeHarness with this TypeHarness (dropping `next`), deletes this file, and rewrites
-// testing/node_harness.cpp over NodeHost. L-3d renames ear::lifecycle::LifecycleReply to ear::LifecycleReply; the
-// spelling here follows whichever is merged.
+// testing/node_harness.cpp over NodeHost. L-3d moved LifecycleReply from ear::lifecycle into ear (node_lifecycle.hpp);
+// this file follows it.
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -24,7 +24,7 @@
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/node_host.hpp"
-#include "ear/core/node_machines.hpp"
+#include "ear/core/node_lifecycle.hpp"
 #include "ear/core/sink.hpp"
 namespace ear::testing::next {
 
@@ -110,12 +110,12 @@ public:
 	void process(std::uint32_t frames = 0);
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys).
 	NodeOutcome change(const NodeSettings& settings);
-	lifecycle::LifecycleReply stop();    // NodeOperations::stop
-	lifecycle::LifecycleReply start();   // NodeOperations::start
-	lifecycle::LifecycleReply restart(); // NodeOperations::restart
-	void disable();                      // nodeChanged, outcome disable (spec.disabled true)
-	void enable();                       // nodeChanged, outcome enable
-	void remove();                       // nodeRemoved
+	LifecycleReply stop();    // NodeOperations::stop
+	LifecycleReply start();   // NodeOperations::start
+	LifecycleReply restart(); // NodeOperations::restart
+	void disable();           // nodeChanged, outcome disable (spec.disabled true)
+	void enable();            // nodeChanged, outcome enable
+	void remove();            // nodeRemoved
 
 	// What the node shows.
 	NodeHealth health() const;           // as last told
@@ -163,9 +163,9 @@ public:
 	void blockReady() { node_->blockReady(); }
 	void process(std::uint32_t frames = 0) { node_->process(frames); }
 	NodeOutcome change(const NodeSettings& settings) { return node_->change(settings); }
-	lifecycle::LifecycleReply stop() { return node_->stop(); }
-	lifecycle::LifecycleReply start() { return node_->start(); }
-	lifecycle::LifecycleReply restart() { return node_->restart(); }
+	LifecycleReply stop() { return node_->stop(); }
+	LifecycleReply start() { return node_->start(); }
+	LifecycleReply restart() { return node_->restart(); }
 	void disable() { node_->disable(); }
 	void enable() { node_->enable(); }
 	void remove() { node_->remove(); }

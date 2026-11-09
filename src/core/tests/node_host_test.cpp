@@ -3378,3 +3378,62 @@ TEST_CASE("A replace of another type sends the older node's health to standard o
 	f.settle();
 	CHECK(f.allGone == 1);
 }
+
+TEST_CASE("A port-caused replace's new node reports its older node's dropped frames, and its own removal waits for "
+          "the older node to be gone",
+          "[node_host][replace]") {
+	Fixture f;
+	auto two = std::make_shared<TestConfig>(f.log, "two");
+	two->handoffs = 1;
+	addRunning(f, "desk", two);
+	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
+
+	SECTION("the frames carried into the new node's removed") {
+		f.host.nodeReplacing("desk", ports);
+		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
+		                    ports);
+		f.settle();
+		f.handoffs.finishOne(5); // the older node's handoff closes: it is gone, telling nobody
+		f.settle();
+		f.blocks.events.back()->ready();
+		f.settle();
+		REQUIRE(f.host.health().back().phase == NodePhase::running);
+		f.log.clear();
+		f.stopAll();
+		f.settle();
+		CHECK(f.log.back() == "all gone");
+		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
+	}
+	SECTION("removed while the older node still closes: gone only after it, with its frames") {
+		f.host.nodeReplacing("desk", ports);
+		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
+		                    ports);
+		f.settle();
+		f.log.clear();
+		f.host.nodeRemoved("desk"); // the new node: its block still waits for the older one's
+		f.settle();
+		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=0")) == 0);
+		REQUIRE(f.host.health().size() == 2);
+		f.handoffs.finishOne(5);
+		f.settle();
+		CHECK(f.log.back() == "node desk gone dropped=5");
+		CHECK(f.host.health().empty());
+		f.stopAll();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("a new node added disabled (D-L46) still stands for the older node's removal and frames") {
+		f.host.nodeReplacing("desk", ports);
+		f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}, true},
+		                    std::make_shared<TestConfig>(f.log, "four"), ports);
+		f.settle();
+		CHECK(f.host.health().back().phase == NodePhase::disabled);
+		f.log.clear();
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 0); // the older node's handoff still closes
+		f.handoffs.finishOne(5);
+		f.settle();
+		CHECK(std::ranges::count(f.log, std::string("node desk gone dropped=5")) == 1);
+		CHECK(f.allGone == 1);
+	}
+}

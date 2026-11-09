@@ -1002,7 +1002,7 @@ a replace (as today; on a disabled node, D-R23: told as `node.removed` then `nod
 keep working; `NodeHost` and the gateway override it.
 
 A replace whose type is unchanged (only the ports changed) is marked `portCaused` on the removal and addition it tells
-(as built, revision 2.8: `nodeReplacing` and `nodeReplaced`, which every replace is told through, defaulting to
+(as built, revision 2.9: `nodeReplacing` and `nodeReplaced`, which every replace is told through, defaulting to
 `nodeRemoved` and `nodeAdded`) (`NodeChange::portCaused`, read by `NodeHost` alone, 5.7; D-L36). An edit that changes the ports and
 `disabled` at once (D-L46) is still a replace, the new node added with the new `disabled`, and the reply carries the
 `disabled` change's outcome, since that is what the operator asked: ports changed with false to true → `applied:
@@ -1809,8 +1809,9 @@ each a minimal edit or recorded here:
 - D-L36's "health goes to `StatusLog` only, never to the gateway": `NodeHealthListener::hearsSuperseded()` (default
   true; the gateway's false). A node is superseded from the commit that replaces it (another type) or adds its name
   back; the older node of a port-caused replace tells nobody, and its successor takes its dropped frames.
-- D-L46's corners: a port-caused replace whose new node is disabled is not given `predecessor` (it shows `disabled` at
-  once, its block waiting for the older one's, which tells nothing); one whose old node was disabled and new node is
+- D-L46's corners: a port-caused replace whose new node is disabled is not given the aggregate's `predecessor` (it
+  shows `disabled` at once, its block waiting for the older one's, which tells nothing), but `NodeHost` still holds its
+  `removed` until the older node is gone and reports the older node's dropped frames in it (review); one whose old node was disabled and new node is
   enabled is given `predecessor`, so it shows `stopping` (`restarting`, `settings`) and `configuring` (`settings`), not
   `enabling`, though the reply says `enable`.
 - 4.5's `waitingFor`, as built: `older-node` (its own name) in `added`; in `configuring`, `block` while the block is not
@@ -1821,5 +1822,11 @@ each a minimal edit or recorded here:
 - Until L-6 the gateway sends `node.state` only when a node's `state` or `reason` changes (the wire has neither `phase`
   nor the other members yet), so a normal start is still `starting` then `running` on the wire; `stopped`, `disabled`
   and a restart's `stopping` are its new values. `NodeOperations` reaches nothing on the wire yet.
+- After review: a port-caused replace's new node is told gone only once its older node is gone too (its own block
+  destroyed and its older node closed, in either order), with the older node's dropped frames, so a removal during the
+  older node's teardown no longer says `removed` while the older configuration still closes (5.7, D-L36). `StatusLog`
+  writes a `still` record for a list told inside its 10 s pace at the first tell after the pace, if it differs from the
+  list last written. A superseded node's health carries `superseded` and its end is `supersededGone` (default
+  `nodeGone`), told first when it is superseded, so `StatusLog` keeps it apart from the newer node of its name.
 - `sendspin_streams_test.cpp`'s `CHECK_FALSE(ear.hasLine("node ma stopping"))` matched the whole line, so the new
   `stopping: <cause>` would pass it vacuously; it checks the prefix now.
