@@ -1715,7 +1715,7 @@ private:
 // resets: it catches up on its own timer, by whole blocks, and after stalls of up to a few seconds the phase it held
 // against the raw clock is kept (docs/design/node-framework.md section 10, "Slice 7 as built"; longer pauses: the next
 // test).
-TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up by whole blocks, never steps back, and "
+TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in whole blocks, never steps back, and "
           "keeps its phase to the raw clock",
           "[port_blocks][clock]") {
 	using Stall = StallingLog::Stall;
@@ -1738,10 +1738,12 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up by 
 		else if ((now - before) % kBlock != 0) ++notWhole;
 		else if (now - before > kBlock) ++jumps;
 	}
+	// Whether the catching up runs every missed cycle or skips some (whole-block jumps) depends on how fast the host is:
+	// a fast one runs them all, so `jumps` is reported, never required. What matters is checked: never back, whole
+	// blocks only, and the phase to the raw clock kept (below), which shows every stall's lost time was caught up.
 	INFO("jumps " << jumps);
 	CHECK(back == 0);
 	CHECK(notWhole == 0);
-	CHECK(jumps >= stalls.size()); // each stall lost time: the graph skipped blocks to catch up
 	for (const Stall& stall : stalls) {
 		// Before: the cycles just ahead of the stall. After: a second on, when the catching up is long over. The loop's own
 		// wander over that second is a few frames (140 ppm at worst, before it has settled: 7 frames).
