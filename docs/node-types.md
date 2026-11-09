@@ -303,10 +303,11 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   client MUST reject it; a carried patch does it). The peer sees 101, then the close.
 - A frame or message over 1 MiB, or over 1024 fragments, is refused before it costs anything.
 - **Sockets that prove nothing give way to newcomers**, so holding them keeps no server out: an
-  address holds at most 8 sockets still to upgrade (counting only sockets its peer has not closed),
-  and the node at most 32; in the upgraded room, the newcomer's own address's oldest goes first,
-  then one with its Noise handshake unfinished, then the oldest. A connection that proved a
-  long-term pairing never gives way.
+  address holds at most 8 sockets still to upgrade and the node at most 32, both counting only
+  sockets whose peer has not closed (a burst of connects closed at once refuses no one after it),
+  and the transport at most 64 threads, closed or not; in the upgraded room, the newcomer's own
+  address's oldest goes first, then one with its Noise handshake unfinished, then the oldest. A
+  connection that proved a long-term pairing never gives way.
 - **A sustained flood keeps servers out for as long as it lasts** (measured on loopback: about 16k
   connects a second from 4 addresses, or 9.6k from the server's own; slower floods cost a server a
   few seconds), and only stopping it lets them in. The owner accepted this cost.
@@ -363,8 +364,10 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
   a burst). The worker's `server_max_connections` is 32 (the library's default is 4).
 - `cmake/ixwebsocket-limits.patch`: refuses frames over 1 MiB and messages over 1024 fragments;
   lets one transport log line through every 10 s; makes a socket still to upgrade give way (8 per
-  address, counting only sockets whose peer has not closed); keeps a close racing a peer's reset from
-  ending the process.
+  address and 32 in all, both counting only sockets whose peer has not closed); keeps a close
+  racing a peer's reset from ending the process; ends a connection whose socket closes while it is
+  open (a stop landing as an upgrade was answered left its thread spinning, and the stop never
+  returned).
 - The library has no log hook: its lines (and IXWebSocket's) are a bare `fprintf(stderr, ...)`, so
   they reach standard output as unattributed `log` records from `stderr` at `warn`. ear fixes its
   level at WARN.

@@ -1,6 +1,6 @@
-// The transport's share per address (cmake/ixwebsocket-limits.patch;
-// docs/node-types.md#library-facts-and-carried-patches): the sockets an address holds are those its peer has not
-// closed, whether or not their own threads have seen the close yet.
+// The transport (cmake/ixwebsocket-limits.patch; docs/node-types.md#library-facts-and-carried-patches): the sockets an
+// address, or the room, holds are those their peers have not closed, whether or not their own threads have seen the
+// close yet; and an open connection whose socket is closed under it ends.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -15,7 +15,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <ixwebsocket/IXSocketFactory.h>
+#include <ixwebsocket/IXSocketTLSOptions.h>
 #include <ixwebsocket/IXWebSocketServer.h>
+#include <ixwebsocket/IXWebSocketTransport.h>
 
 #include "catch2/catch.hpp"
 
@@ -79,13 +82,11 @@ void reset(int fd) {
 	::close(fd);
 }
 
-} // namespace
-
-TEST_CASE("An address's sockets its peer has closed leave its share at once, though their threads have not seen it",
-          "[sendspin][transport]") {
-	constexpr std::size_t share = 8; // ixwebsocket-limits.patch, kSocketsPerAddress
+/// Holds `count` upgraded sockets from 127.0.0.1 on a server of `maxConnections`, closes them all with a reset while
+/// their threads cannot see it, then upgrades one more: whether it was answered.
+bool answeredAfterClosing(std::size_t maxConnections, std::size_t count) {
 	const std::uint16_t port = freePort();
-	ix::WebSocketServer server(port, "127.0.0.1", 64, 32);
+	ix::WebSocketServer server(port, "127.0.0.1", 64, maxConnections);
 
 	// Each socket's thread, once upgraded and given a message, waits in the message's callback until the test lets it go:
 	// none of them sees its peer's close. Not at Open: IXWebSocket calls that before the transport counts the socket as
@@ -113,7 +114,7 @@ TEST_CASE("An address's sockets its peer has closed leave its share at once, tho
 	};
 
 	std::vector<int> held;
-	for (std::size_t i = 0; i < share; ++i) {
+	for (std::size_t i = 0; i < count; ++i) {
 		const int fd = upgrade(port);
 		REQUIRE(fd >= 0);
 		INFO("socket " << i);
@@ -123,22 +124,77 @@ TEST_CASE("An address's sockets its peer has closed leave its share at once, tho
 	}
 	{
 		std::unique_lock lock(mutex);
-		const bool allIn = changed.wait_for(lock, 10s, [&] { return opened == share; });
+		const bool allIn = changed.wait_for(lock, 10s, [&] { return opened == count; });
 		if (!allIn) {
 			lock.unlock();
 			release();
 			server.stop();
-			FAIL("only " << opened << " of " << share << " messages arrived");
+			FAIL("only " << opened << " of " << count << " messages arrived");
 		}
 	}
 	for (const int fd : held) reset(fd);
 
-	// The address's eight are all upgraded, so none can give way, and all still listed: only their being closed lets a
-	// ninth in. Before the patch counted only open sockets, it was refused at once.
-	const int ninth = upgrade(port);
-	const bool ninthAnswered = ninth >= 0 && answered(ninth);
-	if (ninth >= 0) reset(ninth);
+	// All upgraded, so none can give way, and all still listed: only their being closed lets one more in.
+	const int next = upgrade(port);
+	const bool nextAnswered = next >= 0 && answered(next);
+	if (next >= 0) reset(next);
 	release();
 	server.stop();
-	CHECK(ninthAnswered);
+	return nextAnswered;
+}
+
+} // namespace
+
+TEST_CASE("An address's sockets its peer has closed leave its share at once, though their threads have not seen it",
+          "[sendspin][transport]") {
+	// Before the patch counted only open sockets in an address's share, the ninth was refused at once.
+	constexpr std::size_t share = 8; // ixwebsocket-limits.patch, kSocketsPerAddress
+	CHECK(answeredAfterClosing(32, share));
+}
+
+TEST_CASE("Sockets their peers have closed leave the room at once, though their threads have not seen it",
+          "[sendspin][transport]") {
+	// A room of 4, under an address's share of 8: before the room too counted only open sockets, the fifth was refused
+	// at once, as the server after a burst of connects closed at once was.
+	CHECK(answeredAfterClosing(4, 4));
+}
+
+TEST_CASE("An open connection whose socket is closed under it ends, as one a stop raced to its 101 did not",
+          "[sendspin][transport]") {
+	// A server's stop() closes every listed connection, and one is listed before its handshake ends. A close that lands
+	// after the 101 went out and before the state became OPEN finds it CLOSED and leaves only a close request in the
+	// pipe; the first poll in OPEN closed the socket on that request and changed nothing else, so every later poll failed
+	// at once, without a syscall, and the thread spun and stop() never joined it. That state is made here directly: an
+	// open connection whose socket is then closed.
+	const int listener = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	REQUIRE(listener >= 0);
+	sockaddr_in address{};
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	REQUIRE(::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof address) == 0);
+	REQUIRE(::listen(listener, 1) == 0);
+	socklen_t length = sizeof address;
+	REQUIRE(::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+	const int peer = upgrade(ntohs(address.sin_port)); // the upgrade waits in the socket for the handshake to read
+	REQUIRE(peer >= 0);
+	const int accepted = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+	REQUIRE(accepted >= 0);
+
+	std::string error;
+	auto socket = ix::createSocket(false, accepted, error, ix::SocketTLSOptions());
+	INFO(error);
+	REQUIRE(socket);
+	ix::WebSocketTransport transport;
+	REQUIRE(transport.connectToSocket(std::move(socket), 5, false).success);
+	CHECK(answered(peer));
+	REQUIRE(transport.getReadyState() == ix::WebSocketTransport::ReadyState::OPEN);
+
+	transport.closeSocket();
+	// Each round returns at once either way: the socket is gone, so nothing is waited for.
+	for (int round = 0; round < 4 && transport.getReadyState() != ix::WebSocketTransport::ReadyState::CLOSED; ++round)
+		transport.dispatch(transport.poll(),
+		                   [](const std::string&, std::size_t, bool, ix::WebSocketTransport::MessageKind) {});
+	CHECK(transport.getReadyState() == ix::WebSocketTransport::ReadyState::CLOSED);
+	::close(peer);
+	::close(listener);
 }
