@@ -1,4 +1,4 @@
-// What a character of someone else's text may be on one status line (docs/design/sendspin.md sections 4 and 9). The one
+// What a character of someone else's text may be on one status line (docs/node-types.md#sendspin). The one
 // judge, for a `name` setting and for what a peer sends. Pure.
 #pragma once
 #include <cstddef>

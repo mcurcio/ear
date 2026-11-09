@@ -1,4 +1,4 @@
-// The editor's copy of ear.conf (docs/design/knobly-config.md, "Wire additions"): the file as ear
+// The editor's copy of ear.conf (docs/control-port.md#the-graph-file-over-the-port): the file as ear
 // last announced it, and the notices a person should see once (edits dropped by a hand edit). A
 // failed write is the file's own state (writeFailed, shown while it holds), not a notice. The
 // browser never parses knobly: ear is the one judge of the text.

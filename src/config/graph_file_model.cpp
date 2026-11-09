@@ -1,5 +1,5 @@
 // The graph file model: ear.conf loaded with knobly and read with ear's directives
-// (docs/design/knobly-config.md, "File format"; graph_file_model.hpp). knobly finds the language's
+// (docs/graph-file.md#edits-at-the-source; graph_file_model.hpp). knobly finds the language's
 // problems; this file finds ear's (unknown and malformed directives, missing settings, @include),
 // and turns knobly's places into the wire's through placeIn. Edits are made at the source on a
 // fresh load of the text, through knobly's written layer, and the result is loaded again.
@@ -34,6 +34,14 @@ constexpr std::string_view nodeName = "node";
 constexpr std::string_view routeName = "route";
 constexpr std::string_view includeWord = "@include";
 constexpr std::string_view includeMessage = "@include is not supported yet: write the whole graph in ear.conf";
+/// The framework's reserved key in a node's block (docs/architecture.md#phases-states-and-what-is-wanted): read beside
+/// the settings, never one of them.
+constexpr std::string_view disabledKey = "disabled";
+constexpr std::string_view disabledShape = "disabled takes true or false: write disabled true;";
+constexpr std::string_view disabledHint = "to disable a node, write disabled true; inside its braces";
+/// A `disabled` key given inside a node's settings (docs/control-port.md#methods).
+constexpr std::string_view disabledNotASetting =
+	"disabled is not a setting: use node.disable and node.enable, or \"disabled\": true on node.add";
 
 control::TextPlace placeOf(std::string_view text, const vl::place& place) {
 	const auto start = place.span().start();
@@ -193,18 +201,29 @@ private:
 	void readNode(const vr::directive& directive) {
 		const auto values = directive.values();
 		if (values.size() != 2) {
-			report(directive.error("node takes a type and a name: node <type> <name> [{ <setting> <value>; ... }]",
-			                       vl::program_code(badDirectiveCode)));
+			// The spelling an earlier design wrote (`node card porch disabled { ... }`) gets a hint.
+			bool disabledWord = false;
+			for (const vw::expanded_value& value : values)
+				disabledWord = disabledWord || (value.kind() == vl::value_kind::word && value.text() == disabledKey);
+			std::string message = "node takes a type and a name: node <type> <name> [{ <setting> <value>; ... }]";
+			if (disabledWord) message += std::format("; {}", disabledHint);
+			report(directive.error(message, vl::program_code(badDirectiveCode)));
 			return;
 		}
 		const auto type = attempt([&] { return values.at(0).string(); });
 		const auto name = attempt([&] { return values.at(1).string(); });
 		bool ok = type && name;
 		NodeSettings settings = NodeSettings::object();
+		bool disabledSeen = false;
+		bool disabled = false;
 		if (const auto block = directive.block()) {
 			const NodeType* nodeType = type ? catalogue_.find(*type) : nullptr;
 			for (const vr::directive& setting : *block) {
 				const std::string key = setting.name();
+				if (key == disabledKey) { // the framework's, read before and apart from the type's settings
+					if (!readDisabled(setting, disabledSeen, disabled)) ok = false;
+					continue;
+				}
 				if (settings.contains(key)) {
 					report(setting.error(std::format("setting {} is given twice", key),
 					                     vl::program_code(badDirectiveCode)));
@@ -227,8 +246,27 @@ private:
 			}
 		}
 		if (!ok) return;
-		nodes.push_back(NodeSpec{*name, *type, std::move(settings)});
+		nodes.push_back(NodeSpec{*name, *type, std::move(settings), disabled});
 		placements.nodes.push_back(placeOf(text_, directive.written().place()));
+	}
+
+	/// One `disabled` line: one value, knobly's boolean (E4006 for another word, E4002 for another kind), no block, at
+	/// most once in a block. False when the line is refused.
+	bool readDisabled(const vr::directive& setting, bool& seen, bool& disabled) {
+		if (seen) {
+			report(setting.error(std::format("setting {} is given twice", disabledKey),
+			                     vl::program_code(badDirectiveCode)));
+			return false;
+		}
+		seen = true;
+		if (setting.values().size() != 1 || setting.block()) {
+			report(setting.error(std::string(disabledShape), vl::program_code(badDirectiveCode)));
+			return false;
+		}
+		const auto value = attempt([&] { return setting.values().at(0).boolean(); });
+		if (!value) return false;
+		disabled = *value;
+		return true;
 	}
 
 	std::optional<PortRef> readEnd(const vw::expanded_value& value) {
@@ -269,7 +307,7 @@ vw::document_graph loadGraph(const std::string& text) {
 	return processor.load(rootDocument);
 }
 
-// ---- Edits at the source (S3's edit rules) ----
+// ---- Edits at the source ----
 
 /// A text knobly can write as a string: its grammar's STRING has escapes for newline, tab and
 /// carriage return only, so any other control character (U+0000 to U+001F, U+007F) has no written
@@ -366,6 +404,14 @@ public:
 		return std::nullopt;
 	}
 
+	/// The node's own `disabled` line as rendered (from its block, a snippet it uses or a variable); none when absent.
+	static std::optional<vr::directive> disabledOf(const vr::directive& node) {
+		if (const auto block = node.block())
+			for (const vr::directive& setting : *block)
+				if (setting.name() == disabledKey) return setting;
+		return std::nullopt;
+	}
+
 	/// Every route naming `node` at either end, in text order.
 	std::vector<vr::directive> routesOf(const NodeName& node) const {
 		std::vector<vr::directive> found;
@@ -449,6 +495,76 @@ void addBlock(const vw::written_directive& node, const std::string& text, const 
 	const std::string rewritten =
 		text.substr(start, at - start) + " { " + settings + " }" + text.substr(at + 1, end - at - 1);
 	node.replace_with_text(vl::text(rewritten));
+}
+
+/// Where a node's statement starts and ends in `text`, where its last value ends, and where its block's `{` is.
+struct NodeText {
+	std::size_t start;
+	std::size_t end;
+	std::size_t afterValues;
+	std::size_t open;
+};
+
+NodeText nodeText(const vw::written_directive& node, const std::string& text) {
+	const auto span = node.place().span();
+	const auto start = static_cast<std::size_t>(span.start().offset());
+	const auto end = static_cast<std::size_t>(span.end().offset());
+	const auto values = node.values();
+	const auto afterValues = static_cast<std::size_t>(values.at(values.size() - 1).place().span().end().offset());
+	std::size_t open = afterValues;
+	while (open < end && text[open] != '{') { // whitespace and comments up to the block's {
+		if (text[open] == '#') open = std::min(end, text.find('\n', open));
+		else ++open;
+	}
+	if (open >= end) throw std::logic_error("graph file model: a node with a block has no {");
+	return NodeText{start, end, afterValues, open};
+}
+
+/// Puts `statement` first in a node's block (docs/graph-file.md#disabled-true, as pinned by
+/// graph_file_disabled_test.cpp). When the block's first statement starts on a line after the `{`, knobly's
+/// insert_statements writes it on a line of its own, indented as that statement. When it starts on the `{`'s line (a
+/// one-line block, or an empty one), knobly would break the line after the new statement and leave the old first
+/// statement unindented, so it is written on that line instead, before the first statement (or before the `}`), the
+/// rest of the statement kept as it was.
+void insertFirst(const vw::written_directive& node, const vw::written_block& block, const std::string& text,
+                 const std::string& statement) {
+	const NodeText at = nodeText(node, text);
+	std::size_t first = at.open + 1;
+	if (block.size() > 0) {
+		first = static_cast<std::size_t>(block.at(0).place().span().start().offset());
+		if (text.find('\n', at.open) < first) {
+			block.insert_statements(0, vl::text(statement));
+			return;
+		}
+	} else {
+		while (first < at.end && text[first] != '}') ++first; // an empty block holds no comment: dropBlock's rule
+		if (text.find('\n', at.open) < first) {
+			block.insert_statements(0, vl::text(statement));
+			return;
+		}
+	}
+	const std::string rewritten = text.substr(at.start, first - at.start) + (text[first - 1] == '{' ? " " : "") +
+	                              statement + " " + text.substr(first, at.end - first);
+	node.replace_with_text(vl::text(rewritten));
+}
+
+/// addBlock's inverse: rewrites a node whose block holds nothing, not even a comment, as one
+/// with no block, the `{ }` replaced by `;`; everything else the statement owns (comments) is kept. False, and nothing
+/// changed, when the block holds anything.
+bool dropBlock(const vw::written_directive& node, const std::string& text) {
+	const NodeText at = nodeText(node, text);
+	const std::size_t start = at.start;
+	const std::size_t end = at.end;
+	const std::size_t afterValues = at.afterValues;
+	const std::size_t open = at.open;
+	std::size_t close = open + 1;
+	while (close < end && std::string_view(" \t\r\n").find(text[close]) != std::string_view::npos) ++close;
+	if (close >= end || text[close] != '}') return false; // a comment, or a statement
+	std::size_t cut = open;
+	while (cut > afterValues && (text[cut - 1] == ' ' || text[cut - 1] == '\t')) --cut;
+	const std::string rewritten = text.substr(start, cut - start) + ";" + text.substr(close + 1, end - close - 1);
+	node.replace_with_text(vl::text(rewritten));
+	return true;
 }
 
 GraphFileRead onlyError(std::string_view code, std::string message) {
@@ -562,11 +678,14 @@ GraphFileModel GraphFileModel::load(const DiskText& disk, const NodeCatalogue& c
 
 namespace {
 
-/// The candidate: the edited text loaded again; nothing when the text did not change.
-EditOutcome finish(const Editing& editing, const NodeCatalogue& catalogue) {
-	std::string after = editing.text();
-	if (after == editing.original()) return std::optional<GraphFileModel>{};
+/// The candidate: the edited text loaded again; nothing when it is the text the edit started from.
+EditOutcome finish(std::string after, const std::string& original, const NodeCatalogue& catalogue) {
+	if (after == original) return std::optional<GraphFileModel>{};
 	return std::optional<GraphFileModel>(GraphFileModel::load(DiskText{std::move(after)}, catalogue));
+}
+
+EditOutcome finish(const Editing& editing, const NodeCatalogue& catalogue) {
+	return finish(editing.text(), editing.original(), catalogue);
 }
 
 } // namespace
@@ -576,6 +695,7 @@ EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings&
 		const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
 		if (held == nullptr) return refuse(UnknownNode{name});
 		if (!settings.is_object()) return refuse(InvalidSettings{name, "settings: must be an object"});
+		if (settings.contains(disabledKey)) return refuse(InvalidSettings{name, std::string(disabledNotASetting)});
 		if (held->settings == settings) return std::optional<GraphFileModel>{};
 		const NodeType* type = impl_->catalogue->find(held->type);
 		std::map<std::string, std::string> written; // every key's value as knobly text, checked before any edit
@@ -594,6 +714,7 @@ EditOutcome GraphFileModel::updateNode(const NodeName& name, const NodeSettings&
 		if (const auto block = node->block())
 			for (const vr::directive& setting : *block) {
 				const std::string key = setting.name();
+				if (key == disabledKey) continue; // never a setting: an update keeps the node's disabled line
 				present.insert(key);
 				if (!settings.contains(key)) {
 					if (auto shared = editing.shared(setting.written())) return refuse(std::move(*shared));
@@ -633,8 +754,12 @@ EditOutcome GraphFileModel::addNode(const NodeSpec& node) const {
 		if (!writable(node.type)) return refuse(UnknownNodeType{node.type});
 		if (!writable(node.name)) return refuse(InvalidName{node.name});
 		if (!node.settings.is_object()) return refuse(InvalidSettings{node.name, "settings: must be an object"});
+		if (node.settings.contains(disabledKey))
+			return refuse(InvalidSettings{node.name, std::string(disabledNotASetting)});
 		auto settings = settingsText(node.name, impl_->catalogue->find(node.type), node.settings);
 		if (!settings) return refuse(settings.error());
+		if (node.disabled) // the reserved key first, so the state reads before the settings
+			*settings = settings->empty() ? "disabled true;" : "disabled true; " + *settings;
 		const Editing editing(impl_->text);
 		const std::string head = std::format("node {} {}", wordText(node.type), wordText(node.name));
 		editing.append(settings->empty() ? head + ";" : std::format("{} {{ {} }}", head, *settings));
@@ -656,6 +781,56 @@ EditOutcome GraphFileModel::removeNode(const NodeName& name) const {
 			if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
 		removeAll(std::move(removals));
 		return finish(editing, *impl_->catalogue);
+	});
+}
+
+EditOutcome GraphFileModel::disableNode(const NodeName& name) const {
+	return guarded([&]() -> EditOutcome {
+		const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
+		if (held == nullptr) return refuse(UnknownNode{name});
+		if (held->disabled) return std::optional<GraphFileModel>{};
+		const Editing editing(impl_->text);
+		const auto node = editing.node(name);
+		if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+		if (const auto own = Editing::disabledOf(*node)) {
+			// Only this node's line: its value becomes true, wherever it came from; a variable it named is left.
+			const vw::written_directive line = own->written();
+			if (auto shared = editing.shared(line)) return refuse(std::move(*shared));
+			line.set(vl::text("true"));
+		} else {
+			const vw::written_directive statement = node->written();
+			if (auto shared = editing.shared(statement)) return refuse(std::move(*shared));
+			if (const auto block = statement.block())
+				insertFirst(statement, *block, editing.original(), "disabled true;");
+			else addBlock(statement, editing.original(), "disabled true;");
+		}
+		return finish(editing, *impl_->catalogue);
+	});
+}
+
+EditOutcome GraphFileModel::enableNode(const NodeName& name) const {
+	return guarded([&]() -> EditOutcome {
+		const NodeSpec* held = heldNode(wantedOf(impl_->read), name);
+		if (held == nullptr) return refuse(UnknownNode{name});
+		if (!held->disabled) return std::optional<GraphFileModel>{};
+		std::string removed;
+		{
+			const Editing editing(impl_->text);
+			const auto node = editing.node(name);
+			if (!node) throw std::logic_error("graph file model: a wanted node is not in its render");
+			const auto own = Editing::disabledOf(*node);
+			if (!own) throw std::logic_error("graph file model: a disabled node has no disabled line in its render");
+			if (auto shared = editing.shared(own->written())) return refuse(std::move(*shared));
+			own->written().remove();
+			removed = editing.text();
+		}
+		// A block the removal left with nothing in it goes too, on a fresh load of the text it left.
+		const Editing after(removed);
+		const auto node = after.node(name);
+		if (!node) throw std::logic_error("graph file model: an enabled node is not in its render");
+		const vw::written_directive statement = node->written();
+		if (const auto block = statement.block(); block && block->size() == 0) dropBlock(statement, removed);
+		return finish(after.text(), impl_->text, *impl_->catalogue);
 	});
 }
 

@@ -1,4 +1,4 @@
-// ear.conf end to end (docs/design/knobly-config.md, "Tracer bullet" and S5 criteria T1-T8): the
+// ear.conf end to end (docs/graph-file.md): the
 // real out/ear boots from a graph file folder; every request goes through the graph file keeper;
 // editor edits are made at the source and written back, and a hand edit wins; a file with errors, or
 // one the graph refuses, runs nothing and ear stays up; the folder's limits hold. Every wait is
@@ -17,7 +17,7 @@ namespace {
 
 using namespace ear::test;
 
-/// The record's example (docs/design/knobly-config.md, "File format") at `rate`: noise -> rec:record.left,
+/// The record's example (docs/graph-file.md#edits-at-the-source) at `rate`: noise -> rec:record.left,
 /// and two cards ear cannot open, desk (with a route) and porch.
 std::string recordExample(std::uint32_t rate = 48000) {
 	return "graph_frequency " + std::to_string(rate) + R"(;
@@ -63,7 +63,7 @@ void checkNowhere(const std::string& text, const Rpc& rpc, const ChildProcess& p
                   const std::vector<json>& replies) {
 	CHECK(json(rpc.notifications).dump().find(text) == std::string::npos);
 	CHECK(json(replies).dump().find(text) == std::string::npos);
-	CHECK(process.output().find(text) == std::string::npos);
+	CHECK(process.raw().find(text) == std::string::npos);
 }
 
 /// Ready once the keeper's first offer is told (its status line), whatever it says.
@@ -100,8 +100,20 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	// The recording window: the noise check needs at least half of it.
 	std::this_thread::sleep_for(1s);
 	CHECK(ear.stop(rpc) == 0);
-	CHECK(process.hasLine("node rec stopped dropped=0"));
+	CHECK(process.hasLine("node rec removed dropped=0"));
 	checkNoiseOnOneChannel(directory.recordings() / "take1.wav", 0, 44100);
+
+	// A card that cannot open makes alsa-lib and PipeWire say so: through ear's handler and pw_log, both are records
+	// (docs/output-records.md), and nothing ear printed is anything but a record.
+	CHECK(process.plainLines().empty());
+	const auto logged = [&](const std::string& source) {
+		for (const json& record : process.records())
+			if (record["kind"] == "log" && record["source"] == source && record.value("unattributed", false))
+				return true;
+		return false;
+	};
+	CHECK(logged("alsa-lib"));
+	CHECK(logged("pipewire"));
 }
 
 TEST_CASE("T2: an editor edit is announced, applied, answered and written back, and a hand edit wins",

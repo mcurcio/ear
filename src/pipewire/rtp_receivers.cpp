@@ -1,4 +1,4 @@
-// RTP receivers through PipeWire's rtp-source module (docs/design/rtp.md sections 4, 5 and 7.2,
+// RTP receivers through PipeWire's rtp-source module (docs/engine.md#rtp-receivers,
 // rtp_receivers.hpp). A receiver is one kind of outside node: its body here loads the module
 // into the engine's context and finds the module's node through the registry; the one
 // outside-node lifecycle (outside_nodes.hpp) links it once it runs and tears it down.
@@ -30,19 +30,18 @@ constexpr char kind[] = "RTP receiver"; // names it in failure details
 /// "receive_<position>" (impl-port.c), and its positions are AUX0...
 std::string channelPort(std::size_t channel) { return "receive_AUX" + std::to_string(channel); }
 
-/// The module's arguments (docs/design/rtp.md section 5): the one home of this form. Every value
+/// The module's arguments (docs/engine.md#rtp-receivers): the one home of this form. Every value
 /// is a number, a closed enum, an RtpAddress or the engine node's name ([A-Za-z0-9_.-]), so no
 /// user text reaches PipeWire's parsers.
-std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request) {
+std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest& request, std::size_t channels) {
 	const std::string name = "\"" + engineNode + "\"";
 	return "{ remote.name = \"internal\"" + std::string(" source.ip = \"") + request.address.text() + "\"" +
 	       " source.port = " + std::to_string(request.port) + " sess.media = \"audio\"" +
 	       " sess.latency.msec = " + std::to_string(request.latencyMs) + " sess.ignore-ssrc = true" +
 	       " audio.format = \"" + (request.encoding == RtpEncoding::l24 ? "S24BE" : "S16BE") + "\"" +
-	       " audio.rate = " + std::to_string(request.rate) +
-	       " audio.channels = " + std::to_string(request.blockPorts.size()) +
-	       " audio.position = " + auxPositions(request.blockPorts.size()) + " node.name = " + name +
-	       " node.description = " + name + " media.name = " + name +
+	       " audio.rate = " + std::to_string(request.rate) + " audio.channels = " + std::to_string(channels) +
+	       " audio.position = " + auxPositions(channels) + " node.name = " + name + " node.description = " + name +
+	       " media.name = " + name +
 	       " stream.props = { node.always-process = true"
 	       " adapter.auto-port-config = { mode = dsp monitor = false control = false position = "
 	       "preserve } } }";
@@ -55,7 +54,7 @@ std::string moduleArguments(const NodeName& engineNode, const RtpReceiverRequest
 ///      global goes, as the engine may give the id again.
 ///   2. On the done: the module is loaded. The first node global named engineNode that is not
 ///      stale is this receiver's; it is bound for its info.
-///   3. Its info RUNNING (its socket is bound, docs/design/rtp.md section 4, finding g): running.
+///   3. Its info RUNNING (its socket is bound, docs/engine.md#rtp-receivers, finding g): running.
 class RtpReceiverBody final : public OutsideBody {
 public:
 	RtpReceiverBody(Engine& engine, NodeName engineNode, std::string arguments, OutsideBodyEvents& events)
@@ -222,21 +221,22 @@ private:
 
 RtpReceivers::RtpReceivers(Engine& engine) : engine_(engine) {}
 
-std::unique_ptr<OutsideNode> RtpReceivers::make(const NodeName& engineNode, const NodeName& blockNode,
-                                                const RtpReceiverRequest& request, OutsideNodeEvents& events) {
+std::unique_ptr<OutsideNode> RtpReceivers::make(const OutsideTarget& target, const RtpReceiverRequest& request,
+                                                OutsideNodeEvents& events) {
 	std::vector<PortName> receiverPorts;
-	for (std::size_t channel = 0; channel < request.blockPorts.size(); ++channel) {
+	for (std::size_t channel = 0; channel < target.blockPorts.size(); ++channel) {
 		receiverPorts.push_back(channelPort(channel));
 	}
 	return joinOutsideNode(engine_,
 	                       OutsideJoin{.kind = kind,
-	                                   .blockNode = blockNode,
+	                                   .blockId = target.blockId,
 	                                   .flow = ChannelFlow::nodeToBlock,
 	                                   .nodePorts = std::move(receiverPorts),
-	                                   .blockPorts = request.blockPorts},
+	                                   .blockPorts = target.blockPorts},
 	                       events, [&](OutsideBodyEvents& body) -> std::unique_ptr<OutsideBody> {
-							   return std::make_unique<RtpReceiverBody>(engine_, engineNode,
-		                                                                moduleArguments(engineNode, request), body);
+							   return std::make_unique<RtpReceiverBody>(
+								   engine_, target.engineNode,
+								   moduleArguments(target.engineNode, request, target.blockPorts.size()), body);
 						   });
 }
 

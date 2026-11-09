@@ -1,4 +1,4 @@
-// The JSON-RPC 2.0 envelope (docs/design/batch2.md section 4.5, R1 criterion 1), against the
+// The JSON-RPC 2.0 envelope (docs/control-port.md), against the
 // specification's section 7 examples (https://www.jsonrpc.org/specification#examples). EAR has
 // none of the examples' methods, so these check the envelope: what each text parses into and
 // that the encoders give the example's response. Methods and notifications through a session

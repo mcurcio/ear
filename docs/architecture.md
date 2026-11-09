@@ -1,0 +1,391 @@
+# Architecture
+
+EAR ("Einstein Audio Router") is one Linux process that runs PipeWire's audio engine inside
+itself and builds an audio graph from a text file, `ear.conf`. It starts the nodes the file
+names, links their ports as the file's routes say, and keeps the file live: an edit made through
+the control port (port 7777, the graph editor or a script) is applied to the running graph and
+written back into `ear.conf`, and a hand edit to `ear.conf` is applied and shown in the editor.
+Every change is printed on standard output as one JSON record.
+
+This page is the map: what the parts are, which thread runs what, how a change and audio move,
+and what a node's life looks like. The details live on their own pages:
+[graph-file.md](graph-file.md), [node-types.md](node-types.md),
+[writing-a-node-type.md](writing-a-node-type.md), [control-port.md](control-port.md),
+[output-records.md](output-records.md), [engine.md](engine.md) and [editor.md](editor.md).
+
+## The ideas it is built on
+
+- **The graph always runs.** Every port block processes every cycle whether it is routed or
+  not, and nothing is suspended. A node starting, stopping, failing or being reconfigured
+  changes only that node's own audio; its block, its ports and its wires stay, and a peer wired
+  to a silent node reads zeros. *Why:* the owner's rule, "in a general purpose
+  sources-and-sinks graph, its always just 'running'".
+- **One clock, ear's own.** The graph is always driven by ear's internal clock (PipeWire's dummy
+  driver, tracking `CLOCK_MONOTONIC_RAW`). Sound cards, RTP receivers and network nodes follow
+  it and never drive it, so losing a card never moves the clock under anything else
+  ([engine.md](engine.md#the-internal-clock)).
+- **One source of truth for what is wanted: `ear.conf`.** The control port has no state of its
+  own; every graph edit is an edit of the file, judged before it is kept
+  ([graph-file.md](graph-file.md)).
+- **Health is the framework's.** A node type reports facts (a resource lost, a note); the node
+  framework alone decides a node's state.
+- **PipeWire does the audio; ear does the policy.** PipeWire owns the clock, rate matching,
+  resampling, devices and network audio. ear decides which nodes exist and which links join
+  them. There is no PipeWire daemon, no socket and no session manager.
+
+## Packages
+
+Each C++ package lives in `src/<package>/` with its own `CMakeLists.txt`, public headers under
+`src/<package>/include/ear/<package>/` and tests in `tests/`. A node type lives in
+`src/nodes/<type>/` and is its own library ([writing-a-node-type.md](writing-a-node-type.md)).
+
+| Target | Owns | Never |
+|---|---|---|
+| `ear_core` (`src/core`) | The desired graph (`DesiredGraph`: the one judge of every change, `plan` then `commit`); the node type contract (`NodeType`, settings tables, `TypeSpec`, the type's class and its contexts); the node framework (`NodeHost`, the node lifecycle machines, health, `NodeOperations`, the pass-through, interim sinks, latency plans); the reconciler (route links and route status); levels; the graph read (`GraphStatus`); `FrameRing`. Beside it, for tests only, `ear_type_harness` (`ear/testing/`) | Any PipeWire call, socket, thread or file access. nlohmann/json is its only dependency |
+| `ear_folder` (`src/folder`) | `ConfinedFolder`: a folder held open from boot, every path resolved beneath it by the kernel (`openat2` with `RESOLVE_BENEATH`); files replaced only if unchanged (`renameat2(RENAME_EXCHANGE)`); `requireApart`, the boot check that no two folders overlap | Following `..`, absolute paths or (for the graph file) any symlink |
+| `ear_node_white`, `ear_node_file`, `ear_node_card`, `ear_node_rtp`, `ear_node_sendspin` (`src/nodes/<type>`) | One built-in node type each ([node-types.md](node-types.md)) | Another node type; PipeWire (only `ear_core`'s interfaces) |
+| `ear_all_node_types` (`src/all_node_types`) | `allNodeTypes()`, the one list of node types, generated at configure from the folders in `src/nodes/` | Naming a type by hand |
+| `ear_pipewire` (`src/pipewire`) | The in-process engine and the adapters that implement `ear_core`'s interfaces: port blocks, links, live ports, sinks and handoffs, outside nodes (sound cards, RTP receivers), the main-loop executor, the engine's log ([engine.md](engine.md)) | Policy |
+| `ear_output` (`src/output`) | Where standard output goes: the output thread, the capture of descriptors 1 and 2, the main-loop watchdog ([output-records.md](output-records.md)) | A record's text |
+| `ear_control` (`src/control`) | Standard output's one encoder (`StatusLog`); the JSON-RPC protocol (envelope, decoding, commands, events, sessions); the wire types of the graph file and the lifecycle; `MainLoopGateway`, the one crossing between the main loop and the control thread | Sockets; graph rules; knobly |
+| `ear_config` (`src/config`) | The graph file keeper: `ear.conf`'s model through knobly, the keeper's thread (working copy, folder watch, writes) and its main-loop side (plan and commit, the running version) | Judging a graph; letting a knobly type leave its thread |
+| `ear_server` (`src/server`) | The control thread and port 7777 (Boost.Beast): the editor's files, `/rpc`, Host and Origin checks, per-client queues, the level bell | Graph state; PipeWire |
+| `ear` (`src/main.cpp`) | The composition root: wiring, boot and stop order, and glue between packages that do not see each other | Computing anything |
+| `web/` | The graph editor (React, React Flow, Vite; [editor.md](editor.md)) | Graph rules: it draws only what ear announced and never parses knobly |
+
+**Dependency rules.** Dependencies point one way: `ear_core` is below everything; the node types,
+`ear_pipewire`, `ear_control` and `ear_config` depend on it; `ear_control` is below `ear_server`
+and `ear_config`; `ear_folder` is below `ear_node_sendspin` and `ear_config`; `ear` links all of
+them, and links the node types only through `ear_all_node_types`. No node type links another
+(configure refuses it). `ear_output` and `ear_folder` depend on nothing of ear's. No Boost,
+knobly or sendspin-cpp type appears in a public header.
+
+**An interface lives with the package that consumes it.** `node_host.hpp` declares
+`PortBlockFactory` and the resource adapters, `reconciler.hpp` declares `LinkMaker` and the
+live-port and link listeners, and `ear_pipewire` implements them; `requests.hpp` (in
+`ear_control`) declares `GraphRequests` and `GraphFileListener`, which `ear_config` implements
+and consumes. Each package's headers form a CMake header set compiled on its own
+(`VERIFY_INTERFACE_HEADER_SETS`), and `ear_pipewire`'s headers only forward-declare PipeWire's
+types, so PipeWire's headers stay private to it.
+
+## Threads
+
+*Why so many:* the owner's rule, "the control port shouldn't run in the PipeWire context,
+because it will not be real time". The realtime thread does only audio; the main loop holds all
+graph state; everything that can block (sockets, disk, libraries) runs elsewhere and crosses to
+the main loop by posting.
+
+| Thread | Runs |
+|---|---|
+| PipeWire's data loop (realtime, one for the whole engine) | Every port block's `process`, level metering, the sinks' taps and the legacy handoffs' writers; every outside node's processing |
+| PipeWire's main loop (the main thread) | Every piece of graph state: the engine, desired graph, node framework, reconciler, adapters, the gateway's graph side, the keeper's main-loop side; `ear.conf`'s first read at boot |
+| The control thread | Port 7777: sockets, JSON-RPC, sessions, queues. It holds only the gateway, which sends every request whole to the keeper and gets replies and events back in order from the main loop |
+| The keeper thread | The graph file keeper: every request, disk check and write, one step at a time; the working copy (knobly's object, which never leaves this thread); the inotify watch. It waits in `poll()` with no timeout |
+| Sink and handoff threads | A `file` node's sink (its WAV writer); a `sendspin` node's legacy handoff |
+| The output thread | Every write to the real standard output, from a bounded queue |
+| The capture thread | Reads the pipes on descriptors 1 and 2 into `log` records, and drains the engine's log ring |
+| The watchdog thread | `StallWatch`: watches the main loop's heartbeat ([below](#bounds-the-wedged-data-loop-and-the-watchdog)) |
+| A `sendspin` node's threads | Its worker, its notifier and the protocol library's own ([node-types.md](node-types.md#sendspin)) |
+
+Everything is moved by events, not polling, with one exception: a `sendspin` node's worker polls
+its library every 10 ms and watches its connection with 5 s and 31 s timers, because the library
+has no wake hook and no event for a lost connection or a failed dial. Those timers stay inside
+that thread.
+
+## How a change moves
+
+```
+ editor / script                 hand edit
+       |                             |
+ control thread  --request-->  keeper thread  <--inotify--  ear.conf
+                                     |  (candidate text, or the disk's text)
+                                     v
+                              main loop: keeper's main-loop side
+                                     |  DesiredGraph::plan  -> refused: reply only
+                                     |  accepted: tell the file change, commit, reply
+                                     v
+                   DesiredGraph observers (gateway)  then subscribers
+                                     |                       |
+                                 NodeHost               Reconciler
+                                     |                       |
+                          node health, notes        route links, route status
+                                     \                       /
+                                StatusLog (stdout) and gateway (clients)
+```
+
+1. A request reaches the keeper's thread whole (a batch stays whole). For an edit the keeper
+   loads the working copy's text afresh and applies the edit at its source, making a
+   *candidate* ([graph-file.md](graph-file.md#edits-at-the-source)).
+2. The keeper posts the candidate to the main loop, where its main-loop side asks
+   `DesiredGraph::plan` for a verdict against the whole wanted graph.
+3. If accepted, in one main-loop turn: the file change is told (gateway, then `StatusLog`), the
+   plan is committed, its node and route events follow, and the reply is sent.
+4. The keeper keeps the candidate as its working copy and writes `ear.conf` once no step is
+   waiting (write-behind): it swaps the new text in and keeps it only if the text it replaced is
+   what it last read or wrote.
+5. A refused candidate is dropped; nothing is told or written, and only the reply carries the
+   refusal.
+
+A hand edit arrives as an inotify event, is read on the keeper's thread and offered the same way
+(cause `disk`). The graph may refuse it, but the working copy still follows the disk, and the
+graph keeps running what it ran.
+
+**Order.** `DesiredGraph` tells its observers (the gateway) of each change before its subscribers
+(`NodeHost`, then the `Reconciler`), and a commit's events always come in one order: routes
+removed, nodes removed, nodes changed, nodes added, routes added. `LiveGraph` tells the
+`Reconciler` which ports exist; `Links` tells it when a link is active, failed or gone. `NodeHost`
+and the `Reconciler` tell `StatusLog` and the gateway. So a change's notification always comes
+before the statuses it causes, on standard output and on the wire alike.
+
+**Reconciling routes.** A route is linked whenever both its ends are live ports, whatever either
+node's state: the `Reconciler` asks `Links` for a link by port ids; the route is `linked` once
+the link is active, `pending` while an end is missing, and `refused` with a detail when the
+engine refused the link. A wire never depends on a node's state.
+
+## How audio moves
+
+1. **The engine.** `Engine` runs PipeWire's engine in-process with ear's internal clock driving
+   the graph at the graph frequency, one block of `block_size` frames a cycle, both fixed at boot
+   ([engine.md](engine.md)).
+2. **Port blocks.** Each node has one port block (a `pw_filter`) for its whole life, named by the
+   node's name, with one 32-bit float mono port per declared port, public and inside alike. Every
+   block is in the graph group and always processes.
+3. **A configuration.** The node's type makes an instance whose `configure` acquires resources
+   (sound cards, RTP receivers, recordings, sinks) and gives the code that will run. Once every
+   resource is ready and the block is ready, the framework drives the block with that code
+   ([the node lifecycle](#the-node-lifecycle)).
+4. **Each cycle**, on the realtime thread, the block calls the code with one span per port and a
+   `GraphCycle` (the cycle's start on both monotonic clocks, the driver's position, rate and id,
+   the next cycle's start, an xrun count, whether the clock jumped, and the latency downstream of
+   each output), so no type reads a clock ([engine.md](engine.md#graphcycle)).
+5. **Routes.** `LiveGraph` reports ports as the engine's registry announces them; the
+   `Reconciler` links wanted routes between live ports. An unlinked input reads zeros.
+6. **Outside nodes.** A `card` or `rtp` node's block has inside banks no route can name; the
+   framework joins an ALSA adapter node or an RTP receiver to them, and its pass-through copies
+   between inside and public banks ([engine.md](engine.md#outside-nodes)).
+7. **Off the realtime thread.** A `file` node's block writes each cycle into a sink's lock-free
+   ring, read by the sink's own thread ([engine.md](engine.md#sinks)).
+8. **Levels.** Each block meters its public ports and publishes a window every 1/30 s of graph
+   time; the control thread sends the newest to subscribers
+   ([control-port.md](control-port.md#levels)).
+
+## The node lifecycle
+
+A node is two things: its **block**, made once and kept for the node's life, and its
+**configuration**, made from its settings and torn down and remade behind the same block. The
+framework drives both through two pure state machines (`node_lifecycle.hpp`), and `NodeHost`
+carries out what they decide.
+
+### Phases, states and what is wanted
+
+A node's **phase** is its exact state; its **state** is the phase's colour, which the editor and
+standard output show.
+
+| Phase | State | What it means |
+|---|---|---|
+| `added` | `starting` | The node is in the graph and its block is being made. It waits here while an older node of its name (a removed or renamed one) is still closing |
+| `configuring` | `starting` | Its instance was made and `configure` ran; the resources it asked for are being readied |
+| `configured` | `starting` | Every resource is ready; the code is prepared |
+| `starting` | `starting` | Wanted running, waiting for the block to be ready and the code to drive it |
+| `running` | `running` | The block runs the node's code |
+| `stopping` | `stopping` | Fading out, then silencing; the `cause` says why: `stop`, `disabling`, `removing` or `restarting` |
+| `stopped` | `stopped` | Silent, keeping its configuration |
+| `disabled` | `disabled` | Silent, with no configuration |
+| `failed` | `failed` | Torn down after a failure; `reason` says why |
+
+`added`, `configured` and `starting` normally last milliseconds. **What the graph wants** of a
+node (`wanted`) is `disabled` when its block in `ear.conf` says `disabled true;`, else `stopped`
+while a stop is held, else `running`. A node that rests stopped shows `stopped` only once it is
+there; until then it shows `starting`.
+
+### Stopped versus disabled
+
+| | Stopped | Disabled |
+|---|---|---|
+| Set by | `node.stop`; cleared by `node.start` | `node.disable` or `disabled true;` in the node's braces; cleared by `node.enable` or a hand edit |
+| Survives a restart of ear | No: never written to `ear.conf`, forgotten at restart (the node then runs) | Yes: it is in `ear.conf` |
+| Configuration | Kept: instance, resources, a card's open device, a `sendspin` node's connection | Released: nothing is acquired, a card's device is closed |
+| Block, ports, routes | Kept | Kept (its input meters still show what reaches it) |
+| Coming back | `node.start` drives the code again within a turn and a couple of cycles; it cannot fail for a missing device | `node.enable` configures it from empty, which can fail like any start |
+
+A node that boots disabled is never configured. `node.start`, `node.stop` and `node.restart`
+refuse a disabled node (`node-disabled`): enable it first.
+
+### Restarts and changes of settings
+
+`node.restart` tears the configuration down and makes a new one behind the same block, returning
+to the wanted state (a stopped node is configured again and rests stopped). Every change of a
+node's settings does the same (cause `restarting`, then `configuring` with the changed keys).
+An update that leaves the settings as they are changes nothing, for a failed node too. A change
+of a node's ports (a card's channel count) or of its type replaces the node: its routes and the
+node are removed and added again. A change to a disabled node is stored for when it is enabled.
+
+### Failures
+
+A failure tears the node's configuration down at once and keeps its block and routes; the node
+stays `failed` until asked (`node.start` or `node.restart`, which retry it, a change of settings,
+or its removal). Recovery that retries by itself is not built yet.
+
+| Code | When |
+|---|---|
+| `engine-refused` | The engine refused or lost the block or an outside node (a card that cannot open or is unplugged, an RTP receiver lost), or the data loop is wedged |
+| `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin, its insides said `lost`, or a hook threw |
+| `lost` | After that: its insides said `lost`, or a hook threw |
+
+A lost **block** is final (`blockLost: true`): the node cannot be restarted (`not-restartable`,
+reason `block-lost`) until it is removed and added again or ear restarts.
+
+### Fades
+
+Every node with an output fades its outputs in over 5 ms at every start, and out over 5 ms before
+every planned silence: a stop, a restart, a disable, a removal and a failure. A card's playback
+bank fades too, so its speakers never click; a sink's bank (a `file` node's) is never faded, so a
+recording keeps the exact samples of every cycle its code ran. A lost block cannot be faded.
+
+### Bounds, the wedged data loop and the watchdog
+
+Every wait the framework makes on another thread has a bound, so no node can hold the graph:
+
+| Wait | Bound | Past it |
+|---|---|---|
+| A fade-out's acknowledgement | 100 ms | `ear.fade-unacknowledged`; the silence is taken unfaded |
+| A drive or silence on the data loop | 5 s (judged after a grace when the whole process stalled) | `ear.barrier-overdue`, then, once, `ear.data-loop-wedged` |
+| A configuration's teardown (sinks drained, threads stopped) | 10 s | `ear.close-overdue`; the configuration is leaked, never freed, and the node moves on |
+| A hook (`configure`, `start()`, `stop()`) on the main loop | 20 ms | `ear.hook-slow`, once per node and hook (a report only) |
+| A phase that lasts | 2 s | The node says what it waits for (`waitingFor`: `older-node`, `block`, `companion`, `consumer`) |
+
+**A wedged data loop.** Once ear judges the data loop wedged it makes no PipeWire call that could
+wait on it: no block, outside node or link is made or destroyed, and no latency is told. A new
+node fails `engine-refused: the data loop is wedged`, a new route is `refused` with that detail,
+and what ear would destroy is leaked. ear's stop still writes `ear.conf` and every record, then
+leaves through `std::_Exit(0)` (as it does whenever anything was leaked).
+
+**The main-loop watchdog.** A 100 ms main-loop timer beats a heartbeat; the watchdog thread looks
+every 250 ms and, once the heartbeat is older than 500 ms, writes `ear.main-loop-stalled` (with
+the call the loop is in, when known), then `ear.main-loop-resumed` once beats return. Any stall
+over 750 ms is seen. It never touches PipeWire or waits on the main loop. *Why:* PipeWire's own
+object changes, and a sound card's ALSA open and close, run synchronously on ear's main loop, so
+a stalled data thread or a wedged USB card can hold every node and the control port's graph
+requests; the watchdog makes that visible.
+
+### Isolation
+
+One node's lifecycle touches only its own block's code, the audio its peers read from it, and its
+own outside nodes' links. What is shared and how it is kept safe:
+
+| Shared | Kept safe by |
+|---|---|
+| The engine and the clock driver | A refused or lost block or outside node fails only its node; the internal clock belongs to no node and outranks every card |
+| The one data loop | `process` is bounded; ear's barriers are asynchronous invokes; a barrier past 5 s marks the loop wedged |
+| The main loop | Hooks never block; every wait on another thread is asynchronous; PipeWire calls are batched per turn; the watchdog reports stalls |
+| ALSA calls of a card | **Not isolated (a known limit):** ALSA's open, drop and close run on the main loop, so a USB card that wedges in the kernel can block every node until ear restarts |
+
+### Teardown, by dependency
+
+Tearing a configuration down (a restart, a failure, a disable, a removal) goes by dependency, and
+the main loop never joins a thread:
+
+1. The type's `stop()` if its `start()` ran; the fade; the barrier, a drive of no code (after it
+   completes, no `process` of the code runs, so nothing the realtime thread can reach is freed
+   while it can reach it); the code's `release`.
+2. Outside nodes destroyed (and, for a removal, the block, only after the barrier).
+3. Sinks and handoffs drained and finished, each on its own thread.
+4. A legacy run object closed, off the main loop (a `sendspin` node's worker says goodbye on its
+   own thread).
+5. On the main loop: the code, then the instance (or run object) and its config freed, and
+   recordings closed after them.
+
+Steps 3 and 4 have the close deadline ([bounds](#bounds-the-wedged-data-loop-and-the-watchdog)).
+A restart or retry completes the teardown before the
+next `configure`, so a node has one configuration at a time and never waits on its own old one.
+Anything a configuration's threads tell lands only on that configuration (it carries an internal
+generation), never on the next, and facts are dropped once its teardown began. A stop does only
+step 1's fade and silence, keeping everything else.
+
+## Boot and stop
+
+### Running it
+
+```bash
+./out/ear                                                   # ./config/ear.conf; file nodes write into ./recordings
+./out/ear --config-dir ~/ear-config --web-root web/dist     # another graph file folder; the editor built by make web
+```
+
+| Flag | Default | What |
+|---|---|---|
+| `--config-dir` | `config` | The graph file folder, holding `ear.conf` and each `sendspin` node's key file; made at boot if missing (not its parents). It must be writable for edits to be saved |
+| `--recordings-dir` | `recordings` | The folder `file` nodes write into; made at boot if missing (not its parents) |
+| `--graph-frequency` | `48000` | The engine's rate, used only when `ear.conf` cannot be read or does not give both `graph_frequency` and `block_size` |
+| `--block-size` | `256` | The engine's block size, under the same rule |
+| `--control-address` | `0.0.0.0` | The control port's address |
+| `--control-port` | `7777` | Its port; `0` takes any free one |
+| `--web-root` | `<directory of ear>/web` | The editor's built files |
+| `--allowed-host` | none | A DNS name the Host header may carry (repeatable) |
+
+The three folders (graph file folder, recordings folder, web root) may not be the same, nor
+inside or around each other. `ear` reads `engine.conf` from beside its own binary.
+
+### The container image
+
+The run image (`docker/Dockerfile`'s `run` target, published as `ghcr.io/mcurcio/ear`, amd64 only
+until the Talos nodes' CPU is known; anonymous pulls work) is `debian:trixie-slim` with only the
+run-time libraries: no compiler and no knobly (it is compiled in). It holds `/opt/ear/ear`,
+`engine.conf`, `web/` and `licenses/` (the licences of what the `sendspin` node compiles in), runs
+as user `ear` (uid 10001), exposes 7777 and 8928 (a listening `sendspin` node's default), and
+defaults to `--config-dir /var/lib/ear/config --recordings-dir /var/lib/ear/recordings`, two
+volumes owned by `ear`. Arguments given to the container replace both, so pass them again.
+
+- **The graph file folder must be writable by uid 10001.** A read-only mount (a ConfigMap) cannot
+  be edited, a `sendspin` node cannot make its key file there and fails, and a first boot
+  without `ear.conf` runs nothing until the editor's pane saves one.
+- **Realtime where allowed.** The binary carries `CAP_SYS_NICE` as a permitted-only file
+  capability that ear makes effective at boot, so the audio thread is realtime where the
+  container is given `SYS_NICE` (`docker run --cap-add SYS_NICE`) and plain elsewhere; ear prints
+  which, and `graph.get` says it ([engine.md](engine.md#realtime-priority)).
+
+Running it on Talos with the MOTU 24Ao is the `ear-on-talos` skill's.
+
+### Boot
+
+1. Read the flags. Bad flags and `--help` are plain text; from here on every line is a record.
+2. Capture descriptors 1 and 2 ([output-records.md](output-records.md#how-output-is-written)).
+3. Open the two folders and check the three are apart; a failure is an `exit` record and exit 1.
+4. Read `ear.conf` once on the main thread. Its `graph_frequency` and `block_size` set the engine
+   when both read; otherwise the flags do (the file's own values then show as pending restart).
+5. Start the engine and print how its audio thread is scheduled (`engine` record).
+6. Wire the packages and start the keeper's thread. Its first offer (posted once the main loop
+   runs) plans the file from an empty graph. A file that is missing, has errors, or that the graph refuses runs nothing: ear stays
+   up and the editor's pane shows why until the file is fixed.
+7. Open the control port (`control` record).
+
+Exit 1 comes only from bad flags, a folder it cannot make or open, folders that overlap, an
+engine that does not start, a folder watch it cannot arm, or a control port it cannot bind.
+
+### Stop (SIGINT or SIGTERM)
+
+1. `DesiredGraph::close()`: every later edit is refused `stopping`.
+2. The keeper is told to stop: edits still queued get `stopping`; reads are still answered.
+3. `NodeHost::stopAll` takes every node through `stopping` (cause `removing`) and tears it down
+   (a `file` node finishes its WAV file).
+4. The control port closes every client with WebSocket code 1001; the control thread stops; the
+   main loop quits.
+5. The main thread joins the keeper's thread, which first writes the last accepted version of
+   `ear.conf` if it was not written yet (a failure is a `graph-file-write-failed` record; a hung
+   disk delays exit without limit).
+6. Every queued record is written; ear exits 0 (through `std::_Exit(0)` if anything was leaked).
+
+*Why stop in this order:* recordings are finished before anything waits on the disk, and the
+last `ear.conf` write happens before Kubernetes' grace period ends whatever the data loop or a
+card does.
+
+## Not built yet
+
+These are designed or wanted but not in the code: routes naming a whole bank; changing a node's
+settings in place without a restart (a type's change version of `configure` compiles but is
+never called); a sink's realtime side as its own engine node, readiness deadlines for cards and
+RTP receivers, and companions on the wire; `sendspin` on the type's class (it still runs through
+the legacy adapter); recovery of failed nodes; sound cards opened off the main loop; an internal
+clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
+type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
+frequency or block size while ear runs; arm64 images. The design pages for the unbuilt slices
+remain in `docs/design/`.

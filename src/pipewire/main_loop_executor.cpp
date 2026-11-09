@@ -1,8 +1,12 @@
-// Work posted from any thread, run on the engine's main loop (docs/design/batch2.md sections 2
-// and 4.3, main_loop_executor.hpp): a mutex-guarded queue plus a pw_loop event source. The
-// queue owns each posted function, so work left when the executor goes is destroyed unrun.
+// Work posted from any thread, run on the engine's main loop (docs/architecture.md#threads, main_loop_executor.hpp): a
+// mutex-guarded queue plus a pw_loop event source. The queue owns each posted function, so work left when the executor
+// goes is destroyed unrun.
 #include "ear/pipewire/main_loop_executor.hpp"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <ctime>
 #include <deque>
 #include <mutex>
 #include <utility>
@@ -48,7 +52,47 @@ struct MainLoopExecutor::Impl {
 	bool stopped = false;                              // guarded by mutex
 };
 
+namespace {
+
+/// One pw_loop timer source, armed once. `due` is moved out before it runs, so the timer may be destroyed inside it: a
+/// source destroyed during its own dispatch is freed by the loop after the dispatch.
+class LoopTimer final : public Timer {
+public:
+	LoopTimer(pw_loop* loop, std::chrono::milliseconds delay, std::move_only_function<void()> due)
+		: loop_(loop), due_(std::move(due)) {
+		source_ = pw_loop_add_timer(loop_, &LoopTimer::onTimeout, this);
+		// A zero value would disarm the timer: at least a nanosecond.
+		const auto ns = std::max<std::int64_t>(std::chrono::nanoseconds(delay).count(), 1);
+		timespec value{static_cast<time_t>(ns / 1'000'000'000), static_cast<long>(ns % 1'000'000'000)};
+		pw_loop_update_timer(loop_, source_, &value, nullptr, false);
+	}
+	LoopTimer(const LoopTimer&) = delete;
+	LoopTimer& operator=(const LoopTimer&) = delete;
+	~LoopTimer() override {
+		if (source_ != nullptr) pw_loop_destroy_source(loop_, source_);
+	}
+
+private:
+	static void onTimeout(void* data, std::uint64_t /*expirations*/) {
+		auto due = std::move(static_cast<LoopTimer*>(data)->due_);
+		if (due) due();
+	}
+	pw_loop* loop_;
+	spa_source* source_ = nullptr;
+	std::move_only_function<void()> due_;
+};
+
+} // namespace
+
 MainLoopExecutor::MainLoopExecutor(Engine& engine) : impl_(std::make_unique<Impl>(engine.mainLoop())) {}
+
+std::unique_ptr<Timer> MainLoopExecutor::after(std::chrono::milliseconds delay, std::move_only_function<void()> due) {
+	return std::make_unique<LoopTimer>(impl_->loop, delay, std::move(due));
+}
+
+std::chrono::steady_clock::time_point MainLoopExecutor::now() const {
+	return std::chrono::steady_clock::now(); // CLOCK_MONOTONIC on Linux, as the loop's timerfds
+}
 
 MainLoopExecutor::~MainLoopExecutor() = default;
 

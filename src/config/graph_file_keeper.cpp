@@ -43,8 +43,8 @@ public:
 
 struct GraphFileKeeper::Impl {
 	Impl(FirstLoad::Impl first, const folder::ConfinedFolder& folder, AudioFormat engine, DesiredGraph& graph,
-	     const GraphReader& reader, Executor& mainLoop)
-		: folder(folder), disk(folder), side(graph, reader),
+	     const GraphReader& reader, NodeOperations& operations, Executor& mainLoop)
+		: folder(folder), disk(folder), side(graph, reader, operations),
 		  keeper(std::move(first.base), std::move(first.model), disk, engine, side, mainLoop, self) {}
 
 	const folder::ConfinedFolder& folder;
@@ -64,14 +64,19 @@ FirstLoad GraphFileKeeper::load(const folder::ConfinedFolder& folder, const Node
 }
 
 GraphFileKeeper::GraphFileKeeper(FirstLoad first, const folder::ConfinedFolder& folder, AudioFormat engine,
-                                 DesiredGraph& graph, const GraphReader& reader, Executor& mainLoop)
-	: impl_(std::make_unique<Impl>(std::move(*first.impl_), folder, engine, graph, reader, mainLoop)) {}
+                                 DesiredGraph& graph, const GraphReader& reader, NodeOperations& operations,
+                                 Executor& mainLoop)
+	: impl_(std::make_unique<Impl>(std::move(*first.impl_), folder, engine, graph, reader, operations, mainLoop)) {}
 
 GraphFileKeeper::~GraphFileKeeper() {
 	if (!impl_->joined) join();
 }
 
 void GraphFileKeeper::subscribe(control::GraphFileListener& listener) { impl_->side.subscribe(listener); }
+
+void GraphFileKeeper::subscribeActions(control::ActionListener& listener) { impl_->side.subscribeActions(listener); }
+
+void GraphFileKeeper::stampSnapshots(const control::SnapshotStamp& stamp) { impl_->side.stampSnapshots(stamp); }
 
 std::expected<void, std::string> GraphFileKeeper::start() {
 	if (impl_->thread) throw std::logic_error("GraphFileKeeper::start called twice");

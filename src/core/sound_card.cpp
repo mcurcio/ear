@@ -1,4 +1,4 @@
-// The card id, the one way anything names a sound card (docs/design/batch2.md section 4.1,
+// The card id, the one way anything names a sound card (docs/architecture.md#packages,
 // sound_card.hpp). Its grammar is closed, so no user text reaches alsa-lib's device-name parser.
 #include "ear/core/sound_card.hpp"
 

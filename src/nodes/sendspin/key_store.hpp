@@ -1,6 +1,7 @@
-// A sendspin node's key file (docs/design/sendspin.md section 8): `sendspin-<node>.key` in the graph file folder, mode
-// 0600, the library's private key, PSKs and pairing records as opaque blobs, with their audit fields. Written whole on
-// every save, swapped in only if the file is what it last read or wrote. Holds secrets: never logged or sent anywhere.
+// A sendspin node's key file (docs/node-types.md#the-identity-file): `sendspin-<node>.key` in the graph file folder,
+// mode 0600, the library's private key, PSKs and pairing records as opaque blobs, with their audit fields. Written
+// whole on every save, swapped in only if the file is what it last read or wrote. Holds secrets: never logged or sent
+// anywhere.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -14,9 +15,9 @@
 #include "ear/folder/confined_folder.hpp"
 #include "sendspin/client.h"
 namespace ear::sendspin {
-/// Boot. Every `sendspin-*.key` in `folder` and each one's staging file a crash left, narrowed to 0600 whatever its node and
-/// whatever it holds: an fsGroup widens them on every mount, and nothing else opens the file of a node no longer in the
-/// graph (section 8). What it could not narrow, one detail each.
+/// Boot. Every `sendspin-*.key` in `folder` and each one's staging file a crash left, narrowed to 0600 whatever its
+/// node and whatever it holds: an fsGroup widens them on every mount, and nothing else opens the file of a node no
+/// longer in the graph. What it could not narrow, one detail each.
 std::vector<std::string> narrowKeyFiles(const folder::ConfinedFolder& folder);
 class NodeKeyStore final : public ::sendspin::SendspinPersistenceProvider {
 public:

@@ -1,5 +1,5 @@
-// The one outside-node lifecycle (docs/design/rtp.md sections 6 and 7.2, outside_nodes.hpp):
-// batch 2's card state machine (docs/design/batch2.md section 5), moved out of the card so every
+// The one outside-node lifecycle (docs/engine.md#outside-nodes, outside_nodes.hpp):
+// the card's state machine (docs/engine.md#sound-cards), moved out of the card so every
 // kind of outside node is joined, made ready, lost and torn down by this code. A kind's body
 // says only how its engine node is made and heard from; this owns "is this outside node in the
 // graph": it runs alone until its body says it runs, then links its channels to its port block,
@@ -16,6 +16,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -33,6 +34,7 @@ public:
 
 	~JoinedOutsideNode() override {
 		silence();
+		if (dataLoopWedged(engine_)) leakEngineObjects();
 		links_.clear();
 		body_.reset();
 		if (later_ != nullptr) pw_loop_destroy_source(engine_.mainLoop(), later_);
@@ -60,20 +62,27 @@ private:
 	}
 	void failed(std::string detail) override { fail(std::move(detail)); }
 
-	/// One link per channel, the outside node by its global id and the block by its node.name,
-	/// each port by name, owned by EAR's connection.
+	/// One link per channel, the outside node and the block each by its global id (never the block's node.name: an
+	/// older block of the name may still be going, docs/architecture.md#phases-states-and-what-is-wanted), each port by
+	/// name, owned by EAR's connection.
 	void link(std::uint32_t nodeId) {
+		if (dataLoopWedged(engine_)) return; // linking would wait on the wedged loop: it stays opening
 		state_ = State::linking;
+		if (join_.blockId == SPA_ID_INVALID) {
+			fail("the " + join_.kind + "'s port block has no engine id");
+			return;
+		}
 		const bool toNode = join_.flow == ChannelFlow::blockToNode;
 		const std::string node = std::to_string(nodeId);
+		const std::string block = std::to_string(join_.blockId);
 		for (std::size_t channel = 0; channel < join_.blockPorts.size(); ++channel) {
 			const std::string& nodePort = join_.nodePorts[channel];
 			const std::string& blockPort = join_.blockPorts[channel];
 			pw_properties* props =
-				pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, toNode ? join_.blockNode.c_str() : node.c_str(),
+				pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, toNode ? block.c_str() : node.c_str(),
 			                      PW_KEY_LINK_OUTPUT_PORT, toNode ? blockPort.c_str() : nodePort.c_str(),
-			                      PW_KEY_LINK_INPUT_NODE, toNode ? node.c_str() : join_.blockNode.c_str(),
-			                      PW_KEY_LINK_INPUT_PORT, toNode ? nodePort.c_str() : blockPort.c_str(), nullptr);
+			                      PW_KEY_LINK_INPUT_NODE, toNode ? node.c_str() : block.c_str(), PW_KEY_LINK_INPUT_PORT,
+			                      toNode ? nodePort.c_str() : blockPort.c_str(), nullptr);
 			auto* proxy = static_cast<pw_proxy*>(pw_core_create_object(
 				engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0));
 			pw_properties_free(props);
@@ -115,6 +124,11 @@ private:
 		auto* self = static_cast<JoinedOutsideNode*>(data);
 		if (self->state_ != State::failing || self->syncing_) return;
 		self->syncing_ = true;
+		if (dataLoopWedged(self->engine_)) { // nothing is destroyed on a wedged loop, and nothing to sync with
+			self->leakEngineObjects();
+			self->tellLost();
+			return;
+		}
 		self->links_.clear();
 		self->body_.reset();
 		self->syncSeq_ = pw_core_sync(self->engine_.core(), PW_ID_CORE, 0);
@@ -133,6 +147,16 @@ private:
 		state_ = State::lost;
 		silence();
 		events_.lost(detail_);
+	}
+
+	/// On a wedged data loop (data_loop_wedge.hpp): the links and the body are kept for good, never destroyed.
+	void leakEngineObjects() {
+		for (auto& link : links_) {
+			link->silence();
+			static_cast<void>(link.release());
+		}
+		links_.clear();
+		static_cast<void>(body_.release());
 	}
 
 	void silence() {

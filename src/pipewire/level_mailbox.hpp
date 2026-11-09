@@ -1,4 +1,4 @@
-// One port block's level mailbox (docs/design/batch2.md section 4.3): the realtime thread
+// One port block's level mailbox (docs/engine.md): the realtime thread
 // publishes each finished level window into it, an ordinary thread reads the latest. Private to
 // ear_pipewire (port_blocks.cpp).
 //

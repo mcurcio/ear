@@ -1,22 +1,21 @@
-# What the sendspin node fetches (docs/design/sendspin.md section 13): the protocol library, sendspin-cpp, with one
-# carried patch; the four dependencies it would fetch itself at moving tags, each kept here at a full commit, IXWebSocket
-# with a carried patch of its own; and the
-# one header ear's mDNS uses. kept_fetchcontent declares
-# each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a name
-# changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps across
-# "make clean", as Boost's is; only what ear_node_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps their
-# headers' warnings out of EAR's. ear_node_sendspin is the only package that sees any of them. Bump one by changing its
-# commit here, and sendspin-cpp's by reading its cmake/host.cmake for new dependencies.
+# What the sendspin node fetches (docs/node-types.md#library-facts-and-carried-patches): the protocol library,
+# sendspin-cpp, with one carried patch; the four dependencies it would fetch itself at moving tags, each kept here at a
+# full commit, IXWebSocket with a carried patch of its own; and the one header ear's mDNS uses. kept_fetchcontent
+# declares each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a
+# name changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps
+# across "make clean", as Boost's is; only what ear_node_sendspin links is built (EXCLUDE_FROM_ALL), and SYSTEM keeps
+# their headers' warnings out of EAR's. ear_node_sendspin is the only package that sees any of them. Bump one by
+# changing its commit here, and sendspin-cpp's by reading its cmake/host.cmake for new dependencies.
 
 include("${CMAKE_CURRENT_LIST_DIR}/CarriedPatch.cmake")
 
-# TLS and zlib are off: `ws://` only (section 4). The library forces both off itself, later; the options must hold
+# TLS and zlib are off: `ws://` only. The library forces both off itself, later; the options must hold
 # before IXWebSocket's own configure runs here.
 set(USE_TLS OFF CACHE BOOL "" FORCE)
 set(USE_ZLIB OFF CACHE BOOL "" FORCE)
 
 # Roles: the player and the source only. Opus is off because libsndfile pulls in libopus.so and
-# micro-opus's static C symbols would interpose on it (section 5(a2)).
+# micro-opus's static C symbols would interpose on it.
 set(SENDSPIN_ENABLE_CONTROLLER OFF CACHE BOOL "" FORCE)
 set(SENDSPIN_ENABLE_METADATA OFF CACHE BOOL "" FORCE)
 set(SENDSPIN_ENABLE_ARTWORK OFF CACHE BOOL "" FORCE)
@@ -60,9 +59,9 @@ endfunction()
 # The trees' folders are named by kept_fetchcontent in lower case, as FetchContent names its properties.
 sendspin_dep(arduinojson https://github.com/bblanchon/ArduinoJson.git
 	32520135092970120a5ac165cf45f48e658c421d)   # v7.4.1, MIT
-# The carried patch bounds what an unproved peer can cost before any Sendspin message (section 11): frames, fragments, the
-# transport's per-connection log lines, and the sockets it holds, which give way to newcomers. It also keeps a close racing a
-# peer's reset from ending the process.
+# The carried patch bounds what an unproved peer can cost before any Sendspin message: frames, fragments, the
+# transport's per-connection log lines, and the sockets it holds, which give way to newcomers. It also keeps a close
+# racing a peer's reset from ending the process.
 sendspin_patched_dep(ixwebsocket https://github.com/machinezone/IXWebSocket.git
 	64fae7676bd8fe31f7cb4bcde7a6841892dad65e   # v12.0.1, BSD-3
 	"${CMAKE_CURRENT_LIST_DIR}/ixwebsocket-limits.patch")
@@ -74,7 +73,7 @@ sendspin_dep(noise_c https://github.com/esphome-libs/noise-c.git
 	a1e08809a1b8f65cd91765ba7d68a6d00648ad61    # v0.1.13, MIT
 	SOURCE_SUBDIR no-such-directory)
 
-# The carried patch refuses an upgrade carrying Origin, and makes unproved connections give way to newcomers (section 11).
+# The carried patch refuses an upgrade carrying Origin, and makes unproved connections give way to newcomers.
 sendspin_patched_dep(sendspin https://github.com/Sendspin/sendspin-cpp.git
 	7be2278a252dd8c71da55732e93fe28871a9021d   # master: accept_inbound_connections came after v0.9.5, Apache-2.0
 	"${CMAKE_CURRENT_LIST_DIR}/sendspin-listener.patch")

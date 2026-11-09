@@ -1,5 +1,4 @@
-// A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/design/sendspin.md section 7,
-// section 14, S1 criterion 7).
+// A sendspin node's audio code, cycle by cycle, with a real feed and real clocks (docs/node-types.md#clock).
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -66,10 +65,18 @@ struct Rig {
 		}
 		REQUIRE(feed.write(samples, frames, 0ms) == frames);
 	}
-	void cycle(std::uint64_t position, std::int64_t startNs = 1000, std::uint32_t delayFrames = 0) {
+	/// One cycle as the framework tells it: its start on the raw clock, and `downstreamFrames` downstream of both
+	/// outputs (a following card's buffer).
+	void cycle(std::uint64_t position, std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0) {
 		const std::array<std::span<float>, 2> outputs{left, right};
 		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
-		code.process(inputs, outputs, block, ear::GraphCycle{startNs, position, delayFrames});
+		const std::array<ear::Latency, 2> downstream{ear::Latency{downstreamFrames, downstreamFrames},
+		                                             ear::Latency{downstreamFrames, downstreamFrames}};
+		code.process(inputs, outputs, block,
+		             ear::GraphCycle{.startNs = startRawNs - 7, // another clock: the code must not read it
+		                             .position = position,
+		                             .startRawNs = startRawNs,
+		                             .downstream = downstream});
 	}
 	/// Whether the bell rang since the last look.
 	bool rang() { return bell.drain(); }
@@ -89,45 +96,36 @@ struct Rig {
 
 } // namespace
 
-TEST_CASE("A block read counts its frames, and finishes at the cycle's start plus the frames' "
-          "duration on the raw clock",
+TEST_CASE("A block read counts its frames, and finishes at the cycle's start on the raw clock, as the framework "
+          "made it, plus the frames' duration",
           "[sendspin][code]") {
 	Rig rig;
 	rig.write(block);
-	const std::int64_t rawBefore = nowNs(CLOCK_MONOTONIC_RAW);
-	const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t start = monoBefore - 5000000; // a wake 5 ms late cancels out
+	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000; // the code reads no clock of its own
 	rig.cycle(0, start);
-	const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t rawAfter = nowNs(CLOCK_MONOTONIC_RAW);
 
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
 	CHECK(progress->totalFrames == block);
 	const std::int64_t blockNs = std::int64_t{block} * 1000000000 / rate;
-	// (raw - mono) measured around the call brackets the one the code took, within how long the call ran.
-	const std::int64_t expected = start + (rawBefore - monoBefore) + blockNs;
-	const std::int64_t tolerance = (monoAfter - monoBefore) + (rawAfter - rawBefore) + 1000000;
-	INFO("finish " << progress->finishRawNs << " expected " << expected);
-	CHECK(std::abs(progress->finishRawNs - expected) < tolerance);
+	CHECK(progress->finishRawNs == start + blockNs);
 	CHECK(rig.rang());
 	CHECK(rig.left[0] == 1.0F);
 	CHECK(rig.left[block - 1] == static_cast<float>(block));
 }
 
-TEST_CASE("What the driver still holds is added: a frame finishes when the device has played it", "[sendspin][code]") {
-	const std::uint32_t held = 512;
+TEST_CASE("What lies downstream of the outputs is added: a frame finishes when the card that follows has played it",
+          "[sendspin][code]") {
+	const std::uint32_t held = 512 + 32; // a quantum ahead of the card's buffer and its headroom, as ALSA reports it
 	Rig plain;
 	plain.write(block);
 	Rig delayed;
 	delayed.write(block);
-	const std::int64_t start = nowNs(CLOCK_MONOTONIC);
+	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW);
 	plain.cycle(0, start);
 	delayed.cycle(0, start, held);
-	const std::int64_t heldNs = std::int64_t{held} * 1000000000 / rate;
 	const std::int64_t difference = delayed.progress.read()->finishRawNs - plain.progress.read()->finishRawNs;
-	INFO("difference " << difference);
-	CHECK(std::abs(difference - heldNs) < 1000000); // the two calls read their clocks apart, by far less than this
+	CHECK(difference == std::int64_t{block + held} * 1000000000 / rate - std::int64_t{block} * 1000000000 / rate);
 }
 
 TEST_CASE("The lead a player reports covers what still plays after a clear, whatever the block", "[sendspin][code]") {
@@ -233,19 +231,13 @@ TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[s
 TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's start on the raw clock",
           "[sendspin][code]") {
 	Rig rig;
-	const std::int64_t rawBefore = nowNs(CLOCK_MONOTONIC_RAW);
-	const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t start = monoBefore - 5000000; // a wake 5 ms late cancels out
+	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000;
 	rig.cycle(0, start);
-	const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
-	const std::int64_t rawAfter = nowNs(CLOCK_MONOTONIC_RAW);
 
 	const auto first = rig.capture.read();
 	REQUIRE(first.has_value());
 	CHECK(first->framesWritten == 0);
-	const std::int64_t expected = start + (rawBefore - monoBefore);
-	const std::int64_t slack = (rawAfter - rawBefore) + (monoAfter - monoBefore);
-	CHECK(std::abs(first->atRawNs - expected) <= slack);
+	CHECK(first->atRawNs == start);
 
 	rig.cycle(block, start);
 	CHECK(rig.capture.read()->framesWritten == block);

@@ -1,9 +1,7 @@
 // The desired graph's plan() and commit(), a whole wanted graph at a time, checked against a
 // catalogue of test node types: the errors a plan returns, the events a commit sends and their
-// order, and the catalogue's own boot-time check (docs/design/m1-white-to-file.md section 3, S2
-// criteria 1-3; docs/design/batch2.md section 4.1, C1 criteria 1-6: adding, removing and updating,
-// the name rule, observers first, close(); docs/design/knobly-config.md, S1 criterion 8). The old
-// control calls' cases are kept as plans (slice S5).
+// order, and the catalogue's own boot-time check (docs/architecture.md#how-a-change-moves: adding, removing and
+// updating, the name rule, observers first, close()). The old control calls' cases are kept as plans.
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,14 +13,15 @@
 using namespace ear;
 using json = nlohmann::json;
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace desired_graph_test {
 
 /// A node whose ports are fixed.
 class TestConfig final : public NodeConfig {
 public:
 	explicit TestConfig(Ports ports) : ports_(std::move(ports)) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant&) const override {
+	StartResult start(StartContext&) const override {
 		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
 	}
 
@@ -33,7 +32,6 @@ private:
 constexpr auto levelRow = setting::optional("level", setting::number(0, 100));
 constexpr SettingsTable<levelRow> sourceTable{"source"};
 constexpr SettingsTable<levelRow> sinkTable{"sink"};
-constexpr SettingsTable<levelRow> brokenTable{"broken"};
 
 /// A node type whose nodes have fixed ports; settings {"bad": ...} are invalid: its table declares no such key.
 template <const auto& Table> class TestType final : public NodeTypeOf<Table> {
@@ -68,8 +66,6 @@ std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	types.push_back(std::make_unique<CardType>());
 	types.push_back(std::make_unique<TestType<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
 	types.push_back(std::make_unique<TestType<sinkTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}));
-	types.push_back(std::make_unique<TestType<brokenTable>>(
-		Ports{{{Direction::input, "x", {"a"}}, {Direction::output, "x", {"a"}}}}));
 	return types;
 }
 
@@ -136,7 +132,8 @@ template <class Error> const Error& planErrorOf(const std::expected<Plan, Comman
 	return std::get<Error>(result.error());
 }
 
-} // namespace
+} // namespace desired_graph_test
+using namespace desired_graph_test;
 
 TEST_CASE("A wanted node of a known type is added once and told once", "[desired_graph]") {
 	Fixture f;
@@ -161,12 +158,6 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 		CHECK(f.recorder.nodes.size() == 1);
 		CHECK(f.graph.nodes().at(0).spec == noiseSpec);
 	}
-}
-
-TEST_CASE("plan throws a logic error for a type that declares a port name twice", "[desired_graph]") {
-	Fixture f;
-	CHECK_THROWS_AS(f.graph.plan(std::vector<NodeSpec>{{"odd", "broken", json::object()}}, {}), std::logic_error);
-	CHECK(f.recorder.nodes.empty());
 }
 
 TEST_CASE("A wanted route is checked at both ends: node, port and direction", "[desired_graph]") {
@@ -501,4 +492,163 @@ TEST_CASE("commit of a stale plan or of another graph's plan is a wiring bug", "
 		REQUIRE(f.graph.commit(std::move(*plan)).has_value());
 		CHECK_THROWS_AS(f.graph.commit(std::move(*again)), std::logic_error);
 	}
+}
+
+namespace desired_graph_test {
+
+/// Records nodeChanged with its outcome and keys, and every other node event, in one log.
+struct ChangeRecorder final : DesiredNodeListener, DesiredRouteListener {
+	Log log;
+	void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log.push_back("nodeAdded " + node.name + (node.disabled ? " disabled" : ""));
+	}
+	void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+		log.push_back("nodeUpdated " + node.name);
+	}
+	void nodeChanged(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
+		static constexpr const char* names[] = {"restart", "disable", "enable", "stored"};
+		std::string keys;
+		for (const auto& key : change.keys) keys += " " + key;
+		log.push_back("nodeChanged " + node.name + " " + names[static_cast<int>(change.outcome)] +
+		              (node.disabled ? " disabled" : "") + keys);
+	}
+	void nodeRemoved(const NodeName& node) override { log.push_back("nodeRemoved " + node); }
+	void routeAdded(const Route& route) override { log.push_back("routeAdded " + text(route)); }
+	void routeRemoved(const Route& route) override { log.push_back("routeRemoved " + text(route)); }
+};
+
+NodeSpec disabledSpec(NodeSpec spec, bool disabled = true) {
+	spec.disabled = disabled;
+	return spec;
+}
+
+using Outcomes = std::vector<std::pair<NodeName, NodeOutcome>>;
+
+} // namespace desired_graph_test
+
+TEST_CASE("A changed disabled is a disable, an enable or stored, told by nodeChanged in the commit's order",
+          "[desired_graph]") {
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ChangeRecorder recorder;
+	graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
+	graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
+	apply(graph, {noiseSpec, recSpec, deskSpec(2)}, {noiseToFl});
+	recorder.log.clear();
+
+	SECTION("false to true: disable, with no key changed; routes kept") {
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, disabledSpec(recSpec), deskSpec(2)},
+		                       std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->outcomes() == Outcomes{{"rec", NodeOutcome::disable}});
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeChanged rec disable disabled"});
+		CHECK(graph.nodes()[2].spec.disabled);
+		CHECK(graph.routes() == std::vector<Route>{noiseToFl});
+	}
+	SECTION("true to false: enable; true to true with other settings: stored; false to false: restart, with its keys") {
+		apply(graph, {disabledSpec(noiseSpec), recSpec, disabledSpec(deskSpec(2))}, {noiseToFl});
+		recorder.log.clear();
+		NodeSpec desk = disabledSpec(deskSpec(2));
+		desk.settings["card"] = "USB2";
+		const NodeSpec rec{"rec", "sink", {{"level", 3}}};
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, rec, desk}, std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->outcomes() ==
+		      Outcomes{{"desk", NodeOutcome::stored}, {"noise", NodeOutcome::enable}, {"rec", NodeOutcome::restart}});
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeChanged desk stored disabled card", "nodeChanged noise enable",
+		                          "nodeChanged rec restart level"});
+	}
+	SECTION("a disabled node equal to the held one is no change") {
+		apply(graph, {noiseSpec, disabledSpec(recSpec), deskSpec(2)}, {noiseToFl});
+		recorder.log.clear();
+		auto plan = graph.plan(std::vector<NodeSpec>{noiseSpec, disabledSpec(recSpec), deskSpec(2)},
+		                       std::vector<Route>{noiseToFl});
+		REQUIRE(plan.has_value());
+		CHECK(plan->empty());
+		CHECK(plan->outcomes().empty());
+	}
+	SECTION("nodeChanged comes where nodeUpdated came: after removals, before additions and routes") {
+		const NodeSpec hiss{"hiss", "source", json::object()};
+		auto plan =
+			graph.plan(std::vector<NodeSpec>{hiss, disabledSpec(recSpec), deskSpec(2)}, std::vector<Route>{hissToFl});
+		REQUIRE(plan.has_value());
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"routeRemoved noise:noise.mono -> rec:record.left", "nodeRemoved noise",
+		                          "nodeChanged rec disable disabled", "nodeAdded hiss",
+		                          "routeAdded hiss:noise.mono -> rec:record.left"});
+	}
+}
+
+TEST_CASE("A replace keeps its disabled change's outcome: stored on a node staying disabled, restart on one enabled",
+          "[desired_graph]") {
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ChangeRecorder recorder;
+	graph.subscribe(static_cast<DesiredNodeListener&>(recorder));
+	graph.subscribe(static_cast<DesiredRouteListener&>(recorder));
+
+	const auto replaceOutcome = [&](bool was, bool now) {
+		apply(graph, {disabledSpec(deskSpec(2), was)}, {});
+		recorder.log.clear();
+		auto plan = graph.plan(std::vector<NodeSpec>{disabledSpec(deskSpec(4), now)}, std::vector<Route>{});
+		REQUIRE(plan.has_value());
+		const auto outcomes = plan->outcomes();
+		REQUIRE(graph.commit(std::move(*plan)).has_value());
+		CHECK(recorder.log == Log{"nodeRemoved desk", std::string("nodeAdded desk") + (now ? " disabled" : "")});
+		REQUIRE(outcomes.size() == 1);
+		return outcomes[0].second;
+	};
+	CHECK(replaceOutcome(true, true) == NodeOutcome::stored);    // disabled before and after: kept for the enable
+	CHECK(replaceOutcome(false, false) == NodeOutcome::restart); // enabled before and after: the new node starts
+	CHECK(replaceOutcome(false, true) == NodeOutcome::disable);  // the replace disables it
+	CHECK(replaceOutcome(true, false) == NodeOutcome::enable);   // the replace enables it
+}
+
+TEST_CASE("nodeChanged's default tells nodeUpdated, so a listener that tells no outcome apart sees an update",
+          "[desired_graph]") {
+	Fixture f;
+	apply(f.graph, {noiseSpec}, {});
+	f.log.clear();
+	apply(f.graph, {disabledSpec(noiseSpec)}, {});
+	CHECK(f.log == Log{"sub nodeUpdated noise"});
+	REQUIRE(f.recorder.updates.size() == 1);
+	CHECK(f.recorder.updates[0].first.disabled);
+}
+
+TEST_CASE("A replace is told through nodeReplacing and nodeReplaced, port-caused when only the ports changed",
+          "[desired_graph]") {
+	struct ReplaceRecorder final : DesiredNodeListener {
+		Log log;
+		void nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+			log.push_back("nodeAdded " + node.name);
+		}
+		void nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) override {
+			log.push_back("nodeUpdated " + node.name);
+		}
+		void nodeRemoved(const NodeName& node) override { log.push_back("nodeRemoved " + node); }
+		void nodeReplacing(const NodeName& node, const NodeChange& change) override {
+			log.push_back("nodeReplacing " + node + text(change));
+		}
+		void nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig>, const NodeChange& change) override {
+			log.push_back("nodeReplaced " + node.name + text(change));
+		}
+		static std::string text(const NodeChange& change) {
+			std::string line = change.portCaused ? " ports" : " type";
+			for (const auto& key : change.keys) line += " " + key;
+			return line;
+		}
+	};
+	NodeCatalogue catalogue{testTypes()};
+	DesiredGraph graph{catalogue};
+	ReplaceRecorder recorder;
+	graph.subscribe(recorder);
+	apply(graph, {deskSpec(2)}, {});
+	recorder.log.clear();
+	apply(graph, {deskSpec(4)}, {});
+	CHECK(recorder.log == Log{"nodeReplacing desk ports playback", "nodeReplaced desk ports playback"});
+	recorder.log.clear();
+	apply(graph, {NodeSpec{"desk", "source", json::object()}}, {});
+	CHECK(recorder.log == Log{"nodeReplacing desk type card playback", "nodeReplaced desk type card playback"});
 }

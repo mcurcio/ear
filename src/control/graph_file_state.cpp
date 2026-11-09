@@ -1,4 +1,4 @@
-// The plain types of ear.conf's state on the wire (docs/design/knobly-config.md, "Wire additions";
+// The plain types of ear.conf's state on the wire (docs/control-port.md#the-graph-file-over-the-port;
 // graph_file_state.hpp): the one home of the severity, format key, cause and file refusal names.
 #include "ear/control/graph_file_state.hpp"
 

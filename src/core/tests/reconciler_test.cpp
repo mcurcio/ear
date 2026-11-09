@@ -1,6 +1,5 @@
 // The reconciler driven by events through a fake LinkMaker: when it asks for a link, which
-// ports it joins, and the status each route reaches from the link events
-// (docs/design/m1-white-to-file.md section 3, S3 criteria 1-4). Every engine reply is an event
+// ports it joins, and the status each route reaches from the link events. Every engine reply is an event
 // the test sends.
 #include <string>
 #include <vector>

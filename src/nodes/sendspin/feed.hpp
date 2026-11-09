@@ -1,4 +1,4 @@
-// The feed (docs/design/sendspin.md sections 3, 7 and 14): audio from an ordinary thread to the realtime thread, the
+// The feed (docs/node-types.md#sendspin): audio from an ordinary thread to the realtime thread, the
 // handoff's reverse, on the same ring. JACK's disk-reader pattern.
 #pragma once
 #include <atomic>

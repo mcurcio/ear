@@ -1,8 +1,8 @@
-// W1 criterion (1): the reducer turns every fixture's messages into its graph exactly; events
+// The reducer turns every fixture's messages into its graph exactly; events
 // naming unknown nodes are ignored; a snapshot replaces the state.
 import { describe, expect, it } from "vitest";
 import { GraphStore, reduce, type GraphState } from "./graph";
-import type { JsonValue, ServerMessage } from "./protocol";
+import type { Graph, JsonValue, ServerMessage } from "./protocol";
 import { fixtures, messagesOf } from "./testFixtures";
 
 function replay(messages: ServerMessage[], start: GraphState = null): GraphState {
@@ -63,6 +63,66 @@ describe("the graph reducer", () => {
     expect(reduce(start, { jsonrpc: "2.0", id: 4, error: { code: -32601, message: "Method not found" } })).toBe(
       start,
     );
+  });
+
+  it("replaces every health member on node.state: one absent is absent now, one unknown is not kept", () => {
+    const start = replay(messagesOf(fixtures.lifecycle.messages).slice(0, 1));
+    const waiting: ServerMessage = {
+      jsonrpc: "2.0",
+      method: "node.state",
+      params: {
+        name: "desk",
+        state: "starting",
+        phase: "configuring",
+        since: "2026-11-09T10:00:01.000000Z",
+        wanted: "running",
+        blockLost: false,
+        cause: { kind: "action" },
+        waitingFor: [{ kind: "companion", name: "desk.playback" }],
+      },
+    };
+    const running: ServerMessage = {
+      jsonrpc: "2.0",
+      method: "node.state",
+      params: {
+        name: "desk",
+        state: "running",
+        phase: "running",
+        since: "2026-11-09T10:00:02.000000Z",
+        wanted: "running",
+        blockLost: false,
+        attempt: 3,
+      } as unknown as Extract<ServerMessage, { method: "node.state" }>["params"],
+    };
+    const desk = replay([waiting, running], start)!.nodes.find((node) => node.name === "desk")!;
+    expect(desk.phase).toBe("running");
+    expect(desk.cause).toBeUndefined();
+    expect(desk.waitingFor).toBeUndefined();
+    expect("attempt" in desk).toBe(false);
+    expect(desk.settings).toStrictEqual({ card: "MOTU", playback: 2 });
+  });
+
+  it("keeps a snapshot node's spec and the health members it knows, so an unknown one never goes stale", () => {
+    const snapshot = messagesOf(fixtures.lifecycle.messages)[0] as unknown as { jsonrpc: "2.0"; id: number; result: Graph };
+    const withExtra = structuredClone(snapshot);
+    (withExtra.result.nodes[0] as unknown as Record<string, unknown>).attempt = 3;
+    const desk = replay([withExtra as unknown as ServerMessage])!.nodes[0]!;
+    expect("attempt" in desk).toBe(false);
+    expect(desk).toStrictEqual(snapshot.result.nodes[0]);
+  });
+
+  it("takes node.updated's disabled, and drops it when an update leaves it out", () => {
+    const start = replay(messagesOf(fixtures.lifecycle.messages).slice(0, 1));
+    const disabled = replay(
+      [{ jsonrpc: "2.0", method: "node.updated", params: { name: "porch", settings: {}, applied: "disable", disabled: true } }],
+      start,
+    );
+    expect(disabled!.nodes.find((node) => node.name === "porch")!.disabled).toBe(true);
+    const enabled = replay(
+      [{ jsonrpc: "2.0", method: "node.updated", params: { name: "porch", settings: {}, applied: "enable" } }],
+      disabled,
+    );
+    expect("disabled" in enabled!.nodes.find((node) => node.name === "porch")!).toBe(false);
   });
 
   it("tells the store's listeners only when the graph changed", () => {

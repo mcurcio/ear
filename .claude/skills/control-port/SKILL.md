@@ -1,13 +1,13 @@
 ---
 name: control-port
-description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, the graphFile.* calls that read and replace ear.conf, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
+description: How to talk to EAR's control port (7777, HTTP for the graph editor plus JSON-RPC 2.0 over WebSocket at /rpc), its flags, the Host and Origin rules, protocol 1 and its features, the lifecycle requests (node.start, node.stop, node.restart, node.disable, node.enable), node health and node.gone, the graphFile.* calls that read and replace ear.conf, rpc-call.mjs --until, write-behind and hand edits, how it runs on its own thread and reaches the graph through the graph file keeper and the gateway, per-client queues, levels, stopping, and the traps found while building it. Use when calling ear from a script, test or browser, when a request gets 403, file-changed, file-invalid or shared-definition, a socket closes with 1008 or a reset, levels never arrive, an edit is lost or not written, stop hangs, or when changing src/server/, src/control/ (rpc, commands, events, gateway, session), src/config/ or web/src/rpc.ts.
 ---
 
 # EAR's control port
 
 `ear` serves one TCP port (7777 by default): the graph editor's files over HTTP and JSON-RPC 2.0
 over WebSocket at `/rpc`. The wire format (every method, notification, error code and the
-Graph object) has one home: `docs/design/batch2.md` section 6, with the fixtures in
+Graph object) has one home: `docs/control-port.md` (protocol 1), with the fixtures in
 `test/protocol/*.json` that the server's and the editor's tests both check. This skill is how
 to use it and what bites.
 
@@ -28,8 +28,12 @@ use`).
 
 - **From a script:** `node scripts/rpc-call.mjs ws://127.0.0.1:7777/rpc graph.get` (Node 24's own
   WebSocket, no packages; the third argument is the params as JSON). It prints the result, or
-  the error on standard error with exit 1. Inside the image: `scripts/dev.sh node
-  scripts/rpc-call.mjs ...`.
+  the error on standard error with exit 1. `--until '<node> <state>'` subscribes first and,
+  after the reply, waits for the node's `node.state` with that state (`--timeout <s>`, 60 by
+  default; 10 without `--until`): `node scripts/rpc-call.mjs $U --until 'porch running'
+  node.start '{"name":"porch"}'`. Exit codes: 0 done, 1 an error reply, a `failed` node or a
+  lost socket, 2 the state did not come in time, 3 bad arguments, 4 no answer in time (without
+  `--until`). Inside the image: `scripts/dev.sh node scripts/rpc-call.mjs ...`.
 - **From a browser:** `http://<host>:7777/`. In development, `EAR_DEV_PUBLISH=5173:5173
   scripts/dev.sh bash -c 'cd web && npm run dev -- --host 0.0.0.0'` serves the editor with hot
   reload and forwards `/rpc` to an `ear` on `localhost:7777` (run `ear` in the same container,
@@ -42,10 +46,38 @@ use`).
   `{"windowsPerSecond": 30}` and then sends `levels` snapshots. A refused edit is -32000 with
   `data.code` (`unknown-port`, `stopping`, ...).
 
+## The frame and the lifecycle (protocol 1)
+
+- **The frame.** `graph.get` says `"protocol": 1` and `"features": ["lifecycle"]`; an absent
+  `protocol` is 0. Gate every method and request member on its feature, never on a -32601
+  probe. Every enum is open: draw a value you do not know neutrally, never fail on it.
+- **Health.** Each node of a snapshot, `node.added` and every `node.state` carries `state` (the
+  colour: `starting`, `running`, `stopping`, `stopped`, `disabled`, `failed`), `phase` (the exact
+  state, `added` ... `failed`), `since` (when the phase began, stamped by the gateway; a
+  snapshot's is the one its phase had when the graph was read), `wanted` (`running`, `stopped`,
+  `disabled`) and `blockLost`, plus `cause`, `waitingFor` and `reason` when there; a snapshot
+  and `node.added` also `disabled: true`. A `node.state` is sent whenever any member changes and
+  replaces them all (an absent one is absent now). After a removal: `node.stopped`
+  (deprecated) then `node.gone`, both for a node the client already dropped at `node.removed`.
+- **`node.start`, `node.stop`, `node.restart`** (`{"name"}`) edit nothing: they ride with the
+  reads in the keeper's step, in request order with edits, reach `NodeHost` on the main loop
+  and answer `{"applied": "start" | "stop" | "restart" | "retry" | "unchanged"}` after the
+  `node.state` they cause in that turn. They work while `ear.conf` has errors, are forgotten at
+  a restart of ear, and each writes an `action` record on standard output before the node
+  records it causes (`node porch stop invoked`). Refusals: `node-disabled` (enable it first),
+  `not-restartable` (`data.reason` `block-lost`, or `not-started` for a restart of a node still
+  `added`), `unknown-node`, `stopping`.
+- **`node.disable`, `node.enable`** are edits of the node's own `disabled` line (`node white
+  noise { disabled true; }`), written behind like any edit: `node.updated` with `applied`
+  (`disable`, `enable`; `stored` for a change to a disabled node) and `disabled: true` when
+  disabled, then the health. No `action` record: the `graph-file` record says it.
+  `node.add` takes `"disabled": true`.
+- Every -32602 carries `data.pointer`, the JSON pointer its message names.
+
 ## The graph file over the port
 
 Every edit is an edit of `ear.conf` (knobly), the one source of the wanted graph
-(`docs/design/knobly-config.md`; the wire is `docs/design/batch2.md` section 6):
+(`docs/graph-file.md`; the wire is `docs/control-port.md`):
 
 - `graphFile.get` and `graphFile.subscribe` answer with the GraphFile: `version` (opaque),
   `text`, `diagnostics`, `running` (the version the graph runs), `refusal`, `pendingRestart` and
@@ -153,7 +185,7 @@ printed (`graph-file write-failed <detail>`) and reaches no client.
 - **The level bell and a port with no levels subscriber.** The bell is rung at most once per
   window from the realtime side alone (`port_blocks.cpp`, `rungFor`). An earlier flag cleared by
   the reader went silent for good when the control thread answered a ring without reading levels
-  (nobody subscribed): see `docs/design/batch2.md` section 11.
+  (nobody subscribed), so the flag is gone (`docs/engine.md#levels`).
 - **The editor's dev proxy** sends Host `localhost:7777` (`changeOrigin` in
   `web/vite.config.ts`), which the Host rule accepts.
 - **Including the server headers:** no Boost type is in a public header of `ear_server`; Beast

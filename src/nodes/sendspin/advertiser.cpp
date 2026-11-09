@@ -1,4 +1,4 @@
-// The one user of mjansson/mdns (docs/design/sendspin.md sections 2 and 11): no daemon, no probing (the instance is unique
+// The one user of mjansson/mdns (docs/node-types.md#mdns): no daemon, no probing (the instance is unique
 // by its client id), one address, the one the kernel routes the mDNS group through.
 #include "advertiser.hpp"
 
@@ -183,10 +183,10 @@ struct Advertiser::State {
 
 namespace {
 
-/// Sends one answer, at most once per datagram and within the rates above. Multicast, whatever the question's "unicast" bit:
-/// another socket on this host sharing port 5353 may be handed a unicast reply, and a multicast one reaches everybody (RFC
-/// 6762 section 5.4 allows it). A query from any other port is a one-shot querier, which only a unicast reply reaches
-/// (section 6.7).
+/// Sends one answer, at most once per datagram and within the rates above. Multicast, whatever the question's "unicast"
+/// bit: another socket on this host sharing port 5353 may be handed a unicast reply, and a multicast one reaches
+/// everybody (RFC 6762 section 5.4 allows it). A query from any other port is a one-shot querier, which only a unicast
+/// reply reaches (RFC 6762 section 6.7).
 void reply(Advertiser::State& state, Advertiser::State::Answer which, int socket, const sockaddr* from,
            std::size_t fromLength, std::uint16_t queryId, std::uint16_t type, mdns_string_t asked,
            const mdns_record_t& answer, const mdns_record_t* additional, std::size_t additionalCount) noexcept {

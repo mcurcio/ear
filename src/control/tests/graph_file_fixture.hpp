@@ -1,8 +1,9 @@
-// The typed values behind test/protocol/graph-file.json (docs/design/knobly-config.md, "Wire
-// additions"): the session's texts, its graph files and its graph, shared by the encoder test
-// (graph_file_state_test.cpp) and the session replay (session_test.cpp), so both build the fixture's
-// messages from one set of values.
+// The typed values behind test/protocol/graph-file.json (docs/control-port.md#the-graph-file-over-the-port) and
+// snapshot.json: the session's texts, its graph files and its graphs, and a node's health as NodeHost tells it, shared
+// by the encoder tests (graph_file_state_test.cpp, commands_test.cpp) and the session replay (session_test.cpp), so
+// both build the fixture's messages from one set of values.
 #pragma once
+#include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -13,7 +14,42 @@
 
 namespace ear::control::testing {
 
-/// The record's file format example (docs/design/knobly-config.md, "File format").
+/// 2026-11-09T10:00:00Z: where the session replay's gateway clock starts (it moves 10 ms at each reading).
+inline constexpr std::chrono::system_clock::time_point testEpoch{std::chrono::seconds{1'794'218'400}};
+/// The instant `n` readings of that clock after its start.
+inline std::chrono::system_clock::time_point reading(int n) { return testEpoch + std::chrono::milliseconds(10 * n); }
+
+/// A health as NodeHost tells it, by its state: starting is the configuring phase, stopped is wanted stopped, disabled
+/// is wanted disabled; every other state is its own phase, wanted running.
+inline ear::NodeHealth health(const std::string& node, ear::NodeState state,
+                              std::optional<ear::FailureReason> reason = {}) {
+	ear::NodeHealth h{node, state, std::move(reason)};
+	switch (state) {
+	case ear::NodeState::starting:
+		h.phase = ear::NodePhase::configuring;
+		break;
+	case ear::NodeState::running:
+		h.phase = ear::NodePhase::running;
+		break;
+	case ear::NodeState::stopping:
+		h.phase = ear::NodePhase::stopping;
+		break;
+	case ear::NodeState::stopped:
+		h.phase = ear::NodePhase::stopped;
+		h.wanted = ear::Wanted::stopped;
+		break;
+	case ear::NodeState::disabled:
+		h.phase = ear::NodePhase::disabled;
+		h.wanted = ear::Wanted::disabled;
+		break;
+	case ear::NodeState::failed:
+		h.phase = ear::NodePhase::failed;
+		break;
+	}
+	return h;
+}
+
+/// The record's file format example (docs/graph-file.md#edits-at-the-source).
 inline const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;
 @set $ch 2;                      # comments survive every edit
@@ -63,24 +99,60 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 	using Code = ear::FailureReason::Code;
 	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "file", "white"}, {}, {}};
 	const ear::Ports cardPorts{{{ear::Direction::input, "play", ear::numbered(static_cast<std::uint32_t>(playback))}}};
-	view.nodes.push_back({{"desk", "card", {{"card", "MOTU"}, {"playback", playback}}},
-	                      cardPorts,
-	                      NodeState::failed,
-	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"}});
+	view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", playback}}},
+	     cardPorts,
+	     health("desk", NodeState::failed,
+	            ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=MOTU,DEV=0: No such device"})});
 	view.nodes.push_back({{"noise", "white", nlohmann::json::object()},
 	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
-	view.nodes.push_back({{"porch", "card", {{"card", "USB2"}, {"playback", playback}}},
-	                      cardPorts,
-	                      NodeState::failed,
-	                      ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"}});
+	                      health("noise", NodeState::running)});
+	view.nodes.push_back(
+		{{"porch", "card", {{"card", "USB2"}, {"playback", playback}}},
+	     cardPorts,
+	     health("porch", NodeState::failed,
+	            ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=USB2,DEV=0: No such device"})});
 	view.nodes.push_back({{"rec", "file", {{"path", recPath}}},
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      NodeState::running,
-	                      std::nullopt});
+	                      health("rec", NodeState::running)});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"desk", "play.1"}}, ear::RouteMatch::pending, ""});
 	view.routes.push_back({{{"noise", "noise.mono"}, {"rec", "record.left"}}, ear::RouteMatch::linked, ""});
+	return view;
+}
+
+/// snapshot.json's graph, as GraphStatus reads it and the gateway fills it: a card that failed, a running node the
+/// gateway was told of (its since), a node ear.conf disables, a running node and a file node that failed.
+inline ear::GraphView snapshotView() {
+	using ear::NodeState;
+	using Code = ear::FailureReason::Code;
+	ear::GraphView view{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	view.nodes.push_back(
+		{{"motu", "card", {{"card", "Pro24"}, {"playback", 2}}},
+	     ear::Ports{{{ear::Direction::input, "play", {"1", "2"}}}},
+	     health("motu", NodeState::failed,
+	            ear::FailureReason{Code::engineRefused, "cannot open hw:CARD=Pro24,DEV=0: No such device"})});
+	view.nodes.push_back({{"noise", "white", nlohmann::json::object()},
+	                      ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}},
+	                      health("noise", NodeState::running),
+	                      reading(0)});
+	ear::NodeSpec quiet{"quiet", "white", nlohmann::json::object()};
+	quiet.disabled = true;
+	view.nodes.push_back(
+		{quiet, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, health("quiet", NodeState::disabled)});
+	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                      health("rec", NodeState::running)});
+	view.nodes.push_back(
+		{{"tape", "file", {{"path", "nope/t.wav"}}},
+	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	     health("tape", NodeState::failed,
+	            ear::FailureReason{Code::startFailed, "cannot open nope/t.wav: No such file or directory"})});
+	const ear::Route noiseToRecFl{{"noise", "noise.mono"}, {"rec", "record.left"}};
+	view.routes.push_back({{{"noise", "noise.mono"}, {"motu", "play.1"}}, ear::RouteMatch::pending, ""});
+	view.routes.push_back({noiseToRecFl, ear::RouteMatch::linked, ""});
+	view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
+	                       ear::RouteMatch::refused,
+	                       "the engine removed the link before it was active"});
 	return view;
 }
 

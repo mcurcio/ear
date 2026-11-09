@@ -1,7 +1,8 @@
-// Interface page: docs/design/knobly-config.md (slice S4). The graph file keeper as ear wires it:
+// Interface page: docs/graph-file.md. The graph file keeper as ear wires it:
 // ear.conf read once at boot on the main thread, then kept on one background thread that takes every
 // request batch, judges it through the desired graph on the main loop, watches the graph file folder
-// and writes ear.conf when it is free. No knobly type is in this header.
+// and writes ear.conf when it is free. No knobly type is in this header. NodeOperations and subscribeActions are
+// docs/control-port.md#methods.
 #pragma once
 #include <expected>
 #include <memory>
@@ -12,6 +13,7 @@
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
 #include "ear/core/graph_view.hpp"
+#include "ear/core/node_host.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/folder/confined_folder.hpp"
@@ -35,11 +37,15 @@ public:
 	static FirstLoad load(const folder::ConfinedFolder& folder, const NodeCatalogue& catalogue);
 	/// Main thread. Nothing runs until start(). All references outlive the keeper.
 	GraphFileKeeper(FirstLoad first, const folder::ConfinedFolder& folder, AudioFormat engine, DesiredGraph& graph,
-	                const GraphReader& reader, Executor& mainLoop);
+	                const GraphReader& reader, NodeOperations& operations, Executor& mainLoop);
 	GraphFileKeeper(const GraphFileKeeper&) = delete;
 	GraphFileKeeper& operator=(const GraphFileKeeper&) = delete;
 	~GraphFileKeeper();                                   // join() if not joined
 	void subscribe(control::GraphFileListener& listener); // main thread, before start(); told in subscribe order
+	/// Main thread, before start(): who writes each answered node.start, node.stop and node.restart.
+	void subscribeActions(control::ActionListener& listener);
+	/// Main thread, before start(): who fills each snapshot's `since` when the graph is read (the gateway).
+	void stampSnapshots(const control::SnapshotStamp& stamp);
 	/// Main thread, once, after Engine::create and before ControlPort::start (so submit always finds the
 	/// thread). Starts the thread (watch first), and its first work is Keeper::start(). Error: the watch.
 	std::expected<void, std::string> start();

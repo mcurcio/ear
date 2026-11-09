@@ -1,12 +1,10 @@
-// Frozen interface (docs/design/rtp.md section 7.2). Change it only through an erratum in that
-// page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <memory>
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
 namespace ear::pipewire {
 /// One receiver = PipeWire's libpipewire-module-rtp-source loaded into the engine's context
-/// (pw_context_load_module) with the arguments docs/design/rtp.md section 5 lists, every one
+/// (pw_context_load_module) with the arguments docs/engine.md#rtp-receivers lists, every one
 /// built here from the request (the one home of that form): remote.name = internal (the module
 /// finds no core in the context and would otherwise look for a daemon's socket), source.ip,
 /// source.port, sess.media audio, sess.latency.msec, sess.ignore-ssrc = true, audio.format
@@ -23,12 +21,12 @@ namespace ear::pipewire {
 /// linked; node ERROR, the node's global removed or the module destroyed fail it; a module that
 /// will not load fails it (told later, never inside make()). A socket that cannot be bound
 /// gives no event on PipeWire 1.4.2: the node never runs, so it is never linked or ready, and
-/// the EAR node stays starting (docs/design/rtp.md section 4, finding g).
-class RtpReceivers final : public RtpReceiverFactory {
+/// the EAR node stays starting (docs/engine.md#rtp-receivers, finding g).
+class RtpReceivers final : public RtpReceiverAdapter {
 public:
 	explicit RtpReceivers(Engine& engine); // engine outlives it
-	std::unique_ptr<OutsideNode> make(const NodeName& engineNode, const NodeName& blockNode,
-	                                  const RtpReceiverRequest& request, OutsideNodeEvents& events) override;
+	std::unique_ptr<OutsideNode> make(const OutsideTarget& target, const RtpReceiverRequest& request,
+	                                  OutsideNodeEvents& events) override;
 
 private:
 	Engine& engine_;

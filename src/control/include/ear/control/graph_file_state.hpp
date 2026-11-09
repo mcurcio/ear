@@ -1,4 +1,4 @@
-// Interface page: docs/design/knobly-config.md (slices S1 and S3). The plain types of ear.conf's state on
+// Interface page: docs/graph-file.md. The plain types of ear.conf's state on
 // the wire: a place in the text and a problem placed there; the file's state as a client holds it and
 // each change to it; and the graph file's own refusals. No knobly type is ever in this header.
 #pragma once

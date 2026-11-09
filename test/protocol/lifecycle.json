@@ -1,0 +1,1244 @@
+{
+  "description": "A node's whole life on the wire (docs/control-port.md#fixtures; the phases slice 3a has): node.added (added), then a node.state for every change of any health member, each carrying state, phase, since (when the phase began: it moves only with the phase), wanted and blockLost, and cause, waitingFor and reason when the health has them. A stop and a start (no graphFile.changed or node.updated: they edit nothing); a restart (stopping with cause restarting, its reply, then configuring with cause action); a disable and an enable (node.updated with applied and disabled; stopping with cause disabling, then disabled; configuring with cause enabling); node.start on a disabled node refused node-disabled; a node configured while stopped (it rests stopped again); a node added disabled (node.added says disabled, and its first node.state says it again, for a client that reads a state only from node.state); a failed node stopped (one node.state, wanted stopped), retried by node.start and by node.restart (applied retry); a restart during a restart (unchanged); a block lost (blockLost) and the refusals not-restartable block-lost; a name added back waiting for its older node (waitingFor older-node) and refused not-restartable not-started; a removal (node.stopped, then node.gone; ignored by the client, which dropped the node at node.removed); node.restart of a disabled node refused node-disabled; node.stop on a node still configuring (one node.state, the same phase, wanted stopped), which rests stopped once configured. Every reply comes after the node.state its request caused in that turn.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"noise\",\"type\":\"white\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"node.stop\",\"params\":{\"name\":\"noise\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"node.start\",\"params\":{\"name\":\"noise\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"node.restart\",\"params\":{\"name\":\"desk\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"node.disable\",\"params\":{\"name\":\"porch\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"node.start\",\"params\":{\"name\":\"porch\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"node.enable\",\"params\":{\"name\":\"porch\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"node.stop\",\"params\":{\"name\":\"porch\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"node.update\",\"params\":{\"name\":\"porch\",\"settings\":{\"card\":\"USB3\",\"playback\":2}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"node.start\",\"params\":{\"name\":\"porch\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"node.add\",\"params\":{\"name\":\"quiet\",\"type\":\"white\",\"disabled\":true}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"nope/t.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"node.stop\",\"params\":{\"name\":\"tape\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"node.start\",\"params\":{\"name\":\"tape\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"node.restart\",\"params\":{\"name\":\"tape\"}}",
+    "[{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"node.restart\",\"params\":{\"name\":\"desk\"}},{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"node.restart\",\"params\":{\"name\":\"desk\"}}]",
+    "{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"node.restart\",\"params\":{\"name\":\"desk\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"node.start\",\"params\":{\"name\":\"desk\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"node.remove\",\"params\":{\"name\":\"tape\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"node.add\",\"params\":{\"name\":\"tape\",\"type\":\"file\",\"settings\":{\"path\":\"t.wav\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"node.restart\",\"params\":{\"name\":\"tape\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":24,\"method\":\"node.remove\",\"params\":{\"name\":\"noise\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":25,\"method\":\"node.restart\",\"params\":{\"name\":\"quiet\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"node.add\",\"params\":{\"name\":\"fpp\",\"type\":\"rtp\",\"settings\":{\"address\":\"0.0.0.0\",\"port\":5004,\"format\":\"L24\",\"channels\":2}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"node.stop\",\"params\":{\"name\":\"fpp\"}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "types": [
+          "card",
+          "file",
+          "rtp",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "desk",
+            "type": "card",
+            "settings": {
+              "card": "MOTU",
+              "playback": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false
+          },
+          {
+            "name": "porch",
+            "type": "card",
+            "settings": {
+              "card": "USB2",
+              "playback": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.010000Z",
+            "wanted": "running",
+            "blockLost": false
+          }
+        ],
+        "routes": []
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "noise",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.030000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.040000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.050000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.060000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.070000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "stop"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 3,
+      "result": {
+        "applied": "stop"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.080000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.090000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 4,
+      "result": {
+        "applied": "start"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.100000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.110000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 5,
+      "result": {
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.120000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "action"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.130000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.140000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.150000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "porch",
+        "settings": {
+          "card": "USB2",
+          "playback": 2
+        },
+        "disabled": true,
+        "applied": "disable"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.160000Z",
+        "wanted": "disabled",
+        "blockLost": false,
+        "cause": {
+          "kind": "disabling"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 6,
+      "result": {
+        "applied": "disable"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "disabled",
+        "phase": "disabled",
+        "since": "2026-11-09T10:00:00.170000Z",
+        "wanted": "disabled",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 7,
+      "error": {
+        "code": -32000,
+        "message": "node-disabled porch",
+        "data": {
+          "code": "node-disabled"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "porch",
+        "settings": {
+          "card": "USB2",
+          "playback": 2
+        },
+        "applied": "enable"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.180000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "enabling"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 8,
+      "result": {
+        "applied": "enable"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.190000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.200000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.210000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.220000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "stop"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 9,
+      "result": {
+        "applied": "stop"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.230000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.updated",
+      "params": {
+        "name": "porch",
+        "settings": {
+          "card": "USB3",
+          "playback": 2
+        },
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.240000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "settings",
+            "keys": [
+              "card"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 10,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.250000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "cause": {
+          "kind": "settings",
+          "keys": [
+            "card"
+          ]
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.260000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.270000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.280000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 11,
+      "result": {
+        "applied": "start"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "porch",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.290000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "quiet",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "disabled",
+        "phase": "disabled",
+        "since": "2026-11-09T10:00:00.300000Z",
+        "wanted": "disabled",
+        "blockLost": false,
+        "disabled": true
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "quiet",
+        "state": "disabled",
+        "phase": "disabled",
+        "since": "2026-11-09T10:00:00.300000Z",
+        "wanted": "disabled",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 12,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "nope/t.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.310000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.320000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.330000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open nope/t.wav: No such file or directory"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 13,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.330000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open nope/t.wav: No such file or directory"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 14,
+      "result": {
+        "applied": "stop"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.340000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "retry"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 15,
+      "result": {
+        "applied": "retry"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.350000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open nope/t.wav: No such file or directory"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.360000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "retry"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 16,
+      "result": {
+        "applied": "retry"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.370000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "reason": {
+          "code": "start-failed",
+          "detail": "cannot open nope/t.wav: No such file or directory"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.380000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        }
+      }
+    },
+    [
+      {
+        "jsonrpc": "2.0",
+        "id": 17,
+        "result": {
+          "applied": "restart"
+        }
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 18,
+        "result": {
+          "applied": "unchanged"
+        }
+      }
+    ],
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "desk",
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.390000Z",
+        "wanted": "running",
+        "blockLost": true,
+        "reason": {
+          "code": "engine-refused",
+          "detail": "the engine removed the block"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 19,
+      "error": {
+        "code": -32000,
+        "message": "not-restartable desk: block-lost",
+        "data": {
+          "code": "not-restartable",
+          "reason": "block-lost"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 20,
+      "error": {
+        "code": -32000,
+        "message": "not-restartable desk: block-lost",
+        "data": {
+          "code": "not-restartable",
+          "reason": "block-lost"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.removed",
+      "params": {
+        "name": "tape"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.400000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "removing"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 21,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "t.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.410000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 22,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.410000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "waitingFor": [
+          {
+            "name": "tape",
+            "kind": "older-node"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 23,
+      "error": {
+        "code": -32000,
+        "message": "not-restartable tape: not-started",
+        "data": {
+          "code": "not-restartable",
+          "reason": "not-started"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.420000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.430000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "starting",
+        "phase": "starting",
+        "since": "2026-11-09T10:00:00.440000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "tape",
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.450000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.removed",
+      "params": {
+        "name": "noise"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "noise",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.460000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "removing"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 24,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.stopped",
+      "params": {
+        "name": "noise",
+        "droppedFrames": 0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.gone",
+      "params": {
+        "name": "noise",
+        "droppedFrames": 0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 25,
+      "error": {
+        "code": -32000,
+        "message": "node-disabled quiet",
+        "data": {
+          "code": "node-disabled"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "fpp",
+        "type": "rtp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5004
+        },
+        "inputs": [],
+        "outputs": [
+          "stream.1",
+          "stream.2"
+        ],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.470000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.480000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 26,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.480000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "waitingFor": [
+          {
+            "name": "fpp.rtp",
+            "kind": "companion"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.480000Z",
+        "wanted": "stopped",
+        "blockLost": false,
+        "waitingFor": [
+          {
+            "name": "fpp.rtp",
+            "kind": "companion"
+          }
+        ]
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 27,
+      "result": {
+        "applied": "stop"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "starting",
+        "phase": "configured",
+        "since": "2026-11-09T10:00:00.490000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "fpp",
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.500000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": false,
+    "scheduling": "SCHED_OTHER",
+    "types": [
+      "card",
+      "file",
+      "rtp",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "desk",
+        "type": "card",
+        "settings": {
+          "card": "MOTU",
+          "playback": 2
+        },
+        "inputs": [
+          "play.1",
+          "play.2"
+        ],
+        "outputs": [],
+        "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.390000Z",
+        "wanted": "running",
+        "blockLost": true,
+        "reason": {
+          "code": "engine-refused",
+          "detail": "the engine removed the block"
+        }
+      },
+      {
+        "name": "fpp",
+        "type": "rtp",
+        "settings": {
+          "address": "0.0.0.0",
+          "channels": 2,
+          "format": "L24",
+          "port": 5004
+        },
+        "inputs": [],
+        "outputs": [
+          "stream.1",
+          "stream.2"
+        ],
+        "state": "stopped",
+        "phase": "stopped",
+        "since": "2026-11-09T10:00:00.500000Z",
+        "wanted": "stopped",
+        "blockLost": false
+      },
+      {
+        "name": "porch",
+        "type": "card",
+        "settings": {
+          "card": "USB3",
+          "playback": 2
+        },
+        "inputs": [
+          "play.1",
+          "play.2"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.290000Z",
+        "wanted": "running",
+        "blockLost": false
+      },
+      {
+        "name": "quiet",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "disabled",
+        "phase": "disabled",
+        "since": "2026-11-09T10:00:00.300000Z",
+        "wanted": "disabled",
+        "blockLost": false,
+        "disabled": true
+      },
+      {
+        "name": "tape",
+        "type": "file",
+        "settings": {
+          "path": "t.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.450000Z",
+        "wanted": "running",
+        "blockLost": false
+      }
+    ],
+    "routes": []
+  }
+}

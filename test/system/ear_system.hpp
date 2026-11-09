@@ -1,4 +1,4 @@
-// What the system tests share (docs/design/knobly-config.md, S5 criterion T9): a fresh directory
+// What the system tests share (docs/graph-file.md): a fresh directory
 // per test holding the graph file folder (config/, with ear.conf), the recordings folder
 // (recordings/) and anything outside both; the real out/ear started on it with its control port on
 // 127.0.0.1 at a free port; a JSON-RPC client on one WebSocket; and the WAV checks. Every wait is

@@ -1,5 +1,5 @@
-# The real server the sendspin node's tests run against (docs/design/sendspin.md section 13): the version
-# Music Assistant pins, and what it needs, each by hash for both architectures. To bump it:
+# The real server the sendspin node's tests run against (docs/node-types.md#library-facts-and-carried-patches): the
+# version Music Assistant pins, and what it needs, each by hash for both architectures. To bump it:
 #   echo 'aiosendspin[server]==<version>' | uv pip compile --universal --generate-hashes --python-version 3.13 -
 aiohappyeyeballs==2.7.1 \
     --hash=sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d \

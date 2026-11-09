@@ -1,4 +1,4 @@
-// A sendspin node's clock (docs/design/sendspin.md section 7, section 14, S1 criterion 9): the real engine, a real port
+// A sendspin node's clock (docs/node-types.md#clock): the real engine, a real port
 // block driven by the real code, the real library behind the real worker, and the real server playing a ramp in which
 // every frame names its place, so output time can be held against the time filter's prediction, cycle by cycle. Every
 // wait is event-gated; a deadline only fails the test.
@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cinttypes>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -21,10 +23,12 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/node_host.hpp"
+#include "ear/core/pass_through.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/sound_cards.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "feed.hpp"
 #include "sendspin_code.hpp"
@@ -48,7 +52,8 @@ struct Cycle {
 	std::int64_t startRawNs;
 	std::uint64_t position;
 	std::uint32_t frames;
-	std::uint32_t delayFrames; // what the driver still held
+	std::uint32_t delayFrames; // what lies downstream of the outputs (a following card's buffer), as the code was told
+	std::uint32_t driverId;    // as the framework told it
 	std::uint32_t got;         // frames of ramp in it (the rest zeros), if they name their place
 	std::uint32_t firstAt;     // where in the cycle the first of them is, when got > 0
 	std::uint32_t firstIndex;  // the ramp index that one names
@@ -75,18 +80,15 @@ public:
 	void release() noexcept override { code_.release(); }
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
-		timespec raw{};
-		timespec mono{};
-		clock_gettime(CLOCK_MONOTONIC_RAW, &raw);
-		clock_gettime(CLOCK_MONOTONIC, &mono);
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
 		Cycle& out = cycles_[at];
-		out.startRawNs = cycle.startNs + ((raw.tv_sec - mono.tv_sec) * 1000000000 + (raw.tv_nsec - mono.tv_nsec));
+		out.startRawNs = cycle.startRawNs;
 		out.position = cycle.position;
 		out.frames = frames;
-		out.delayFrames = cycle.delayFrames;
+		out.delayFrames = cycle.downstreamOf(0).maxFrames;
+		out.driverId = cycle.driverId;
 		out.got = 0;
 		out.firstAt = 0;
 		out.firstIndex = 0;
@@ -116,7 +118,7 @@ public:
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
 	const Cycle& at(std::size_t index) const { return cycles_[index]; }
-	static constexpr std::size_t kCapacity = 30 * kRate / kBlock;
+	static constexpr std::size_t kCapacity = 60 * kRate / kBlock;
 
 private:
 	AudioCode& code_;
@@ -200,11 +202,11 @@ struct Rig {
 			Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}},
 			kFormat, blockEvents);
 		tap.prepare(kFormat);
-		block->drive(&tap);
+		REQUIRE(ear::testing::driveNow(*block, &tap));
 		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
 	}
 	~Rig() {
-		block->drive(nullptr);
+		ear::testing::silenceOrAbort(*block);
 		block.reset();
 		tap.release();
 		std::atomic<bool> stopped{false};
@@ -215,8 +217,9 @@ struct Rig {
 		CHECK(waiter.until([&] { return stopped.load(); }, 10s));
 	}
 
-	/// Connected and paired, then the server's clock has a play time for the ramp's first frame.
-	std::int64_t play(double seconds) {
+	/// Connected and paired, then the server has committed the ramp's first frames. Their play time is not taken from
+	/// here: a Judge reads each frame's from the chunk that carried it.
+	void play(double seconds) {
 		INFO("the node said:\n" << notes.all());
 		REQUIRE(waiter.until([&] { return notes.heard("connected "); }, 20s));
 		server.send("pair");
@@ -225,10 +228,28 @@ struct Rig {
 		std::erase(code, '-');
 		server.send("code " + code);
 		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
+		// Not a check: on a loaded host the data thread's stalls can keep two seconds without a jump from coming, and
+		// the test then judges what it can (the docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
+		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
+			WARN("the graph did not settle on the raw clock's rate within 20 s");
 		server.send("play " + std::to_string(seconds));
-		const auto start = server.waitForEvent("play-start ", 20s);
-		REQUIRE(start.has_value());
-		return std::stoll(start->substr(11));
+		REQUIRE(server.waitForEvent("play-start ", 20s).has_value());
+	}
+
+	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the last two seconds of cycles. The
+	/// internal clock starts at the rate of CLOCK_MONOTONIC and its loop takes seconds to reach the raw clock's
+	/// (docs/engine.md#the-internal-clock); until it has, the library sees the graph off by however far
+	/// NTP slews CLOCK_MONOTONIC on the host (140 ppm seen) and corrects by interpolating frames.
+	bool tracksRawClock() const {
+		constexpr std::size_t window = 2 * kRate / kBlock;
+		const std::size_t count = tap.count();
+		if (count < window + 1) return false;
+		const Cycle& first = tap.at(count - 1 - window);
+		const Cycle& last = tap.at(count - 1);
+		if (last.position - first.position != std::uint64_t{window} * kBlock) return false; // a jump: look again later
+		const double frames = static_cast<double>(last.position - first.position);
+		const double seconds = static_cast<double>(last.startRawNs - first.startRawNs) / 1e9;
+		return std::abs(frames / seconds / kRate - 1.0) < 20e-6;
 	}
 
 	/// The ramp reached the output.
@@ -263,17 +284,6 @@ struct Rig {
 	std::unique_ptr<PortBlock> block;
 };
 
-/// Silent code for the block the test card plays through.
-class Silence final : public AudioCode {
-public:
-	void prepare(const AudioFormat&) override {}
-	void release() noexcept override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const GraphCycle&) noexcept override {
-		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-	}
-};
-
 class CardEvents final : public OutsideNodeEvents {
 public:
 	explicit CardEvents(Waiter& waiter) : waiter_(waiter) {}
@@ -292,33 +302,65 @@ private:
 	Waiter& waiter_;
 };
 
-/// Card "Test" of the test ALSA configuration, behind its own block, driving the graph.
+/// Card "Test" of the test ALSA configuration behind its own block, as a card node runs: the framework's pass-through
+/// from its public "play" bank to the inside bank the card joins, carrying the card's latency back. The node's "from"
+/// outputs are linked to "play", so the card follows the internal clock and plays what the node plays. The test card
+/// has no clock, so it is made clockless (its rate matching off): docs/engine.md#the-internal-clock.
 struct TestCard {
 	explicit TestCard(Rig& rig)
-		: cards(*rig.engine), blockEvents(rig.waiter), events(rig.waiter), registry(*rig.engine, rig.waiter) {
-		block = rig.blocks.make("card", Ports{{}, {}, {"to_card_1", "to_card_2"}}, kFormat, blockEvents);
-		block->drive(&silence);
+		: engine(*rig.engine), cards(*rig.engine, clocklessCardProperties()), blockEvents(rig.waiter),
+		  events(rig.waiter), registry(*rig.engine, rig.waiter) {
+		const Ports ports{{{Direction::input, "play", {"1", "2"}},
+		                   {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}};
+		const std::vector<BankPair> pairs{{"play", "to_card"}};
+		passThrough = makePassThrough(ports, pairs);
+		passThrough->prepare(kFormat);
+		block = rig.blocks.make("card", ports, kFormat, blockEvents);
+		block->carryLatency(LatencyPlan{pairs, {}});
+		REQUIRE(ear::testing::driveNow(*block, passThrough.get()));
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
-		card = cards.make("card.playback", "card",
-		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, {"to_card_1", "to_card_2"}},
-		                  kFormat, events);
+		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat, block->blockId()},
+		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
 		REQUIRE(rig.waiter.until([&] { return events.isReady || events.lostDetail.has_value(); }));
 		REQUIRE(events.lostDetail.value_or("") == "");
+		for (const char* side : {"left", "right"})
+			link(std::string("from.") + side, side[0] == 'l' ? "play.1" : "play.2");
+		REQUIRE(rig.waiter.until([&] {
+			const auto node = registry.id("clock");
+			return node && registry.activeLinksOf(*node) == 2;
+		}));
 	}
-	~TestCard() { block->drive(nullptr); }
+	~TestCard() {
+		for (pw_proxy* made : links) pw_proxy_destroy(made);
+		ear::testing::silenceOrAbort(*block);
+	}
+	/// A route's link, by node and port name, as the reconciler would make by port id.
+	void link(const std::string& from, const std::string& to) {
+		pw_properties* props =
+			pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, "clock", PW_KEY_LINK_OUTPUT_PORT, from.c_str(),
+		                      PW_KEY_LINK_INPUT_NODE, "card", PW_KEY_LINK_INPUT_PORT, to.c_str(), nullptr);
+		links.push_back(static_cast<pw_proxy*>(pw_core_create_object(
+			engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0)));
+		pw_properties_free(props);
+		REQUIRE(links.back() != nullptr);
+	}
+	Engine& engine;
 	AlsaSoundCards cards;
-	Silence silence;
+	std::unique_ptr<AudioCode> passThrough;
 	BlockEvents blockEvents;
 	CardEvents events;
 	Registry registry;
 	std::unique_ptr<PortBlock> block;
 	std::unique_ptr<OutsideNode> card;
+	std::vector<pw_proxy*> links;
 };
 
 struct Errors {
 	std::size_t judged = 0;
 	std::size_t afterFirst3s = 0; // the cycles that could have been judged, skipped ones' 1.5 s among them
 	std::uint32_t mostDelayFrames = 0;
+	std::uint32_t leastDelayFrames = UINT32_MAX;
+	std::size_t driverChanges = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
 	std::size_t skips = 0;
@@ -334,10 +376,10 @@ struct Errors {
 };
 
 /// Reads cycles as they arrive and holds each ramp cycle's output time against the time filter's prediction, at that
-/// moment.
+/// moment, for the stamp the server sent its frames with.
 class Judge {
 public:
-	Judge(Rig& rig, std::int64_t playStartUs) : rig_(rig), playStartUs_(playStartUs) {}
+	explicit Judge(Rig& rig) : rig_(rig) {}
 
 	/// Every cycle not read yet.
 	void read() {
@@ -354,14 +396,20 @@ public:
 
 private:
 	void one(const Cycle& cycle) {
+		std::int64_t skipped = 0; // the frames the code skips in this cycle: the graph's forward jump
 		if (previous_ && cycle.position != previous_->position + previous_->frames) {
 			const auto gap = static_cast<std::int64_t>(cycle.position) -
 			                 static_cast<std::int64_t>(previous_->position + previous_->frames);
 			if (gap > 0 && gap <= kFeedFrames) {
 				++errors.skips;
 				lastSkipNs_ = cycle.startRawNs;
+				skipped = gap;
 			}
 		}
+		// The ramp ran dry in the last cycle: the feed held less than a skip took, and the library, told nothing played
+		// while it was dry, drops what it holds to catch up with its clock.
+		const bool afterDry = previous_ && previous_->got == 0 && lastIndex_.has_value();
+		if (previous_ && cycle.driverId != previous_->driverId) ++errors.driverChanges;
 		if (previous_ && cycle.position == previous_->position + previous_->frames) {
 			errors.contiguousFrames += previous_->frames;
 			errors.contiguousNs += cycle.startRawNs - previous_->startRawNs;
@@ -371,36 +419,73 @@ private:
 			plusOneRun_ = 0;
 			return;
 		}
-		if (!cycle.ramp) ++errors.badCycles;
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
 		if (lastIndex_) {
 			const auto step = cycle.firstIndex - *lastIndex_;
 			// The library's dropped frame: frame n goes and n+1 is blended, so no ramp frame names n or n+1. Inside a cycle
 			// that is only a bad cycle; when the blend falls on the cycle's edge, the indices either side of it are 3 apart.
 			const bool blendOnEdge = step == 3 && !(cycle.ramp && lastCycleRamp_);
-			if (step != 1 && (step - 1) % kBlock != 0 && !blendOnEdge) errors.badSteps.push_back(step);
+			// A skip moves the ramp on by exactly the frames the graph jumped. A stalled data thread makes the internal
+			// clock jump by the time it lost, any number of frames (1127, 1156, 1189 seen on an idle host), not only
+			// whole cycles. Resuming after the ramp ran dry is the library's own catching up, right after a skip only.
+			const bool skip = skipped > 0 && step == 1 + skipped;
+			const bool caughtUp = afterDry && lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000;
+			if (step != 1 && !skip && !caughtUp && !blendOnEdge) errors.badSteps.push_back(step);
 			plusOneRun_ = step == 1 && cycle.ramp && cycle.got == cycle.frames ? plusOneRun_ + 1 : 0;
 		}
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
 
-		const std::int64_t rampUs = playStartUs_ + static_cast<std::int64_t>(cycle.firstIndex) * 1000000 / kRate;
-		// When the first of them is heard: at the block's port, plus what the driver holds ahead of it (section 7).
+		const std::int64_t rampUs = sentUs(cycle.firstIndex);
+		// When the first of them is heard: at the block's port, plus what lies downstream of it.
 		const double outputUs = static_cast<double>(cycle.startRawNs) / 1000.0 +
 		                        static_cast<double>(cycle.firstAt + cycle.delayFrames) * 1e6 / kRate;
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
+		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
 		if (lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000) return;
 		++errors.judged;
+		// Judged as the timing is: not within 1.5 s of a skip, a stall the internal clock caught up by whole blocks
+		// (engine.conf's resync.ms: it keeps its phase to the raw clock), after which the feed may have run dry and the
+		// library catches up with its clock.
+		if (!cycle.ramp) ++errors.badCycles;
 		if (std::abs(errorUs) < 1000.0) ++errors.within;
 		if (std::abs(errorUs) > std::abs(errors.worstUs)) errors.worstUs = errorUs;
 		errors.sorted.insert(std::ranges::lower_bound(errors.sorted, errorUs), errorUs);
 	}
 
+	/// One chunk of the ramp as the server handed it to the client: its first frame, how many, and the server time the
+	/// first is stamped to play at.
+	struct SentChunk {
+		std::uint32_t first;
+		std::uint32_t frames;
+		std::int64_t us;
+	};
+
+	/// The server time ramp frame `index` was sent to play at, from the stamp of the chunk that carried it: the time the
+	/// client was asked to play it at, which is what the time filter's prediction is of. Not play-start plus the index:
+	/// the server can move its timeline after a commit (on a loaded host, the second commit came late and moved it by
+	/// 7 ms), and the audio its encoder held from before goes out on the moved one (sendspin_server.py, _SentRamp).
+	std::int64_t sentUs(std::uint32_t index) {
+		for (;;) {
+			for (const SentChunk& chunk : sent_) {
+				if (index >= chunk.first && index - chunk.first < chunk.frames)
+					return chunk.us + static_cast<std::int64_t>(index - chunk.first) * 1000000 / kRate;
+			}
+			// Chunks go out hundreds of milliseconds before they play, so this one has been said by now.
+			const auto said = rig_.server.waitForEvent("chunk-sent ", 5s);
+			REQUIRE(said.has_value());
+			SentChunk chunk{};
+			REQUIRE(std::sscanf(said->c_str(), "chunk-sent %u %u %" SCNd64, &chunk.first, &chunk.frames, &chunk.us) ==
+			        3);
+			sent_.push_back(chunk);
+		}
+	}
+
 	Rig& rig_;
-	std::int64_t playStartUs_;
+	std::vector<SentChunk> sent_;
 	std::size_t next_ = 0;
 	std::optional<Cycle> previous_;
 	std::optional<std::uint32_t> lastIndex_;
@@ -412,25 +497,32 @@ private:
 
 void report(const Errors& errors) {
 	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
-	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, the driver holding at most "
-	               << errors.mostDelayFrames << " frames, within 1 ms " << errors.within << ", p50 "
-	               << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99) << " us, worst "
-	               << errors.worstUs << " us, skips " << errors.skips << ", bad cycles " << errors.badCycles
-	               << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
+	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, downstream "
+	               << errors.leastDelayFrames << " to " << errors.mostDelayFrames << " frames, within 1 ms "
+	               << errors.within << ", p50 " << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99)
+	               << " us, worst " << errors.worstUs << " us, skips " << errors.skips << ", bad cycles "
+	               << errors.badCycles << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
 	               << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
 }
 
 void checkSync(const Errors& errors) {
 	report(errors);
-	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about half a
-	// second's worth of cycles; a host worse than that fails here, without a bug (the rtp.md erratum 3 trap).
+	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about
+	// half a second's worth of cycles; a host worse than that fails here, without a bug (the
+	// docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
 	INFO("judged " << errors.judged << " of " << errors.afterFirst3s << ", within " << errors.within);
 	REQUIRE(errors.afterFirst3s > 0);
 	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
+	INFO("bad steps: " << [&] {
+		std::string steps;
+		for (const std::uint32_t step : errors.badSteps) steps += std::to_string(step) + " ";
+		return steps;
+	}());
 	CHECK(errors.badSteps.empty());
-	// A frame the library interpolates to correct an error past 100 us (section 7) is no exact ramp frame, and is allowed: CI's
-	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be something else.
+	// A frame the library interpolates to correct an error past 100 us is no exact ramp frame, and is allowed: CI's
+	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be
+	// something else.
 	CHECK(static_cast<double>(errors.badCycles) <= 0.01 * static_cast<double>(errors.judged));
 }
 
@@ -439,8 +531,8 @@ void checkSync(const Errors& errors) {
 TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time filter's prediction",
           "[sendspin][clock]") {
 	Rig rig;
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	const auto finished = [&] {
 		judge.read();
@@ -451,30 +543,37 @@ TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time f
 	checkSync(judge.errors);
 }
 
-// The test card cannot give 1 ms, so this holds what its clock allows (docs/design/sendspin.md section 16, its numbers): it
-// has no clock of its own, and PipeWire's rate loop runs the graph some percent fast, past the library's +-0.5% speed
-// correction, so the library hard-syncs each time the error passes 5 ms. A real card's bound is a check on the hardware.
-TEST_CASE("Driven by the test card, the library holds the audio to its hard sync's bound", "[sendspin][clock][cards]") {
+// The card follows the internal clock (docs/engine.md#the-internal-clock), so the graph keeps the dummy's clock and the
+// library's 1 ms holds as on the dummy alone. What changes is when a frame is heard: once the card has played what it
+// holds, which the card reports as its latency and the framework carries back through the card block's pass-through to
+// the node's outputs. The test card is clockless, so it cannot show drift; that is a check on the hardware (the
+// ear-on-talos skill).
+TEST_CASE("Through a following test card, audio is dated by the card's latency and leaves within 1 ms of the time "
+          "filter's prediction",
+          "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	const auto finished = [&] {
 		judge.read();
 		return rig.notes.heard("stream-ended");
 	};
 	REQUIRE(rig.waiter.until(finished, 30s));
-	report(judge.errors);
-	REQUIRE(judge.errors.judged > 0);
-	CHECK(std::abs(judge.errors.worstUs) < 20000.0);
+	CHECK(rig.notes.heard("stream flac 48000 2 24"));
+	// ALSA's playback node reports at least a quantum (alsa-pcm-sink.c), and the card's latency is the same all along.
+	CHECK(judge.errors.leastDelayFrames >= kBlock);
+	CHECK(judge.errors.leastDelayFrames == judge.errors.mostDelayFrames);
+	checkSync(judge.errors);
 }
 
-TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[sendspin][clock][cards]") {
+TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the output steps by +1 again",
+          "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	const std::int64_t playStart = rig.play(8.0);
-	Judge judge(rig, playStart);
+	rig.play(8.0);
+	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	// Well into the stream: two seconds of the ramp are out.
 	REQUIRE(rig.waiter.until(
@@ -495,7 +594,9 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 	}));
 	judge.restartRun();
 
-	// The library may still be correcting, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
+	// Losing the card cuts the audio path but leaves its latency (PipeWire never tells the block that the last link went,
+	// so the downstream latency the node's frames are dated by stays, stale). Any correction the library makes comes from
+	// the cut, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
 	CHECK(rig.waiter.until(
 		[&] {
 			judge.read();
@@ -503,6 +604,8 @@ TEST_CASE("A card lost mid-stream: within 3 s the output steps by +1 again", "[s
 		},
 		3s));
 	report(judge.errors);
+	// The internal clock drove all along: neither the card's links nor its loss moved the clock.
+	CHECK(judge.errors.driverChanges == 0);
 }
 
 TEST_CASE("A stream ended mid-play leaves zeros within two blocks", "[sendspin][clock]") {

@@ -1,5 +1,5 @@
-// The control calls' error codes and their one-line descriptions (docs/design/batch2.md
-// section 4.1, command_error.hpp): the one home of the code strings.
+// The control calls' error codes and their one-line descriptions (docs/architecture.md#packages, command_error.hpp):
+// the one home of the code strings.
 #include "ear/core/command_error.hpp"
 
 #include <format>

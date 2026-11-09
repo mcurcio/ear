@@ -1,13 +1,16 @@
-// Interface page: docs/design/knobly-config.md (slice S3), crossings C1 and C4. The two interfaces
-// ear_control declares at its edge: where every request batch goes (the graph file keeper implements
-// it), and who is told of each change to the graph file (the gateway and the status log).
+// The two interfaces ear_control declares at its edge: where every request batch goes (the graph file keeper implements
+// it), and who is told of each change to the graph file (the gateway and the status log). WallClock lives here, the
+// edge both StatusLog and the gateway include (docs/control-port.md#node-health).
 #pragma once
+#include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
 #include "ear/control/commands.hpp"
 #include "ear/control/graph_file_state.hpp"
 namespace ear::control {
+/// What stamps an instant on the wire (`since`) and on standard output (`t`): the system clock, or a test's.
+using WallClock = std::function<std::chrono::system_clock::time_point()>;
 using BatchReply = std::move_only_function<void(std::vector<CommandResult>)>; // called once, on the main loop
 /// Where every request batch goes (the graph file keeper implements it).
 class GraphRequests {
@@ -28,5 +31,15 @@ public:
 	virtual void graphFileWritten(const std::string& version) = 0; // status line only; not on the wire
 protected:
 	~GraphFileListener() = default;
+};
+/// Who fills in what a graph read cannot know: each node's `since`, when its phase began (the gateway's).
+/// Main loop, at the read itself, so a snapshot's `since` is the one its
+/// phase had when the graph was read, whatever the batch does after it.
+class SnapshotStamp {
+public:
+	virtual void stamp(GraphView& view) const = 0;
+
+protected:
+	~SnapshotStamp() = default;
 };
 } // namespace ear::control

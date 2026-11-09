@@ -8,7 +8,7 @@
 # - format: in the same image, clang-format's check of every C++ file (make format-check).
 # - image: builds the run image (target run, what publish pushes) and checks it with
 #   scripts/image-smoke.sh; first, scripts/version-tags.sh's own check.
-# Then, on a push to master only, once all four pass (docs/design/batch2.md section 7):
+# Then, on a push to master only, once all four pass (AGENTS.md#commits-ci-and-releases):
 # - release: semantic-release (.releaserc.json, the root package.json) reads the Conventional
 #   Commits since the last v* tag and, when one calls for a bump, appends the release notes to
 #   CHANGELOG.md, commits it to master ("chore(release): <version> [skip ci]"), tags that commit
@@ -230,7 +230,7 @@ jobs:
       # which is now behind master, so semantic-release releases nothing and publish never runs;
       # the new head (the [skip ci] commit, already tagged) starts no run either. The GitHub
       # Release is then made by hand from that version's CHANGELOG.md section, and that version's
-      # image is not published (AGENTS.md, Run image and releases).
+      # image is not published (AGENTS.md, "Commits, CI and releases").
       - id: release
         name: semantic-release
         env:

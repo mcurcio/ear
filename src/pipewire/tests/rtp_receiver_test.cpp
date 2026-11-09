@@ -1,6 +1,6 @@
-// RtpReceivers on the real in-process engine (docs/design/rtp.md sections 4, 5 and 7.2; R1b
-// criteria 1-6): PipeWire's rtp-source module loaded into EAR's own engine, no daemon, joined to a
-// port block by the one outside-node lifecycle. The sender is the tests' own thread writing RTP to
+// RtpReceivers on the real in-process engine (docs/engine.md#rtp-receivers): PipeWire's rtp-source module loaded into
+// EAR's own engine, no daemon, joined to a port block by the one outside-node lifecycle. The sender is the tests' own
+// thread writing RTP to
 // 127.0.0.1 (test/support/rtp_tone.hpp). Every wait is event-gated: the main loop runs until the
 // events a test waits for have arrived (a receiver event, a registry change, the block's cycles);
 // the deadline only fails the test.
@@ -25,6 +25,7 @@
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/pipewire/rtp_receivers.hpp"
+#include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "rtp_tone.hpp"
 
@@ -39,7 +40,7 @@ using ear::test::RtpTone;
 
 constexpr double kAmplitude = 0.5;
 
-/// Records the block's inside inputs (from_rtp_1, from_rtp_2) into buffers made before it runs,
+/// Records the block's inside inputs (from_rtp.1, from_rtp.2) into buffers made before it runs,
 /// up to kCapacity frames, and notes the first frame that is not silent and every onset: a frame
 /// that is not silent after at least kSilentRun silent frames (every channel exactly zero). Writes
 /// zeros to every output.
@@ -147,28 +148,29 @@ private:
 	Registry& registry_;
 };
 
-/// One port block "fpp" (outputs stream.1, stream.2; inside inputs from_rtp_1, from_rtp_2)
+/// One port block "fpp" (outputs stream.1, stream.2; the inside input bank from_rtp)
 /// driven by a Recorder, running on the dummy driver, and the receivers' factory.
 struct Graph {
 	Graph()
 		: engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell), receivers(*engine),
 		  recorder(waiter, 2), blockEvents(waiter) {
-		block = blocks.make("fpp", Ports{{{Direction::output, "stream", {"1", "2"}}}, {"from_rtp_1", "from_rtp_2"}},
+		block = blocks.make("fpp",
+		                    Ports{{{Direction::output, "stream", {"1", "2"}},
+		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
 		                    kFormat, blockEvents);
-		block->drive(&recorder);
+		REQUIRE(ear::testing::driveNow(*block, &recorder));
 		REQUIRE(
 			waiter.until([&] { return blockEvents.isReady && registry.id("Dummy-Driver") && registry.props("fpp"); }));
 		dummy = *registry.id("Dummy-Driver");
 	}
-	~Graph() { block->drive(nullptr); }
+	~Graph() { ear::testing::silenceOrAbort(*block); }
 
 	std::unique_ptr<OutsideNode> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
 	                                          ReceiverEvents& events) {
 		events.insideMake = true;
 		auto receiver = receivers.make(
-			"fpp.rtp", "fpp",
-			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, {"from_rtp_1", "from_rtp_2"}},
-			events);
+			OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
+			RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100, "from_rtp"}, events);
 		events.insideMake = false;
 		return receiver;
 	}
@@ -203,7 +205,7 @@ struct Graph {
 /// 750 Hz, still fails every tenth).
 void checkTone(const Recorder& recorder, std::size_t channel, std::size_t from, std::size_t frames, double wanted,
                double other) {
-	INFO("from_rtp_" << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
+	INFO("from_rtp." << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
 	const auto samples = recorder.frames(channel, from, frames);
 	constexpr std::size_t tenth = kRate / 10;
 	std::string profile;
@@ -277,7 +279,37 @@ TEST_CASE("A receiver is ready once, every channel's link active, and it and the
 	CHECK(events.readyCount == 1);
 }
 
-TEST_CASE("L24 at the graph rate: channel 1 reaches from_rtp_1 and channel 2 from_rtp_2", "[rtp][channels]") {
+// docs/architecture.md#phases-states-and-what-is-wanted: the join names the block by its global id, so beside an older
+// block of the same name (one still going) it reaches only the block it was given.
+TEST_CASE("A receiver joins its block by the block's id: beside an older block of the same name it reaches only the "
+          "newer",
+          "[rtp][join]") {
+	Graph graph;
+	Recorder newerRecorder(graph.waiter, 2);
+	BlockEvents newerEvents(graph.waiter);
+	auto newer = graph.blocks.make("fpp",
+	                               Ports{{{Direction::output, "stream", {"1", "2"}},
+	                                      {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
+	                               kFormat, newerEvents);
+	REQUIRE(ear::testing::driveNow(*newer, &newerRecorder));
+	REQUIRE(graph.waiter.until([&] { return newerEvents.isReady && graph.registry.ids("fpp").size() == 2; }));
+	const std::uint32_t olderId = graph.block->blockId();
+	const std::uint32_t newerId = newer->blockId();
+	REQUIRE(olderId != newerId);
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const auto receiver =
+		graph.receivers.make(OutsideTarget{"fpp.rtp", "fpp", {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
+	                         RtpReceiverRequest{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(),
+	                                            RtpEncoding::l24, kRate, 100, "from_rtp"},
+	                         events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	CHECK(graph.registry.activeLinksOf(newerId) == 2);
+	CHECK(graph.registry.linksOf(olderId).empty());
+	ear::testing::silenceOrAbort(*newer);
+}
+
+TEST_CASE("L24 at the graph rate: channel 1 reaches from_rtp.1 and channel 2 from_rtp.2", "[rtp][channels]") {
 	checkTwoTones(RtpPcm::l24, RtpEncoding::l24, kRate);
 }
 

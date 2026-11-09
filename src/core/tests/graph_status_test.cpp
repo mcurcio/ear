@@ -1,4 +1,4 @@
-// The graph read (docs/design/batch2.md section 4.2, graph_view.hpp; C1 criterion 14): the join
+// The graph read (docs/architecture.md#packages, graph_view.hpp): the join
 // of the real desired graph, node framework and reconciler, wired as main.cpp wires them, with
 // the engine faked behind their factory interfaces.
 #include <functional>
@@ -14,7 +14,8 @@
 
 using namespace ear;
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace graph_status_test {
 
 struct SilentCode final : AudioCode {
 	void prepare(const AudioFormat&) override {}
@@ -28,10 +29,8 @@ struct NullConsumer final : HandoffConsumer {
 	void finish() override {}
 };
 
-struct Insides final : NodeInsides {
-	SilentCode code;
+struct Run final : RunObject {
 	NullConsumer consumer;
-	AudioCode& audioCode() override { return code; }
 };
 
 /// Nodes of "recorder" ask for one handoff, so a removed one stays stopping until it closes.
@@ -40,10 +39,14 @@ struct Config final : NodeConfig {
 	bool handoff;
 	Config(Ports p, bool h) : ports_(std::move(p)), handoff(h) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
-		auto insides = std::make_unique<Insides>();
-		if (handoff) grant.handoff(1, 64, insides->consumer);
-		return insides;
+	StartResult start(StartContext& context) const override {
+		auto run = std::make_unique<Run>();
+		if (handoff) context.acquire(HandoffRequest{"record", 64, &run->consumer});
+		return StartResult{
+			std::make_unique<SilentCode>(),
+			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+				return std::move(run);
+			}};
 	}
 };
 
@@ -70,21 +73,45 @@ std::vector<std::unique_ptr<const NodeType>> types() {
 	all.push_back(std::make_unique<Type<sourceTable>>(Ports{{{Direction::output, "noise", {"mono"}}}}));
 	all.push_back(
 		std::make_unique<Type<recorderTable>>(Ports{{{Direction::input, "record", {"left", "right"}}}}, true));
-	all.push_back(std::make_unique<Type<cardTable>>(
-		Ports{{{Direction::input, "play", {"1"}}, {Direction::output, "capture", {"1"}}}, {"PB1"}, {"CAP1"}}));
+	all.push_back(
+		std::make_unique<Type<cardTable>>(Ports{{{Direction::input, "play", {"1"}},
+	                                             {Direction::output, "capture", {"1"}},
+	                                             {Direction::input, "from_card", {"1"}, PortBank::Reach::inside},
+	                                             {Direction::output, "to_card", {"1"}, PortBank::Reach::inside}}}));
 	return all;
 }
 
+/// Completions wait in the factory until the test runs them, as the engine runs them on the main loop later
+/// (docs/engine.md#drive-and-fade).
+using Completions = std::vector<std::move_only_function<void()>>;
+
 struct Block final : PortBlock {
-	void drive(AudioCode*) override {}
+	Completions& completions;
+	explicit Block(Completions& c) : completions(c) {}
+	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)> done) override {
+		completions.push_back([done = std::move(done)]() mutable { done(0); });
+	}
+	void fadeOut(std::move_only_function<void()> done) override { completions.push_back(std::move(done)); }
+	void settle() override {}
+	std::uint64_t takenAt() const noexcept override { return 0; }
+	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
 };
 
 struct Blocks final : PortBlockFactory {
 	std::map<NodeName, PortBlockEvents*> events; // the latest block of each name
+	Completions completions;
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports&, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		events[node] = &e;
-		return std::make_unique<Block>();
+		return std::make_unique<Block>(completions);
+	}
+	/// Runs every completion, and those they cause, in order.
+	void complete() {
+		while (!completions.empty()) {
+			auto now = std::move(completions);
+			completions.clear();
+			for (auto& done : now) done();
+		}
 	}
 };
 
@@ -102,7 +129,7 @@ struct PendingHandoff final : Handoff {
 	void close(std::move_only_function<void(std::uint64_t)> closed) override { pending.push_back(std::move(closed)); }
 };
 
-struct Handoffs final : HandoffFactory {
+struct Handoffs final : HandoffAdapter {
 	std::vector<std::move_only_function<void(std::uint64_t)>> pending;
 	std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t, std::uint32_t, HandoffConsumer&) override {
 		return std::make_unique<PendingHandoff>(pending);
@@ -113,31 +140,46 @@ struct Handoffs final : HandoffFactory {
 	}
 };
 
-struct NoCards final : SoundCardFactory {
-	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const SoundCardRequest&, const AudioFormat&,
-	                                  OutsideNodeEvents&) override {
+struct NoCards final : SoundCardAdapter {
+	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const SoundCardRequest&, OutsideNodeEvents&) override {
 		FAIL("a sound card was made");
 		return nullptr;
 	}
 };
 
-struct NoReceivers final : RtpReceiverFactory {
-	std::unique_ptr<OutsideNode> make(const NodeName&, const NodeName&, const RtpReceiverRequest&,
-	                                  OutsideNodeEvents&) override {
+struct NoReceivers final : RtpReceiverAdapter {
+	std::unique_ptr<OutsideNode> make(const OutsideTarget&, const RtpReceiverRequest&, OutsideNodeEvents&) override {
 		FAIL("an RTP receiver was made");
 		return nullptr;
 	}
 };
 
-/// Only insides with threads post, and these have none.
-struct NoExecutor final : Executor {
-	void post(std::move_only_function<void()>) override { throw std::logic_error("nothing here posts"); }
+/// The main loop as the test turns it: NodeHost posts its per-turn flush here (docs/architecture.md#isolation).
+struct Turns final : Executor {
+	std::vector<std::move_only_function<void()>> posted;
+	void post(std::move_only_function<void()> work) override { posted.push_back(std::move(work)); }
+};
+
+/// Close deadlines that never come due: every run here closes in time.
+struct NoTimers final : Timers {
+	struct Never final : Timer {};
+	std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		return std::make_unique<Never>();
+	}
+	std::chrono::steady_clock::time_point now() const override { return {}; }
 };
 
 struct Links final : LinkMaker {
 	std::vector<LinkId> made;
 	void createLink(LinkId link, EnginePortId, EnginePortId) override { made.push_back(link); }
 	void destroyLink(LinkId) override {}
+};
+
+/// No node here asks for a sink.
+struct NoSinks final : SinkAdapter {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t) override {
+		throw std::logic_error("no sink in these tests");
+	}
 };
 
 struct Fixture {
@@ -148,8 +190,11 @@ struct Fixture {
 	NoCards cards;
 	NoReceivers receivers;
 	Links links;
-	NoExecutor mainLoop;
-	NodeHost nodes{AudioFormat{48000, 256}, blocks, handoffs, cards, receivers, mainLoop};
+	Turns mainLoop;
+	NoTimers timers;
+	NoSinks sinks;
+	ResourceRegistry resources{cards, receivers, handoffs, sinks};
+	NodeHost nodes{AudioFormat{48000, 256}, blocks, resources, mainLoop, timers};
 	Reconciler routes{links};
 	GraphStatus status{EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, catalogue, graph, nodes, routes};
 	Fixture() {
@@ -158,7 +203,18 @@ struct Fixture {
 	}
 	~Fixture() {
 		nodes.stopAll(graph.close(), [] {});
+		settle();
 		handoffs.closeAll();
+		settle();
+	}
+	/// The main loop turns until nothing is left: the flushes NodeHost posted and every completion, in order.
+	void settle() {
+		while (!mainLoop.posted.empty() || !blocks.completions.empty()) {
+			auto now = std::move(mainLoop.posted);
+			mainLoop.posted.clear();
+			for (auto& work : now) work();
+			blocks.complete();
+		}
 	}
 };
 
@@ -173,14 +229,17 @@ void apply(DesiredGraph& graph, const std::vector<NodeSpec>& nodes, const std::v
 	REQUIRE(graph.commit(std::move(*plan)).has_value());
 }
 
-} // namespace
+} // namespace graph_status_test
+using namespace graph_status_test;
 
 TEST_CASE("The graph read joins the wanted graph with node and route status", "[graph_status]") {
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", {{"seed", 1}}}, {"motu", "card", noSettings}},
 	      {noiseToFl, noiseToFr});
+	f.settle(); // the turn's flush makes the blocks
 	f.blocks.events.at("noise")->ready();
 	f.blocks.events.at("motu")->lost("no driver");
+	f.settle(); // noise's drive
 	f.routes.portAppeared({{"noise", "noise.mono"}, Direction::output, 1});
 	f.routes.portAppeared({{"rec", "record.left"}, Direction::input, 2});
 	REQUIRE(f.links.made.size() == 1);
@@ -196,19 +255,19 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 
 	REQUIRE(view.nodes.size() == 3);
 	CHECK(view.nodes[0].spec == NodeSpec{"motu", "card", noSettings});
-	CHECK(view.nodes[0].state == NodeState::failed);
-	REQUIRE(view.nodes[0].reason.has_value());
-	CHECK(view.nodes[0].reason->detail == "no driver");
+	CHECK(view.nodes[0].health.state == NodeState::failed);
+	REQUIRE(view.nodes[0].health.reason.has_value());
+	CHECK(view.nodes[0].health.reason->detail == "no driver");
 	// Public ports only: inside ports are the card's own.
 	CHECK(view.nodes[0].ports.inputs() == std::vector<PortName>{"play.1"});
 	CHECK(view.nodes[0].ports.outputs() == std::vector<PortName>{"capture.1"});
 	CHECK(view.nodes[0].ports.insideInputs().empty());
 	CHECK(view.nodes[0].ports.insideOutputs().empty());
 	CHECK(view.nodes[1].spec == NodeSpec{"noise", "source", {{"seed", 1}}});
-	CHECK(view.nodes[1].state == NodeState::running);
-	CHECK_FALSE(view.nodes[1].reason.has_value());
+	CHECK(view.nodes[1].health.state == NodeState::running);
+	CHECK_FALSE(view.nodes[1].health.reason.has_value());
 	CHECK(view.nodes[2].spec.name == "rec");
-	CHECK(view.nodes[2].state == NodeState::starting);
+	CHECK(view.nodes[2].health.state == NodeState::starting);
 
 	REQUIRE(view.routes.size() == 2);
 	CHECK(view.routes[0].route == noiseToFl);
@@ -220,13 +279,16 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 TEST_CASE("A removed node still stopping is absent, and a re-added name shows the new node", "[graph_status]") {
 	Fixture f;
 	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {noiseToFl});
+	f.settle();
 	f.blocks.events.at("rec")->ready();
-	REQUIRE(f.nodes.status().at(1).name == "rec"); // a commit adds in name order
-	REQUIRE(f.nodes.status().at(1).state == NodeState::running);
+	f.settle();
+	REQUIRE(f.nodes.health().at(1).name == "rec"); // a commit adds in name order
+	REQUIRE(f.nodes.health().at(1).state == NodeState::running);
 
 	apply(f.graph, {{"noise", "source", noSettings}}, {});
-	REQUIRE(f.nodes.status().size() == 2); // rec waits for its handoff to close
-	CHECK(f.nodes.status().at(1).state == NodeState::stopping);
+	f.settle();                            // rec's silence, then its block destroyed
+	REQUIRE(f.nodes.health().size() == 2); // rec waits for its handoff to close
+	CHECK(f.nodes.health().at(1).state == NodeState::stopping);
 
 	GraphView view = f.status.read();
 	REQUIRE(view.nodes.size() == 1);
@@ -234,18 +296,50 @@ TEST_CASE("A removed node still stopping is absent, and a re-added name shows th
 	CHECK(view.routes.empty());
 
 	apply(f.graph, {{"noise", "source", noSettings}, {"rec", "recorder", noSettings}}, {});
-	REQUIRE(f.nodes.status().size() == 3); // the old rec, still stopping, comes first
+	REQUIRE(f.nodes.health().size() == 3); // the old rec, still stopping, comes first
 	view = f.status.read();
 	REQUIRE(view.nodes.size() == 2);
 	CHECK(view.nodes[1].spec.name == "rec");
-	CHECK(view.nodes[1].state == NodeState::starting);
+	CHECK(view.nodes[1].health.state == NodeState::starting);
 
+	f.settle(); // the new rec's block
 	f.blocks.events.at("rec")->ready();
 	view = f.status.read();
-	CHECK(view.nodes[1].state == NodeState::starting); // its insides wait for the old rec
+	CHECK(view.nodes[1].health.state == NodeState::starting); // its insides wait for the old rec
 
 	f.handoffs.closeAll();
-	REQUIRE(f.nodes.status().size() == 2);
+	f.settle(); // the new rec's drive
+	REQUIRE(f.nodes.health().size() == 2);
 	view = f.status.read();
-	CHECK(view.nodes[1].state == NodeState::running);
+	CHECK(view.nodes[1].health.state == NodeState::running);
+}
+
+TEST_CASE("A node NodeHost has not told yet reads its health from its spec, and a disabled one reads disabled",
+          "[graph_status]") {
+	const NodeHealth added = healthFromSpec(NodeSpec{"noise", "source", noSettings});
+	CHECK(added.name == "noise");
+	CHECK(added.phase == NodePhase::added);
+	CHECK(added.state == NodeState::starting);
+	CHECK(added.wanted == Wanted::running);
+	CHECK_FALSE(added.blockLost);
+	NodeSpec quiet{"quiet", "source", noSettings};
+	quiet.disabled = true;
+	const NodeHealth disabled = healthFromSpec(quiet);
+	CHECK(disabled.phase == NodePhase::disabled);
+	CHECK(disabled.state == NodeState::disabled);
+	CHECK(disabled.wanted == Wanted::disabled);
+
+	Fixture f;
+	apply(f.graph, {{"noise", "source", noSettings}, quiet}, {});
+	f.settle();
+	f.blocks.events.at("noise")->ready();
+	f.settle();
+	const GraphView view = f.status.read();
+	REQUIRE(view.nodes.size() == 2);
+	CHECK(view.nodes[0].health.phase == NodePhase::running);
+	CHECK(view.nodes[0].health.wanted == Wanted::running);
+	CHECK(view.nodes[1].spec.disabled);
+	CHECK(view.nodes[1].health.phase == NodePhase::disabled);
+	CHECK(view.nodes[1].health.wanted == Wanted::disabled);
+	CHECK_FALSE(view.nodes[0].since.has_value()); // the gateway's to fill
 }

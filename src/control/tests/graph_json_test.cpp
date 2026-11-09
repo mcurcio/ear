@@ -1,5 +1,5 @@
-// graph_json: the one decoder and encoder of node and route JSON (docs/design/batch2.md section
-// 4.5, R1 criterion 2): every missing, extra and mistyped key is named by its JSON pointer.
+// graph_json: the one decoder and encoder of node and route JSON (docs/control-port.md): every missing, extra and
+// mistyped key is named by its JSON pointer.
 #include <string>
 
 #include "catch2/catch.hpp"

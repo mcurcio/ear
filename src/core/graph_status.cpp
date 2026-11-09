@@ -1,5 +1,5 @@
 // The graph read: the join of the desired graph, the node framework and the reconciler
-// (docs/design/batch2.md section 4.2, graph_view.hpp). It holds no state of its own: every read
+// (docs/architecture.md#packages, graph_view.hpp). It holds no state of its own: every read
 // asks the three owners, so it can never disagree with them.
 #include "ear/core/graph_view.hpp"
 
@@ -7,6 +7,16 @@
 #include <utility>
 
 namespace ear {
+
+NodeHealth healthFromSpec(const NodeSpec& spec) {
+	NodeHealth health{spec.name};
+	if (spec.disabled) {
+		health.state = NodeState::disabled;
+		health.phase = NodePhase::disabled;
+		health.wanted = Wanted::disabled;
+	}
+	return health;
+}
 
 GraphStatus::GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired,
                          const NodeHost& nodes, const Reconciler& routes)
@@ -18,14 +28,13 @@ GraphView GraphStatus::read() const {
 
 	// A wanted node is NodeHost's last entry of its name: an earlier one is a removed node of the
 	// same name still stopping.
-	std::map<NodeName, NodeStatus> latest;
-	for (auto& status : nodes_.status()) latest.insert_or_assign(status.name, std::move(status));
+	std::map<NodeName, NodeHealth> latest;
+	for (auto& health : nodes_.health()) latest.insert_or_assign(health.name, std::move(health));
 	for (auto& wanted : desired_.nodes()) {
-		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(), NodeState::starting, std::nullopt};
-		if (const auto it = latest.find(node.spec.name); it != latest.end()) {
-			node.state = it->second.state;
-			node.reason = it->second.reason;
-		}
+		NodeView node{std::move(wanted.spec), wanted.ports.publicOnly(), {}, std::nullopt};
+		if (const auto it = latest.find(node.spec.name); it != latest.end()) node.health = std::move(it->second);
+		else node.health = healthFromSpec(node.spec);
+		node.health.superseded = false;
 		view.nodes.push_back(std::move(node));
 	}
 

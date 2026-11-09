@@ -1,4 +1,4 @@
-// Places in ear.conf (docs/design/knobly-config.md, "Wire additions"): knobly's units to the wire's.
+// Places in ear.conf (docs/control-port.md#the-graph-file-over-the-port): knobly's units to the wire's.
 #pragma once
 #include <cstdint>
 #include <string_view>

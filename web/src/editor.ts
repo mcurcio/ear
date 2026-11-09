@@ -1,5 +1,5 @@
 // One editor session: the client, the graph, the graph file and the levels, wired together
-// outside React (docs/design/batch2.md section 8). Every server text goes to the graph's and the
+// outside React (docs/editor.md). Every server text goes to the graph's and the
 // graph file's reducers; each levels notification replaces the level store; a closed connection
 // makes every meter read silent until the new connection's levels arrive.
 import { GraphStore } from "./graph";

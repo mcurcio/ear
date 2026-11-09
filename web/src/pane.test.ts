@@ -1,4 +1,4 @@
-// S6 criterion 3: the ear.conf pane's logic. A dirty draft plus a new file goes stale and keeps
+// The ear.conf pane's logic. A dirty draft plus a new file goes stale and keeps
 // the draft; reload takes the newest text; invalid-text sets the errors; Save carries the base
 // version; a click on a diagnostic finds its place in the text.
 import { describe, expect, it } from "vitest";

@@ -16,7 +16,8 @@
 #endif
 #include "ear/core/settings_table.hpp"
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace settings_table_bad {
 
 using namespace ear;
 
@@ -42,6 +43,14 @@ class GoodType final : public NodeTypeOf<table> {
 
 #ifdef EAR_CASE_key_empty
 constexpr auto bad = setting::required("", setting::number(1, 2));
+#endif
+
+#ifdef EAR_CASE_key_reserved_disabled
+constexpr auto bad = setting::optional("disabled", setting::text<anyText>("true or false"));
+#endif
+
+#ifdef EAR_CASE_key_reserved_disabled_family
+constexpr auto bad = setting::required("disabled.1", setting::number(0, 1));
 #endif
 
 #ifdef EAR_CASE_key_twice
@@ -236,4 +245,4 @@ constexpr auto bad = setting::required("r", setting::number(1, 2)).onlyWithout(t
 constexpr auto bad = setting::optional("o", setting::number(1, 2)).onlyWithout(numberRow);
 #endif
 
-} // namespace
+} // namespace settings_table_bad

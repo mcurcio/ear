@@ -1,8 +1,7 @@
-// The control port's client: JSON-RPC 2.0 over one WebSocket (docs/design/batch2.md sections 6
-// and 8). It numbers requests, matches each reply to its request, hands every server text to
-// onMessage in arrival order, and when the socket opens it subscribes to the graph, to the graph
-// file and to the levels. When the socket closes it fails the calls in flight and opens a new socket after a
-// growing wait (1 s doubling to 30 s): a stated retry rate, not a schedule. The new socket
+// The control port's client: JSON-RPC 2.0 over one WebSocket (docs/control-port.md). It numbers requests, matches each
+// reply to its request, hands every server text to onMessage in arrival order, and when the socket opens it subscribes
+// to the graph, to the graph file and to the levels. When the socket closes it fails the calls in flight and opens a
+// new socket after a growing wait (1 s doubling to 30 s): a stated retry rate, not a schedule. The new socket
 // subscribes again, so the client starts over from a fresh snapshot (list, then watch).
 import type { MethodName, Methods, RpcErrorObject, ServerMessage } from "./protocol";
 

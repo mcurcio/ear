@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
 #pragma once
 #include <optional>
 #include <span>

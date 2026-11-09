@@ -1,5 +1,5 @@
-// The judge of the sendspin system tests' ramp, `checkRamp`, on hand-made frames: no ear, no server. What it may pass is the
-// library's correction of a clock error and nothing else (docs/design/sendspin.md erratum 42).
+// The judge of the sendspin system tests' ramp, `checkRamp`, on hand-made frames: no ear, no server. What it may pass
+// is the library's correction of a clock error and nothing else (docs/node-types.md#library-facts-and-carried-patches).
 #include <array>
 #include <cstddef>
 #include <cstdint>

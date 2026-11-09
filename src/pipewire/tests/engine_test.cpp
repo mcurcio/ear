@@ -1,17 +1,19 @@
-// Slice S1's tests (docs/design/m1-white-to-file.md section 3, acceptance criteria S1): the
-// real in-process engine, port blocks, live ports and links, no daemon and no hardware. On batch
-// 2's interfaces (docs/design/batch2.md section 4.1) a block is made silent and then driven.
+// The real in-process engine (docs/engine.md): port blocks, live ports and links, no daemon and no hardware. A block
+// is made silent and then driven.
 // Every wait is event-gated: the main loop runs until the events a test waits for have
 // arrived; the deadline only fails the test.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <sched.h>
@@ -21,10 +23,19 @@
 #include <pipewire/pipewire.h>
 
 #include "catch2/catch.hpp"
+#include "ear/core/desired_graph.hpp"
+#include "ear/core/node_catalogue.hpp"
+#include "ear/core/node_host.hpp"
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "ear/pipewire/engine.hpp"
+#include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
+#include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/rtp_receivers.hpp"
+#include "ear/pipewire/sound_cards.hpp"
+#include "ear/testing/drive_now.hpp"
 
 namespace {
 using namespace ear;
@@ -57,7 +68,7 @@ public:
 std::unique_ptr<PortBlock> makeDriven(FilterPortBlocks& blocks, const NodeName& node, const Ports& ports,
                                       AudioCode& code, PortBlockEvents& events) {
 	auto block = blocks.make(node, ports, kFormat, events);
-	block->drive(&code);
+	REQUIRE(ear::testing::driveNow(*block, &code));
 	return block;
 }
 
@@ -487,4 +498,143 @@ TEST_CASE("The scheduling report is how the thread running process() is schedule
 	}
 	// The dev container and CI grant no realtime priority (no CAP_SYS_NICE, RLIMIT_RTPRIO 0).
 	CHECK_FALSE(scheduling.realtime);
+}
+
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: once the data loop is judged wedged, a route's
+// link is neither made nor destroyed, since either reaches the data loop through a blocking invoke (impl-port.c's
+// port_set_io releases a mix with pw_loop_invoke(..., true)), and the main loop would wait on it for good.
+TEST_CASE("After the data loop is judged wedged a route's link is leaked, not destroyed, and a new one is refused, "
+          "and the main loop never waits",
+          "[engine][wedge]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	LinkedPair pair(*engine, waiter);
+	REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "out.a") && pair.ports.find("rec", "record.left"); }));
+	const EnginePortId out = pair.ports.find("ramp", "out.a")->id;
+	const EnginePortId left = pair.ports.find("rec", "record.left")->id;
+	pair.links.createLink(kLink, out, left);
+	REQUIRE(waiter.until([&] { return !pair.linkLog.active.empty(); }));
+
+	// The data loop runs no invoke from here: one of its invokes waits for the test.
+	std::atomic<bool> release{false};
+	pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+	REQUIRE(dataLoop != nullptr);
+	pw_loop_invoke(
+		dataLoop,
+		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+			auto* flag = static_cast<std::atomic<bool>*>(data);
+			while (!flag->load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			return 0;
+		},
+		0, nullptr, 0, false, &release);
+	markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+	CHECK(dataLoopWedged(*engine));
+
+	const auto before = std::chrono::steady_clock::now();
+	pair.links.destroyLink(kLink);       // leaked: it returns at once
+	pair.links.createLink(8, out, left); // refused later, never inside the call
+	CHECK(pair.linkLog.failed.empty());
+	// The main loop keeps turning: the refusal arrives, and a round of the loop later nothing has waited.
+	REQUIRE(waiter.until([&] { return !pair.linkLog.failed.empty(); }));
+	CHECK(pair.linkLog.failed == std::vector<std::pair<LinkId, std::string>>{{8, "the data loop is wedged"}});
+	struct Later {
+		bool fired = false;
+		Waiter* waiter;
+	} later{false, &waiter};
+	spa_source* timer = pw_loop_add_timer(
+		engine->mainLoop(),
+		[](void* data, std::uint64_t) {
+			auto* state = static_cast<Later*>(data);
+			state->fired = true;
+			state->waiter->wake();
+		},
+		&later);
+	timespec value{0, 200'000'000};
+	pw_loop_update_timer(engine->mainLoop(), timer, &value, nullptr, false);
+	const bool turned = waiter.until([&] { return later.fired; });
+	pw_loop_destroy_source(engine->mainLoop(), timer);
+	CHECK(turned);
+	CHECK(pair.linkLog.gone.empty()); // the link was never destroyed, so never told gone
+	CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(4));
+
+	release.store(true); // the blocks' teardown below waits on the data loop
+}
+
+namespace {
+
+/// Writes one level on every output: a node with outputs, so every stop fades.
+class LevelCode final : public AudioCode {
+public:
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> output : outputs) std::ranges::fill(output, 0.25F);
+	}
+	void release() noexcept override {}
+};
+
+class LevelConfig final : public NodeConfig {
+public:
+	const Ports& ports() const override { return ports_; }
+	StartResult start(StartContext&) const override { return std::make_unique<LevelCode>(); }
+
+private:
+	Ports ports_{{{Direction::output, "out", {"left", "right"}}}};
+};
+
+class HealthWake final : public NodeHealthListener {
+public:
+	explicit HealthWake(Waiter& waiter) : waiter_(waiter) {}
+	void nodeChanged(const NodeHealth&) override { waiter_.wake(); }
+	void nodeGone(const NodeName&, std::uint64_t) override { waiter_.wake(); }
+
+private:
+	Waiter& waiter_;
+};
+
+} // namespace
+
+// Stopping many nodes at once (docs/architecture.md#teardown-by-dependency): NodeHost over the real engine posts every
+// node's fade at once, then every silence once the fades are acknowledged, then one flush of destroys, so stopping many
+// nodes costs about one fade, one cycle and one batch of destroys, never one per node in turn. Measured and printed;
+// bounded at 2 s.
+TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of destroys", "[engine][fade]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	ThreadHandoffs handoffs(engine->mainLoop());
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	ResourceRegistry resources(cards, receivers, handoffs, sinks);
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	{
+		NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop);
+		host.subscribe(health);
+		auto config = std::make_shared<LevelConfig>();
+		for (int i = 0; i < 16; ++i) host.nodeAdded(NodeSpec{"n" + std::to_string(i), "level", {}}, config);
+		REQUIRE(waiter.until(
+			[&] {
+				const auto all = host.health();
+				return all.size() == 16 &&
+			           std::ranges::all_of(all, [](const NodeHealth& h) { return h.state == NodeState::running; });
+			},
+			10s));
+		bool gone = false;
+		const auto before = std::chrono::steady_clock::now();
+		host.stopAll(graph.close(), [&] {
+			gone = true;
+			waiter.wake();
+		});
+		REQUIRE(waiter.until([&] { return gone; }, 10s));
+		const auto took =
+			std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - before);
+		std::printf("stopping 16 nodes took %lld us\n", static_cast<long long>(took.count()));
+		CHECK(took < std::chrono::seconds(2));
+		CHECK(host.leaked() == 0);
+	}
 }

@@ -1,5 +1,5 @@
 // Every node type together, however many the folders in src/nodes make: their names, and each type's declared setting
-// kinds (docs/design/knobly-config.md). That main.cpp registers them is the system tests' to prove.
+// kinds (docs/graph-file.md). That main.cpp registers them is the system tests' to prove.
 #include <algorithm>
 #include <map>
 #include <memory>

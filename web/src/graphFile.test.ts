@@ -1,4 +1,4 @@
-// S6 criterion 1: the graph file reducer turns graph-file.json's messages into its file exactly,
+// The graph file reducer turns graph-file.json's messages into its file exactly,
 // and the other fixtures (no graphFile.subscribe) leave it null; dropped edits become notices, and a
 // failed write stays the file's own state (the pane's one banner for it), never a notice too.
 import { describe, expect, it } from "vitest";

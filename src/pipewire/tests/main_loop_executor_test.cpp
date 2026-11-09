@@ -1,12 +1,18 @@
-// MainLoopExecutor on the real engine's main loop (docs/design/batch2.md section 4.3; acceptance
-// criterion E1(9)): post order per thread, the loop thread, never inline, and work left at
-// destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
-// the deadline only fails the test.
+// MainLoopExecutor on the real engine's main loop (docs/engine.md): post order per thread, the loop thread, never
+// inline, and work left at destruction destroyed unrun. Every wait runs the main loop until the awaited work has run;
+// the deadline only fails the test. Also the main-loop watchdog
+// (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog) beaten by its timers, as main.cpp wires it,
+// reporting a real stall of the loop with where it was.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <functional>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -14,6 +20,8 @@
 #include <pipewire/pipewire.h>
 
 #include "catch2/catch.hpp"
+#include "ear/core/main_loop_activity.hpp"
+#include "ear/output/stall_watch.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 
 namespace {
@@ -132,4 +140,98 @@ TEST_CASE("Work still queued when the executor is destroyed is destroyed unrun",
 	next.post([&] { engine->quit(); });
 	REQUIRE(runUntilQuit(*engine));
 	CHECK_FALSE(ran);
+}
+
+TEST_CASE("A timer runs once on the main loop after its delay, never once destroyed, and may be destroyed inside "
+          "its own call",
+          "[executor][timers]") {
+	auto engine = makeEngine();
+	MainLoopExecutor executor(*engine);
+	Timers& timers = executor;
+	const std::thread::id loopThread = std::this_thread::get_id();
+	int cancelledRan = 0;
+	int ownRan = 0;
+	bool onLoop = false;
+	std::unique_ptr<Timer> own;
+	const auto armed = std::chrono::steady_clock::now();
+	std::chrono::steady_clock::duration waited{};
+
+	auto cancelled = timers.after(std::chrono::milliseconds(20), [&] { ++cancelledRan; });
+	cancelled.reset();
+	own = timers.after(std::chrono::milliseconds(50), [&] {
+		++ownRan;
+		onLoop = std::this_thread::get_id() == loopThread;
+		waited = std::chrono::steady_clock::now() - armed;
+		own.reset(); // the timer goes inside its own call
+		executor.post([&] { engine->quit(); });
+	});
+	auto zero = timers.after(std::chrono::milliseconds(0), [] {}); // a zero delay still fires, later
+	REQUIRE(runUntilQuit(*engine));
+	CHECK(ownRan == 1);
+	CHECK(onLoop);
+	CHECK(waited >= std::chrono::milliseconds(50));
+	CHECK(cancelledRan == 0);
+	CHECK(own == nullptr);
+}
+
+TEST_CASE("The main-loop watchdog reports a stall of the engine's main loop with where it was, then its resumption",
+          "[executor][stall_watch]") {
+	auto engine = makeEngine();
+	MainLoopExecutor executor(*engine);
+	struct Report {
+		bool stalled;
+		std::int64_t ms;
+		std::string where;
+	};
+	std::mutex mutex;
+	std::vector<Report> reports;
+	ear::output::StallWatch watch(
+		[] { return MainLoopActivity::current(); },
+		[&](std::int64_t ms, const std::string& where) {
+			const std::scoped_lock lock(mutex);
+			reports.push_back({true, ms, where});
+		},
+		[&](std::int64_t ms) {
+			bool planned = false;
+			{
+				const std::scoped_lock lock(mutex);
+				// A loaded host may stall the loop unplanned first: only the planned stall's resumption ends the run.
+				planned = !reports.empty() && reports.back().stalled && reports.back().where == "configure desk";
+				reports.push_back({false, ms, ""});
+			}
+			if (planned)
+				executor.post([&] { engine->quit(); }); // the watchdog's thread posts; it never touches the loop
+		});
+	// main.cpp's heartbeat: a 100 ms timer armed again each time it beats.
+	std::unique_ptr<Timer> beat;
+	std::function<void()> arm = [&] {
+		beat = executor.after(std::chrono::milliseconds(100), [&] {
+			watch.beat();
+			arm();
+		});
+	};
+	arm();
+	// After a few beats, one main-loop turn runs 900 ms inside a named call.
+	auto stall = executor.after(std::chrono::milliseconds(350), [] {
+		const MainLoopActivity::Scope scope("configure", "desk");
+		std::this_thread::sleep_for(std::chrono::milliseconds(900));
+	});
+	REQUIRE(runUntilQuit(*engine, std::chrono::seconds(10)));
+	beat.reset();
+	watch.stop();
+	const std::scoped_lock lock(mutex);
+	// The planned stall and the resumption after it; other reports, if any, were the host's.
+	const auto planned = std::ranges::find_if(
+		reports, [](const Report& report) { return report.stalled && report.where == "configure desk"; });
+	REQUIRE(planned != reports.end());
+	REQUIRE(planned + 1 != reports.end());
+	const Report& stalled = *planned;
+	const Report& resumed = *(planned + 1);
+	CHECK(stalled.ms > 500);
+	CHECK(stalled.where == "configure desk");
+	CHECK_FALSE(resumed.stalled);
+	// The gap from the last beat before the stall to the first after it: the 900 ms turn, plus at most one 100 ms beat
+	// interval and the loop's dispatch.
+	CHECK(resumed.ms >= 900);
+	CHECK(resumed.ms < 1500);
 }

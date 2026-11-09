@@ -1,5 +1,5 @@
 {
-  "description": "Live edits after graph.subscribe (docs/design/batch2.md section 6): each change's notification comes before the statuses it causes and before the request's response; later statuses follow. Removing a node removes its routes first. A notification naming a node the client does not know (ghost) changes nothing.",
+  "description": "Live edits after graph.subscribe (docs/control-port.md): each change's notification comes before the statuses it causes and before the request's response; later statuses follow. Removing a node removes its routes first. A notification naming a node the client does not know (ghost) changes nothing.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.add\",\"params\":{\"name\":\"n2\",\"type\":\"white\"}}",
@@ -15,6 +15,10 @@
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
         "graphFrequency": 48000,
         "blockSize": 256,
         "realtime": false,
@@ -33,7 +37,10 @@
             "outputs": [
               "noise.mono"
             ],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           },
           {
             "name": "rec",
@@ -46,7 +53,10 @@
               "record.right"
             ],
             "outputs": [],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           }
         ],
         "routes": [
@@ -74,7 +84,12 @@
         "inputs": [],
         "outputs": [
           "noise.mono"
-        ]
+        ],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -82,7 +97,11 @@
       "method": "node.state",
       "params": {
         "name": "n2",
-        "state": "starting"
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.010000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -95,7 +114,11 @@
       "method": "node.state",
       "params": {
         "name": "n2",
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -160,7 +183,12 @@
           "record.left",
           "record.right"
         ],
-        "outputs": []
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.030000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -168,7 +196,11 @@
       "method": "node.state",
       "params": {
         "name": "tape",
-        "state": "starting"
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.040000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -177,6 +209,10 @@
       "params": {
         "name": "tape",
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.050000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "start-failed",
           "detail": "cannot open nope/t.wav: No such file or directory"
@@ -245,6 +281,28 @@
         "name": "rec",
         "settings": {
           "path": "y.wav"
+        },
+        "applied": "restart"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.state",
+      "params": {
+        "name": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.060000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "settings",
+            "keys": [
+              "path"
+            ]
+          }
         }
       }
     },
@@ -253,7 +311,17 @@
       "method": "node.state",
       "params": {
         "name": "rec",
-        "state": "starting"
+        "state": "starting",
+        "phase": "configuring",
+        "since": "2026-11-09T10:00:00.070000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "settings",
+          "keys": [
+            "path"
+          ]
+        }
       }
     },
     {
@@ -266,7 +334,11 @@
       "method": "node.state",
       "params": {
         "name": "rec",
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.080000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -314,7 +386,14 @@
       "method": "node.state",
       "params": {
         "name": "noise",
-        "state": "stopping"
+        "state": "stopping",
+        "phase": "stopping",
+        "since": "2026-11-09T10:00:00.090000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "cause": {
+          "kind": "removing"
+        }
       }
     },
     {
@@ -332,14 +411,30 @@
     },
     {
       "jsonrpc": "2.0",
+      "method": "node.gone",
+      "params": {
+        "name": "noise",
+        "droppedFrames": 0
+      }
+    },
+    {
+      "jsonrpc": "2.0",
       "method": "node.state",
       "params": {
         "name": "ghost",
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.100000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     }
   ],
   "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
     "graphFrequency": 48000,
     "blockSize": 256,
     "realtime": false,
@@ -358,7 +453,11 @@
         "outputs": [
           "noise.mono"
         ],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false
       },
       {
         "name": "rec",
@@ -371,7 +470,11 @@
           "record.right"
         ],
         "outputs": [],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.080000Z",
+        "wanted": "running",
+        "blockLost": false
       },
       {
         "name": "tape",
@@ -385,6 +488,10 @@
         ],
         "outputs": [],
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.050000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "start-failed",
           "detail": "cannot open nope/t.wav: No such file or directory"

@@ -1,7 +1,7 @@
 {
   "name": "ear-web",
   "private": true,
-  "description": "EAR's graph editor, served by ear on its control port (docs/design/batch2.md section 8)",
+  "description": "EAR's graph editor, served by ear on its control port (docs/editor.md)",
   "type": "module",
   "engines": {
     "node": ">=24"

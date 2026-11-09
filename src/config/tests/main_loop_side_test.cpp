@@ -6,6 +6,7 @@
 
 #include "catch2/catch.hpp"
 #include "main_loop_side.hpp"
+#include "keeper_support.hpp"
 #include "test_types.hpp"
 
 using namespace ear;
@@ -74,10 +75,12 @@ FileState state(std::string version) { return FileState{std::move(version), "tex
 } // namespace
 
 TEST_CASE("A disk offer the graph refuses is recorded for its version only, and nothing runs", "[main_loop_side]") {
-	NodeCatalogue catalogue{test::testTypes()};
+	NodeCatalogue catalogue{ear::config::test::testTypes()};
 	DesiredGraph graph{catalogue};
 	NoReader reader;
-	MainLoopSide side{graph, reader};
+	ear::config::test::Log log;
+	ear::config::test::FakeOperations operations{log};
+	MainLoopSide side{graph, reader, operations};
 	Listener listener;
 	side.subscribe(listener);
 
@@ -104,4 +107,115 @@ TEST_CASE("A disk offer the graph refuses is recorded for its version only, and 
 	CHECK(edit.verdict == Verdict::refused);
 	CHECK(listener.changes.size() == 1);
 	CHECK_FALSE(side.graphFile(state("v3")).refusal.has_value());
+}
+
+namespace {
+
+/// The wire's reply as its encoder writes it: the result, or the error object.
+json wire(const control::CommandResult& result) {
+	const auto encoded = control::encodeCommandResult(result);
+	if (encoded) return *encoded;
+	const control::RpcError& error = encoded.error();
+	json out = {{"code", error.code}, {"message", error.message}};
+	if (!error.data.is_null()) out["data"] = error.data;
+	return out;
+}
+
+} // namespace
+
+TEST_CASE("LifecycleApplied and every LifecycleRefusal map to the wire's applied values and codes, and to the action "
+          "record",
+          "[main_loop_side][lifecycle]") {
+	using Code = LifecycleRefusal::Code;
+	using Reason = LifecycleRefusal::Reason;
+	using control::LifecycleVerb;
+	struct Row {
+		LifecycleReply reply;
+		const char* wire;
+		const char* result;
+		std::optional<std::string> detail;
+	};
+	const std::vector<Row> rows{
+		{LifecycleApplied::start, R"({"applied":"start"})", "ok", std::nullopt},
+		{LifecycleApplied::stop, R"({"applied":"stop"})", "ok", std::nullopt},
+		{LifecycleApplied::restart, R"({"applied":"restart"})", "ok", std::nullopt},
+		{LifecycleApplied::retry, R"({"applied":"retry"})", "ok", std::nullopt},
+		{LifecycleApplied::unchanged, R"({"applied":"unchanged"})", "ok", std::nullopt},
+		{std::unexpected(LifecycleRefusal{Code::unknownNode}),
+	     R"({"code":-32000,"message":"unknown-node desk","data":{"code":"unknown-node"}})", "unknown-node",
+	     std::nullopt},
+		{std::unexpected(LifecycleRefusal{Code::nodeDisabled}),
+	     R"({"code":-32000,"message":"node-disabled desk","data":{"code":"node-disabled"}})", "node-disabled",
+	     std::nullopt},
+		{std::unexpected(LifecycleRefusal{Code::notRestartable, Reason::blockLost}),
+	     R"({"code":-32000,"message":"not-restartable desk: block-lost","data":{"code":"not-restartable","reason":"block-lost"}})",
+	     "not-restartable", "block-lost"},
+		{std::unexpected(LifecycleRefusal{Code::notRestartable, Reason::notStarted}),
+	     R"({"code":-32000,"message":"not-restartable desk: not-started","data":{"code":"not-restartable","reason":"not-started"}})",
+	     "not-restartable", "not-started"},
+		{std::unexpected(LifecycleRefusal{Code::stopping}),
+	     R"({"code":-32000,"message":"stopping","data":{"code":"stopping"}})", "stopping", std::nullopt},
+	};
+	for (const Row& row : rows) {
+		INFO(row.wire);
+		CHECK(wire(resultOf("desk", row.reply)) == json::parse(row.wire));
+		const control::ActionRecord record = recordOf(LifecycleVerb::restart, "desk", row.reply);
+		CHECK(record == control::ActionRecord{"desk", "restart", row.result, row.detail});
+	}
+}
+
+TEST_CASE("operate tells the action record before the operation's health, a refusal's too, and once stopping asks "
+          "nobody",
+          "[main_loop_side][lifecycle]") {
+	NodeCatalogue catalogue{ear::config::test::testTypes()};
+	DesiredGraph graph{catalogue};
+	NoReader reader;
+	ear::config::test::Log log;
+	ear::config::test::FakeOperations operations{log};
+	ear::config::test::ActionLog actions{log};
+	MainLoopSide side{graph, reader, operations};
+	side.subscribeActions(actions);
+
+	operations.reply = LifecycleApplied::stop;
+	CHECK(wire(side.operate(control::LifecycleVerb::stop, "porch", false)) == json::parse(R"({"applied":"stop"})"));
+	operations.reply = std::unexpected(LifecycleRefusal{LifecycleRefusal::Code::nodeDisabled});
+	CHECK(wire(side.operate(control::LifecycleVerb::start, "porch", false))["data"]["code"] == "node-disabled");
+	CHECK(wire(side.operate(control::LifecycleVerb::start, "porch", true))["data"]["code"] == "stopping");
+	operations.callBack = false; // an operations that never calls back still gets its record, after it
+	operations.reply = LifecycleApplied::retry;
+	CHECK(wire(side.operate(control::LifecycleVerb::restart, "desk", false)) == json::parse(R"({"applied":"retry"})"));
+	CHECK(log.lines == std::vector<std::string>{"stop porch", "action porch stop ok", "health porch", "start porch",
+	                                            "action porch start node-disabled", "action porch start stopping",
+	                                            "restart desk", "health desk", "action desk restart ok"});
+}
+
+TEST_CASE("Each graph read is stamped at once by every SnapshotStamp", "[main_loop_side][lifecycle]") {
+	class OneNode final : public GraphReader {
+	public:
+		GraphView read() const override {
+			GraphView view{};
+			view.nodes.push_back({{"noise", "white", json::object()}, Ports{}, healthFromSpec({"noise", "white", {}})});
+			return view;
+		}
+	};
+	class Stamp final : public control::SnapshotStamp {
+	public:
+		mutable int stamped = 0;
+		void stamp(GraphView& view) const override {
+			++stamped;
+			view.nodes[0].since = std::chrono::system_clock::time_point{std::chrono::seconds{7}};
+		}
+	};
+	NodeCatalogue catalogue{ear::config::test::testTypes()};
+	DesiredGraph graph{catalogue};
+	OneNode reader;
+	ear::config::test::Log log;
+	ear::config::test::FakeOperations operations{log};
+	MainLoopSide side{graph, reader, operations};
+	Stamp stamp;
+	side.stampSnapshots(stamp);
+	const GraphView view = side.graph();
+	CHECK(stamp.stamped == 1);
+	REQUIRE(view.nodes[0].since.has_value());
+	CHECK(view.nodes[0].since->time_since_epoch() == std::chrono::seconds{7});
 }

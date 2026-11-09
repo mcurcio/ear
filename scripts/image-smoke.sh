@@ -17,10 +17,12 @@
 # Then ear itself, twice, on a sample graph file (ear.conf: white noise into a file node writing
 # rec.wav in the image's recordings folder, /var/lib/ear/recordings, which must be the ear user's),
 # in a scratch graph file folder made writable for uid 10001 and mounted read-write at
-# /var/lib/ear/config, without and with --cap-add SYS_NICE: once it prints "control listening on"
-# and the route is linked, GET / must return the built editor's index.html, and graph.get and
+# /var/lib/ear/config, without and with --cap-add SYS_NICE: once it prints its "control listening on"
+# record and the route's linked one (each line ear prints is one JSON record whose msg is the plain
+# line, docs/output-records.md), GET / must return the built editor's index.html, and graph.get and
 # graphFile.get must answer (scripts/rpc-call.mjs, run with the dev image's Node in a container
-# sharing ear's network): graphFile.get runs the file's version and holds its text. Without
+# sharing ear's network): graph.get says protocol 1 with the lifecycle feature, and graphFile.get runs the
+# file's version and holds its text. Without
 # SYS_NICE graph.get says "realtime": false and ear still runs; with it, "realtime": true (the
 # binary's permitted capability, made effective by Engine::create). Each run is stopped with
 # SIGTERM and must exit 0 and leave rec.wav in the recordings folder.
@@ -106,13 +108,14 @@ run_ear() {
 	container=$(docker run --detach "$@" --volume "$scratch/config:/var/lib/ear/config" "$image")
 	containers+=("$container")
 
-	# Waits for the line (an event); the read deadline only fails a start that never comes.
+	# Waits for the records (an event); the read deadline only fails a start that never comes. A record's
+	# msg is matched inside its JSON line: neither text holds a character JSON escapes.
 	# The file's route is linked after the port listens (the keeper's first offer runs on the loop).
 	local line listening= linked=
 	while IFS= read -r -t 30 line; do
 		echo "  ear: $line"
-		if [[ $line == "control listening on "* ]]; then listening=yes; fi
-		if [[ $line == "route noise:noise.mono -> rec:record.left linked" ]]; then linked=yes; fi
+		if [[ $line == *'"msg":"control listening on '* ]]; then listening=yes; fi
+		if [[ $line == *'"msg":"route noise:noise.mono -> rec:record.left linked"'* ]]; then linked=yes; fi
 		if [[ -n $listening && -n $linked ]]; then break; fi
 	done < <(docker logs --follow "$container" 2>&1)
 	if [[ -z $listening || -z $linked ]]; then
@@ -136,6 +139,11 @@ run_ear() {
 	echo "  graph.get: $graph"
 	if [[ $graph != *"\"realtime\":$realtime"* ]]; then
 		echo "image-smoke: graph.get does not say \"realtime\":$realtime" >&2
+		exit 1
+	fi
+	# The wire's frame (docs/control-port.md#protocol-and-features): protocol 1 and the lifecycle feature.
+	if [[ $graph != *'"protocol":1'* || $graph != *'"features":['*'"lifecycle"'* ]]; then
+		echo "image-smoke: graph.get does not say \"protocol\":1 with the \"lifecycle\" feature" >&2
 		exit 1
 	fi
 

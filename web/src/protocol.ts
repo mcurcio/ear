@@ -1,22 +1,90 @@
-// The control port's wire format: JSON-RPC 2.0 over WebSocket at /rpc, named params only
-// (docs/design/batch2.md section 6; the graph file's methods: docs/design/knobly-config.md,
-// "Wire additions"). The one home of the wire types on the UI side; the server
-// side is ear_control (src/control). Both are tested against the fixtures in test/protocol.
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
+// The control port's wire format on the editor's side: JSON-RPC 2.0 over WebSocket at /rpc, named params only
+// (docs/control-port.md, the wire's one description). The one home of the wire types on the UI side; the server side is
+// ear_control (src/control). Both are tested against the fixtures in test/protocol, and a change to the wire changes
+// that page, the fixtures and both sides together (docs/control-port.md#changing-the-wire).
+//
+// Every enum ear sends is open from protocol 1 (docs/control-port.md#protocol-and-features): a known union plus
+// (string & {}), so a value this editor does not know types and is drawn neutrally, never a failure.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
 // ----- The graph -----
 
-export type NodeState = "starting" | "running" | "failed" | "stopping";
-export type RouteStatusName = "pending" | "linked" | "refused";
-export type FailureCode = "engine-refused" | "start-failed";
+/** The phase's colour (docs/control-port.md#node-health). */
+export type NodeState = "starting" | "running" | "stopping" | "stopped" | "disabled" | "failed" | (string & {});
+/** The exact state; a client explains by it and never colours by it. */
+export type NodePhase =
+  | "added"
+  | "configuring"
+  | "configured"
+  | "starting"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "disabled"
+  | "failed"
+  | (string & {});
+/** What the graph wants of the node: disabled from ear.conf, stopped while its stop is held, else running. */
+export type Wanted = "running" | "stopped" | "disabled" | (string & {});
+/** Why a node is stopping, or configuring after a restart, a retry or an enable. */
+export type CauseKind =
+  | "stop"
+  | "removing"
+  | "disabling"
+  | "restarting"
+  | "settings"
+  | "action"
+  | "retry"
+  | "enabling"
+  | (string & {});
+export type RouteStatusName = "pending" | "linked" | "refused" | (string & {});
+export type FailureCode = "engine-refused" | "start-failed" | "lost" | (string & {});
+/** What a lifecycle request applied, or (node.updated) what a change asked of the node. */
+export type Applied =
+  | "start"
+  | "stop"
+  | "restart"
+  | "retry"
+  | "disable"
+  | "enable"
+  | "stored"
+  | "unchanged"
+  | (string & {});
 
 export interface FailureReason {
   code: FailureCode;
   detail: string;
+}
+
+export interface NodeCause {
+  kind: CauseKind;
+  /** settings: the changed keys. */
+  keys?: string[];
+  /** restarting: the restart's own kind (and its keys). */
+  restart?: { kind: CauseKind; keys?: string[] };
+}
+
+/** What a node still waits for, once its phase has lasted 2 s. */
+export interface WaitingFor {
+  kind: "older-node" | "block" | "companion" | "consumer" | (string & {});
+  /** older-node and companion. */
+  name?: string;
+}
+
+/** A node's health (docs/control-port.md#node-health): node.state replaces every member, so an absent one is absent now. */
+export interface NodeHealth {
+  state: NodeState;
+  phase: NodePhase;
+  /** When this phase began, UTC to the microsecond. */
+  since?: string;
+  wanted: Wanted;
+  /** The engine's block is lost: neither Start nor restart can bring the node back. */
+  blockLost: boolean;
+  cause?: NodeCause;
+  waitingFor?: WaitingFor[];
+  /** Present only while failed. */
+  reason?: FailureReason;
 }
 
 export interface PortRef {
@@ -37,15 +105,15 @@ export interface NodeSpec {
   settings?: JsonObject;
 }
 
-export interface GraphNode {
+/** A node as snapshots and node.added carry it: its spec, its public ports and its health. */
+export interface GraphNode extends NodeHealth {
   name: string;
   type: string;
   settings: JsonObject;
   inputs: string[];
   outputs: string[];
-  state: NodeState;
-  /** Present only while failed. */
-  reason?: FailureReason;
+  /** ear.conf disables it (`disabled true;` in its braces). */
+  disabled?: true;
 }
 
 export interface GraphRoute extends RouteEnds {
@@ -56,6 +124,10 @@ export interface GraphRoute extends RouteEnds {
 
 /** graph.get's and graph.subscribe's result. Nodes in name order, routes in route order. */
 export interface Graph {
+  /** The wire's protocol (absent: 0, the wire before the lifecycle). */
+  protocol?: number;
+  /** What this ear speaks beyond protocol 0's: a client gates each method and request member on its feature. */
+  features?: string[];
   graphFrequency: number;
   blockSize: number;
   realtime: boolean;
@@ -65,7 +137,7 @@ export interface Graph {
   routes: GraphRoute[];
 }
 
-// ----- The graph file (docs/design/knobly-config.md, "Wire additions") -----
+// ----- The graph file (docs/control-port.md#the-graph-file-over-the-port) -----
 
 export type Severity = "error" | "warning";
 
@@ -117,7 +189,8 @@ export interface Methods {
   "graph.get": { params: undefined; result: Graph };
   "graph.subscribe": { params: undefined; result: Graph };
   "levels.subscribe": { params: undefined; result: { windowsPerSecond: number } };
-  "node.add": { params: NodeSpec; result: Record<string, never> };
+  /** disabled (feature lifecycle): written as `disabled true;` in the node's braces. */
+  "node.add": { params: NodeSpec & { disabled?: boolean }; result: Record<string, never> };
   "node.update": { params: { name: string; settings: JsonObject }; result: Record<string, never> };
   "node.remove": { params: { name: string }; result: Record<string, never> };
   "route.add": { params: RouteEnds; result: Record<string, never> };
@@ -127,6 +200,12 @@ export interface Methods {
   "graphFile.subscribe": { params: undefined; result: GraphFile };
   /** ear.conf's whole new text and the version it was based on; {} once the graph runs it. */
   "graphFile.set": { params: { text: string; version: string }; result: Record<string, never> };
+  /** The lifecycle (feature lifecycle). Start, stop and restart edit nothing; disable and enable edit ear.conf. */
+  "node.start": { params: { name: string }; result: { applied: Applied } };
+  "node.stop": { params: { name: string }; result: { applied: Applied } };
+  "node.restart": { params: { name: string }; result: { applied: Applied } };
+  "node.disable": { params: { name: string }; result: { applied: Applied } };
+  "node.enable": { params: { name: string }; result: { applied: Applied } };
 }
 export type MethodName = keyof Methods;
 
@@ -136,14 +215,18 @@ export type MethodName = keyof Methods;
 export type Level = [peak: number, rms: number];
 
 export interface Notifications {
-  /** state starts as "starting"; public ports only. */
-  "node.added": { name: string; type: string; settings: JsonObject; inputs: string[]; outputs: string[] };
-  "node.updated": { name: string; settings: JsonObject };
+  /** Public ports only; its health from its spec (added, or disabled). */
+  "node.added": GraphNode;
+  /** applied: what the change asks of the node; disabled only when true. */
+  "node.updated": { name: string; settings: JsonObject; applied?: Applied; disabled?: true };
   /** After route.removed for each of its routes. */
   "node.removed": { name: string };
-  "node.state": { name: string; state: NodeState; reason?: FailureReason };
-  /** Everything the node made is gone. */
+  /** Every health member: one absent is absent now. */
+  "node.state": { name: string } & NodeHealth;
+  /** Deprecated (protocol 1 sends it, then node.gone): everything the node made is gone. */
   "node.stopped": { name: string; droppedFrames: number };
+  /** Everything the node made is gone (feature lifecycle). */
+  "node.gone": { name: string; droppedFrames: number };
   "route.added": RouteEnds;
   "route.removed": RouteEnds;
   "route.status": RouteEnds & { status: RouteStatusName; detail?: string };
@@ -179,6 +262,14 @@ export type FileErrorCode =
   /** the line also makes other nodes or routes (data.line, data.column). */
   | "shared-definition";
 
+/** data.code of the control plane's own refusals (-32000; docs/control-port.md#error-codes). */
+export type ControlErrorCode =
+  /** node.start, node.stop or node.restart on a node ear.conf disables. */
+  | "node-disabled"
+  /** node.start or node.restart: the block is lost; node.restart: not started yet (data.reason). */
+  | "not-restartable"
+  | (string & {});
+
 export const rpcErrorCodes = {
   parseError: -32700,
   invalidRequest: -32600,
@@ -191,8 +282,17 @@ export type RpcErrorCode = (typeof rpcErrorCodes)[keyof typeof rpcErrorCodes];
 export interface RpcErrorObject {
   code: RpcErrorCode;
   message: string;
-  /** Present on commandRefused only. */
-  data?: { code: CommandErrorCode | FileErrorCode; diagnostics?: Diagnostic[]; line?: number; column?: number };
+  /** commandRefused: its code and what it names; invalidParams: the JSON pointer of the param at fault. */
+  data?: {
+    code?: CommandErrorCode | FileErrorCode | ControlErrorCode;
+    diagnostics?: Diagnostic[];
+    line?: number;
+    column?: number;
+    /** not-restartable: "block-lost" or "not-started". */
+    reason?: string;
+    /** invalidParams. */
+    pointer?: string;
+  };
 }
 
 // ----- The envelope -----
@@ -244,6 +344,11 @@ const methodSet: { [M in MethodName]: true } = {
   "graphFile.get": true,
   "graphFile.subscribe": true,
   "graphFile.set": true,
+  "node.start": true,
+  "node.stop": true,
+  "node.restart": true,
+  "node.disable": true,
+  "node.enable": true,
 };
 export const methodNames = Object.keys(methodSet) as MethodName[];
 
@@ -253,6 +358,7 @@ const notificationSet: { [N in NotificationName]: true } = {
   "node.removed": true,
   "node.state": true,
   "node.stopped": true,
+  "node.gone": true,
   "route.added": true,
   "route.removed": true,
   "route.status": true,
@@ -281,6 +387,15 @@ const fileErrorCodeSet: { [C in FileErrorCode]: true } = {
   "shared-definition": true,
 };
 export const fileErrorCodes = Object.keys(fileErrorCodeSet) as FileErrorCode[];
+
+const controlErrorCodeSet: { [C in "node-disabled" | "not-restartable"]: true } = {
+  "node-disabled": true,
+  "not-restartable": true,
+};
+export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErrorCode[];
+
+/** The features this editor uses when ear says it has them (docs/control-port.md#protocol-and-features). */
+export const lifecycleFeature = "lifecycle";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

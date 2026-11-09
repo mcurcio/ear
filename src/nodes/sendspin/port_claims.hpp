@@ -1,4 +1,4 @@
-// Which node holds which listening port (docs/design/sendspin.md section 10). The library only logs a port it cannot bind
+// Which node holds which listening port (docs/node-types.md#failures). The library only logs a port it cannot bind
 // and retries, so a node told it can listen must be checked before its worker starts: across ear's nodes here, then a
 // probe of the kernel. A program taking the port just after the probe is not caught.
 #pragma once

@@ -1,4 +1,4 @@
-# ear_config: the graph file in knobly, mcurcio/knobly (docs/design/knobly-config.md): ear.conf loaded
+# ear_config: the graph file in knobly, mcurcio/knobly (docs/graph-file.md): ear.conf loaded
 # with knobly and read with ear's directives into a wanted graph, with knobly's diagnostics and ear's
 # own, placed in the wire's units; and the graph file keeper, which keeps it on one background thread
 # (the working copy, its judging on the main loop, the folder watch and the writes). knobly is private
@@ -23,6 +23,7 @@ target_link_libraries(ear_config PUBLIC ear_core ear_control ear_folder PRIVATE 
 
 if(BUILD_TESTS)
 	add_executable(ear_config_tests
+		tests/graph_file_disabled_test.cpp
 		tests/graph_file_edit_test.cpp
 		tests/graph_file_keeper_test.cpp
 		tests/graph_file_model_test.cpp

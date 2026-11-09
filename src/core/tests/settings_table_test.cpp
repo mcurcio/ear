@@ -14,7 +14,8 @@
 
 #include "catch2/catch.hpp"
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace settings_table_test {
 
 using ear::MadeConfig;
 using ear::NodeName;
@@ -71,7 +72,8 @@ template <class Table> std::string refusal(const Table& table, const NodeSetting
 /// JSON text, so a big number is what a parser makes of it.
 NodeSettings parsed(std::string_view json) { return NodeSettings::parse(json); }
 
-} // namespace
+} // namespace settings_table_test
+using namespace settings_table_test;
 
 TEST_CASE("A table with no rows takes null and an empty object, and nothing else", "[settings-table]") {
 	const NodeSettings null;
@@ -210,7 +212,8 @@ TEST_CASE("A text's meaning is asked once and its value read without asking agai
 	CHECK(meaningCalls == 1);
 }
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace settings_table_test {
 
 struct Doubled {
 	int value;
@@ -223,7 +226,8 @@ constexpr auto doubledRow = setting::required("x", setting::text<doubled>("21"))
 constexpr auto maybeDoubledRow = setting::optional("y", setting::text<doubled>("21"));
 constexpr SettingsTable<doubledRow, maybeDoubledRow> doubledTable{"t"};
 
-} // namespace
+} // namespace settings_table_test
+using namespace settings_table_test;
 
 TEST_CASE("A row reads as its type", "[settings-table]") {
 	const NodeSettings settings = {{"x", "21"}};
@@ -249,12 +253,13 @@ TEST_CASE("Checked settings own their values, past the table and the settings", 
 	CHECK(checked->get<measuredRow>() == 7U);
 }
 
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace settings_table_test {
 
 class NoPorts final : public ear::NodeConfig {
 public:
 	const ear::Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+	ear::StartResult start(ear::StartContext&) const override {
 		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "not started in these tests"});
 	}
 
@@ -278,7 +283,8 @@ private:
 	}
 };
 
-} // namespace
+} // namespace settings_table_test
+using namespace settings_table_test;
 
 TEST_CASE("A type's name, kinds and parse come from its table", "[settings-table]") {
 	const CountingType type;

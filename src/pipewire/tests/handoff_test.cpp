@@ -1,4 +1,4 @@
-// Slice S4's tests (docs/design/m1-white-to-file.md section 3, acceptance criteria S4): the
+// The legacy handoff: the
 // real ThreadHandoffs on PipeWire's own loops, no engine. Every wait is event-gated: a test
 // waits for the event it needs; the deadline only fails the test.
 #include <atomic>

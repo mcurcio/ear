@@ -1,5 +1,5 @@
 // The feed across real threads: exact audio, zeros past the end, a full feed's wait, clear, and no allocation on the
-// reading side (docs/design/sendspin.md section 14, S1 criterion 1).
+// reading side (docs/node-types.md#sendspin).
 #include <array>
 #include <atomic>
 #include <chrono>

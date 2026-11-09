@@ -36,7 +36,10 @@ function(ear_node_type)
 
 	if(BUILD_TESTS)
 		add_executable(${library}_tests ${arg_TESTS})
-		target_link_libraries(${library}_tests PRIVATE ${library} ear_catch_main)
+		# A type's tests run it through ear::testing::TypeHarness (docs/writing-a-node-type.md#testing-a-type), by its
+		# spec and behaviour from the type's private header, src/nodes/<type>/<type>_spec.hpp.
+		target_link_libraries(${library}_tests PRIVATE ${library} ear_type_harness ear_catch_main)
+		target_include_directories(${library}_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 		add_dependencies(${library}_tests ${library}_verify_interface_header_sets)
 		ear_catch_tests(${library}_tests)
 	endif()

@@ -1,19 +1,24 @@
-// The conformance fixtures (test/protocol, docs/design/batch2.md section 6), read as the wire
-// type, for the UI's tests only. The server's tests (ear_control) run on the same files.
+// The conformance fixtures (test/protocol, docs/control-port.md; docs/control-port.md#fixtures
+// from protocol 1), read as the wire type, for the UI's tests only. The server's tests (ear_control)
+// run on the same files.
 import edits from "../../test/protocol/edits.json";
 import errors from "../../test/protocol/errors.json";
 import graphFile from "../../test/protocol/graph-file.json";
 import levels from "../../test/protocol/levels.json";
+import lifecycle from "../../test/protocol/lifecycle.json";
 import snapshot from "../../test/protocol/snapshot.json";
+import unknownValues from "../../test/protocol/unknown-values.json";
 import type { ProtocolFixture, ServerMessage, ServerText } from "./protocol";
 
 // JSON imports are typed by their contents (strings widened), so they are read as the wire type.
-export const fixtures = { snapshot, edits, levels, errors, graphFile } as unknown as {
+export const fixtures = { snapshot, edits, levels, errors, graphFile, lifecycle, unknownValues } as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
   levels: ProtocolFixture;
   errors: ProtocolFixture;
   graphFile: ProtocolFixture;
+  lifecycle: ProtocolFixture;
+  unknownValues: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

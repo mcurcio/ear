@@ -1,4 +1,4 @@
-# ear_server: the control thread and port 7777 (docs/design/batch2.md section 1): HTTP for the
+# ear_server: the control thread and port 7777 (docs/architecture.md#packages): HTTP for the
 # graph editor's files, WebSocket JSON-RPC at /rpc, the Host and Origin checks, per-client queues
 # and the level bell. It holds no graph state and never calls PipeWire: the graph reaches it only
 # through ear_control's GraphGateway. Boost.Beast and Asio (header-only) are PRIVATE: no Asio type

@@ -1,4 +1,4 @@
-// A sendspin node's settings (docs/design/sendspin.md section 4): its table and what the type makes of it. Pure.
+// A sendspin node's settings (docs/node-types.md#sendspin): its table and what the type makes of it. Pure.
 #pragma once
 #include <cstdint>
 #include <optional>
@@ -21,7 +21,7 @@ private:
 	std::string text_;
 };
 inline constexpr std::uint16_t defaultListenPort = 8928;
-/// Every port pair of the node and each direction's audio: stereo (section 4).
+/// Every port pair of the node and each direction's audio: stereo.
 inline constexpr std::uint32_t nodeChannels = 2;
 struct SendspinSettings {
 	std::optional<ServerUrl> server; // with it, ear dials; without it, ear listens on `port`

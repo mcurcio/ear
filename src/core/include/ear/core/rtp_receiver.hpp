@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/rtp.md section 7.1). Change it only through an erratum in that
-// page's Errata section and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <optional>
@@ -14,7 +12,7 @@ namespace ear {
 /// address, so no user text reaches PipeWire's address parser (which resolves a host name with
 /// a blocking lookup on the main loop) and no unicast address does: PipeWire 1.4.2 reads one
 /// as "the sender's address and source port", which a sender with its own source port never
-/// matches (docs/design/rtp.md section 4).
+/// matches (docs/engine.md#rtp-receivers).
 class RtpAddress {
 public:
 	static std::optional<RtpAddress> parse(std::string_view text); // nullopt outside the grammar
@@ -34,10 +32,10 @@ struct RtpReceiverRequest {
 	RtpAddress address;
 	std::uint16_t port; // UDP port, 1-65535 (never 0)
 	RtpEncoding encoding;
-	std::uint32_t rate;               // the sender's rate, 8000-192000 Hz; resampled to the
-									  // graph frequency when it differs
-	std::uint32_t latencyMs;          // target receive buffer, 1-1000
-	std::vector<PortName> blockPorts; // channel i <-> blockPorts[i]: insideInputs of this node;
-									  // size() is the stream's channel count, 1-64
+	std::uint32_t rate;      // the sender's rate, 8000-192000 Hz; resampled to the
+							 // graph frequency when it differs
+	std::uint32_t latencyMs; // target receive buffer, 1-1000
+	std::string bank{};      // the inside input bank it joins, channel i <-> the bank's port i; the bank's size is the
+							 // stream's channel count, 1-64
 };
 } // namespace ear

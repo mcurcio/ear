@@ -1,13 +1,15 @@
-// The graph file keeper's sequencer (docs/design/knobly-config.md, design rules 1-3; S4): it owns
+// The graph file keeper's sequencer (docs/architecture.md#how-a-change-moves): it owns
 // the working copy, the disk base and the write state, takes requests, verdicts and disk checks one
 // at a time in arrival order, and writes ear.conf only when nothing is waiting. Keeper thread only
 // (every call, including the completions it posts to `self`). Its tests drive it on one thread with
-// two pumped executors.
+// two pumped executors. The lifecycle verbs riding with the reads, and node.disable and node.enable as edits answered
+// by their outcome, are docs/control-port.md#methods.
 #pragma once
 #include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 #include "ear/control/requests.hpp"
@@ -41,20 +43,27 @@ private:
 	struct FirstOffer {};
 	struct DiskCheck {};
 	using Input = std::variant<FirstOffer, DiskCheck, Batch>;
+	/// A command answered on the main loop with no candidate, in index order with the batch's edits: a read, or a
+	/// lifecycle verb (start, stop, restart), which needs no file and works while it has errors and once stopped.
 	struct Read {
 		std::size_t index;
-		std::optional<FileState> file;
-	}; // file: GetGraphFile; none: GetGraph
+		std::variant<std::monostate /* GetGraph */, FileState /* GetGraphFile */,
+		             std::pair<control::LifecycleVerb, NodeName> /* StartNode, StopNode, RestartNode */>
+			what;
+	};
 	struct Candidate {
 		GraphFileModel model;
 		std::string version;
+		std::optional<NodeName> appliedFor{}; // the node of a DisableNode or EnableNode: answered by its outcome
 	};
 
 	void pump();
 	void advance(Batch batch);
 	/// A keeper-made answer to command `index`, or nothing when it made a candidate (left in candidate_).
 	std::optional<control::CommandResult> take(const control::Command& command);
-	void postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex, bool last);
+	/// appliedFor: the node of a DisableNode or EnableNode whose candidate this offer is.
+	void postStep(Batch batch, std::vector<Read> reads, std::optional<Offer> offer, std::size_t offerIndex,
+	              std::optional<NodeName> appliedFor, bool last);
 	void completed(std::optional<Verdict> verdict, std::optional<Batch> batch);
 	void checkDisk(DiskText disk);
 	void present(std::uint32_t droppedEdits); // the working copy after a disk load: announced or offered

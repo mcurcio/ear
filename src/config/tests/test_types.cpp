@@ -9,13 +9,14 @@
 #include "ear/core/settings_table.hpp"
 
 namespace ear::config::test {
-namespace {
+// Named, never unnamed: every table, row and spec a template is keyed on (settings_table.hpp, linkage).
+namespace tables {
 
 class FixedConfig final : public NodeConfig {
 public:
 	explicit FixedConfig(Ports ports) : ports_(std::move(ports)) {}
 	const Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant&) const override {
+	StartResult start(StartContext&) const override {
 		return std::unexpected(FailureReason{FailureReason::Code::startFailed, "not started in these tests"});
 	}
 
@@ -54,7 +55,8 @@ class CardType final : public NodeTypeOf<cardTable> {
 	}
 };
 
-} // namespace
+} // namespace tables
+using namespace tables;
 
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;

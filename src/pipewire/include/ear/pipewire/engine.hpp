@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/batch2.md section 4). Change it only through an erratum in that
-// page's Errata section (section 11) and a re-cut, never a local edit.
 #pragma once
 #include <cstdint>
 #include <expected>
@@ -30,6 +28,7 @@ class Engine {
 public:
 	/// If CAP_SYS_NICE is in the process's permitted set, it is made effective before the
 	/// context loads its modules (so module-rt can raise the data thread); absent: no error.
+	/// The data thread flushes denormals to zero (FTZ and DAZ) from before the first process().
 	static std::expected<std::unique_ptr<Engine>, EngineError> create(const EngineSettings& settings);
 	~Engine();
 	Engine(const Engine&) = delete;

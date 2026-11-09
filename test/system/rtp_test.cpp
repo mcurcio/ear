@@ -1,5 +1,4 @@
-// The owner's end-to-end tests of the rtp node (docs/design/rtp.md R1c criteria 1 and 2; ported to
-// ear.conf by docs/design/knobly-config.md, S5 criterion T9): the real out/ear runs a graph file
+// The owner's end-to-end tests of the rtp node (docs/node-types.md#rtp): the real out/ear runs a graph file
 // with an rtp node routed into a file node; the tests' own sender plays
 // a tone to it over 127.0.0.1 and the WAV file must hold that tone, channel for channel. With no
 // sender the node still runs and its meters show silence (gate answer Q1). Every wait is for an
@@ -113,7 +112,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(exitStatus == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");
 	REQUIRE(wav.info.channels == 2);

@@ -1,4 +1,4 @@
-// The node types EAR knows, looked up by name (docs/design/batch2.md section 4.1,
+// The node types EAR knows, looked up by name (docs/architecture.md#packages,
 // node_catalogue.hpp).
 #include "ear/core/node_catalogue.hpp"
 

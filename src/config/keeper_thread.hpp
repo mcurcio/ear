@@ -1,6 +1,6 @@
-// The graph file keeper's one background thread (docs/design/knobly-config.md, "Module map and
-// threads"; S4): an executor that also watches the graph file folder. It waits in poll() on an
-// eventfd (posted work) and an inotify descriptor (the folder), with no timeout: events, never timers.
+// The graph file keeper's one background thread (docs/architecture.md#how-a-change-moves): an executor that also
+// watches the graph file folder. It waits in poll() on an eventfd (posted work) and an inotify descriptor (the folder),
+// with no timeout: events, never timers.
 #pragma once
 #include <deque>
 #include <expected>

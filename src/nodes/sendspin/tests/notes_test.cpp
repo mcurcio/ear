@@ -1,4 +1,4 @@
-// What reaches a status line from a peer, and how many notes can (docs/design/sendspin.md sections 9 and 11).
+// What reaches a status line from a peer, and how many notes can (docs/node-types.md#notes).
 #include <chrono>
 #include <string>
 #include <vector>

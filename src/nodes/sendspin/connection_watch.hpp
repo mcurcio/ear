@@ -1,4 +1,4 @@
-// The connection watch (docs/design/sendspin.md sections 10 and 14): the pure judge of the connection. No connection
+// The connection watch (docs/node-types.md#failures): the pure judge of the connection. No connection
 // event exists upstream, so the worker feeds it each reading of the library's getters, is_paired() first (the guide:
 // a true is_connected() read after it means that session is activated).
 #pragma once

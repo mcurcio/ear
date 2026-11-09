@@ -1,5 +1,5 @@
 {
-  "description": "The graph file over the wire (docs/design/knobly-config.md, \"Wire additions\"), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which replaces both cards; a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with graph_frequency 44100 (pendingRestart); a batch [node.update, graph.subscribe], a batch [graph.subscribe, graphFile.subscribe]; and graphFile.get, answered with the file as it stands. file is the graph file the client holds at the end, graph the graph.",
+  "description": "The graph file over the wire (docs/control-port.md#the-graph-file-over-the-port), one session over the record's example file. graphFile.subscribe answers with the file, then every graphFile.changed; a change's graphFile.changed comes before the node and route events it causes, and those before the request's response. In order: an editor edit (cause edit); graphFile.set on a stale version (file-changed) and with a typo (invalid-text, with the diagnostics); a route the graph refuses (unknown-port, the file unchanged, no graphFile.changed); a hand edit with @include (cause disk, include-unsupported; running stays); node.update while the file has errors (file-invalid); the hand fix (disk); an editor edit, then a hand save over it before it was written (disk, droppedEdits 1: the hand edit wins); removing a setting a shared snippet line makes (shared-definition at that line); playback 4 through @set $ch, which replaces both cards; a write that fails, then succeeds (cause write); an editor edit, then a hand edit the graph refuses (refusal at its line, running unchanged, droppedEdits 1); graphFile.set with graph_frequency 44100 (pendingRestart); a batch [node.update, graph.subscribe], a batch [graph.subscribe, graphFile.subscribe]; and graphFile.get, answered with the file as it stands. file is the graph file the client holds at the end, graph the graph.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graphFile.subscribe\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}",
@@ -33,6 +33,10 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
         "graphFrequency": 48000,
         "blockSize": 256,
         "realtime": false,
@@ -56,6 +60,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=MOTU,DEV=0: No such device"
@@ -69,7 +76,10 @@
             "outputs": [
               "noise.mono"
             ],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           },
           {
             "name": "porch",
@@ -84,6 +94,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=USB2,DEV=0: No such device"
@@ -100,7 +113,10 @@
               "record.right"
             ],
             "outputs": [],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           }
         ],
         "routes": [
@@ -148,7 +164,8 @@
         "name": "rec",
         "settings": {
           "path": "take2.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     {
@@ -260,7 +277,8 @@
         "name": "rec",
         "settings": {
           "path": "take3.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     {
@@ -288,7 +306,8 @@
         "name": "rec",
         "settings": {
           "path": "take2.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     {
@@ -360,7 +379,12 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -379,7 +403,12 @@
           "play.3",
           "play.4"
         ],
-        "outputs": []
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.010000Z",
+        "wanted": "running",
+        "blockLost": false
       }
     },
     {
@@ -407,6 +436,10 @@
       "params": {
         "name": "desk",
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=MOTU,DEV=0: No such device"
@@ -419,6 +452,10 @@
       "params": {
         "name": "porch",
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.030000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=USB2,DEV=0: No such device"
@@ -469,7 +506,8 @@
         "name": "rec",
         "settings": {
           "path": "take3.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     {
@@ -517,7 +555,8 @@
         "name": "rec",
         "settings": {
           "path": "take2.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     {
@@ -546,7 +585,8 @@
         "name": "rec",
         "settings": {
           "path": "take4.wav"
-        }
+        },
+        "applied": "restart"
       }
     },
     [
@@ -559,6 +599,10 @@
         "jsonrpc": "2.0",
         "id": 14,
         "result": {
+          "protocol": 1,
+          "features": [
+            "lifecycle"
+          ],
           "graphFrequency": 48000,
           "blockSize": 256,
           "realtime": false,
@@ -584,6 +628,10 @@
               ],
               "outputs": [],
               "state": "failed",
+              "phase": "failed",
+              "since": "2026-11-09T10:00:00.020000Z",
+              "wanted": "running",
+              "blockLost": false,
               "reason": {
                 "code": "engine-refused",
                 "detail": "cannot open hw:CARD=MOTU,DEV=0: No such device"
@@ -597,7 +645,10 @@
               "outputs": [
                 "noise.mono"
               ],
-              "state": "running"
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false
             },
             {
               "name": "porch",
@@ -614,6 +665,10 @@
               ],
               "outputs": [],
               "state": "failed",
+              "phase": "failed",
+              "since": "2026-11-09T10:00:00.030000Z",
+              "wanted": "running",
+              "blockLost": false,
               "reason": {
                 "code": "engine-refused",
                 "detail": "cannot open hw:CARD=USB2,DEV=0: No such device"
@@ -630,7 +685,10 @@
                 "record.right"
               ],
               "outputs": [],
-              "state": "running"
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false
             }
           ],
           "routes": [
@@ -665,6 +723,10 @@
         "jsonrpc": "2.0",
         "id": 15,
         "result": {
+          "protocol": 1,
+          "features": [
+            "lifecycle"
+          ],
           "graphFrequency": 48000,
           "blockSize": 256,
           "realtime": false,
@@ -690,6 +752,10 @@
               ],
               "outputs": [],
               "state": "failed",
+              "phase": "failed",
+              "since": "2026-11-09T10:00:00.020000Z",
+              "wanted": "running",
+              "blockLost": false,
               "reason": {
                 "code": "engine-refused",
                 "detail": "cannot open hw:CARD=MOTU,DEV=0: No such device"
@@ -703,7 +769,10 @@
               "outputs": [
                 "noise.mono"
               ],
-              "state": "running"
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false
             },
             {
               "name": "porch",
@@ -720,6 +789,10 @@
               ],
               "outputs": [],
               "state": "failed",
+              "phase": "failed",
+              "since": "2026-11-09T10:00:00.030000Z",
+              "wanted": "running",
+              "blockLost": false,
               "reason": {
                 "code": "engine-refused",
                 "detail": "cannot open hw:CARD=USB2,DEV=0: No such device"
@@ -736,7 +809,10 @@
                 "record.right"
               ],
               "outputs": [],
-              "state": "running"
+              "state": "running",
+              "phase": "running",
+              "wanted": "running",
+              "blockLost": false
             }
           ],
           "routes": [
@@ -794,6 +870,10 @@
     }
   ],
   "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
     "graphFrequency": 48000,
     "blockSize": 256,
     "realtime": false,
@@ -819,6 +899,10 @@
         ],
         "outputs": [],
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.020000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=MOTU,DEV=0: No such device"
@@ -832,7 +916,10 @@
         "outputs": [
           "noise.mono"
         ],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false
       },
       {
         "name": "porch",
@@ -849,6 +936,10 @@
         ],
         "outputs": [],
         "state": "failed",
+        "phase": "failed",
+        "since": "2026-11-09T10:00:00.030000Z",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=USB2,DEV=0: No such device"
@@ -865,7 +956,10 @@
           "record.right"
         ],
         "outputs": [],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false
       }
     ],
     "routes": [

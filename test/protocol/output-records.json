@@ -1,0 +1,701 @@
+{
+  "description": "Every kind of record ear writes on standard output (docs/output-records.md), one JSON object a line from one encoder (src/control/status_log.cpp), in the order the C++ test (src/control/tests/status_log_test.cpp) makes them. Each has v (the schema's version: additive changes keep it, a breaking one bumps it), seq (from 1; a gap is a record a full queue dropped, and the next record carries dropped and says so in msg: record 18 here is dropped), t (UTC, microseconds), kind, the kind's fields in this order, and msg, the plain line ear printed before records (jq -r .msg reads as ear always did). A graph-file record carries every diagnostic of its change; its msg is the lines it printed, joined by newlines (errors only). A log record names its node, or says unattributed; log records are paced per node, or per source when unattributed (32 at once, then one a second), and the next one that passes after a flood carries heldBack and says so in msg (the last log record here; records 20 to 51 passed but are not shown). Text from peers and libraries is escaped, never interpreted. A node record carries its phase beside its state (the phase's colour), and is written when the state changes (or a failure's reason does): starting for a node added, starting: <cause> for one configuring after a restart, a retry or an enable, none for the colour's other phases; still when what a node waits for first appears after 2 s in its phase, then at most once per 10 s while it changes (a list told inside the pace is written by the first tell after it); removed dropped=<frames> once everything it made is gone (no record carries a run). A diagnostic record carries its structured fields (such as ms) between code and detail, and one that names no node (ear.data-loop-wedged) has no node field.",
+  "records": [
+    {
+      "case": "the engine's audio thread is realtime",
+      "record": {
+        "v": 1,
+        "seq": 1,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "engine",
+        "realtime": true,
+        "scheduling": "SCHED_FIFO 88",
+        "msg": "engine: realtime SCHED_FIFO 88"
+      }
+    },
+    {
+      "case": "the engine's audio thread is not realtime",
+      "record": {
+        "v": 1,
+        "seq": 2,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "engine",
+        "realtime": false,
+        "scheduling": "SCHED_OTHER",
+        "msg": "engine: not realtime (SCHED_OTHER)"
+      }
+    },
+    {
+      "case": "the control port listens",
+      "record": {
+        "v": 1,
+        "seq": 3,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "control",
+        "address": "127.0.0.1",
+        "port": 7777,
+        "msg": "control listening on 127.0.0.1:7777"
+      }
+    },
+    {
+      "case": "a node is added: its first record (phase added) says starting",
+      "record": {
+        "v": 1,
+        "seq": 4,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "starting",
+        "phase": "added",
+        "msg": "node desk starting"
+      }
+    },
+    {
+      "case": "a node fails",
+      "record": {
+        "v": 1,
+        "seq": 5,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "failed",
+        "phase": "failed",
+        "failure": {
+          "code": "engine-refused",
+          "detail": "card lost"
+        },
+        "msg": "node desk failed engine-refused: card lost"
+      }
+    },
+    {
+      "case": "a node is removed: everything it made is gone (no longer \"stopped\", which names a resting node)",
+      "record": {
+        "v": 1,
+        "seq": 6,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopping",
+        "phase": "removed",
+        "droppedFrames": 0,
+        "msg": "node rec removed dropped=0"
+      }
+    },
+    {
+      "case": "a node's note",
+      "record": {
+        "v": 1,
+        "seq": 7,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "note",
+        "node": "kitchen",
+        "text": "connected \"Music Assistant\" unpaired",
+        "msg": "node kitchen says connected \"Music Assistant\" unpaired"
+      }
+    },
+    {
+      "case": "a route is linked",
+      "record": {
+        "v": 1,
+        "seq": 8,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "route",
+        "from": "noise:noise.mono",
+        "to": "rec:record.left",
+        "status": "linked",
+        "msg": "route noise:noise.mono -> rec:record.left linked"
+      }
+    },
+    {
+      "case": "a route is refused",
+      "record": {
+        "v": 1,
+        "seq": 9,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "route",
+        "from": "noise:noise.mono",
+        "to": "desk:play.1",
+        "status": "refused",
+        "detail": "link failed",
+        "msg": "route noise:noise.mono -> desk:play.1 refused: link failed"
+      }
+    },
+    {
+      "case": "a graph file change with nothing wrong",
+      "record": {
+        "v": 1,
+        "seq": 10,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file",
+        "cause": "edit",
+        "version": "v2",
+        "running": "v2",
+        "diagnostics": [],
+        "droppedEdits": 0,
+        "pendingRestart": [],
+        "msg": "graph-file edit v2 running=v2"
+      }
+    },
+    {
+      "case": "a graph file change with everything: every diagnostic is in the record, only errors in msg",
+      "record": {
+        "v": 1,
+        "seq": 11,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file",
+        "cause": "disk",
+        "version": "v9",
+        "running": null,
+        "diagnostics": [
+          {
+            "severity": "error",
+            "line": 9,
+            "column": 34,
+            "code": "E2001",
+            "message": "unexpected token: \"}\""
+          },
+          {
+            "severity": "warning",
+            "line": 10,
+            "column": 1,
+            "code": "W3005",
+            "message": "nothing matched"
+          }
+        ],
+        "refused": {
+          "code": "unknown-port",
+          "line": 14,
+          "column": 1
+        },
+        "droppedEdits": 2,
+        "pendingRestart": [
+          "graphFrequency",
+          "blockSize"
+        ],
+        "writeFailed": "ear.conf: No space left on device",
+        "msg": "graph-file disk v9 running=none\ngraph-file error 9:34 E2001: unexpected token: \"}\"\ngraph-file refused unknown-port at 14:1\ngraph-file dropped 2 edits\ngraph-file pending-restart graphFrequency blockSize\ngraph-file write-failed ear.conf: No space left on device"
+      }
+    },
+    {
+      "case": "a graph file write",
+      "record": {
+        "v": 1,
+        "seq": 12,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file-written",
+        "version": "v7",
+        "msg": "graph-file written v7"
+      }
+    },
+    {
+      "case": "the last write's failure, as ear exits",
+      "record": {
+        "v": 1,
+        "seq": 13,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "graph-file-write-failed",
+        "detail": "ear.conf: No space left on device",
+        "msg": "graph-file write-failed ear.conf: No space left on device"
+      }
+    },
+    {
+      "case": "a line some library wrote to standard error, captured",
+      "record": {
+        "v": 1,
+        "seq": 14,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "warn",
+        "source": "stderr",
+        "text": "W sendspin.client: \u001b[1mtime\u001b[0m skew",
+        "msg": "stderr warn: W sendspin.client: \u001b[1mtime\u001b[0m skew"
+      }
+    },
+    {
+      "case": "PipeWire's log, through ear's own pw_log",
+      "record": {
+        "v": 1,
+        "seq": 15,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "error",
+        "source": "pipewire",
+        "topic": "spa.alsa",
+        "text": "'hw:Pro24': playback open failed: No such file or directory",
+        "msg": "pipewire spa.alsa error: 'hw:Pro24': playback open failed: No such file or directory"
+      }
+    },
+    {
+      "case": "a node's own log, cut at its bound",
+      "record": {
+        "v": 1,
+        "seq": 16,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "node": "kitchen",
+        "level": "info",
+        "source": "sendspin",
+        "text": "key file narrowed",
+        "cut": true,
+        "msg": "node kitchen sendspin info: key file narrowed"
+      }
+    },
+    {
+      "case": "why ear exits",
+      "record": {
+        "v": 1,
+        "seq": 17,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "exit",
+        "status": 1,
+        "reason": "control port: cannot bind 0.0.0.0:7777: Address in use",
+        "msg": "ear: control port: cannot bind 0.0.0.0:7777: Address in use"
+      }
+    },
+    {
+      "case": "the record after a drop counts it",
+      "record": {
+        "v": 1,
+        "seq": 19,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "desk",
+        "state": "running",
+        "phase": "running",
+        "dropped": 1,
+        "msg": "node desk running (1 records dropped before this)"
+      }
+    },
+    {
+      "case": "a source's log after a flood: 32 passed at once (seq 20 to 51), 9 were held back, and a second later this one counts them",
+      "record": {
+        "v": 1,
+        "seq": 52,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "log",
+        "unattributed": true,
+        "level": "error",
+        "source": "alsa-lib",
+        "text": "pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24",
+        "heldBack": 9,
+        "msg": "alsa-lib error: pcm.c:2664:(snd_pcm_open_noupdate) Unknown PCM hw:Pro24 (9 more held back before this: over 32 at once)"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a run leaked past its close deadline",
+      "record": {
+        "v": 1,
+        "seq": 53,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.close-overdue",
+        "detail": "its run did not close within 10 s, so it was leaked",
+        "msg": "node kitchen ear.close-overdue: its run did not close within 10 s, so it was leaked"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a planned silence's fade not acknowledged within 100 ms, so the silence was taken unfaded",
+      "record": {
+        "v": 1,
+        "seq": 54,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "desk",
+        "code": "ear.fade-unacknowledged",
+        "ms": 100,
+        "detail": "the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded",
+        "msg": "node desk ear.fade-unacknowledged: the fade before its silence was not acknowledged within 100 ms, so the silence was taken unfaded"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a barrier not completed within 5 s, its configuration and block leaked",
+      "record": {
+        "v": 1,
+        "seq": 55,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "desk",
+        "code": "ear.barrier-overdue",
+        "ms": 5000,
+        "detail": "a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked",
+        "msg": "node desk ear.barrier-overdue: a barrier posted to the data loop did not complete within 5000 ms, so its configuration and block are leaked"
+      }
+    },
+    {
+      "case": "the framework's diagnostic that names no node: the data loop judged wedged, once; no engine change follows and ear's stop leaves through _Exit",
+      "record": {
+        "v": 1,
+        "seq": 56,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.data-loop-wedged",
+        "ms": 5000,
+        "detail": "node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied",
+        "msg": "ear.data-loop-wedged: node desk's barrier did not complete within 5000 ms: the data loop runs no invoke, so no further engine change is applied"
+      }
+    },
+    {
+      "case": "the main-loop watchdog, from its own thread: a look found the heartbeat older than 500 ms (ms is its age then), said once per stall, with the call the main loop is in",
+      "record": {
+        "v": 1,
+        "seq": 57,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-stalled",
+        "ms": 612,
+        "in": "pw_filter_destroy desk",
+        "detail": "no main-loop heartbeat for 612 ms, in pw_filter_destroy desk",
+        "msg": "ear.main-loop-stalled: no main-loop heartbeat for 612 ms, in pw_filter_destroy desk"
+      }
+    },
+    {
+      "case": "the main-loop watchdog: a stall between calls has no \"in\"",
+      "record": {
+        "v": 1,
+        "seq": 58,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-stalled",
+        "ms": 503,
+        "detail": "no main-loop heartbeat for 503 ms",
+        "msg": "ear.main-loop-stalled: no main-loop heartbeat for 503 ms"
+      }
+    },
+    {
+      "case": "the main-loop watchdog: the heartbeat moved again; ms is the gap from the last beat before the stall to the first after, measured by that beat",
+      "record": {
+        "v": 1,
+        "seq": 59,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.main-loop-resumed",
+        "ms": 1840,
+        "detail": "the main-loop heartbeat came back after a gap of 1840 ms",
+        "msg": "ear.main-loop-resumed: the main-loop heartbeat came back after a gap of 1840 ms"
+      }
+    },
+    {
+      "case": "a node runs: configuring, configured and starting, the colour's other phases, write none",
+      "record": {
+        "v": 1,
+        "seq": 60,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "running",
+        "phase": "running",
+        "msg": "node porch running"
+      }
+    },
+    {
+      "case": "a node stops (node.stop): cause stop",
+      "record": {
+        "v": 1,
+        "seq": 61,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "stop"
+        },
+        "msg": "node porch stopping: stop"
+      }
+    },
+    {
+      "case": "a node rests stopped, keeping its configuration",
+      "record": {
+        "v": 1,
+        "seq": 62,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopped",
+        "phase": "stopped",
+        "msg": "node porch stopped"
+      }
+    },
+    {
+      "case": "a node is disabled: cause disabling",
+      "record": {
+        "v": 1,
+        "seq": 63,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "disabling"
+        },
+        "msg": "node porch stopping: disabling"
+      }
+    },
+    {
+      "case": "a node is disabled: its configuration gone, its block and wires kept",
+      "record": {
+        "v": 1,
+        "seq": 64,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "disabled",
+        "phase": "disabled",
+        "msg": "node porch disabled"
+      }
+    },
+    {
+      "case": "a node is enabled: configuring, cause enabling",
+      "record": {
+        "v": 1,
+        "seq": 65,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "porch",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "enabling"
+        },
+        "msg": "node porch starting: enabling"
+      }
+    },
+    {
+      "case": "a restart-only change: stopping, cause restarting by settings, with the keys",
+      "record": {
+        "v": 1,
+        "seq": 66,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "settings",
+            "keys": [
+              "path"
+            ]
+          }
+        },
+        "msg": "node rec stopping: restarting (settings changed: path)"
+      }
+    },
+    {
+      "case": "configuring again after a restart-only change: cause settings, with the keys",
+      "record": {
+        "v": 1,
+        "seq": 67,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "settings",
+          "keys": [
+            "path"
+          ]
+        },
+        "msg": "node rec starting: settings changed: path"
+      }
+    },
+    {
+      "case": "running again after a restart",
+      "record": {
+        "v": 1,
+        "seq": 68,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "running",
+        "phase": "running",
+        "msg": "node rec running"
+      }
+    },
+    {
+      "case": "a restart asked (node.restart): cause restarting by action",
+      "record": {
+        "v": 1,
+        "seq": 69,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "restarting",
+          "restart": {
+            "kind": "action"
+          }
+        },
+        "msg": "node rec stopping: restarting (restart invoked)"
+      }
+    },
+    {
+      "case": "configuring again after node.restart: cause action",
+      "record": {
+        "v": 1,
+        "seq": 70,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "rec",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "action"
+        },
+        "msg": "node rec starting: restart invoked"
+      }
+    },
+    {
+      "case": "a node that had rested says it cannot go on: failure code lost",
+      "record": {
+        "v": 1,
+        "seq": 71,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "failed",
+        "phase": "failed",
+        "failure": {
+          "code": "lost",
+          "detail": "the library died"
+        },
+        "msg": "node kitchen failed lost: the library died"
+      }
+    },
+    {
+      "case": "a failed node retried (node.start): configuring, cause retry",
+      "record": {
+        "v": 1,
+        "seq": 72,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "starting",
+        "phase": "configuring",
+        "cause": {
+          "kind": "retry"
+        },
+        "msg": "node kitchen starting: retry"
+      }
+    },
+    {
+      "case": "a node removed: cause removing",
+      "record": {
+        "v": 1,
+        "seq": 73,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "kitchen",
+        "state": "stopping",
+        "phase": "stopping",
+        "cause": {
+          "kind": "removing"
+        },
+        "msg": "node kitchen stopping: removing"
+      }
+    },
+    {
+      "case": "a node still configuring after 2 s says what it waits for",
+      "record": {
+        "v": 1,
+        "seq": 74,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "companion",
+            "name": "fpp.rtp"
+          }
+        ],
+        "msg": "node fpp still configuring after 2s: waiting for fpp.rtp"
+      }
+    },
+    {
+      "case": "then at most once per 10 s while what it waits for changes: a list told inside the pace is written by the first tell after it",
+      "record": {
+        "v": 1,
+        "seq": 75,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "node",
+        "node": "fpp",
+        "state": "starting",
+        "phase": "configuring",
+        "waitingFor": [
+          {
+            "kind": "older-node",
+            "name": "fpp"
+          },
+          {
+            "kind": "consumer"
+          }
+        ],
+        "msg": "node fpp still configuring after 12s: waiting for the previous fpp, its consumer"
+      }
+    },
+    {
+      "case": "the framework's diagnostic about a node: a hook (configure, start or stop, named in its detail) ran past 20 ms on the main loop, said once per node and hook",
+      "record": {
+        "v": 1,
+        "seq": 76,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.hook-slow",
+        "ms": 31,
+        "detail": "configure ran 31 ms",
+        "msg": "node rec ear.hook-slow: configure ran 31 ms"
+      }
+    },
+    {
+      "case": "an operator's node.restart, answered: an action record, before the node records it causes (docs/output-records.md#action)",
+      "record": {
+        "v": 1,
+        "seq": 77,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "desk",
+        "action": "restart",
+        "result": "ok",
+        "msg": "node desk restart invoked"
+      }
+    },
+    {
+      "case": "a lifecycle request refused: its code as the result, and not-restartable's reason as the detail",
+      "record": {
+        "v": 1,
+        "seq": 78,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "desk",
+        "action": "restart",
+        "result": "not-restartable",
+        "detail": "block-lost",
+        "msg": "node desk restart refused: not-restartable (block-lost)"
+      }
+    },
+    {
+      "case": "a start on a node ear.conf disables",
+      "record": {
+        "v": 1,
+        "seq": 79,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "action",
+        "node": "porch",
+        "action": "start",
+        "result": "node-disabled",
+        "msg": "node porch start refused: node-disabled"
+      }
+    }
+  ]
+}

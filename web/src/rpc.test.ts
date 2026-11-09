@@ -1,6 +1,6 @@
-// W1 criterion (2): the client with a fake socket. Ids are matched; errors reject with code and
-// message; notifications are dispatched; after a close it reconnects, subscribes again (S6
-// criterion 4: the graph, the graph file and the levels), and the new snapshot replaces the graph.
+// The client with a fake socket. Ids are matched; errors reject with code and
+// message; notifications are dispatched; after a close it reconnects, subscribes again (the
+// graph, the graph file and the levels), and the new snapshot replaces the graph.
 import { describe, expect, it } from "vitest";
 import { Editor } from "./editor";
 import type { Graph, JsonValue, ServerMessage } from "./protocol";

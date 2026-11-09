@@ -1,4 +1,4 @@
-// The graph editor (docs/design/batch2.md section 8): a React Flow canvas of ear's graph and the
+// The graph editor (docs/editor.md): a React Flow canvas of ear's graph and the
 // ear.conf pane. Nodes and wires are exactly what ear announced; dragging a wire between ports,
 // the panels, the pane's Save and the delete key send requests, and the canvas changes when ear's
 // events arrive. Node positions
@@ -44,7 +44,8 @@ function syncNodes(previous: EarFlowNode[], graph: GraphState, places: Places): 
 }
 
 function describe(error: unknown): string {
-  if (error instanceof RpcError) return error.data !== undefined ? `${error.data.code}: ${error.message}` : error.message;
+  if (error instanceof RpcError)
+    return error.data?.code !== undefined ? `${error.data.code}: ${error.message}` : error.message;
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -158,7 +159,9 @@ export function App() {
         )}
         {graph !== null && <EngineFacts graph={graph} />}
         {graph !== null && <AddNodePanel types={graph.types} onError={showError} />}
-        {selectedNode !== undefined && <NodePanel node={selectedNode} onError={showError} />}
+        {selectedNode !== undefined && (
+          <NodePanel node={selectedNode} features={graph?.features ?? []} onError={showError} />
+        )}
         {file !== null && <TextPane state={file} onError={showError} />}
       </aside>
     </div>

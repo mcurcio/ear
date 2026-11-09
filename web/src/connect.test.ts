@@ -1,4 +1,4 @@
-// W1 criterion (3): an output → input drag gives route.add's params; input → input (and
+// An output → input drag gives route.add's params; input → input (and
 // output → output) is refused.
 import { describe, expect, it } from "vitest";
 import { edgeId, handleId, isValidConnection, parseHandleId, routeFromConnection } from "./connect";

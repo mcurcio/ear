@@ -1,5 +1,5 @@
 // placeIn: knobly's places (line and byte column from 0) to the wire's (line from 1, column from 1
-// in UTF-16 code units) (docs/design/knobly-config.md, "Wire additions"; S1 criterion 7).
+// in UTF-16 code units) (docs/control-port.md#the-graph-file-over-the-port).
 #include "catch2/catch.hpp"
 #include "place.hpp"
 

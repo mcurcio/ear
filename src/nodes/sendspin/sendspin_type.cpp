@@ -1,4 +1,4 @@
-// The "sendspin" node type (docs/design/sendspin.md sections 3 and 4): a port block with its own audio code and its own
+// The "sendspin" node type (docs/node-types.md#sendspin): a port block with its own audio code and its own
 // threads, not an outside node. Its ports are fixed; the connection is the worker's, so an absent server is no
 // failure: the node runs and its outputs are silent.
 #include "ear/nodes/sendspin.hpp"
@@ -8,7 +8,6 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
-#include <iostream>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -16,6 +15,7 @@
 #include <string_view>
 #include <utility>
 
+#include "ear/core/log.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "feed.hpp"
 #include "key_store.hpp"
@@ -27,7 +27,7 @@
 namespace ear::sendspin {
 namespace {
 
-/// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks (section 7).
+/// Small, so a correction lands within a chunk: the next power of two at or above 40 ms and two blocks.
 std::uint32_t feedFramesFor(const AudioFormat& format) {
 	return std::bit_ceil(std::max(format.rate * 40 / 1000, 2 * format.maxBlock));
 }
@@ -46,22 +46,27 @@ private:
 	std::uint16_t port_;
 };
 
-class SendspinInsides final : public NodeInsides {
+/// The run object: the claim, the feed and the worker with its threads. Until slice 3c (docs/design/node-primitives.md)
+/// moves sendspin onto the framework's loops, feed, stores and claims, it is built in start (the worker reads the key
+/// file and starts its threads there), and its recipe only hands it over.
+class SendspinRun final : public RunObject {
 public:
-	SendspinInsides(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node,
-	                SendspinSettings settings, NodeGrant& grant, std::optional<HeldPort> port)
-		: port_(std::move(port)), feed_(nodeChannels, feedFramesFor(grant.format())),
-		  worker_(std::move(folder), node, std::move(settings), grant.format(), feed_, grant.events()),
-		  code_(feed_, worker_.progress(), worker_.bell(), grant.format().rate,
-	            grant.handoff(nodeChannels, grant.format().rate / 2, worker_.toServer()), worker_.capture()) {}
-	AudioCode& audioCode() override { return code_; }
+	SendspinRun(std::shared_ptr<const folder::ConfinedFolder> folder, const NodeName& node, SendspinSettings settings,
+	            StartContext& context, std::optional<HeldPort> port)
+		: port_(std::move(port)), feed_(nodeChannels, feedFramesFor(context.format())),
+		  worker_(std::move(folder), node, std::move(settings), context.format(), feed_, context.events()) {}
 	void close(std::move_only_function<void()> closed) override { worker_.stop(std::move(closed)); }
+	/// The run's code, reading this run's feed and writing `toServer`; it must not outlive the run.
+	std::unique_ptr<SendspinCode> code(std::uint32_t rate, RtWriter& toServer) {
+		return std::make_unique<SendspinCode>(feed_, worker_.progress(), worker_.bell(), rate, toServer,
+		                                      worker_.capture());
+	}
+	HandoffConsumer& toServer() noexcept { return worker_.toServer(); }
 
 private:
 	std::optional<HeldPort> port_;
 	Feed feed_;
 	SendspinWorker worker_;
-	SendspinCode code_;
 };
 
 class SendspinConfig final : public NodeConfig {
@@ -73,7 +78,7 @@ public:
 
 	const Ports& ports() const override { return ports_; }
 
-	std::expected<std::unique_ptr<NodeInsides>, FailureReason> start(NodeGrant& grant) const override {
+	StartResult start(StartContext& context) const override {
 		std::optional<HeldPort> port;
 		if (!settings_.server) {
 			const auto refused = [&](const std::string& reason) {
@@ -85,11 +90,22 @@ public:
 			port.emplace(claims_, settings_.port);
 			if (auto probed = probeListenPort(settings_.port); !probed) return refused(probed.error());
 		}
+		std::unique_ptr<SendspinRun> run;
 		try {
-			return std::make_unique<SendspinInsides>(folder_, node_, settings_, grant, std::move(port));
+			run = std::make_unique<SendspinRun>(folder_, node_, settings_, context, std::move(port));
 		} catch (const std::system_error& error) {
 			return std::unexpected(FailureReason{FailureReason::Code::startFailed, error.what()});
 		}
+		const std::uint32_t rate = context.format().rate;
+		RtWriter& toServer = context.acquire(HandoffRequest{"to", rate / 2, &run->toServer()});
+		// The feed holds the server's audio up to its size before it leaves (docs/engine.md#latency-per-bank-pair).
+		context.declareLatency("from", Latency{0, feedFramesFor(context.format())});
+		auto code = run->code(rate, toServer);
+		return StartResult{
+			std::move(code),
+			[run = std::move(run)](Ready&) mutable -> std::expected<std::unique_ptr<RunObject>, FailureReason> {
+				return std::move(run);
+			}};
 	}
 
 private:
@@ -120,9 +136,10 @@ namespace ear::nodes {
 
 std::unique_ptr<const NodeType> makeSendspinNodeType(const NodeFolders& folders) {
 	if (!folders.config) throw std::logic_error("sendspin needs the graph file folder");
-	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph (section 8).
-	for (const std::string& failure : sendspin::narrowKeyFiles(*folders.config))
-		std::cerr << "sendspin: " << failure << '\n';
+	// Boot's one look at the folder: nothing else opens the key file of a node no longer in the graph.
+	if (folders.log == nullptr) throw std::logic_error("sendspin needs the boot log");
+	for (std::string& failure : sendspin::narrowKeyFiles(*folders.config))
+		folders.log->log({.level = LogLevel::warn, .source = "sendspin", .text = std::move(failure)});
 	return std::make_unique<const sendspin::SendspinType>(folders.config);
 }
 

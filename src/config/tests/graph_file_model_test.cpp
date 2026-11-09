@@ -1,6 +1,6 @@
-// The graph file model: ear.conf loaded with knobly and read with ear's directives into a wanted graph,
-// with knobly's diagnostics and ear's own at their places (docs/design/knobly-config.md, "File
-// format"; S1 criteria 2-6). Pure: text in, read out, against test types that declare their kinds.
+// The graph file model: ear.conf loaded with knobly and read with ear's directives into a wanted graph, with knobly's
+// diagnostics and ear's own at their places (docs/graph-file.md#edits-at-the-source). Pure: text in, read out, against
+// test types that declare their kinds.
 #include <string>
 #include <tuple>
 #include <vector>
@@ -15,7 +15,7 @@ using json = nlohmann::json;
 
 namespace {
 
-/// The record's file format example (docs/design/knobly-config.md, "File format").
+/// The record's file format example (docs/graph-file.md#edits-at-the-source).
 const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;
 @set $ch 2;                      # comments survive every edit

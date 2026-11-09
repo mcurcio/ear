@@ -1,4 +1,4 @@
-// Route links from events (docs/design/batch2.md section 4.1, reconciler.hpp): it holds
+// Route links from events (docs/architecture.md#packages, reconciler.hpp): it holds
 // the wanted routes and the live ports, asks the LinkMaker for one link per wanted route whose
 // ends are both live, and keeps each route's status from the link events. It never knows node
 // state and never touches audio.

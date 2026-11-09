@@ -1,4 +1,4 @@
-// ear.conf's state on the wire (docs/design/knobly-config.md, "Wire additions"; S3 criterion 9): the
+// ear.conf's state on the wire (docs/control-port.md#the-graph-file-over-the-port): the
 // names the wire carries, value equality of places and diagnostics, and every message of
 // test/protocol/graph-file.json built here from typed values (graph_file_fixture.hpp) and encoded
 // exactly as the fixture has it.
@@ -101,7 +101,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(resultOf(1, file("v1", t.t1, "v1")) == m[0]);
 		CHECK(resultOf(2, graphView(2, "take1.wav")) == m[1]);
 		CHECK(changed(file("v2", t.t2, "v2"), FileChangeCause::edit) == m[2]);
-		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}}) == m[3]);
+		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}, false, ear::NodeOutcome::restart}) == m[3]);
 		CHECK(resultOf(3, std::expected<void, ear::CommandError>{}) == m[4]);
 	}
 	SECTION("the refusals") {
@@ -120,7 +120,7 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(changed(file("v4", t.t2, "v4"), FileChangeCause::disk) == m[10]);
 		CHECK(changed(file("v5", t.t5, "v5"), FileChangeCause::edit) == m[11]);
 		CHECK(changed(file("v6", t.t2, "v6"), FileChangeCause::disk, 1) == m[14]);
-		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}}) == m[15]);
+		CHECK(event(NodeUpdated{"rec", {{"path", "take2.wav"}}, false, ear::NodeOutcome::restart}) == m[15]);
 	}
 	SECTION("playback 4 through @set $ch replaces both cards") {
 		const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
@@ -128,13 +128,19 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		CHECK(event(RouteRemoved{toDesk}) == m[18]);
 		CHECK(event(NodeRemoved{"desk"}) == m[19]);
 		CHECK(event(NodeRemoved{"porch"}) == m[20]);
-		CHECK(event(NodeAdded{{"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, four}) == m[21]);
-		CHECK(event(NodeAdded{{"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, four}) == m[22]);
+		// The gateway's clock: one reading for each node.added and for each node.state that changed a phase.
+		CHECK(event(NodeAdded{
+				  {"desk", "card", {{"card", "MOTU"}, {"playback", 4}}}, four, ear::NodeHealth{"desk"}, reading(0)}) ==
+		      m[21]);
+		CHECK(
+			event(NodeAdded{
+				{"porch", "card", {{"card", "USB2"}, {"playback", 4}}}, four, ear::NodeHealth{"porch"}, reading(1)}) ==
+			m[22]);
 		CHECK(event(RouteAdded{toDesk}) == m[23]);
 		CHECK(resultOf(10, std::expected<void, ear::CommandError>{}) == m[24]);
 		const auto& view = graphView(4, "take4.wav");
-		CHECK(event(NodeChanged{{"desk", view.nodes[0].state, view.nodes[0].reason}}) == m[25]);
-		CHECK(event(NodeChanged{{"porch", view.nodes[2].state, view.nodes[2].reason}}) == m[26]);
+		CHECK(event(NodeChanged{view.nodes[0].health, reading(2)}) == m[25]);
+		CHECK(event(NodeChanged{view.nodes[2].health, reading(3)}) == m[26]);
 	}
 	SECTION("a write that fails, then succeeds") {
 		GraphFile failed = file("v7", t.t7, "v7");
@@ -155,7 +161,9 @@ TEST_CASE("Every graph-file.json message encodes as the fixture has it", "[graph
 		GraphFile last = file("v11", t.t11, "v11");
 		last.pendingRestart = {FormatKey::graphFrequency};
 		CHECK(changed(last, FileChangeCause::edit) == m[36]);
-		const ear::GraphView view = graphView(4, "take4.wav");
+		ear::GraphView view = graphView(4, "take4.wav");
+		view.nodes[0].since = reading(2); // the gateway fills in when each card's failure began
+		view.nodes[2].since = reading(3);
 		const std::vector<std::string> first{encodeResult(13, json::object()),
 		                                     encodeResult(14, encodeCommandResult(view).value())};
 		CHECK(json::parse(encodeBatch(first)) == m[38]);

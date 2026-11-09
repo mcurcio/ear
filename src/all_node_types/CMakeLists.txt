@@ -18,7 +18,7 @@ foreach(type IN LISTS types)
 	string(SUBSTRING "${type}" 1 -1 rest)
 	string(TOUPPER "${first}" first)
 	string(APPEND EAR_NODE_TYPE_INCLUDES "#include \"ear/nodes/${type}.hpp\"\n")
-	string(APPEND EAR_NODE_TYPE_PUSHES "\ttypes.push_back(make${first}${rest}NodeType(folders));\n")
+	string(APPEND EAR_NODE_TYPE_PUSHES "\ttypes.push_back(made(&make${first}${rest}NodeType, folders));\n")
 	list(APPEND libraries ear_node_${type})
 endforeach()
 

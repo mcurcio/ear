@@ -1,4 +1,4 @@
-// mDNS for a listening sendspin node (docs/design/sendspin.md section 4): `_sendspin._tcp` on its port, so a server finds
+// mDNS for a listening sendspin node (docs/node-types.md#mdns): `_sendspin._tcp` on its port, so a server finds
 // it. mjansson/mdns stays inside advertiser.cpp. One socket per node, on the worker thread only.
 #pragma once
 #include <cstdint>

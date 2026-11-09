@@ -1,14 +1,13 @@
-// Frozen interface (docs/design/batch2.md section 4; split from nodes/builtin.hpp by section 11's erratum of
-// 2026-11-06). Change it only through an erratum and a re-cut, never a local edit.
 #pragma once
 #include <memory>
-#include "ear/core/node_folders.hpp"
 #include "ear/core/node_type.hpp"
 namespace ear::nodes {
-/// "file": inputs "record.left", "record.right"; settings {"path": a path relative to `folders.recordings`}: non-empty,
-/// not absolute, no ".." component (else invalid). Opened beneath the folder only
-/// (folder::ConfinedFolder::create), truncated at start; 32-bit float stereo WAV at the graph
-/// frequency; complete once the node is gone. A path the folder refuses or cannot open: start
-/// fails with startFailed. Ring: 2 s at the graph frequency.
-std::unique_ptr<const NodeType> makeFileNodeType(const NodeFolders& folders);
+/// "file": inputs "record.left", "record.right"; settings {"path": a path relative to the recordings folder}: non-empty,
+/// not absolute, no ".." component (else invalid). Opened at configure as a recording (RecordingRequest), so beneath the
+/// folder only and truncated; a path the folder refuses or cannot open fails the node start-failed, "cannot open
+/// <path>: <why>". Recorded through an interim sink on its inside output bank "writer" (2 s ring at the graph
+/// frequency): the WAV is opened on the sink's own thread, and a libsndfile refusal fails the node start-failed before
+/// it is configured. 32-bit float stereo WAV at the graph frequency, every cycle the node's code drove (none while
+/// stopped); complete once its configuration is torn down (a restart, a disable, a removal).
+std::unique_ptr<const NodeType> makeFileNodeType();
 } // namespace ear::nodes

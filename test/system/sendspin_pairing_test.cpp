@@ -63,7 +63,7 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	ear.signal(SIGTERM);
 	const auto exitStatus = ear.waitForExit(deadline);
 	REQUIRE(exitStatus == 0);
-	CHECK(ear.hasLine("node rec stopped dropped=0"));
+	CHECK(ear.hasLine("node rec removed dropped=0"));
 	CHECK(ear.hasLine("node ma says stream flac 48000 2 24"));
 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");

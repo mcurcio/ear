@@ -1,7 +1,6 @@
-// MainLoopGateway (docs/design/batch2.md sections 2 and 4.5, R1 criterion 4; docs/design/knobly-config.md,
-// crossings C1 and C4, S5 criterion T10), with two queue executors the test runs by hand: a batch goes
-// whole to the graph file keeper (here a fake that answers on the main loop, telling the gateway the
-// file change and graph events its batch causes first, as the keeper's main-loop side does), and the
+// MainLoopGateway (docs/architecture.md#threads; docs/architecture.md#how-a-change-moves), with two queue executors the
+// test runs by hand: a batch goes whole to the graph file keeper (here a fake that answers on the main loop, telling
+// the gateway the file change and graph events its batch causes first, as the keeper's main-loop side does), and the
 // reply, file changes and events come back on the control executor in main-loop order.
 #include <deque>
 #include <functional>
@@ -50,7 +49,7 @@ class Config final : public ear::NodeConfig {
 public:
 	explicit Config(ear::Ports ports) : ports_(std::move(ports)) {}
 	const ear::Ports& ports() const override { return ports_; }
-	std::expected<std::unique_ptr<ear::NodeInsides>, ear::FailureReason> start(ear::NodeGrant&) const override {
+	ear::StartResult start(ear::StartContext&) const override {
 		return std::unexpected(ear::FailureReason{ear::FailureReason::Code::startFailed, "test config"});
 	}
 
@@ -106,10 +105,14 @@ private:
 	Loops& loops_;
 };
 
+/// 2026-11-09T10:00:00Z, the gateway's clock until a test moves it.
+constexpr std::chrono::system_clock::time_point testEpoch{std::chrono::seconds{1'794'218'400}};
+
 struct Fixture {
 	Loops loops;
 	FakeRequests requests{loops};
-	MainLoopGateway gateway{loops.main, loops.control, requests};
+	std::chrono::system_clock::time_point clockAt = testEpoch;
+	MainLoopGateway gateway{loops.main, loops.control, requests, [this] { return clockAt; }};
 	Sink sink{loops};
 	Fixture() { requests.gateway = &gateway; }
 	/// run() from the control thread, as a session calls it.
@@ -161,7 +164,7 @@ TEST_CASE("The reply follows the file change and every event its batch caused", 
 		gateway.graphFileChanged(GraphFileChanged{file("b.2"), FileChangeCause::edit, 0});
 		gateway.nodeAdded({"a", "white", json::object()},
 		                  std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}));
-		gateway.nodeChanged({"a", ear::NodeState::starting, std::nullopt});
+		gateway.nodeChanged({"a", ear::NodeState::starting, std::nullopt, ear::NodePhase::configuring});
 	};
 	f.run({AddNode{{"a", "white", json::object()}}}, [&](std::vector<CommandResult>) {
 		if (f.loops.running != &f.loops.control) ++f.sink.offControl;
@@ -189,8 +192,10 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	f.gateway.graphFileWritten("b.3"); // a status line only: nothing on the wire
 	f.gateway.nodeAdded(
 		{"n", "white", json::object()},
-		std::make_shared<Config>(ear::Ports{
-			{{ear::Direction::input, "in", {"a"}}, {ear::Direction::output, "out", {"a"}}}, {"I2"}, {"O2"}}));
+		std::make_shared<Config>(ear::Ports{{{ear::Direction::input, "in", {"a"}},
+	                                         {ear::Direction::output, "out", {"a"}},
+	                                         {ear::Direction::input, "i2", {"1"}, ear::PortBank::Reach::inside},
+	                                         {ear::Direction::output, "o2", {"1"}, ear::PortBank::Reach::inside}}}));
 	f.gateway.nodeUpdated({"n", "white", {{"k", 1}}}, std::make_shared<Config>(ear::Ports{}));
 	f.gateway.nodeChanged({"n", ear::NodeState::running, std::nullopt});
 	f.gateway.routeAdded({{"n", "out.a"}, {"m", "in.a"}});
@@ -199,16 +204,17 @@ TEST_CASE("Each listener call posts one event, and the sink hears it only on the
 	f.gateway.nodeRemoved("n");
 	f.gateway.nodeGone("n", 7);
 	f.loops.running = nullptr;
-	CHECK(f.sink.seen.empty());         // never inline
-	CHECK(f.loops.control.size() == 9); // one post per call, none for the write
+	CHECK(f.sink.seen.empty());          // never inline
+	CHECK(f.loops.control.size() == 10); // one post per call, none for the write, two for the node gone
 	f.loops.control.runAll();
 	CHECK(f.sink.offControl == 0);
-	REQUIRE(f.sink.seen.size() == 9);
+	REQUIRE(f.sink.seen.size() == 10);
 	std::vector<std::string> methods;
 	for (const auto& text : f.sink.seen) methods.push_back(method(text));
 	CHECK(methods == std::vector<std::string>{"graphFile.changed", "node.added", "node.updated", "node.state",
 	                                          "route.added", "route.status", "route.removed", "node.removed",
-	                                          "node.stopped"});
+	                                          "node.stopped", "node.gone"});
+	CHECK(json::parse(f.sink.seen[9])["params"]["droppedFrames"] == 7);
 	CHECK(json::parse(f.sink.seen[0])["params"]["droppedEdits"] == 2);
 	// node.added carries the public ports only
 	CHECK(json::parse(f.sink.seen[1])["params"]["inputs"] == json::array({"in.a"}));
@@ -232,4 +238,118 @@ TEST_CASE("Events and file changes from before watch are not sent", "[gateway]")
 	REQUIRE(f.sink.seen.size() == 2);
 	CHECK(method(f.sink.seen[0]) == "node.removed");
 	CHECK(f.sink.seen[1] == "reply");
+}
+
+TEST_CASE("node.state is sent whenever any health member changes, its since moving only with the phase, and never "
+          "for a superseded node",
+          "[gateway]") {
+	Fixture f;
+	f.gateway.watch(f.sink);
+	f.loops.main.runAll();
+	using ear::NodePhase;
+	using ear::NodeState;
+	using ear::Wanted;
+	const std::vector<ear::WaitingFor> forRtp{{ear::WaitingFor::Kind::companion, "n.rtp"}};
+	f.loops.running = &f.loops.main;
+	f.gateway.nodeAdded({"n", "white", json::object()},
+	                    std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}));
+	f.clockAt += std::chrono::milliseconds(5);
+	// NodeHost's first tell, `added`, is what node.added carried: nothing more is sent.
+	f.gateway.nodeChanged({"n", NodeState::starting, std::nullopt, NodePhase::added});
+	f.gateway.nodeChanged({"n", NodeState::starting, std::nullopt, NodePhase::configuring});
+	f.clockAt += std::chrono::milliseconds(5);
+	f.gateway.nodeChanged(
+		{"n", NodeState::starting, std::nullopt, NodePhase::configuring, Wanted::running, std::nullopt, forRtp});
+	f.gateway.nodeChanged(
+		{"n", NodeState::starting, std::nullopt, NodePhase::configuring, Wanted::stopped, std::nullopt, forRtp});
+	f.clockAt += std::chrono::milliseconds(5);
+	f.gateway.nodeChanged({"n", NodeState::stopped, std::nullopt, NodePhase::stopped, Wanted::stopped});
+	f.gateway.nodeChanged({"n", NodeState::stopped, std::nullopt, NodePhase::stopped, Wanted::stopped}); // the same
+	f.gateway.nodeRemoved("n"); // forgotten: a node added back by the same name is sent from its first state
+	f.gateway.nodeChanged({"n", NodeState::stopped, std::nullopt, NodePhase::stopped});
+	f.loops.running = nullptr;
+	f.loops.control.runAll();
+	std::vector<json> states;
+	for (const auto& text : f.sink.seen)
+		if (method(text) == "node.state") states.push_back(json::parse(text)["params"]);
+	REQUIRE(states.size() == 5);
+	CHECK(states[0]["phase"] == "configuring");
+	CHECK(states[0]["since"] == "2026-11-09T10:00:00.005000Z");
+	CHECK(states[1]["waitingFor"] == json::parse(R"([{"kind":"companion","name":"n.rtp"}])"));
+	CHECK(states[1]["since"] == "2026-11-09T10:00:00.005000Z"); // the phase did not change
+	CHECK(states[2]["wanted"] == "stopped");
+	CHECK(states[2]["since"] == "2026-11-09T10:00:00.005000Z");
+	CHECK(states[3]["phase"] == "stopped");
+	CHECK(states[3]["since"] == "2026-11-09T10:00:00.015000Z");
+	CHECK_FALSE(states[3].contains("waitingFor")); // an absent member is absent now
+	CHECK(states[3]["blockLost"] == false);
+	CHECK(states[4]["phase"] == "stopped"); // the name added back, sent from its first
+	CHECK_FALSE(f.gateway.hearsSuperseded());
+}
+
+TEST_CASE("node.added carries the spec's health and a disabled node's disabled, and node.updated its outcome",
+          "[gateway]") {
+	Fixture f;
+	f.gateway.watch(f.sink);
+	f.loops.main.runAll();
+	f.loops.running = &f.loops.main;
+	ear::NodeSpec quiet{"q", "white", json::object()};
+	quiet.disabled = true;
+	f.gateway.nodeAdded(quiet, std::make_shared<Config>(ear::Ports{}));
+	// NodeHost's first tell of a node added disabled is sent although node.added said it: a protocol 0 client reads a
+	// state only from node.state. Its since stays node.added's (the phase did not change).
+	f.gateway.nodeChanged(
+		{"q", ear::NodeState::disabled, std::nullopt, ear::NodePhase::disabled, ear::Wanted::disabled});
+	f.gateway.nodeChanged( // the same again: nothing
+		{"q", ear::NodeState::disabled, std::nullopt, ear::NodePhase::disabled, ear::Wanted::disabled});
+	f.gateway.nodeChanged(quiet, std::make_shared<Config>(ear::Ports{}),
+	                      ear::NodeChange{ear::NodeOutcome::stored, {"k"}});
+	const ear::NodeSpec loud{"q", "white", {{"k", 2}}};
+	f.gateway.nodeChanged(loud, std::make_shared<Config>(ear::Ports{}), ear::NodeChange{ear::NodeOutcome::enable, {}});
+	f.loops.running = nullptr;
+	f.loops.control.runAll();
+	REQUIRE(f.sink.seen.size() == 4);
+	const json added = json::parse(f.sink.seen[0])["params"];
+	CHECK(added["state"] == "disabled");
+	CHECK(added["phase"] == "disabled");
+	CHECK(added["wanted"] == "disabled");
+	CHECK(added["disabled"] == true);
+	CHECK(added["blockLost"] == false);
+	CHECK(added["since"] == "2026-11-09T10:00:00.000000Z");
+	const json first = json::parse(f.sink.seen[1]);
+	CHECK(first["method"] == "node.state");
+	CHECK(first["params"]["state"] == "disabled");
+	CHECK(first["params"]["since"] == "2026-11-09T10:00:00.000000Z");
+	CHECK(json::parse(f.sink.seen[2])["params"] ==
+	      json::parse(R"({"name":"q","settings":{},"applied":"stored","disabled":true})"));
+	CHECK(json::parse(f.sink.seen[3])["params"] ==
+	      json::parse(R"({"name":"q","settings":{"k":2},"applied":"enable"})"));
+}
+
+TEST_CASE("A snapshot's since is stamped when the graph is read: the one its phase had then, whatever follows",
+          "[gateway]") {
+	Fixture f;
+	f.gateway.watch(f.sink);
+	f.loops.main.runAll();
+	ear::GraphView view{{{48000, 256}, false, "SCHED_OTHER"}, {"white"}, {}, {}};
+	view.nodes.push_back({{"n", "white", json::object()}, ear::Ports{}, {"n"}, std::nullopt});
+	view.nodes.push_back({{"m", "white", json::object()}, ear::Ports{}, {"m"}, std::nullopt});
+	f.requests.step = [&](MainLoopGateway& gateway) {
+		f.clockAt += std::chrono::milliseconds(7);
+		gateway.nodeChanged({"n", ear::NodeState::running, std::nullopt, ear::NodePhase::running});
+		ear::GraphView read = view; // the keeper's main-loop side reads, then stamps at once
+		gateway.stamp(read);
+		f.requests.results = {read};
+		f.clockAt += std::chrono::milliseconds(7); // a later verb in the batch: the read keeps the running phase's
+		gateway.nodeChanged({"n", ear::NodeState::stopping, std::nullopt, ear::NodePhase::stopping});
+	};
+	std::vector<CommandResult> results;
+	f.run({GetGraph{}}, [&](std::vector<CommandResult> r) { results = std::move(r); });
+	f.loops.main.runAll();
+	f.loops.control.runAll();
+	REQUIRE(results.size() == 1);
+	const auto& got = std::get<ear::GraphView>(results[0]);
+	REQUIRE(got.nodes[0].since.has_value());
+	CHECK(encodeGraph(got)["nodes"][0]["since"] == "2026-11-09T10:00:00.007000Z");
+	CHECK_FALSE(got.nodes[1].since.has_value()); // never told
 }

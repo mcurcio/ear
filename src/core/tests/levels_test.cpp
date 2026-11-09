@@ -1,4 +1,4 @@
-// What a level is (docs/design/batch2.md section 4.2, levels.hpp; acceptance criterion E1(1)):
+// What a level is (docs/engine.md#levels, levels.hpp):
 // a port's peak and RMS over a window, and the window's length at each rate.
 #include <cmath>
 #include <numbers>

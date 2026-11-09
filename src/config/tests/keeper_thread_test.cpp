@@ -1,4 +1,4 @@
-// The keeper's thread (keeper_thread.hpp; S4 criterion 16) on a real thread and a real folder:
+// The keeper's thread (keeper_thread.hpp) on a real thread and a real folder:
 // posted work in post order on its own thread, a rename of ear.conf as a disk event (and another
 // file's as none), free after each wake, and stop. Every wait is for an event; the deadline only
 // fails the test.

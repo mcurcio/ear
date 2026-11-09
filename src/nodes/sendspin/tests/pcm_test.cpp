@@ -1,4 +1,4 @@
-// PCM to float and back, exact (docs/design/sendspin.md section 14, S1 criterion 6).
+// PCM to float and back, exact (docs/node-types.md#sendspin).
 #include <array>
 #include <cstdint>
 #include <vector>

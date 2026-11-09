@@ -1,4 +1,4 @@
-# ear_folder: the confined folder (docs/design/knobly-config.md), one directory EAR reads and writes
+# ear_folder: the confined folder (docs/graph-file.md), one directory EAR reads and writes
 # beneath, held open for EAR's life: the recordings folder that "file" nodes write into, and the
 # graph file folder that holds ear.conf. The kernel resolves every path inside it (openat2), and a
 # file is replaced only if it still holds what the caller expected (renameat2). It depends on

@@ -1,5 +1,3 @@
-// Frozen interface (docs/design/sendspin.md section 14, S1). Change it only through an erratum and a re-cut, never a
-// local edit.
 #pragma once
 #include <algorithm>
 #include <atomic>

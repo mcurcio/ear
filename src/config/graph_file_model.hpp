@@ -1,4 +1,4 @@
-// The graph file model (docs/design/knobly-config.md, "File format"): one knobly graph of ear.conf,
+// The graph file model (docs/graph-file.md#edits-at-the-source): one knobly graph of ear.conf,
 // its read with ear's directives, and the five graph edits made at the source. A keeper-thread
 // object; no knobly type is in this header, and ear_config's headers are its own (no other package
 // includes them).
@@ -67,7 +67,7 @@ public:
 	GraphFileModel fresh(const DiskText& disk) const;
 	const std::string& text() const noexcept;   // "" when missing or unreadable
 	const GraphFileRead& read() const noexcept; // worked out at load
-	// The graph edits, made at the source (docs/design/knobly-config.md, "File format"; S3's edit rules).
+	// The graph edits, made at the source (docs/graph-file.md#edits-at-the-source).
 	// Const: the model they are called on never changes. Precondition: read().wanted is present (the
 	// keeper refuses file-invalid first); otherwise std::logic_error. A text knobly cannot write (a
 	// control character other than newline, tab and carriage return) is refused before any edit, with
@@ -76,10 +76,22 @@ public:
 	/// Each changed value's definition is set (every node using it changes too); an added key is
 	/// appended in the node's own block (one is written when it has none); a removed key's statement
 	/// is removed. SharedDefinition when an added or removed key's statement makes more than one
-	/// rendered directive.
+	/// rendered directive. The node's `disabled` line is never touched; a `disabled` key in `settings` is
+	/// InvalidSettings before any edit.
 	EditOutcome updateNode(const NodeName& node, const NodeSettings& settings) const;
-	/// Appends `node <type> <name>;` or `node <type> <name> { <key> <value>; ... }` (keys in JSON order).
+	/// Appends `node <type> <name>;` or `node <type> <name> { <key> <value>; ... }` (keys in JSON order),
+	/// `disabled true;` first in the block when the node is disabled. A `disabled` key in its settings is
+	/// InvalidSettings.
 	EditOutcome addNode(const NodeSpec& node) const;
+	/// node.disable (docs/architecture.md#phases-states-and-what-is-wanted): edits only the node's own `disabled` line,
+	/// setting its value to true (a variable it named is left as it is); with no such line, puts `disabled true;` first
+	/// in its block, making `{ disabled true; }` for a node with none. SharedDefinition when the line edited (or, with
+	/// none, the node's own statement) makes more than one rendered directive. Nothing when already disabled.
+	EditOutcome disableNode(const NodeName& node) const;
+	/// node.enable: removes the node's own `disabled` line, and a block it leaves with nothing in it, not even a
+	/// comment (`node white noise { disabled true; }` comes back as `node white noise;`). SharedDefinition when that
+	/// line makes more than one rendered directive. Nothing when the node is not disabled.
+	EditOutcome enableNode(const NodeName& node) const;
 	/// Removes its statement and every route statement naming it; SharedDefinition when any of them
 	/// makes more than one rendered directive, and then nothing is removed.
 	EditOutcome removeNode(const NodeName& node) const;

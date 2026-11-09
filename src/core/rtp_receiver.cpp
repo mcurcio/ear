@@ -1,7 +1,7 @@
-// The RTP address, the one way anything names where an RTP receiver listens (docs/design/rtp.md
-// sections 3 and 7.1, rtp_receiver.hpp). Its grammar is closed: "0.0.0.0" or an IPv4 multicast
-// group as a plain dotted quad, so no host name (a blocking lookup on the main loop) and no
-// unicast address (which PipeWire 1.4.2 reads as the one sender to hear) reaches PipeWire.
+// The RTP address, the one way anything names where an RTP receiver listens (docs/node-types.md#rtp, rtp_receiver.hpp).
+// Its grammar is closed: "0.0.0.0" or an IPv4 multicast group as a plain dotted quad, so no host name (a blocking
+// lookup on the main loop) and no unicast address (which PipeWire 1.4.2 reads as the one sender to hear) reaches
+// PipeWire.
 #include "ear/core/rtp_receiver.hpp"
 
 #include <array>

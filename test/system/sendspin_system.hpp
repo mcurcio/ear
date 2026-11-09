@@ -1,12 +1,11 @@
-// The owner's end-to-end tests of the sendspin node (docs/design/sendspin.md section 14, S1 criteria 10 to 12, S2 criteria
-// 3 to 8, S3 criteria 2 to 8): the real out/ear runs a graph file with a sendspin node routed into a file node, and dials
-// the real server, or listens for it and is found over mDNS. A listening node's port is refused when it is held, and an
-// upgrade with Origin is closed.
-// Paired by a code, the server plays a ramp in which every frame names its place, and the WAV must hold it; routed noise
-// reaches the server on the routed channel alone. Unpaired, nothing moves. A round limit holds, a bad key file fails only
-// the node. With no server the node runs and is silent; a peer that never answers, or a listener that drops the dial,
-// holds up neither a stop nor a restart. Sockets that prove nothing keep no server out (section 11, item 6). Every wait is for an event (a line ear prints, an event the server prints, a
-// message, ear's exit); a deadline only fails a test.
+// The owner's end-to-end tests of the sendspin node (docs/node-types.md#sendspin): the real out/ear runs a graph file
+// with a sendspin node routed into a file node, and dials the real server, or listens for it and is found over mDNS. A
+// listening node's port is refused when it is held, and an upgrade with Origin is closed. Paired by a code, the server
+// plays a ramp in which every frame names its place, and the WAV must hold it; routed noise reaches the server on the
+// routed channel alone. Unpaired, nothing moves. A round limit holds, a bad key file fails only the node. With no
+// server the node runs and is silent; a peer that never answers, or a listener that drops the dial, holds up neither a
+// stop nor a restart. Sockets that prove nothing keep no server out (docs/node-types.md#on-an-untrusted-network). Every wait is for an event (a line ear
+// prints, an event the server prints, a message, ear's exit); a deadline only fails a test.
 #pragma once
 
 #include <algorithm>
@@ -176,19 +175,19 @@ inline std::string waitForInstance(ChildProcess& ear, const std::string& node, s
 	return instance;
 }
 
-/// One second of the 1.5 s every test plays. On a loaded host the server can join its own ramp late, and it holds back the
-/// tail: 50688 frames were seen, all exact (erratum 38).
+/// One second of the 1.5 s every test plays. On a loaded host the server can join its own ramp late, and it holds back
+/// the tail: 50688 frames were seen, all exact.
 inline constexpr std::uint32_t rampFramesAtLeast = graphFrequency;
 
 /// The frames of one decoded chunk: what FFmpeg's FLAC encoder makes at 48000 Hz (aiosendspin's `_chunk_samples` is the
-/// encoder's `frame_size`), whatever the test server's 1200 frames a `prepare_audio`. The library makes at most one blended
-/// frame per chunk (section 7, erratum 42).
+/// encoder's `frame_size`), whatever the test server's 1200 frames a `prepare_audio`. The library makes at most one
+/// blended frame per chunk (docs/node-types.md#library-facts-and-carried-patches).
 inline constexpr std::size_t chunkFrames = 4608;
 
-/// The WAV's first non-zero frame onward. Left is the low 16 bits of the frame index and right the high 16, each as a signed
-/// sample, so a frame names its place, and a whole frame must say exactly that.
-/// The one other frame allowed is the library's correction of a clock error past 100 us (erratum 42), a blend: each channel
-/// the average of two consecutive ramp frames, a frame's neighbours saying which two and how it was made.
+/// The WAV's first non-zero frame onward. Left is the low 16 bits of the frame index and right the high 16, each as a
+/// signed sample, so a frame names its place, and a whole frame must say exactly that. The one other frame allowed is
+/// the library's correction of a clock error past 100 us, a blend: each channel the average of two consecutive ramp
+/// frames, a frame's neighbours saying which two and how it was made.
 ///   insert: n-1, blend of n-1 and n, n
 ///   drop:   n-1, blend of n and n+1, n+2
 /// Its neighbours are whole frames: the library's corrections are at least a chunk apart, less the two frames at its ends.

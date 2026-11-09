@@ -1,7 +1,7 @@
-// The library's client behind two threads (docs/design/sendspin.md sections 6, 7 and 10). The worker is what the
-// library calls its main loop: start, loop, stop and destruction, every listener callback but on_audio_write, the
-// connection watch, and a listening node's mDNS. It waits in poll() on its stop signal, 10 ms at most: the library has no wake hook for its inbox
-// and no event for a lost connection or a failed dial (section 5), so this timer stays inside this adapter.
+// The library's client behind two threads (docs/node-types.md#threads). The worker is what the library calls its main
+// loop: start, loop, stop and destruction, every listener callback but on_audio_write, the connection watch, and a
+// listening node's mDNS. It waits in poll() on its stop signal, 10 ms at most: the library has no wake hook for its
+// inbox and no event for a lost connection or a failed dial, so this timer stays inside this adapter.
 #include "worker.hpp"
 
 #include <algorithm>
@@ -35,9 +35,9 @@ namespace ear::sendspin {
 namespace {
 
 constexpr int loopPollMs = 10;
-/// The player's one format: the graph frequency (R5, spec "player@v1", the server resamples) and one depth, so nothing the
-/// sync thread writes can change depth under it: on_audio_write carries no format, and a stream/start reaches the worker
-/// while chunks of the last format are still being written (section 2).
+/// The player's one format: the graph frequency (spec "player@v1", the server resamples) and one depth, so nothing the
+/// sync thread writes can change depth under it: on_audio_write carries no format, and a stream/start reaches the
+/// worker while chunks of the last format are still being written.
 constexpr std::uint32_t playerBytesPerSample = 3;
 constexpr std::uint32_t playerBytesPerFrame = playerBytesPerSample * nodeChannels;
 
@@ -124,7 +124,7 @@ public:
 	std::size_t on_audio_write(std::uint8_t* data, std::size_t length, std::uint32_t timeout_ms) override {
 		if (!streamAsked_.load(std::memory_order_acquire)) {
 			// A format not listed breaks the spec: the sink stays full, and the library closes the connection when its
-			// ring pins (section 10). This keeps the thread from spinning until then, and answers a stop.
+			// ring pins. This keeps the thread from spinning until then, and answers a stop.
 			pollfd stopping{stop_.fd(), POLLIN, 0};
 			::poll(&stopping, 1, static_cast<int>(timeout_ms));
 			return 0;
@@ -167,7 +167,7 @@ public:
 	}
 	void on_clear_pairing_code() override { events_.say(notes::pairingCodeCleared()); }
 	/// A dynamic code asks for this only for an attempt the round limit held back, and ear offers no gesture to confirm
-	/// it: section 10's action is a new client.
+	/// it: the remedy (docs/node-types.md#failures) is a new client.
 	void on_open_pairing_window() override { events_.say(notes::pairingHeld()); }
 
 	// SourceRoleListener. The worker.
@@ -219,25 +219,26 @@ private:
 		::sendspin::SendspinClientConfig config;
 		config.name = settings_.name;
 		config.product_name = "ear";
-		// Per node: a dialling node must not be reachable by anything else (section 2).
+		// Per node: a dialling node must not be reachable by anything else.
 		config.accept_inbound_connections = !settings_.server.has_value();
 		config.server_port = settings_.port;
-		// Room for sockets that prove nothing to give way to newcomers, not to refuse them (section 11, item 6); the transport
-		// holds one address to 8 of these and all of them to twice this.
+		// Room for sockets that prove nothing to give way to newcomers, not to refuse them
+		// (docs/node-types.md#on-an-untrusted-network); the transport holds one address to 8 of these and all of them
+		// to twice this.
 		config.server_max_connections = 32;
 		// His Permission answer: a code on a status line, typed into Music Assistant.
 		config.pairing_code_out_channels = {::sendspin::SendspinPairingCodeChannel::DISPLAY};
 		config.pairing_code_formats = {::sendspin::SendspinPairingCodeFormat::DIGITS};
 		auto client = std::make_unique<::sendspin::SendspinClient>(std::move(config));
 
-		// The graph frequency only: the server resamples (R5, spec "player@v1").
+		// The graph frequency only: the server resamples (spec "player@v1").
 		::sendspin::PlayerRoleConfig playerConfig;
 		using Codec = ::sendspin::SendspinCodecFormat;
 		playerConfig.audio_formats = {{Codec::FLAC, nodeChannels, format_.rate, playerBytesPerSample * 8}};
 		playerConfig.required_lead_time_ms = requiredLeadMs(feed_.capacityFrames(), format_.maxBlock, format_.rate);
 		player_ = &client->add_player(std::move(playerConfig));
 		player_->set_listener(this);
-		player_->set_volume_adjustable(false); // deferred (section 2)
+		player_->set_volume_adjustable(false); // deferred
 		player_->set_mute_adjustable(false);
 
 		// The graph frequency, PCM 24 stereo, 20 ms chunks, the library's own defaults for the rest.
@@ -261,8 +262,8 @@ private:
 		return client;
 	}
 
-	/// The library is listening by now. Its advertiser, or nothing with `advertise-failed`: the node still listens, and an
-	/// operator can give the server its URL (section 10).
+	/// The library is listening by now. Its advertiser, or nothing with `advertise-failed`: the node still listens, and
+	/// an operator can give the server its URL.
 	std::unique_ptr<Advertiser> startListening(std::string_view clientId) {
 		std::string instance = advertisedInstance(node_, clientId);
 		events_.say(notes::listening(settings_.port, instance));
@@ -305,7 +306,7 @@ private:
 	}
 
 	/// Tells the library what played, one call per bell. Apart from the worker, whose writes sync to disk: a late
-	/// notify can cost a hard sync (section 6).
+	/// notify can cost a hard sync.
 	void notify() noexcept {
 		nameThread("ear-notify ", node_);
 		std::uint64_t reported = 0;
@@ -353,7 +354,7 @@ private:
 	SendspinSettings settings_;
 	AudioFormat format_;
 	Feed& feed_;
-	NoteGate events_;            // every note of the node's goes through it (section 11)
+	NoteGate events_;            // every note of the node's goes through it
 	std::vector<float> scratch_; // the sync thread's; a feed's worth of floats
 	EventFd bell_;
 	EventFd stop_;

@@ -1,4 +1,4 @@
-// Route links through the engine's link-factory (docs/design/m1-white-to-file.md section 2,
+// Route links through the engine's link-factory (docs/architecture.md#packages,
 // links.hpp).
 #include "ear/pipewire/links.hpp"
 
@@ -11,6 +11,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "ear/pipewire/data_loop_wedge.hpp"
 #include "link_proxy.hpp"
 
 namespace ear::pipewire {
@@ -23,6 +24,7 @@ struct Links::Impl final : LinkEvents {
 		later = pw_loop_add_event(engine.mainLoop(), &Impl::onLater, this);
 	}
 	~Impl() {
+		if (dataLoopWedged(engine)) leakAll();
 		live.clear();
 		done.clear();
 		if (later != nullptr) pw_loop_destroy_source(engine.mainLoop(), later);
@@ -49,8 +51,23 @@ struct Links::Impl final : LinkEvents {
 		pw_loop_signal_event(engine.mainLoop(), later);
 	}
 
+	/// On a wedged data loop a link proxy is never destroyed (data_loop_wedge.hpp): its destruction would release port
+	/// mixes with a blocking invoke into that loop. It is silenced and kept for good.
+	void leakAll() {
+		for (auto& [link, proxy] : live) {
+			proxy->silence();
+			static_cast<void>(proxy.release());
+		}
+		live.clear();
+		for (auto& proxy : done) static_cast<void>(proxy.release());
+		done.clear();
+	}
+
 	static void onLater(void* data, std::uint64_t /*count*/) {
 		auto* self = static_cast<Impl*>(data);
+		if (dataLoopWedged(self->engine)) {
+			for (auto& proxy : self->done) static_cast<void>(proxy.release());
+		}
 		self->done.clear();
 		auto refused = std::exchange(self->refused, {});
 		for (auto& [link, detail] : refused) {
@@ -73,6 +90,11 @@ Links::~Links() = default;
 void Links::subscribe(LinkListener& listener) { impl_->listeners.push_back(&listener); }
 
 void Links::createLink(LinkId link, EnginePortId output, EnginePortId input) {
+	if (dataLoopWedged(impl_->engine)) { // making it would wait on the wedged loop: refused, told later
+		impl_->refused.emplace_back(link, "the data loop is wedged");
+		pw_loop_signal_event(impl_->engine.mainLoop(), impl_->later);
+		return;
+	}
 	pw_properties* props = pw_properties_new(nullptr, nullptr);
 	pw_properties_setf(props, PW_KEY_LINK_OUTPUT_PORT, "%u", output);
 	pw_properties_setf(props, PW_KEY_LINK_INPUT_PORT, "%u", input);

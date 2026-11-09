@@ -1,5 +1,5 @@
 {
-  "description": "graph.get and graph.subscribe answer with the whole graph (docs/design/batch2.md section 6): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
+  "description": "graph.get and graph.subscribe answer with the whole graph (docs/control-port.md): engine facts, node types, every wanted node with its state (a failed one with its reason) and every wanted route with its status (a refused one with its detail). Names in name order, routes in route order.",
   "requests": [
     "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.get\"}",
     "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"graph.subscribe\"}"
@@ -9,6 +9,10 @@
       "jsonrpc": "2.0",
       "id": 1,
       "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
         "graphFrequency": 48000,
         "blockSize": 256,
         "realtime": true,
@@ -32,6 +36,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
@@ -45,7 +52,25 @@
             "outputs": [
               "noise.mono"
             ],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false
+          },
+          {
+            "name": "quiet",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "disabled",
+            "phase": "disabled",
+            "wanted": "disabled",
+            "blockLost": false,
+            "disabled": true
           },
           {
             "name": "rec",
@@ -58,7 +83,10 @@
               "record.right"
             ],
             "outputs": [],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           },
           {
             "name": "tape",
@@ -72,6 +100,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "start-failed",
               "detail": "cannot open nope/t.wav: No such file or directory"
@@ -120,6 +151,10 @@
       "jsonrpc": "2.0",
       "id": 2,
       "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle"
+        ],
         "graphFrequency": 48000,
         "blockSize": 256,
         "realtime": true,
@@ -143,6 +178,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "engine-refused",
               "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
@@ -156,7 +194,25 @@
             "outputs": [
               "noise.mono"
             ],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "since": "2026-11-09T10:00:00.000000Z",
+            "wanted": "running",
+            "blockLost": false
+          },
+          {
+            "name": "quiet",
+            "type": "white",
+            "settings": {},
+            "inputs": [],
+            "outputs": [
+              "noise.mono"
+            ],
+            "state": "disabled",
+            "phase": "disabled",
+            "wanted": "disabled",
+            "blockLost": false,
+            "disabled": true
           },
           {
             "name": "rec",
@@ -169,7 +225,10 @@
               "record.right"
             ],
             "outputs": [],
-            "state": "running"
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false
           },
           {
             "name": "tape",
@@ -183,6 +242,9 @@
             ],
             "outputs": [],
             "state": "failed",
+            "phase": "failed",
+            "wanted": "running",
+            "blockLost": false,
             "reason": {
               "code": "start-failed",
               "detail": "cannot open nope/t.wav: No such file or directory"
@@ -229,6 +291,10 @@
     }
   ],
   "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle"
+    ],
     "graphFrequency": 48000,
     "blockSize": 256,
     "realtime": true,
@@ -252,6 +318,9 @@
         ],
         "outputs": [],
         "state": "failed",
+        "phase": "failed",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "engine-refused",
           "detail": "cannot open hw:CARD=Pro24,DEV=0: No such device"
@@ -265,7 +334,25 @@
         "outputs": [
           "noise.mono"
         ],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false
+      },
+      {
+        "name": "quiet",
+        "type": "white",
+        "settings": {},
+        "inputs": [],
+        "outputs": [
+          "noise.mono"
+        ],
+        "state": "disabled",
+        "phase": "disabled",
+        "wanted": "disabled",
+        "blockLost": false,
+        "disabled": true
       },
       {
         "name": "rec",
@@ -278,7 +365,10 @@
           "record.right"
         ],
         "outputs": [],
-        "state": "running"
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false
       },
       {
         "name": "tape",
@@ -292,6 +382,9 @@
         ],
         "outputs": [],
         "state": "failed",
+        "phase": "failed",
+        "wanted": "running",
+        "blockLost": false,
         "reason": {
           "code": "start-failed",
           "detail": "cannot open nope/t.wav: No such file or directory"
