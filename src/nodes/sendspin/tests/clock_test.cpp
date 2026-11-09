@@ -200,11 +200,11 @@ struct Rig {
 			Ports{{{Direction::input, "to", {"left", "right"}}, {Direction::output, "from", {"left", "right"}}}},
 			kFormat, blockEvents);
 		tap.prepare(kFormat);
-		ear::testing::driveNow(*block, &tap);
+		REQUIRE(ear::testing::driveNow(*block, &tap));
 		REQUIRE(waiter.until([&] { return blockEvents.isReady; }));
 	}
 	~Rig() {
-		ear::testing::driveNow(*block, nullptr);
+		ear::testing::silenceOrAbort(*block);
 		block.reset();
 		tap.release();
 		std::atomic<bool> stopped{false};
@@ -316,7 +316,7 @@ struct TestCard {
 		passThrough->prepare(kFormat);
 		block = rig.blocks.make("card", ports, kFormat, blockEvents);
 		block->carryLatency(LatencyPlan{pairs, {}});
-		ear::testing::driveNow(*block, passThrough.get());
+		REQUIRE(ear::testing::driveNow(*block, passThrough.get()));
 		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
 		card = cards.make(OutsideTarget{"card.playback", "card", {"to_card.1", "to_card.2"}, kFormat},
 		                  SoundCardRequest{*CardId::parse("Test"), CardDirection::playback, "to_card"}, events);
@@ -331,7 +331,7 @@ struct TestCard {
 	}
 	~TestCard() {
 		for (pw_proxy* made : links) pw_proxy_destroy(made);
-		ear::testing::driveNow(*block, nullptr);
+		ear::testing::silenceOrAbort(*block);
 	}
 	/// A route's link, by node and port name, as the reconciler would make by port id.
 	void link(const std::string& from, const std::string& to) {

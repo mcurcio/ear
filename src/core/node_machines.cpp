@@ -938,9 +938,17 @@ Actions NodeAggregate::fault(Fact fact, std::string detail) {
 	switch (state) {
 	case ConfigState::none:
 		return out;
+	case ConfigState::arming:
+		// A drive in flight whose completion will fade and silence it (a stop or teardown asked, 4.3's row 6) is a
+		// stop or teardown already begun: as in fading, held during a stop and dropped during a teardown (I6), so a
+		// fault cannot turn a restart, disable or removal into a failure.
+		if (config_.stopAsked()) {
+			if (intent_ == Intent::stop && !heldFault_) heldFault_ = std::move(failure);
+			return out;
+		}
+		[[fallthrough]];
 	case ConfigState::readying:
 	case ConfigState::prepared:
-	case ConfigState::arming:
 	case ConfigState::driving:
 		if (!raise(Intent::fail)) return out; // a disable or removal in flight drops it
 		failure_ = std::move(failure);

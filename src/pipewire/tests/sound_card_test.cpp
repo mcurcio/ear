@@ -113,8 +113,10 @@ public:
 		lostInsideMake = insideMake;
 		nodePresentAtLost = registry_.present(engineNode_);
 		waiter_.wake();
+		if (onLost) onLost();
 	}
 	std::function<void()> onReady; // told inside ready(), to read the engine at that moment
+	std::function<void()> onLost;  // told last inside lost(), as NodeHost destroys a failed configuration's card
 	int readyCount = 0;
 	bool insideMake = false;
 	std::optional<std::string> lostDetail;
@@ -138,9 +140,9 @@ struct Graph {
 		                        Ports{{{Direction::input, "play", {"1", "2"}},
 		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
 		                        kFormat, cardBlockEvents);
-		ear::testing::driveNow(*cardBlock, &cardCode);
+		REQUIRE(ear::testing::driveNow(*cardBlock, &cardCode));
 		otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
-		ear::testing::driveNow(*otherBlock, &otherCode);
+		REQUIRE(ear::testing::driveNow(*otherBlock, &otherCode));
 		REQUIRE(waiter.until([&] {
 			return cardBlockEvents.isReady && otherBlockEvents.isReady && registry.id("Dummy-Driver") &&
 			       registry.props("card") && registry.props("other");
@@ -149,8 +151,8 @@ struct Graph {
 		REQUIRE(blocksDrivenBy(dummy));
 	}
 	~Graph() {
-		ear::testing::driveNow(*cardBlock, nullptr);
-		ear::testing::driveNow(*otherBlock, nullptr);
+		ear::testing::silenceOrAbort(*cardBlock);
+		ear::testing::silenceOrAbort(*otherBlock);
 	}
 
 	std::unique_ptr<OutsideNode> makeCard(const CardId& id, CardEvents& events) {
@@ -331,6 +333,22 @@ TEST_CASE("A card that cannot open is lost after make returns, its node already 
 	CHECK(graph.bothRun(16));
 }
 
+// node_host.hpp's contract (docs/design/node-lifecycle.md 4.2's T14): NodeHost tears a failed configuration down inside
+// the lost() that failed it, so the outside node is destroyed inside its own callback.
+TEST_CASE("A card lost before it was ready may be destroyed inside its own lost(), and the blocks keep running",
+          "[cards][lost]") {
+	Graph graph;
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	std::unique_ptr<OutsideNode> card;
+	events.onLost = [&] { card.reset(); };
+	card = graph.makeCard(cardId("Absent"), events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(card == nullptr);
+	CHECK(events.readyCount == 0);
+	CHECK(graph.blocksDrivenBy(graph.dummy));
+	CHECK(graph.bothRun(16));
+}
+
 TEST_CASE("A card that loses a link while it follows is lost with its node gone, and leaves the clock alone: every "
           "block keeps the internal clock with no discontinuity while the card object still exists",
           "[cards][lost][clock]") {
@@ -410,16 +428,16 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	RecordingPassThrough pass(cardPorts, pairs, graph.waiter);
 	pass.prepare(kFormat);
 	graph.cardBlock->carryLatency(LatencyPlan{pairs, {}});
-	ear::testing::driveNow(*graph.cardBlock, &pass);
+	REQUIRE(ear::testing::driveNow(*graph.cardBlock, &pass));
 	struct Silenced { // before `pass` goes, however the test ends
 		PortBlock& block;
-		~Silenced() { ear::testing::driveNow(block, nullptr); }
+		~Silenced() { ear::testing::silenceOrAbort(block); }
 	} silenced{*graph.cardBlock};
 
 	Code sourceCode(graph.waiter);
 	BlockEvents sourceEvents(graph.waiter);
 	auto source = graph.blocks.make("source", Ports{{{Direction::output, "out", {"1", "2"}}}}, kFormat, sourceEvents);
-	ear::testing::driveNow(*source, &sourceCode);
+	REQUIRE(ear::testing::driveNow(*source, &sourceCode));
 	REQUIRE(graph.waiter.until([&] { return sourceEvents.isReady; }));
 	std::vector<pw_proxy*> links{linkByName(*graph.engine, "source", "out.1", "card", "play.1"),
 	                             linkByName(*graph.engine, "source", "out.2", "card", "play.2")};
@@ -459,5 +477,5 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 	CHECK(graph.waiter.until([&] { return pass.downstream() == reported && sourceCode.downstream() == reported; }));
 
 	for (pw_proxy* link : links) pw_proxy_destroy(link);
-	ear::testing::driveNow(*source, nullptr);
+	REQUIRE(ear::testing::driveNow(*source, nullptr));
 }

@@ -158,12 +158,12 @@ struct Graph {
 		                    Ports{{{Direction::output, "stream", {"1", "2"}},
 		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
 		                    kFormat, blockEvents);
-		ear::testing::driveNow(*block, &recorder);
+		REQUIRE(ear::testing::driveNow(*block, &recorder));
 		REQUIRE(
 			waiter.until([&] { return blockEvents.isReady && registry.id("Dummy-Driver") && registry.props("fpp"); }));
 		dummy = *registry.id("Dummy-Driver");
 	}
-	~Graph() { ear::testing::driveNow(*block, nullptr); }
+	~Graph() { ear::testing::silenceOrAbort(*block); }
 
 	std::unique_ptr<OutsideNode> makeReceiver(std::uint16_t port, RtpEncoding encoding, std::uint32_t rate,
 	                                          ReceiverEvents& events) {

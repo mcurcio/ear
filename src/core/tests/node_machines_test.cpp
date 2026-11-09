@@ -1273,12 +1273,24 @@ TEST_CASE("The newest intent wins: remove over disable over fail over restart ov
 		CHECK(q.phase() == NodePhase::stopped);
 		CHECK(q.node.intent() == Intent::none);
 	}
-	SECTION("fail replaces restart and stop") {
+	// A restart asked while the drive is in flight has begun its teardown (4.3's row 6), so a fault is dropped (I6), as
+	// in fading: it never turns the restart into a failure (revision 2.3, found reviewing L-3a).
+	SECTION("a fault during a restart's drive in flight is dropped, and the restart goes on") {
 		Probe q = reach(Spot::startingDrive);
 		q.change();
 		CHECK(q.node.intent() == Intent::restart);
 		q.take(q.node.fault(Fact::engine, "card gone"));
-		CHECK(q.node.intent() == Intent::fail);
+		CHECK(q.node.intent() == Intent::restart);
+		CHECK(q.phase() == NodePhase::stopping);
+		q.settle();
+		CHECK(q.phase() == NodePhase::running);
+	}
+	SECTION("a fault during a stop's drive in flight is held, and fails the node once it rests") {
+		Probe q = reach(Spot::startingDrive);
+		q.take(q.node.stop());
+		q.take(q.node.fault(Fact::engine, "card gone"));
+		CHECK(q.node.heldFault() == Failure{FailureCode::engineRefused, "card gone"});
+		q.settle();
 		CHECK(q.phase() == NodePhase::failed);
 	}
 }

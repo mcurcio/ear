@@ -522,7 +522,7 @@ TEST_CASE("stopAll takes a node down in order: the barrier, release, handoffs, b
 	f.log.clear();
 
 	f.stopAll();
-	CHECK(f.log == Log{"drive nothing", "node rec stopping"});
+	CHECK(f.log == Log{"node rec stopping", "drive nothing"});
 	f.log.clear();
 	f.settle();
 
@@ -588,7 +588,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	f.update("rec", std::move(b));
 
 	// The block stops running the old code before release(); the handoff then closes.
-	CHECK(f.log == Log{"drive nothing", "node rec starting"});
+	CHECK(f.log == Log{"node rec starting", "drive nothing"});
 	f.log.clear();
 	f.settle();
 	CHECK(f.log == Log{"release", "handoff close"});
@@ -615,7 +615,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	SECTION("a removal during a restart stops the node and starts nothing") {
 		f.host.nodeRemoved("rec");
 		// Silenced already, so the block goes at once.
-		CHECK(f.log == Log{"config B destroyed", "block destroyed", "node rec stopping"});
+		CHECK(f.log == Log{"config B destroyed", "node rec stopping", "block destroyed"});
 		f.log.clear();
 		f.handoffs.finishOne(2);
 		CHECK(f.log == Log{"handoff destroyed", "run destroyed", "config A destroyed", "node rec gone dropped=2"});
@@ -630,7 +630,7 @@ TEST_CASE("An update restarts the configuration behind the same port block, lett
 	f.log.clear();
 	f.stopAll();
 	f.settle();
-	CHECK(f.log.at(0) == "drive nothing");
+	CHECK(f.log.at(1) == "drive nothing");
 	while (!f.handoffs.pendingCloses.empty()) f.handoffs.finishOne(0);
 	CHECK(f.allGone == 1);
 }
@@ -645,7 +645,7 @@ TEST_CASE("An update of a node whose start failed configures the new config", "[
 
 	f.update("rec", std::make_shared<TestConfig>(f.log, "B"));
 
-	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "node rec starting", "run built", "prepare 44100/256",
+	CHECK(f.log == Log{"config A destroyed", "node rec starting", "start 44100 B", "run built", "prepare 44100/256",
 	                   "drive code"});
 	f.log.clear();
 	f.settle();
@@ -693,7 +693,7 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 	SECTION("a restart remakes the cards at once, the block being ready") {
 		f.update("motu", withCards(f.log, "B"));
 		f.settle();
-		CHECK(f.log == Log{"drive nothing", "node motu starting", "release", "card motu.playback destroyed",
+		CHECK(f.log == Log{"node motu starting", "drive nothing", "release", "card motu.playback destroyed",
 		                   "card motu.capture destroyed", "start 44100 B",
 		                   "card motu.playback of motu Pro24 pb.1,pb.2 at 44100",
 		                   "card motu.capture of motu Pro24 cap.1 at 44100"});
@@ -710,7 +710,7 @@ TEST_CASE("A node's sound cards are made once its port block is ready, and it is
 	f.settle();
 	CHECK(f.log.back() == "all gone");
 	if (f.cards.events.size() == 4) {
-		CHECK(f.log.front() == "drive nothing");
+		CHECK(f.log.at(1) == "drive nothing");
 		CHECK(indexOf(f.log, "release") < indexOf(f.log, "card motu.playback destroyed"));
 		CHECK(indexOf(f.log, "card motu.capture destroyed") < indexOf(f.log, "node motu gone dropped=0"));
 	}
@@ -817,7 +817,7 @@ TEST_CASE("nodeRemoved stops only that node and ends with nodeGone", "[node_host
 
 	f.host.nodeRemoved("noise");
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node noise stopping", "release", "block destroyed", "run destroyed",
+	CHECK(f.log == Log{"node noise stopping", "drive nothing", "release", "block destroyed", "run destroyed",
 	                   "node noise gone dropped=0"});
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].name == "rec");
@@ -950,7 +950,7 @@ TEST_CASE("A receiver lost after the node ran fails it, and an update makes a ne
 	f.log.clear();
 
 	f.update("fpp", withReceiver(f.log, "B"));
-	CHECK(f.log == Log{"config A destroyed", "start 44100 B", "receiver fpp.rtp of fpp", "node fpp starting"});
+	CHECK(f.log == Log{"config A destroyed", "node fpp starting", "start 44100 B", "receiver fpp.rtp of fpp"});
 	REQUIRE(f.receivers.events.size() == 2); // made once more, not twice
 	CHECK(f.blocks.events.size() == 1);      // the block stayed
 	f.log.clear();
@@ -1030,6 +1030,10 @@ TEST_CASE("One run names each engine object once: a second of a name, or a bank 
 	for (auto* events : f.blocks.events) events->ready();
 	CHECK(f.receivers.events.empty());
 	CHECK(f.cards.events.empty());
+	// They still stop: ~NodeHost's precondition.
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
 }
 
 TEST_CASE("A legacy type with a recipe that asks for an outside node is a std::logic_error at T2",
@@ -1043,6 +1047,9 @@ TEST_CASE("A legacy type with a recipe that asks for an outside node is a std::l
 	f.blocks.events.at(0)->ready();
 	CHECK(f.cards.events.empty());
 	CHECK(std::ranges::count(f.log, std::string("run built")) == 0);
+	f.stopAll(); // ~NodeHost's precondition; it asked for no handoff
+	f.settle();
+	CHECK(f.allGone == 1);
 
 	// A recipe alone, or outside nodes alone, is fine.
 	Fixture g;
@@ -1283,7 +1290,7 @@ TEST_CASE("Removal silences before it destroys the block, and a node never drive
 	f.log.clear();
 
 	f.host.nodeRemoved("noise");
-	CHECK(f.log == Log{"drive nothing", "node noise stopping"}); // the block stays until the silence completed
+	CHECK(f.log == Log{"node noise stopping", "drive nothing"}); // the block stays until the silence completed
 	f.log.clear();
 	f.settle();
 	CHECK(f.log == Log{"release", "block destroyed", "run destroyed", "node noise gone dropped=0"});
@@ -1291,7 +1298,7 @@ TEST_CASE("Removal silences before it destroys the block, and a node never drive
 
 	f.host.nodeRemoved("idle"); // no code was driven since its last silence (D-L7)
 	CHECK(f.log ==
-	      Log{"release", "block destroyed", "node idle stopping", "run destroyed", "node idle gone dropped=0"});
+	      Log{"node idle stopping", "release", "block destroyed", "run destroyed", "node idle gone dropped=0"});
 	f.stopAll();
 	CHECK(f.allGone == 1);
 }
@@ -1341,6 +1348,56 @@ struct ThreadedConfig final : NodeConfig {
 
 } // namespace
 
+TEST_CASE("A fault while a restart's drive is in flight is dropped, and the restart configures the new config",
+          "[node_host][async]") {
+	SECTION("the run's own thread says it died") {
+		Fixture f;
+		f.blocks.hold = true;
+		auto old = std::make_shared<ThreadedConfig>(f.log);
+		f.add("net", old);
+		f.blocks.events.at(0)->ready(); // the drive is in flight
+		REQUIRE(f.blocks.held.size() == 1);
+		f.update("net", std::make_shared<TestConfig>(f.log, "next"));
+		std::thread([&] { old->events->lost("died"); }).join();
+		f.blocks.complete(0);   // the drive: its completion silences it
+		f.mainLoop.runPosted(); // the loss, told once the restart began
+		f.blocks.complete(0);   // the silence
+		f.blocks.hold = false;
+		old->run->closed();
+		f.settle();
+		CHECK(std::ranges::count(f.log, std::string("node net failed start-failed: died")) == 0);
+		CHECK(std::ranges::find(f.log, std::string("start 44100 next")) != f.log.end());
+		CHECK(f.log.back() == "node net running");
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("a card is lost") {
+		Fixture f;
+		f.blocks.hold = true;
+		f.add("motu", withCards(f.log, "A"));
+		f.blocks.events.at(0)->ready();
+		f.cards.events.at(0)->ready();
+		f.cards.events.at(1)->ready();
+		REQUIRE(f.blocks.held.size() == 1);
+		f.update("motu", withCards(f.log, "B"));
+		f.cards.events.at(0)->lost("unplugged");
+		f.blocks.complete(0);
+		f.blocks.complete(0);
+		f.blocks.hold = false;
+		CHECK(std::ranges::count(f.log, std::string("node motu failed engine-refused: unplugged")) == 0);
+		CHECK(std::ranges::find(f.log, std::string("start 44100 B")) != f.log.end());
+		REQUIRE(f.cards.events.size() == 4);
+		f.cards.events.at(2)->ready();
+		f.cards.events.at(3)->ready();
+		f.settle();
+		CHECK(f.log.back() == "node motu running");
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
 TEST_CASE("A run object closes after every handoff has closed, and goes only after it says closed", "[node_host]") {
 	Fixture f;
 	auto config = std::make_shared<ThreadedConfig>(f.log);
@@ -1352,7 +1409,7 @@ TEST_CASE("A run object closes after every handoff has closed, and goes only aft
 
 	f.stopAll();
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "handoff close", "block destroyed"});
+	CHECK(f.log == Log{"node net stopping", "drive nothing", "release", "handoff close", "block destroyed"});
 	f.log.clear();
 
 	f.handoffs.finishOne(7);
@@ -1380,7 +1437,7 @@ TEST_CASE("A restart waits for the old configuration to close before it configur
 	auto next = std::make_shared<TestConfig>(f.log, "next");
 	f.update("net", next);
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
+	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
 	f.log.clear();
 
 	std::thread([&] { old->run->closed(); }).join();
@@ -1566,7 +1623,7 @@ TEST_CASE("A run lost from its own thread fails a running node with start-failed
 
 	f.log.clear();
 	f.stopAll();
-	CHECK(f.log == Log{"block destroyed", "node net stopping"});
+	CHECK(f.log == Log{"node net stopping", "block destroyed"});
 	f.log.clear();
 	config->run->closed();
 	f.mainLoop.runPosted();
@@ -1585,7 +1642,7 @@ TEST_CASE("A loss told once close began changes nothing", "[node_host]") {
 	config->events->lost("late");
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
+	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
 	f.log.clear();
 	config->run->closed();
 	f.settle();
@@ -1649,8 +1706,8 @@ TEST_CASE("Start only acquires, the recipe runs once every resource is ready and
 		f.settle();
 		CHECK(f.log.empty());
 		f.update("net", std::make_shared<TestConfig>(f.log, "B"));
-		CHECK(f.log.at(0) == "start 44100 B");
-		CHECK(f.log.at(1) == "node net starting");
+		CHECK(f.log.at(0) == "node net starting"); // at once, as before the teardown
+		CHECK(f.log.at(1) == "start 44100 B");
 	}
 	f.log.clear();
 	f.stopAll();
@@ -1767,7 +1824,7 @@ TEST_CASE("A handoff consumer blocked at teardown blocks no main-loop turn, and 
 	f.host.nodeRemoved("rec");
 	f.mainLoop.settle(); // returns although the consumer is stuck
 	config->run->consumer.entered.get_future().wait();
-	CHECK(f.log == Log{"drive nothing", "node rec stopping", "release", "block destroyed"});
+	CHECK(f.log == Log{"node rec stopping", "drive nothing", "release", "block destroyed"});
 	f.log.clear();
 
 	// The main loop keeps serving other nodes meanwhile.
@@ -1808,7 +1865,7 @@ TEST_CASE("A handoff consumer blocked past the close deadline leaks the run and 
 	// Stop proceeds past the bound: the node is gone, the run object was never closed nor destroyed.
 	CHECK(allGone == 1);
 	CHECK(f.host.leakedRuns() == 1); // main.cpp then ends without destroying the main loop under the leaked run
-	CHECK(f.log == Log{"drive nothing", "node rec stopping", "release", "block destroyed",
+	CHECK(f.log == Log{"node rec stopping", "drive nothing", "release", "block destroyed",
 	                   "diagnostic rec ear.close-overdue", "node rec gone dropped=0"});
 	REQUIRE(f.diagnostics.details.size() == 1);
 	CHECK(f.diagnostics.details[0].find("1 handoffs open") != std::string::npos);
@@ -1834,7 +1891,7 @@ TEST_CASE("A run never closing past the deadline is leaked, and a restart then c
 
 	f.update("net", std::make_shared<TestConfig>(f.log, "next"));
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close"});
+	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close"});
 	f.log.clear();
 	CHECK(f.timers.live() == 1);
 
@@ -1885,7 +1942,7 @@ TEST_CASE("A run mid-handler at teardown finishes off the main loop: close retur
 
 	f.host.nodeRemoved("net");
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net stopping", "release", "run close", "block destroyed"});
+	CHECK(f.log == Log{"node net stopping", "drive nothing", "release", "run close", "block destroyed"});
 	CHECK(f.host.health().at(0).state == NodeState::stopping);
 	f.log.clear();
 
@@ -1920,7 +1977,7 @@ TEST_CASE("Nothing from an old run lands on a new one, even when it closed at on
 		oldEvents->lost("old run failed");
 	}).join();
 	f.blocks.complete(0); // the silence
-	CHECK(f.log == Log{"drive nothing", "node net starting", "release", "run close", "run destroyed",
+	CHECK(f.log == Log{"node net starting", "drive nothing", "release", "run close", "run destroyed",
 	                   "prepare 44100/256", "drive code"});
 	f.log.clear();
 
@@ -1958,7 +2015,8 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 	f.update("rec", withCards(f.log, "B"));
 	f.settle();
 	f.handoffs.finishOne(0);
-	CHECK(f.log.at(0) == "drive nothing");
+	CHECK(f.log.at(0) == "node rec starting");
+	CHECK(f.log.at(1) == "drive nothing");
 	CHECK(f.log.at(2) == "release");
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "card rec.playback destroyed"));
 	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "handoff close"));
@@ -1969,7 +2027,8 @@ TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a res
 	f.log.clear();
 
 	f.host.nodeRemoved("rec");
-	CHECK(f.log.at(0) == "drive nothing");
+	CHECK(f.log.at(0) == "node rec stopping");
+	CHECK(f.log.at(1) == "drive nothing");
 	f.settle();
 	CHECK(indexOf(f.log, "release") < indexOf(f.log, "block destroyed"));
 	CHECK(indexOf(f.log, "card rec.capture destroyed") < indexOf(f.log, "block destroyed"));
@@ -2012,7 +2071,7 @@ TEST_CASE("Step 5 frees the code before the run object it reads, and the config 
 	f.log.clear();
 	f.host.nodeRemoved("net");
 	f.settle();
-	CHECK(f.log == Log{"drive nothing", "node net stopping", "block destroyed", "code destroyed", "run destroyed",
+	CHECK(f.log == Log{"node net stopping", "drive nothing", "block destroyed", "code destroyed", "run destroyed",
 	                   "config destroyed", "node net gone dropped=0"});
 	f.stopAll();
 }

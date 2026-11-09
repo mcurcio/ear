@@ -58,7 +58,7 @@ public:
 std::unique_ptr<PortBlock> makeDriven(FilterPortBlocks& blocks, const NodeName& node, const Ports& ports,
                                       AudioCode& code, PortBlockEvents& events) {
 	auto block = blocks.make(node, ports, kFormat, events);
-	ear::testing::driveNow(*block, &code);
+	REQUIRE(ear::testing::driveNow(*block, &code));
 	return block;
 }
 

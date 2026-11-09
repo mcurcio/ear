@@ -172,9 +172,9 @@ follows in the same turn, so T3 (a legacy recipe included, 5.10) always runs and
 | `readying`, `prepared` | teardown asked (restart, disable, removal, fault) | `tearing` | no barrier (never driven); `release` if prepared; as above | I5 ("before ready") |
 | `tearing` | every sink and handoff closed, then the legacy run object closed | `none` | on the main loop: the code, the instance, the recordings, in that order (I5 step 5) | I5 |
 | `tearing` | the 10 s bound | `none` (leaked) | `ear.close-overdue`, its detail naming every sink, handoff and run object still open; leak (today's `closeOverdue`, `node_host.cpp:447-464` [V]) | I5a |
-| `readying` … `driving` | fault: a resource refused or lost, `lost(d)`, a hook threw | as "teardown asked" (intent `fail`) | the failure's code by the fact (below) | T14 |
-| `fading`, `silencing` | fault, intent `stop` | unchanged | held: the aggregate records it (`heldFault`) and applies T14 once the node rests (4.3, rule 1; D-L32) | T14 |
-| `fading`, `silencing`, `tearing` | fault, any other intent | unchanged | dropped (I6: facts are dropped once a teardown's step 1 began) | I6 |
+| `readying` … `driving` (not `arming` with `stopAsked`) | fault: a resource refused or lost, `lost(d)`, a hook threw | as "teardown asked" (intent `fail`) | the failure's code by the fact (below) | T14 |
+| `fading`, `silencing`, `arming` with `stopAsked` | fault, intent `stop` | unchanged | held: the aggregate records it (`heldFault`) and applies T14 once the node rests (4.3, rule 1; D-L32) | T14 |
+| `fading`, `silencing`, `tearing`, `arming` with `stopAsked` | fault, any other intent | unchanged | dropped (I6: facts are dropped once a teardown's step 1 began) | I6 |
 | any but `none` | the block lost | `silencing` if driven, else `tearing` | no `stop()` (`started = false` without it), no fade; the silence completes by signal on a block with no data loop (5.3) | T13 |
 
 **The failure's code, by fact** (node-framework.md 6.2's table, D-L23):
@@ -1552,9 +1552,10 @@ back.
 Step L-3a built `NodeHost` on `NodeAggregate` with the asynchronous drive (`node_host.cpp`), every type through the
 legacy adapter, `Timers::now()`, and the blocking `PortBlock::drive(AudioCode*)` removed (engine tests use
 `ear::testing::driveNow`, `ear/testing/drive_now.hpp`: the asynchronous drive, then `settle()` until it completed).
-`node_host_test.cpp` has 51 cases: the 47 rewritten (the slice 2 cases that paired a recipe with a card now give the
-card no recipe) and four new (a drive's completion later than the call, a stale completion, a restart with a drive in
-flight, removal silencing before the block goes). What building it settled, each a minimal edit or recorded here:
+`node_host_test.cpp` has 52 cases: the 47 rewritten (the slice 2 cases that paired a recipe with a card now give the
+card no recipe) and five new (a drive's completion later than the call, a stale completion, a restart with a drive in
+flight, removal silencing before the block goes, and, after review, a fault during a restart's drive in flight). What
+building it settled, each a minimal edit or recorded here:
 
 - 12: a failed node is torn down at once in L-3a, not L-3c: the machines' fault rows (4.2, T14) tear the
   configuration down, and L-3a runs on them. Externally a failed node's code is silenced and its outside nodes, handoffs
@@ -1581,3 +1582,23 @@ flight, removal silencing before the block goes). What building it settled, each
   is ready, as before.
 - `Timers::now()` is `std::chrono::steady_clock::time_point` (CLOCK_MONOTONIC, the clock the main loop's timers count
   on).
+
+Then an independent review of the L-3a commit found these, each fixed in a second commit:
+
+- 4.2: a fault in `arming` with `stopAsked` (a restart, disable or removal asked while the drive is in flight, which
+  4.3's row 6 already shows as `stopping`) went through the `driving` row and raised intent `fail` over `restart`, so
+  the restart's queued config never configured. Such a drive is a stop or teardown already begun: the rows now treat it
+  as `fading` (held during a stop, dropped otherwise), and `NodeHost` marks the configuration's channel closing then,
+  as at its silence.
+- 5.2: an input that throws (a type bug) no longer clears the inputs queued behind it, which may be other nodes' (a
+  stop's `allGone` would never run): they are handled, then the first exception is rethrown.
+- The records' order, now as before: a removal tells `stopping` before anything it does (a never-driven removal used to
+  release and destroy the block first), and an update of a node whose block stands tells `starting` at once, before
+  its teardown, a failed node's included (its retry waits for the failed configuration to go; the old health shows
+  `starting` while `retryAsked` is set).
+- `node_host.hpp`: an outside node may be destroyed inside its own `lost()` (`NodeHost` tears a failed configuration
+  down in that call); not inside `ready()`. `sound_card_test.cpp` checks it on a card that cannot open.
+- An outside node's `ready` or a handoff's `closed` queued while its configuration tears down, or after it, lands on
+  nothing (the generation, and the outside nodes already cleared).
+- `driveNow` is `[[nodiscard]]` and every engine test REQUIREs it; destructors use `silenceOrAbort`, which waits up to a
+  minute and aborts rather than free a code the data loop may still run.

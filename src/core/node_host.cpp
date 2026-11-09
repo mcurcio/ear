@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <deque>
+#include <exception>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -98,13 +99,18 @@ struct NodeHost::Impl {
 		/// A new configuration from `config` behind the same port block. One that arrives while the configuration is
 		/// still going replaces the config the next one takes (4.3, rule 2). A lost block is final: nothing is kept.
 		void update(std::shared_ptr<const NodeConfig> config) {
-			queued_ = aggregate_.block().state() == lc::BlockState::lost ? nullptr : std::move(config);
+			const bool lost = aggregate_.block().state() == lc::BlockState::lost;
+			queued_ = lost ? nullptr : std::move(config);
 			++version_;
+			// Today's records: an update of a node whose block stands says starting at once, before its teardown, a
+			// failed node's included (whose retry waits for its failed configuration to go, mapped() shows it).
+			if (!lost) tell(NodeHealth{name_, NodeState::starting, std::nullopt});
 			feed(aggregate_.change(queued(), {}));
 		}
 
 		void remove() {
 			queued_.reset(); // never configured again
+			stopping();      // today's records: stopping before anything the removal does
 			feed(aggregate_.remove());
 		}
 
@@ -181,8 +187,10 @@ struct NodeHost::Impl {
 			bool isReady = false;
 			void ready() override {
 				node_.host_.inputFor(node_.serial_, [generation = generation_, index = index_](Node& node) {
-					if (!node.current(generation)) return;
-					node.config_->outside.at(index)->isReady = true;
+					// Still current while it tears down, when its outside nodes are already gone: nothing to ready.
+					if (!node.current(generation) || node.config_->tearing || index >= node.config_->outside.size())
+						return;
+					node.config_->outside[index]->isReady = true;
 					node.checkReady(generation);
 				});
 			}
@@ -226,7 +234,7 @@ struct NodeHost::Impl {
 			/// The `closed` a handoff of this configuration gets: on the main thread, later.
 			std::move_only_function<void(std::uint64_t)> handoffClosedCall() {
 				return [self = shared_from_this()](std::uint64_t droppedFrames) {
-					if (Node* node = self->node()) node->handoffClosed(droppedFrames);
+					if (Node* node = self->node()) node->handoffClosed(node->config_->generation, droppedFrames);
 				};
 			}
 			/// The `closed` the run object gets: from any thread, later or inside close().
@@ -312,6 +320,8 @@ struct NodeHost::Impl {
 			if (health.phase == lc::NodePhase::stopping && health.cause &&
 			    health.cause->kind == lc::NodeCause::Kind::removing)
 				return {name_, NodeState::stopping, std::nullopt};
+			if (health.phase == lc::NodePhase::failed && health.reason && aggregate_.retryAsked())
+				return {name_, NodeState::starting, std::nullopt}; // a retry asked, its configure still to come
 			if (health.phase == lc::NodePhase::failed && health.reason) {
 				const auto code = health.reason->code == lc::FailureCode::engineRefused
 				                      ? FailureReason::Code::engineRefused
@@ -342,6 +352,12 @@ struct NodeHost::Impl {
 						   },
 				           action);
 			}
+			// A teardown asked while the drive is in flight (arming, stopAsked) has begun: from here on nothing the
+			// configuration's threads tell is a fact (I6), as from its silence on.
+			if (config_ && aggregate_.configuration().state() == lc::ConfigState::arming &&
+			    aggregate_.configuration().stopAsked() && aggregate_.intent() != lc::Intent::stop &&
+			    aggregate_.intent() != lc::Intent::none)
+				config_->channel->closing();
 		}
 
 		void tell(const lc::Health& health) { tell(mapped(health)); }
@@ -578,9 +594,9 @@ struct NodeHost::Impl {
 			closeRunObject();
 		}
 
-		void handoffClosed(std::uint64_t droppedFrames) {
-			host_.inputFor(serial_, [droppedFrames](Node& node) {
-				if (!node.config_) return;
+		void handoffClosed(std::uint64_t generation, std::uint64_t droppedFrames) {
+			host_.inputFor(serial_, [generation, droppedFrames](Node& node) {
+				if (!node.current(generation)) return;
 				node.dropped_ += droppedFrames;
 				++node.config_->handoffsClosed;
 				node.closeRunObject();
@@ -687,23 +703,26 @@ struct NodeHost::Impl {
 	bool handling = false;
 
 	/// One input at a time (5.2): one that arrives while another is handled, from an action or a callback inside it,
-	/// is handled after it, in arrival order, before this returns.
+	/// is handled after it, in arrival order, before this returns. An input that throws (a type bug: a std::logic_error
+	/// from a type's start or recipe) does not strand the inputs queued behind it, which may be other nodes' (a stop
+	/// whose allGone would then never run): they are handled first, and the first exception is rethrown once the queue
+	/// is empty. The node it was thrown out of is left as the throw left it.
 	void input(std::move_only_function<void()> work) {
 		inputs.push_back(std::move(work));
 		if (handling) return;
 		handling = true;
-		try {
-			while (!inputs.empty()) {
-				auto next = std::move(inputs.front());
-				inputs.pop_front();
+		std::exception_ptr thrown;
+		while (!inputs.empty()) {
+			auto next = std::move(inputs.front());
+			inputs.pop_front();
+			try {
 				next();
+			} catch (...) {
+				if (!thrown) thrown = std::current_exception();
 			}
-		} catch (...) {
-			inputs.clear();
-			handling = false;
-			throw;
 		}
 		handling = false;
+		if (thrown) std::rethrow_exception(thrown);
 	}
 
 	/// An input for the node of this serial, dropped if it is gone (nodes are looked up by serial, never by pointer).

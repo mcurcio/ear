@@ -154,7 +154,9 @@ public:
 	virtual void ready() = 0;
 	/// At most once, before or after ready, never inside make(). When it is told, the outside
 	/// node's engine node and links are already destroyed, so it no longer clocks or holds any
-	/// part of the graph.
+	/// part of the graph. Destroying the OutsideNode inside lost() is allowed (not inside ready()):
+	/// the adapter touches nothing of it after telling (NodeHost tears a failed configuration
+	/// down in the same call, docs/design/node-lifecycle.md section 4.2's T14).
 	virtual void lost(std::string detail) = 0;
 
 protected:
