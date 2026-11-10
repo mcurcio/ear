@@ -766,33 +766,52 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 
 namespace {
 
-/// A sink's consumer that throws on its first chunk, on the real sink's thread, as one with a bug.
+/// A sink's consumer that throws on the first chunk after the test arms it, on the real sink's thread, as one with a
+/// bug.
 class ThrowingConsumer final : public SinkConsumer {
 public:
-	void consume(const Chunk&) override { throw std::runtime_error("disk full"); }
+	explicit ThrowingConsumer(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
+	void consume(const Chunk&) override {
+		if (armed_->load()) throw std::runtime_error("disk full");
+	}
 	void finish() override {}
+
+private:
+	std::shared_ptr<std::atomic<bool>> armed_;
 };
 
 /// A class's instance with a sink on its inside output bank "tap", consumed by a ThrowingConsumer, and a code that
 /// writes every output.
 class ThrowingSinkInstance final : public ErasedInstance {
 public:
+	explicit ThrowingSinkInstance(std::shared_ptr<std::atomic<bool>> armed) : armed_(std::move(armed)) {}
 	Configured configure(InstanceContexts& cx) override {
-		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>());
+		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>(armed_));
 		cx.create.use(std::make_unique<LevelCode>());
 		return Configured::applied();
 	}
+
+private:
+	std::shared_ptr<std::atomic<bool>> armed_;
 };
 
 class ThrowingSinkConfig final : public NodeConfig {
 public:
+	std::shared_ptr<std::atomic<bool>> armed = std::make_shared<std::atomic<bool>>(false);
 	const Ports& ports() const override { return ports_; }
 	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
-		return std::make_unique<ThrowingSinkInstance>();
+		return std::make_unique<ThrowingSinkInstance>(armed);
 	}
 
 private:
 	Ports ports_{{{Direction::output, "tap", {"1"}, PortBank::Reach::inside}}};
+};
+
+/// Every log record NodeHost writes, on the main loop.
+class Logged final : public LogSink {
+public:
+	void log(const LogEntry& entry) override { entries.push_back(entry.text); }
+	std::vector<std::string> entries;
 };
 
 } // namespace
@@ -818,25 +837,34 @@ TEST_CASE("A sink consumer that throws on its real sink thread fails only its no
 	HealthWake health(waiter);
 	NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop);
 	host.subscribe(health);
+	Logged logged;
+	host.subscribeLog(logged);
+	auto config = std::make_shared<ThrowingSinkConfig>();
 	host.nodeAdded(NodeSpec{"ok", "level", {}}, std::make_shared<LevelConfig>());
-	host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<ThrowingSinkConfig>());
+	host.nodeAdded(NodeSpec{"rec", "test", {}}, config);
 	const auto of = [&](const NodeName& name) -> std::optional<NodeHealth> {
 		for (const NodeHealth& each : host.health())
 			if (each.name == name) return each;
 		return std::nullopt;
 	};
+	const auto running = [&](const NodeName& name) {
+		const auto health = of(name);
+		return health && health->state == NodeState::running;
+	};
+	REQUIRE(waiter.until([&] { return running("rec") && running("ok"); }, 10s));
+	config->armed->store(true); // the next chunk the sink's thread hands over throws
 	REQUIRE(waiter.until(
 		[&] {
 			const auto rec = of("rec");
-			return rec && rec->state == NodeState::failed && of("ok") && of("ok")->state == NodeState::running;
+			return rec && rec->state == NodeState::failed;
 		},
 		10s));
 	const auto rec = of("rec");
 	REQUIRE(rec->reason);
-	// lost once rested; start-failed if the first chunk beat the drive's completion to the main loop
-	CHECK((rec->reason->code == FailureReason::Code::lost || rec->reason->code == FailureReason::Code::startFailed));
+	CHECK(rec->reason->code == FailureReason::Code::lost);
 	CHECK(rec->reason->detail == "the sink tap's consumer threw in consume: disk full");
-	CHECK(of("ok")->state == NodeState::running);
+	CHECK(running("ok"));
+	CHECK(logged.entries.empty()); // a fact, not a record
 	bool gone = false;
 	host.stopAll(graph.close(), [&] {
 		gone = true;

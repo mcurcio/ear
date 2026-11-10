@@ -1057,6 +1057,7 @@ struct NodeHost::Impl {
 								   goneHeld_ = true;
 								   tellGone();
 							   },
+							   [&](const lc::Dropped& dropped) { recordDropped(dropped); },
 						   },
 				           action);
 			}
@@ -1857,18 +1858,20 @@ struct NodeHost::Impl {
 		}
 
 		/// A consumer of the configuration threw while facts reach it (Channel::threw): it fails as a hook that throws
-		/// does (start-failed before it rested, lost after). One the machine would drop, since a failure, a disable or a
-		/// removal already outranks it (a teardown's fade, before its silence closes the channel), is a log record
-		/// instead, so no throw goes unrecorded.
+		/// does (start-failed before it rested, lost after); one the machine drops is a log record (recordDropped).
 		void consumerThrew(std::string detail) {
 			host_.inputFor(serial_, [generation = config_->generation, detail = std::move(detail)](Node& node) mutable {
-				if (!node.current(generation)) return;
-				if (node.aggregate_.intent() >= lc::Intent::fail) {
-					node.host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node.name_});
-					return;
-				}
-				node.feed(node.aggregate_.fault(lc::Fact::hookThrew, std::move(detail)));
+				if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::hookThrew, std::move(detail)));
 			});
+		}
+
+		/// A fault the machine dropped (a teardown, a failure or a held fault already outranks it). A throw of the
+		/// type's code is a bug that must not vanish, so it is an `ear` log record; every other dropped fact (a
+		/// configuration's insides saying lost, an engine companion lost, a deadline) is what a teardown expects of
+		/// what it stops, and stays dropped (docs/architecture.md#teardown-by-dependency).
+		void recordDropped(const lc::Dropped& dropped) {
+			if (dropped.fact != lc::Fact::hookThrew) return;
+			host_.logged(LogEntry{LogLevel::error, "ear", dropped.detail, {}, name_});
 		}
 
 		/// teardown step 5, on the main loop: the code (released and unreachable since the barrier; it may hold

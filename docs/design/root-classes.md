@@ -348,10 +348,12 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
   into the crash's last words, then `std::terminate()` (the handler `main.cpp:216` installs). The guard lands with it.
 - **R4b**: the owner's answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
   `FaultOwner`s, routed to their node's `lost`. Inside a type's call, NodeHost's `guarded()` (the wrapper of every
-  context call) wraps a throw that is not a rule the type broke (one of NodeHost's own or an adapter's, such as a sink
-  adapter's `std::logic_error` inside `cx.sink`) in a private `EarFault` carrying its owner, so `callType` can tell it
-  from the type's throw and route it by owner rather than fail the node as a broken rule, which is what R4c leaves
-  (pinned by the test "An adapter's own std::logic_error inside a context call fails the node as a broken rule").
+  context call) wraps a `std::logic_error` that is not a rule the type broke but a bug of NodeHost's own or of an
+  adapter (a sink adapter's `std::logic_error` inside `cx.sink`) in a private `EarFault` carrying its owner, so
+  `callType` can tell it from the type's throw and route it by owner rather than fail the node as a broken rule, which
+  is what R4c leaves (pinned by the test "An adapter's own std::logic_error inside a context call fails the node as a
+  broken rule"). An adapter's refusal (a `std::system_error`: no thread, no eventfd) is not a bug and stays what it is:
+  the node's `start-failed`, which the type may catch and still fails with.
 - **R4c** (behaviour-free but for the consumer; **built**, as
   `docs/writing-a-node-type.md#rules-the-framework-enforces` describes, with the changes in 4.6): NodeHost's type
   calls go through `callType`; `ThreadSink` calls the consumer through it and reports a fault as the sink's loss.
@@ -426,15 +428,20 @@ boundary `docs/architecture.md#the-callback-boundary`):
   config parse already made and read (the desired graph reads every config's ports to plan), so a `ports()` that
   throws is refused at parse first.
 - **A type's throw at parse (found in review).** A type's text rows' parse functions, its `check`, its `ports` and a
-  legacy type's config run in `NodeType::parse` as an edit is planned, on the main loop, outside NodeHost; a throw
-  there reached the boundary and ended ear, so a hand edit could crash-loop the container. `NodeType::parse` (the one
-  function the desired graph and the harness both call) now runs them through the same `caughtFrom` and refuses the
-  edit as `invalid-settings` with `<type> threw: <what>`, as any invalid setting is; `caughtFrom` and `whatOf` moved to
-  a private header (`src/core/caught.hpp`) for it.
-- **No consumer's throw goes unrecorded (found in review).** A consumer that throws while its configuration still takes
-  facts but a failure, a disable or a removal already outranks a fault (a teardown's fade, before its silence closes
-  the channel) would have been dropped by the machine with no record; it is a `log` record then, as during the
-  teardown.
+  legacy type's config run in `NodeType::parse` as an edit is planned, on the main loop, outside NodeHost; a throw there
+  reached the boundary and ended ear, so a hand edit could crash-loop the container. `NodeType::parse` (the one function
+  the desired graph and the harness both call) now runs them through the same `caughtFrom` and refuses the edit as
+  `invalid-settings` with `<type> threw: <what>`, as any invalid setting is; `caughtFrom` and `whatOf` moved to a
+  private header (`src/core/caught.hpp`) for it. The catch holds the core settings walk too, since a text row's parse is
+  the type's: a bug of ear's own in the walk would also surface as `<type> threw` and refuse the edit, which is
+  acceptable, since parse changes no state.
+- **No type's throw goes unrecorded (found in review).** `NodeAggregate::fault` dropped a fault it neither applied nor
+  held (a restart's, disable's or removal's fade before its silence closes the channel, a second fault during a stop, a
+  teardown, no configuration) and said nothing, so a consumer's throw there vanished. The machine now says what it drops
+  (`Dropped{fact, detail}` in its actions, on every such path), and NodeHost writes an `ear` log record for each dropped
+  `hookThrew`, a throw of the type's code. Every other dropped fact (a configuration's insides saying `lost`, an engine
+  companion lost, a deadline) is what a teardown expects of what it stops and stays dropped without a record, as
+  `docs/architecture.md#teardown-by-dependency` says.
 - **A `prepare` that throws in the batch that drives.** The machine answers every resource ready with the prepare and,
   the block being ready, the drive in one batch, so a fault told after the batch finds the drive in flight. The drive of
   an unprepared code carries no code (`DriveRequest{nullptr}`, a barrier like a silence); the fault, heard once the batch

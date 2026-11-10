@@ -359,18 +359,20 @@ when the type catches the throw; none takes ear down:
 | `start()` throws | `start threw: <what>` (then `start-failed`, or `lost` once rested) |
 | `stop()` throws during a stop | `stop threw: <what>`; during another teardown it is a `log` record |
 | The code's `prepare` throws | `prepare threw: <what>` (`start-failed`, or `lost` once rested); that code is never run again, nor released |
-| A sink's consumer throws | `the sink <bank>'s consumer threw in <begin\|consume>: <what>` (`start-failed`, or `lost` once rested); in `finish()`, or once the teardown began (its fade included), a `log` record |
+| A sink's consumer throws | `the sink <bank>'s consumer threw in <begin\|consume>: <what>` (`start-failed`, or `lost` once rested); in `finish()`, during a restart's, disable's or removal's fade, a second fault during a stop, or once the teardown began, a `log` record |
 | A legacy recipe, or a legacy handoff's consumer, throws | `recipe threw: <what>` (`start-failed`); `the handoff <bank>'s consumer threw in consume: <what>` (`start-failed`, or `lost` once rested; its `finish`, or once the teardown began, a `log` record); a run object's `close` that throws is a `log` record |
 | A type's code throws at parse (a text row's parse function, `check`, `ports`, a legacy type's config) | the edit is refused, `invalid-settings` with `<type> threw: <what>`, as any invalid setting is |
 
 **One catch.** Every call the framework makes into a type's code goes through one catch: the hooks,
 the code's `prepare` and a legacy recipe and close on the main loop (each named in the main loop's
 activity while it runs, so a stall inside one is placed), a sink's or legacy handoff's consumer on
-that one's own thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's callbacks
-([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs fails it
-first, even when the type caught the throw. A type's own `std::logic_error` is its bug like any
-other throw. A code's `release` and `process`, and every destructor, are `noexcept`: a throw there
-is `std::terminate`.
+that one's own thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's
+callbacks ([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs
+fails it first, even when the type caught the throw. A type's own `std::logic_error` is its bug like
+any other throw. A throw the node cannot take as its failure (a restart, disable or removal under
+way, or a stop's fault already held) is an `ear` `log` record instead, so none goes unrecorded. A
+code's `release` and `process`, and every destructor, are `noexcept`: a throw there is
+`std::terminate`.
 
 **Timing.** Each hook is timed; one that runs past 20 ms on the main loop is `ear.hook-slow` (once
 per node and hook). Hooks never block: they acquire, construct and post.

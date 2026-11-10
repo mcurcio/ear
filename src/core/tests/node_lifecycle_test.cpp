@@ -163,6 +163,7 @@ struct Probe {
 	std::vector<Health> told;
 	std::vector<K> asked;
 	std::vector<BlockAction> blockAsked;
+	std::vector<std::string> dropped; // every fault's detail the aggregate said it dropped
 	bool gone = false;
 	std::uint64_t version = 1;
 
@@ -170,7 +171,8 @@ struct Probe {
 		for (const NodeAction& action : actions)
 			std::visit(Overloaded{[&](BlockAction a) { blockAsked.push_back(a); },
 			                      [&](const ConfigAction& a) { asked.push_back(a.kind); },
-			                      [&](const Tell& t) { told.push_back(t.health); }, [&](Gone) { gone = true; }},
+			                      [&](const Tell& t) { told.push_back(t.health); }, [&](Gone) { gone = true; },
+			                      [&](const Dropped& d) { dropped.push_back(d.detail); }},
 			           action);
 	}
 	std::optional<LifecycleReply> take(Operated operated) {
@@ -1258,6 +1260,7 @@ TEST_CASE("The newest intent wins: remove over disable over fail over restart ov
 	CHECK(p.node.intent() == Intent::disable);
 	p.take(p.node.fault(Fact::nodeLost, "late")); // lower than disable, and dropped in a teardown anyway
 	CHECK(p.node.intent() == Intent::disable);
+	CHECK(p.dropped == std::vector<std::string>{"late"});
 	p.take(p.node.blockLost("gone")); // fail is lower than disable
 	CHECK(p.node.intent() == Intent::disable);
 	p.take(p.node.remove());
@@ -1411,8 +1414,9 @@ TEST_CASE("A fault during a stop's fade is held and fails the node once it rests
 		CHECK(p.node.heldFault() == Failure{FailureCode::engineRefused, "card unplugged"});
 		CHECK(p.phase() == NodePhase::stopping);
 		p.step();                                       // faded
-		p.take(p.node.fault(Fact::nodeLost, "second")); // the first held stays
-		p.step();                                       // silenced: rests, then T14
+		p.take(p.node.fault(Fact::nodeLost, "second")); // the first held stays; the second is said dropped
+		CHECK(p.dropped == std::vector<std::string>{"second"});
+		p.step(); // silenced: rests, then T14
 		CHECK(p.phase() == NodePhase::failed);
 		CHECK(p.health().reason == Failure{FailureCode::engineRefused, "card unplugged"});
 		p.settle();
@@ -1427,6 +1431,7 @@ TEST_CASE("A fault during a stop's fade is held and fails the node once it rests
 			p.take(p.node.fault(Fact::engine, "card unplugged"));
 			CHECK_FALSE(p.node.heldFault().has_value());
 			CHECK_FALSE(p.node.failure().has_value());
+			CHECK(p.dropped == std::vector<std::string>{"card unplugged"}); // said, so NodeHost can record it
 		}
 	}
 	SECTION("a restart over a held fault drops it at the configure") {
@@ -1436,6 +1441,23 @@ TEST_CASE("A fault during a stop's fade is held and fails the node once it rests
 		p.settle();
 		CHECK(p.phase() == NodePhase::stopped);
 		CHECK_FALSE(p.node.heldFault().has_value());
+	}
+}
+
+TEST_CASE("A fault neither applied nor held is said dropped, on every path, and one applied or held is not",
+          "[lifecycle][machines]") {
+	for (Spot spot : {Spot::added, Spot::disabled, Spot::failed, Spot::stoppingRestart, Spot::stoppingDisable,
+	                  Spot::stoppingRemove}) {
+		INFO(spotName(spot));
+		Probe p = reach(spot);
+		p.take(p.node.fault(Fact::hookThrew, "consume threw: disk full"));
+		CHECK(p.dropped == std::vector<std::string>{"consume threw: disk full"});
+	}
+	for (Spot spot : {Spot::configuring, Spot::running, Spot::stoppingStop}) {
+		INFO(spotName(spot));
+		Probe p = reach(spot);
+		p.take(p.node.fault(Fact::hookThrew, "consume threw: disk full"));
+		CHECK(p.dropped.empty());
 	}
 }
 

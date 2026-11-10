@@ -5301,6 +5301,65 @@ TEST_CASE("A consumer's throw from a configuration being torn down for a restart
 	CHECK(f.allGone == 1);
 }
 
+TEST_CASE("A consumer's throw during a restart's fade is a log record, and the restart completes without a failure",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withThrowingSink(f.log, "consume");
+	addRunning(f, "rec", config);
+	f.blocks.hold = true; // the fade's acknowledgement waits for the test
+	REQUIRE(f.host.restart("rec"));
+	f.settle();
+	REQUIRE(f.blocks.held.size() == 1);
+	f.sinks.made.at(0)->feed(64); // the fade's chunk: it throws, and the machine drops it (a restart outranks it)
+	f.settle();
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].text == "the sink pb's consumer threw in consume: disk full");
+	f.blocks.hold = false;
+	while (!f.blocks.held.empty()) {
+		f.blocks.complete(0);
+		f.settle();
+	}
+	CHECK(failureOf(f, "rec").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running); // the next configuration
+	CHECK(f.sinks.made.size() == 2);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A second consumer throw during a stop's fade is a log record, and the first, held, fails the node once it "
+          "rests",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withThrowingSink(f.log, "consume");
+	config->onStop = [] { throw std::runtime_error("stuck"); }; // the stop's first fault, held
+	addRunning(f, "rec", config);
+	f.blocks.hold = true;
+	REQUIRE(f.host.stop("rec"));
+	f.settle();
+	REQUIRE(f.blocks.held.size() == 1);
+	CHECK(logs.entries.empty());
+	f.sinks.made.at(0)->feed(64); // the fade's chunk throws: a second fault of the stop, dropped
+	f.settle();
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].text == "the sink pb's consumer threw in consume: disk full");
+	f.blocks.hold = false;
+	while (!f.blocks.held.empty()) {
+		f.blocks.complete(0);
+		f.settle();
+	}
+	CHECK(failureOf(f, "rec") == "lost: stop threw: stuck");
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
 TEST_CASE("An adapter's own std::logic_error inside a context call fails the node as a broken rule, not thrown out "
           "(pinned: the owner's answer C, built by R4b, changes this on purpose)",
           "[node_host][sink][type-throw]") {

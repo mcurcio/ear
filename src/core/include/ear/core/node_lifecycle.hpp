@@ -225,7 +225,13 @@ struct Tell {
 	Health health;
 };
 struct Gone {};
-using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone>;
+/// A fault the aggregate neither applied nor held (a teardown or a failure already outranks it, a second fault during a
+/// stop, or no configuration to fail): what was dropped, so NodeHost can record it.
+struct Dropped {
+	Fact fact;
+	std::string detail;
+};
+using NodeAction = std::variant<BlockAction, ConfigAction, Tell, Gone, Dropped>;
 using Actions = std::vector<NodeAction>;
 
 /// core's own replies to start, stop and restart, NodeOperations' (node_host.hpp); MainLoopSide maps them
@@ -268,6 +274,8 @@ public:
 	Operated start();
 	Operated restart();
 	// A fact against the configuration, with the fact's detail.
+	/// A fault: applied (a failure and its teardown), held during a stop, or, on every other path, dropped and said
+	/// (Dropped in the actions).
 	Actions fault(Fact fact, std::string detail);
 	Actions startThrew(std::string detail);
 	// The configuration's completions and bounds; a stale barrier number changes nothing.
@@ -300,6 +308,7 @@ public:
 private:
 	DeriveFacts facts() const;
 	bool raise(Intent next, std::optional<NodeCause> why = std::nullopt);
+	Actions holdOrDrop(Fact fact, std::string detail);
 	void onBlock(BlockEvent event, std::string detail, Actions& out);
 	void onConfig(ConfigInput input, Actions& out);
 	void tell(Actions& out);
