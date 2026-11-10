@@ -15,18 +15,49 @@ target_include_directories(ear_catch_main SYSTEM PUBLIC
 # SERIAL <test spec>: the test cases the Catch test spec matches (a tag, such as [s2]) are discovered apart, with the
 # CTest property RUN_SERIAL, so ctest --parallel runs nothing beside them: for a test whose load would starve the
 # realtime-timed tests running beside it (PipeWire's data thread keeping time), and theirs it.
+#
+# Each executable's build also fails on its own, before and after discovery, since catch_discover_tests takes the
+# listing's exit code as a count of tests (only a negative one is fatal) and a listing that ran nothing would leave the
+# executable out of ctest unseen: first the executable checks its test names (test/main.cpp, --ear-check-test-names),
+# then catch_tests_guard.cmake fails unless each discovered file names at least one test.
+set(EAR_CATCH_TESTS_GUARD "${CMAKE_CURRENT_SOURCE_DIR}/catch_tests_guard.cmake" CACHE INTERNAL
+	"ear_catch_tests' check that discovery found tests (read from sibling directories)")
 function(ear_catch_tests target)
 	cmake_parse_arguments(PARSE_ARGV 1 arg "" "SERIAL" "")
 	if(arg_UNPARSED_ARGUMENTS)
 		message(FATAL_ERROR "ear_catch_tests: unexpected arguments: ${arg_UNPARSED_ARGUMENTS}")
 	endif()
 	include(Catch)
+	add_custom_command(TARGET ${target} POST_BUILD
+		COMMAND $<TARGET_FILE:${target}> --ear-check-test-names
+		COMMENT "Checking ${target}'s test names"
+		VERBATIM)
+	set(extra --warn NoTests)
 	if(arg_SERIAL)
-		catch_discover_tests(${target} TEST_SPEC "~${arg_SERIAL}" EXTRA_ARGS --warn NoTests)
-		catch_discover_tests(${target} TEST_SPEC "${arg_SERIAL}" EXTRA_ARGS --warn NoTests PROPERTIES RUN_SERIAL TRUE)
+		catch_discover_tests(${target} TEST_SPEC "~${arg_SERIAL}" EXTRA_ARGS ${extra})
+		catch_discover_tests(${target} TEST_SPEC "${arg_SERIAL}" EXTRA_ARGS ${extra} PROPERTIES RUN_SERIAL TRUE)
+		set(specs "~${arg_SERIAL}" "${arg_SERIAL}")
 	else()
-		catch_discover_tests(${target} EXTRA_ARGS --warn NoTests)
+		catch_discover_tests(${target} EXTRA_ARGS ${extra})
+		set(specs "")
 	endif()
+	# The file each catch_discover_tests call writes, named as Catch.cmake names it.
+	set(files "")
+	foreach(spec IN LISTS specs)
+		string(SHA1 hash "${spec} ${extra}")
+		string(SUBSTRING ${hash} 0 7 hash)
+		list(APPEND files "${CMAKE_CURRENT_BINARY_DIR}/${target}_tests-${hash}.cmake")
+	endforeach()
+	if(NOT specs)
+		string(SHA1 hash " ${extra}")
+		string(SUBSTRING ${hash} 0 7 hash)
+		set(files "${CMAKE_CURRENT_BINARY_DIR}/${target}_tests-${hash}.cmake")
+	endif()
+	string(REPLACE ";" "|" files_arg "${files}") # a ';' would split the argument
+	add_custom_command(TARGET ${target} POST_BUILD
+		COMMAND "${CMAKE_COMMAND}" "-DEXECUTABLE=${target}" "-DFILES=${files_arg}"
+			-P "${EAR_CATCH_TESTS_GUARD}"
+		VERBATIM)
 endfunction()
 
 # ear_compile_check(<name> <source> [<flag>...]): compiles <source> (syntax only) against ear_core's headers as a test.

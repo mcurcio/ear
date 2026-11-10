@@ -2598,7 +2598,7 @@ TEST_CASE("An adapter's refusal through any path to it, a nested context call am
 }
 
 TEST_CASE("An adapter that makes nothing, or throws its own std::logic_error, through a nested context call is ear's "
-          "bug: its node lost and a record",
+          "bug, its node lost and a record",
           "[node_host][recording][type-throw]") {
 	const std::vector<std::pair<std::string, std::string>> cases{
 		{"null/take.wav", "the recording adapter opened no file"},

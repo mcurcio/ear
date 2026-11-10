@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -63,22 +62,22 @@ CardId cardId(std::string_view text) {
 /// Counts its cycles, the driver and discontinuities the framework told it, and the latency
 /// downstream of its first output. Writes zeros everywhere, except a ramp of exact floats
 /// (k * 2^-24, k from 1) on output `rampOn` when it is set; then it records each cycle in its
-/// ledger, with the ramp's first k in it and, once watching a DriverCycles, the graph cycle it ran in.
+/// ledger, with the ramp's first k in it and the graph cycle it ran in, by `driver`.
 class Code final : public AudioCode {
 public:
-	Code(Waiter& waiter, std::optional<std::size_t> rampOn = std::nullopt)
-		: waiter_(waiter), rampOn_(rampOn), ledger_(rampOn ? kRampCycles : 0), firstK_(ledger_.capacity()),
-		  graphCycle_(ledger_.capacity()) {}
+	Code(Waiter& waiter, const DriverCycles& driver, std::optional<std::size_t> rampOn = std::nullopt)
+		: waiter_(waiter), driverCycles_(driver), rampOn_(rampOn), ledger_(rampOn ? kRampCycles : 0),
+		  firstK_(ledger_.capacity()), graphCycle_(ledger_.capacity()) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		const std::uint64_t graphCycle = driverCycles_.started(); // the cycle this one runs in; 0 before it listened
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		if (rampOn_ && *rampOn_ < outputs.size()) {
 			const std::size_t n = ledger_.count(); // this thread alone records
 			if (n < ledger_.capacity()) {          // before record() publishes the cycle
 				firstK_[n] = next_ + 1;
-				const DriverCycles* watched = watched_.load(std::memory_order_acquire);
-				graphCycle_[n] = watched != nullptr ? watched->started() : 0;
+				graphCycle_[n] = graphCycle;
 			}
 			for (std::uint32_t i = 0; i < frames; ++i) {
 				outputs[*rampOn_][i] = static_cast<float>(++next_) * kStep;
@@ -86,36 +85,36 @@ public:
 			ledger_.record(cycle, frames);
 		}
 		if (calls_.load(std::memory_order_relaxed) > 0 && cycle.discontinuity) {
-			// A host's stall makes the internal clock skip blocks to catch up, a discontinuity of its own
-			// (docs/engine.md#xruns-on-a-loaded-host-are-not-bugs): a jump forward on the same driver by no more than the
-			// time the raw clock, read here, shows was lost since the last cycle's end, within the driver's 1 ms error
-			// clamp and two cycles of wake latency. Anything else (a new driver, a step back, a jump further than time
-			// went) is the graph's own.
-			timespec now{};
-			clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-			const auto rawFrames = static_cast<std::int64_t>(
-				(static_cast<__int128>(now.tv_sec) * 1'000'000'000 + now.tv_nsec) * kRate / 1'000'000'000);
-			const auto jump = static_cast<std::int64_t>(cycle.position) - static_cast<std::int64_t>(lastEnd_);
-			const std::int64_t lost = rawFrames - static_cast<std::int64_t>(lastEnd_);
-			const bool lostTime = cycle.driverId == lastDriver_ && jump > 0 &&
-			                      jump - lost <= static_cast<std::int64_t>(2 * kBlock + kRate / 1000);
-			(lostTime ? hostJumps_ : discontinuities_).fetch_add(1, std::memory_order_relaxed);
+			// A host's stall can cut short the cycles this block would have run, so its clock jumps by them: a
+			// discontinuity of its own (docs/engine.md#xruns-on-a-loaded-host-are-not-bugs). It is excused only as such:
+			// on the same driver, forward by exactly the cycles started since this code last ran, every one of them
+			// cut short by the driver's own account. Anything else (a new driver, a step back, a jump over a cycle the
+			// driver did not cut) is the graph's own; so is any discontinuity before the driver was listened to.
+			const std::uint64_t skipped = graphCycle > lastGraphCycle_ ? graphCycle - lastGraphCycle_ - 1 : 0;
+			bool cut = lastGraphCycle_ > 0 && cycle.driverId == lastDriver_ && skipped > 0 &&
+			           cycle.position == lastEnd_ + skipped * frames;
+			for (std::uint64_t g = lastGraphCycle_ + 1; cut && g < graphCycle; ++g) cut = driverCycles_.cutShort(g);
+			(cut ? hostJumps_ : discontinuities_).fetch_add(1, std::memory_order_relaxed);
 		}
 		lastEnd_ = cycle.position + frames;
 		lastDriver_ = cycle.driverId;
+		lastGraphCycle_ = graphCycle;
 		driver_.store(cycle.driverId, std::memory_order_relaxed);
 		downstream_.store(cycle.downstreamOf(0).maxFrames, std::memory_order_relaxed);
+		if (graphCycle > 0) watched_.store(true, std::memory_order_release);
 		calls_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
 	/// Cycles after the first that the framework marked discontinuous for a reason of the graph's: another driver took
-	/// over, or the clock stepped back or jumped further than the raw clock shows time was lost.
+	/// over, the clock stepped back, or it jumped over cycles the driver did not cut short.
 	std::uint64_t discontinuities() const { return discontinuities_.load(std::memory_order_acquire); }
-	/// Cycles after the first that the framework marked discontinuous where the clock caught up on time a host's stall
-	/// lost (counted, never required).
+	/// Cycles after the first that the framework marked discontinuous where this block's clock jumped over cycles the
+	/// driver cut short (a host's stall: counted, never required).
 	std::uint64_t hostJumps() const { return hostJumps_.load(std::memory_order_acquire); }
+	/// It has run a cycle the driver's listener counted.
+	bool watched() const { return watched_.load(std::memory_order_acquire); }
 	/// The driver of the latest cycle, by the framework.
 	std::uint32_t driver() const { return driver_.load(std::memory_order_acquire); }
 	/// The latency downstream of output 0 in the latest cycle.
@@ -123,8 +122,6 @@ public:
 	static constexpr float kStep = 1.0F / 16777216.0F;
 	static constexpr std::size_t kRampCycles = 1 << 14; // about 87 s of cycles
 
-	/// From its next cycle on, the ramp's cycles name the graph cycle they ran in, by `driver`.
-	void watch(const DriverCycles& driver) { watched_.store(&driver, std::memory_order_release); }
 	/// The ramp's cycles (none without a ramp); of cycle `n`, the ramp's first k and the graph cycle it ran in.
 	const ear::test::CycleLedger& ledger() const { return ledger_; }
 	std::uint64_t firstK(std::size_t n) const { return firstK_[n]; }
@@ -132,17 +129,19 @@ public:
 
 private:
 	Waiter& waiter_;
+	const DriverCycles& driverCycles_;
 	std::optional<std::size_t> rampOn_;
 	ear::test::CycleLedger ledger_;
 	std::vector<std::uint64_t> firstK_;
 	std::vector<std::uint64_t> graphCycle_;
-	std::atomic<const DriverCycles*> watched_{nullptr};
 	std::uint32_t next_ = 0;
 	std::atomic<std::uint64_t> calls_{0};
 	std::atomic<std::uint64_t> discontinuities_{0};
 	std::atomic<std::uint64_t> hostJumps_{0};
-	std::uint64_t lastEnd_ = 0;    // data thread: the last cycle's end
-	std::uint32_t lastDriver_ = 0; // and its driver
+	std::atomic<bool> watched_{false};
+	std::uint64_t lastEnd_ = 0;        // data thread: the last cycle's end
+	std::uint32_t lastDriver_ = 0;     // its driver
+	std::uint64_t lastGraphCycle_ = 0; // and the graph cycle it ran in
 	std::atomic<std::uint32_t> driver_{0};
 	std::atomic<std::uint32_t> downstream_{0};
 };
@@ -182,9 +181,10 @@ private:
 /// (one input), each driven by its own code, both running on the dummy driver, and clockless cards.
 struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt, Faults* faults = nullptr)
-		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine), registry(*engine, waiter),
-		  blocks(*engine, bell), cards(*engine, clocklessCardProperties()), cardCode(waiter, rampOn), otherCode(waiter),
-		  cardBlockEvents(waiter), otherBlockEvents(waiter) {
+		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine), driverCycles(*engine, 1 << 16),
+		  registry(*engine, waiter), blocks(*engine, bell), cards(*engine, clocklessCardProperties()),
+		  cardCode(waiter, driverCycles, rampOn), otherCode(waiter, driverCycles), cardBlockEvents(waiter),
+		  otherBlockEvents(waiter) {
 		cardBlock = blocks.make("card",
 		                        Ports{{{Direction::input, "play", {"1", "2"}},
 		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
@@ -198,6 +198,8 @@ struct Graph {
 		}));
 		dummy = *registry.id("Dummy-Driver");
 		REQUIRE(blocksDrivenBy(dummy));
+		// From here on every cycle each code runs names its graph cycle, so every discontinuity is judged.
+		REQUIRE(waiter.until([&] { return cardCode.watched() && otherCode.watched(); }));
 	}
 	~Graph() {
 		ear::testing::silenceOrAbort(*cardBlock);
@@ -230,6 +232,7 @@ struct Graph {
 	std::filesystem::path out;
 	std::unique_ptr<Engine> engine;
 	Waiter waiter;
+	DriverCycles driverCycles; // before the codes, which read it, so it outlives them
 	Registry registry;
 	NoBell bell;
 	FilterPortBlocks blocks;
@@ -310,10 +313,11 @@ RampHeard judgeRamp(const std::vector<float>& samples, const Code& code, const D
 		}
 		const std::uint64_t k = kOf(samples[i]);
 		const std::optional<std::size_t> from = cycleOf(last), to = cycleOf(k);
-		if (!from || !to) {
+		if (zeroRun % kBlock != 0) { // silence the card plays for a block it missed is whole blocks too
+			breakAt(std::to_string(zeroRun) + " zeros before k " + std::to_string(k));
+		} else if (!from || !to) {
 			breakAt("k " + std::to_string(k) + " after " + std::to_string(last) + ", outside the ramp's ledger");
 		} else if (k == last + 1) {
-			if (zeroRun % kBlock != 0) breakAt(std::to_string(zeroRun) + " zeros before k " + std::to_string(k));
 			heard.silentBlocks += zeroRun / kBlock;
 			if (*to != *from) ++heard.judged;
 		} else if (*to > *from + 1 && last + 1 == endK(*from) && k == code.firstK(*to) && allCut(*from + 1, *to)) {
@@ -354,7 +358,7 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	REQUIRE(graph.registry.reread({"card.playback"}));
 	CHECK(graph.registry.driverId("card.playback") == graph.dummy);
 	CHECK(graph.cardCode.driver() == graph.dummy); // what the framework tells the code: the same driver
-	INFO("discontinuities where the clock caught up on a host's lost time: " << graph.cardCode.hostJumps());
+	INFO("discontinuities over cycles the driver cut short: " << graph.cardCode.hostJumps());
 	CHECK(graph.cardCode.discontinuities() == 0); // the card joining moved no clock
 }
 
@@ -363,7 +367,7 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 TEST_CASE("A card joins its block by the block's id: beside an older block of the same name it reaches only the newer",
           "[cards][join]") {
 	Graph graph;
-	Code newerCode(graph.waiter);
+	Code newerCode(graph.waiter, graph.driverCycles);
 	BlockEvents newerEvents(graph.waiter);
 	auto newer = graph.blocks.make("card",
 	                               Ports{{{Direction::input, "play", {"1", "2"}},
@@ -418,14 +422,8 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 	Graph graph(1); // the ramp on the card block's second output: to_card.2
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
 	// The card runs no code of ear's, so it keeps no ledger: the driver's own account of each cycle stands in for one.
-	// The ramp names the graph cycle each of its cycles ran in, from before the card is made.
-	DriverCycles driver(*graph.engine, 1 << 16);
-	graph.cardCode.watch(driver);
-	const std::size_t watchedFrom = graph.cardCode.ledger().count();
-	REQUIRE(graph.waiter.until([&] {
-		const std::size_t n = graph.cardCode.ledger().count();
-		return n > watchedFrom + 1 && graph.cardCode.graphCycle(n - 1) > 0;
-	}));
+	// The ramp names the graph cycle each of its cycles ran in, from before the card is made (Graph waits for it).
+	const DriverCycles& driver = graph.driverCycles;
 	const auto card = graph.makeCard(cardId("Test"), events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
@@ -647,11 +645,11 @@ TEST_CASE("A card that loses a link while it follows is lost with its node gone,
 	CHECK(graph.bothRun(16));
 	CHECK(graph.cardCode.driver() == graph.dummy);
 	CHECK(graph.otherCode.driver() == graph.dummy);
-	// A loaded host's stall makes the internal clock skip blocks to catch up, a discontinuity of its own
-	// (docs/engine.md#xruns-on-a-loaded-host-are-not-bugs): each code tells those apart by the raw clock and counts
+	// A loaded host's stall cuts cycles short, so a block's clock jumps over them, a discontinuity of its own
+	// (docs/engine.md#xruns-on-a-loaded-host-are-not-bugs): each code tells those apart by the driver's own cuts and counts
 	// them aside. The card's loss makes none of the graph's.
-	INFO("discontinuities where the clock caught up on a host's lost time: " << graph.cardCode.hostJumps() << " and "
-	                                                                         << graph.otherCode.hostJumps());
+	INFO("discontinuities over cycles the driver cut short: " << graph.cardCode.hostJumps() << " and "
+	                                                          << graph.otherCode.hostJumps());
 	CHECK(graph.cardCode.discontinuities() == 0);
 	CHECK(graph.otherCode.discontinuities() == 0);
 	CHECK(card != nullptr); // nobody destroyed it
@@ -714,7 +712,7 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 		~Silenced() { ear::testing::silenceOrAbort(block); }
 	} silenced{*graph.cardBlock};
 
-	Code sourceCode(graph.waiter);
+	Code sourceCode(graph.waiter, graph.driverCycles);
 	BlockEvents sourceEvents(graph.waiter);
 	auto source = graph.blocks.make("source", Ports{{{Direction::output, "out", {"1", "2"}}}}, kFormat, sourceEvents);
 	REQUIRE(ear::testing::driveNow(*source, &sourceCode));

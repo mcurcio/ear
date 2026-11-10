@@ -683,18 +683,20 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	});
 	REQUIRE(waiter.until([&] { return driven; }));
 	// Dated by the cycle's start, the frames it played, dst's 960 beyond `out` and the code's 4800 on it.
-	const auto heardAt = [](const CodeCycle& cycle, std::uint32_t downstream) {
-		return cycle.startRawNs + static_cast<std::int64_t>(cycle.frames + downstream) * 1'000'000'000 / kRate;
+	const auto heardAt = [](const CodeCycle& cycle, std::uint64_t played, std::uint32_t downstream) {
+		return cycle.startRawNs + static_cast<std::int64_t>(played + downstream) * 1'000'000'000 / kRate;
 	};
 	const auto dated = [&] {
 		const auto cycles = code.log.entries();
-		return !cycles.empty() && cycles.back().played.heardRawNs == heardAt(cycles.back(), 960 + 4800);
+		return !cycles.empty() &&
+		       cycles.back().played.heardRawNs == heardAt(cycles.back(), cycles.back().frames, 960 + 4800);
 	};
 	REQUIRE(waiter.until(dated)); // once dst's latency reached rx
 	const std::size_t datedFrom = code.log.count() - 1;
 	// The source keeps to the clock by its rule, judged cycle by cycle as part A's is (judgeSource): a host that starves
 	// the writer thread or stalls the data thread past the ring only makes a cycle that is not judged against dst, never
-	// a pass or a failure. dst is judged on the cycles the source played whole, to a planned count of them.
+	// a pass or a failure. dst is judged on the cycles the source played whole, and the date with both latencies on
+	// those it played every frame of once dst's latency arrived, each to a planned count.
 	constexpr std::size_t kJudged = 200;
 	const auto judge = [&] {
 		const auto cycles = code.log.entries();
@@ -702,8 +704,18 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		judgeHeard(j, cycles, listening.log.entries());
 		return j;
 	};
+	const auto playedSinceDated = [&](const SourceJudged& j) {
+		return static_cast<std::size_t>(
+			std::count(j.played.begin() + static_cast<std::ptrdiff_t>(datedFrom), j.played.end(), std::uint8_t{1}));
+	};
 	REQUIRE(waiter.until(
-		[&] { return (code.log.count() >= datedFrom + 200 && judge().judged >= kJudged) || code.log.full(); }, 30s));
+		[&] {
+			if (code.log.full()) return true;
+			if (code.log.count() <= datedFrom) return false;
+			const SourceJudged j = judge();
+			return j.judged >= kJudged && playedSinceDated(j) >= kJudged;
+		},
+		30s));
 	{
 		INFO("the code's log filled its " << code.log.entries().size() << " cycles before " << kJudged
 		                                  << " cycles were judged");
@@ -722,19 +734,24 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	const std::uint64_t last = cycles.back().position;
 	const SourceJudged j = judgeSource(cycles, source->writer().capacityFrames());
 	// Played is dated by the last frame the cycle played, so a cycle the writer left short (a starved writer thread) is
-	// dated earlier by what it lacked: the date is judged on the cycles the source played every frame of.
-	std::size_t datedCycles = 0;
+	// dated earlier by the frames it lacked, its shortfall; one that moved the count not at all keeps the last date.
 	for (std::size_t n = 0; n < cycles.size(); ++n) {
-		if (j.played[n] == 0) continue;
-		++datedCycles;
-		INFO("cycle " << n << " at " << cycles[n].position);
+		const CodeCycle& c = cycles[n];
+		INFO("cycle " << n << " at " << c.position << ", played every frame: " << int{j.played[n]});
+		const CodeCycle* p = n > 0 ? &cycles[n - 1] : nullptr;
+		if (p != nullptr && c.played.totalFrames == p->played.totalFrames) {
+			CHECK(c.played.heardRawNs == p->played.heardRawNs);
+			continue;
+		}
+		const std::uint64_t dry = c.shortfall - (p != nullptr ? p->shortfall : 0);
+		const std::uint64_t played = c.frames - std::min<std::uint64_t>(dry, c.frames);
 		// Before dst's latency arrived, the code's own alone; from then on, both.
-		if (n >= datedFrom) CHECK(cycles[n].played.heardRawNs == heardAt(cycles[n], 960 + 4800));
+		if (n >= datedFrom) CHECK(c.played.heardRawNs == heardAt(c, played, 960 + 4800));
 		else
-			CHECK((cycles[n].played.heardRawNs == heardAt(cycles[n], 4800) ||
-			       cycles[n].played.heardRawNs == heardAt(cycles[n], 960 + 4800)));
+			CHECK((c.played.heardRawNs == heardAt(c, played, 4800) ||
+			       c.played.heardRawNs == heardAt(c, played, 960 + 4800)));
 	}
-	CHECK(datedCycles >= kJudged);
+	CHECK(playedSinceDated(j) >= kJudged);
 	// Played keeps to the clock by the source rule, and dst heard, in each cycle the source played whole, the ramp
 	// frames its count says it played: no offset in position. Then silence.
 	SourceJudged heard = j;
@@ -755,7 +772,9 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);
-	CHECK(source->shortfallFrames() >= j.excusedDry); // every frame short was one the writer had not written
+	// Every frame short was one the writer had not written, and the source counted no other.
+	CHECK(source->shortfallFrames() == cycles.back().shortfall);
+	CHECK(cycles.back().shortfall == j.excusedDry);
 	CHECK(silent >= 20);
 	CHECK(heard.judged >= kJudged);
 	CHECK(heard.wrong == 0);

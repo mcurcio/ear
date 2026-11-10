@@ -55,11 +55,14 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   and waits until `clean()` reaches the number it planned.
 - **`StallingCode`** is an `AudioCode` that writes silence, records into its ledger and stalls at
   its plan's cycles (by ledger index).
-- **`DriverCycles`** (`src/pipewire/tests/engine_harness.hpp`, the engine tests only) listens to the
+- **`DriverCycles`** (`src/pipewire/tests/driver_cycles.hpp`, the engine tests only) listens to the
   internal clock's driver in this process (PipeWire's realtime `start` and `incomplete` events on
   `Dummy-Driver`): it counts the graph cycles started and keeps which were cut short. A code reads
   `started()` in its `process()` to name the cycle it ran in; `cutShort()` of that says whether the
-  nodes after it may have lost it. It is the ledger of a node that runs no code of ear's (a card).
+  nodes after it may have lost it. It is the ledger of a node that runs no code of ear's (a card),
+  and what excuses a cycle a code missed: on the tracking dummy driver every started cycle moves the
+  position on by one block, so a block whose clock jumped missed the cycles started between, and a
+  host's stall made it only if the driver cut every one of them short.
 - **Judged to a planned count.** A check that holds only where the clock did not jump (a take-up's
   first cycle at the published position, a ramp continuing across a cycle boundary) is judged where
   the cycles themselves say so: a ledger's clean cycles, the block's own `xruns` unchanged since its
@@ -73,18 +76,21 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   is, the position may never lead the raw clock by more than the driver's 1 ms clamp and its wake
   latency (two cycles' room), so a host's stall is excused and an engine that jumps further than time
   went fails. S5 reads `CLOCK_MONOTONIC_RAW` itself; part A reads it in its code too, never the
-  driver's own stamp, and so do the card tests' codes, which count a discontinuity only when it is
-  not such a jump.
+  driver's own stamp. Where a test has the driver's own account, it is stricter: the card tests'
+  codes count a discontinuity unless it is a forward jump on the same driver by exactly the cycles
+  started since the code last ran, every one cut short by `DriverCycles`.
 - **A chain is judged where its last node says so.** Each code in a chain counts only the cycles it
   runs, and a cycle cut short is run by an upstream prefix only
   ([engine.md](engine.md#the-one-data-loop-and-invokes)), so a ramp at its head moves on by a block
   its tail never hears. A sample within a cycle is judged every time; a cycle boundary only where the
   last node's own record shows nothing was lost before it: the recorder's clean cycles (the ramp
   through a block's inside ports), or, where the last node is a card, the ramp's blocks missing from
-  the card's file each of a cycle `DriverCycles` found cut short (counted, not judged), any other
-  gap or repeat a break. Either way the test waits for a planned count of judged boundaries (32),
-  requires that its ledger did not fill first, and still fails a block dropped or repeated on a
-  clean cycle.
+  the card's file. What was lost is excused only where `DriverCycles` cut it: a recorder cycle that
+  is not clean must follow the last across exactly the graph cycles started between them, each cut
+  short, and a block missing from the card's file must have run in a cut cycle, with any silence
+  before the next whole blocks; every other unclean cycle, gap or repeat fails. Either way the test
+  waits for a planned count of judged boundaries (32), requires that its ledger did not fill first,
+  and still fails a block dropped, repeated or skipped without the driver cutting a cycle.
 
 ### A writer's own event
 
@@ -160,8 +166,14 @@ It is Catch's runner, with one check before any test runs: Catch 2.12's console 
 failing test's header after the name's first `": "`, in a column 79 wide: an indent of 79 or more
 aborts the process (an `assert`) and one of 78 loops forever printing `-`, either way before the
 failing check is printed. So a test program holding a name whose first `": "` ends past column 69
-(less than 10 columns left) refuses to run, naming it (exit 3), and its discovery fails the build.
-Keep a test name's first `": "` early, or leave it out.
+(less than 10 columns left) fails its build: `ear_catch_tests` runs each executable with
+`--ear-check-test-names` after it links, which exits 3 naming each such name (a run by hand refuses
+the same way). Keep a test name's first `": "` early, or leave it out. A `SECTION`'s name is printed
+the same way but is known only once it runs, so it is not checked; keep its `": "` early too.
+Discovery is checked on its own as well: Catch.cmake takes the listing's exit code as a count of
+tests and goes on past one that listed nothing, which would drop the whole executable from ctest
+unseen, so `test/catch_tests_guard.cmake` fails the build unless every file discovery wrote names
+a test.
 
 Beside the executables, `test/CMakeLists.txt` runs the sleep guard and its own tests
 ([above](#the-sleep-guard)), the frame guard and its own (in the table below), `ear --help` (the binary loads its shared libraries), `ear_carried_patch_check` runs what configure asks of a tree that must carry a patch,

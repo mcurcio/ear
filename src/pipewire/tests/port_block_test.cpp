@@ -41,6 +41,7 @@
 #include "latency_table.hpp"
 #include "probes.hpp"
 #include "quiescence.hpp"
+#include "driver_cycles.hpp"
 
 // Allocations are counted on a thread that asks for it (the realtime thread, from a test code's process() on), by the
 // binary's one malloc hook.
@@ -50,6 +51,7 @@ namespace {
 using namespace ear;
 using namespace ear::pipewire;
 using namespace std::chrono_literals;
+using ear::pipewire::testing::DriverCycles;
 using ear::test::CycleLedger;
 using ear::test::StallingCode;
 using ear::test::StallLength;
@@ -192,11 +194,12 @@ public:
 };
 
 /// Records its first input's samples (up to a fixed capacity), and each cycle whose samples it recorded whole in its
-/// ledger, with the index of its first sample.
+/// ledger, with the index of its first sample and, given a DriverCycles, the graph cycle it ran in.
 class Recorder final : public AudioCode {
 public:
-	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate)
-		: waiter_(waiter), samples_(capacity), ledger_(capacity / kBlock), cycleStart_(capacity / kBlock) {}
+	explicit Recorder(Waiter& waiter, const DriverCycles* driver = nullptr, std::size_t capacity = 8 * kRate)
+		: waiter_(waiter), driver_(driver), samples_(capacity), ledger_(capacity / kBlock),
+		  cycleStart_(capacity / kBlock), graphCycle_(capacity / kBlock) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
 	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
@@ -205,6 +208,7 @@ public:
 		for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
 		if (at == from + frames && ledger_.count() < ledger_.capacity()) {
 			cycleStart_[ledger_.count()] = from; // before record() publishes the cycle
+			graphCycle_[ledger_.count()] = driver_ != nullptr ? driver_->started() : 0;
 			ledger_.record(cycle, frames);
 		}
 		recorded_.store(at, std::memory_order_release);
@@ -215,12 +219,16 @@ public:
 	/// The cycles recorded whole, and where cycle `n`'s samples begin in samples().
 	const CycleLedger& ledger() const { return ledger_; }
 	std::size_t cycleStart(std::size_t n) const { return cycleStart_[n]; }
+	/// The graph cycle cycle `n` ran in, by the DriverCycles given (0 without one, or before it listened).
+	std::uint64_t graphCycle(std::size_t n) const { return graphCycle_[n]; }
 
 private:
 	Waiter& waiter_;
+	const DriverCycles* driver_;
 	std::vector<float> samples_;
 	CycleLedger ledger_;
 	std::vector<std::size_t> cycleStart_;
+	std::vector<std::uint64_t> graphCycle_;
 	std::atomic<std::size_t> recorded_{0};
 };
 
@@ -633,7 +641,8 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	Wiring wiring(*engine, waiter);
 	Ramp ramp;
 	PassThrough through;
-	Recorder recorder(waiter);
+	const DriverCycles driver(*engine, 1 << 16); // before the recorder, which reads it
+	Recorder recorder(waiter, &driver);
 	BlockEvents srcEvents(waiter), cardEvents(waiter), recEvents(waiter);
 	auto src = blocks.make("ramp", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, srcEvents);
 	REQUIRE(ear::testing::driveNow(*src, &ramp));
@@ -652,8 +661,11 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	// The ramp, the pass-through and the recorder each count only the cycles they run. A cycle cut short is run by an
 	// upstream prefix of the chain only (docs/engine.md#the-one-data-loop-and-invokes), so one a host's stall cuts after
 	// the ramp moves the ramp on unheard, and the recorder, last in the chain, misses it: its next cycle is not clean in
-	// its ledger. So a cycle boundary is judged only on the recorder's clean cycles, to a planned count of them; within
-	// every cycle it heard, the ramp is whole. A block the chain drops or repeats on a clean cycle is still a break.
+	// its ledger. A cycle boundary is judged on the recorder's clean cycles, to a planned count of them; within every
+	// cycle it heard, the ramp is whole. A cycle that is not clean is excused only as such a loss: its position past
+	// the last one's end by exactly the graph cycles started between them, every one of them cut short by the driver's
+	// own account (the recorder missed each because it had not finished it). Any other, after the first sound, fails:
+	// a block the chain drops, repeats or skips without the driver cutting a cycle is a break.
 	constexpr std::size_t kWanted = 32; // clean cycle boundaries judged, after the first sound
 	const CycleLedger& ledger = recorder.ledger();
 	const auto judged = [&] {
@@ -668,23 +680,47 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 		INFO("the recorder filled its " << ledger.capacity() << " cycles before " << kWanted << " clean ones came");
 		REQUIRE_FALSE(ledger.full());
 	}
+	REQUIRE_FALSE(driver.overflowed());
 	const auto samples = recorder.samples();
 	const std::size_t first = firstSound(samples);
 	REQUIRE(first < samples.size());
-	std::size_t breaks = 0, unjudged = 0;
+	const std::uint64_t started = driver.started(); // every cycle before this one has had its cut told
+	// Recorder cycle n followed cycle n - 1 across graph cycles the driver cut short, and nothing else.
+	const auto lostToCuts = [&](std::size_t n) {
+		const std::uint64_t from = recorder.graphCycle(n - 1), to = recorder.graphCycle(n);
+		if (from == 0 || to <= from + 1 || to >= started) return false;
+		if (ledger[n].position != ledger[n - 1].position + ledger[n - 1].frames + (to - from - 1) * ledger[n].frames)
+			return false;
+		for (std::uint64_t g = from + 1; g < to; ++g)
+			if (!driver.cutShort(g)) return false;
+		return true;
+	};
+	std::size_t breaks = 0, excused = 0, unexcused = 0;
+	std::string firstUnexcused;
 	for (std::size_t n = 0; n < ledger.count(); ++n) {
 		const std::size_t start = recorder.cycleStart(n);
 		const std::size_t end = start + ledger[n].frames;
+		if (end > samples.size()) break; // recorded after samples() was read
 		if (end <= first + 1) continue;
 		for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
 			if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
 		if (start <= first) continue;
-		if (!ledger[n].clean) ++unjudged; // a cycle lost before it: the boundary is not the chain's to keep
-		else if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
+		if (ledger[n].clean) {
+			if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
+		} else if (lostToCuts(n)) {
+			++excused; // the chain lost those cycles with the graph: the boundary is not its to keep
+		} else if (unexcused++ == 0) {
+			firstUnexcused = "recorder cycle " + std::to_string(n) + " at " + std::to_string(ledger[n].position) +
+			                 " (graph cycle " + std::to_string(recorder.graphCycle(n)) + ") after one at " +
+			                 std::to_string(ledger[n - 1].position) + " (graph cycle " +
+			                 std::to_string(recorder.graphCycle(n - 1)) + ")";
+		}
 	}
-	INFO(unjudged << " cycle boundaries after a lost cycle, not judged");
+	INFO(excused << " cycle boundaries across cycles the driver cut short (" << driver.cuts() << " cuts), not judged");
+	INFO(firstUnexcused);
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
+	CHECK(unexcused == 0);
 
 	std::vector<NodeLevels> snapshot;
 	REQUIRE(waiter.until([&] {

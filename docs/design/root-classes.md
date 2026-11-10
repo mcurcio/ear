@@ -788,29 +788,41 @@ in `docs/testing.md#making-the-rare-event`.
   inside ports and `sound_card_test.cpp`'s ramp onto the card's channel 2 counted every sample step as a break. Each
   code counts only the cycles it runs, so a cycle a starved data thread cut short after the ramp moved it on by a block
   the tail never heard: both failed within 10 to 60 repeats beside 8 busy processes on 4 cores, at the R7 head too. The
-  port block chain now judges a boundary only on its recorder's clean cycles, as the engine's ramp test does; the
-  recorder is the chain's last node, and a cut cycle is run by an upstream prefix only, so it misses every cycle lost
-  anywhere in the chain. A card runs no code of ear's to keep a ledger, so the engine tests gained `DriverCycles`: the
-  driver's own realtime `incomplete` event names each cycle cut short, the ramp records the graph cycle each of its
-  cycles ran in, and a jump in the card's file is excused only where every block missing from it ran in a cut cycle.
-  Both wait for 32 judged boundaries.
+  port block chain now judges a boundary on its recorder's clean cycles; the recorder is the chain's last node, and a
+  cut cycle is run by an upstream prefix only, so it misses every cycle lost anywhere in the chain. A card runs no code
+  of ear's to keep a ledger, so the engine tests gained `DriverCycles` (`driver_cycles.hpp`): the driver's own realtime
+  `incomplete` event names each cycle cut short, and a code names the graph cycle it ran in. What either test loses is
+  excused only where the driver cut it, never by the ledger alone (review): a recorder cycle that is not clean must
+  follow the last across exactly the graph cycles started between them, each cut short, and a block missing from the
+  card's file must have run in a cut cycle, with any silence before the next whole blocks; any other unclean cycle or
+  gap fails. Both wait for 32 judged boundaries. A recorder that skipped every third cycle without the driver saying so
+  fails the first (32 unexcused), and a ramp block dropped before the card fails the second.
 - **Found after R5b: more of the class, by a sweep of `ear_pipewire_tests`.** The card tests' `discontinuities() == 0`
   ("the card joining moved no clock", "a card that loses a link ... leaves the clock alone") counted a host's catch-up
-  jump as a discontinuity too; each code now counts only those the raw clock does not excuse, as S5 judges a jump, and
-  the rest aside. `source_test.cpp`'s bound source required an unbroken Played count against the first position and no
-  shortfall, with its writer a plain thread on an 8,192-frame ring, so a writer or data thread starved past 170 ms
-  failed it; it is now judged by part A's source rule (`judgeSource`, shared) and dst by part A's listener rule, to a
-  planned 200 cycles played whole. Its date was checked on every cycle too, but Played is dated by the last frame a
-  cycle played, so a cycle a starved writer left short is dated earlier by what it lacked (failed 3 in 30 under load):
-  the date is judged on the cycles the source played every frame of. Still owed, found by the same sweep and not fixed here: `rtp_receiver_test.cpp`'s
-  tone fits every tenth with no ledger, so a cycle the recorder missed or a receiver underrun fails a tenth.
+  jump as a discontinuity too. On the tracking dummy driver every started cycle moves the position on by one block, so
+  a forward jump on the same driver always means the block missed cycles, and real time passed: excusing it by the raw
+  clock would have excused a block skipping cycles while a card joins (review). Each code now excuses it only when the
+  jump is exactly the cycles started since it last ran and `DriverCycles` cut every one; the `Graph` owns the
+  `DriverCycles`, before its codes, and waits until both codes have run a cycle it counted. Two or three cycles a code
+  skipped during the join or the link's loss, with no cut, now fail. `source_test.cpp`'s bound source required an
+  unbroken Played count against the first position and no shortfall, with its writer a plain thread on an 8,192-frame
+  ring, so a writer or data thread starved past 170 ms failed it; it is now judged by part A's source rule
+  (`judgeSource`, shared) and dst by part A's listener rule, to a planned 200 cycles. Played is dated by the last frame
+  a cycle played (failed 3 in 30 under load while every cycle was dated as whole), so each cycle's date is checked
+  against its frames less its shortfall, a cycle that moved no count keeps the last date, 200 cycles played whole are
+  required after dst's latency arrived, and the source's shortfall must equal the log's, every frame of it one the
+  writer had not written. Still owed, found by the same sweep and not fixed here: `rtp_receiver_test.cpp`'s tone fits
+  every tenth with no ledger, so a cycle the recorder missed or a receiver underrun fails a tenth.
 - **Found after R5b: a failure Catch could not print.** Under load the card's lost-link test failed and the process
   aborted inside Catch 2.12's console reporter (an `assert` in its text column) before printing the failing check: the
   reporter indents a failing test's header after its first ": ", and asserts that indent is under the column's width
   (`CATCH_CONFIG_CONSOLE_WIDTH - 1`, 79), which seven names passed; an indent of 78 (an eighth name) loops forever
-  printing "-" instead. `test/main.cpp` is now Catch's runner with a check first: a test program holding a name whose
-  first ": " leaves under 10 columns refuses to run (exit 3, naming each), so catch_discover_tests fails the build; the
-  eight were renamed. A wider console would only move the limit.
+  printing "-" instead. `test/main.cpp` is now Catch's runner, and every test executable's build runs it with
+  `--ear-check-test-names`, which fails (exit 3, naming each) on a name whose first ": " leaves under 10 columns; the
+  eight, and a ninth R4b added, were renamed. A wider console would only move the limit. Refusing in the listing alone
+  did not fail the build (review): Catch.cmake takes the listing's exit code as a count of tests, so the executable
+  dropped out of ctest with no word. So `test/catch_tests_guard.cmake` now also fails any executable's build whose
+  discovery found no test, whatever the cause. A `SECTION`'s name is known only once it runs and is not checked.
 
 ## 6. Class 4: PipeWire properties
 

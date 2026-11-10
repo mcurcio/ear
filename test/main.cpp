@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -19,7 +20,7 @@ namespace {
 // its first ": ", in a text column CATCH_CONFIG_CONSOLE_WIDTH - 1 wide. An indent at or past that width aborts the
 // process (an assert in the column) and one column short of it loops forever printing "-", either way before the
 // failing check is printed; a few columns more print the rest a character or two a line. So a test program holding a
-// name whose first ": " leaves less than kHeaderRoom columns after it refuses to run at all, naming it, whether or not
+// name whose first ": " leaves less than kHeaderRoom columns after it fails its build, naming it, whether or not
 // anything would fail (docs/testing.md#how-the-suites-are-built).
 constexpr std::size_t kHeaderColumn = CATCH_CONFIG_CONSOLE_WIDTH - 1;
 constexpr std::size_t kHeaderRoom = 10;
@@ -33,18 +34,30 @@ std::vector<std::string> namesTheReporterCannotPrint(const Catch::IConfig& confi
 	return bad;
 }
 
+/// The check every test executable's build runs (test/CMakeLists.txt, ear_catch_tests): exit 0 only when every test
+/// case's name can be printed. Test names only; a SECTION's name is known only once it runs, so it is not checked.
+constexpr std::string_view kCheckNamesFlag = "--ear-check-test-names";
+
+int refuse(const std::vector<std::string>& bad) {
+	std::cerr
+		<< "Catch's console reporter cannot print a failure of these test cases (the first \": \" ends past column "
+		<< kHeaderColumn - kHeaderRoom << "); rename them:\n";
+	for (const std::string& name : bad) std::cerr << "  " << name << '\n';
+	return 3;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
 	Catch::Session session;
-	if (const int error = session.applyCommandLine(argc, argv); error != 0) return error;
-	const std::vector<std::string> bad = namesTheReporterCannotPrint(session.config());
-	if (!bad.empty()) {
-		std::cerr << "Catch's console reporter cannot print a failure of these test cases (the first \": \" ends past "
-					 "column "
-				  << kHeaderColumn - kHeaderRoom << "); rename them:\n";
-		for (const std::string& name : bad) std::cerr << "  " << name << '\n';
-		return 3;
+	if (argc == 2 && argv[1] == kCheckNamesFlag) {
+		const std::vector<std::string> bad = namesTheReporterCannotPrint(session.config());
+		return bad.empty() ? 0 : refuse(bad);
 	}
+	if (const int error = session.applyCommandLine(argc, argv); error != 0) return error;
+	// Refused here too, for a run by hand; the build's own check is what fails the build (catch_discover_tests takes
+	// a non-zero exit of its listing as a count of tests).
+	if (const std::vector<std::string> bad = namesTheReporterCannotPrint(session.config()); !bad.empty())
+		return refuse(bad);
 	return session.run();
 }
