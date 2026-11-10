@@ -28,6 +28,7 @@
 #include "ear/pipewire/rtp_receivers.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
+#include "inducers.hpp"
 #include "rtp_tone.hpp"
 
 namespace {
@@ -44,20 +45,29 @@ constexpr double kAmplitude = 0.5;
 /// Records the block's inside inputs (from_rtp.1, from_rtp.2) into buffers made before it runs,
 /// up to kCapacity frames, and notes the first frame that is not silent and every onset: a frame
 /// that is not silent after at least kSilentRun silent frames (every channel exactly zero). Writes
-/// zeros to every output.
+/// zeros to every output. Each cycle goes in a ledger with its first frame and its start on the steady clock, so a
+/// test can tell the frames the host left alone (docs/testing.md#making-the-rare-event).
 class Recorder final : public AudioCode {
 public:
-	static constexpr std::size_t kCapacity = 20 * kRate;
+	static constexpr std::size_t kCapacity = 30 * kRate;
 	static constexpr std::size_t kSilentRun = kRate / 20; // 50 ms
+	static constexpr std::size_t kCycles = kCapacity / kBlock + 1;
 
 	Recorder(Waiter& waiter, std::size_t channels)
-		: waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)) {}
+		: waiter_(waiter), channels_(channels, std::vector<float>(kCapacity, 0.0F)), ledger_(kCycles),
+		  cycleFirst_(kCycles), cycleStartNs_(kCycles) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		const std::size_t take = std::min<std::size_t>(frames, kCapacity - at);
+		if (const std::size_t n = ledger_.count(); take > 0 && n < kCycles) {
+			// Before the ledger publishes the cycle, so a reader that sees it sees these too.
+			cycleFirst_[n] = at;
+			cycleStartNs_[n] = cycle.startNs;
+			ledger_.record(cycle, frames);
+		}
 		for (std::size_t channel = 0; channel < channels_.size() && channel < inputs.size(); ++channel) {
 			for (std::size_t i = 0; i < take; ++i) {
 				const float sample = inputs[channel][i];
@@ -106,10 +116,33 @@ public:
 	std::span<const float> frames(std::size_t channel, std::size_t from, std::size_t frames) const {
 		return std::span<const float>(channels_[channel]).subspan(from, frames);
 	}
+	/// Frames [from, from + frames), already counted, came in cycles the ledger calls clean, as did every cycle back to
+	/// `settle` frames before them: nothing the host did lies in them, nor long enough before them to still show.
+	bool clean(std::size_t from, std::size_t frames, std::size_t settle) const {
+		const std::size_t cycles = ledger_.count();
+		const std::size_t start = from > settle ? from - settle : 0;
+		for (std::size_t n = 0; n < cycles; ++n) {
+			const std::size_t first = cycleFirst_[n];
+			const std::size_t end = first + ledger_[n].frames;
+			if (end <= start || first >= from + frames) continue;
+			if (n == 0 || !ledger_[n].clean) return false;
+		}
+		return true;
+	}
+	/// When the cycle holding frame `frame` (already counted) started, on the steady clock.
+	std::chrono::steady_clock::time_point startOf(std::size_t frame) const {
+		const std::size_t cycles = ledger_.count();
+		std::size_t n = 0;
+		while (n + 1 < cycles && cycleFirst_[n + 1] <= frame) ++n;
+		return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(cycleStartNs_[n]));
+	}
 
 private:
 	Waiter& waiter_;
 	std::vector<std::vector<float>> channels_;
+	ear::test::CycleLedger ledger_; // the data thread writes; cycleFirst_ and cycleStartNs_ beside it
+	std::vector<std::size_t> cycleFirst_;
+	std::vector<std::int64_t> cycleStartNs_;
 	std::atomic<std::size_t> count_{0};
 	std::atomic<std::size_t> first_{kNone};
 	std::size_t silentRun_ = kSilentRun; // the data thread's only; the very first sound is an onset
@@ -200,33 +233,69 @@ struct Graph {
 	std::uint32_t dummy = 0;
 };
 
-/// Channel `channel` carries `wanted` Hz at kAmplitude and not `other` Hz, over `frames` frames
-/// from `from`, checked in tenths of a second: the receiver steers its resampler by the packets'
-/// arrival, so its rate wobbles by parts in ten thousand, which over a whole second moves a
-/// sine's phase too far for one fit (a different frequency, such as an unresampled 816 Hz for
-/// 750 Hz, still fails every tenth).
-void checkTone(const Recorder& recorder, std::size_t channel, std::size_t from, std::size_t frames, double wanted,
-               double other) {
-	INFO("from_rtp." << channel + 1 << ": " << wanted << " Hz, frames " << from << "+" << frames);
-	const auto samples = recorder.frames(channel, from, frames);
+/// What one channel must carry: `wanted` Hz at kAmplitude, and not `other` Hz.
+struct Tone {
+	double wanted;
+	double other;
+};
+
+/// The tenths a tone test judges: one second of what the receiver played while the host left the block and the sender
+/// alone. However often it did not, the sender sends on until they are judged.
+constexpr std::size_t kPlannedTenths = 10;
+/// How long a disturbance still shows in what the receiver plays: its resampler's rate control settles in half a
+/// second (the first sound's own settling), and a late packet is heard up to its buffer later.
+constexpr std::size_t kSettleFrames = kRate / 2;
+constexpr auto kLateHeardWithin = 600ms;
+
+/// Each channel carries its tone, judged in tenths of a second from frame `from` until kPlannedTenths are judged: the
+/// receiver steers its resampler by the packets' arrival, so its rate wobbles by parts in ten thousand, which over a
+/// whole second moves a sine's phase too far for one fit (a different frequency, such as an unresampled 816 Hz for
+/// 750 Hz, still fails every tenth). A tenth is judged only when the host left it alone: every cycle of it, and of the
+/// half second before it, clean in the recorder's ledger (a stalled data thread starves or floods the receiver's
+/// buffer), and no packet the sender sent late by more than its bound within kLateHeardWithin before it (the
+/// sender's own counter of what the host did to it). Anything else in a tenth is the receiver's, and judged.
+void judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const std::array<Tone, 2>& tones) {
 	constexpr std::size_t tenth = kRate / 10;
 	std::string profile;
-	double worstAmplitude = kAmplitude;
-	double worstResidual = 0.0;
-	double worstOther = 0.0;
-	for (std::size_t at = 0; at + tenth <= samples.size(); at += tenth) {
-		const auto window = samples.subspan(at, tenth);
-		const auto fit = ear::test::fitSine(window, wanted, kRate);
-		profile += std::to_string(fit.amplitude) + "/" + std::to_string(fit.residual) + " ";
-		if (std::abs(fit.amplitude - kAmplitude) > std::abs(worstAmplitude - kAmplitude))
-			worstAmplitude = fit.amplitude;
-		worstResidual = std::max(worstResidual, fit.residual);
-		worstOther = std::max(worstOther, ear::test::fitSine(window, other, kRate).amplitude);
+	std::array<double, 2> worstAmplitude{kAmplitude, kAmplitude};
+	std::array<double, 2> worstResidual{};
+	std::array<double, 2> worstOther{};
+	std::size_t judged = 0;
+	std::size_t excused = 0;
+	for (std::size_t at = from; judged < kPlannedTenths; at += tenth) {
+		INFO("judged " << judged << " tenths, excused " << excused << ", from frame " << from);
+		REQUIRE(at + tenth <= Recorder::kCapacity);
+		REQUIRE(graph.recorded(at + tenth, 30s));
+		const auto startsAt = graph.recorder.startOf(at);
+		const auto endsAt = graph.recorder.startOf(at + tenth - 1);
+		const auto late = sender.lateSends();
+		const bool senderLate = std::ranges::any_of(late, [&](const RtpSender::LateSend& send) {
+			return send.at >= startsAt - kLateHeardWithin && send.at <= endsAt;
+		});
+		if (senderLate || !graph.recorder.clean(at, tenth, kSettleFrames)) {
+			++excused;
+			continue;
+		}
+		++judged;
+		for (std::size_t channel = 0; channel < 2; ++channel) {
+			const auto window = graph.recorder.frames(channel, at, tenth);
+			const auto fit = ear::test::fitSine(window, tones[channel].wanted, kRate);
+			profile += std::to_string(fit.amplitude) + "/" + std::to_string(fit.residual) + (channel == 0 ? "," : " ");
+			if (std::abs(fit.amplitude - kAmplitude) > std::abs(worstAmplitude[channel] - kAmplitude))
+				worstAmplitude[channel] = fit.amplitude;
+			worstResidual[channel] = std::max(worstResidual[channel], fit.residual);
+			worstOther[channel] =
+				std::max(worstOther[channel], ear::test::fitSine(window, tones[channel].other, kRate).amplitude);
+		}
 	}
-	INFO("amplitude/residual per tenth: " << profile);
-	CHECK(worstAmplitude == Approx(kAmplitude).margin(0.01));
-	CHECK(worstResidual < 0.1);
-	CHECK(worstOther < 0.01);
+	INFO("amplitude/residual per judged tenth, channel 1,2: " << profile << "(excused " << excused << ")");
+	for (std::size_t channel = 0; channel < 2; ++channel) {
+		INFO("from_rtp." << channel + 1 << ": " << tones[channel].wanted << " Hz, not " << tones[channel].other
+		                 << " Hz");
+		CHECK(worstAmplitude[channel] == Approx(kAmplitude).margin(0.01));
+		CHECK(worstResidual[channel] < 0.1);
+		CHECK(worstOther[channel] < 0.01);
+	}
 }
 
 /// Sends `seconds` of 750 Hz on channel 1 and 1500 Hz on channel 2 at `rate` in `pcm` to a
@@ -240,14 +309,12 @@ void checkTwoTones(RtpPcm pcm, RtpEncoding encoding, std::uint32_t senderRate) {
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
 
+	// Long enough for a loaded host to leave a second of it alone; the sender goes once it has been judged.
 	RtpSender sender(port, pcm, senderRate, RtpTone{{750.0, 1500.0}, kAmplitude});
-	sender.send(2 * senderRate);
+	sender.send(25 * senderRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
 	const std::size_t from = graph.recorder.first() + kRate / 2;
-	REQUIRE(graph.recorded(from + kRate));
-	checkTone(graph.recorder, 0, from, kRate, 750.0, 1500.0);
-	checkTone(graph.recorder, 1, from, kRate, 1500.0, 750.0);
-	CHECK(sender.waitSent(10s));
+	judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}});
 	CHECK_FALSE(events.lostDetail.has_value());
 }
 
@@ -363,13 +430,10 @@ TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]"
 	// of exact zeros, then sound). The check starts half a second into it.
 	const std::size_t mark = graph.recorder.count();
 	RtpSender second(port, RtpPcm::l24, kRate, RtpTone{{500.0, 1000.0}, kAmplitude}, 0xBEEF);
-	second.send(3 * kRate);
+	second.send(25 * kRate);
 	REQUIRE(graph.waiter.until([&] { return graph.recorder.onsetFrom(mark) != Recorder::kNone; }));
 	const std::size_t from = graph.recorder.onsetFrom(mark) + kRate / 2;
-	REQUIRE(graph.recorded(from + kRate));
-	checkTone(graph.recorder, 0, from, kRate, 500.0, 750.0);
-	checkTone(graph.recorder, 1, from, kRate, 1000.0, 1500.0);
-	CHECK(second.waitSent(10s));
+	judgeTones(graph, second, from, {Tone{500.0, 750.0}, Tone{1000.0, 1500.0}});
 	CHECK_FALSE(events.lostDetail.has_value());
 }
 

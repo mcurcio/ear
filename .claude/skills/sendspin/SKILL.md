@@ -210,13 +210,18 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **Every 127/8 address is this host's, so one test can be peers on many addresses** (`connectFrom` binds its source). Peers on 127.0.0.1 share the server's own.
 - **`ChildProcess::waitForLine` finds a line an earlier wait already saw.** A second `says connected ... paired` needs `waitForNthLine`.
 - **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
-  the role, by a 5 ms poll: `aiosendspin` has no event for it. Under load it can still join late, so the tests ask for 1 s of the 1.5 s. The encoder also holds back the stream's tail, so 68607 of 72000
-  frames arrive.
+  the role, by a 5 ms poll: `aiosendspin` has no event for it. Under load it can still join late, by however much the host delayed
+  it, so a system test plays a 60 s stream until the WAV holds the second of exact ramp it needs (`waitForRamp`), then ends it
+  (`end`, then `says stream-ended`), never a fixed length (`docs/testing.md#waiting-for-what-ear-wrote`). A stream that plays
+  out ends short too: the encoder holds back its tail, so 68607 of 72000 frames arrive.
 - **The clock tests judge only cycles the host left alone.** Each cycle goes in a `CycleLedger`; a cycle is judged when it is
   clean, 3 s into the ramp and 1.5 s past the last that was not (or that held silence mid-ramp: the worker starved), and a
   test plays a 90 s stream until it has judged 750. Before
   playing they wait for the internal clock to reach the raw clock's rate over the clean cycles of two seconds, and fail naming
   it if it never does. A host that stalls makes them take longer, never fail.
+- **The source's stamps are judged step by step:** the server says each chunk (`source-chunk <frames> <stamp> <lag>`); each
+  stamp must step by the last chunk's length within 200 us, or by more where the graph skipped cycles (counted), never by less,
+  until a second of frames came on clean steps and one chunk arrived within 250 ms of its stamp.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
   instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused". A test's listening port comes from below the kernel's
   outgoing range (`freeTcpPort`), or a neighbour's flood can hold it as a socket's near end.

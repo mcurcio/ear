@@ -12,9 +12,9 @@ typed: one per round), source-start, source-stop, quit. --name is what the serve
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
 play-start <us>, chunk-sent <first frame> <frames> <us> (a chunk of the ramp handed to the client, the first of its frames
 stamped to play at <us>), play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
-pair-failed <reason>, source-started <rate> <channels> <bits>, source-heard (a second of it has arrived),
-source-ended <frames> <left rms> <non-zero right samples> <last stamp - first stamp, us> <frames before the last chunk> <first
-chunk's arrival on this server's clock - its stamp, us>, prefer-16 <true|false: whether the player took it>, lead <ms>,
+pair-failed <reason>, source-started <rate> <channels> <bits>, source-chunk <frames> <stamp, us> <its arrival on this
+server's clock - its stamp, us> (each chunk of the source's audio as it arrives), source-heard (a second of it has arrived),
+source-ended <frames> <left rms> <non-zero right samples>, prefer-16 <true|false: whether the player took it>, lead <ms>,
 disconnected <reason>, activate-held, activate-ended <close|message: what ended the hold, the socket closing or the client saying something>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
@@ -208,34 +208,26 @@ class TestServer:
             self._heard.add_done_callback(self._done)
 
     async def _hear_source(self, started: SourceStreamStartedEvent) -> None:
-        """Until the client ends the stream: what arrived, in one line at its end."""
+        """Until the client ends the stream: each chunk as it arrives, and what arrived, in one line at its end."""
         audio_format = started.audio_format
         emit(f"source-started {audio_format.sample_rate} {audio_format.channels} {audio_format.bit_depth}")
         frames = 0
-        frames_before_last = 0
         squares = 0.0
         right_nonzero = 0
-        first_us = None
-        last_us = 0
-        arrival_lag_us = 0
         said_heard = False
         async for pcm, timestamp_us in started.handle:
-            if first_us is None:
-                first_us = timestamp_us
-                arrival_lag_us = self._server.clock.now_us() - timestamp_us
-            last_us = timestamp_us
-            frames_before_last = frames
+            chunk_frames = len(pcm) // SOURCE_BYTES_PER_FRAME
+            emit(f"source-chunk {chunk_frames} {timestamp_us} {self._server.clock.now_us() - timestamp_us}")
             for at in range(0, len(pcm), SOURCE_BYTES_PER_FRAME):
                 left = int.from_bytes(pcm[at : at + 3], "little", signed=True) / SOURCE_SAMPLE_SCALE
                 squares += left * left
                 right_nonzero += any(pcm[at + 3 : at + 6])
-            frames += len(pcm) // SOURCE_BYTES_PER_FRAME
+            frames += chunk_frames
             if not said_heard and frames >= audio_format.sample_rate:
                 said_heard = True
                 emit("source-heard")
         rms = (squares / frames) ** 0.5 if frames else 0.0
-        stamps = last_us - first_us if first_us is not None else 0
-        emit(f"source-ended {frames} {rms:.4f} {right_nonzero} {stamps} {frames_before_last} {arrival_lag_us}")
+        emit(f"source-ended {frames} {rms:.6f} {right_nonzero}")
 
     async def _upgrade(self, request: web.Request) -> web.StreamResponse:
         emit("upgrade")

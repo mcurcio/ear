@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <functional>
 #include <optional>
 #include <ostream>
 #include <random>
@@ -175,9 +177,14 @@ inline std::string waitForInstance(ChildProcess& ear, const std::string& node, s
 	return instance;
 }
 
-/// One second of the 1.5 s every test plays. On a loaded host the server can join its own ramp late, and it holds back
-/// the tail: 50688 frames were seen, all exact.
+/// The exact ramp frames a test asks the WAV for: one second. On a loaded host the server can join its own ramp late,
+/// by however much the host delayed it, so a test plays a long stream until the WAV holds them (waitForRamp), then ends
+/// it: as many seconds of play as it takes.
 inline constexpr std::uint32_t rampFramesAtLeast = graphFrequency;
+/// The stream a test plays until its WAV holds what it needs: far longer than a quiet host takes.
+inline constexpr const char* playLong = "play 60";
+/// Fails a wait for the WAV to hold a stream's frames, which a loaded host only makes longer.
+inline constexpr auto rampDeadline = 60s;
 
 /// The frames of one decoded chunk: what FFmpeg's FLAC encoder makes at 48000 Hz (aiosendspin's `_chunk_samples` is the
 /// encoder's `frame_size`), whatever the test server's 1200 frames a `prepare_audio`. The library makes at most one
@@ -206,19 +213,34 @@ struct RampCheck {
 	std::size_t zeroFramesInside = 0;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
-	std::size_t lastRunFrames = 0; // exact frames since the last bad step
+	std::size_t lastRunFrames = 0;         // exact frames since the last bad step
+	std::vector<std::string> badStepsSeen; // the first few, "<step> at <frame>", so a red names them
 };
 
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
-	return out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-	           << ", bad steps " << ramp.badSteps << ", zeros inside " << ramp.zeroFramesInside << ", indices "
-	           << ramp.firstIndex << " to " << ramp.lastIndex << ", frames of the last run " << ramp.lastRunFrames;
+	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
+		<< ", bad steps " << ramp.badSteps << ", zeros inside " << ramp.zeroFramesInside << ", indices "
+		<< ramp.firstIndex << " to " << ramp.lastIndex << ", frames of the last run " << ramp.lastRunFrames
+		<< ", bad steps seen:";
+	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
+	return out;
 }
 
 /// One blend per chunk the WAV's frames could have come from: each whole chunk, and one cut short at either end. Blends beyond
 /// it are corrections the library's rule cannot make, so they fail as frames off the ramp, in every test that asks for none.
 inline std::size_t blendLimit(std::size_t frames) { return frames / chunkFrames + 2; }
+
+/// Whether a step between exact ramp frames is one a skip makes: the node skips the frames the graph jumped, and the
+/// internal clock catches a stall up by the time it lost, whole blocks to within a frame either way (a step of 256 and
+/// of 512, a block and two less one, seen four times in 20 runs under load; the WAV carries no positions to tell the
+/// exact jump, which the clock tests judge frame for frame, docs/node-types.md#clock).
+inline bool isSkipStep(std::uint32_t step) {
+	if (step + 1 < blockSize) return false;
+	const std::uint32_t skipped = step - 1;
+	const std::uint32_t off = skipped % blockSize;
+	return off == 0 || off == 1 || off == blockSize - 1;
+}
 
 /// The ramp index a frame names, if it names one: both channels whole samples.
 inline std::optional<std::uint32_t> rampIndexOf(float left, float right) {
@@ -262,6 +284,47 @@ inline bool isBlend(const Wav& wav, std::size_t frame) {
 	return false;
 }
 
+inline RampCheck checkRamp(const Wav& wav);
+
+/// Until what the file node has written of `path` holds the ramp `enough` asks for, judged by checkRamp on the frames so
+/// far from frame `from` on (docs/testing.md#making-the-rare-event: the WAV holding the frames is the event). The stream
+/// must be playing, and long enough (playLong).
+inline bool waitForRamp(const std::filesystem::path& path, const std::function<bool(const RampCheck&)>& enough,
+                        std::size_t from = 0) {
+	return waitForWav(
+		path,
+		[&](const Wav& wav) {
+			const auto frames = static_cast<std::size_t>(wav.info.frames);
+			if (from == 0 || from >= frames) return from < frames && enough(checkRamp(wav));
+			Wav tail;
+			tail.info = wav.info;
+			tail.info.frames = static_cast<sf_count_t>(frames - from);
+			tail.samples.assign(wav.samples.begin() + static_cast<std::ptrdiff_t>(from * 2), wav.samples.end());
+			return enough(checkRamp(tail));
+		},
+		rampDeadline);
+}
+
+/// The frames the file node has written of `path` so far.
+inline std::size_t wavFramesSoFar(const std::filesystem::path& path) {
+	const std::optional<Wav> wav = readWavSoFar(path);
+	return wav ? static_cast<std::size_t>(wav->info.frames) : 0;
+}
+
+/// Until the WAV at `path` holds `frames` exact ramp frames.
+inline bool waitForRampFrames(const std::filesystem::path& path, std::size_t frames = rampFramesAtLeast) {
+	return waitForRamp(path, [frames](const RampCheck& ramp) { return ramp.rampFrames >= frames; });
+}
+
+/// Ends the stream the server plays to its current client, and waits for node `node` to say so: stream/end clears what
+/// the node holds, so the WAV ends in zeros rather than in the fade a stop would make.
+inline bool endStream(ChildProcess& ear, SendspinTestServer& server, const std::string& node = "ma") {
+	const std::string ended = "node " + node + " says stream-ended";
+	const std::size_t before = countLines(ear, ended);
+	server.send("end");
+	return waitForNthLine(ear, ended, before, playDeadline).has_value();
+}
+
 inline RampCheck checkRamp(const Wav& wav) {
 	RampCheck result;
 	const auto frames = static_cast<std::size_t>(wav.info.frames);
@@ -291,8 +354,10 @@ inline RampCheck checkRamp(const Wav& wav) {
 		}
 		if (previous) {
 			const std::uint32_t step = *index - *previous;
-			if (step != 1 && (step - 1) % blockSize != 0 && !(afterBlend && step == 3)) {
+			if (step != 1 && !isSkipStep(step) && !(afterBlend && step == 3)) {
 				++result.badSteps;
+				if (result.badStepsSeen.size() < 8)
+					result.badStepsSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));
 				result.lastRunFrames = 0;
 			}
 		} else {

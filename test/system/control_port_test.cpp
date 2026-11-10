@@ -220,9 +220,11 @@ TEST_CASE("levels.subscribe sends the noise's level", "[system][control]") {
 	INFO(levels.dump());
 	const json& level = levels["params"]["nodes"]["noise"]["noise.mono"];
 	// One window is 1600 frames, so its RMS of uniform noise is 0.577 with a standard deviation of 0.258 / sqrt(1600) =
-	// 0.0065 (see the test above): the margin is 7.7 of them, and a window that is partly silent or faded, which this test
-	// read before it waited for a whole one, still fails.
-	CHECK(level[1].get<double>() == Approx(0.577).margin(0.05));
+	// 0.0065 (docs/testing.md#statistics-from-the-count): within 6 of them, and a window that is partly silent or faded,
+	// which this test read before it waited for a whole one, still fails.
+	constexpr std::size_t windowFrames = 48000 / 30; // the graph file's rate, 30 windows a second
+	INFO("sigma " << noiseRmsSigma(windowFrames));
+	CHECK(noiseRmsWithin(level[1].get<double>(), windowFrames, 6.0));
 	CHECK(ear.stop(rpc) == 0);
 }
 

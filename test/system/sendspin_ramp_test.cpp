@@ -105,6 +105,20 @@ TEST_CASE("A skip's block multiple is still allowed", "[system][sendspin][ramp]"
 	CHECK(ramp.lastRunFrames == 3);
 }
 
+TEST_CASE("A skip of whole blocks to within a frame either way is allowed, and a step further off is not",
+          "[system][sendspin][ramp]") {
+	for (const std::uint32_t skipped : {blockSize - 1, blockSize + 1, 2 * blockSize - 1, 3 * blockSize + 1}) {
+		const RampCheck ramp = check({whole(100), whole(101 + skipped), whole(102 + skipped)});
+		INFO(skipped << ": " << ramp);
+		CHECK(ramp.badSteps == 0);
+	}
+	for (const std::uint32_t skipped : {blockSize - 2, blockSize + 2, blockSize / 2, std::uint32_t{2}}) {
+		const RampCheck ramp = check({whole(100), whole(101 + skipped), whole(102 + skipped)});
+		INFO(skipped << ": " << ramp);
+		CHECK(ramp.badSteps == 1);
+	}
+}
+
 TEST_CASE("The inserted frame as CI saw it passes", "[system][sendspin][ramp]") {
 	// CI's own frames, (12798,1) (12798.5,1) (12799,1).
 	const RampCheck ramp = check({{12798.0F, 1.0F}, {12798.5F, 1.0F}, {12799.0F, 1.0F}});

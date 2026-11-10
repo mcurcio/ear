@@ -8,7 +8,6 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "ear_system.hpp"
@@ -97,8 +96,8 @@ TEST_CASE("T1: ear boots from the record's example, and the cards fail and keep 
 	CHECK(graph["routes"][1]["to"] == json{{"node", "rec"}, {"port", "record.left"}});
 	CHECK(graph["routes"][1]["status"] == "linked");
 
-	// The recording window: the noise check needs at least half of it.
-	std::this_thread::sleep_for(1s);
+	// The recording window: until the WAV holds the second of noise the check below needs half of.
+	CHECK(waitForNoiseSecond(directory.recordings() / "take1.wav", 0, 44100));
 	CHECK(ear.stop(rpc) == 0);
 	CHECK(process.hasLine("node rec removed dropped=0"));
 	checkNoiseOnOneChannel(directory.recordings() / "take1.wav", 0, 44100);

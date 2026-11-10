@@ -6,7 +6,8 @@ harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 b
 type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R4b built
 (faults split by owner, `docs/architecture.md#faults-by-owner`; section 4.7), R5a built
 (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
-5.5), R5c built (`ear_node_sendspin_tests` audited, section 5.6), R6 built (the property table:
+5.5), R5c built (`ear_node_sendspin_tests` audited, section 5.6), R5d built (`ear_system_tests`, `ear_output_tests`,
+`ear_folder_tests` and the RTP receiver tests audited, section 5.7), R6 built (the property table:
 `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3) and R7 built (the harness runs the engine's
 own rules: `docs/writing-a-node-type.md#testing-a-type`, `docs/engine.md#sinks`; section 7.3); the rest designed, not
 built. Its steps are taken between slice 3b.4 and
@@ -882,6 +883,44 @@ in `docs/testing.md#making-the-rare-event`.
 - **The flood's thread bound is proven where it is enforced.** `transport_test.cpp` holds twice a room of 2 with listed
   sockets whose threads cannot end, and a flood of 50 upgrades after them adds no thread: four, exactly. The system
   test's sampled peak stays a `negative`.
+
+### 5.7 Found building R5d
+
+`ear_system_tests`, `ear_output_tests` and `ear_folder_tests` have no `luck` or `owed` entry left, and the RTP receiver
+tests in `ear_pipewire_tests` judge only what the host left alone.
+
+- **A recording is waited for in the WAV.** The file node's header is finished only at the end, so `readWavSoFar` reads
+  by RIFF chunks; `waitForWav` polls it (a `poll` sleep). White noise waits for a second of it; the `sendspin` ramps play
+  60 s and end the stream once the WAV holds the exact frames they need (a second; two and a half for the depth test; a
+  second of the new stream's run after a lost server, counted from the frames written before it). Ending by stream/end
+  keeps the WAV free of the stop's fade.
+- **The source's stamp span became steps.** `sendspin_server.py` says each source chunk (`source-chunk`) instead of the
+  span at the end. A step longer than the last chunk by more than 200 us is a skip (counted), a shorter one fails, and the
+  test streams until a second of frames came on clean steps. The 500 ms arrival bound became the quickest chunk's
+  (250 ms), waited for over the stream: only a stamp on another clock or carrying an offset keeps every chunk above it;
+  no chunk may arrive before its stamp.
+- **Holders renew on the transport's close.** A renewing round half-closes its sockets and reads each until the
+  transport closes its end, then opens the next; the holder test checks none was left. The slow upgrade's `took < 3 s`
+  (the peers' rounds on the host's schedule) became "the rounds asked for, or those within 2 s, at least one".
+- **RMS from the count everywhere.** `checkNoiseOnOneChannel` (also past the 5 ms fade) and the levels window use
+  `noiseRmsWithin`, and so does the source's recorded channel.
+- **The RTP receiver has no counters a test can read**, so the sender counts its own late sends (`lateSends()`, over
+  10 ms late). The engine tests' recorder keeps a ledger: a tenth is judged when its cycles and the half second before it
+  are clean and no late send lies within 600 ms before it, to a planned ten, sending 25 s. The system test has no ledger
+  (ear is another process): it excuses tenths only by the sender's late sends, timed by when the WAV was first seen to
+  hold them. A stall of ear's own data thread in the system test is not seen there; it is judged where it can be, in
+  `ear_pipewire_tests`.
+- **The ramp judge assumed whole-block jumps.** `checkRamp` let a step through only as one more than a multiple of the
+  block; under load the depth test saw steps of 256 and 512 at cycle boundaries, 4 runs in 20: the internal clock catches
+  a stall up by the time lost, whole blocks to within a frame. The WAV carries no positions, so `isSkipStep` allows a
+  frame either way of whole blocks, and nothing else; the clock tests judge every skip frame for frame.
+- **More than the table named.** `sendspin_connections_test.cpp`'s `fillBacklog` took a connect not finished within
+  200 ms as dropped; it now asks the listener (`TCP_INFO`: the accept queue against its bound). `output_writer_test.cpp`'s
+  50 ms became the writer's own event: a page of room, a line of two pages, and the page filling again; the test then
+  checks the stuck path exactly. `confined_folder_test.cpp`'s skip under root uses `WithoutFilePrivileges`.
+- **Kept, as the product's own bounds:** a stop or a restart within S1's 5 s (`stopBound`), the spill within 2 s, the
+  log's and mDNS's rates over the time measured (a slower host only loosens them), the 200 ms look for late transport
+  lines (a negative), and the flood's sampled thread peak (a negative, its bound proven in the transport's tests).
 
 ## 6. Class 4: PipeWire properties
 

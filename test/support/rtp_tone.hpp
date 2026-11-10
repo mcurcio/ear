@@ -55,6 +55,18 @@ public:
 	/// never paces one).
 	bool waitSent(std::chrono::milliseconds deadline);
 
+	/// A packet the sender's thread sent later than its last frame was due, by more than lateSendBound: the host's
+	/// doing (it woke the thread late), which a receiver hears as a gap in its buffer. When it was sent, on the steady
+	/// clock (CLOCK_MONOTONIC, a GraphCycle's startNs), and how late.
+	struct LateSend {
+		std::chrono::steady_clock::time_point at;
+		std::chrono::nanoseconds late;
+	};
+	static constexpr std::chrono::milliseconds lateSendBound{10};
+	/// Every late send so far, in order: the sender's own counter, which a test judges a receiver's output by
+	/// (docs/testing.md#making-the-rare-event), as the receiver itself counts nothing a test can read.
+	std::vector<LateSend> lateSends() const;
+
 private:
 	struct Impl;
 	std::unique_ptr<Impl> impl_;
@@ -148,9 +160,14 @@ struct RtpSender::Impl {
 		const auto start = std::chrono::steady_clock::now();
 		for (std::uint64_t sent = 0; sent < total && !stopping.load(); sent += framesPerPacket) {
 			const std::chrono::duration<double> due(static_cast<double>(sent + framesPerPacket) / rate);
-			std::this_thread::sleep_until(start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due));
+			const auto dueAt = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due);
+			std::this_thread::sleep_until(dueAt);
 			const auto bytes = packet(sent);
 			::sendto(socket.fd(), bytes.data(), bytes.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
+			if (const auto now = std::chrono::steady_clock::now(); now - dueAt > lateSendBound) {
+				const std::lock_guard lock(mutex);
+				late.push_back({now, now - dueAt});
+			}
 		}
 		const std::lock_guard lock(mutex);
 		done = true;
@@ -169,6 +186,7 @@ struct RtpSender::Impl {
 	std::mutex mutex;
 	std::condition_variable doneChanged;
 	bool done = false;
+	std::vector<LateSend> late; // under mutex
 };
 
 inline RtpSender::RtpSender(std::uint16_t port, RtpPcm pcm, std::uint32_t rate, RtpTone tone, std::uint32_t ssrc)
@@ -188,6 +206,11 @@ inline void RtpSender::send(std::uint64_t frames) {
 inline bool RtpSender::waitSent(std::chrono::milliseconds deadline) {
 	std::unique_lock lock(impl_->mutex);
 	return impl_->doneChanged.wait_for(lock, deadline, [&] { return impl_->done; });
+}
+
+inline std::vector<RtpSender::LateSend> RtpSender::lateSends() const {
+	const std::lock_guard lock(impl_->mutex);
+	return impl_->late;
 }
 
 inline std::uint16_t freeUdpPort() {

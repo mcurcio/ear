@@ -12,6 +12,7 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -21,12 +22,14 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "catch2/catch.hpp"
 #include "child_process.hpp"
+#include "statistics.hpp"
 #include "temp_folder.hpp"
 #include "ws_client.hpp"
 
@@ -230,6 +233,64 @@ inline Wav readWav(const std::filesystem::path& path) {
 	return wav;
 }
 
+/// What a 32-bit float WAV a file node is still writing holds so far, read by its RIFF chunks rather than its header's
+/// sizes, which the writer fills in only when it finishes: its frames are every whole frame past the data chunk's start.
+/// Nothing until its header is written. A frame being written as it is read may be torn, so this decides only when to
+/// stop waiting; the finished file is what a test judges.
+inline std::optional<Wav> readWavSoFar(const std::filesystem::path& path) {
+	std::ifstream file(path, std::ios::binary);
+	const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+	const auto word = [&](std::size_t at, std::size_t size) {
+		std::uint32_t value = 0;
+		for (std::size_t i = 0; i < size; ++i) value |= static_cast<std::uint32_t>(bytes[at + i]) << (8U * i);
+		return value;
+	};
+	if (bytes.size() < 12 || std::memcmp(bytes.data(), "RIFF", 4) != 0 || std::memcmp(bytes.data() + 8, "WAVE", 4) != 0)
+		return std::nullopt;
+	Wav wav;
+	for (std::size_t at = 12; at + 8 <= bytes.size(); at += 8 + word(at + 4, 4) + (word(at + 4, 4) & 1U)) {
+		if (std::memcmp(bytes.data() + at, "fmt ", 4) == 0 && at + 16 <= bytes.size()) {
+			wav.info.channels = static_cast<int>(word(at + 10, 2));
+			wav.info.samplerate = static_cast<int>(word(at + 12, 4));
+		} else if (std::memcmp(bytes.data() + at, "data", 4) == 0) {
+			if (wav.info.channels <= 0) return std::nullopt;
+			const std::size_t frameBytes = static_cast<std::size_t>(wav.info.channels) * sizeof(float);
+			const std::size_t frames = (bytes.size() - (at + 8)) / frameBytes;
+			wav.info.frames = static_cast<sf_count_t>(frames);
+			wav.samples.resize(frames * static_cast<std::size_t>(wav.info.channels));
+			std::memcpy(wav.samples.data(), bytes.data() + at + 8, frames * frameBytes);
+			return wav;
+		}
+	}
+	return std::nullopt;
+}
+
+/// Until what a file node has written of `path` satisfies `enough`: the WAV holding what a check needs is the event, so
+/// a loaded host only makes the wait longer; `patience` only fails the test.
+inline bool waitForWav(const std::filesystem::path& path, const std::function<bool(const Wav&)>& enough,
+                       std::chrono::milliseconds patience) {
+	const auto until = std::chrono::steady_clock::now() + patience;
+	for (;;) {
+		if (const std::optional<Wav> wav = readWavSoFar(path); wav && enough(*wav)) return true;
+		if (std::chrono::steady_clock::now() >= until) return false;
+		std::this_thread::sleep_for(10ms); // between looks at the WAV, which decide
+	}
+}
+
+/// Frames of channel `channel` (of two) from its first non-zero sample on: how much of a route's noise a WAV holds.
+inline std::size_t framesFromFirstSound(const Wav& wav, int channel) {
+	const auto frames = static_cast<std::size_t>(wav.info.frames);
+	for (std::size_t frame = 0; frame < frames; ++frame)
+		if (wav.samples[frame * 2 + static_cast<std::size_t>(channel)] != 0.0F) return frames - frame;
+	return 0;
+}
+
+/// Until the WAV a file node writes at `path` holds a second of noise on channel `noisy` (of two), at `rate`: the
+/// recording window checkNoiseOnOneChannel needs, waited for as an event.
+inline bool waitForNoiseSecond(const std::filesystem::path& path, int noisy, std::uint32_t rate) {
+	return waitForWav(path, [&](const Wav& wav) { return framesFromFirstSound(wav, noisy) >= rate; }, 4 * deadline);
+}
+
 /// A finished 32-bit float stereo WAV at `rate` with uniform white noise on channel `noisy` for at
 /// least half a second, unbroken, and exact zeros on the other.
 inline void checkNoiseOnOneChannel(const std::filesystem::path& path, int noisy, std::uint32_t rate) {
@@ -267,8 +328,18 @@ inline void checkNoiseOnOneChannel(const std::filesystem::path& path, int noisy,
 		if (sample == 0.0F && wav.samples[(frame - 1) * 2 + noisy] == 0.0F) ++zeroRuns;
 	}
 	CHECK(zeroRuns == 0);
-	const double rms = std::sqrt(sumOfSquares / static_cast<double>(span));
-	CHECK(rms == Approx(0.577).margin(0.01));
+	// The noise's RMS within 5 standard deviations for the frames measured (docs/testing.md#statistics-from-the-count),
+	// past the drive's 5 ms fade-in (docs/engine.md#drive-and-fade), which would weigh on it.
+	const std::size_t fade = rate * 5 / 1000;
+	double fadedSquares = 0.0;
+	for (std::size_t frame = first; frame < first + fade && frame <= last; ++frame) {
+		const float sample = wav.samples[frame * 2 + noisy];
+		fadedSquares += static_cast<double>(sample) * sample;
+	}
+	const std::size_t measured = span > fade ? span - fade : 0;
+	const double rms = measured == 0 ? 0.0 : std::sqrt((sumOfSquares - fadedSquares) / static_cast<double>(measured));
+	INFO("noise RMS " << rms << " over " << measured << " frames, sigma " << noiseRmsSigma(measured));
+	CHECK(noiseRmsWithin(rms, measured, 5.0));
 }
 
 } // namespace ear::test

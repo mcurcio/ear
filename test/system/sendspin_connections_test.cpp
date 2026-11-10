@@ -10,6 +10,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -41,9 +42,20 @@ public:
 	std::string url() const { return "ws://127.0.0.1:" + std::to_string(port_) + "/sendspin"; }
 	std::uint16_t port() const noexcept { return port_; }
 
-	/// Connects until the backlog is full: the kernel then drops every new SYN, so the last connect stays in progress.
+	/// Connects until the backlog is full, then once more: the kernel then drops every new SYN, so that connect, and any
+	/// after it, stays in progress. Full is the listening socket's own word (TCP_INFO on a listener: tcpi_unacked is its
+	/// accept queue, tcpi_sacked the queue's bound, and it is full past the bound), never a guess from how long a connect
+	/// took; each connect the queue can take is waited for until it has finished.
 	void fillBacklog() {
+		const auto queue = [this] {
+			tcp_info info{};
+			socklen_t length = sizeof info;
+			REQUIRE(::getsockopt(fd_, IPPROTO_TCP, TCP_INFO, &info, &length) == 0);
+			return info;
+		};
 		for (int tries = 0; tries < 64; ++tries) {
+			const tcp_info before = queue();
+			const bool full = before.tcpi_unacked > before.tcpi_sacked;
 			const int filler = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
 			REQUIRE(filler >= 0);
 			fillers_.push_back(filler);
@@ -52,9 +64,9 @@ public:
 			address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 			address.sin_port = htons(port_);
 			::connect(filler, reinterpret_cast<sockaddr*>(&address), sizeof address);
-			// A connect the backlog took has finished by now on loopback; one it dropped has not.
+			if (full) return; // this one's SYN was dropped
 			pollfd writable{filler, POLLOUT, 0};
-			if (::poll(&writable, 1, 200) == 0) return;
+			REQUIRE(::poll(&writable, 1, static_cast<int>(std::chrono::milliseconds(deadline).count())) == 1);
 		}
 		FAIL("the backlog never filled");
 	}
@@ -173,8 +185,9 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	SendspinTestServer server({"--dial", "ws://127.0.0.1:" + std::to_string(port) + "/sendspin"});
 	REQUIRE_SEEN(ear, ear.waitForLine(connectedUnpaired, deadline));
 	pairOnce(ear, server);
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, ear.waitForLine("node ma says stream-ended", playDeadline));
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);

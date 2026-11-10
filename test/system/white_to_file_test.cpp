@@ -7,7 +7,6 @@
 #include <csignal>
 #include <filesystem>
 #include <string>
-#include <thread>
 
 #include "ear_system.hpp"
 
@@ -32,8 +31,8 @@ void checkAllRecords(const ChildProcess& ear) {
 	}
 }
 
-/// Runs ear on a graph routing noise to rec:`to` for about a second after the route is linked,
-/// stops it with SIGTERM and checks the WAV: noise on channel `noisy`, exact zeros on the other.
+/// Runs ear on a graph routing noise to rec:`to` until the WAV holds a second of it, stops it with SIGTERM and checks
+/// the WAV: noise on channel `noisy`, exact zeros on the other.
 void recordNoise(const std::string& to, int noisy) {
 	TempDirectory directory;
 	writeGraphFile(directory, noiseToRec(to));
@@ -42,8 +41,8 @@ void recordNoise(const std::string& to, int noisy) {
 	const bool linked = ear.waitForLine(linkedLine("noise:noise.mono", "rec:" + to), deadline);
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(linked);
-	// The recording window: one second; the checks below need at least half of it.
-	std::this_thread::sleep_for(1s);
+	// The recording window: until the WAV holds a second of noise; the checks below need at least half of it.
+	CHECK(waitForNoiseSecond(directory.recordings() / "rec.wav", noisy, 48000));
 	ear.signal(SIGTERM);
 	const auto exitStatus = ear.waitForExit(deadline);
 	INFO("ear printed:\n" << ear.output());

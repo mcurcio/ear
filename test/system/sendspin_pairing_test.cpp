@@ -56,9 +56,9 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	CHECK_FALSE(ear.lineStartingWith("node ma says pairing-failed"));
 	CHECK_FALSE(ear.hasLine("node ma says disconnected"));
 
-	server.send("play 1.5");
-	const bool ended = ear.waitForLine("node ma says stream-ended", playDeadline);
-	REQUIRE(ended);
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "rec.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server));
 
 	ear.signal(SIGTERM);
 	const auto exitStatus = ear.waitForExit(deadline);
@@ -269,11 +269,14 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-out.key"));
 	CHECK(std::filesystem::exists(directory.config() / "sendspin-in.key"));
 
-	server.send("play 1.5"); // the node paired last
+	server.send(playLong); // the node paired last
 	server.send("use " + outId);
-	server.send("play 1.5");
-	REQUIRE_SEEN(ear, ear.waitForLine("node in says stream-ended", playDeadline));
-	REQUIRE_SEEN(ear, ear.waitForLine("node out says stream-ended", playDeadline));
+	server.send(playLong);
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "in.wav"));
+	REQUIRE_SEEN(ear, waitForRampFrames(directory.recordings() / "out.wav"));
+	REQUIRE_SEEN(ear, endStream(ear, server, "out"));
+	server.send("use " + inId);
+	REQUIRE_SEEN(ear, endStream(ear, server, "in"));
 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);

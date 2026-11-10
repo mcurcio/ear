@@ -19,6 +19,7 @@
 #include "catch2/catch.hpp"
 #include "ear/folder/confined_folder.hpp"
 #include "temp_folder.hpp"
+#include "without_file_privileges.hpp"
 
 namespace {
 
@@ -292,10 +293,7 @@ TEST_CASE("replaceIf() refuses a path that leads out or through a symlinked dire
 }
 
 TEST_CASE("replaceIf() in a folder it cannot write is an error and the file is unchanged", "[folder]") {
-	if (::geteuid() == 0) {
-		WARN("root writes a read-only folder; this case needs an ordinary user");
-		return;
-	}
+	const ear::test::WithoutFilePrivileges asAnOrdinaryUser; // first, so the folder is gone before they come back
 	TempFolder dir{"readonly"};
 	const auto folder = openFolder(dir.path() / "folder");
 	const auto file = dir.path() / "folder" / "ear.conf";
