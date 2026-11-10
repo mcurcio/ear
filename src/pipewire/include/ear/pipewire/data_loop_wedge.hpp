@@ -5,7 +5,10 @@
 // good, SIGTERM included. So main.cpp marks the engine once ear.data-loop-wedged is said, and from then on this
 // package's adapters refuse or leak instead of calling: Links makes no link (each is refused "the data loop is wedged")
 // and leaks every link proxy it would destroy; an engine companion leaks its links and body; a port block tells no
-// latency. Leaked objects are never freed: main.cpp ends through std::_Exit.
+// latency. Every step that would wait on that loop (a blocking invoke, removing a filter's listener, destroying a
+// filter or a proxy) is taken in the callback boundary, which skips it and leaks once the engine is marked, so no
+// other path (an adapter's fault among them) can wait either. Leaked objects are never freed: main.cpp ends through
+// std::_Exit.
 #pragma once
 namespace ear::pipewire {
 class Engine;

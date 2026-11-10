@@ -229,7 +229,10 @@ that removes it when destroyed: `addEvent`, `addTimer` and `addSignal` fill a `L
 and filters ear makes are held the same way (`OwnedProxy`). Each owner declares them in the order
 it registers them, the object before the listeners on it, so a constructor that throws anywhere
 unwinds every registration made so far before anything they call into goes, and its destructor
-still removes each first, in its own order. A test seam counts what is held and throws after the
+still removes each first, in its own order. Every step that would wait on the data loop (a blocking invoke into it,
+removing a filter's listener, destroying a filter or a proxy) is taken in the boundary too, which skips it and leaks
+once the loop is marked wedged ([below](#bounds-the-wedged-data-loop-and-the-watchdog)), so no path, an owner's fault
+among them, can hang the main loop on it. A test seam counts what is held and throws after the
 `n`th registration (`boundary::throwAfterRegistration`, `registrationsHeld`), and another throws
 inside a named callback (`boundary::throwInCallback`), so the tests prove each owner both ways
 ([testing.md](testing.md#the-tools)).

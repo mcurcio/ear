@@ -18,6 +18,7 @@ namespace {
 std::atomic<bool> engaged{false}; // an engine (or a test) holds the boundary
 std::atomic<Faults*> installed{nullptr};
 std::atomic<std::thread::id> mainThread{};
+std::atomic<bool> wedged{false};     // the data loop runs no invoke
 std::atomic<std::size_t> heldNow{0}; // registrations held
 std::atomic<std::size_t> throwAt{0}; // the seam: the registration that throws once held, counted down; 0 none
 
@@ -51,12 +52,14 @@ std::string detailOfCaught() {
 
 bool install(Faults* faults) noexcept {
 	if (engaged.exchange(true, std::memory_order_acq_rel)) return false;
+	wedged.store(false, std::memory_order_release);
 	mainThread.store(std::this_thread::get_id(), std::memory_order_release);
 	installed.store(faults, std::memory_order_release);
 	return true;
 }
 
 void uninstall() noexcept {
+	wedged.store(false, std::memory_order_release);
 	installed.store(nullptr, std::memory_order_release);
 	mainThread.store(std::thread::id{}, std::memory_order_release);
 	engaged.store(false, std::memory_order_release);
@@ -78,6 +81,12 @@ void injectedIn(std::string_view callback) {
 	armedCallback.clear();
 	throw std::runtime_error("injected");
 }
+
+void markDataLoopWedged() noexcept { wedged.store(true, std::memory_order_release); }
+
+bool dataLoopWedged() noexcept { return wedged.load(std::memory_order_acquire); }
+
+void clearDataLoopWedged() noexcept { wedged.store(false, std::memory_order_release); }
 
 void throwAfterRegistration(std::size_t n) noexcept { throwAt.store(n, std::memory_order_release); }
 

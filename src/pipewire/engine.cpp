@@ -233,7 +233,10 @@ std::set<const Engine*>& wedgedEngines() {
 }
 } // namespace
 
-void markDataLoopWedged(const Engine& engine) { wedgedEngines().insert(&engine); }
+void markDataLoopWedged(const Engine& engine) {
+	wedgedEngines().insert(&engine);
+	boundary::markDataLoopWedged(); // every blocking step into the data loop goes through the boundary
+}
 
 bool dataLoopWedged(const Engine& engine) noexcept { return wedgedEngines().contains(&engine); }
 

@@ -575,9 +575,10 @@ least change made (the built rule is `docs/architecture.md#faults-by-owner`):
   factory and an engine companion adapter refuse only through their events, so a throw is their bug, and NodeHost
   already strands nothing where it calls them: R4b routes them by owner (`PortBlockFactory::make`,
   `SoundCardCompanions::make`, `RtpReceiverCompanions::make`: the record with the flush item as where, the node `lost`,
-  nothing rethrown). Safe only once every adapter constructor is exception-safe, which the review below made true. An adapter call that interrupts NodeHost's own update (a block's `drive`, `fadeOut`, `settle` or
-  `carryLatency` while NodeHost carries out a machine's actions) stays NodeHost's: what NodeHost had half-done is
-  every node's, which is section 9's reason for ending the process.
+  nothing rethrown). Safe only once every adapter constructor is exception-safe, which the review below made true.
+  An adapter call that interrupts NodeHost's own update (a block's `drive`, `fadeOut`, `settle` or `carryLatency`
+  while NodeHost carries out a machine's actions) stays NodeHost's: what NodeHost had half-done is every node's,
+  which is section 9's reason for ending the process.
 - **The record.** A `diagnostic` code, `ear.internal-error`, with `node` when it fails one, `callback`, and `detail`
   `<callback> threw[ during <where>]: <what>`, the boundary's `where` folded into the detail rather than a field of its
   own (section 9 names three fields). `StatusLog::internalError` is its one wording, and `InternalErrorListener`
@@ -630,6 +631,16 @@ Found in R4b's review, each fixed at its root class:
   Faults ear runs with is now `RecordThenEnd` in `ear/pipewire/faults.hpp` (main.cpp gives it the record and the last
   words), so the child runs under it: a fault taken for an owner would return and the child would exit 91. Its owned
   path is tested in-process.
+- **A faulted block's leaving could wait on a wedged data loop for good** (found in the re-review): removing its
+  filter's listener clears the process callback by a blocking invoke, and only `leave()` checked the wedge. The rule is
+  now structural: every step that waits on the data loop is taken in one place in the boundary, which skips it and
+  leaks once the loop is marked wedged (`boundary::markDataLoopWedged`, set by `markDataLoopWedged`): a blocking
+  `invoke` on the data loop (-EDEADLK, nothing run), the removal of a listener bound to it (a filter's, left on the
+  leaked filter's list), and the destruction of a filter or a proxy (`OwnedFilter`, `OwnedProxy`). The adapters' own
+  wedge checks stay where they refuse rather than leak (`Links` makes no link, a companion does not link). Tested with
+  the data loop really stuck in a code's process: a fault's three steps return at once, the owner is told and the
+  main loop's next event runs. Also: a link's proxy is held (`OwnedProxy`) from its making, before its `LinkProxy`
+  is, and a handoff's or sink's thread loop is held (`OwnedThreadLoop`), so neither leaks on a throw between.
 - **The no-node records were alike.** `fatal: true` marks the one after which ear ends; a route link's has none.
   `docs/output-records.md` says the node's `lost` follows unless the node is already being stopped, restarted or
   removed.

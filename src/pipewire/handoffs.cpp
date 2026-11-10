@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -22,17 +23,24 @@
 namespace ear::pipewire {
 namespace {
 
+/// A thread loop held by its owner, declared before the sources on it, so a constructor that throws after making it
+/// destroys it (after those sources), never leaks it (docs/architecture.md#faults-by-owner).
+struct ThreadLoopDestroy {
+	void operator()(pw_thread_loop* loop) const noexcept { pw_thread_loop_destroy(loop); }
+};
+using OwnedThreadLoop = std::unique_ptr<pw_thread_loop, ThreadLoopDestroy>;
+
 class ThreadHandoff final : public Handoff, public RtWriter {
 public:
 	ThreadHandoff(pw_loop* mainLoop, const NodeName& node, std::uint32_t channels, std::uint32_t capacityFrames,
 	              HandoffConsumer& consumer)
 		: mainLoop_(mainLoop), ring_(channels, capacityFrames), consumer_(consumer) {
 		const std::string name = "ear-handoff " + node;
-		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
+		thread_.reset(pw_thread_loop_new(name.c_str(), nullptr));
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), name);
-		addEvent(wake_, pw_thread_loop_get_loop(thread_), guarded<&ThreadHandoff::onWake>, this);
+		addEvent(wake_, pw_thread_loop_get_loop(thread_.get()), guarded<&ThreadHandoff::onWake>, this);
 		addEvent(finished_, mainLoop_, guarded<&ThreadHandoff::onFinished>, this);
-		if (const int result = pw_thread_loop_start(thread_); result < 0) {
+		if (const int result = pw_thread_loop_start(thread_.get()); result < 0) {
 			destroy();
 			throw std::system_error(-result, std::generic_category(), name);
 		}
@@ -49,13 +57,13 @@ public:
 		closed_ = std::move(closed);
 		// The writing port block is gone, so every write happened before this store.
 		closing_.store(true, std::memory_order_release);
-		pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get());
+		pw_loop_signal_event(pw_thread_loop_get_loop(thread_.get()), wake_.get());
 	}
 
 	std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept override {
 		const std::uint32_t accepted = ring_.writePlanar(channels, frames);
 		if (accepted < frames) dropped_.fetch_add(frames - accepted, std::memory_order_relaxed);
-		if (accepted > 0) pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get());
+		if (accepted > 0) pw_loop_signal_event(pw_thread_loop_get_loop(thread_.get()), wake_.get());
 		return accepted;
 	}
 
@@ -94,17 +102,16 @@ private:
 
 	void destroy() noexcept {
 		if (thread_ == nullptr) return;
-		pw_thread_loop_stop(thread_);
+		pw_thread_loop_stop(thread_.get());
 		wake_.reset();
-		pw_thread_loop_destroy(thread_);
-		thread_ = nullptr;
+		thread_.reset();
 		finished_.reset();
 	}
 
 	pw_loop* mainLoop_;
 	FrameRing ring_;
 	HandoffConsumer& consumer_;
-	pw_thread_loop* thread_ = nullptr;
+	OwnedThreadLoop thread_;
 	LoopSource wake_;     // on the handoff's thread loop
 	LoopSource finished_; // on the main loop
 	std::atomic<std::uint64_t> dropped_{0};
@@ -123,15 +130,15 @@ public:
 	           std::uint32_t capacityFrames, std::uint32_t rate)
 		: mainLoop_(mainLoop), rules_(channels, capacityFrames, rate) {
 		const std::string name = node + "." + std::string(bank); // its engine name
-		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
+		thread_.reset(pw_thread_loop_new(name.c_str(), nullptr));
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), "sink thread " + name);
-		addEvent(wake_, pw_thread_loop_get_loop(thread_), guarded<&ThreadSink::onWake>, this);
+		addEvent(wake_, pw_thread_loop_get_loop(thread_.get()), guarded<&ThreadSink::onWake>, this);
 		if (!wake_) {
 			const int error = errno;
 			destroy();
 			throw std::system_error(error, std::generic_category(), "sink thread " + name);
 		}
-		if (const int result = pw_thread_loop_start(thread_); result < 0) {
+		if (const int result = pw_thread_loop_start(thread_.get()); result < 0) {
 			destroy();
 			throw std::system_error(-result, std::generic_category(), "sink thread " + name);
 		}
@@ -167,7 +174,7 @@ public:
 	}
 
 private:
-	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get()); }
+	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_.get()), wake_.get()); }
 
 	/// The sink's thread: begin once asked, every stamped chunk to the consumer, then (closing) finish once.
 	void onWake(std::uint64_t /*count*/) {
@@ -197,10 +204,9 @@ private:
 	/// Stops the thread (joining it) before anything it reads goes.
 	void destroy() noexcept {
 		if (thread_ == nullptr) return;
-		pw_thread_loop_stop(thread_);
+		pw_thread_loop_stop(thread_.get());
 		wake_.reset();
-		pw_thread_loop_destroy(thread_);
-		thread_ = nullptr;
+		thread_.reset();
 	}
 
 	Executor& mainLoop_;
@@ -212,7 +218,7 @@ private:
 	std::move_only_function<void(std::uint64_t)> closed_; // set before closing_; then the sink's thread's
 	bool began_ = false;                                  // the sink's thread only
 	bool finished_ = false;                               // the sink's thread only
-	pw_thread_loop* thread_ = nullptr;
+	OwnedThreadLoop thread_;
 	LoopSource wake_; // on the sink's thread loop
 };
 

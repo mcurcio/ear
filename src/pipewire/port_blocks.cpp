@@ -104,11 +104,6 @@ private:
 	RegisteredBlock* block_ = nullptr;
 };
 
-/// Destroys a filter ear made.
-struct FilterDestroy {
-	void operator()(pw_filter* filter) const noexcept { pw_filter_destroy(filter); }
-};
-
 std::vector<PortName> publicPorts(const Ports& ports) {
 	std::vector<PortName> names = ports.inputs();
 	names.insert(names.end(), ports.outputs().begin(), ports.outputs().end());
@@ -290,7 +285,8 @@ private:
 	/// any of the filter's events, the filter and any invoke of its still queued, as its destructor does it. From
 	/// then on every request is applied on the main thread and completed by signal, so the silences its node's
 	/// teardown asks for complete and no bound takes the data loop for wedged (docs/architecture.md#faults-by-owner).
-	/// On a wedged data loop nothing more is touched (data_loop_wedge.hpp).
+	/// On a wedged data loop each step that would wait on it is skipped by the boundary, which leaks instead
+	/// (boundary::dataLoopWedged), and nothing is applied on the main thread (leave()).
 	void faulted(std::string_view callback, std::string_view detail) override {
 		listener_.remove();
 		processing_.store(false, std::memory_order_release);
@@ -302,7 +298,9 @@ private:
 		if (refusal_) pw_loop_signal_event(loop_, refusal_.get());
 	}
 
-	/// Main loop, outside the filter's events: the rest of faulted()'s leaving.
+	/// Main loop, outside the filter's events: the rest of faulted()'s leaving. On a wedged data loop the filter's
+	/// process stays installed (its listener leaked), so nothing is applied here either, where it would race that
+	/// loop's apply should it ever run again.
 	void leave() {
 		if (dataLoopWedged(engine_)) return;
 		filter_.reset();
@@ -720,7 +718,7 @@ private:
 	LevelsEntry levelsEntry_;
 	LoopSource refusal_;
 	LoopSource completion_;
-	std::unique_ptr<pw_filter, FilterDestroy> filter_;
+	OwnedFilter filter_;
 	Listener listener_;
 };
 

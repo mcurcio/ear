@@ -4,6 +4,7 @@
 // arrived; the deadline only fails the test.
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <csignal>
@@ -684,6 +685,9 @@ TEST_CASE("After the data loop is judged wedged a route's link is leaked, not de
 	CHECK(std::chrono::steady_clock::now() - before < std::chrono::seconds(4));
 
 	release.store(true); // the blocks' teardown below waits on the data loop
+	// The loop runs again: the mark is lifted for the teardown, which on a loop still wedged would leak what it
+	// destroys (the boundary skips every step that waits on it).
+	boundary::clearDataLoopWedged();
 }
 
 namespace {
@@ -1013,4 +1017,82 @@ TEST_CASE(
 	CHECK_FALSE(faults.reports[1].owned);
 	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink + 1}); // told before the listener that threw
 	CHECK(pair.linkLog.failed.size() == 1);                       // the link itself was not failed
+}
+
+namespace {
+
+/// An owner of a filter listened to on the data loop, whose fault takes the same steps through the boundary as a port
+/// block's (FilterPortBlock::faulted and leave): the listener removed (its process callback cleared by a blocking
+/// invoke), a blocking flush invoke, the filter destroyed.
+class FilterOwner final : public FaultOwner {
+public:
+	explicit FilterOwner(Engine& engine) : dataLoop_(pw_context_get_data_loop(engine.context())) {
+		filter_.reset(pw_filter_new(engine.core(), "faulted", pw_properties_new(PW_KEY_MEDIA_TYPE, "Audio", nullptr)));
+		listen<FilterCallbacks<FilterOwner>{.process = realtime<&FilterOwner::onProcess>}>(filter_.get(), listener_,
+		                                                                                   this);
+		pw_filter_connect(filter_.get(), PW_FILTER_FLAG_RT_PROCESS, nullptr, 0);
+	}
+	std::string_view faultNode() const noexcept override { return "faulted"; }
+	void faulted(std::string_view, std::string_view) override {
+		listener_.remove();
+		flushed = invoke(dataLoop_, realtime<&FilterOwner::onNothing>, this, true);
+		filter_.reset();
+		told = true;
+	}
+	void onEvent(std::uint64_t /*count*/) { throw std::runtime_error("bad state"); }
+	void onProcess(spa_io_position* /*position*/) noexcept {}
+	void onNothing() noexcept {}
+	bool told = false;
+	int flushed = 0;
+
+private:
+	DataLoop dataLoop_;
+	OwnedFilter filter_;
+	Listener listener_;
+};
+
+} // namespace
+
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: once the data loop is marked wedged, every step
+// that would wait on it goes through the boundary, which skips it and leaks: an owner's fault there (a listener bound
+// to the data loop removed, a blocking invoke, a filter destroyed) returns at once, its owner is told, and the main
+// loop runs on. The data loop is really stuck here (a code that waits in process), so a step that waited would hang.
+TEST_CASE("A fault on a wedged data loop makes no blocking step into it: the owner is told and the main loop runs on",
+          "[engine][faults][wedge]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	auto* owner = new FilterOwner(*engine); // leaked, with its filter, as a wedged loop's objects are
+	// The data loop runs no invoke from here: one of its invokes waits until the test lets it go.
+	std::atomic<bool> hold{true};
+	pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+	REQUIRE(dataLoop != nullptr);
+	pw_loop_invoke(
+		dataLoop,
+		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+			static_cast<std::atomic<bool>*>(data)->wait(true);
+			return 0;
+		},
+		0, nullptr, 0, false, &hold);
+	markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+
+	Guarded<&FilterOwner::onEvent>::call(owner, 0); // returns: nothing waited on the stuck loop
+	CHECK(owner->told);
+	CHECK(owner->flushed == -EDEADLK);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "FilterOwner::onEvent");
+	CHECK(faults.reports[0].node == "faulted");
+	CHECK(faults.reports[0].owned);
+
+	MainLoopExecutor mainLoop(*engine);
+	Waiter waiter(*engine);
+	bool ran = false;
+	mainLoop.post([&] {
+		ran = true;
+		waiter.wake();
+	});
+	CHECK(waiter.until([&] { return ran; })); // the main loop's next event runs
+
+	hold = false;
+	hold.notify_all();
+	boundary::clearDataLoopWedged(); // the loop runs again: the teardown below destroys what it holds
 }

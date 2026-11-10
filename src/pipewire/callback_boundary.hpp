@@ -14,6 +14,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -83,6 +84,18 @@ void throwAfterRegistration(std::size_t n) noexcept;
 /// How many registrations are held now (sources and listeners the boundary made, and port blocks' levels entries):
 /// a test's count that an owner whose constructor threw left none behind.
 std::size_t registrationsHeld() noexcept;
+/// Main thread (markDataLoopWedged): the data loop runs no invoke. From then on every step that would wait on it is
+/// skipped here, in the one place each such step is taken, and what it would have released is leaked: a blocking
+/// invoke into it (invoke with `block`), the removal of a listener bound to it (a filter's: its process callback is
+/// cleared by a blocking invoke), and the destruction of a filter or a proxy (a link's releases port mixes by one)
+/// (data_loop_wedge.hpp; docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog). Cleared when the
+/// boundary is next installed.
+void markDataLoopWedged() noexcept;
+bool dataLoopWedged() noexcept;
+/// Test seam: a test that stalled the data loop on purpose and let it go lifts the mark before its objects' teardown,
+/// which would otherwise leak what it destroys (as ear does, never freeing anything once wedged).
+void clearDataLoopWedged() noexcept;
+
 /// Test seam (docs/testing.md#the-tools): the next guarded callback whose member is `callback`
 /// ("FilterPortBlock::onStateChanged") throws std::runtime_error("injected") inside the boundary instead of running,
 /// as a bug of that callback's own would; empty disarms. Main thread; never armed outside tests.
@@ -341,10 +354,12 @@ public:
 	Listener& operator=(const Listener&) = delete;
 	~Listener() { remove(); }
 	explicit operator bool() const noexcept { return attached_; }
+	/// On a wedged data loop a listener bound to it is left on its object's list, which is leaked with it (and with
+	/// its owner), since taking it off would wait on that loop for good.
 	void remove() noexcept {
 		if (!attached_) return;
 		attached_ = false;
-		spa_hook_remove(&hook_);
+		if (!(dataLoopBound_ && boundary::dataLoopWedged())) spa_hook_remove(&hook_);
 		boundary::released();
 	}
 	/// The registrations' own: the hook to attach (detached first), then attached() once it is on the list.
@@ -353,21 +368,34 @@ public:
 		hook_ = spa_hook{};
 		return hook_;
 	}
-	void attached() {
+	/// `dataLoopBound`: removing it waits on the data loop (a filter's listener).
+	void attached(bool dataLoopBound = false) {
 		attached_ = true;
+		dataLoopBound_ = dataLoopBound;
 		boundary::held();
 	}
 
 private:
 	spa_hook hook_{};
 	bool attached_ = false;
+	bool dataLoopBound_ = false;
 };
 
-/// Destroys a proxy ear made (its registry's too: a registry is a proxy).
+/// Destroys a proxy ear made (its registry's too: a registry is a proxy); leaks it on a wedged data loop (above).
 struct ProxyDestroy {
-	void operator()(pw_proxy* proxy) const noexcept { pw_proxy_destroy(proxy); }
-	void operator()(pw_registry* registry) const noexcept { pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry)); }
+	void operator()(pw_proxy* proxy) const noexcept {
+		if (!boundary::dataLoopWedged()) pw_proxy_destroy(proxy);
+	}
+	void operator()(pw_registry* registry) const noexcept { (*this)(reinterpret_cast<pw_proxy*>(registry)); }
 };
+/// Destroys a filter ear made; leaks it on a wedged data loop (above): its destruction removes its node from that
+/// loop by a blocking invoke.
+struct FilterDestroy {
+	void operator()(pw_filter* filter) const noexcept {
+		if (!boundary::dataLoopWedged()) pw_filter_destroy(filter);
+	}
+};
+using OwnedFilter = std::unique_ptr<pw_filter, FilterDestroy>;
 /// A proxy held by its owner, declared before the listeners on it, so it goes after them, a constructor's unwinding
 /// included.
 using OwnedProxy = std::unique_ptr<pw_proxy, ProxyDestroy>;
@@ -401,10 +429,12 @@ template <class B>
 int invoke(pw_loop* loop, B /*callback*/, typename B::Class* self, bool block) {
 	return pw_loop_invoke(loop, &B::invoked, 0, nullptr, 0, block, self);
 }
-/// An invoke on the data loop: realtime only. The member takes nothing and returns int or nothing (0).
+/// An invoke on the data loop: realtime only. The member takes nothing and returns int or nothing (0). A blocking one
+/// on a wedged data loop is never made: -EDEADLK, and nothing ran (above).
 template <class B>
 	requires isRealtime<B>
 int invoke(DataLoop loop, B /*callback*/, typename B::Class* self, bool block) {
+	if (block && boundary::dataLoopWedged()) return -EDEADLK;
 	return pw_loop_invoke(loop.loop(), &B::invoked, 0, nullptr, 0, block, self);
 }
 
@@ -421,7 +451,7 @@ void listen(pw_filter* filter, Listener& listener, typename decltype(Table)::Cla
 		return table;
 	}();
 	pw_filter_add_listener(filter, &listener.attach(), &events, self);
-	listener.attached();
+	listener.attached(true);
 }
 /// A proxy's own events (removed, error).
 template <auto Table>

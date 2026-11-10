@@ -35,9 +35,10 @@ protected:
 /// companion (and so the node, `node`) whose channel it carries (docs/architecture.md#faults-by-owner).
 class LinkProxy final : public FaultOwner {
 public:
-	/// Takes `proxy` (destroyed with this, even when the constructor throws).
-	LinkProxy(LinkId id, pw_proxy* proxy, LinkEvents& events, std::string node = {})
-		: id_(id), proxy_(proxy), events_(events), node_(std::move(node)) {
+	/// Takes `proxy`, already held, so nothing between its making and this leaks it, and it goes with this, even when
+	/// the constructor throws.
+	LinkProxy(LinkId id, OwnedProxy proxy, LinkEvents& events, std::string node = {})
+		: id_(id), proxy_(std::move(proxy)), events_(events), node_(std::move(node)) {
 		listen<ProxyCallbacks<LinkProxy>{.removed = guarded<&LinkProxy::onRemoved>,
 		                                 .error = guarded<&LinkProxy::onError>}>(proxy_.get(), proxyListener_, this);
 		listen<LinkCallbacks<LinkProxy>{.info = guarded<&LinkProxy::onInfo>}>(proxy_.get(), linkListener_, this);

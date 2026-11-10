@@ -82,13 +82,13 @@ private:
 			     {property<Home::companionLink>("link.output.port"), toNode ? blockPort : nodePort},
 			     {property<Home::companionLink>("link.input.node"), toNode ? node : block},
 			     {property<Home::companionLink>("link.input.port"), toNode ? nodePort : blockPort}});
-			pw_proxy* proxy =
-				createObject(engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props);
+			OwnedProxy proxy(
+				createObject(engine_.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, props));
 			if (proxy == nullptr) {
 				fail("cannot ask for the " + join_.kind + "'s link: " + spa_strerror(-errno));
 				return;
 			}
-			links_.push_back(std::make_unique<LinkProxy>(channel, proxy, *this, join_.node));
+			links_.push_back(std::make_unique<LinkProxy>(channel, std::move(proxy), *this, join_.node));
 		}
 	}
 
