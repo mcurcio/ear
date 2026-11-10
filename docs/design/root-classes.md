@@ -796,7 +796,10 @@ in `docs/testing.md#making-the-rare-event`.
   follow the last across exactly the graph cycles started between them, each cut short, and a block missing from the
   card's file must have run in a cut cycle, with any silence before the next whole blocks; any other unclean cycle or
   gap fails. Both wait for 32 judged boundaries. A recorder that skipped every third cycle without the driver saying so
-  fails the first (32 unexcused), and a ramp block dropped before the card fails the second.
+  fails the first (32 unexcused), and a ramp block dropped before the card fails the second. A host cuts cycles only
+  by chance (a quiet one, in the window judged, never), so both make four themselves once the ramp is heard: the
+  ramp's code stalls the data thread one and a half cycles at planned cycles, the cycle is cut straight after it,
+  and each test requires the four excused, idle or loaded.
 - **Found after R5b: more of the class, by a sweep of `ear_pipewire_tests`.** The card tests' `discontinuities() == 0`
   ("the card joining moved no clock", "a card that loses a link ... leaves the clock alone") counted a host's catch-up
   jump as a discontinuity too. On the tracking dummy driver every started cycle moves the position on by one block, so
@@ -804,7 +807,11 @@ in `docs/testing.md#making-the-rare-event`.
   clock would have excused a block skipping cycles while a card joins (review). Each code now excuses it only when the
   jump is exactly the cycles started since it last ran and `DriverCycles` cut every one; the `Graph` owns the
   `DriverCycles`, before its codes, and waits until both codes have run a cycle it counted. Two or three cycles a code
-  skipped during the join or the link's loss, with no cut, now fail. `source_test.cpp`'s bound source required an
+  skipped during the join or the link's loss, with no cut, now fail. Their excuse is not induced: a stall in one
+  block's code does not cut its sibling, since both are the driver's first followers, woken in one batch with it,
+  and run before the next timeout is seen; it would take a node of its own upstream of both, linked in, in tests
+  about links. The `Graph` makes its blocks first (the dummy driver runs only with a node to drive), then drives
+  the codes once the driver's listener counts cycles. `source_test.cpp`'s bound source required an
   unbroken Played count against the first position and no shortfall, with its writer a plain thread on an 8,192-frame
   ring, so a writer or data thread starved past 170 ms failed it; it is now judged by part A's source rule
   (`judgeSource`, shared) and dst by part A's listener rule, to a planned 200 cycles. Played is dated by the last frame
@@ -812,7 +819,12 @@ in `docs/testing.md#making-the-rare-event`.
   against its frames less its shortfall, a cycle that moved no count keeps the last date, 200 cycles played whole are
   required after dst's latency arrived, and the source's shortfall must equal the log's, every frame of it one the
   writer had not written. Still owed, found by the same sweep and not fixed here: `rtp_receiver_test.cpp`'s tone fits
-  every tenth with no ledger, so a cycle the recorder missed or a receiver underrun fails a tenth.
+  every tenth with no ledger, so a cycle the recorder missed or a receiver underrun fails a tenth. Also owed, found
+  while proving the induced cuts: `sound_card_test.cpp`'s "to_card's last 5 ms before a silence decay to zero" fails
+  about 1 run in 50 beside 5 busy processes on 4 cores, at a317bcc305 too, its card's file not growing by 16 blocks
+  within 5 s of the drive; why the card stops writing is not known yet. And the ramp through inside ports failed once
+  in about 240 loaded runs with one unclean recorder cycle across two graph cycles not both cut; its message now says,
+  for each, whether the driver cut it and told it complete, so the next occurrence names what the driver saw.
 - **Found after R5b: a failure Catch could not print.** Under load the card's lost-link test failed and the process
   aborted inside Catch 2.12's console reporter (an `assert` in its text column) before printing the failing check: the
   reporter indents a failing test's header after its first ": ", and asserts that indent is under the column's width

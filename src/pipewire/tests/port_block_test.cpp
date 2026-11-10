@@ -169,17 +169,26 @@ private:
 };
 
 /// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks.
+/// Given a plan, once armed it stalls the data thread at the planned cycles, counted from the first armed one.
 class Ramp final : public AudioCode {
 public:
+	Ramp() = default;
+	explicit Ramp(StallPlan plan) : stalls_(std::move(plan)) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
+		if (armed.load(std::memory_order_acquire)) stalls_(armedCycles_++, frames, kRate);
 	}
 	void release() noexcept override {}
+	std::atomic<bool> armed{false};
+	/// Stalls made so far.
+	std::size_t stalls() const noexcept { return stalls_.made(); }
 
 private:
 	std::uint32_t next_ = 0;
+	ear::test::Stalls stalls_;
+	std::size_t armedCycles_ = 0;
 };
 
 /// Copies its first input to its first output.
@@ -639,7 +648,11 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	Bell bell(waiter);
 	FilterPortBlocks blocks(*engine, bell);
 	Wiring wiring(*engine, waiter);
-	Ramp ramp;
+	constexpr std::size_t kStalls = 4; // cycles the test cuts short itself, once the ramp is heard
+	Ramp ramp(StallPlan::at({{8, StallLength::cycles(1.5)},
+	                         {16, StallLength::cycles(1.5)},
+	                         {24, StallLength::cycles(1.5)},
+	                         {32, StallLength::cycles(1.5)}}));
 	PassThrough through;
 	const DriverCycles driver(*engine, 1 << 16); // before the recorder, which reads it
 	Recorder recorder(waiter, &driver);
@@ -665,7 +678,10 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	// cycle it heard, the ramp is whole. A cycle that is not clean is excused only as such a loss: its position past
 	// the last one's end by exactly the graph cycles started between them, every one of them cut short by the driver's
 	// own account (the recorder missed each because it had not finished it). Any other, after the first sound, fails:
-	// a block the chain drops, repeats or skips without the driver cutting a cycle is a break.
+	// a block the chain drops, repeats or skips without the driver cutting a cycle is a break. A host cuts cycles only
+	// by chance, so the ramp cuts kStalls itself (docs/testing.md#making-the-rare-event): it holds the data thread for
+	// one and a half cycles, so the driver's next timeout comes before the pass-through and the recorder ran the
+	// cycle, and the excuse is taken, and proven, on every run.
 	constexpr std::size_t kWanted = 32; // clean cycle boundaries judged, after the first sound
 	const CycleLedger& ledger = recorder.ledger();
 	const auto judged = [&] {
@@ -675,7 +691,17 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 			if (ledger[n].clean && recorder.cycleStart(n) > first) ++clean;
 		return clean;
 	};
-	REQUIRE(waiter.until([&] { return judged() >= kWanted || ledger.full(); }, 30s));
+	REQUIRE(waiter.until([&] { return firstSound(recorder.samples()) < recorder.samples().size(); }));
+	ramp.armed.store(true, std::memory_order_release);
+	std::size_t pastStalls = 0; // the recorder's cycles once the last stall was made, and four more
+	REQUIRE(waiter.until(
+		[&] {
+			if (ledger.full()) return true;
+			if (ramp.stalls() < kStalls) return false;
+			if (pastStalls == 0) pastStalls = ledger.count() + 4;
+			return judged() >= kWanted && ledger.count() >= pastStalls;
+		},
+		30s));
 	{
 		INFO("the recorder filled its " << ledger.capacity() << " cycles before " << kWanted << " clean ones came");
 		REQUIRE_FALSE(ledger.full());
@@ -695,7 +721,7 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 			if (!driver.cutShort(g)) return false;
 		return true;
 	};
-	std::size_t breaks = 0, excused = 0, unexcused = 0;
+	std::size_t breaks = 0, excused = 0, excusedCycles = 0, unexcused = 0;
 	std::string firstUnexcused;
 	for (std::size_t n = 0; n < ledger.count(); ++n) {
 		const std::size_t start = recorder.cycleStart(n);
@@ -709,18 +735,27 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 			if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
 		} else if (lostToCuts(n)) {
 			++excused; // the chain lost those cycles with the graph: the boundary is not its to keep
+			excusedCycles += recorder.graphCycle(n) - recorder.graphCycle(n - 1) - 1;
 		} else if (unexcused++ == 0) {
 			firstUnexcused = "recorder cycle " + std::to_string(n) + " at " + std::to_string(ledger[n].position) +
 			                 " (graph cycle " + std::to_string(recorder.graphCycle(n)) + ") after one at " +
 			                 std::to_string(ledger[n - 1].position) + " (graph cycle " +
 			                 std::to_string(recorder.graphCycle(n - 1)) + ")";
+			for (std::uint64_t g = recorder.graphCycle(n - 1) + 1; g < recorder.graphCycle(n); ++g)
+				firstUnexcused += "; graph cycle " + std::to_string(g) +
+				                  (driver.cutShort(g) ? " cut short" : " not cut") + ", told complete " +
+				                  std::to_string(driver.completed(g)) + " times";
 		}
 	}
-	INFO(excused << " cycle boundaries across cycles the driver cut short (" << driver.cuts() << " cuts), not judged");
+	INFO(excused << " cycle boundaries across " << excusedCycles << " cycles the driver cut short (" << driver.cuts()
+	             << " cuts), not judged");
 	INFO(firstUnexcused);
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
 	CHECK(unexcused == 0);
+	CHECK(ramp.stalls() == kStalls);
+	CHECK(driver.cuts() >= kStalls);
+	CHECK(excusedCycles >= kStalls); // each cut the ramp made was excused, by the driver's word (a run may hold two)
 
 	std::vector<NodeLevels> snapshot;
 	REQUIRE(waiter.until([&] {

@@ -90,7 +90,11 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   short, and a block missing from the card's file must have run in a cut cycle, with any silence
   before the next whole blocks; every other unclean cycle, gap or repeat fails. Either way the test
   waits for a planned count of judged boundaries (32), requires that its ledger did not fill first,
-  and still fails a block dropped, repeated or skipped without the driver cutting a cycle.
+  and still fails a block dropped, repeated or skipped without the driver cutting a cycle. So that
+  the excuse is proven on every run, not only when the host happens to cut a cycle, each test cuts
+  four itself once the ramp is heard (a `StallPlan` of `StallLength::cycles(1.5)` in the ramp's
+  code) and requires each excused: at least four excused missing cycles and four cuts, and on the card
+  every stalled ramp cycle among the blocks missing from the file.
 
 ### A writer's own event
 
