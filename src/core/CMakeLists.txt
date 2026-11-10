@@ -36,6 +36,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/frame_ring.hpp
 	include/ear/core/graph_spec.hpp
 	include/ear/core/graph_view.hpp
+	include/ear/core/internal_error.hpp
 	include/ear/core/latency.hpp
 	include/ear/core/levels.hpp
 	include/ear/core/lifecycle.hpp

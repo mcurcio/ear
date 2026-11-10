@@ -18,8 +18,10 @@
 // a start() that returned. Each hook is timed (ear.hook-slow, once per node and hook). Every call into a type's code
 // (its configure, start() and stop(), its code's prepare, a legacy recipe and close, and a sink's or handoff's consumer
 // on that one's own thread) goes through one catch (callType, ConsumerCalls), so a type's throw is a fact about its
-// node; what NodeHost throws itself is ear's own bug and leaves for the callback boundary
-// (docs/writing-a-node-type.md#rules-the-framework-enforces). A configuration is silenced the
+// node (docs/writing-a-node-type.md#rules-the-framework-enforces). ear's own bugs are split by owner
+// (docs/architecture.md#faults-by-owner): an adapter's that NodeHost caught where it called it (inside a context call,
+// or a factory in the flush) is told as ear.internal-error and fails only its node, lost; what NodeHost throws itself
+// leaves for the callback boundary, which ends the process. A configuration is silenced the
 // same way, then torn down by dependency: release(); engine companions; handoffs closed, each on its own thread; the
 // instance closed (a legacy run object, on its own threads); then, on the main loop, the code, the instance, the
 // recordings and the config. Steps 3 and 4 have the close deadline: past it the configuration is leaked, never
@@ -123,11 +125,38 @@ inline constexpr TypeHook recipe{"recipe", "recipe", false};    // a legacy reci
 inline constexpr TypeHook close{"close", "close run", false};   // a legacy run object's close
 } // namespace hooks
 
-/// What a call into a type's code ended with instead of returning (callType): its own throw, or the first rule a
-/// context call found broken while it ran, which fails it even when the type caught the throw.
+/// What a call into a type's code ended with instead of returning (callType): its own throw, the first rule a context
+/// call found broken while it ran, which fails it even when the type caught the throw, or a bug of an adapter a context
+/// call made (adapterFaulted: the node fails lost, docs/architecture.md#faults-by-owner).
 struct TypeFault {
-	std::string detail; // "<hook> threw: <what>"
-	std::string what;   // the exception's what(), or the rule's text
+	std::string detail;          // "<hook> threw: <what>", or "internal error in <adapter call>: <what>"
+	std::string what;            // the exception's what(), or the rule's text
+	bool adapterFaulted = false; // ear's adapter's bug, not the type's: told as ear.internal-error first
+};
+
+/// Who owns a bug of ear's own caught inside a type's call (docs/architecture.md#faults-by-owner): an adapter, whose
+/// state is its node's alone, or NodeHost itself, whose state is every node's.
+enum class FaultOwner { adapter, host };
+
+/// ear's own fault inside a context call a type made: thrown on through the type's frames in place of what was thrown
+/// (the type may catch it, as it may any throw) and recorded by the context, so callType routes it by its owner rather
+/// than fail the node as the type's throw. Never seen outside NodeHost.
+class EarFault final : public std::exception {
+public:
+	EarFault(FaultOwner owner, std::string callback, std::exception_ptr thrown)
+		: owner_(owner), callback_(std::move(callback)), thrown_(std::move(thrown)), what_(whatOf(thrown_)) {}
+	FaultOwner owner() const noexcept { return owner_; }
+	/// The adapter call that threw ("SinkAdapter::make"); empty for NodeHost's own.
+	const std::string& callback() const noexcept { return callback_; }
+	/// What was thrown, rethrown as itself when the owner is NodeHost.
+	const std::exception_ptr& thrown() const noexcept { return thrown_; }
+	const char* what() const noexcept override { return what_.c_str(); }
+
+private:
+	FaultOwner owner_;
+	std::string callback_;
+	std::exception_ptr thrown_;
+	std::string what_;
 };
 
 /// An exception a drain or flush keeps to rethrow once it has run everything else, with the place it left the main
@@ -367,6 +396,28 @@ struct NodeHost::Impl {
 		/// The older block of this name was destroyed (T1): this node's block is made in the same flush.
 		void olderDestroyed() { feed(aggregate_.olderDestroyed()); }
 
+		/// Inside the handler of what an adapter NodeHost called in the flush threw: told as ear.internal-error, with
+		/// the flush item it was thrown in, then `fail` given the node's detail ("internal error in <callback>: ...").
+		template <typename Fail> void adapterFaulted(std::string_view callback, Fail fail) {
+			const std::string what = whatOf(std::current_exception());
+			host_.internalError(InternalError{.callback = callback,
+			                                  .node = name_,
+			                                  .where = MainLoopActivity::describe(MainLoopActivity::save()),
+			                                  .what = what});
+			fail(internalErrorDetail(callback, what));
+		}
+		static std::string_view companionMaker(const EngineCompanionShape& shape) noexcept {
+			return std::holds_alternative<SoundCardShape>(shape) ? "SoundCardCompanions::make"
+			                                                     : "RtpReceiverCompanions::make";
+		}
+		/// The block lost for good, an input of its own: engine-refused, or lost for its own bug.
+		void blockGone(std::string detail, FailureCode code) {
+			host_.inputFor(serial_, [detail = std::move(detail), code](Node& node) mutable {
+				node.feed(node.aggregate_.blockLost(std::move(detail), code));
+				node.queued_.reset(); // a lost block is final: nothing is configured again
+			});
+		}
+
 		/// Flush items. The block's making, unless its destruction overtook it in the flush.
 		void makeBlock() {
 			if (!makePending_) return;
@@ -378,9 +429,10 @@ struct NodeHost::Impl {
 			try {
 				block_ = host_.blocks.make(name_, ports_, host_.format, *this);
 			} catch (...) {
-				// A factory that throws (a bug) leaves no block: the node is lost, never left made with none.
-				lost("making the port block threw: " + whatOf(std::current_exception()));
-				throw;
+				// A factory refuses through lost(), never by a throw, so one that throws has a bug of its own; it made
+				// nothing and NodeHost changed nothing yet, so the adapter's fault is its node's alone: told, and the
+				// block lost for good (docs/architecture.md#faults-by-owner).
+				adapterFaulted("PortBlockFactory::make", [this](std::string detail) { faulted(std::move(detail)); });
 			}
 		}
 		/// The block's destruction (after the removal's silence completed, or with no code ever driven); a block
@@ -421,14 +473,16 @@ struct NodeHost::Impl {
 					[&](const auto& shape) { return host_.resources.adapterFor(shape).make(target, shape, companion); },
 					asked.shape);
 			} catch (...) {
-				// An adapter that throws (a bug) strands nothing: the half-made entry goes, and the node fails as for
-				// an engine companion refused.
-				std::string detail = "making " + target.engineNode + " threw: " + whatOf(std::current_exception());
+				// An adapter refuses through lost(), never by a throw, so one that throws has a bug of its own; the
+				// half-made entry goes and nothing is stranded, so the fault is its node's alone: told, and the node
+				// lost (docs/architecture.md#faults-by-owner).
 				c.engineCompanions.pop_back();
-				host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
-					if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
+				adapterFaulted(companionMaker(asked.shape), [this, generation](std::string detail) {
+					host_.inputFor(serial_, [generation, detail = std::move(detail)](Node& node) mutable {
+						if (node.current(generation))
+							node.feed(node.aggregate_.fault(lc::Fact::adapterFaulted, std::move(detail)));
+					});
 				});
-				throw;
 			}
 		}
 
@@ -439,12 +493,8 @@ struct NodeHost::Impl {
 				node.askResources();
 			});
 		}
-		void lost(std::string detail) override {
-			host_.inputFor(serial_, [detail = std::move(detail)](Node& node) mutable {
-				node.feed(node.aggregate_.blockLost(std::move(detail)));
-				node.queued_.reset(); // a lost block is final: nothing is configured again
-			});
-		}
+		void lost(std::string detail) override { blockGone(std::move(detail), FailureCode::engineRefused); }
+		void faulted(std::string detail) override { blockGone(std::move(detail), FailureCode::lost); }
 
 		// The contexts (docs/writing-a-node-type.md#configure-and-createof): CreateContext for the class, StartContext
 		// for the legacy start, Ready for its recipe, on one set of internals. Each call is valid only inside its
@@ -487,14 +537,15 @@ struct NodeHost::Impl {
 		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
 			return guarded([&]() -> std::expected<int, std::string> {
 				requireConfiguring("openRecording");
-				auto opened = host_.resources.adapterFor(request).open(name_, request.path);
+				auto opened = adapter("RecordingAdapter::open",
+				                      [&] { return host_.resources.adapterFor(request).open(name_, request.path); });
 				if (!opened) return std::unexpected(std::move(opened.error()));
 				return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
 			});
 		}
 		/// The interim sink (docs/writing-a-node-type.md#sinks): made at once on the inside output bank, its thread
 		/// started; its bank is never faded. An adapter that cannot make it (no thread) fails the node through
-		/// configure, recorded so a type that catches it still fails.
+		/// configure, recorded so a type that catches it still fails; an adapter's own bug fails it lost (adapter()).
 		SinkRequest& sink(std::string_view bank, SinkShape shape) override {
 			return guarded([&]() -> SinkRequest& {
 				requireConfiguring("sink");
@@ -503,17 +554,11 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
-				std::unique_ptr<Sink> made;
-				try {
-					made =
-						host_.resources.sinks().make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
-					                                 shape.frames, host_.format.rate);
-				} catch (const std::logic_error&) {
-					throw;
-				} catch (...) {
-					if (!brokenRule_) brokenRule_ = whatOf(std::current_exception());
-					throw;
-				}
+				std::unique_ptr<Sink> made = adapter("SinkAdapter::make", [&] {
+					return host_.resources.sinks().make(name_, found.name,
+					                                    static_cast<std::uint32_t>(found.ports.size()), shape.frames,
+					                                    host_.format.rate);
+				});
 				if (!made) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
 				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(*this, found.name));
 				slot.sink = std::move(made);
@@ -525,7 +570,8 @@ struct NodeHost::Impl {
 		}
 		/// A source (docs/writing-a-node-type.md#sources): made at once on the inside input bank, ready at once, bound
 		/// by every drive of the configuration; its capacity declared beyond the bank. An adapter that cannot make it
-		/// (no eventfd) fails the node through configure, recorded so a type that catches it still fails.
+		/// (no eventfd) fails the node through configure, recorded so a type that catches it still fails; an adapter's
+		/// own bug fails it lost (adapter()).
 		SourceWriter& source(std::string_view bank, SourceShape shape) override {
 			return guarded([&]() -> SourceWriter& {
 				requireConfiguring("source");
@@ -538,17 +584,11 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
-				std::unique_ptr<Source> made;
-				try {
-					made = host_.resources.sources().make(name_, found.name,
+				std::unique_ptr<Source> made = adapter("SourceAdapter::make", [&] {
+					return host_.resources.sources().make(name_, found.name,
 					                                      static_cast<std::uint32_t>(found.ports.size()), shape.frames,
 					                                      host_.format.rate);
-				} catch (const std::logic_error&) {
-					throw;
-				} catch (...) {
-					if (!brokenRule_) brokenRule_ = whatOf(std::current_exception());
-					throw;
-				}
+				});
 				if (!made) throw std::logic_error("the source adapter made no source for bank " + found.name);
 				auto& slot = c.sources.emplace_back(SourceSlot{found.name, std::move(made), {}});
 				slot.binding = SourceBinding{&slot.source->tap(), found.first, found.ports.size()};
@@ -592,8 +632,11 @@ struct NodeHost::Impl {
 							auto& caught =
 								*config_->handoffConsumers.emplace_back(std::make_unique<GuardedHandoffConsumer>(
 									*handoff.consumer, config_->channel, bank.name));
-							auto& made = config_->handoffs.emplace_back(host_.resources.adapterFor(handoff).make(
-								name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames, caught));
+							auto& made = config_->handoffs.emplace_back(adapter("HandoffAdapter::make", [&] {
+								return host_.resources.adapterFor(handoff).make(
+									name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
+									caught);
+							}));
 							return &made->writer();
 						},
 					},
@@ -601,15 +644,48 @@ struct NodeHost::Impl {
 			});
 		}
 
-		/// Runs a context call; a rule it finds broken (a std::logic_error) is recorded, the first one only, before it
-		/// is thrown on to the type.
+		/// Runs a context call, telling apart by owner what it throws (docs/architecture.md#faults-by-owner), each
+		/// recorded, the first only, before it is thrown on to the type: a std::logic_error NodeHost's checks threw is a
+		/// rule the type broke; an adapter's refusal or bug was recorded by adapter(); anything else thrown by NodeHost's
+		/// own code is NodeHost's bug, thrown on as an EarFault NodeHost owns, which callType rethrows as itself for the
+		/// callback boundary.
 		template <typename Call> std::invoke_result_t<Call> guarded(Call&& call) {
 			try {
 				return std::forward<Call>(call)();
+			} catch (const EarFault&) {
+				throw;
 			} catch (const std::logic_error& broken) {
 				if (!brokenRule_) brokenRule_ = broken.what();
 				throw;
+			} catch (...) {
+				if (std::current_exception() == std::exchange(refused_, nullptr)) throw;
+				throw recordFault(FaultOwner::host, {});
 			}
+		}
+
+		/// Calls an adapter from inside a context call. What it throws is told apart by its class, as only an adapter's
+		/// own code can throw here: a std::logic_error is the adapter's bug, recorded and thrown on as an EarFault the
+		/// adapter owns, so its node fails lost and the rest of the graph runs on; anything else is its refusal (no
+		/// thread, no eventfd), not a bug, recorded as the node's failure so a type that catches it still fails, and
+		/// thrown on as itself.
+		template <typename Call> std::invoke_result_t<Call> adapter(std::string_view callback, Call&& call) {
+			try {
+				return std::forward<Call>(call)();
+			} catch (const std::logic_error&) {
+				throw recordFault(FaultOwner::adapter, std::string(callback));
+			} catch (...) {
+				if (!brokenRule_) brokenRule_ = whatOf(std::current_exception());
+				refused_ = std::current_exception();
+				throw;
+			}
+		}
+
+		/// Inside a catch handler: the exception handled, as ear's own fault of `owner`, recorded when it is the first
+		/// in the type's call (callType reads it even when the type caught what it threw).
+		EarFault recordFault(FaultOwner owner, std::string callback) {
+			EarFault fault(owner, std::move(callback), std::current_exception());
+			if (!earFault_) earFault_ = fault;
+			return fault;
 		}
 
 	private:
@@ -634,13 +710,17 @@ struct NodeHost::Impl {
 					node.refreshWaiting();
 				});
 			}
-			void lost(std::string detail) override {
-				host_.inputFor(serial_, [generation = generation_, detail = std::move(detail)](Node& node) mutable {
-					if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::engine, std::move(detail)));
-				});
-			}
+			void lost(std::string detail) override { tell(lc::Fact::engine, std::move(detail)); }
+			void faulted(std::string detail) override { tell(lc::Fact::adapterFaulted, std::move(detail)); }
 
 		private:
+			void tell(lc::Fact fact, std::string detail) {
+				host_.inputFor(serial_,
+				               [generation = generation_, fact, detail = std::move(detail)](Node& node) mutable {
+								   if (node.current(generation))
+									   node.feed(node.aggregate_.fault(fact, std::move(detail)));
+							   });
+			}
 			Impl& host_; // never the node: a queued destruction may outlive it
 			std::uint64_t serial_;
 			std::uint64_t generation_;
@@ -1276,13 +1356,18 @@ struct NodeHost::Impl {
 
 		/// Every call NodeHost makes into a type's code on the main loop: named in MainLoopActivity while it runs, timed
 		/// when the hook is (one past hookSlowBound is ear.hook-slow, once per node and hook for the node's life,
-		/// whether or not it threw), and caught. What it returned, or what ended it instead: its throw, or a rule a
-		/// context call found broken while it ran (first), even one the type caught. Only a throw of NodeHost's own,
-		/// outside `call`, leaves (docs/writing-a-node-type.md#rules-the-framework-enforces).
+		/// whether or not it threw), and caught. What it returned, or what ended it instead, by owner
+		/// (docs/architecture.md#faults-by-owner): a fault of ear's own a context call recorded first, even one the
+		/// type caught: an adapter's is told as ear.internal-error and returned as adapterFaulted, and NodeHost's own
+		/// is rethrown as what was thrown, from inside this call's scope, so the callback boundary names it and where;
+		/// then a rule a context call found broken while it ran (first), even one the type caught; then the type's
+		/// throw (docs/writing-a-node-type.md#rules-the-framework-enforces).
 		template <typename Call> auto callType(const TypeHook& hook, Call&& call)
 			-> std::expected<std::invoke_result_t<Call>, TypeFault> {
 			const MainLoopActivity::Scope activity(hook.activity, name_);
 			brokenRule_.reset();
+			earFault_.reset();
+			refused_ = nullptr;
 			const auto began = host_.timers.now();
 			auto result = caughtFrom(std::forward<Call>(call));
 			if (hook.timed) {
@@ -1292,6 +1377,17 @@ struct NodeHost::Impl {
 					host_.diagnosed(name_, "ear.hook-slow",
 					                std::string(hook.name) + " ran " + std::to_string(ms) + " ms", fields);
 				}
+			}
+			refused_ = nullptr;
+			if (std::optional<EarFault> fault = std::exchange(earFault_, std::nullopt)) {
+				brokenRule_.reset();
+				if (fault->owner() == FaultOwner::host) std::rethrow_exception(fault->thrown());
+				host_.internalError(InternalError{.callback = fault->callback(),
+				                                  .node = name_,
+				                                  .where = MainLoopActivity::describe(MainLoopActivity::save()),
+				                                  .what = fault->what()});
+				return std::unexpected(
+					TypeFault{internalErrorDetail(fault->callback(), fault->what()), fault->what(), true});
 			}
 			std::optional<std::string> what = std::exchange(brokenRule_, std::nullopt);
 			if (!what && !result) what = std::move(result.error());
@@ -1324,8 +1420,11 @@ struct NodeHost::Impl {
 				return c.instance->configure(contexts);
 			});
 			configuring_ = false;
-			// A rule a call found broken fails the node whatever configure did next: caught, answered or thrown.
-			if (!answer) return failConfigure(lc::Fact::hookThrew, std::move(answer.error().detail));
+			// A rule a call found broken fails the node whatever configure did next: caught, answered or thrown. Only
+			// configure's context calls reach an adapter, so only here can an adapter's bug end a type's call.
+			if (!answer)
+				return failConfigure(answer.error().adapterFaulted ? lc::Fact::adapterFaulted : lc::Fact::hookThrew,
+				                     std::move(answer.error().detail));
 			if (answer->isFailed()) {
 				if (answer->detail().empty())
 					return failConfigure(lc::Fact::configureFailed, "configure answered failed with no detail");
@@ -1939,8 +2038,10 @@ struct NodeHost::Impl {
 		bool superseded_ = false;                  // a newer node of its name was added: standard output alone
 		std::unique_ptr<Configuration> config_;    // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
-		bool configuring_ = false; // inside the instance's making and configure: the contexts' calls are valid
-		bool building_ = false;    // inside a legacy recipe: events() is valid
+		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
+		bool building_ = false;            // inside a legacy recipe: events() is valid
+		std::optional<EarFault> earFault_; // the first fault of ear's own in the hook running (guarded)
+		std::exception_ptr refused_;       // an adapter's refusal, thrown on through guarded as itself
 		std::optional<std::string> brokenRule_;   // the first rule a context call found broken in the hook running
 		std::optional<std::string> prepareThrew_; // a code's prepare that threw, a fault after its batch
 		std::optional<std::string> startThrew_;   // a start() that threw, likewise
@@ -1975,6 +2076,7 @@ struct NodeHost::Impl {
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<EngineDiagnosticListener*> engineListeners;
 	std::vector<LogSink*> logSinks;
+	std::vector<InternalErrorListener*> internalErrorListeners;
 	bool wedged = false;                      // the data loop was judged wedged: no PipeWire call is made again
 	std::vector<std::unique_ptr<Node>> nodes; // in arrival order; removed ones are pruned on add
 	std::uint64_t generations = 0;            // every configuration's generation, across nodes, so none is ever reused
@@ -1992,10 +2094,10 @@ struct NodeHost::Impl {
 
 	/// One input at a time: one that arrives while another is handled, from an action or a callback inside it,
 	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (ear's
-	/// own bug, or an adapter's: a type's throw never leaves callType) does not strand the inputs queued behind it,
-	/// which may be other nodes' (a stop whose allGone would then never run): they are handled first, and the first
-	/// exception is rethrown once the queue is empty, with the place it was thrown from. The node it was thrown out of
-	/// is left as the throw left it.
+	/// own bug: a type's throw never leaves callType, nor an adapter's bug NodeHost caught) does not strand the inputs
+	/// queued behind it, which may be other nodes' (a stop whose allGone would then never run): they are handled first,
+	/// and the first exception is rethrown once the queue is empty, with the place it was thrown from. The node it was
+	/// thrown out of is left as the throw left it.
 	void input(std::move_only_function<void()> work) {
 		inputs.push_back(std::move(work));
 		if (handling || inItem) return;
@@ -2184,6 +2286,10 @@ struct NodeHost::Impl {
 		for (auto* sink : logSinks) sink->log(entry);
 	}
 
+	void internalError(const InternalError& error) {
+		for (auto* listener : internalErrorListeners) listener->internalError(error);
+	}
+
 	void diagnosed(const NodeName& node, std::string_view code, const std::string& detail,
 	               std::span<const DiagnosticField> fields) {
 		for (auto* listener : diagnosticListeners) listener->nodeDiagnostic(node, code, detail, fields);
@@ -2264,6 +2370,10 @@ void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 }
 
 void NodeHost::subscribeLog(LogSink& sink) { impl_->logSinks.push_back(&sink); }
+
+void NodeHost::subscribeInternalErrors(InternalErrorListener& listener) {
+	impl_->internalErrorListeners.push_back(&listener);
+}
 
 void NodeHost::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	impl_->add(node, std::move(config), nullptr);

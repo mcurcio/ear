@@ -127,6 +127,7 @@ The framework's own observations. With a node:
 | `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded |
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |
+| `ear.internal-error` | `callback` | ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows; the rest of the graph runs on |
 
 `msg`: `node <name> <code>: <detail>`. Without a node (`msg`: `<code>: <detail>`):
 
@@ -135,10 +136,14 @@ The framework's own observations. With a node:
 | `ear.data-loop-wedged` | `ms` | Once: the data loop is judged wedged. No further engine change is made, and ear's stop leaves through `_Exit` |
 | `ear.main-loop-stalled` | `ms`, `in`? | The watchdog found the main loop's heartbeat older than 500 ms (`ms` is its age at the look); `in` is the PipeWire call or hook running, when known. Once per stall |
 | `ear.main-loop-resumed` | `ms` | The heartbeat came back; `ms` is the gap between the beats either side |
+| `ear.internal-error` | `callback` | ear's own bug with no owner but ear's core (NodeHost, the main loop's posted work, a sink's thread), caught by the callback boundary: the process ends right after it, with the line below on standard error. Also a route's link whose own callback threw, which fails only that route |
 
 These name no node or happen while the main loop is stuck, so they are standard output only, never
 on the control port. What they mean for the graph is in
-[architecture.md](architecture.md#bounds-the-wedged-data-loop-and-the-watchdog).
+[architecture.md](architecture.md#bounds-the-wedged-data-loop-and-the-watchdog). Who owns an
+`ear.internal-error`, and so whether ear runs on, is
+[architecture.md](architecture.md#faults-by-owner)'s; a node it fails shows on the control port
+only as that node's failure (`lost`, `internal error in <callback>: <what>`).
 
 ### `action`
 
@@ -182,5 +187,6 @@ an engine that does not start, a folder watch it cannot arm, a control port it c
   what the pipes hold written out, then one plain line written whole straight to the real standard
   error, just before terminate's own message: `ear: internal error in <callback>[, during <where>]:
   <detail>`, naming the callback that threw and what the main loop was in
-  ([architecture.md](architecture.md#the-callback-boundary)); it is no record.
+  ([architecture.md](architecture.md#the-callback-boundary)). It is no record; the
+  `ear.internal-error` record written just before it, among what is queued, says the same.
 - **At stop**, every record still queued is written before ear exits.

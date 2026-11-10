@@ -506,6 +506,8 @@ FailureCode failureCodeFor(Fact fact, bool rested) noexcept {
 	case Fact::nodeLost:
 	case Fact::hookThrew:
 		return rested ? FailureCode::lost : FailureCode::startFailed;
+	case Fact::adapterFaulted:
+		return FailureCode::lost;
 	}
 	return FailureCode::startFailed;
 }
@@ -565,7 +567,7 @@ Health derive(const DeriveFacts& f) {
 		h.cause = restarting(f.why);
 	} else if (f.failure || (h.blockLost && !f.disabled)) {
 		h.phase = NodePhase::failed;
-		h.reason = f.failure ? *f.failure : Failure{FailureCode::engineRefused, f.blockLossDetail};
+		h.reason = f.failure ? *f.failure : Failure{f.blockLossCode, f.blockLossDetail};
 	} else if (f.config == ConfigState::none && f.disabled) {
 		h.phase = NodePhase::disabled;
 	} else if (stoppingConfig(f.config) || (f.config == ConfigState::arming && f.stopAsked) ||
@@ -604,7 +606,8 @@ DeriveFacts NodeAggregate::facts() const {
 	        why_,
 	        failure_,
 	        predecessor_,
-	        configuredTold_};
+	        configuredTold_,
+	        blockLossCode_};
 }
 
 Health NodeAggregate::health() const { return derive(facts()); }
@@ -809,11 +812,12 @@ Actions NodeAggregate::blockReady() {
 	return out;
 }
 
-Actions NodeAggregate::blockLost(std::string detail) {
+Actions NodeAggregate::blockLost(std::string detail, FailureCode code) {
 	Actions out;
 	if (goneTold_) return out;
 	const BlockState before = block_.state();
 	if (before != BlockState::made && before != BlockState::ready) return out;
+	blockLossCode_ = code;
 	// The block's loss replaces any failure's reason, and nothing is configured again.
 	failure_.reset();
 	heldFault_.reset();

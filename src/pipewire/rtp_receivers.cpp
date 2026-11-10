@@ -69,7 +69,7 @@ ModuleArguments<Home::rtpReceiver> moduleArguments(const NodeName& engineNode, c
 ///   2. On the done: the module is loaded. The first node global named engineNode that is not
 ///      stale is this receiver's; it is bound for its info.
 ///   3. Its info RUNNING (its socket is bound, docs/engine.md#rtp-receivers, finding g): running.
-class RtpReceiverBody final : public CompanionBody {
+class RtpReceiverBody final : public CompanionBody, public FaultOwner {
 public:
 	RtpReceiverBody(Engine& engine, NodeName engineNode, ModuleArguments<Home::rtpReceiver> arguments,
 	                CompanionBodyEvents& events)
@@ -103,6 +103,11 @@ public:
 
 	RtpReceiverBody(const RtpReceiverBody&) = delete;
 	RtpReceiverBody& operator=(const RtpReceiverBody&) = delete;
+
+	// A throw out of the body's own callback is its bug: the lifecycle gives it up and fails its node lost
+	// (docs/architecture.md#faults-by-owner).
+	std::string_view faultNode() const noexcept override { return events_.faultNode(); }
+	void faulted(std::string_view callback, std::string_view detail) override { events_.faulted(callback, detail); }
 
 private:
 	// 1 -> 2: every node of this name the engine had before the sync is stale.
@@ -203,6 +208,7 @@ std::unique_ptr<EngineCompanion> RtpReceivers::make(const CompanionTarget& targe
 	}
 	return joinEngineCompanion(engine_,
 	                           CompanionJoin{.kind = kind,
+	                                         .node = target.blockNode,
 	                                         .blockId = target.blockId,
 	                                         .flow = ChannelFlow::nodeToBlock,
 	                                         .nodePorts = std::move(receiverPorts),

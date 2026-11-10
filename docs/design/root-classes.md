@@ -3,7 +3,8 @@
 Status: R1 built (`ear/core/latency.hpp`, section 3.5 says what changed building it), R2 built (the block and the
 harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 built (every frame dated by
 `FrameClock`, `docs/engine.md#dating`; section 3.7), R4a built (section 4.5 says what changed from 4.3), R4c built (a
-type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R5a built
+type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R4b built
+(faults split by owner, `docs/architecture.md#faults-by-owner`; section 4.7), R5a built
 (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
 5.5), R6 built (the property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3)
 and R7 built (the harness runs the engine's own rules: `docs/writing-a-node-type.md#testing-a-type`,
@@ -394,7 +395,8 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
   below): `callback_boundary.*`; the 21 registrations move onto it; `MainLoopExecutor` runs items one
   by one through it; `Faults` is implemented in `main.cpp` as today's outcome made explicit: write the callback and node
   into the crash's last words, then `std::terminate()` (the handler `main.cpp:216` installs). The guard lands with it.
-- **R4b**: the owner's answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
+- **R4b** (**built**, as `docs/architecture.md#faults-by-owner` describes, with the changes in 4.7): the owner's
+  answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
   `FaultOwner`s, routed to their node's `lost`. Inside a type's call, NodeHost's `guarded()` (the wrapper of every
   context call) wraps a `std::logic_error` that is not a rule the type broke but a bug of NodeHost's own or of an
   adapter (a sink adapter's `std::logic_error` inside `cx.sink`) in a private `EarFault` carrying its owner, so
@@ -526,6 +528,65 @@ boundary `docs/architecture.md#the-callback-boundary`):
   `finish` that throws is a `log` record. An edit naming a type that throws at parse is refused (`invalid-settings`), an
   existing code, where ear ended before. No record kind is added and the wire is unchanged: section 9 adds
   `ear.internal-error` only with R4b.
+
+### 4.7 Found building R4b
+
+What 4.3, 4.4 and section 9 declared for the split by owner that could not work as declared, or left open, and the
+least change made (the built rule is `docs/architecture.md#faults-by-owner`):
+
+- **A throw out of an owner's callback is not always the owner's.** An adapter tells NodeHost from inside its own
+  callback (a block's state change tells `ready`, NodeHost's input runs inside it), so a throw of NodeHost's own comes
+  out of the block's callback: 4.4's "routed to their node's `lost`" would have kept ear running on NodeHost's
+  half-changed state. Only NodeHost leaves a place with a throw (its scopes, and `KeptThrow`'s `putThrown` on every
+  rethrow of a drain or flush), so the boundary takes a throw that carries one as NodeHost's whatever callback it came
+  out of, and tells no owner. No new marker: the place R4a already carries is it. NodeHost's public calls that throw a
+  wiring bug directly carry none, but no adapter's callback calls them.
+- **`Faults::caught` and `FaultOwner` grew.** `caught` takes the owner's `node` (the record names the node it fails)
+  beside `owned`; `FaultOwner` gives `faultNode()` (empty for a route's link), and its `faulted` may throw: what it
+  throws is NodeHost's bug as the owner tells it, reported again with no owner (a `noexcept` `faulted` would have been
+  `std::terminate` with no line). An engine made with no `Faults` (the tests') still ends the process for every fault,
+  owned or not.
+- **`lost`, not `engine-refused`, needed a fact and an event.** A block's or engine companion's loss was
+  `engine-refused`; section 9 says an adapter's fault fails its node `lost`. So the machine has `Fact::adapterFaulted`
+  (`lost` at any phase, before the node rested too, since it is no `start-failed` of the type's) and `blockLost` takes
+  the code (a block lost by its own bug: `lost`, still `blockLost`, final); `PortBlockEvents` and
+  `EngineCompanionEvents` have `faulted(detail)`, which defaults to `lost` so the test doubles need nothing. The link
+  and the companion body carry it on (`LinkEvents::faulted`, `CompanionBodyEvents::faulted`/`faultNode`), and the
+  companion lifecycle runs its loss path afresh from any state but lost (the callback may have left it half-done) and
+  tells `faulted`. `CompanionJoin` carries its node, and so does a companion's `LinkProxy`.
+- **The owners.** `FilterPortBlock`, `JoinedEngineCompanion`, `AlsaCardBody`, `RtpReceiverBody` and `LinkProxy`. A
+  route's link has no node: its fault fails its route (`refused`, `internal error in LinkProxy::...`) and its record
+  names none. Not owners, each for its reason: a sink's and a legacy handoff's own thread code (`ThreadSink`,
+  `ThreadHandoff`: off the main loop, where a node cannot be failed in order with what the main loop does, and R7's
+  ground), the main-loop executor's items and timers, the engine's signals, `Links`' own later event and the live
+  graph's registry (no node's state): all end the process with the record first.
+- **Inside a type's call, the owner is told by where, then by class.** 4.4 said `guarded()` wraps "a `std::logic_error`
+  that is not a rule". A rule and NodeHost's own `std::logic_error` cannot be told apart by class, so each adapter call
+  inside a context call goes through `adapter(callback, ...)`: its `std::logic_error` is the adapter's bug (an
+  `EarFault` it owns), anything else its refusal (recorded as the node's `start-failed`, as before, and thrown on as
+  itself, which `guarded()` knows by the exception's identity). `guarded()` keeps its rule; anything else NodeHost's own
+  code throws there is an `EarFault` NodeHost owns, which `callType` rethrows as what was thrown inside the hook's
+  scope, so the boundary names `configure <node>`. Both are recorded first and win over a broken rule and the type's
+  throw, so a type that catches an `EarFault` (it derives from `std::exception`) changes nothing. The record and the
+  node's detail name the adapter call by its core interface (`SinkAdapter::make`, `SourceAdapter::make`,
+  `HandoffAdapter::make`, `RecordingAdapter::open`). A non-logic throw of a recording or handoff adapter, which went to
+  the type unrecorded, is now recorded as a refusal like a sink's.
+- **NodeHost's own adapter calls in the flush.** 4.6 left a factory's throw in the flush leaving NodeHost. A port block
+  factory and an engine companion adapter refuse only through their events, so a throw is their bug, and NodeHost
+  already strands nothing where it calls them: R4b routes them by owner (`PortBlockFactory::make`,
+  `SoundCardCompanions::make`, `RtpReceiverCompanions::make`: the record with the flush item as where, the node `lost`,
+  nothing rethrown). An adapter call that interrupts NodeHost's own update (a block's `drive`, `fadeOut`, `settle` or
+  `carryLatency` while NodeHost carries out a machine's actions) stays NodeHost's: what NodeHost had half-done is
+  every node's, which is section 9's reason for ending the process.
+- **The record.** A `diagnostic` code, `ear.internal-error`, with `node` when it fails one, `callback`, and `detail`
+  `<callback> threw[ during <where>]: <what>`, the boundary's `where` folded into the detail rather than a field of its
+  own (section 9 names three fields). `StatusLog::internalError` is its one wording, and `InternalErrorListener`
+  (`ear/core/internal_error.hpp`, with the node's `internal error in <callback>: <what>`) the one way to it: NodeHost
+  tells it (`subscribeInternalErrors`), and `main.cpp`'s `Faults` calls it, then returns for an owned fault or writes
+  the line and terminates (the record goes out among what is queued, before the line). Diagnostics never reach the
+  control port, so the JSON-RPC wire, `web/src/protocol.ts` and the editor are unchanged and no feature name is
+  needed: a node fails `lost` with a new text, and `reason.code` and its detail were open already. The records' `v`
+  stays 1 (additive).
 
 ## 5. Class 3: tests that depend on the host
 
@@ -907,7 +968,7 @@ makes stale.
 | **R3** | Dating through `FrameClock` | After R2 | None |
 | **R6** | The property table and its four checks; `docs/engine.md`'s table | After 3b.4 | None, unless the live check finds a drift |
 | **R4a** | The callback boundary, behaviour-free; its guard (built, 4.5) | After 3b.4 | None |
-| **R4b** | The owner's answer on faults | After R4a and the answer | Section 9 |
+| **R4b** | The owner's answer on faults (built, 4.7) | After R4a and the answer | Section 9 |
 | **R4c** | NodeHost's type calls through `callType`; a sink consumer's throw as a fact (built, 4.6) | After R4a | Section 9 |
 | **R5b-d** | The audit, by executable (5.3) | After R5a | None |
 | **R7** | `cutChunk`; the harness's ring size and companion bank; conformance tests | After R3 | None |

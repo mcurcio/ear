@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 #include "ear/core/graph_spec.hpp"
@@ -118,6 +119,9 @@ public:
 	/// allowed (not inside ready()): the adapter touches nothing of it after telling (NodeHost tears a failed
 	/// configuration down in the same call).
 	virtual void lost(std::string detail) = 0;
+	/// As lost, when what ended it was ear's own bug in one of its callbacks (docs/architecture.md#faults-by-owner): the
+	/// node fails lost with `detail` (internalErrorDetail's) rather than engine-refused. At most once, instead of lost.
+	virtual void faulted(std::string detail) { lost(std::move(detail)); }
 
 protected:
 	~EngineCompanionEvents() = default;

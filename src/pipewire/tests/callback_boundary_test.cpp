@@ -8,7 +8,10 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
+#include <functional>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -25,6 +28,7 @@
 #include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/main_loop_activity.hpp"
+#include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/faults.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
@@ -40,15 +44,17 @@ struct Report {
 	std::string detail;
 	bool owned = false;
 	bool toOwner = false; // a FaultOwner's faulted(), not the Faults
+	std::string node{};   // the owner's node, as the Faults was told it
 };
 
-/// Records instead of ending the process (R4a's main.cpp ends it), so a test sees what the boundary told it and what
-/// ran after.
+/// Records instead of ending the process (main.cpp ends it for a fault no adapter owns), so a test sees what the
+/// boundary told it and what ran after.
 class RecordingFaults final : public Faults {
 public:
-	void caught(std::string_view callback, std::string_view where, std::string_view detail,
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
 	            bool owned) noexcept override {
-		reports.push_back(Report{std::string(callback), std::string(where), std::string(detail), owned, false});
+		reports.push_back(
+			Report{std::string(callback), std::string(where), std::string(detail), owned, false, std::string(node)});
 	}
 	std::vector<Report> reports;
 };
@@ -90,10 +96,18 @@ struct CallsBackWhenDestroyed {
 class OwnedThrower final : public FaultOwner {
 public:
 	explicit OwnedThrower(RecordingFaults& faults) : faults_(faults) {}
-	void faulted(std::string_view callback, std::string_view detail) noexcept override {
+	std::string_view faultNode() const noexcept override { return "hall"; }
+	void faulted(std::string_view callback, std::string_view detail) override {
 		faults_.reports.push_back(Report{std::string(callback), {}, std::string(detail), true, true});
+		if (throwWhenTold) throw std::logic_error("told twice"); // as NodeHost with a bug of its own, told
 	}
 	void onEvent(std::uint64_t /*count*/) { throw std::runtime_error("owned boom"); }
+	/// Throws out of NodeHost's scope, as a throw NodeHost let out through an adapter's event would.
+	void onThroughHost(std::uint64_t /*count*/) {
+		const MainLoopActivity::Scope scope("start", "porch");
+		throw std::logic_error("NodeHost's bug");
+	}
+	bool throwWhenTold = false;
 
 private:
 	RecordingFaults& faults_;
@@ -240,18 +254,53 @@ TEST_CASE("A second holder of the boundary is refused while one holds it", "[bou
 	CHECK(other.reports.empty());
 }
 
-TEST_CASE("A FaultOwner's callback that throws is reported, then the owner is told", "[boundary]") {
+TEST_CASE("A FaultOwner's callback that throws is reported with its node, then the owner is told", "[boundary]") {
 	RecordingFaults faults;
 	const Installed installed(faults);
+	MainLoopActivity::clear();
 	OwnedThrower owner(faults);
 	Guarded<&OwnedThrower::onEvent>::call(&owner, 0);
 	REQUIRE(faults.reports.size() == 2);
 	CHECK(faults.reports[0].callback == "OwnedThrower::onEvent");
 	CHECK(faults.reports[0].owned);
+	CHECK(faults.reports[0].node == "hall");
 	CHECK_FALSE(faults.reports[0].toOwner);
 	CHECK(faults.reports[1].toOwner);
 	CHECK(faults.reports[1].callback == "OwnedThrower::onEvent");
 	CHECK(faults.reports[1].detail == "owned boom");
+}
+
+// docs/architecture.md#faults-by-owner: only NodeHost leaves a place with a throw, so one that carries a place came out
+// of NodeHost, through whichever adapter's event it was told by: NodeHost's bug, never the adapter's.
+TEST_CASE("A throw that came out of NodeHost through an owner's callback has no owner, and the owner is not told",
+          "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	MainLoopActivity::clear();
+	OwnedThrower owner(faults);
+	Guarded<&OwnedThrower::onThroughHost>::call(&owner, 0);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "OwnedThrower::onThroughHost");
+	CHECK(faults.reports[0].where == "start porch");
+	CHECK(faults.reports[0].detail == "NodeHost's bug");
+	CHECK_FALSE(faults.reports[0].owned);
+	CHECK(faults.reports[0].node.empty());
+}
+
+TEST_CASE("An owner that throws as it is told is reported again, with no owner", "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	MainLoopActivity::clear();
+	OwnedThrower owner(faults);
+	owner.throwWhenTold = true;
+	Guarded<&OwnedThrower::onEvent>::call(&owner, 0);
+	REQUIRE(faults.reports.size() == 3);
+	CHECK(faults.reports[0].owned);
+	CHECK(faults.reports[1].toOwner);
+	CHECK(faults.reports[2].callback == "OwnedThrower::onEvent");
+	CHECK(faults.reports[2].detail == "told twice");
+	CHECK_FALSE(faults.reports[2].owned);
+	CHECK_FALSE(faults.reports[2].toOwner);
 }
 
 TEST_CASE("A realtime callback calls its member and nothing else", "[boundary]") {
@@ -339,4 +388,170 @@ TEST_CASE("With no Faults installed a callback that throws ends the process, say
 	REQUIRE(line != std::string::npos);
 	REQUIRE(terminate != std::string::npos);
 	CHECK(line < terminate);
+}
+
+namespace {
+
+/// What a forked child wrote to its standard output and error, and how it ended.
+struct ChildEnd {
+	std::string written;
+	int status = 0;
+};
+
+/// Runs `body` in a forked child whose standard output and error are a pipe this reads; `body` must end the process.
+template <class Body> ChildEnd inChild(Body body) {
+	int ends[2];
+	REQUIRE(::pipe2(ends, O_CLOEXEC) == 0);
+	std::fflush(nullptr);
+	const pid_t child = ::fork();
+	REQUIRE(child >= 0);
+	if (child == 0) {
+		const rlimit noCore{0, 0}; // a crash on purpose leaves no core file behind
+		::setrlimit(RLIMIT_CORE, &noCore);
+		::dup2(ends[1], STDOUT_FILENO);
+		::dup2(ends[1], STDERR_FILENO);
+		body();
+		::_exit(91); // never: the boundary ended the process
+	}
+	::close(ends[1]);
+	ChildEnd end;
+	char buffer[4096];
+	ssize_t got;
+	while ((got = ::read(ends[0], buffer, sizeof buffer)) > 0)
+		end.written.append(buffer, static_cast<std::size_t>(got));
+	::close(ends[0]);
+	REQUIRE(::waitpid(child, &end.status, 0) == child);
+	return end;
+}
+
+/// The child's main loop: what is posted runs when the test says; no timer ever fires.
+class QueueLoop final : public Executor, public Timers {
+public:
+	void post(std::move_only_function<void()> work) override { queue.push_back(std::move(work)); }
+	std::unique_ptr<Timer> after(std::chrono::milliseconds, std::move_only_function<void()>) override {
+		return std::make_unique<Timer>();
+	}
+	std::chrono::steady_clock::time_point now() const override { return {}; }
+	void runPosted() {
+		while (!queue.empty()) {
+			auto next = std::move(queue.front());
+			queue.pop_front();
+			next();
+		}
+	}
+	std::deque<std::move_only_function<void()>> queue;
+};
+
+/// A block that tells its events from a guarded callback of its own, as FilterPortBlock does, and is a FaultOwner as
+/// it is; its carryLatency throws, as a block that disagrees with NodeHost's own plan check would.
+class TellingBlock final : public PortBlock, public FaultOwner {
+public:
+	explicit TellingBlock(PortBlockEvents& events) : events_(events) {}
+	void carryLatency(const LatencyPlan&) override { throw std::logic_error("a plan the block cannot carry"); }
+	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)>) override {}
+	void fadeOut(std::move_only_function<void()>) override {}
+	void settle() override {}
+	std::uint64_t takenAt() const noexcept override { return 0; }
+	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
+	std::string_view faultNode() const noexcept override { return "amp"; }
+	void faulted(std::string_view, std::string_view) override { std::fputs("the block was told\n", stderr); }
+	void onStreaming(std::uint64_t /*count*/) { events_.ready(); }
+
+private:
+	PortBlockEvents& events_;
+};
+
+struct TellingBlocks final : PortBlockFactory {
+	TellingBlock* made = nullptr;
+	std::unique_ptr<PortBlock> make(const NodeName&, const Ports&, const AudioFormat&,
+	                                PortBlockEvents& events) override {
+		auto block = std::make_unique<TellingBlock>(events);
+		made = block.get();
+		return block;
+	}
+};
+
+struct NoCards final : SoundCardCompanions {
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget&, const SoundCardShape&,
+	                                      EngineCompanionEvents&) override {
+		return nullptr;
+	}
+};
+struct NoReceivers final : RtpReceiverCompanions {
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget&, const RtpReceiverShape&,
+	                                      EngineCompanionEvents&) override {
+		return nullptr;
+	}
+};
+struct NoHandoffs final : HandoffAdapter {
+	std::unique_ptr<Handoff> make(const NodeName&, std::uint32_t, std::uint32_t, HandoffConsumer&) override {
+		return nullptr;
+	}
+};
+struct NoSinks final : SinkAdapter {
+	std::unique_ptr<Sink> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
+	                           std::uint32_t) override {
+		return nullptr;
+	}
+};
+struct NoSources final : SourceAdapter {
+	std::unique_ptr<Source> make(const NodeName&, std::string_view, std::uint32_t, std::uint32_t,
+	                             std::uint32_t) override {
+		return nullptr;
+	}
+};
+
+class SilentCode final : public AudioCode {
+public:
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>>, std::uint32_t,
+	             const GraphCycle&) noexcept override {}
+	void release() noexcept override {}
+};
+
+class SilentConfig final : public NodeConfig {
+public:
+	const Ports& ports() const override { return ports_; }
+	StartResult start(StartContext&) const override { return std::make_unique<SilentCode>(); }
+
+private:
+	Ports ports_{{{Direction::output, "out", {"mono"}}}};
+};
+
+} // namespace
+
+// docs/architecture.md#faults-by-owner: a throw of NodeHost's own is NodeHost's bug, whose state is every node's, so it
+// ends the process through the boundary, even out of the callback of an adapter that owns its faults, which is never
+// told.
+TEST_CASE("A std::logic_error of NodeHost's own, out of a block's callback, ends the process with the boundary's line, "
+          "the block never told",
+          "[boundary][crash]") {
+	const ChildEnd end = inChild([] {
+		boundary::install(nullptr); // the boundary's own last words, as an engine made with no Faults
+		QueueLoop loop;
+		TellingBlocks blocks;
+		NoCards cards;
+		NoReceivers receivers;
+		NoHandoffs handoffs;
+		NoSinks sinks;
+		NoSources sources;
+		ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+		NodeHost host(AudioFormat{48000, 256}, blocks, resources, loop, loop);
+		host.nodeAdded(NodeSpec{"amp", "silent", {}}, std::make_shared<SilentConfig>());
+		loop.runPosted(); // the flush makes the block
+		if (blocks.made == nullptr) ::_exit(92);
+		// The block streams: it tells ready, NodeHost drives and carries the plan, and the block's throw interrupts
+		// NodeHost's own update.
+		Guarded<&TellingBlock::onStreaming>::call(blocks.made, 1);
+	});
+	INFO(end.written);
+	REQUIRE(WIFSIGNALED(end.status));
+	CHECK(WTERMSIG(end.status) == SIGABRT);
+	const auto line =
+		end.written.find("ear: internal error in TellingBlock::onStreaming: a plan the block cannot carry\n");
+	const auto terminate = end.written.find("terminate called after throwing an instance of 'std::logic_error'");
+	REQUIRE(line != std::string::npos);
+	REQUIRE(terminate != std::string::npos);
+	CHECK(line < terminate);
+	CHECK(end.written.find("the block was told") == std::string::npos);
 }

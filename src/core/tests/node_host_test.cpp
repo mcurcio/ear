@@ -208,8 +208,9 @@ using Held = std::vector<std::move_only_function<void()>>;
 /// How the fake blocks complete what they are asked (TestBlocks): posted to the main loop, held for the test, or
 /// applied with their event not yet dispatched, so only settle() runs them (a main loop that stalled).
 struct BlockModes {
-	bool hold = false;  // completions wait in TestBlocks::held until the test runs them
-	bool stall = false; // completions wait in the block until its settle()
+	bool hold = false;         // completions wait in TestBlocks::held until the test runs them
+	bool stall = false;        // completions wait in the block until its settle()
+	bool throwInCarry = false; // carryLatency throws, as a block that disagrees with NodeHost's plan check
 	std::size_t settles = 0;
 	std::vector<std::vector<bool>> faded;            // each drive's faded flags, in order
 	std::vector<std::vector<SinkBinding>> sinks;     // each drive's taps (a silence's none), in order
@@ -230,7 +231,10 @@ struct TestBlock final : PortBlock {
 	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p, Executor& m, BlockModes& b, Held& hd)
 		: log(l), driven(d), plans(p), mainLoop(m), modes(b), held(hd) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
-	void carryLatency(const LatencyPlan& plan) override { plans->push_back(plan); }
+	void carryLatency(const LatencyPlan& plan) override {
+		if (modes.throwInCarry) throw std::logic_error("a plan the block cannot carry");
+		plans->push_back(plan);
+	}
 	void drive(DriveRequest request, std::move_only_function<void(std::uint64_t)> done) override {
 		*driven = request.code;
 		log.push_back(request.code != nullptr ? "drive code" : "drive nothing");
@@ -650,6 +654,15 @@ struct TestDiagnostics final : NodeDiagnosticListener, EngineDiagnosticListener 
 	}
 };
 
+/// Every ear.internal-error NodeHost tells (docs/architecture.md#faults-by-owner), as "<callback>|<node>|<where>|<what>".
+struct TestInternalErrors final : InternalErrorListener {
+	std::vector<std::string> told;
+	void internalError(const InternalError& error) override {
+		told.push_back(std::string(error.callback) + "|" + std::string(error.node) + "|" + std::string(error.where) +
+		               "|" + std::string(error.what));
+	}
+};
+
 constexpr std::chrono::milliseconds closeDeadline{10'000};
 
 struct Fixture {
@@ -668,6 +681,7 @@ struct Fixture {
 	FakeTimers timers;
 	TestNotes notes{log};
 	TestDiagnostics diagnostics{log};
+	TestInternalErrors internalErrors;
 	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
 	int allGone = 0; // how often stopAll's callback has run
 	Fixture() {
@@ -675,6 +689,7 @@ struct Fixture {
 		host.subscribeNotes(notes);
 		host.subscribeDiagnostics(diagnostics);
 		host.subscribeEngineDiagnostics(diagnostics);
+		host.subscribeInternalErrors(internalErrors);
 	}
 	/// The node added, then the turn ends: what it posted runs (its flush makes its block).
 	void add(const NodeName& name, std::shared_ptr<const NodeConfig> config) {
@@ -2158,11 +2173,13 @@ struct ThreadedFixture {
 	DesiredGraph graph{catalogue};
 	FakeTimers timers;
 	TestDiagnostics diagnostics{log};
+	TestInternalErrors internalErrors;
 	NodeHost host{AudioFormat{44100, 256}, blocks, resources, mainLoop, timers, closeDeadline};
 	ThreadedFixture() {
 		host.subscribe(listener);
 		host.subscribeDiagnostics(diagnostics);
 		host.subscribeEngineDiagnostics(diagnostics);
+		host.subscribeInternalErrors(internalErrors);
 	}
 };
 
@@ -3110,21 +3127,22 @@ TEST_CASE("Stopping 16 nodes posts every fade at once", "[node_host][fade]") {
 	CHECK(std::ranges::count(f.log, std::string("block destroyed")) == 16);
 }
 
-TEST_CASE("A factory or an adapter that throws inside the flush fails its node and strands nothing",
+// docs/architecture.md#faults-by-owner: a factory refuses through lost(), never by a throw, so one that throws has a bug
+// of its own; NodeHost changed nothing yet where it calls it, so the fault is its node's alone.
+TEST_CASE("A factory or an adapter that throws inside the flush is told as ear's bug and fails only its node lost",
           "[node_host][flush]") {
 	SECTION("the port block's factory") {
 		Fixture f;
+		addRunning(f, "ok", std::make_shared<OutputConfig>(f.log));
 		f.blocks.throwInMake = true;
 		f.addInTurn("amp", std::make_shared<OutputConfig>(f.log));
-		CHECK_THROWS_WITH(f.endTurn(), "no memory for amp");
-		// The rethrow carries where it was thrown, for the callback boundary that catches it.
-		const auto thrownAt = MainLoopActivity::takeThrown();
-		REQUIRE(thrownAt);
-		CHECK(MainLoopActivity::describe(*thrownAt) == "make block amp");
-		REQUIRE(f.host.health().size() == 1);
-		CHECK(f.host.health()[0].state == NodeState::failed);
-		REQUIRE(f.host.health()[0].reason.has_value());
-		CHECK(f.host.health()[0].reason->detail == "making the port block threw: no memory for amp");
+		f.endTurn(); // nothing thrown out of NodeHost
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		CHECK(f.internalErrors.told ==
+		      std::vector<std::string>{"PortBlockFactory::make|amp|make block amp|no memory for amp"});
+		CHECK(failureOf(f, "amp") == "lost: internal error in PortBlockFactory::make: no memory for amp");
+		CHECK(f.host.health().at(1).blockLost);
+		CHECK(f.host.health().at(0).state == NodeState::running); // the rest of the graph runs on
 		CHECK(MainLoopActivity::current().empty());
 		f.stopAll();
 		f.settle();
@@ -3135,11 +3153,12 @@ TEST_CASE("A factory or an adapter that throws inside the flush fails its node a
 		f.cards.throwInMake = true;
 		f.add("desk", withPlayback(f.log));
 		f.blocks.events.at(0)->ready();
-		CHECK_THROWS_WITH(f.endTurn(), "no card Pro24");
-		REQUIRE(f.host.health().size() == 1);
-		CHECK(f.host.health()[0].state == NodeState::failed);
-		REQUIRE(f.host.health()[0].reason.has_value());
-		CHECK(f.host.health()[0].reason->detail == "making desk.playback threw: no card Pro24");
+		f.endTurn(); // nothing thrown out of NodeHost
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		CHECK(f.internalErrors.told == std::vector<std::string>{"SoundCardCompanions::make|desk|make engine companion "
+		                                                        "desk|no card Pro24"});
+		CHECK(failureOf(f, "desk") == "lost: internal error in SoundCardCompanions::make: no card Pro24");
+		CHECK_FALSE(f.host.health().at(0).blockLost); // a retry makes the companion afresh
 		f.stopAll();
 		f.settle();
 		CHECK(f.allGone == 1);
@@ -5219,8 +5238,8 @@ TEST_CASE("A legacy handoff's consumer that throws fails its node, and is still 
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("A type's std::logic_error is a fact about its node, while ear's own still leaves NodeHost for the callback "
-          "boundary, with where it was thrown",
+TEST_CASE("A type's std::logic_error is a fact about its node, while NodeHost's own still leaves NodeHost for the "
+          "callback boundary, marked as NodeHost's",
           "[node_host][type-throw]") {
 	Fixture f;
 	auto config = std::make_shared<ProbeConfig>(f.log);
@@ -5230,19 +5249,19 @@ TEST_CASE("A type's std::logic_error is a fact about its node, while ear's own s
 	f.settle(); // nothing thrown out of NodeHost
 	CHECK(failureOf(f, "probe") == "start-failed: start threw: bad state");
 	CHECK_FALSE(MainLoopActivity::takeThrown());
-
-	f.blocks.breakRuleInMake = true;
-	f.addInTurn("amp", std::make_shared<ProbeConfig>(f.log));
-	CHECK_THROWS_AS(f.endTurn(), std::logic_error);
-	const auto thrownAt = MainLoopActivity::takeThrown();
-	REQUIRE(thrownAt);
-	CHECK(MainLoopActivity::describe(*thrownAt) == "make block amp");
-	CHECK(failureOf(f, "amp") == "engine-refused: making the port block threw: a block made twice for amp");
-	CHECK(failureOf(f, "probe") == "start-failed: start threw: bad state");
-	f.blocks.breakRuleInMake = false;
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
+
+	// A block that throws as NodeHost carries out its own actions (the drive's latency plan) interrupts NodeHost's own
+	// update, so it is NodeHost's to answer (docs/architecture.md#faults-by-owner): it leaves, carrying a place, which
+	// tells the callback boundary it came out of NodeHost, and ear ends. No stopAll: the fixture goes by destruction.
+	Fixture g;
+	g.blocks.modes.throwInCarry = true;
+	g.add("amp", std::make_shared<ProbeConfig>(g.log));
+	CHECK_THROWS_WITH(g.blocks.events.at(0)->ready(), "a plan the block cannot carry");
+	CHECK(MainLoopActivity::takeThrown());
+	CHECK(g.internalErrors.told.empty()); // the boundary tells it, not NodeHost
 }
 
 TEST_CASE("A consumer's throw the machine would drop, during a removal's fade, is a log record",
@@ -5360,15 +5379,50 @@ TEST_CASE("A second consumer throw during a stop's fade is a log record, and the
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("An adapter's own std::logic_error inside a context call fails the node as a broken rule, not thrown out "
-          "(pinned: the owner's answer C, built by R4b, changes this on purpose)",
+// docs/architecture.md#faults-by-owner: an adapter's std::logic_error is its bug, not a rule the type broke; its state
+// is the node's alone, so the node fails lost, told as ear.internal-error, and the rest of the graph runs on.
+TEST_CASE("An adapter's own std::logic_error inside a context call is told as ear's bug and fails only its node lost, "
+          "even when the type catches it",
+          "[node_host][sink][type-throw]") {
+	for (const bool caught : {false, true}) {
+		INFO("caught by the type: " << caught);
+		Fixture f;
+		addRunning(f, "ok", std::make_shared<OutputConfig>(f.log));
+		f.sinks.breakRuleInMake = true;
+		auto config = std::make_shared<ProbeConfig>(f.log);
+		const auto configure = withSink(f.log);
+		config->onConfigure = [&, configure](InstanceContexts& cx) -> Configured {
+			if (!caught) return configure(cx);
+			try {
+				return configure(cx);
+			} catch (const std::exception&) {
+				return Configured::applied(); // swallowed: the type goes on with no sink
+			}
+		};
+		f.add("rec", config); // nothing thrown out of NodeHost
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		CHECK(f.internalErrors.told ==
+		      std::vector<std::string>{
+				  "SinkAdapter::make|rec|configure rec|the sink adapter broke its own rule for rec"});
+		CHECK(failureOf(f, "rec") ==
+		      "lost: internal error in SinkAdapter::make: the sink adapter broke its own rule for "
+		      "rec");
+		CHECK(f.host.health().at(0).state == NodeState::running);
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+}
+
+TEST_CASE("An adapter's refusal inside a context call is the node's start-failed, not ear's bug",
           "[node_host][sink][type-throw]") {
 	Fixture f;
-	f.sinks.breakRuleInMake = true;
+	f.sinks.throwInMake = true; // std::system_error: no thread
 	auto config = std::make_shared<ProbeConfig>(f.log);
 	config->onConfigure = withSink(f.log);
-	f.add("rec", config); // nothing thrown out of NodeHost
-	CHECK(failureOf(f, "rec") == "start-failed: configure threw: the sink adapter broke its own rule for rec");
+	f.add("rec", config);
+	CHECK(failureOf(f, "rec").starts_with("start-failed: configure threw: no thread for rec"));
+	CHECK(f.internalErrors.told.empty());
 	CHECK_FALSE(MainLoopActivity::takeThrown());
 	f.stopAll();
 	f.settle();

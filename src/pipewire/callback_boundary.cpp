@@ -22,7 +22,7 @@ std::atomic<std::thread::id> mainThread{};
 /// callback first among the crash's last words.
 class LastWords final : public Faults {
 public:
-	void caught(std::string_view callback, std::string_view where, std::string_view detail,
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view /*node*/,
 	            bool /*owned*/) noexcept override {
 		const std::string line = faultLine(callback, where, detail);
 		std::fwrite(line.data(), 1, line.size(), stderr);
@@ -69,14 +69,24 @@ void report(std::string_view callback, FaultOwner* owner) noexcept {
 	const std::string detail = detailOfCaught();
 	std::string where;
 	if (onMainThread()) {
-		// The place the throw left; else the call still open around this callback (one PipeWire made inside it).
+		// The place the throw left; else the call still open around this callback (one PipeWire made inside it). Only
+		// NodeHost leaves a place (a scope a throw ended, or its rethrow putting one back), so a throw that carries one
+		// came out of NodeHost, whose state is every node's: its bug, whichever adapter's callback it came out of
+		// (docs/architecture.md#faults-by-owner).
 		const auto at = MainLoopActivity::takeThrown();
+		if (at) owner = nullptr;
 		where = MainLoopActivity::describe(at ? *at : MainLoopActivity::save());
 	}
 	static LastWords lastWords;
 	Faults* faults = installed.load(std::memory_order_acquire);
-	(faults != nullptr ? *faults : lastWords).caught(callback, where, detail, owner != nullptr);
-	if (owner != nullptr) owner->faulted(callback, detail);
+	const std::string_view node = owner != nullptr ? owner->faultNode() : std::string_view{};
+	(faults != nullptr ? *faults : lastWords).caught(callback, where, detail, node, owner != nullptr);
+	if (owner == nullptr) return;
+	try {
+		owner->faulted(callback, detail);
+	} catch (...) {
+		report(callback, nullptr); // NodeHost's bug as the owner told it: it carries NodeHost's place
+	}
 }
 
 } // namespace ear::pipewire::boundary

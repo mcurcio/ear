@@ -13,9 +13,11 @@ public:
 	/// member PipeWire called ("FilterPortBlock::onStateChanged"), or the posted item or timer for the main-loop
 	/// executor's own; `where` is what the main loop was in when the exception was thrown (MainLoopActivity's "<call>
 	/// <node>", such as "make block hall"), empty off the main thread or when it was in no call; `detail` is what it
-	/// said. `owned`: the callback's object is told next (its faulted()), unless this does not return.
+	/// said. `owned`: the callback's object is an adapter whose state is one node's (`node`, empty for a route's link),
+	/// told next so only that node fails, and this must return; otherwise the fault is ear's own with no owner, and
+	/// the process must end (docs/architecture.md#faults-by-owner).
 	virtual void caught(std::string_view callback, std::string_view where, std::string_view detail,
-	                    bool owned) noexcept = 0;
+	                    std::string_view node, bool owned) noexcept = 0;
 
 protected:
 	~Faults() = default;

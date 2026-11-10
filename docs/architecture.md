@@ -105,7 +105,7 @@ to `ear_pipewire`), with no exception:
   it caught goes to the `Faults` the engine was made with (`ear/pipewire/faults.hpp`,
   `EngineSettings::faults`), naming the member (`FilterPortBlock::onStateChanged`) and where the
   main loop was when it was thrown (below), and then to the object itself when its class is a
-  `FaultOwner` (no class is one yet).
+  `FaultOwner`: an adapter whose state is one node's ([below](#faults-by-owner)).
 - **`realtime<&Class::member>`** is for the data loop: a filter's `process`, a block's request
   invoke and its blocking flush, and the engine's denormal and scheduling invokes. The member must
   be `noexcept` and nothing is added around it: realtime code never throws, and a throw there is
@@ -157,13 +157,16 @@ rethrows. A callback PipeWire makes inside an open call (a state change inside `
 placed in that call. Off the main thread (a sink's or legacy handoff's thread) only the callback
 is named.
 
-**What follows.** The process ends, as it did before the boundary, but saying where:
-`main.cpp`'s `Faults` has the capture write out what is queued and what its pipes hold, then
+**What follows** depends on who owns the fault ([below](#faults-by-owner)). `main.cpp`'s
+`Faults` first writes an `ear.internal-error` record
+([output-records.md](output-records.md#diagnostic)). A fault an adapter owns then returns and the
+adapter fails its node. Any other ends the process, as it did before the boundary, but saying
+where: the capture writes out what is queued (the record among it) and what its pipes hold, then
 `ear: internal error in <callback>[, during <where>]: <detail>` whole on the real standard error
-(`DescriptorCapture::lastWords`, never through a pipe), then calls `std::terminate`, whose own
+(`DescriptorCapture::lastWords`, never through a pipe), then `std::terminate` runs, whose own
 message follows ([output-records.md](output-records.md#how-output-is-written)). An engine made
-without a `Faults` (the tests') writes the same line to standard error and ends the same way. No
-record is added.
+without a `Faults` (the tests') writes the same line to standard error and ends the same way for
+every fault, owned or not.
 
 **A node type's throw never reaches it.** NodeHost calls every piece of a type's code through one
 catch of its own, before any boundary: its hooks, its code's `prepare` and a legacy recipe and
@@ -173,7 +176,44 @@ throws there, a `std::logic_error` included, is a fact about its node
 graph runs on. A type's code run at parse (its settings' parse functions, `check`, `ports`) goes
 through the same catch in `NodeType::parse`, and what it throws refuses the edit as
 `invalid-settings`. So a throw that leaves NodeHost, or a sink's or handoff's own code, for the
-boundary is ear's own bug (or an adapter's), never a type's.
+boundary is ear's own bug, never a type's.
+
+### Faults by owner
+
+ear's own bugs are split by who owns the state the bug may have left half-changed. *Why:* an
+adapter's state dies with its node, so failing only that node is clean and the rest of the graph
+plays on; NodeHost's state is every node's, and its invariants cannot be trusted after an exception
+in the middle of an update, so ending the process (the container restarts it) stays the safe
+answer there. Every caught bug is said in an `ear.internal-error` record (`callback`, `node` when
+it fails one, `detail`; [output-records.md](output-records.md#diagnostic)).
+
+| Where it was thrown | Owner | What follows |
+|---|---|---|
+| A type's code: its hooks, its code's `prepare`, a legacy recipe or close, a sink's or handoff's consumer, its parse | The type | Its node's fact (`start-failed`, or `lost` once rested; an edit refused at parse) and no record ([writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
+| An adapter's own callback: a port block's, an engine companion's or its body's (a card's, an RTP receiver's), a link's | The adapter (`FaultOwner`) | The record, with the node; the adapter gives up what it holds and the node fails `lost`, `internal error in <callback>: <what>` (a block is lost for good, `blockLost`; an engine companion is torn down as on its loss, and a retry makes it afresh). A route's link fails its route, `refused` with that detail, and names no node |
+| An adapter NodeHost calls inside a type's context call (`SinkAdapter::make`, `SourceAdapter::make`, `HandoffAdapter::make`, `RecordingAdapter::open`): a `std::logic_error` | The adapter | The record, with the node and where (`configure <node>`); the node fails `lost` even if the type caught the throw |
+| The same call's refusal (any other exception: no thread, no eventfd) | Not a bug | The node's `start-failed`, `configure threw: <what>`, even if the type caught it; no record |
+| A port block factory or an engine companion adapter, in the flush (each refuses through its events, never by a throw) | The adapter | The record, with the node and its flush item; the node fails `lost` (the block lost for good) |
+| NodeHost itself, or any adapter call that interrupts NodeHost's own update (a block's `drive` or `carryLatency` as NodeHost carries out its actions), the main loop's posted work and timers, the engine's signals, the live graph's registry, a sink's or handoff's own thread | No owner but ear's core | The record without a node, then the line and `std::terminate` (above) |
+
+Inside a context call NodeHost tells them apart by where they are thrown: around each adapter
+call (`adapter()`), a `std::logic_error` is the adapter's bug and anything else its refusal;
+around the whole call (`guarded()`), a `std::logic_error` of NodeHost's own checks is a rule the
+type broke, and anything else of NodeHost's own code is NodeHost's bug. ear's own fault travels
+through the type's frames as a private `EarFault` naming its owner and is recorded where it was
+made, so a type that catches it changes nothing; `callType` routes it: an adapter's becomes the
+record and the node's `lost`, NodeHost's is rethrown as what was thrown, inside the hook's scope,
+so the boundary names where.
+
+An adapter whose fault the boundary catches tells its node through its events (`faulted` on
+`PortBlockEvents` and `EngineCompanionEvents`), and the node framework's answer may itself throw:
+what it throws is NodeHost's bug, reported again with no owner. A throw that came out of NodeHost
+through an adapter's callback (NodeHost's inputs run inside the event that told them) is never the
+adapter's: only NodeHost leaves a place with a throw (a scope a throw ended, or its rethrow putting
+one back, `MainLoopActivity::takeThrown`), so the boundary takes a throw that carries one as
+NodeHost's, whichever callback it came out of, and does not tell the owner. A sink's or legacy
+handoff's own code runs on its own thread, where no node can be failed in order with the rest, so
+it has no owner and ends the process.
 
 ## How a change moves
 
@@ -313,7 +353,7 @@ or its removal). Recovery that retries by itself is not built yet.
 |---|---|
 | `engine-refused` | The engine refused or lost the block or an engine companion (a card that cannot open or is unplugged, an RTP receiver lost), an engine companion was not ready by its deadline (a card that never started, an RTP receiver on a held UDP port), or the data loop is wedged |
 | `start-failed` | Before the node first rested `running` or `stopped`: its `configure` failed or broke a rule, a sink's consumer could not begin or did not begin within 5 s, its insides said `lost`, or the type's code threw (a hook, its code's `prepare`, a sink's consumer: [writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
-| `lost` | After that: its insides said `lost`, or the type's code threw |
+| `lost` | After that: its insides said `lost`, or the type's code threw. At any phase: ear's own bug in one of its adapters, `internal error in <callback>: <what>` ([faults by owner](#faults-by-owner)) |
 
 A lost **block** is final (`blockLost: true`): the node cannot be restarted (`not-restartable`,
 reason `block-lost`) until it is removed and added again or ear restarts.

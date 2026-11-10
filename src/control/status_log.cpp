@@ -297,6 +297,21 @@ void StatusLog::engineDiagnostic(const EngineDiagnostic& diagnostic) {
 	emit("diagnostic", std::move(record), std::format("{}: {}", diagnostic.code, diagnostic.detail));
 }
 
+void StatusLog::internalError(const InternalError& error) {
+	constexpr std::string_view code = "ear.internal-error";
+	Fields record;
+	if (!error.node.empty()) record.emplace_back("node", json(error.node));
+	record.emplace_back("code", json(code));
+	record.emplace_back("callback", json(error.callback));
+	std::string detail = std::format("{} threw", error.callback);
+	if (!error.where.empty()) detail += std::format(" during {}", error.where);
+	detail += std::format(": {}", error.what);
+	record.emplace_back("detail", json(detail));
+	std::string msg = error.node.empty() ? std::format("{}: {}", code, detail)
+	                                     : std::format("node {} {}: {}", error.node, code, detail);
+	emit("diagnostic", std::move(record), std::move(msg));
+}
+
 void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
 	constexpr std::string_view code = "ear.main-loop-stalled";
 	Fields record{{"code", json(code)}, {"ms", json(ms)}};

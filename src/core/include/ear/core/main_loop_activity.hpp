@@ -41,7 +41,9 @@ public:
 	static std::string describe(const Saved& saved);
 
 	/// Main thread: where the throw being handled left the main loop: the innermost scope it ended, kept until it is
-	/// taken or forgotten; nothing when it ended no scope. Taking it forgets it.
+	/// taken or forgotten; nothing when it ended no scope. Taking it forgets it. Scopes and putThrown are NodeHost's
+	/// alone, so a place kept says the throw came out of NodeHost: the callback boundary takes it as NodeHost's bug,
+	/// never an adapter's (docs/architecture.md#faults-by-owner).
 	static std::optional<Saved> takeThrown() noexcept;
 	/// Main thread: a catch that keeps an exception to rethrow later puts the place it took back just before the
 	/// rethrow, so the place travels with the exception (no scope the rethrow ends replaces it).

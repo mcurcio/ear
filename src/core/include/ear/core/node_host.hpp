@@ -8,10 +8,12 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include "ear/core/companions.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
+#include "ear/core/internal_error.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_lifecycle.hpp"
@@ -182,6 +184,10 @@ class PortBlockEvents { // main thread
 public:
 	virtual void ready() = 0;                  // processing in the engine; at most once
 	virtual void lost(std::string detail) = 0; // engine refused or dropped the block
+	/// The block's own callback threw (ear's bug; docs/architecture.md#faults-by-owner): the block is lost for good, and
+	/// its node fails lost with `detail` (internalErrorDetail's). At most once, instead of lost.
+	virtual void faulted(std::string detail) { lost(std::move(detail)); }
+
 protected:
 	~PortBlockEvents() = default;
 };
@@ -293,6 +299,10 @@ public:
 	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
 	/// thread, before the first node.
 	void subscribeLog(LogSink& sink);
+	/// Where a bug of an adapter's that NodeHost caught is told, before its node fails lost
+	/// (docs/architecture.md#faults-by-owner): a sink, source, handoff or recording adapter's std::logic_error inside a
+	/// context call, and a port block factory's or engine companion adapter's throw in the flush. Main thread.
+	void subscribeInternalErrors(InternalErrorListener& listener);
 	/// starting; port block made (in the turn's flush, once no older block of the name exists); then a configuration
 	/// (docs/architecture.md#the-node-lifecycle; docs/writing-a-node-type.md#configure-and-createof):
 	/// config.make(context) makes its instance (the type's class, or the legacy adapter over config.start), whose

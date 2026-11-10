@@ -771,6 +771,7 @@ TEST_CASE("The failure code is chosen by the fact: engine-refused always for the
 		{Fact::recipeFailed, startFailed, startFailed},
 		{Fact::nodeLost, startFailed, lost},
 		{Fact::hookThrew, startFailed, lost},
+		{Fact::adapterFaulted, lost, lost}, // ear's own adapter's bug: lost at any phase
 	};
 	for (const auto& [fact, before, after] : table) {
 		INFO("fact " << static_cast<int>(fact));
@@ -788,6 +789,10 @@ TEST_CASE("The failure code is chosen by the fact: engine-refused always for the
 		Probe e = running();
 		e.take(e.node.fault(Fact::engine, "card gone"));
 		CHECK(e.health().reason == Failure{engineRefused, "card gone"});
+		Probe b = running();
+		b.take(b.node.blockLost("internal error in FilterPortBlock::onStateChanged: boom", lost));
+		CHECK(b.health().reason == Failure{lost, "internal error in FilterPortBlock::onStateChanged: boom"});
+		CHECK(b.health().blockLost);
 	}
 }
 

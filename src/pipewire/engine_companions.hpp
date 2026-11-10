@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ear/core/companions.hpp"
@@ -26,6 +27,7 @@ enum class ChannelFlow {
 /// How one engine companion is joined to its port block, channel for channel.
 struct CompanionJoin {
 	std::string kind;      // "card", "RTP receiver": names it in loss details
+	NodeName node;         // the node it belongs to (CompanionTarget::blockNode), which a fault of its own fails
 	std::uint32_t blockId; // its port block's engine node's global id (PortBlock::blockId), which its links name
 	ChannelFlow flow;
 	std::vector<PortName> nodePorts;  // channel i's port on the engine companion
@@ -43,6 +45,11 @@ public:
 	/// The engine node failed or went (refused, ERROR, removed, its module destroyed). May be told
 	/// inside the body's constructor; the lifecycle reports the loss later, never inside make().
 	virtual void failed(std::string detail) = 0;
+	/// A callback of the body's own threw (ear's bug, docs/architecture.md#faults-by-owner): the body is given up as on
+	/// failed, and its node fails lost. The body names its node by faultNode() and forwards its FaultOwner's faulted()
+	/// here.
+	virtual std::string_view faultNode() const noexcept = 0;
+	virtual void faulted(std::string_view callback, std::string_view detail) = 0;
 
 protected:
 	~CompanionBodyEvents() = default;
@@ -79,6 +86,8 @@ using CompanionBodyMaker = std::move_only_function<std::unique_ptr<CompanionBody
 ///   any state --body failed, a link failed or gone--> failing: nothing more is heard; later, on
 ///     the main loop (never inside a proxy's own event, never inside make()), the links and the
 ///     body are destroyed, then a pw_core_sync round trip, and on its done events.lost(detail)
+///   any state but lost --a callback of its own, its body's or a link's threw--> failing afresh, the same way, and on
+///     its done events.faulted(detail) (docs/architecture.md#faults-by-owner)
 /// Destroying the returned node (main thread) in any state destroys links and body and tells
 /// nothing.
 /// Precondition: join.nodePorts.size() == join.blockPorts.size() > 0.

@@ -168,6 +168,8 @@ enum class Fact {
 	recipeFailed,       // a legacy recipe failed
 	nodeLost,           // lost(detail) from the node's handle
 	hookThrew,          // a type's code threw: a hook, its code's prepare, or a consumer
+	adapterFaulted,     // ear's own bug in one of the node's adapters: lost whatever the phase
+						// (docs/architecture.md#faults-by-owner)
 };
 FailureCode failureCodeFor(Fact fact, bool rested) noexcept;
 
@@ -201,6 +203,7 @@ struct DeriveFacts {
 	std::optional<Failure> failure{};
 	bool predecessor = false;
 	bool configuredTold = false;
+	FailureCode blockLossCode = FailureCode::engineRefused; // a block lost by its own bug: lost
 };
 Health derive(const DeriveFacts& facts);
 /// The derivation's first row: block gone, configuration none, intent remove.
@@ -263,7 +266,9 @@ public:
 	/// Every older node of the name is gone (its block destroyed and its configuration none): rule 1 may configure.
 	Actions olderNodeGone();
 	Actions blockReady();
-	Actions blockLost(std::string detail);
+	/// The block refused or dropped (engine-refused), or, by `code` lost, failed by its own bug
+	/// (docs/architecture.md#faults-by-owner); either way final.
+	Actions blockLost(std::string detail, FailureCode code = FailureCode::engineRefused);
 	// The plan's outcomes: a restart-only change, a change on a disabled node, a disable, an enable, a removal.
 	Actions change(Queued queued, std::vector<std::string> keys);
 	Actions disable();
@@ -330,6 +335,7 @@ private:
 	std::optional<Failure> failure_;
 	bool retryAsked_ = false;
 	std::optional<Failure> heldFault_;
+	FailureCode blockLossCode_ = FailureCode::engineRefused;
 	bool predecessor_ = false;
 	bool predecessorClosed_ = false;
 	bool olderNode_ = false;

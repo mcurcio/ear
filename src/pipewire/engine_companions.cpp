@@ -17,6 +17,7 @@
 #include <spa/utils/result.h>
 
 #include "callback_boundary.hpp"
+#include "ear/core/internal_error.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_property_set.hpp"
 #include "link_proxy.hpp"
@@ -24,7 +25,10 @@
 namespace ear::pipewire {
 namespace {
 
-class JoinedEngineCompanion final : public EngineCompanion, public CompanionBodyEvents, public LinkEvents {
+class JoinedEngineCompanion final : public EngineCompanion,
+									public CompanionBodyEvents,
+									public LinkEvents,
+									public FaultOwner {
 public:
 	JoinedEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
 	                      CompanionBodyMaker makeBody)
@@ -83,7 +87,7 @@ private:
 				fail("cannot ask for the " + join_.kind + "'s link: " + spa_strerror(-errno));
 				return;
 			}
-			links_.push_back(std::make_unique<LinkProxy>(channel, proxy, *this));
+			links_.push_back(std::make_unique<LinkProxy>(channel, proxy, *this, join_.node));
 		}
 	}
 
@@ -95,6 +99,27 @@ private:
 	}
 	void failed(LinkId link, std::string detail) override {
 		fail("the " + join_.kind + "'s link for channel " + std::to_string(link + 1) + " failed: " + detail);
+	}
+	void faulted(LinkId /*link*/, std::string detail) override { failFaulted(std::move(detail)); }
+
+	// FaultOwner, and CompanionBodyEvents for the body's own: a callback threw, ear's bug, so the companion's node fails
+	// lost and nothing else (docs/architecture.md#faults-by-owner).
+	std::string_view faultNode() const noexcept override { return join_.node; }
+	void faulted(std::string_view callback, std::string_view detail) override {
+		failFaulted(internalErrorDetail(callback, detail));
+	}
+
+	/// The loss path afresh from any state but lost, since the callback that threw may have left it half-done (a
+	/// teardown begun, a sync asked); repeating it is harmless (the links and body already destroyed stay so). Told as
+	/// faulted, not lost.
+	void failFaulted(std::string detail) {
+		if (state_ == State::lost) return;
+		faulted_ = true;
+		state_ = State::failing;
+		syncing_ = false;
+		detail_ = std::move(detail);
+		for (const auto& link : links_) link->silence();
+		if (later_ != nullptr) pw_loop_signal_event(engine_.mainLoop(), later_);
 	}
 	void gone(LinkId link) override {
 		fail("the " + join_.kind + "'s link for channel " + std::to_string(link + 1) + " is gone");
@@ -135,7 +160,8 @@ private:
 	void tellLost() {
 		state_ = State::lost;
 		silence();
-		events_.lost(detail_);
+		if (faulted_) events_.faulted(detail_);
+		else events_.lost(detail_);
 	}
 
 	/// On a wedged data loop (data_loop_wedge.hpp): the links and the body are kept for good, never destroyed.
@@ -169,6 +195,7 @@ private:
 	spa_source* later_ = nullptr;
 	bool syncing_ = false;
 	int syncSeq_ = 0;
+	bool faulted_ = false; // the loss is ear's own bug in a callback: told as faulted
 };
 
 } // namespace

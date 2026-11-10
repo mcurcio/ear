@@ -375,7 +375,11 @@ activity while it runs, so a stall inside one is placed), a sink's or legacy han
 that one's own thread, and the type's code run at parse. So nothing a type throws reaches PipeWire's
 callbacks ([architecture.md](architecture.md#the-callback-boundary)); a rule broken while one runs
 fails it first, even when the type caught the throw. A type's own `std::logic_error` is its bug like
-any other throw. A throw the node cannot take as its failure (a restart, disable or removal under
+any other throw. A bug of ear's own adapter inside a context call (a sink adapter's
+`std::logic_error` inside `sink`) is not the type's: the node fails `lost`,
+`internal error in <adapter call>: <what>`, said first in an `ear.internal-error` record, whether
+or not the type caught it; an adapter's refusal (no thread, no eventfd) stays the node's
+`start-failed` ([architecture.md](architecture.md#faults-by-owner)). A throw the node cannot take as its failure (a restart, disable or removal under
 way, or a stop's fault already held) is an `ear` `log` record instead, so none goes unrecorded. A
 code's `release` and `process`, and every destructor, are `noexcept`: a throw there is
 `std::terminate`.

@@ -33,10 +33,19 @@
 
 namespace ear::pipewire {
 
-/// An object whose own callback may fault: told when one threw, inside the boundary, never from the call that threw.
+/// An adapter whose state is one node's alone (a block, an engine companion and its body, a link): a throw out of its
+/// own callback is its bug, which fails only that node (docs/architecture.md#faults-by-owner). Told inside the boundary,
+/// after the Faults, never from the call that threw. A throw that came out of NodeHost through its callback (one that
+/// carries a place, MainLoopActivity::takeThrown) is NodeHost's, and the owner is not told.
 class FaultOwner {
 public:
-	virtual void faulted(std::string_view callback, std::string_view detail) noexcept = 0;
+	/// The node the owner's state belongs to, which a fault fails; empty for none (a route's link, which fails its
+	/// route).
+	virtual std::string_view faultNode() const noexcept = 0;
+	/// Main thread: give up what the callback left half-done and tell the node (or route) it is lost, its detail
+	/// internalErrorDetail(callback, detail). What this throws (NodeHost's bug, as it is told) is reported as thrown
+	/// out of `callback`, with no owner.
+	virtual void faulted(std::string_view callback, std::string_view detail) = 0;
 
 protected:
 	~FaultOwner() = default;
@@ -54,7 +63,8 @@ void uninstall() noexcept;
 /// A callback begins: on the main thread and with no exception unwinding, a throw's place left by a throw handled
 /// before it is forgotten.
 void entered() noexcept;
-/// Inside a catch handler: the exception being handled, reported as thrown out of `callback`, then told to `owner`.
+/// Inside a catch handler: the exception being handled, reported as thrown out of `callback`, then told to `owner`
+/// unless it came out of NodeHost.
 void report(std::string_view callback, FaultOwner* owner) noexcept;
 
 /// The member a pointer names, as "Class::member" (namespaces ear::pipewire and anonymous left out), made at compile

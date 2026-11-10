@@ -151,9 +151,9 @@ public:
 class SourceAdapter {
 public:
 	/// Main thread. A source of `channels` channels and `capacityFrames` frames of ring for `node`'s inside input bank
-	/// `bank`, at the graph frequency `rate` (its fades and Played's dating). Never fails but by std::bad_alloc or
-	/// std::system_error (an eventfd it cannot make), which NodeHost treats as a type bug's throw: the node fails
-	/// start-failed.
+	/// `bank`, at the graph frequency `rate` (its fades and Played's dating). Refuses only by std::bad_alloc or
+	/// std::system_error (an eventfd it cannot make): the node fails start-failed. A std::logic_error is its own bug:
+	/// the node fails lost, told as ear.internal-error (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Source> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
 	                                     std::uint32_t capacityFrames, std::uint32_t rate) = 0;
 

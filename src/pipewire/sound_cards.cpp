@@ -43,7 +43,7 @@ std::string channelPort(Direction bank, std::size_t channel) {
 
 /// One card's engine node: the ALSA adapter, made on EAR's connection and heard from through its
 /// own proxy. The lifecycle (joinEngineCompanion) links it once it runs and tears it down.
-class AlsaCardBody final : public CompanionBody {
+class AlsaCardBody final : public CompanionBody, public FaultOwner {
 public:
 	AlsaCardBody(Engine& engine, const CompanionTarget& target, const SoundCardShape& shape,
 	             const AlsaSoundCards::Properties& extra, CompanionBodyEvents& events)
@@ -90,6 +90,11 @@ public:
 
 	AlsaCardBody(const AlsaCardBody&) = delete;
 	AlsaCardBody& operator=(const AlsaCardBody&) = delete;
+
+	// A throw out of the body's own callback is its bug: the lifecycle gives it up and fails its node lost
+	// (docs/architecture.md#faults-by-owner).
+	std::string_view faultNode() const noexcept override { return events_.faultNode(); }
+	void faulted(std::string_view callback, std::string_view detail) override { events_.faulted(callback, detail); }
 
 private:
 	/// One 32-bit float mono port per channel, named by its AUX position ("playback_AUX0"..), set
@@ -166,6 +171,7 @@ std::unique_ptr<EngineCompanion> AlsaSoundCards::make(const CompanionTarget& tar
 	return joinEngineCompanion(
 		engine_,
 		CompanionJoin{.kind = kind,
+	                  .node = target.blockNode,
 	                  .blockId = target.blockId,
 	                  .flow = target.bank == Direction::output ? ChannelFlow::blockToNode : ChannelFlow::nodeToBlock,
 	                  .nodePorts = std::move(cardPorts),

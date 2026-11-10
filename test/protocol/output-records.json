@@ -696,6 +696,33 @@
         "result": "node-disabled",
         "msg": "node porch start refused: node-disabled"
       }
+    },
+    {
+      "case": "ear's own bug in an adapter whose state is one node's (here a block's callback): the node fails lost after this, and the rest of the graph runs on (docs/architecture.md#faults-by-owner)",
+      "record": {
+        "v": 1,
+        "seq": 80,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "hall",
+        "code": "ear.internal-error",
+        "callback": "FilterPortBlock::onStateChanged",
+        "detail": "FilterPortBlock::onStateChanged threw: bad state",
+        "msg": "node hall ear.internal-error: FilterPortBlock::onStateChanged threw: bad state"
+      }
+    },
+    {
+      "case": "ear's own bug with no owner but ear's core: no node, where the main loop was in its detail, and the process ends after it, with the boundary's line on standard error",
+      "record": {
+        "v": 1,
+        "seq": 81,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.internal-error",
+        "callback": "MainLoopExecutor's posted work",
+        "detail": "MainLoopExecutor's posted work threw during make block hall: a block made twice",
+        "msg": "ear.internal-error: MainLoopExecutor's posted work threw during make block hall: a block made twice"
+      }
     }
   ]
 }

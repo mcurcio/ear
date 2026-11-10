@@ -64,6 +64,8 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       | <code>: <detail>   (one that names no node: ear.data-loop-wedged, with no "node" field;
 ///                       ear.main-loop-stalled with "ms" and "in" (the call the main loop is in, when known) and
 ///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)
+///                       | ear.internal-error: ear's own bug, caught, with "callback" and, when it fails one, "node"
+///                       (docs/output-records.md#diagnostic; its detail "<callback> threw[ during <where>]: <what>")
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -77,6 +79,7 @@ class StatusLog final : public NodeHealthListener,
 						public NodeDiagnosticListener,
 						public EngineDiagnosticListener,
 						public ActionListener,
+						public InternalErrorListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -98,6 +101,8 @@ public:
 	void graphFileWriteFailed(const std::string& detail);
 	void log(const LogEntry& entry) override;
 	void actionAnswered(const ActionRecord& record) override;
+	/// A bug of ear's own, caught (docs/architecture.md#faults-by-owner), from the thread that caught it.
+	void internalError(const InternalError& error) override;
 	/// The main-loop watchdog (StallWatch, docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog), from its
 	/// own thread: a look found the heartbeat
 	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back

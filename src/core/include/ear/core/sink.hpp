@@ -156,8 +156,9 @@ class SinkAdapter {
 public:
 	/// Main thread. A sink of `channels` channels and `capacityFrames` frames of ring for `node`'s inside output bank
 	/// `bank`, its thread started (named for "<node>.<bank>"), at the graph's `rate` (a chunk handed in two calls dates
-	/// the second call's first frame by it). Never fails but by std::bad_alloc or std::system_error (a thread it cannot
-	/// start), which NodeHost treats as a type bug's throw would be: the node fails start-failed.
+	/// the second call's first frame by it). Refuses only by std::bad_alloc or std::system_error (a thread it cannot
+	/// start): the node fails start-failed. A std::logic_error is its own bug: the node fails lost, told as
+	/// ear.internal-error (docs/architecture.md#faults-by-owner).
 	virtual std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
 	                                   std::uint32_t capacityFrames, std::uint32_t rate) = 0;
 

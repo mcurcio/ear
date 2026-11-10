@@ -4,11 +4,14 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+#include <utility>
 
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
 #include "callback_boundary.hpp"
+#include "ear/core/internal_error.hpp"
 #include "ear/core/reconciler.hpp"
 
 namespace ear::pipewire {
@@ -19,16 +22,21 @@ public:
 	virtual void active(LinkId link) = 0;
 	virtual void failed(LinkId link, std::string detail) = 0;
 	virtual void gone(LinkId link) = 0;
+	/// The link's own callback threw (ear's bug, docs/architecture.md#faults-by-owner): nothing more is heard from it,
+	/// and it is failed with `detail` (internalErrorDetail's), as a link the engine refused.
+	virtual void faulted(LinkId link, std::string detail) { failed(link, std::move(detail)); }
 
 protected:
 	~LinkEvents() = default;
 };
 
 /// One link, owned by EAR's connection: the engine removes the link when this proxy goes
-/// (no object.linger).
-class LinkProxy {
+/// (no object.linger). Its state is its own, so a throw out of its callback fails only it: its route, or the engine
+/// companion (and so the node, `node`) whose channel it carries (docs/architecture.md#faults-by-owner).
+class LinkProxy final : public FaultOwner {
 public:
-	LinkProxy(LinkId id, pw_proxy* proxy, LinkEvents& events) : id_(id), proxy_(proxy), events_(events) {
+	LinkProxy(LinkId id, pw_proxy* proxy, LinkEvents& events, std::string node = {})
+		: id_(id), proxy_(proxy), events_(events), node_(std::move(node)) {
 		listen<ProxyCallbacks<LinkProxy>{.removed = guarded<&LinkProxy::onRemoved>,
 		                                 .error = guarded<&LinkProxy::onError>}>(proxy_, proxyHook_, this);
 		listen<LinkCallbacks<LinkProxy>{.info = guarded<&LinkProxy::onInfo>}>(proxy_, linkHook_, this);
@@ -46,6 +54,12 @@ public:
 		listening_ = false;
 		spa_hook_remove(&proxyHook_);
 		spa_hook_remove(&linkHook_);
+	}
+
+	std::string_view faultNode() const noexcept override { return node_; }
+	void faulted(std::string_view callback, std::string_view detail) override {
+		silence();
+		events_.faulted(id_, internalErrorDetail(callback, detail));
 	}
 
 private:
@@ -76,6 +90,7 @@ private:
 	LinkId id_;
 	pw_proxy* proxy_;
 	LinkEvents& events_;
+	std::string node_; // the node whose engine companion this link joins; empty for a route's
 	spa_hook proxyHook_{};
 	spa_hook linkHook_{};
 	bool listening_ = true;

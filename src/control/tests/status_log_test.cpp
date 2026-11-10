@@ -280,6 +280,16 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "ok", std::nullopt}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"desk", "restart", "not-restartable", "block-lost"}); },
 		[](StatusLog& log, Lines&) { log.actionAnswered({"porch", "start", "node-disabled", std::nullopt}); },
+		[](StatusLog& log, Lines&) {
+			log.internalError(
+				{.callback = "FilterPortBlock::onStateChanged", .node = "hall", .where = {}, .what = "bad state"});
+		},
+		[](StatusLog& log, Lines&) {
+			log.internalError({.callback = "MainLoopExecutor's posted work",
+		                       .node = {},
+		                       .where = "make block hall",
+		                       .what = "a block made twice"});
+		},
 	};
 }
 

@@ -34,6 +34,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/core/block_rules.hpp"
+#include "ear/core/internal_error.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
 #include "engine_property_set.hpp"
@@ -89,7 +90,9 @@ Latency unpacked(std::uint64_t word) noexcept {
 	return Latency{static_cast<std::uint32_t>(word >> 32U), static_cast<std::uint32_t>(word & 0xFFFFFFFFU)};
 }
 
-class FilterPortBlock final : public PortBlock {
+/// A block's state is its node's alone, so a throw out of its own callback fails only that node
+/// (docs/architecture.md#faults-by-owner).
+class FilterPortBlock final : public PortBlock, public FaultOwner {
 public:
 	FilterPortBlock(Engine& engine, std::shared_ptr<Levels> levels, const NodeName& node, const Ports& ports,
 	                const AudioFormat& format, PortBlockEvents& events)
@@ -243,6 +246,14 @@ private:
 					.release(),
 				nullptr, 0));
 		}
+	}
+
+	/// A callback of this block's threw (its bug): it is lost for good, and its node fails lost.
+	std::string_view faultNode() const noexcept override { return registered_.node; }
+	void faulted(std::string_view callback, std::string_view detail) override {
+		if (lostTold_) return; // its node already fails
+		lostTold_ = true;
+		events_.faulted(internalErrorDetail(callback, detail));
 	}
 
 	/// A refusal while making the block is told on the main loop, never inside make().
