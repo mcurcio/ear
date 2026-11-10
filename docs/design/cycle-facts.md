@@ -1,6 +1,7 @@
 # Cycle facts, one test judge and a sample-rate type
 
-Status: designed to module level (2026-11-10), not built. Its steps (section 8) follow `root-classes.md`'s and come
+Status: designed to module level (2026-11-10), not built; Q-CF1 and Q-CF2 answered, diagnostics counters added
+(section 8). Its steps (section 9) follow `root-classes.md`'s and come
 before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -8,7 +9,7 @@ it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock
 only what changes. When it is built it is deleted, and what lasts moves into those pages.
 
 [V] = verified in the code or PipeWire 1.4.2's source named, as of this page's writing; [U] = unverified, with the step
-that checks it (most are spike S6's, section 8).
+that checks it (most are spike S6's, section 9).
 
 ## 1. The owner's words that bind this page
 
@@ -17,6 +18,10 @@ that checks it (most are spike S6's, section 8).
 - (2026-11-10, agreed in conversation; paraphrased, not quoted) The root class behind the test-luck reviews is that ear
   never states what happened to each cycle, so every test rebuilds it from a partial view and invents its own excuse,
   each looser than the event it excuses.
+- (2026-11-10, Q-CF1) "Yes. We should include counters like this as part of the core diagnostics. Per node? Per
+  graph?" Section 8 designs both and recommends both; the owner can still overturn that.
+- (2026-11-10, Q-CF2) Keep in step: after a stall longer than a node's buffer, what ear reports as played counts the
+  whole stall (section 4.4).
 
 ## 2. The root class
 
@@ -78,7 +83,8 @@ a source's tap and a sink's stamp see the same facts; the two skip rules and `Cy
 them. Tests judge through one judge (`CycleJudge`, `test/support`) that excuses exactly the cycles the driver cut and
 nothing else, induces cuts itself so every run proves its excuse path, and refuses to pass on nothing. The frame guard
 becomes a type (`SampleRate`), and the callback and sleep guards become compile-time refusals (`#pragma GCC poison`
-behind a forced include), each leaving a one-token text check at most.
+behind a forced include), each leaving a one-token text check at most. The same facts feed ear's diagnostics
+counters, per graph and per node, on the control port and standard output (section 8).
 
 ## 4. Cycle facts
 
@@ -159,8 +165,8 @@ tests that build a `GraphCycle` by hand), and nothing reads `xruns` outside the 
 and refused: every consumer already holds the `GraphCycle`, and a second object would be a second home.
 
 Off the data loop the facts travel with what already crosses: a sink's stamp ring (`ChunkStamp` gains `causes` and
-`lostFrames`), a source's `Played` (it moves by them), and, if the owner wants a record (Q-CF1), a realtime tally the
-main loop reads on a timer.
+`lostFrames`), a source's `Played` (it moves by them), and the counters of section 8, which the main loop reads on a
+timer.
 
 ### 4.4 The product consumers, moved
 
@@ -169,10 +175,10 @@ main loop reads on a timer.
 | `CycleContinuity` | its own rule | deleted; `CycleAccount` |
 | `GraphCycle::discontinuity`, `xruns` | two summaries | `facts` (C2 adds, C4 removes the two) |
 | Sink chunk stamps | the same bit; a consumer compares positions | `Chunk` gains `causes` and `lostFrames` (the frames the graph lost before this chunk since the sink's last, `jumpFrames` on a `catchUp`); a wrapped chunk's second call has none, as its `discontinuity` is false today. `file` may then write the lost frames as silence or say them; that is its type's choice, not this page's |
-| `SourceRing::keepTime` | a skip within capacity, else "a new clock" | `catchUp`: the stream moves on by `jumpFrames`, skipping what the ring holds and owing the rest (today's `debt`); `start`, `driverChange`, `reposition`: a new clock. What happens to a `catchUp` longer than the ring is Q-CF2 |
-| `Played` | moves by what was skipped | moves by `jumpFrames + frames` on every `catchUp` (with Q-CF2's answer), so it stays on the graph's clock |
-| `SendspinCode` skips and `PlayProgress` | `missedFrames` from its own position; progress adds only what the feed held | the feed skips `min(jumpFrames, held)`; progress moves by the whole `jumpFrames` on a `catchUp` (the library is told the time that went, not what the feed happened to hold); `lastSkipped()` is deleted. If R5c's open findings (the 256-frame step on a clean cycle, the short skips) are a product bug in progress, its fix is this row, not a patch of `missedFrames` (section 8, C4a). In 3c the feed becomes a source and this row merges into `SourceRing`'s |
-| `StallWatch` | the main loop's heartbeat | **unchanged.** It watches the main loop, not cycles, so it is no consumer of cycle facts. NodeHost's "unfair" grace for a bound (`node_host.cpp:1798-1830`) is main-loop lateness too. What cycle facts add for an operator is Q-CF1's record, from the data side |
+| `SourceRing::keepTime` | a skip within capacity, else "a new clock" | `catchUp`: the stream moves on by `jumpFrames`, skipping what the ring holds and owing the rest (today's `debt`); `start`, `driverChange`, `reposition`: a new clock. A `catchUp` longer than the ring keeps in step too (Q-CF2, decided): the whole jump is counted played, what the ring holds is dropped, and the rest is owed, the writer's next frames dropped up to it; a clear forgets it |
+| `Played` | moves by what was skipped | moves by `jumpFrames + frames` on every `catchUp`, however long (Q-CF2), so it stays on the graph's clock |
+| `SendspinCode` skips and `PlayProgress` | `missedFrames` from its own position; progress adds only what the feed held | the feed skips `min(jumpFrames, held)`; progress moves by the whole `jumpFrames` on a `catchUp` (the library is told the time that went, not what the feed happened to hold); `lastSkipped()` is deleted. If R5c's open findings (the 256-frame step on a clean cycle, the short skips) are a product bug in progress, its fix is this row, not a patch of `missedFrames` (section 9, C4a). In 3c the feed becomes a source and this row merges into `SourceRing`'s |
+| `StallWatch` | the main loop's heartbeat | **unchanged.** It watches the main loop, not cycles, so it is no consumer of cycle facts. NodeHost's "unfair" grace for a bound (`node_host.cpp:1798-1830`) is main-loop lateness too. What cycle facts add for an operator is section 8's counters, from the data side |
 | Dating (`FrameClock::heardRawNs`, `enteredRawNs`) | `startRawNs` | unchanged: a date is still the cycle's start; the facts only say which frames never played |
 
 ### 4.5 What the facts are not
@@ -242,8 +248,9 @@ and each test splits off the rest:
 - **RTP.** The graph side by the judge; the sender's late sends stay the sender's fact (`lateSends()`), and their reach
   is the receiver's buffer as configured (`latencyMs`, through `FrameClock`), not 600 ms. The half second "before" a
   tenth is that same reach.
-- **System tests** (ear is another process). With Q-CF1's record they judge from what ear says it lost; without it,
-  the WAV's step shapes stay, labelled as the one place the account is not available.
+- **System tests** (ear is another process). They judge from what ear says it lost: the `ear.graph-lost-cycles` and
+  `ear.node-missed-cycles` records and the counters in `graph.get` (section 8), each skip in the WAV matched to a cut
+  the records count, none left over.
 
 ### 5.5 Every judge today, mapped
 
@@ -258,7 +265,7 @@ and each test splits off the rest:
 | `engine_test.cpp` ramp, `sink_test.cpp` take-ups | `CycleLedger::clean`, `xruns` | `CycleLedger` records facts, `clean` is `whole()`; the judge | the ledger's own clean rule and `stalled` special case |
 | `sendspin/tests/clock_test.cpp` | `Judge` with 1.5 s windows, `excusedSteps`, `dryCycles`, `lastSkipped` | 5.4 | `kSettleNs`, `lastSkipped()`, the window logic |
 | `rtp_receiver_test.cpp`, `test/system/rtp_test.cpp` | clean cycles plus 0.5 s, late sends within 600 ms | 5.4 | the two fixed windows |
-| `test/system/*` ramps and stamps | `isSkipStep`, the 200 µs step | Q-CF1's record, else kept and labelled | (with Q-CF1) both |
+| `test/system/*` ramps and stamps | `isSkipStep`, the 200 µs step | the counters and records (section 8) | both |
 | The branch's `DriverCycles` | the only reader of the driver's account | `DriverCuts`, in the product | `src/pipewire/tests/driver_cycles.hpp` |
 
 ## 6. Interfaces
@@ -282,7 +289,7 @@ and each test splits off the rest:
 | `test/support/inducers.hpp` | `ear_inducers` | `CycleLedger` records `CycleFacts` | data thread writes, test reads |
 | `test/support/test_sleeps.hpp` (new, forced include in tests) | `ear_inducers` | `induce`, `negative`, `poll`, `pace` (7.3) | any |
 
-No PipeWire, Boost, knobly or sendspin-cpp type appears in any public header here. `CutRecord` lives in core because
+The diagnostics counters' headers (`cycle_counters.hpp`, `counter_watch.hpp`) are in 8.4. No PipeWire, Boost, knobly or sendspin-cpp type appears in any public header here. `CutRecord` lives in core because
 core's `CycleAccount` consumes it (the interface lives with its consumer); `ear_pipewire` and the harness implement it.
 
 ### 6.2 `ear/core/cycle_facts.hpp`
@@ -570,7 +577,205 @@ code, the second guards the one rule whose breach is `std::terminate` in product
 this page adds. The sleep calls (7.3) are cheap but guard test code only, where the audit has already emptied the
 inventory: do them last, or not, as review load allows. None changes behaviour.
 
-## 8. Migration
+## 8. Diagnostics counters, per graph and per node
+
+The owner answered Q-CF1 (section 1): counters like the lost cycles belong in ear's core diagnostics, and asked "per
+node? per graph?". **Recommended here, which the owner can still overturn: both, because they mean different things.**
+
+- **The graph's counters** say what the host did to the whole graph. A cycle the driver cut is a dropout on every
+  output at once (the host starved ear's audio thread); no node caused it alone or can avoid it. They live on the graph.
+- **A node's counters** say what happened to that node beyond the graph's own losses: cycles its block missed that the
+  driver did not cut (`absent`: the block was not scheduled), and cycles its own work ran past a whole cycle (an
+  overrun, which is what makes the driver cut the next one). They live on each node.
+
+Repeating the graph's cuts on every node would make each node look faulty for what the host did, and summing nodes'
+misses into the graph would count one dropout once per node. So each fact is counted once, where it belongs.
+
+### 8.1 What is counted, and where its one home is
+
+Every counter is a monotonic total read from a fact that already exists; none is worked out again.
+
+| Counter | Scope | Counts | Its source (never recomputed) |
+|---|---|---|---|
+| `cycles` | graph | graph cycles the internal clock started | `DriverCuts::started()` |
+| `cutCycles` | graph | cycles the driver reported cut short | `DriverCuts`' cut count |
+| `stalls` | graph | runs of consecutive cut cycles (one stall of the host, however many cycles it took) | `DriverCuts`: a cut whose previous cycle was not cut |
+| `lostMs` | graph | time the graph lost | encoded from `cutCycles` (each cut is one block: `FrameClock::ns`), never kept |
+| `missedCycles` | node | cycles its block missed that the driver did not cut | the block's `CycleFacts`: `missed - missedCut` |
+| `overruns` | node | cycles in which its block's own work (sources, code, fade, taps) took longer than the cycle | the block: one raw clock read at the end of `processCycle`, against the entry read `onProcess` already takes |
+| `repositions` | node | cycles with `reposition` (the position moved by what no missed cycle explains) | `CycleFacts::causes` |
+| `driverChanges` | node | cycles with `driverChange` | `CycleFacts::causes` |
+| a sink's `dropped`, a source's `shortfall` | the node's companion | as `companions.md` 3.7 designs them | `Sink::droppedFrames()`, `Source::shortfallFrames()`; they stay on the companion's entry |
+| an RTP receiver's late or underrun packets | the node's companion | only if module-rtp-source ever gives a count (it gives none ear can read today) | the companion's entry |
+| `sendspin`'s library re-locks, a type's own counts | the node | once slice 3c routes the library's log, and any count a type observes | a status field (`control-plane.md` 3.1: what a type observes is status, not a framework counter) |
+
+The last three rows are not new counters: they name the homes other designs already give those facts, so a client finds
+every count of a node on that node (its `counters`, its companions' entries, its status) and nothing twice. A legacy
+handoff's drops stay in `node.gone`'s `droppedFrames` until 3c retires handoffs.
+
+`repositions` and `driverChanges` are per node because each block sees its own; on the tracking dummy both stay zero
+(spike S6 says whether the 1127-frame jumps come from a driver restart, which would count here), and a non-zero value is
+a finding, not noise.
+
+`overruns` measures the block's own work, from its entry to its end, not from the cycle's start: a late wake is the
+host's and shows as the graph's `cutCycles`, not as the node's fault. It is the count behind the code
+`ear.realtime-overrun` that `control-plane.md` 4.6 reserves; this page builds the count, and the code stays slice 5's
+to put on the wire as a diagnostic.
+
+### 8.2 Totals, scope and reset
+
+- **Graph counters run from the engine's start** (ear's start): `DriverCuts` begins at `Engine::create`.
+- **A node's counters run from the node's add** and survive its restarts, stops and changes of settings, as
+  `control-plane.md` 3.3 decides for node diagnostics ("diagnostics belong to the node"). A remove drops them; a node
+  added again under the same name starts from zero. If the node's block is made again within its life, `NodeHost`
+  carries what the old block counted when it is destroyed and adds the new block's counts to it: the totals never step
+  back.
+- **Companion counters run per configuration**, as `companions.md` 3.7 already decides (a companion dies with its
+  configuration). That is the one place two scopes meet, and the wire keeps them apart: node `counters`, companion
+  entries' counts.
+- **Nothing resets a counter** but its owner's end. A client that wants "since I looked" keeps the last value it saw
+  and subtracts. No reset request is offered: a reset by one editor would hide the history from every other client and
+  from standard output.
+- **Width.** Every counter is a `std::uint64_t` in C++ and a JSON number on the wire; a cycle count stays below 2^53 for
+  over a million years at 48 kHz / 256, so no client loses precision.
+
+### 8.3 How they are reported
+
+**On the control port.** A wire change, so `docs/control-port.md`, the fixtures in `test/protocol/`, `src/control/` and
+`web/src/protocol.ts` change in one commit (`docs/control-port.md#changing-the-wire`). It is additive, so it is a
+**feature, `counters`**, not a new `protocol`:
+
+- The Graph gains `"counters": {"cycles", "cutCycles", "stalls", "lostMs"}`; each node gains
+  `"counters": {"missedCycles", "overruns", "repositions", "driverChanges"}`, all zero for a node whose block was never
+  made. Both are read in the one main-loop turn that makes the snapshot, so they agree with the rest of it.
+- **`counters.changed`** `{"graph": {...}, "nodes": {"<name>": {...}, ...}}`: the graph's counters whole, and the whole
+  counters of each node whose counters changed since the last one; sent at most once a second, and only when something
+  changed. It is a sample, never a record of every change, and it orders with nothing (a client folds it by replacing
+  the counters it names). A node it names that the client has not seen is ignored (its `node.added` is on the way).
+- The counter names are an open set, as every enum is (`docs/control-port.md#protocol-and-features`): a client shows a
+  counter it does not know by its name and number.
+- Fixtures: `test/protocol/snapshot.json` gains both objects (under the feature), `counters-changed.json` is new, and
+  `unknown-values.json` gains an unknown counter.
+
+**On standard output** (`docs/output-records.md#diagnostic`, and its JSON schema):
+
+- **`ear.graph-lost-cycles`**, no node: fields `cycles` (cut in the second it covers), `stalls`, `ms`, `totalCycles`
+  (since start). At most one a second, and only for a second in which something was cut. Like the other node-less
+  diagnostics it is standard output only; its numbers are on the wire as the graph's counters.
+- **`ear.node-missed-cycles`**, with the node: fields `missed`, `overruns` (since its last such record) and their
+  totals. At most once per 10 s per node, only when either moved: a node that misses cycles is a fault worth a line, but
+  one that keeps missing must not flood the log (`companions.md`'s K2 paces its companions' drops the same way). It goes
+  on the wire as a `node.diagnostic` once slice 5 builds that, as `ear.sink-dropped` does.
+- The pace is the records', not the counters': the counters are exact whatever the records leave out.
+
+### 8.4 Interfaces
+
+```cpp
+// ear/core/cycle_counters.hpp (ear_core, public): the counters' one home, filled from facts.
+namespace ear {
+/// A node's counters (8.1), a value.
+struct NodeCounts {
+	std::uint64_t missedCycles = 0, overruns = 0, repositions = 0, driverChanges = 0;
+	friend constexpr NodeCounts operator+(NodeCounts, NodeCounts) noexcept; // NodeHost carries a destroyed block's
+	friend bool operator==(const NodeCounts&, const NodeCounts&) = default;
+};
+/// The graph's counters (8.1), a value; lostMs is encoded from cutCycles, not kept.
+struct GraphCounts {
+	std::uint64_t cycles = 0, cutCycles = 0, stalls = 0;
+	friend bool operator==(const GraphCounts&, const GraphCounts&) = default;
+};
+/// One block's counters as its cycles state them. One writer (the thread that runs the block's cycles), any reader:
+/// each counter is an atomic stored relaxed by its one writer and loaded relaxed (counters are independent; no reader
+/// needs two to agree). Allocates nothing; the port block and the harness's fake block each hold one.
+class CycleCounters {
+public:
+	/// The writer, once per cycle the block runs, after its work: the cycle's facts, and whether its work overran.
+	void add(const CycleFacts& facts, bool overran) noexcept;
+	/// Any thread.
+	NodeCounts read() const noexcept;
+};
+
+/// Where the graph's counters come from (ear_pipewire's Engine, over DriverCuts; the harness has none).
+class GraphCounterSource {
+public:
+	/// Any thread.
+	virtual GraphCounts graphCounts() const noexcept = 0;
+
+protected:
+	~GraphCounterSource() = default;
+};
+} // namespace ear
+
+// ear/core/node_host.hpp: PortBlock gains
+/// Any thread: the counts this block's cycles stated (zero before its first cycle).
+virtual NodeCounts counts() const noexcept = 0;
+// NodeHost gains (main thread)
+/// The node's totals since its add (8.2): what its destroyed blocks counted plus its block's now; none for no node.
+std::optional<NodeCounts> counts(std::string_view node) const;
+
+// ear/core/counter_watch.hpp (ear_core, public): the one pacer of 8.3, on the main loop.
+namespace ear {
+/// Told the counters that changed, at most once a second. Implemented by ear_control (StatusLog's records and the
+/// gateway's counters.changed); declared here, with its consumer.
+class CounterListener {
+public:
+	struct NodeEntry {
+		std::string name;
+		NodeCounts total;
+		NodeCounts sinceLast;
+	};
+	virtual void countersChanged(const GraphCounts& total, const GraphCounts& sinceLast,
+	                             std::span<const NodeEntry> nodes) = 0;
+
+protected:
+	~CounterListener() = default;
+};
+/// Main thread. Each second (a Timers timer) reads the graph's counts and every node's (NodeHost::counts), compares
+/// them with what it last told, and tells the listener only what changed. Keeps one entry per node, made at add and
+/// dropped at remove (main thread; never on the data loop). StatusLog paces the per-node record to 10 s itself.
+class CounterWatch {
+public:
+	CounterWatch(Timers& timers, const GraphCounterSource& graph, const NodeHost& nodes, CounterListener& listener);
+};
+} // namespace ear
+
+// ear/pipewire/engine.hpp: Engine implements GraphCounterSource
+GraphCounts graphCounts() const noexcept override; // from DriverCuts (started, cuts, stalls)
+```
+
+- **Threads.** The data thread writes a block's `CycleCounters` and `DriverCuts`' counts; the main loop reads them
+  (`NodeHost::counts`, the snapshot, `CounterWatch`); the control thread never reads them, it gets the main loop's
+  copies through the gateway as every other graph fact. Nothing on the data loop allocates, locks or formats; the
+  per-node map lives on the main loop.
+- **`DriverCuts`** gains a `stalls_` count (in `onIncomplete`, when the previous cycle's bit is clear): one more relaxed
+  store. **The port block** reads the raw clock once more at the end of `processCycle` (vDSO, no system call) for
+  `overran`, and calls `counters_.add(facts, overran)` there.
+- **The harness** holds a `CycleCounters` too and gives `NodeHarness::counts()`, so a type's tests see a node's
+  counters move under `loseCycles(n, Lost::notScheduled)` exactly as the engine's do; `Lost::cut` moves none of them
+  (only the graph's would move, which the harness does not keep).
+- **Packages.** `cycle_counters.hpp` and `counter_watch.hpp` are core (pure, no thread: `CounterWatch` uses core's
+  `Timers`); `ear_pipewire` implements `GraphCounterSource` and `PortBlock::counts`; `ear_control` implements
+  `CounterListener` and encodes both the records and the wire; `main.cpp` wires them. Dependencies keep pointing one
+  way, and no PipeWire type reaches a public header.
+
+### 8.5 The editor
+
+Proposed, not over-built (`docs/editor.md` changes with it):
+
+- **Nothing when nothing was lost.** A box with every counter at zero looks as today.
+- **A node's mark.** When a node's `missedCycles` or `overruns` moved in the last minute (on the browser's clock, from
+  `counters.changed`), a small warning mark sits beside its state word, the same mark companions' badges use for a
+  counter above zero (`companions.md` 3.7); the tooltip and the side panel give the totals in words ("missed 12 cycles
+  it was not scheduled for; its work overran 3 times; since it was added"). Not per port: these are the node's, and the
+  per-port meters (the owner's R30) stay what they are, the audio itself.
+- **The graph's badge.** Beside the "not realtime" badge, "dropouts" with the count of the last minute, shown while
+  `cutCycles` moved in it, its tooltip the totals ("the host held up the audio thread: 12 dropouts, 64 ms, since ear
+  started"). Hidden when the last minute had none.
+- Gated on the `counters` feature; an unknown counter is listed in the panel by name.
+
+Whether the editor shows these unasked, or only in the side panel, is Q-CF4 (section 11).
+
+## 9. Migration
 
 Each step is one mergeable change, green on every test and `make format-check`, with its own review, changing the
 library pages it makes stale. Assumed merged first: the engine-test branch (`worktree-agent-ac4b07a6145554fa8`:
@@ -584,10 +789,12 @@ R5d).
 | **C2** | `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
-| **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (the owner's answer to Q-CF2 sets the second) |
-| **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` per Q-CF2; `docs/writing-a-node-type.md#sources` and `#sinks` change |
+| **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
+| **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `excusedSteps`, the 600 ms and 0.5 s windows | none |
-| **C5** | With Q-CF1 "yes": the lost-cycles record, `docs/output-records.md` and its JSON, the system tests judging from it | `isSkipStep`, the 200 µs step rule | a new record |
+| **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
+| **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
+| **D3** | The editor (8.5), as Q-CF4 decides; `docs/editor.md` | nothing | the marks and badge |
 | **C6a** | `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
 | **C7** | The callback poison | `test/pipewire/callback_guard.cmake` and its snippets | none |
@@ -596,10 +803,11 @@ R5d).
 Order: S6 first (it can change 4.1's causes), then C1, C2, C3a; C4a may jump ahead of C3a when sendspin's bug needs
 it. C3c needs the sendspin branch merged and C4a (its judge reads progress). C6 and C7 are independent of the rest and
 of each other and may land at any point; C7 before C2 would let C2 add its listener to the poison list instead of the
-text guard. All before 3c, which moves `sendspin` onto a source, so C4a's rule moves into `SourceRing` once, already
-on facts.
+text guard. D1 follows C2 and C4b (it reads the facts and `absent`); D2 follows D1, D3 follows D2. C1 to C4 come before 3c, which
+moves `sendspin` onto a source, so C4a's rule moves into `SourceRing` once, already on facts; the D steps may land
+before or after 3c (3c's library log adds no framework counter: re-locks are status, 8.1).
 
-## 9. Decided here (technical)
+## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
 - The listener counts cycles itself; blocks name their cycle by its count, not `clock.cycle` (6.4).
@@ -607,35 +815,19 @@ on facts.
 - The judge excuses by cause and count, never by time; downstream dynamics are split off and named (5.4).
 - An induced plan is the default, so every timing test proves its excuse path each run.
 - `StallWatch` stays as it is (4.4).
+- Counters: each fact counted once where it belongs (graph or node), monotonic, never reset but by its owner's end;
+  a node's survive its restarts, companions' are per configuration as designed (8.2); on the wire as the additive
+  feature `counters` with one paced notification, `counters.changed` (8.3).
 
-## 10. Questions for the owner
+## 11. Questions for the owner
 
-**Q-CF1. Should ear tell you when the audio thread fell behind and the graph lost cycles?**
+**Q-CF1 (answered, 2026-11-10).** Should ear tell you when the audio thread fell behind and the graph lost cycles? The
+owner: "Yes. We should include counters like this as part of the core diagnostics. Per node? Per graph?" Section 8
+answers his question with both, each for what it means (graph: what the host did to every output; node: what happened
+to that node beyond it), as a recommendation he can still overturn.
 
-*Background.* When the host starves ear's audio thread, the internal clock catches up by skipping cycles: a short
-dropout on every output. Today nothing says so; it shows only in PipeWire's debug log, and the main-loop watchdog does
-not see it (it watches a different thread). With this design ear knows exactly how many cycles were lost and when.
-
-*Scenario.* In the Talos pod with a CPU limit, the MOTU clicks every few minutes. With a record, the log shows
-`{"code":"ear.graph-lost-cycles","cycles":12,"ms":64}` at each click, so you know it is the host, not the card or
-the network; the system tests can also judge from it.
-
-*Recommendation: yes*, at most one record a second summing what was lost in it, only when something was.
-
-**Q-CF2. After a stall longer than a node's buffer, should what ear reports as played keep in step with the clock?**
-
-*Background.* A `sendspin` node tells Music Assistant how far playback has got; a source tells its type the same.
-After a stall shorter than the node's buffer, both count the stalled time as played (`sendspin` only as far as
-its feed held, which C4a fixes either way), so the speaker stays in sync with
-the others. After a longer one (a 43 ms feed, a 200 ms stall), today they count nothing ("a new clock"), so the
-speaker believes 200 ms less has played than really has, and stays that far off until the library notices on its
-own and re-syncs.
-
-*Scenario.* Three speakers in one Music Assistant group; the ear one stalls for 200 ms. Keep in step: it skips ahead
-and is back in sync at once, with a 200 ms gap. Start afresh (today): no extra skip, but it plays 200 ms behind the
-other two until the library re-locks.
-
-*Recommendation: keep in step.* The clock really moved; telling the truth lets the library do the right thing at once.
+**Q-CF2 (answered, 2026-11-10).** After a stall longer than a node's buffer, should what ear reports as played keep in
+step with the clock? The owner: keep in step (section 4.4).
 
 **Q-CF3. If PipeWire turns out to lose a cycle without reporting it, what should the tests do?**
 
@@ -652,3 +844,18 @@ and it holds only if the mark is reliable. (c) Report it upstream and let those 
 
 *Recommendation: (b) if S6 shows the mark is reliable, else (a)*, with the upstream report either way. Only asked if
 S6 finds such a path.
+
+**Q-CF4. Should the editor show dropouts and a node's missed cycles without being asked?**
+
+*Background.* With section 8 ear counts the graph's dropouts (the host held up ear's audio thread, every output went
+quiet for a moment) and, per node, cycles that node missed on its own or in which its work ran too long. The editor can
+show these on the canvas the moment they happen, or keep them in the side panel for when you go looking.
+
+*Scenario.* You are routing FPP's stream to the MOTU and something clicks now and then. Shown unasked: a "dropouts: 3"
+badge appears at the top for a minute after each click, and if the `rtp` node's own work was too slow its box gets a
+small warning mark, so you see at once whether it was the host or the node. Panel only: the canvas stays as it is, and
+you open a node's panel to read its counts; the dropout count shows only in a graph panel you open.
+
+*Recommendation: shown unasked, but only while something happened in the last minute* (8.5), totals in the tooltip
+and panel. A canvas that stays quiet when all is well and points at the trouble when there is some is the reason to
+count at all.
