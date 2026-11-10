@@ -13,12 +13,16 @@
 # A rate is an identifier spelled as one: rate, <anything>_rate, <anything>Rate, frequency, <anything>_frequency or
 # <anything>Frequency, each with an optional trailing '_' or '()', reached through '.', '->' or '::' and inside a cast
 # or braces (static_cast<double>(rate), std::uint64_t{format.rate}). A line that ends in an operator, or in a rate,
-# carries it to the next, so an expression split there is still seen.
+# carries it to the next, so an expression split there is still seen. Digit separators (48'000) are removed before
+# character literals are emptied, so one never opens a literal that hides the rest of the line; each block comment is
+# removed alone, so code between two on one line is still read.
 # The limit: the guard sees a rate only by its name. A rate held under another name (hz, sr), a literal rate (48000),
-# a rate inside a call's arguments (std::max(rate, 1U) * x) and nanoseconds-per-second alone are not seen: ns-to-
-# timespec and ms conversions use 1'000'000'000 and 1'000'000 with no rate, and they are not frames. A pointer declared
-# to a type named like a rate (SampleRate* p) is refused; rename it. It fails, too, when ROOT and GLOB leave it no file
-# to check. Raw string literals are not emptied (src/ has none).
+# a rate inside a call's arguments (std::max(rate, 1U) * x), a rate shifted (rate >> 1) and nanoseconds-per-second
+# alone are not seen: ns-to-timespec and ms conversions use 1'000'000'000 and 1'000'000 with no rate, and they are not
+# frames. It fails closed where it errs the other way: a pointer declared to a type named like a rate (SampleRate* p)
+# is refused, and so is a line opening with a dereference after a line that ends in a rate (`if (n == rate)` then
+# `*p = 1;` reads as rate) * p); brace or rejoin it. It fails, too, when ROOT and GLOB leave it no file to check.
+# Raw string literals are not emptied (src/ has none).
 cmake_policy(VERSION 3.28)
 if(NOT DEFINED ROOT)
 	message(FATAL_ERROR "frame_guard: ROOT is not set")
@@ -69,17 +73,21 @@ foreach(file IN LISTS files)
 	foreach(line IN LISTS lines)
 		math(EXPR number "${number} + 1")
 		# Literals first, so neither a quote nor a comment marker inside one counts; then comments.
-		string(REGEX REPLACE [=['([^'\]|\\.)*']=] "''" code "${line}")
+		# A digit separator first (twice: a match takes the digit after it, so 1'2'3 needs a second pass), so 48'000
+		# opens no character literal.
+		string(REGEX REPLACE "([0-9])'([0-9A-Fa-f])" "\\1\\2" code "${line}")
+		string(REGEX REPLACE "([0-9])'([0-9A-Fa-f])" "\\1\\2" code "${code}")
+		string(REGEX REPLACE [=['([^'\]|\\.)*']=] "''" code "${code}")
 		string(REGEX REPLACE [=["([^"\]|\\.)*"]=] [=[""]=] code "${code}")
 		if(inBlock)
 			if(code MATCHES [=[\*/]=])
-				string(REGEX REPLACE [=[^.*\*/]=] "" code "${code}")
+				string(REGEX REPLACE [=[^([^*]|\*+[^*/])*\*+/]=] "" code "${code}")
 				set(inBlock FALSE)
 			else()
 				continue()
 			endif()
 		endif()
-		string(REGEX REPLACE [=[/\*.*\*/]=] "" code "${code}")
+		string(REGEX REPLACE [=[/\*([^*]|\*+[^*/])*\*+/]=] "" code "${code}")
 		string(REGEX REPLACE "//.*$" "" code "${code}")
 		if(code MATCHES [=[/\*]=])
 			string(REGEX REPLACE [=[/\*.*$]=] "" code "${code}")

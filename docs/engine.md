@@ -528,7 +528,7 @@ a PipeWire that fixes it fails it.
 ### Dating
 
 `FrameClock` (`ear/core/latency.hpp`) is the one code that converts between frames and time at the
-graph's rate; nothing else in ear multiplies or divides by a rate to get one from the other.
+graph's rate; nothing else in ear uses a rate as an operand of `*`, `/` or `%` to get one from the other.
 
 - **`ns(frames)`** is how long frames last, and **`frames(duration)`** how many whole frames a
   duration holds. Each is the exact quotient of the whole count, truncated toward zero (one

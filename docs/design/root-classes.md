@@ -269,6 +269,12 @@ What R3 built differs from 3.3 and 3.4 here; `docs/engine.md#dating` describes i
 - **No clock domain is mixed.** Every date is on `CLOCK_MONOTONIC_RAW`, from `GraphCycle::startRawNs` (or the anchor
   copied from it); the library's own clock is that one (sendspin-cpp's `platform/time.h`), and the server's time is
   converted only by the library (`get_client_time`), never compared with ours.
+- **A later step: a `SampleRate` type.** The guard reads names, so it can be fooled by one (a rate held as `hz`). A
+  `SampleRate` type with no arithmetic, whose only exits are `FrameClock(SampleRate)` and an explicit `.hz()` (for
+  PipeWire's properties and libsndfile), would make the rule a type check: arithmetic on a rate would not compile, and
+  the guard would shrink to finding `.hz()` used with an operator. Not done in R3: `AudioFormat::rate` is a plain
+  `std::uint32_t` read by every type, every companion shape and the control port's records, so the change crosses
+  every package and the wire's code for no date that moves, and the guard already refuses every site there is.
 - **A name `<chrono>` exposed.** `latency.hpp` now includes `<chrono>`, which in libstdc++ brings `<iomanip>`, and
   `graph_file_model.cpp`'s own `quoted(std::string_view)` called with a `std::string` then found `std::quoted` by
   argument-dependent lookup and stopped compiling; it is `knoblyQuoted` now.

@@ -159,7 +159,8 @@ ear_sleep_guard_case(refuses_checking_nothing no-such-file.snippet empty.txt "th
 
 # The frame guard (docs/engine.md#dating): no arithmetic with a rate in src/ outside FrameClock and its named
 # exceptions; and the guard itself refusing each spelling it knows (frame_guard/<spelling>.snippet, a "//" inside a
-# string and an expression split before or after its operator among them), letting through what only looks like one
+# string, a digit separator before a character literal, code between two block comments and an expression split
+# before or after its operator among them), letting through what only looks like one
 # (allowed.snippet: a dereference, calls, other names, comments, strings, ns-to-timespec and ms conversions), skipping
 # exactly the exempt path and tests but not a namesake elsewhere, and refusing to check nothing.
 set(ear_frame_guard "${CMAKE_CURRENT_SOURCE_DIR}/frame_guard.cmake")
@@ -168,7 +169,7 @@ set(ear_frame_exempt "-DEXEMPT=exempt/latency.snippet")
 add_test(NAME ear_frames_through_frame_clock
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_frame_guard}")
 foreach(spelling times_rate member rate_first frequency graph_frequency sample_rate k_rate cast cast_first braced call
-		compound remainder comment_in_string)
+		compound remainder comment_in_string separator between_block_comments)
 	add_test(NAME ear_frame_guard_refuses_${spelling}
 		COMMAND "${CMAKE_COMMAND}" "-DROOT=${ear_frame_snippets}" "-DGLOB=${spelling}.snippet" -P "${ear_frame_guard}")
 	set_tests_properties(ear_frame_guard_refuses_${spelling} PROPERTIES
