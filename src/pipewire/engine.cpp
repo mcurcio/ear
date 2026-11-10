@@ -158,13 +158,13 @@ struct Engine::Impl {
 	pw_context* context = nullptr;
 	pw_core* core = nullptr;
 	std::function<void()> stopHandler;
-	spa_source* sigint = nullptr;
-	spa_source* sigterm = nullptr;
+	LoopSource sigint;
+	LoopSource sigterm;
 
 	~Impl() {
 		if (loop != nullptr) {
-			if (sigint != nullptr) pw_loop_destroy_source(pw_main_loop_get_loop(loop), sigint);
-			if (sigterm != nullptr) pw_loop_destroy_source(pw_main_loop_get_loop(loop), sigterm);
+			sigint.reset();
+			sigterm.reset();
 		}
 		if (core != nullptr) pw_core_disconnect(core);
 		if (context != nullptr) pw_context_destroy(context);
@@ -246,8 +246,8 @@ void Engine::quit() { pw_main_loop_quit(impl_->loop); }
 void Engine::onStopSignal(std::function<void()> handler) {
 	impl_->stopHandler = std::move(handler);
 	pw_loop* loop = pw_main_loop_get_loop(impl_->loop);
-	if (impl_->sigint == nullptr) impl_->sigint = addSignal(loop, SIGINT, guarded<&Impl::onSignal>, impl_.get());
-	if (impl_->sigterm == nullptr) impl_->sigterm = addSignal(loop, SIGTERM, guarded<&Impl::onSignal>, impl_.get());
+	if (!impl_->sigint) addSignal(impl_->sigint, loop, SIGINT, guarded<&Impl::onSignal>, impl_.get());
+	if (!impl_->sigterm) addSignal(impl_->sigterm, loop, SIGTERM, guarded<&Impl::onSignal>, impl_.get());
 }
 
 /// The context's one data loop (engine.conf pins context.num-data-loops = 1)

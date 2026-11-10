@@ -70,6 +70,45 @@ struct Levels {
 	std::vector<RegisteredBlock*> blocks;
 };
 
+/// A block's entry in its factory's levels registry, held by the block: added once, erased when it goes (or when the
+/// block's constructor throws after adding it), so latestLevels never reads a freed block's mailbox. Counted with the
+/// boundary's registrations, so the injection seam covers it (docs/testing.md#the-tools).
+class LevelsEntry {
+public:
+	LevelsEntry() = default;
+	LevelsEntry(const LevelsEntry&) = delete;
+	LevelsEntry& operator=(const LevelsEntry&) = delete;
+	~LevelsEntry() { reset(); }
+	void add(std::shared_ptr<Levels> levels, RegisteredBlock& block) {
+		reset();
+		{
+			const std::scoped_lock lock(levels->mutex);
+			levels->blocks.push_back(&block);
+		}
+		levels_ = std::move(levels);
+		block_ = &block;
+		boundary::held();
+	}
+	void reset() noexcept {
+		if (block_ == nullptr) return;
+		{
+			const std::scoped_lock lock(levels_->mutex);
+			std::erase(levels_->blocks, block_);
+		}
+		block_ = nullptr;
+		boundary::released();
+	}
+
+private:
+	std::shared_ptr<Levels> levels_;
+	RegisteredBlock* block_ = nullptr;
+};
+
+/// Destroys a filter ear made.
+struct FilterDestroy {
+	void operator()(pw_filter* filter) const noexcept { pw_filter_destroy(filter); }
+};
+
 std::vector<PortName> publicPorts(const Ports& ports) {
 	std::vector<PortName> names = ports.inputs();
 	names.insert(names.end(), ports.outputs().begin(), ports.outputs().end());
@@ -113,28 +152,27 @@ public:
 		// A source plays into scratch of the block's own, never into PipeWire's buffer of its (unlinked) port: one
 		// buffer per inside input port.
 		for (std::size_t i = publicInputs_; i < inputs_.size(); ++i) sourceScratch_.emplace_back(format.maxBlock, 0.0f);
-		{
-			const std::scoped_lock lock(levels_->mutex);
-			levels_->blocks.push_back(&registered_);
-		}
-		refusal_ = addEvent(loop_, guarded<&FilterPortBlock::onRefusal>, this);
-		completion_ = addEvent(loop_, guarded<&FilterPortBlock::onCompletion>, this);
+		// Each registration is held by a member declared, like it, in this order, so a throw anywhere below unwinds
+		// every one made so far before anything it calls into goes (docs/architecture.md#faults-by-owner).
+		levelsEntry_.add(levels_, registered_);
+		addEvent(refusal_, loop_, guarded<&FilterPortBlock::onRefusal>, this);
+		addEvent(completion_, loop_, guarded<&FilterPortBlock::onCompletion>, this);
 		// Every key from the property table (docs/engine.md#properties-ear-sets says why each).
-		filter_ = pw_filter_new(engine.core(), node.c_str(),
-		                        PropertySet<Home::block>({{property<Home::block>("node.name"), node},
-		                                                  {property<Home::block>("media.name"), node},
-		                                                  {property<Home::block>("media.type"), "Audio"},
-		                                                  {property<Home::block>("node.group"), graphGroup},
-		                                                  {property<Home::block>("node.always-process"), "true"}})
-		                            .release());
+		filter_.reset(pw_filter_new(engine.core(), node.c_str(),
+		                            PropertySet<Home::block>({{property<Home::block>("node.name"), node},
+		                                                      {property<Home::block>("media.name"), node},
+		                                                      {property<Home::block>("media.type"), "Audio"},
+		                                                      {property<Home::block>("node.group"), graphGroup},
+		                                                      {property<Home::block>("node.always-process"), "true"}})
+		                                .release()));
 		if (filter_ == nullptr) {
 			fail(std::string("cannot make the engine node: ") + spa_strerror(-errno));
 			return;
 		}
 		listen<FilterCallbacks<FilterPortBlock>{.stateChanged = guarded<&FilterPortBlock::onStateChanged>,
 		                                        .paramChanged = guarded<&FilterPortBlock::onParamChanged>,
-		                                        .process = realtime<&FilterPortBlock::onProcess>}>(filter_, listener_,
-		                                                                                           this);
+		                                        .process = realtime<&FilterPortBlock::onProcess>}>(filter_.get(),
+		                                                                                           listener_, this);
 		// AudioCode::process sees inputs then inside inputs, outputs then inside outputs.
 		addPorts(PW_DIRECTION_INPUT, ports.inputs(), inputPorts_);
 		addPorts(PW_DIRECTION_INPUT, ports.insideInputs(), inputPorts_);
@@ -144,7 +182,7 @@ public:
 		// every input's upstream into every output), mixing paths that never meet (filter.c, default_latency). The
 		// block carries it per bank pair instead (carryLatency).
 		if (const int res = pw_filter_connect(
-				filter_, static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY),
+				filter_.get(), static_cast<pw_filter_flags>(PW_FILTER_FLAG_RT_PROCESS | PW_FILTER_FLAG_CUSTOM_LATENCY),
 				nullptr, 0);
 		    res < 0) {
 			fail(std::string("cannot connect the engine node: ") + spa_strerror(res));
@@ -161,17 +199,14 @@ public:
 	// invoke on the loop it was posted to flushes it first (invokes run in posting order). Only then is the completion
 	// source destroyed, so a completion for a destroyed block runs nothing; requests not completed are dropped.
 	~FilterPortBlock() override {
-		if (filter_ != nullptr) {
-			spa_hook_remove(&listener_);
-			pw_filter_destroy(filter_);
-		}
+		listener_.remove();
+		filter_.reset();
 		if (postedLoop_ && invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) {
 			invoke(postedLoop_, realtime<&FilterPortBlock::onNothing>, this, true);
 		}
-		if (completion_ != nullptr) pw_loop_destroy_source(loop_, completion_);
-		if (refusal_ != nullptr) pw_loop_destroy_source(loop_, refusal_);
-		const std::scoped_lock lock(levels_->mutex);
-		std::erase(levels_->blocks, &registered_);
+		completion_.reset();
+		refusal_.reset();
+		levelsEntry_.reset();
 	}
 
 	FilterPortBlock(const FilterPortBlock&) = delete;
@@ -240,7 +275,7 @@ private:
 		// leaves its span on zeros or scratch.
 		for (const PortName& name : names) {
 			handles.push_back(pw_filter_add_port(
-				filter_, direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
+				filter_.get(), direction, PW_FILTER_PORT_FLAG_MAP_BUFFERS, 0,
 				PropertySet<Home::blockPort>({{property<Home::blockPort>("format.dsp"), "32 bit float mono audio"},
 			                                  {property<Home::blockPort>("port.name"), name}})
 					.release(),
@@ -250,19 +285,42 @@ private:
 
 	/// A callback of this block's threw (its bug): it is lost for good, and its node fails lost.
 	std::string_view faultNode() const noexcept override { return registered_.node; }
+	/// The block leaves the graph, so nothing it half-changed runs on the data loop again: its listener now (the
+	/// process callback with it; removing a hook inside its own event is allowed), and, later on the main loop, outside
+	/// any of the filter's events, the filter and any invoke of its still queued, as its destructor does it. From
+	/// then on every request is applied on the main thread and completed by signal, so the silences its node's
+	/// teardown asks for complete and no bound takes the data loop for wedged (docs/architecture.md#faults-by-owner).
+	/// On a wedged data loop nothing more is touched (data_loop_wedge.hpp).
 	void faulted(std::string_view callback, std::string_view detail) override {
-		if (lostTold_) return; // its node already fails
-		lostTold_ = true;
-		events_.faulted(internalErrorDetail(callback, detail));
+		listener_.remove();
+		processing_.store(false, std::memory_order_release);
+		if (!lostTold_) {
+			lostTold_ = true;
+			events_.faulted(internalErrorDetail(callback, detail));
+		}
+		leaving_ = true;
+		if (refusal_) pw_loop_signal_event(loop_, refusal_.get());
+	}
+
+	/// Main loop, outside the filter's events: the rest of faulted()'s leaving.
+	void leave() {
+		if (dataLoopWedged(engine_)) return;
+		filter_.reset();
+		if (postedLoop_ && invokesPosted_ != invokesRun_.load(std::memory_order_acquire))
+			invoke(postedLoop_, realtime<&FilterPortBlock::onNothing>, this, true);
+		postedLoop_ = DataLoop();
+		kick_ = true;
+		pump();
 	}
 
 	/// A refusal while making the block is told on the main loop, never inside make().
 	void fail(std::string detail) {
 		refusalDetail_ = std::move(detail);
-		if (refusal_ != nullptr) pw_loop_signal_event(loop_, refusal_);
+		if (refusal_) pw_loop_signal_event(loop_, refusal_.get());
 	}
 
 	void onRefusal(std::uint64_t /*count*/) {
+		if (std::exchange(leaving_, false)) leave();
 		if (lostTold_) return;
 		lostTold_ = true;
 		events_.lost(refusalDetail_);
@@ -276,7 +334,7 @@ private:
 		const bool streaming = state == PW_FILTER_STATE_STREAMING;
 		processing_.store(streaming, std::memory_order_release);
 		if (streaming && blockId_ == SPA_ID_INVALID && filter_ != nullptr) {
-			blockId_ = pw_filter_get_node_id(filter_);
+			blockId_ = pw_filter_get_node_id(filter_.get());
 		}
 		if (!streaming && old == PW_FILTER_STATE_STREAMING && completed_.load(std::memory_order_acquire) < pushed_) {
 			kick_ = true;
@@ -344,7 +402,7 @@ private:
 				spa_pod_builder builder = SPA_POD_BUILDER_INIT(buffer, sizeof(buffer));
 				const spa_pod* params[1] = {
 					static_cast<const spa_pod*>(spa_latency_build(&builder, SPA_PARAM_Latency, &info))};
-				pw_filter_update_params(filter_, ports[i], params, 1);
+				pw_filter_update_params(filter_.get(), ports[i], params, 1);
 			}
 		};
 		publish(0, inputPorts_, inputToldNow_, inputTold_, SPA_DIRECTION_INPUT);
@@ -380,11 +438,11 @@ private:
 		if (invokesPosted_ != invokesRun_.load(std::memory_order_acquire)) return; // its completion pumps again
 		if (drained_.load(std::memory_order_acquire) == pushed_ && !kick_) return;
 		kick_ = false;
-		const DataLoop dataLoop = filter_ != nullptr ? DataLoop::of(filter_) : DataLoop();
+		const DataLoop dataLoop = filter_ != nullptr ? DataLoop::of(filter_.get()) : DataLoop();
 		if (!dataLoop) {
 			// Nothing processes: applied here, and still completed by signal.
 			apply();
-			pw_loop_signal_event(loop_, completion_);
+			pw_loop_signal_event(loop_, completion_.get());
 			return;
 		}
 		// One invoke in flight per block. A loop whose thread is not running runs it inline: it only sets
@@ -398,7 +456,7 @@ private:
 	void onRequests() noexcept {
 		apply();
 		invokesRun_.fetch_add(1, std::memory_order_acq_rel);
-		pw_loop_signal_event(loop_, completion_);
+		pw_loop_signal_event(loop_, completion_.get());
 	}
 
 	/// The data loop: nothing, so a blocking invoke of it flushes the invokes posted before it.
@@ -451,7 +509,7 @@ private:
 		const std::uint64_t drained = drained_.load(std::memory_order_relaxed);
 		if (completed_.load(std::memory_order_relaxed) == drained) return;
 		completed_.store(drained, std::memory_order_release);
-		pw_loop_signal_event(loop_, completion_);
+		pw_loop_signal_event(loop_, completion_.get());
 	}
 
 	/// Main loop: the data loop completed requests, or an invoke ran.
@@ -600,11 +658,9 @@ private:
 	std::vector<Latency> inputTold_;                  // what each input last told its peers (zero: nothing yet)
 	std::vector<Latency> outputTold_;
 	LatencyPlan plan_;
-	pw_filter* filter_ = nullptr;
-	spa_hook listener_{};
 	bool readyTold_ = false;
 	bool lostTold_ = false;
-	spa_source* refusal_ = nullptr;
+	bool leaving_ = false; // faulted: the filter goes at the next refusal event
 	std::string refusalDetail_;
 
 	// The asynchronous drive and fade (see pump()).
@@ -657,8 +713,15 @@ private:
 	DataLoop postedLoop_; // the loop the last invoke was posted to: the block's data loop
 	bool kick_ = false;
 	std::uint32_t blockId_ = SPA_ID_INVALID;
-	spa_source* completion_ = nullptr;
 	std::shared_ptr<int> life_ = std::make_shared<int>(0); // a `done` that destroyed the block expires it
+	// What the constructor registers, in its order and declared last, so a throw in the constructor unwinds them (in
+	// reverse: the listener before its filter) before any member they reach goes; the destructor removes each first,
+	// in its own order.
+	LevelsEntry levelsEntry_;
+	LoopSource refusal_;
+	LoopSource completion_;
+	std::unique_ptr<pw_filter, FilterDestroy> filter_;
+	Listener listener_;
 };
 
 } // namespace

@@ -121,7 +121,8 @@ to `ear_pipewire`), with no exception:
   (on loops that may run anything: the main loop, a sink's or handoff's thread loop) and an invoke
   on any `pw_loop` take only `guarded<>`; an invoke on the data loop takes a `DataLoop` (made from
   the context's `pw_data_loop` or a filter's) and only `realtime<>`; a filter's `process` entry
-  takes only `realtime<>` and every other table entry only `guarded<>`. A raw function pointer, a
+  takes only `realtime<>` and every other table entry only `guarded<>`. Each registration fills a
+  handle its owner holds, which removes it when destroyed ([below](#faults-by-owner)). A raw function pointer, a
   method that can throw, or an object of another class than the member's does not compile
   (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case).
 - **The guard.** The CTest test `ear_callbacks_through_the_boundary`
@@ -185,21 +186,25 @@ adapter's state dies with its node, so failing only that node is clean and the r
 plays on; NodeHost's state is every node's, and its invariants cannot be trusted after an exception
 in the middle of an update, so ending the process (the container restarts it) stays the safe
 answer there. Every caught bug is said in an `ear.internal-error` record (`callback`, `node` when
-it fails one, `detail`; [output-records.md](output-records.md#diagnostic)).
+it fails one, `fatal` when ear ends after it, `detail`;
+[output-records.md](output-records.md#diagnostic)), once per owner: an owner whose callbacks keep
+throwing is said and told only the first time (`FaultOwner::firstFault`).
 
 | Where it was thrown | Owner | What follows |
 |---|---|---|
 | A type's code: its hooks, its code's `prepare`, a legacy recipe or close, a sink's or handoff's consumer, its parse | The type | Its node's fact (`start-failed`, or `lost` once rested; an edit refused at parse) and no record ([writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)) |
-| An adapter's own callback: a port block's, an engine companion's or its body's (a card's, an RTP receiver's), a link's | The adapter (`FaultOwner`) | The record, with the node; the adapter gives up what it holds and the node fails `lost`, `internal error in <callback>: <what>` (a block is lost for good, `blockLost`; an engine companion is torn down as on its loss, and a retry makes it afresh). A route's link fails its route, `refused` with that detail, and names no node |
-| An adapter NodeHost calls inside a type's context call (`SinkAdapter::make`, `SourceAdapter::make`, `HandoffAdapter::make`, `RecordingAdapter::open`): a `std::logic_error` | The adapter | The record, with the node and where (`configure <node>`); the node fails `lost` even if the type caught the throw |
-| The same call's refusal (any other exception: no thread, no eventfd) | Not a bug | The node's `start-failed`, `configure threw: <what>`, even if the type caught it; no record |
-| A port block factory or an engine companion adapter, in the flush (each refuses through its events, never by a throw) | The adapter | The record, with the node and its flush item; the node fails `lost` (the block lost for good) |
-| NodeHost itself, or any adapter call that interrupts NodeHost's own update (a block's `drive` or `carryLatency` as NodeHost carries out its actions), the main loop's posted work and timers, the engine's signals, the live graph's registry, a sink's or handoff's own thread | No owner but ear's core | The record without a node, then the line and `std::terminate` (above) |
+| An adapter's own callback: a port block's, an engine companion's or its body's (a card's, an RTP receiver's), a link's | The adapter (`FaultOwner`) | The record, with the node; the adapter gives up what it holds and the node fails `lost`, `internal error in <callback>: <what>`. A block is lost for good (`blockLost`) and leaves the graph at once (its listener, the process callback with it, then, outside the filter's events, the filter itself), so every request its node's teardown makes is applied on the main thread and completes, and no silence can be judged a wedged data loop; an engine companion is torn down as on its loss, from wherever its callback left it, and a retry makes it afresh. A route's link fails its route, `refused` with that detail, and names no node |
+| An adapter NodeHost calls inside a type's context call (`SinkAdapter::make`, `SourceAdapter::make`, `HandoffAdapter::make`, `RecordingAdapter::open`): a `std::logic_error`, or nothing made where it must make something | The adapter | The record, with the node and where (`configure <node>`); the node fails `lost` even if the type caught the throw |
+| The same call's refusal (any other exception: no thread, no eventfd, no memory), through any context call it is nested in (a recording through the legacy start's `acquire`), and `std::bad_alloc` from NodeHost's own code there | Not a bug | The node's `start-failed`, `configure threw: <what>`, even if the type caught it; no record |
+| A port block factory or an engine companion adapter, in the flush (each refuses through its events, never by a throw) | The adapter | The record, with the node and its flush item; the node fails `lost` (the block lost for good). Safe to run on because every adapter constructor is strongly exception-safe by construction (below) |
+| NodeHost itself, or any adapter call that interrupts NodeHost's own update (a block's `drive` or `carryLatency` as NodeHost carries out its actions), anything of core's an adapter's callback tells (a route link's listeners: the reconciler, and through it standard output and the gateway), the main loop's posted work and timers, the engine's signals, the live graph's registry, a sink's or handoff's own thread | No owner but ear's core | The record without a node, `fatal`, then the line and `std::terminate` (above) |
 
 Inside a context call NodeHost tells them apart by where they are thrown: around each adapter
 call (`adapter()`), a `std::logic_error` is the adapter's bug and anything else its refusal;
 around the whole call (`guarded()`), a `std::logic_error` of NodeHost's own checks is a rule the
-type broke, and anything else of NodeHost's own code is NodeHost's bug. ear's own fault travels
+type broke, `std::bad_alloc` is exhaustion (a refusal), and anything else of NodeHost's own code
+is NodeHost's bug. A refusal passes as itself through every `guarded()` it is nested in, known by
+the exception's identity until the type's call ends. ear's own fault travels
 through the type's frames as a private `EarFault` naming its owner and is recorded where it was
 made, so a type that catches it changes nothing; `callType` routes it: an adapter's becomes the
 record and the node's `lost`, NodeHost's is rethrown as what was thrown, inside the hook's scope,
@@ -207,13 +212,27 @@ so the boundary names where.
 
 An adapter whose fault the boundary catches tells its node through its events (`faulted` on
 `PortBlockEvents` and `EngineCompanionEvents`), and the node framework's answer may itself throw:
-what it throws is NodeHost's bug, reported again with no owner. A throw that came out of NodeHost
-through an adapter's callback (NodeHost's inputs run inside the event that told them) is never the
-adapter's: only NodeHost leaves a place with a throw (a scope a throw ended, or its rethrow putting
-one back, `MainLoopActivity::takeThrown`), so the boundary takes a throw that carries one as
-NodeHost's, whichever callback it came out of, and does not tell the owner. A sink's or legacy
+what it throws is NodeHost's bug, reported again with no owner. A throw that came out of core
+through an adapter's callback (NodeHost's inputs run inside the event that told them; a route link
+tells the reconciler) is never the adapter's: only core's dispatchers leave a place with a throw
+(a scope a throw ended, or NodeHost's rethrow putting one back, `MainLoopActivity::takeThrown`),
+and an adapter that tells core anything but NodeHost does it inside a scope of its own (`Links`
+tells its listeners inside `tell route links`), so the boundary takes a throw that carries a place
+as core's, whichever callback it came out of, and does not tell the owner. A sink's or legacy
 handoff's own code runs on its own thread, where no node can be failed in order with the rest, so
 it has no owner and ends the process.
+
+**Nothing stays registered.** Running on after an adapter's fault is safe only if what it
+registered goes with it. Every registration the boundary makes is held by its owner as a handle
+that removes it when destroyed: `addEvent`, `addTimer` and `addSignal` fill a `LoopSource`, each
+`listen` a `Listener`, and a port block's entry in the levels registry is a `LevelsEntry`; proxies
+and filters ear makes are held the same way (`OwnedProxy`). Each owner declares them in the order
+it registers them, the object before the listeners on it, so a constructor that throws anywhere
+unwinds every registration made so far before anything they call into goes, and its destructor
+still removes each first, in its own order. A test seam counts what is held and throws after the
+`n`th registration (`boundary::throwAfterRegistration`, `registrationsHeld`), and another throws
+inside a named callback (`boundary::throwInCallback`), so the tests prove each owner both ways
+([testing.md](testing.md#the-tools)).
 
 ## How a change moves
 

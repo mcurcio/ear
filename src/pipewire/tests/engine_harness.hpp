@@ -25,6 +25,7 @@
 #include "catch2/catch.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
+#include "ear/pipewire/faults.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 
 namespace ear::pipewire::testing {
@@ -34,15 +35,37 @@ constexpr std::uint32_t kRate = 48000;
 constexpr std::uint32_t kBlock = 256;
 constexpr AudioFormat kFormat{kRate, kBlock};
 
-inline std::unique_ptr<Engine> makeEngine() {
+/// The engine; with `faults`, the callback boundary reports to it rather than ending this test program.
+inline std::unique_ptr<Engine> makeEngine(Faults* faults = nullptr) {
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
 	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
 		unsetenv(name);
 	}
-	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock});
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock, faults});
 	if (!engine) FAIL("Engine::create: " << engine.error().detail);
 	return std::move(*engine);
 }
+
+/// What the callback boundary reported, in order, where main.cpp would end the process for a fault no adapter owns
+/// (docs/architecture.md#faults-by-owner); `onCaught` runs inside each report.
+class FaultLog final : public Faults {
+public:
+	struct Seen {
+		std::string callback;
+		std::string where;
+		std::string detail;
+		std::string node;
+		bool owned;
+	};
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
+	            bool owned) noexcept override {
+		reports.push_back(
+			Seen{std::string(callback), std::string(where), std::string(detail), std::string(node), owned});
+		if (onCaught) onCaught();
+	}
+	std::vector<Seen> reports;
+	std::function<void()> onCaught;
+};
 
 /// Runs the engine's main loop until `done` holds. Every event a test listens for calls
 /// wake() (from any thread), which re-checks `done` on the main loop.

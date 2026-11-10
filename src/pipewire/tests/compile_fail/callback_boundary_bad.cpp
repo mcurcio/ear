@@ -35,11 +35,11 @@ struct Other {
 	void onEvent(std::uint64_t /*count*/) {}
 };
 
-[[maybe_unused]] void registrations(pw_loop* loop, pw_data_loop* data, pw_filter* filter, spa_hook& hook,
-                                    Owner& owner) {
+[[maybe_unused]] void registrations(pw_loop* loop, pw_data_loop* data, pw_filter* filter, Listener& hook,
+                                    LoopSource& source, Owner& owner) {
 	// The control: each registration as ear makes it. The data loop takes only realtime<>, every other loop guarded<>.
-	addEvent(loop, guarded<&Owner::onEvent>, &owner);
-	addTimer(loop, guarded<&Owner::onTimeout>, &owner);
+	addEvent(source, loop, guarded<&Owner::onEvent>, &owner);
+	addTimer(source, loop, guarded<&Owner::onTimeout>, &owner);
 	invoke(DataLoop(data), realtime<&Owner::onInvoke>, &owner, false);
 	invoke(DataLoop::of(filter), realtime<&Owner::onInvoke>, &owner, false);
 	invoke(loop, guarded<&Owner::onInvoke>, &owner, true);
@@ -49,7 +49,7 @@ struct Other {
 
 #ifdef EAR_CASE_raw_event
 	// A raw function pointer is no Guarded: it has no catch.
-	addEvent(loop, &Owner::raw, &owner);
+	addEvent(source, loop, &Owner::raw, &owner);
 #endif
 #ifdef EAR_CASE_raw_invoke
 	invoke(loop, &Owner::rawInvoke, &owner, false);
@@ -68,7 +68,7 @@ struct Other {
 #ifdef EAR_CASE_other_class
 	// The object handed with a callback is the member's class.
 	Other other;
-	addEvent(loop, guarded<&Owner::onEvent>, &other);
+	addEvent(source, loop, guarded<&Owner::onEvent>, &other);
 #endif
 #ifdef EAR_CASE_guarded_invoke_on_data_loop
 	// The data loop never runs a catching trampoline.
@@ -80,7 +80,7 @@ struct Other {
 #endif
 #ifdef EAR_CASE_realtime_timer
 	// A timer, event or signal source runs on a loop that may run anything: guarded<> only.
-	addTimer(loop, realtime<&Owner::onInvokeTimer>, &owner);
+	addTimer(source, loop, realtime<&Owner::onInvokeTimer>, &owner);
 #endif
 #ifdef EAR_CASE_realtime_in_guarded_entry
 	listen<FilterCallbacks<Owner>{.stateChanged = realtime<&Owner::onStateNoexcept>}>(filter, hook, &owner);
@@ -94,7 +94,7 @@ struct Other {
 #endif
 #ifdef EAR_CASE_wrong_signature
 	// A timer's member takes the expirations.
-	addTimer(loop, guarded<&Owner::onWrongTimer>, &owner);
+	addTimer(source, loop, guarded<&Owner::onWrongTimer>, &owner);
 #endif
 }
 

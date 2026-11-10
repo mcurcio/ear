@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -22,6 +23,7 @@
 #include <pipewire/filter.h>
 #include <pipewire/pipewire.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/lifecycle.hpp"
@@ -872,4 +874,143 @@ TEST_CASE("A sink consumer that throws on its real sink thread fails only its no
 	});
 	REQUIRE(waiter.until([&] { return gone; }, 10s));
 	CHECK(host.leaked() == 0);
+}
+
+namespace {
+
+/// What the callback boundary reported, in order, where main.cpp would end the process for a fault no adapter owns
+/// (docs/architecture.md#faults-by-owner); each report wakes the waiter once one is given.
+class Reported final : public Faults {
+public:
+	struct Seen {
+		std::string callback;
+		std::string where;
+		std::string detail;
+		std::string node;
+		bool owned;
+	};
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
+	            bool owned) noexcept override {
+		reports.push_back(
+			Seen{std::string(callback), std::string(where), std::string(detail), std::string(node), owned});
+		if (waiter != nullptr) waiter->wake();
+	}
+	std::vector<Seen> reports;
+	Waiter* waiter = nullptr;
+};
+
+std::unique_ptr<Engine> makeEngine(Faults& faults) {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, kRate, kBlock, &faults});
+	if (!engine) FAIL("Engine::create: " << engine.error().detail);
+	return std::move(*engine);
+}
+
+/// A route link listener with a bug of core's own: it throws when told a link is active.
+class ThrowingLinkListener final : public LinkListener {
+public:
+	void linkActive(LinkId) override { throw std::logic_error("the reconciler's bug"); }
+	void linkFailed(LinkId, std::string) override {}
+	void linkGone(LinkId) override {}
+};
+
+} // namespace
+
+// docs/architecture.md#faults-by-owner: a throw out of a port block's own callback is ear's bug in state that is its
+// node's alone: reported with the node, the block told faulted once, and the block leaves the graph, so the requests
+// its node's teardown makes still complete (applied on the main thread, by signal). The throw is the boundary's
+// injection seam, inside the real callback (docs/testing.md#the-tools).
+TEST_CASE("A port block whose own callback throws is told faulted, leaves the graph, and still completes its requests",
+          "[engine][faults]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	Waiter waiter(*engine);
+	faults.waiter = &waiter;
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	BlockEvents events(waiter);
+	boundary::throwInCallback("FilterPortBlock::onStateChanged");
+	auto block = blocks.make("hall", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in FilterPortBlock::onStateChanged: injected");
+	CHECK(events.readyCount == 0);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "FilterPortBlock::onStateChanged");
+	CHECK(faults.reports[0].node == "hall");
+	CHECK(faults.reports[0].detail == "injected");
+	CHECK(faults.reports[0].owned);
+	LevelCode code;
+	for (AudioCode* request : {static_cast<AudioCode*>(&code), static_cast<AudioCode*>(nullptr)}) {
+		bool done = false;
+		block->drive(DriveRequest{request, {}}, [&](std::uint64_t) {
+			done = true;
+			waiter.wake();
+		});
+		REQUIRE(waiter.until([&] { return done; }));
+	}
+	CHECK(faults.reports.size() == 1);
+}
+
+TEST_CASE("A port block whose making throws after any registration leaves nothing registered", "[engine][faults]") {
+	auto engine = makeEngine();
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Waiter waiter(*engine);
+	BlockEvents events(waiter);
+	const Ports ports{{{Direction::output, "out", {"a"}}}};
+	const std::size_t before = boundary::registrationsHeld();
+	std::size_t made = 0;
+	{
+		const auto block = blocks.make("hall", ports, kFormat, events);
+		made = boundary::registrationsHeld() - before;
+	}
+	CHECK(made == 4); // its levels entry, two event sources and the filter's listener
+	CHECK(boundary::registrationsHeld() == before);
+	for (std::size_t n = 1; n <= made; ++n) {
+		INFO("thrown after registration " << n << " of " << made);
+		boundary::throwAfterRegistration(n);
+		CHECK_THROWS_WITH(blocks.make("hall", ports, kFormat, events), "injected after a registration");
+		boundary::throwAfterRegistration(0);
+		CHECK(boundary::registrationsHeld() == before);
+		CHECK(blocks.latestLevels().empty()); // no entry left pointing at a freed block
+	}
+}
+
+// docs/architecture.md#faults-by-owner: a route link's own callback that throws fails only its route; a throw of core's
+// own that the link's event dispatches to (a route link listener) leaves a place, so it is core's bug, no owner's.
+TEST_CASE(
+	"A route link whose own callback throws fails its route as ear's bug, and a listener's throw it tells is core's",
+	"[engine][faults]") {
+	Reported faults;
+	auto engine = makeEngine(faults);
+	Waiter waiter(*engine);
+	faults.waiter = &waiter;
+	LinkedPair pair(*engine, waiter);
+	REQUIRE(waiter.until([&] { return pair.ports.find("ramp", "out.a") && pair.ports.find("rec", "record.left"); }));
+	const EnginePortId out = pair.ports.find("ramp", "out.a")->id;
+	const EnginePortId left = pair.ports.find("rec", "record.left")->id;
+
+	boundary::throwInCallback("LinkProxy::onInfo");
+	pair.links.createLink(kLink, out, left);
+	REQUIRE(waiter.until([&] { return !pair.linkLog.failed.empty(); }));
+	CHECK(pair.linkLog.failed.at(0) ==
+	      std::pair<LinkId, std::string>{kLink, "internal error in LinkProxy::onInfo: injected"});
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[0].node.empty());
+	CHECK(faults.reports[0].owned);
+
+	ThrowingLinkListener buggy;
+	pair.links.subscribe(buggy);
+	pair.links.createLink(kLink + 1, out, left);
+	REQUIRE(waiter.until([&] { return faults.reports.size() == 2; }));
+	CHECK(faults.reports[1].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[1].where == "tell route links");
+	CHECK(faults.reports[1].detail == "the reconciler's bug");
+	CHECK_FALSE(faults.reports[1].owned);
+	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink + 1}); // told before the listener that threw
+	CHECK(pair.linkLog.failed.size() == 1);                       // the link itself was not failed
 }

@@ -288,7 +288,11 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.internalError({.callback = "MainLoopExecutor's posted work",
 		                       .node = {},
 		                       .where = "make block hall",
-		                       .what = "a block made twice"});
+		                       .what = "a block made twice",
+		                       .fatal = true});
+		},
+		[](StatusLog& log, Lines&) {
+			log.internalError({.callback = "LinkProxy::onInfo", .node = {}, .where = {}, .what = "bad info"});
 		},
 	};
 }

@@ -712,7 +712,7 @@
       }
     },
     {
-      "case": "ear's own bug with no owner but ear's core: no node, where the main loop was in its detail, and the process ends after it, with the boundary's line on standard error",
+      "case": "ear's own bug with no owner but ear's core: no node, where the main loop was in its detail, fatal, and the process ends after it, with the boundary's line on standard error",
       "record": {
         "v": 1,
         "seq": 81,
@@ -720,8 +720,22 @@
         "kind": "diagnostic",
         "code": "ear.internal-error",
         "callback": "MainLoopExecutor's posted work",
+        "fatal": true,
         "detail": "MainLoopExecutor's posted work threw during make block hall: a block made twice",
         "msg": "ear.internal-error: MainLoopExecutor's posted work threw during make block hall: a block made twice"
+      }
+    },
+    {
+      "case": "ear's own bug in a route's link callback: no node and not fatal, the route refused, ear running on",
+      "record": {
+        "v": 1,
+        "seq": 82,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.internal-error",
+        "callback": "LinkProxy::onInfo",
+        "detail": "LinkProxy::onInfo threw: bad info",
+        "msg": "ear.internal-error: LinkProxy::onInfo threw: bad info"
       }
     }
   ]

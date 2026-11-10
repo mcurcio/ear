@@ -21,6 +21,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/param/latency-utils.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/port_blocks.hpp"
@@ -151,9 +152,9 @@ private:
 /// One port block "fpp" (outputs stream.1, stream.2; the inside input bank from_rtp)
 /// driven by a Recorder, running on the dummy driver, and the receivers' factory.
 struct Graph {
-	Graph()
-		: engine(makeEngine()), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell), receivers(*engine),
-		  recorder(waiter, 2), blockEvents(waiter) {
+	explicit Graph(Faults* faults = nullptr)
+		: engine(makeEngine(faults)), waiter(*engine), registry(*engine, waiter), blocks(*engine, bell),
+		  receivers(*engine), recorder(waiter, 2), blockEvents(waiter) {
 		block = blocks.make("fpp",
 		                    Ports{{{Direction::output, "stream", {"1", "2"}},
 		                           {Direction::input, "from_rtp", {"1", "2"}, PortBank::Reach::inside}}},
@@ -629,4 +630,87 @@ TEST_CASE("A real receiver's buffer beyond from_rtp reaches stream whole: the to
 	REQUIRE(stream.told().has_value());
 	CHECK(stream.told()->minFrames == buffered);
 	CHECK(stream.told()->maxFrames == buffered);
+}
+
+// docs/architecture.md#faults-by-owner: a throw out of an engine companion's own callback (its body's, its lifecycle's,
+// a link's) is ear's bug in state that is its node's alone: the boundary reports it with the node, and the companion
+// is torn down as on a loss and told faulted, once, so its node fails lost; a retry makes one afresh. Each throw is the
+// boundary's injection seam, inside the real callback (docs/testing.md#the-tools).
+TEST_CASE("A receiver whose body's callback throws is torn down and told faulted, once, with a sync in flight too, "
+          "and a new receiver is ready afresh",
+          "[rtp][faults]") {
+	FaultLog faults;
+	Graph graph(&faults);
+	ReceiverEvents events(graph.waiter, graph.registry);
+	// The body's first done throws; as it is reported, the lifecycle's first done (of the sync its teardown asks) is
+	// armed to throw too, so the teardown runs again from a sync in flight.
+	faults.onCaught = [&] {
+		if (faults.reports.size() == 1) boundary::throwInCallback("JoinedEngineCompanion::onCoreDone");
+		graph.waiter.wake();
+	};
+	boundary::throwInCallback("RtpReceiverBody::onCoreDone");
+	auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in RtpReceiverBody::onCoreDone: injected");
+	CHECK_FALSE(events.nodePresentAtLost);
+	REQUIRE(faults.reports.size() == 2);
+	CHECK(faults.reports[0].callback == "RtpReceiverBody::onCoreDone");
+	CHECK(faults.reports[0].node == "fpp");
+	CHECK(faults.reports[0].owned);
+	CHECK(faults.reports[1].callback == "JoinedEngineCompanion::onCoreDone");
+	CHECK(faults.reports[1].node == "fpp");
+	CHECK(faults.reports[1].owned);
+	CHECK(events.readyCount == 0);
+	receiver.reset();
+	CHECK(graph.runs(16)); // the block runs on
+
+	boundary::throwInCallback({});
+	ReceiverEvents again(graph.waiter, graph.registry);
+	const auto retried = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, again);
+	REQUIRE(graph.waiter.until([&] { return again.settled(); }));
+	CHECK(again.lostDetail.value_or("") == "");
+	CHECK(again.readyCount == 1);
+	CHECK(faults.reports.size() == 2);
+}
+
+TEST_CASE("A receiver whose link's callback throws is torn down and told faulted, the link's report naming its node",
+          "[rtp][faults]") {
+	FaultLog faults;
+	Graph graph(&faults);
+	faults.onCaught = [&] { graph.waiter.wake(); };
+	ReceiverEvents events(graph.waiter, graph.registry);
+	boundary::throwInCallback("LinkProxy::onInfo");
+	const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in LinkProxy::onInfo: injected");
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "LinkProxy::onInfo");
+	CHECK(faults.reports[0].node == "fpp");
+	CHECK(faults.reports[0].owned);
+	CHECK(graph.runs(16));
+}
+
+// docs/architecture.md#faults-by-owner: every registration a receiver's constructor makes is held by a member, so a
+// throw after any one of them leaves none behind (nothing for the engine to call into a freed object).
+TEST_CASE("A receiver whose making throws after any registration leaves nothing registered", "[rtp][faults]") {
+	Graph graph;
+	const std::size_t before = boundary::registrationsHeld();
+	ReceiverEvents events(graph.waiter, graph.registry);
+	std::size_t made = 0;
+	{
+		const auto receiver = graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, events);
+		made = boundary::registrationsHeld() - before;
+	}
+	REQUIRE(made > 0);
+	CHECK(boundary::registrationsHeld() == before);
+	for (std::size_t n = 1; n <= made; ++n) {
+		INFO("thrown after registration " << n << " of " << made);
+		ReceiverEvents unmade(graph.waiter, graph.registry);
+		boundary::throwAfterRegistration(n);
+		CHECK_THROWS_WITH(graph.makeReceiver(ear::test::freeUdpPort(), RtpEncoding::l24, kRate, unmade),
+		                  "injected after a registration");
+		boundary::throwAfterRegistration(0);
+		CHECK(boundary::registrationsHeld() == before);
+	}
+	CHECK(graph.runs(16));
 }

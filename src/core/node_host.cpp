@@ -66,6 +66,7 @@
 #include <deque>
 #include <exception>
 #include <expected>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -537,8 +538,12 @@ struct NodeHost::Impl {
 		std::expected<int, std::string> openRecording(const RecordingRequest& request) override {
 			return guarded([&]() -> std::expected<int, std::string> {
 				requireConfiguring("openRecording");
-				auto opened = adapter("RecordingAdapter::open",
-				                      [&] { return host_.resources.adapterFor(request).open(name_, request.path); });
+				RecordingAdapter& recordings = host_.resources.adapterFor(request);
+				auto opened = adapter("RecordingAdapter::open", [&] {
+					auto file = recordings.open(name_, request.path);
+					if (file && *file == nullptr) throw std::logic_error("the recording adapter opened no file");
+					return file;
+				});
 				if (!opened) return std::unexpected(std::move(opened.error()));
 				return (*config_->recordings.emplace_back(std::move(*opened))).descriptor();
 			});
@@ -554,12 +559,13 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
+				SinkAdapter& sinks = host_.resources.sinks();
 				std::unique_ptr<Sink> made = adapter("SinkAdapter::make", [&] {
-					return host_.resources.sinks().make(name_, found.name,
-					                                    static_cast<std::uint32_t>(found.ports.size()), shape.frames,
-					                                    host_.format.rate);
+					auto sink = sinks.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
+					                       shape.frames, host_.format.rate);
+					if (!sink) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
+					return sink;
 				});
-				if (!made) throw std::logic_error("the sink adapter made no sink for bank " + found.name);
 				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(*this, found.name));
 				slot.sink = std::move(made);
 				slot.binding = SinkBinding{&slot.sink->tap(), found.first, found.ports.size()};
@@ -584,12 +590,13 @@ struct NodeHost::Impl {
 				requireOneName(name_ + "." + found.name);
 				requireFreeBank(found);
 				Configuration& c = *config_;
+				SourceAdapter& sources = host_.resources.sources();
 				std::unique_ptr<Source> made = adapter("SourceAdapter::make", [&] {
-					return host_.resources.sources().make(name_, found.name,
-					                                      static_cast<std::uint32_t>(found.ports.size()), shape.frames,
-					                                      host_.format.rate);
+					auto source = sources.make(name_, found.name, static_cast<std::uint32_t>(found.ports.size()),
+					                           shape.frames, host_.format.rate);
+					if (!source) throw std::logic_error("the source adapter made no source for bank " + found.name);
+					return source;
 				});
-				if (!made) throw std::logic_error("the source adapter made no source for bank " + found.name);
 				auto& slot = c.sources.emplace_back(SourceSlot{found.name, std::move(made), {}});
 				slot.binding = SourceBinding{&slot.source->tap(), found.first, found.ports.size()};
 				return slot.source->writer();
@@ -632,10 +639,12 @@ struct NodeHost::Impl {
 							auto& caught =
 								*config_->handoffConsumers.emplace_back(std::make_unique<GuardedHandoffConsumer>(
 									*handoff.consumer, config_->channel, bank.name));
+							HandoffAdapter& handoffs = host_.resources.adapterFor(handoff);
 							auto& made = config_->handoffs.emplace_back(adapter("HandoffAdapter::make", [&] {
-								return host_.resources.adapterFor(handoff).make(
-									name_, static_cast<std::uint32_t>(bank.ports.size()), handoff.capacityFrames,
-									caught);
+								auto made = handoffs.make(name_, static_cast<std::uint32_t>(bank.ports.size()),
+						                                  handoff.capacityFrames, caught);
+								if (!made) throw std::logic_error("the handoff adapter made no handoff");
+								return made;
 							}));
 							return &made->writer();
 						},
@@ -646,9 +655,11 @@ struct NodeHost::Impl {
 
 		/// Runs a context call, telling apart by owner what it throws (docs/architecture.md#faults-by-owner), each
 		/// recorded, the first only, before it is thrown on to the type: a std::logic_error NodeHost's checks threw is a
-		/// rule the type broke; an adapter's refusal or bug was recorded by adapter(); anything else thrown by NodeHost's
-		/// own code is NodeHost's bug, thrown on as an EarFault NodeHost owns, which callType rethrows as itself for the
-		/// callback boundary.
+		/// rule the type broke; std::bad_alloc is resource exhaustion, not a bug, and fails the node as a refusal does;
+		/// an adapter's refusal or bug was recorded by adapter() and passes as it is, through any guarded() it is
+		/// nested in (openRecording inside acquire): the refusal is known by its identity, which nothing clears until
+		/// the type's call ends; anything else thrown by NodeHost's own code is NodeHost's bug, thrown on as an EarFault
+		/// NodeHost owns, which callType rethrows as itself for the callback boundary.
 		template <typename Call> std::invoke_result_t<Call> guarded(Call&& call) {
 			try {
 				return std::forward<Call>(call)();
@@ -657,8 +668,11 @@ struct NodeHost::Impl {
 			} catch (const std::logic_error& broken) {
 				if (!brokenRule_) brokenRule_ = broken.what();
 				throw;
+			} catch (const std::bad_alloc& exhausted) {
+				if (!brokenRule_) brokenRule_ = exhausted.what();
+				throw;
 			} catch (...) {
-				if (std::current_exception() == std::exchange(refused_, nullptr)) throw;
+				if (refused_ != nullptr && std::current_exception() == refused_) throw;
 				throw recordFault(FaultOwner::host, {});
 			}
 		}

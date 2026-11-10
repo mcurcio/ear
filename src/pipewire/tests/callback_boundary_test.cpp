@@ -129,11 +129,11 @@ class Deadline {
 public:
 	explicit Deadline(Engine& engine) : engine_(engine) {}
 	bool run(std::chrono::seconds deadline = std::chrono::seconds(5)) {
-		spa_source* timer = addTimer(engine_.mainLoop(), guarded<&Deadline::onTimeout>, this);
+		LoopSource timer;
+		addTimer(timer, engine_.mainLoop(), guarded<&Deadline::onTimeout>, this);
 		timespec value{static_cast<time_t>(deadline.count()), 0};
-		pw_loop_update_timer(engine_.mainLoop(), timer, &value, nullptr, false);
+		pw_loop_update_timer(engine_.mainLoop(), timer.get(), &value, nullptr, false);
 		engine_.run();
-		pw_loop_destroy_source(engine_.mainLoop(), timer);
 		return !timedOut_;
 	}
 
@@ -527,7 +527,15 @@ TEST_CASE("A std::logic_error of NodeHost's own, out of a block's callback, ends
           "the block never told",
           "[boundary][crash]") {
 	const ChildEnd end = inChild([] {
-		boundary::install(nullptr); // the boundary's own last words, as an engine made with no Faults
+		// The Faults ear runs with: it returns for a fault an adapter owns, so the child would run on to _exit(91)
+		// had the block been taken for the owner.
+		static RecordThenEnd faults(
+			[](const InternalError& error) {
+				std::fprintf(stderr, "record %s fatal=%d node=%s\n", std::string(error.callback).c_str(),
+			                 error.fatal ? 1 : 0, std::string(error.node).c_str());
+			},
+			[](std::string_view line) { std::fwrite(line.data(), 1, line.size(), stderr); });
+		boundary::install(&faults);
 		QueueLoop loop;
 		TellingBlocks blocks;
 		NoCards cards;
@@ -547,11 +555,58 @@ TEST_CASE("A std::logic_error of NodeHost's own, out of a block's callback, ends
 	INFO(end.written);
 	REQUIRE(WIFSIGNALED(end.status));
 	CHECK(WTERMSIG(end.status) == SIGABRT);
+	const auto record = end.written.find("record TellingBlock::onStreaming fatal=1 node=\n");
 	const auto line =
 		end.written.find("ear: internal error in TellingBlock::onStreaming: a plan the block cannot carry\n");
+	REQUIRE(record != std::string::npos);
+	CHECK(record < line);
 	const auto terminate = end.written.find("terminate called after throwing an instance of 'std::logic_error'");
 	REQUIRE(line != std::string::npos);
 	REQUIRE(terminate != std::string::npos);
 	CHECK(line < terminate);
 	CHECK(end.written.find("the block was told") == std::string::npos);
+}
+
+// docs/architecture.md#faults-by-owner: the Faults ear runs with records every fault first, then returns for one an
+// adapter owns; one with no owner it ends (the forked child above).
+TEST_CASE("The Faults ear runs with records an owned fault, not fatal, and returns", "[boundary]") {
+	std::vector<std::string> recorded;
+	std::vector<std::string> lines;
+	RecordThenEnd faults(
+		[&](const InternalError& error) {
+			recorded.push_back(std::string(error.callback) + "|" + std::string(error.node) + "|" +
+		                       std::string(error.where) + "|" + std::string(error.what) + "|" +
+		                       (error.fatal ? "fatal" : "runs on"));
+		},
+		[&](std::string_view line) { lines.emplace_back(line); });
+	faults.caught("FilterPortBlock::onStateChanged", "", "bad state", "hall", true);
+	CHECK(recorded == std::vector<std::string>{"FilterPortBlock::onStateChanged|hall||bad state|runs on"});
+	CHECK(lines.empty());
+}
+
+TEST_CASE("An owner whose callbacks keep throwing is reported and told once", "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	MainLoopActivity::clear();
+	OwnedThrower owner(faults);
+	Guarded<&OwnedThrower::onEvent>::call(&owner, 0);
+	Guarded<&OwnedThrower::onEvent>::call(&owner, 0);
+	Guarded<&OwnedThrower::onEvent>::call(&owner, 0);
+	REQUIRE(faults.reports.size() == 2); // the report, and the owner told
+	CHECK(faults.reports[0].owned);
+	CHECK(faults.reports[1].toOwner);
+}
+
+TEST_CASE("The injection seam throws in the one callback it names, once", "[boundary]") {
+	RecordingFaults faults;
+	const Installed installed(faults);
+	MainLoopActivity::clear();
+	Thrower thrower;
+	boundary::throwInCallback("Thrower::onEvent");
+	Guarded<&Thrower::onEvent>::call(&thrower, 1);
+	Guarded<&Thrower::onEvent>::call(&thrower, 1);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "Thrower::onEvent");
+	CHECK(faults.reports[0].detail == "injected");
+	CHECK(thrower.ran == 1); // the injected call ran nothing of its member
 }

@@ -33,10 +33,11 @@ public:
 	JoinedEngineCompanion(Engine& engine, CompanionJoin join, EngineCompanionEvents& events,
 	                      CompanionBodyMaker makeBody)
 		: engine_(engine), join_(std::move(join)), events_(events) {
-		later_ = addEvent(engine_.mainLoop(), guarded<&JoinedEngineCompanion::onLater>, this);
+		// Each registration is held by a member, so a throw here (the body's making among it) unwinds them all
+		// (docs/architecture.md#faults-by-owner).
+		addEvent(later_, engine_.mainLoop(), guarded<&JoinedEngineCompanion::onLater>, this);
 		listen<CoreCallbacks<JoinedEngineCompanion>{.done = guarded<&JoinedEngineCompanion::onCoreDone>}>(
-			engine_.core(), coreHook_, this);
-		coreListening_ = true;
+			engine_.core(), coreListener_, this);
 		body_ = makeBody(*this);
 	}
 
@@ -45,7 +46,7 @@ public:
 		if (dataLoopWedged(engine_)) leakEngineObjects();
 		links_.clear();
 		body_.reset();
-		if (later_ != nullptr) pw_loop_destroy_source(engine_.mainLoop(), later_);
+		later_.reset();
 	}
 
 	JoinedEngineCompanion(const JoinedEngineCompanion&) = delete;
@@ -110,16 +111,16 @@ private:
 	}
 
 	/// The loss path afresh from any state but lost, since the callback that threw may have left it half-done (a
-	/// teardown begun, a sync asked); repeating it is harmless (the links and body already destroyed stay so). Told as
-	/// faulted, not lost.
+	/// teardown begun, a sync asked: its done is dropped by its sequence number); repeating it is harmless (the links
+	/// and body already destroyed stay so). Told as faulted, not lost, with the first fault's detail.
 	void failFaulted(std::string detail) {
 		if (state_ == State::lost) return;
+		if (!faulted_) detail_ = std::move(detail);
 		faulted_ = true;
 		state_ = State::failing;
 		syncing_ = false;
-		detail_ = std::move(detail);
 		for (const auto& link : links_) link->silence();
-		if (later_ != nullptr) pw_loop_signal_event(engine_.mainLoop(), later_);
+		if (later_) pw_loop_signal_event(engine_.mainLoop(), later_.get());
 	}
 	void gone(LinkId link) override {
 		fail("the " + join_.kind + "'s link for channel " + std::to_string(link + 1) + " is gone");
@@ -133,7 +134,7 @@ private:
 		state_ = State::failing;
 		detail_ = std::move(detail);
 		for (const auto& link : links_) link->silence();
-		if (later_ != nullptr) pw_loop_signal_event(engine_.mainLoop(), later_);
+		if (later_) pw_loop_signal_event(engine_.mainLoop(), later_.get());
 	}
 
 	/// Destroys the links and the body (its engine node goes with it), then syncs with the
@@ -176,10 +177,7 @@ private:
 
 	void silence() {
 		for (const auto& link : links_) link->silence();
-		if (coreListening_) {
-			coreListening_ = false;
-			spa_hook_remove(&coreHook_);
-		}
+		coreListener_.remove();
 	}
 
 	Engine& engine_;
@@ -188,11 +186,10 @@ private:
 	State state_ = State::opening;
 	std::string detail_;
 	std::unique_ptr<CompanionBody> body_;
-	spa_hook coreHook_{};
-	bool coreListening_ = false;
+	Listener coreListener_;
 	std::vector<std::unique_ptr<LinkProxy>> links_; // link id = channel
 	std::size_t activeLinks_ = 0;
-	spa_source* later_ = nullptr;
+	LoopSource later_;
 	bool syncing_ = false;
 	int syncSeq_ = 0;
 	bool faulted_ = false; // the loss is ear's own bug in a callback: told as faulted

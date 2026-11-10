@@ -74,30 +74,29 @@ public:
 	RtpReceiverBody(Engine& engine, NodeName engineNode, ModuleArguments<Home::rtpReceiver> arguments,
 	                CompanionBodyEvents& events)
 		: engine_(engine), engineNode_(std::move(engineNode)), arguments_(std::move(arguments)), events_(events) {
-		registry_ = pw_core_get_registry(engine_.core(), PW_VERSION_REGISTRY, 0);
+		// The registry and each listener are held by members declared in this order, so a throw below unwinds them,
+		// listeners first (docs/architecture.md#faults-by-owner).
+		registry_.reset(pw_core_get_registry(engine_.core(), PW_VERSION_REGISTRY, 0));
 		if (registry_ == nullptr) {
 			events_.failed(std::string("cannot watch the engine for the RTP receiver: ") + spa_strerror(-errno));
 			return;
 		}
 		listen<RegistryCallbacks<RtpReceiverBody>{.global = guarded<&RtpReceiverBody::onGlobal>,
 		                                          .globalRemove = guarded<&RtpReceiverBody::onGlobalRemove>}>(
-			registry_, registryHook_, this);
-		listen<CoreCallbacks<RtpReceiverBody>{.done = guarded<&RtpReceiverBody::onCoreDone>}>(engine_.core(), coreHook_,
-		                                                                                      this);
-		coreListening_ = true;
+			registry_.get(), registryListener_, this);
+		listen<CoreCallbacks<RtpReceiverBody>{.done = guarded<&RtpReceiverBody::onCoreDone>}>(engine_.core(),
+		                                                                                      coreListener_, this);
 		// Without the sync's done there is no telling stale nodes from this receiver's: a failure.
 		syncSeq_ = pw_core_sync(engine_.core(), PW_ID_CORE, 0);
 		if (syncSeq_ < 0) events_.failed(std::string("cannot sync with the engine: ") + spa_strerror(syncSeq_));
 	}
 
 	~RtpReceiverBody() override {
-		if (moduleListening_) spa_hook_remove(&moduleHook_);
+		moduleListener_.remove();
 		unbindNode();
-		if (coreListening_) spa_hook_remove(&coreHook_);
-		if (registry_ != nullptr) {
-			spa_hook_remove(&registryHook_);
-			pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
-		}
+		coreListener_.remove();
+		registryListener_.remove();
+		registry_.reset();
 		if (module_ != nullptr) pw_impl_module_destroy(module_);
 	}
 
@@ -113,8 +112,7 @@ private:
 	// 1 -> 2: every node of this name the engine had before the sync is stale.
 	void onCoreDone(std::uint32_t id, int seq) {
 		if (id != PW_ID_CORE || seq != syncSeq_ || loading_) return;
-		coreListening_ = false;
-		spa_hook_remove(&coreHook_);
+		coreListener_.remove();
 		load();
 	}
 
@@ -126,8 +124,7 @@ private:
 			return;
 		}
 		listen<ModuleCallbacks<RtpReceiverBody>{.destroy = guarded<&RtpReceiverBody::onModuleDestroy>}>(
-			module_, moduleHook_, this);
-		moduleListening_ = true;
+			module_, moduleListener_, this);
 	}
 
 	void onGlobal(std::uint32_t id, std::uint32_t /*permissions*/, const char* type, std::uint32_t /*version*/,
@@ -151,28 +148,27 @@ private:
 	}
 
 	void bindNode(std::uint32_t id) {
-		node_ = static_cast<pw_proxy*>(pw_registry_bind(registry_, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0));
+		node_.reset(
+			static_cast<pw_proxy*>(pw_registry_bind(registry_.get(), id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, 0)));
 		if (node_ == nullptr) {
 			events_.failed(std::string("cannot watch the RTP receiver: ") + spa_strerror(-errno));
 			return;
 		}
 		nodeId_ = id;
-		listen<NodeCallbacks<RtpReceiverBody>{.info = guarded<&RtpReceiverBody::onInfo>}>(node_, nodeHook_, this);
+		listen<NodeCallbacks<RtpReceiverBody>{.info = guarded<&RtpReceiverBody::onInfo>}>(node_.get(), nodeListener_,
+		                                                                                  this);
 	}
 
 	void unbindNode() {
-		if (node_ == nullptr) return;
-		spa_hook_remove(&nodeHook_);
-		pw_proxy_destroy(node_);
-		node_ = nullptr;
+		nodeListener_.remove();
+		node_.reset();
 	}
 
 	// 3: RUNNING lets the channels be linked, by the node's global id; ERROR fails it.
 	void onInfo(const pw_node_info* info) { tellNodeState(*info, kind, nodeId_, events_); }
 
 	void onModuleDestroy() {
-		spa_hook_remove(&moduleHook_);
-		moduleListening_ = false;
+		moduleListener_.remove();
 		module_ = nullptr;
 		events_.failed("the engine removed the RTP receiver's module");
 	}
@@ -181,19 +177,17 @@ private:
 	NodeName engineNode_;
 	ModuleArguments<Home::rtpReceiver> arguments_;
 	CompanionBodyEvents& events_;
-	pw_registry* registry_ = nullptr;
-	spa_hook registryHook_{};
-	spa_hook coreHook_{};
-	bool coreListening_ = false;
+	OwnedRegistry registry_;
+	Listener registryListener_;
+	Listener coreListener_;
 	int syncSeq_ = 0;
 	bool loading_ = false;          // the sync is done: a node of this name now is ours
 	std::set<std::uint32_t> stale_; // node ids of this name from before the sync
 	pw_impl_module* module_ = nullptr;
-	spa_hook moduleHook_{};
-	bool moduleListening_ = false;
-	pw_proxy* node_ = nullptr;
+	Listener moduleListener_;
+	OwnedProxy node_;
 	std::uint32_t nodeId_ = SPA_ID_INVALID;
-	spa_hook nodeHook_{};
+	Listener nodeListener_;
 };
 
 } // namespace

@@ -303,6 +303,7 @@ void StatusLog::internalError(const InternalError& error) {
 	if (!error.node.empty()) record.emplace_back("node", json(error.node));
 	record.emplace_back("code", json(code));
 	record.emplace_back("callback", json(error.callback));
+	if (error.fatal) record.emplace_back("fatal", json(true));
 	std::string detail = std::format("{} threw", error.callback);
 	if (!error.where.empty()) detail += std::format(" during {}", error.where);
 	detail += std::format(": {}", error.what);

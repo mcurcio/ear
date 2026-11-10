@@ -17,8 +17,10 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include <dlfcn.h>
 
@@ -35,8 +37,9 @@ namespace ear::pipewire {
 
 /// An adapter whose state is one node's alone (a block, an engine companion and its body, a link): a throw out of its
 /// own callback is its bug, which fails only that node (docs/architecture.md#faults-by-owner). Told inside the boundary,
-/// after the Faults, never from the call that threw. A throw that came out of NodeHost through its callback (one that
-/// carries a place, MainLoopActivity::takeThrown) is NodeHost's, and the owner is not told.
+/// after the Faults, never from the call that threw. A throw that came out of core through its callback (one that
+/// carries a place, MainLoopActivity::takeThrown) is core's, and the owner is not told: an owner that tells core
+/// anything but NodeHost (which keeps a place itself) opens a MainLoopActivity::Scope around it.
 class FaultOwner {
 public:
 	/// The node the owner's state belongs to, which a fault fails; empty for none (a route's link, which fails its
@@ -46,9 +49,15 @@ public:
 	/// internalErrorDetail(callback, detail). What this throws (NodeHost's bug, as it is told) is reported as thrown
 	/// out of `callback`, with no owner.
 	virtual void faulted(std::string_view callback, std::string_view detail) = 0;
+	/// The boundary's own: true the first time only. An owner's first fault fails its node; any later throw of its
+	/// callbacks (one that keeps throwing) is neither recorded again nor told.
+	bool firstFault() noexcept { return !std::exchange(faultTold_, true); }
 
 protected:
 	~FaultOwner() = default;
+
+private:
+	bool faultTold_ = false;
 };
 
 namespace boundary {
@@ -66,6 +75,24 @@ void entered() noexcept;
 /// Inside a catch handler: the exception being handled, reported as thrown out of `callback`, then told to `owner`
 /// unless it came out of NodeHost.
 void report(std::string_view callback, FaultOwner* owner) noexcept;
+
+/// Test seam (docs/testing.md#the-tools): the `n`th registration from now (a loop source, a listener, a port block's
+/// levels entry), once its owner holds it, throws std::runtime_error("injected after registration <n>"), so a test
+/// proves an owner whose constructor threw there left nothing registered; 0 disarms. Never armed outside tests.
+void throwAfterRegistration(std::size_t n) noexcept;
+/// How many registrations are held now (sources and listeners the boundary made, and port blocks' levels entries):
+/// a test's count that an owner whose constructor threw left none behind.
+std::size_t registrationsHeld() noexcept;
+/// Test seam (docs/testing.md#the-tools): the next guarded callback whose member is `callback`
+/// ("FilterPortBlock::onStateChanged") throws std::runtime_error("injected") inside the boundary instead of running,
+/// as a bug of that callback's own would; empty disarms. Main thread; never armed outside tests.
+void throwInCallback(std::string_view callback);
+/// Inside a guarded callback named `callback`, before its member: throws when the seam names it (then disarms).
+void injectedIn(std::string_view callback);
+/// A registration is now held by its owner: counted, then thrown after when the seam says.
+void held();
+/// A held registration was removed.
+void released() noexcept;
 
 /// The member a pointer names, as "Class::member" (namespaces ear::pipewire and anonymous left out), made at compile
 /// time from the compiler's own spelling of the template argument.
@@ -104,6 +131,7 @@ template <class C, class R, class... A> struct MemberParts<R (C::*)(A...)> {
 		auto* self = static_cast<C*>(data);
 		entered();
 		try {
+			injectedIn(memberName<Member>);
 			return (self->*Member)(args...);
 		} catch (...) {
 			if constexpr (std::is_base_of_v<FaultOwner, C>) report(memberName<Member>, self);
@@ -155,6 +183,7 @@ public:
 		auto* self = static_cast<Class*>(userData);
 		boundary::entered();
 		try {
+			boundary::injectedIn(name);
 			return boundary::invokeResult([self] { return (self->*Member)(); });
 		} catch (...) {
 			if constexpr (std::is_base_of_v<FaultOwner, Class>) boundary::report(name, self);
@@ -271,26 +300,100 @@ private:
 	pw_loop* loop_ = nullptr;
 };
 
+/// A loop source the boundary registered, held by its owner: destroying it (or reset()) removes the source, on the
+/// loop's own thread, so a constructor that throws after registering one leaves nothing for the loop to call into a
+/// freed object (docs/architecture.md#faults-by-owner). Filled in place by addEvent, addTimer or addSignal; empty when
+/// the loop refused it.
+class LoopSource {
+public:
+	LoopSource() = default;
+	LoopSource(const LoopSource&) = delete;
+	LoopSource& operator=(const LoopSource&) = delete;
+	~LoopSource() { reset(); }
+	spa_source* get() const noexcept { return source_; }
+	explicit operator bool() const noexcept { return source_ != nullptr; }
+	void reset() noexcept {
+		if (source_ == nullptr) return;
+		pw_loop_destroy_source(loop_, source_);
+		source_ = nullptr;
+		boundary::released();
+	}
+	/// The registrations' own: holds `source` of `loop` (none when null), then tells the boundary it is held.
+	void hold(pw_loop* loop, spa_source* source) {
+		reset();
+		loop_ = loop;
+		source_ = source;
+		if (source_ != nullptr) boundary::held();
+	}
+
+private:
+	pw_loop* loop_ = nullptr;
+	spa_source* source_ = nullptr;
+};
+
+/// A listener the boundary added, held by its owner: destroying it (or remove()) takes it off its object's list. Its
+/// object must outlive it, so an owner declares the object's holder before its listeners, and removes them first in
+/// its own destructor (destroying a proxy or a filter leaves its list's memory freed).
+class Listener {
+public:
+	Listener() = default;
+	Listener(const Listener&) = delete;
+	Listener& operator=(const Listener&) = delete;
+	~Listener() { remove(); }
+	explicit operator bool() const noexcept { return attached_; }
+	void remove() noexcept {
+		if (!attached_) return;
+		attached_ = false;
+		spa_hook_remove(&hook_);
+		boundary::released();
+	}
+	/// The registrations' own: the hook to attach (detached first), then attached() once it is on the list.
+	spa_hook& attach() noexcept {
+		remove();
+		hook_ = spa_hook{};
+		return hook_;
+	}
+	void attached() {
+		attached_ = true;
+		boundary::held();
+	}
+
+private:
+	spa_hook hook_{};
+	bool attached_ = false;
+};
+
+/// Destroys a proxy ear made (its registry's too: a registry is a proxy).
+struct ProxyDestroy {
+	void operator()(pw_proxy* proxy) const noexcept { pw_proxy_destroy(proxy); }
+	void operator()(pw_registry* registry) const noexcept { pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry)); }
+};
+/// A proxy held by its owner, declared before the listeners on it, so it goes after them, a constructor's unwinding
+/// included.
+using OwnedProxy = std::unique_ptr<pw_proxy, ProxyDestroy>;
+using OwnedRegistry = std::unique_ptr<pw_registry, ProxyDestroy>;
+
 // The only registrations ear makes. Sources (events, timers, signals) live on loops that may run anything (the main
-// loop, a sink's or handoff's thread loop) and take only guarded<>; the data loop takes only realtime<>.
+// loop, a sink's or handoff's thread loop) and take only guarded<>; the data loop takes only realtime<>. Each fills the
+// owner's LoopSource or Listener in place.
 
 /// An event source on `loop`: the member takes the count of signals since it last ran.
 template <class B>
 	requires(isGuarded<B> && BoundaryCallback<B, void(std::uint64_t)>)
-spa_source* addEvent(pw_loop* loop, B /*callback*/, typename B::Class* self) {
-	return pw_loop_add_event(loop, B::call, self);
+void addEvent(LoopSource& source, pw_loop* loop, B /*callback*/, typename B::Class* self) {
+	source.hold(loop, pw_loop_add_event(loop, B::call, self));
 }
 /// A timer source on `loop` (armed with pw_loop_update_timer): the member takes the expirations.
 template <class B>
 	requires(isGuarded<B> && BoundaryCallback<B, void(std::uint64_t)>)
-spa_source* addTimer(pw_loop* loop, B /*callback*/, typename B::Class* self) {
-	return pw_loop_add_timer(loop, B::call, self);
+void addTimer(LoopSource& source, pw_loop* loop, B /*callback*/, typename B::Class* self) {
+	source.hold(loop, pw_loop_add_timer(loop, B::call, self));
 }
 /// A signal source on `loop`: the member takes the signal's number.
 template <class B>
 	requires(isGuarded<B> && BoundaryCallback<B, void(int)>)
-spa_source* addSignal(pw_loop* loop, int signal, B /*callback*/, typename B::Class* self) {
-	return pw_loop_add_signal(loop, signal, B::call, self);
+void addSignal(LoopSource& source, pw_loop* loop, int signal, B /*callback*/, typename B::Class* self) {
+	source.hold(loop, pw_loop_add_signal(loop, signal, B::call, self));
 }
 /// An invoke on a loop that is not the data loop: guarded. The member takes nothing and returns int or nothing (0).
 template <class B>
@@ -308,7 +411,7 @@ int invoke(DataLoop loop, B /*callback*/, typename B::Class* self, bool block) {
 /// A filter's events.
 template <auto Table>
 	requires isTable<decltype(Table), FilterCallbacks>
-void listen(pw_filter* filter, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_filter* filter, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_filter_events events = [] {
 		pw_filter_events table{};
 		table.version = PW_VERSION_FILTER_EVENTS;
@@ -317,12 +420,13 @@ void listen(pw_filter* filter, spa_hook& hook, typename decltype(Table)::Class* 
 		table.process = Table.process.function;
 		return table;
 	}();
-	pw_filter_add_listener(filter, &hook, &events, self);
+	pw_filter_add_listener(filter, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// A proxy's own events (removed, error).
 template <auto Table>
 	requires isTable<decltype(Table), ProxyCallbacks>
-void listen(pw_proxy* proxy, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_proxy* proxy, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_proxy_events events = [] {
 		pw_proxy_events table{};
 		table.version = PW_VERSION_PROXY_EVENTS;
@@ -330,36 +434,39 @@ void listen(pw_proxy* proxy, spa_hook& hook, typename decltype(Table)::Class* se
 		table.error = Table.error.function;
 		return table;
 	}();
-	pw_proxy_add_listener(proxy, &hook, &events, self);
+	pw_proxy_add_listener(proxy, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// A node proxy's object events.
 template <auto Table>
 	requires isTable<decltype(Table), NodeCallbacks>
-void listen(pw_proxy* node, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_proxy* node, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_node_events events = [] {
 		pw_node_events table{};
 		table.version = PW_VERSION_NODE_EVENTS;
 		table.info = Table.info.function;
 		return table;
 	}();
-	pw_proxy_add_object_listener(node, &hook, &events, self);
+	pw_proxy_add_object_listener(node, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// A link proxy's object events.
 template <auto Table>
 	requires isTable<decltype(Table), LinkCallbacks>
-void listen(pw_proxy* link, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_proxy* link, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_link_events events = [] {
 		pw_link_events table{};
 		table.version = PW_VERSION_LINK_EVENTS;
 		table.info = Table.info.function;
 		return table;
 	}();
-	pw_proxy_add_object_listener(link, &hook, &events, self);
+	pw_proxy_add_object_listener(link, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// A registry's events.
 template <auto Table>
 	requires isTable<decltype(Table), RegistryCallbacks>
-void listen(pw_registry* registry, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_registry* registry, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_registry_events events = [] {
 		pw_registry_events table{};
 		table.version = PW_VERSION_REGISTRY_EVENTS;
@@ -367,31 +474,34 @@ void listen(pw_registry* registry, spa_hook& hook, typename decltype(Table)::Cla
 		table.global_remove = Table.globalRemove.function;
 		return table;
 	}();
-	pw_registry_add_listener(registry, &hook, &events, self);
+	pw_registry_add_listener(registry, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// The core's events.
 template <auto Table>
 	requires isTable<decltype(Table), CoreCallbacks>
-void listen(pw_core* core, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_core* core, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_core_events events = [] {
 		pw_core_events table{};
 		table.version = PW_VERSION_CORE_EVENTS;
 		table.done = Table.done.function;
 		return table;
 	}();
-	pw_core_add_listener(core, &hook, &events, self);
+	pw_core_add_listener(core, &listener.attach(), &events, self);
+	listener.attached();
 }
 /// A loaded module's events.
 template <auto Table>
 	requires isTable<decltype(Table), ModuleCallbacks>
-void listen(pw_impl_module* module, spa_hook& hook, typename decltype(Table)::Class* self) {
+void listen(pw_impl_module* module, Listener& listener, typename decltype(Table)::Class* self) {
 	static constexpr pw_impl_module_events events = [] {
 		pw_impl_module_events table{};
 		table.version = PW_VERSION_IMPL_MODULE_EVENTS;
 		table.destroy = Table.destroy.function;
 		return table;
 	}();
-	pw_impl_module_add_listener(module, &hook, &events, self);
+	pw_impl_module_add_listener(module, &listener.attach(), &events, self);
+	listener.attached();
 }
 
 // Plain C functions ear hands a library as an interface's methods or a handler: PipeWire's log and alsa-lib's error

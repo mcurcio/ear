@@ -3,8 +3,12 @@
 // callback_boundary.hpp), which catches what its member threw and tells the Faults the engine was made with. main.cpp
 // provides it; an engine made with none ends the process the same way (EngineSettings::faults).
 #pragma once
+#include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
+
+#include "ear/core/internal_error.hpp"
 namespace ear::pipewire {
 class Faults {
 public:
@@ -25,4 +29,20 @@ protected:
 /// The crash's last line for a fault: "ear: internal error in <callback>[, during <where>]: <detail>", with its
 /// newline. One wording for main.cpp's Faults and the boundary's own.
 std::string faultLine(std::string_view callback, std::string_view where, std::string_view detail);
+/// The Faults ear runs with (main.cpp), split by owner (docs/architecture.md#faults-by-owner): every fault is told
+/// first to `record` (standard output's ear.internal-error, `fatal` when it has no owner); then one an adapter owns
+/// returns, so the adapter fails its node, and any other gives `lastWords` the line (faultLine) and ends the process
+/// with std::terminate, whose own message follows. Each callable must not throw for long: what they throw is dropped.
+class RecordThenEnd final : public Faults {
+public:
+	using Record = std::function<void(const InternalError& error)>;
+	using LastWords = std::function<void(std::string_view line)>;
+	RecordThenEnd(Record record, LastWords lastWords) : record_(std::move(record)), lastWords_(std::move(lastWords)) {}
+	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
+	            bool owned) noexcept override;
+
+private:
+	Record record_;
+	LastWords lastWords_;
+};
 } // namespace ear::pipewire

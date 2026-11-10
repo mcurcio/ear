@@ -30,8 +30,8 @@ public:
 		const std::string name = "ear-handoff " + node;
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), name);
-		wake_ = addEvent(pw_thread_loop_get_loop(thread_), guarded<&ThreadHandoff::onWake>, this);
-		finished_ = addEvent(mainLoop_, guarded<&ThreadHandoff::onFinished>, this);
+		addEvent(wake_, pw_thread_loop_get_loop(thread_), guarded<&ThreadHandoff::onWake>, this);
+		addEvent(finished_, mainLoop_, guarded<&ThreadHandoff::onFinished>, this);
 		if (const int result = pw_thread_loop_start(thread_); result < 0) {
 			destroy();
 			throw std::system_error(-result, std::generic_category(), name);
@@ -49,13 +49,13 @@ public:
 		closed_ = std::move(closed);
 		// The writing port block is gone, so every write happened before this store.
 		closing_.store(true, std::memory_order_release);
-		pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_);
+		pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get());
 	}
 
 	std::uint32_t write(std::span<const std::span<const float>> channels, std::uint32_t frames) noexcept override {
 		const std::uint32_t accepted = ring_.writePlanar(channels, frames);
 		if (accepted < frames) dropped_.fetch_add(frames - accepted, std::memory_order_relaxed);
-		if (accepted > 0) pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_);
+		if (accepted > 0) pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get());
 		return accepted;
 	}
 
@@ -79,7 +79,7 @@ private:
 		if (closing && !consumerFinished_) {
 			consumerFinished_ = true;
 			consumer_.finish();
-			pw_loop_signal_event(mainLoop_, finished_);
+			pw_loop_signal_event(mainLoop_, finished_.get());
 		}
 	}
 
@@ -95,18 +95,18 @@ private:
 	void destroy() noexcept {
 		if (thread_ == nullptr) return;
 		pw_thread_loop_stop(thread_);
-		if (wake_ != nullptr) pw_loop_destroy_source(pw_thread_loop_get_loop(thread_), wake_);
+		wake_.reset();
 		pw_thread_loop_destroy(thread_);
 		thread_ = nullptr;
-		if (finished_ != nullptr) pw_loop_destroy_source(mainLoop_, finished_);
+		finished_.reset();
 	}
 
 	pw_loop* mainLoop_;
 	FrameRing ring_;
 	HandoffConsumer& consumer_;
 	pw_thread_loop* thread_ = nullptr;
-	spa_source* wake_ = nullptr;     // on the handoff's thread loop
-	spa_source* finished_ = nullptr; // on the main loop
+	LoopSource wake_;     // on the handoff's thread loop
+	LoopSource finished_; // on the main loop
 	std::atomic<std::uint64_t> dropped_{0};
 	std::atomic<bool> closing_{false};
 	bool consumerFinished_ = false;                       // handoff thread only
@@ -125,8 +125,8 @@ public:
 		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), "sink thread " + name);
-		wake_ = addEvent(pw_thread_loop_get_loop(thread_), guarded<&ThreadSink::onWake>, this);
-		if (wake_ == nullptr) {
+		addEvent(wake_, pw_thread_loop_get_loop(thread_), guarded<&ThreadSink::onWake>, this);
+		if (!wake_) {
 			const int error = errno;
 			destroy();
 			throw std::system_error(error, std::generic_category(), "sink thread " + name);
@@ -167,7 +167,7 @@ public:
 	}
 
 private:
-	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_); }
+	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_.get()); }
 
 	/// The sink's thread: begin once asked, every stamped chunk to the consumer, then (closing) finish once.
 	void onWake(std::uint64_t /*count*/) {
@@ -198,7 +198,7 @@ private:
 	void destroy() noexcept {
 		if (thread_ == nullptr) return;
 		pw_thread_loop_stop(thread_);
-		if (wake_ != nullptr) pw_loop_destroy_source(pw_thread_loop_get_loop(thread_), wake_);
+		wake_.reset();
 		pw_thread_loop_destroy(thread_);
 		thread_ = nullptr;
 	}
@@ -213,7 +213,7 @@ private:
 	bool began_ = false;                                  // the sink's thread only
 	bool finished_ = false;                               // the sink's thread only
 	pw_thread_loop* thread_ = nullptr;
-	spa_source* wake_ = nullptr; // on the sink's thread loop
+	LoopSource wake_; // on the sink's thread loop
 };
 
 } // namespace

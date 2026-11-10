@@ -28,6 +28,7 @@
 
 #include <pipewire/pipewire.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/core/pass_through.hpp"
 #include "ear/pipewire/engine.hpp"
@@ -133,8 +134,8 @@ private:
 /// Two blocks: "card" (two inputs, the inside output bank "to_card": "to_card.1", "to_card.2") and "other"
 /// (one input), each driven by its own code, both running on the dummy driver, and clockless cards.
 struct Graph {
-	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt)
-		: out(useTestAlsa(alsaOut)), engine(makeEngine()), waiter(*engine), registry(*engine, waiter),
+	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt, Faults* faults = nullptr)
+		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine), registry(*engine, waiter),
 		  blocks(*engine, bell), cards(*engine, clocklessCardProperties()), cardCode(waiter, rampOn), otherCode(waiter),
 		  cardBlockEvents(waiter), otherBlockEvents(waiter) {
 		cardBlock = blocks.make("card",
@@ -633,4 +634,47 @@ TEST_CASE("A following card's latency reaches its block's inside bank, and the p
 
 	for (pw_proxy* link : links) pw_proxy_destroy(link);
 	REQUIRE(ear::testing::driveNow(*source, nullptr));
+}
+
+// docs/architecture.md#faults-by-owner: a throw out of a card's body's own callback is ear's bug in state that is its
+// node's alone: the body names its node and forwards the fault to the lifecycle, which tears the card down and tells
+// it faulted (the boundary's injection seam throws inside the real callback, docs/testing.md#the-tools).
+TEST_CASE("A card whose body's callback throws is torn down and told faulted, the report naming its node",
+          "[cards][faults]") {
+	FaultLog faults;
+	Graph graph(std::nullopt, &faults);
+	faults.onCaught = [&] { graph.waiter.wake(); };
+	CardEvents events(graph.waiter, graph.registry, "card.playback");
+	boundary::throwInCallback("AlsaCardBody::onInfo");
+	const auto card = graph.makeCard(cardId("Test"), events);
+	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
+	CHECK(*events.lostDetail == "internal error in AlsaCardBody::onInfo: injected");
+	CHECK_FALSE(events.nodePresentAtLost);
+	REQUIRE(faults.reports.size() == 1);
+	CHECK(faults.reports[0].callback == "AlsaCardBody::onInfo");
+	CHECK(faults.reports[0].node == "card");
+	CHECK(faults.reports[0].owned);
+	CHECK(graph.bothRun(8));
+}
+
+TEST_CASE("A card whose making throws after any registration leaves nothing registered", "[cards][faults]") {
+	Graph graph;
+	const std::size_t before = boundary::registrationsHeld();
+	std::size_t made = 0;
+	{
+		CardEvents events(graph.waiter, graph.registry, "card.playback");
+		const auto card = graph.makeCard(cardId("Test"), events);
+		made = boundary::registrationsHeld() - before;
+	}
+	REQUIRE(made > 0);
+	CHECK(boundary::registrationsHeld() == before);
+	for (std::size_t n = 1; n <= made; ++n) {
+		INFO("thrown after registration " << n << " of " << made);
+		CardEvents unmade(graph.waiter, graph.registry, "card.playback");
+		boundary::throwAfterRegistration(n);
+		CHECK_THROWS_WITH(graph.makeCard(cardId("Test"), unmade), "injected after a registration");
+		boundary::throwAfterRegistration(0);
+		CHECK(boundary::registrationsHeld() == before);
+	}
+	CHECK(graph.bothRun(8));
 }

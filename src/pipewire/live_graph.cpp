@@ -41,10 +41,11 @@ public:
 	Feed(pw_core* core, LivePortListener& listener) : listener_(listener) {
 		registry_ = pw_core_get_registry(core, PW_VERSION_REGISTRY, 0);
 		listen<RegistryCallbacks<Feed>{.global = guarded<&Feed::onGlobal>,
-		                               .globalRemove = guarded<&Feed::onGlobalRemove>}>(registry_, hook_, this);
+		                               .globalRemove = guarded<&Feed::onGlobalRemove>}>(registry_, registryListener_,
+		                                                                                this);
 	}
 	~Feed() {
-		spa_hook_remove(&hook_);
+		registryListener_.remove();
 		pw_proxy_destroy(reinterpret_cast<pw_proxy*>(registry_));
 	}
 	Feed(const Feed&) = delete;
@@ -88,7 +89,7 @@ private:
 
 	LivePortListener& listener_;
 	pw_registry* registry_ = nullptr;
-	spa_hook hook_{};
+	Listener registryListener_;
 	std::map<std::uint32_t, NodeName> nodes_;
 	std::map<std::uint32_t, PortGlobal> ports_;
 	std::set<std::uint32_t> announced_;

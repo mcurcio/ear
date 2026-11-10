@@ -328,9 +328,13 @@ struct TestHandoffs final : HandoffAdapter {
 	Log& log;
 	std::vector<std::move_only_function<void(std::uint64_t)>> pendingCloses;
 	std::vector<HandoffConsumer*> consumers; // what each handoff made calls, in make order, as its thread would
+	bool throwInMake = false; // make() throws std::system_error, as an adapter that cannot start a thread
+	bool nullInMake = false;  // make() makes nothing, as an adapter with a bug
 	explicit TestHandoffs(Log& l) : log(l) {}
 	std::unique_ptr<Handoff> make(const NodeName& node, std::uint32_t channels, std::uint32_t,
 	                              HandoffConsumer& consumer) override {
+		if (throwInMake) throw std::system_error(EAGAIN, std::generic_category(), "no thread for " + node);
+		if (nullInMake) return nullptr;
 		consumers.push_back(&consumer);
 		log.push_back("handoff " + node + " " + std::to_string(channels) + " channels");
 		return std::make_unique<TestHandoff>(log, pendingCloses);
@@ -2478,6 +2482,10 @@ struct TestRecordings final : RecordingAdapter {
 	                                                                const std::string& path) override {
 		log.push_back("recording " + node + " " + path);
 		if (path.starts_with("missing/")) return std::unexpected(std::string("no such folder"));
+		if (path.starts_with("emfile/")) throw std::system_error(EMFILE, std::generic_category(), "no descriptor");
+		if (path.starts_with("bad_alloc/")) throw std::bad_alloc();
+		if (path.starts_with("bug/")) throw std::logic_error("the folder adapter broke its own rule");
+		if (path.starts_with("null/")) return nullptr;
 		return std::make_unique<File>(log, 42);
 	}
 };
@@ -2552,6 +2560,76 @@ TEST_CASE("A recording the folder refuses fails the start, and a registry with n
 	REQUIRE(plain.host.health().size() == 1);
 	CHECK(plain.host.health()[0].reason->detail == "cannot open: no recordings folder");
 	plain.stopAll();
+}
+
+// docs/architecture.md#faults-by-owner: an adapter's refusal is the node's start-failed through every path to it,
+// a nested context call (a recording through the legacy start's acquire) among them, and never ear's bug.
+TEST_CASE("An adapter's refusal through any path to it, a nested context call among them, is start-failed with no "
+          "record",
+          "[node_host][recording][type-throw]") {
+	for (const std::string path : {"emfile/take.wav", "bad_alloc/take.wav"}) {
+		INFO(path);
+		RecordingFixture f;
+		TestInternalErrors errors;
+		f.host.subscribeInternalErrors(errors);
+		// The legacy start's acquire(RecordingRequest) is a context call inside which openRecording is another.
+		f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, path));
+		CHECK_FALSE(MainLoopActivity::takeThrown()); // nothing thrown out of NodeHost
+		REQUIRE(f.host.health().size() == 1);
+		REQUIRE(f.host.health()[0].reason);
+		CHECK(f.host.health()[0].reason->code == FailureReason::Code::startFailed);
+		CHECK(f.host.health()[0].reason->detail.starts_with("configure threw: "));
+		CHECK(errors.told.empty());
+		f.host.stopAll(f.graph.close(), [] {});
+		f.mainLoop.settle();
+	}
+	SECTION("a handoff's refusal through acquire") {
+		Fixture g;
+		g.handoffs.throwInMake = true;
+		auto config = std::make_shared<TestConfig>(g.log);
+		config->handoffs = 1;
+		g.add("rec", config);
+		CHECK(failureOf(g, "rec").starts_with("start-failed: configure threw: no thread for rec"));
+		CHECK(g.internalErrors.told.empty());
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		g.stopAll();
+		g.settle();
+	}
+}
+
+TEST_CASE("An adapter that makes nothing, or throws its own std::logic_error, through a nested context call is ear's "
+          "bug: its node lost and a record",
+          "[node_host][recording][type-throw]") {
+	const std::vector<std::pair<std::string, std::string>> cases{
+		{"null/take.wav", "the recording adapter opened no file"},
+		{"bug/take.wav", "the folder adapter broke its own rule"}};
+	for (const auto& [path, what] : cases) {
+		INFO(path);
+		RecordingFixture f;
+		TestInternalErrors errors;
+		f.host.subscribeInternalErrors(errors);
+		f.host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<RecordingConfig>(f.log, path));
+		CHECK_FALSE(MainLoopActivity::takeThrown());
+		CHECK(errors.told == std::vector<std::string>{"RecordingAdapter::open|rec|configure rec|" + what});
+		REQUIRE(f.host.health().at(0).reason);
+		CHECK(f.host.health()[0].reason->code == FailureReason::Code::lost);
+		CHECK(f.host.health()[0].reason->detail == "internal error in RecordingAdapter::open: " + what);
+		f.host.stopAll(f.graph.close(), [] {});
+		f.mainLoop.settle();
+	}
+	SECTION("a handoff adapter that makes nothing") {
+		Fixture f;
+		f.handoffs.nullInMake = true;
+		auto config = std::make_shared<TestConfig>(f.log);
+		config->handoffs = 1;
+		f.add("rec", config);
+		CHECK(f.internalErrors.told ==
+		      std::vector<std::string>{"HandoffAdapter::make|rec|configure rec|the handoff adapter made no handoff"});
+		CHECK(failureOf(f, "rec") ==
+		      "lost: internal error in HandoffAdapter::make: the handoff adapter made no handoff");
+		f.stopAll();
+		f.settle();
+	}
 }
 
 TEST_CASE("A host destroyed with a recording node still running frees its run object and recipe before the recording",
@@ -5427,4 +5505,39 @@ TEST_CASE("An adapter's refusal inside a context call is the node's start-failed
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
+}
+
+// docs/architecture.md#faults-by-owner: an adapter whose own callback threw tells its events faulted; the node fails
+// lost, a block for good and an engine companion so that a retry makes it afresh.
+TEST_CASE("A block or an engine companion told faulted fails its node lost: the block for good, the companion retried",
+          "[node_host][type-throw]") {
+	SECTION("a block") {
+		Fixture f;
+		addRunning(f, "amp", std::make_shared<OutputConfig>(f.log));
+		f.blocks.events.at(0)->faulted("internal error in FilterPortBlock::onStateChanged: bad state");
+		f.settle();
+		CHECK(failureOf(f, "amp") == "lost: internal error in FilterPortBlock::onStateChanged: bad state");
+		CHECK(f.host.health().at(0).blockLost);
+		CHECK_FALSE(f.host.start("amp").has_value()); // not-restartable: block-lost
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
+	SECTION("an engine companion") {
+		Fixture f;
+		f.add("desk", withPlayback(f.log));
+		f.blocks.events.at(0)->ready();
+		f.settle();
+		REQUIRE(f.cards.events.size() == 1);
+		f.cards.events.at(0)->faulted("internal error in AlsaCardBody::onInfo: bad info");
+		f.settle();
+		CHECK(failureOf(f, "desk") == "lost: internal error in AlsaCardBody::onInfo: bad info");
+		CHECK_FALSE(f.host.health().at(0).blockLost);
+		REQUIRE(f.host.start("desk").has_value()); // a retry makes the companion afresh
+		f.settle();
+		CHECK(f.cards.events.size() == 2);
+		f.stopAll();
+		f.settle();
+		CHECK(f.allGone == 1);
+	}
 }

@@ -70,22 +70,24 @@ public:
 		                               {property<Home::card>("api.alsa.period-num"), periods}});
 		// The seam's keys, vetted again (each was at construction); each is text the AlsaSoundCards owns.
 		for (const auto& [key, value] : extra) props.set(seamChecked(key), value);
-		node_ = createObject(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, props);
+		// The proxy and each listener are held by members declared in this order, so a throw below (the port
+		// configuration's) unwinds them, listeners first (docs/architecture.md#faults-by-owner).
+		node_.reset(createObject(engine.core(), "adapter", PW_TYPE_INTERFACE_Node, PW_VERSION_NODE, props));
 		if (node_ == nullptr) {
 			events_.failed(std::string("cannot ask for the card: ") + spa_strerror(-errno));
 			return;
 		}
 		listen<ProxyCallbacks<AlsaCardBody>{.removed = guarded<&AlsaCardBody::onRemoved>,
-		                                    .error = guarded<&AlsaCardBody::onError>}>(node_, proxyHook_, this);
-		listen<NodeCallbacks<AlsaCardBody>{.info = guarded<&AlsaCardBody::onInfo>}>(node_, nodeHook_, this);
+		                                    .error = guarded<&AlsaCardBody::onError>}>(node_.get(), proxyListener_,
+		                                                                               this);
+		listen<NodeCallbacks<AlsaCardBody>{.info = guarded<&AlsaCardBody::onInfo>}>(node_.get(), nodeListener_, this);
 		configurePorts();
 	}
 
 	~AlsaCardBody() override {
-		if (node_ == nullptr) return;
-		spa_hook_remove(&proxyHook_);
-		spa_hook_remove(&nodeHook_);
-		pw_proxy_destroy(node_); // no linger: the engine node goes with the proxy
+		proxyListener_.remove();
+		nodeListener_.remove();
+		node_.reset(); // no linger: the engine node goes with the proxy
 	}
 
 	AlsaCardBody(const AlsaCardBody&) = delete;
@@ -118,11 +120,11 @@ private:
 			SPA_PARAM_PORT_CONFIG_mode, SPA_POD_Id(SPA_PARAM_PORT_CONFIG_MODE_dsp), SPA_PARAM_PORT_CONFIG_monitor,
 			SPA_POD_Bool(false), SPA_PARAM_PORT_CONFIG_control, SPA_POD_Bool(false), SPA_PARAM_PORT_CONFIG_format,
 			SPA_POD_Pod(format)));
-		pw_node_set_param(reinterpret_cast<pw_node*>(node_), SPA_PARAM_PortConfig, 0, config);
+		pw_node_set_param(reinterpret_cast<pw_node*>(node_.get()), SPA_PARAM_PortConfig, 0, config);
 	}
 
 	// RUNNING: the PCM runs, so the card may be linked, by its global id; ERROR: failed.
-	void onInfo(const pw_node_info* info) { tellNodeState(*info, kind, pw_proxy_get_bound_id(node_), events_); }
+	void onInfo(const pw_node_info* info) { tellNodeState(*info, kind, pw_proxy_get_bound_id(node_.get()), events_); }
 	void onError(int /*seq*/, int res, const char* message) {
 		events_.failed(std::string("the card failed: ") + (message != nullptr ? message : spa_strerror(res)));
 	}
@@ -132,9 +134,9 @@ private:
 	std::size_t channels_;
 	std::uint32_t rate_;
 	CompanionBodyEvents& events_;
-	pw_proxy* node_ = nullptr;
-	spa_hook proxyHook_{};
-	spa_hook nodeHook_{};
+	OwnedProxy node_;
+	Listener proxyListener_;
+	Listener nodeListener_;
 };
 
 } // namespace

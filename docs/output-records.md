@@ -127,7 +127,7 @@ The framework's own observations. With a node:
 | `ear.fade-unacknowledged` | `ms` | A planned silence's fade was not acknowledged within 100 ms; the silence was taken unfaded |
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |
-| `ear.internal-error` | `callback` | ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows; the rest of the graph runs on |
+| `ear.internal-error` | `callback` | ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows, unless the node is already being stopped, restarted or removed (the fault is then dropped with the rest of its teardown); the rest of the graph runs on. Said once per adapter, however often its callbacks throw |
 
 `msg`: `node <name> <code>: <detail>`. Without a node (`msg`: `<code>: <detail>`):
 
@@ -136,7 +136,7 @@ The framework's own observations. With a node:
 | `ear.data-loop-wedged` | `ms` | Once: the data loop is judged wedged. No further engine change is made, and ear's stop leaves through `_Exit` |
 | `ear.main-loop-stalled` | `ms`, `in`? | The watchdog found the main loop's heartbeat older than 500 ms (`ms` is its age at the look); `in` is the PipeWire call or hook running, when known. Once per stall |
 | `ear.main-loop-resumed` | `ms` | The heartbeat came back; `ms` is the gap between the beats either side |
-| `ear.internal-error` | `callback` | ear's own bug with no owner but ear's core (NodeHost, the main loop's posted work, a sink's thread), caught by the callback boundary: the process ends right after it, with the line below on standard error. Also a route's link whose own callback threw, which fails only that route |
+| `ear.internal-error` | `callback`, `fatal`? | ear's own bug with no owner but ear's core (NodeHost, a route link's listeners, the main loop's posted work, a sink's thread), caught by the callback boundary: `fatal: true`, and the process ends right after it, with the line below on standard error. Without `fatal`: a route's link whose own callback threw, which fails only that route, and ear runs on |
 
 These name no node or happen while the main loop is stuck, so they are standard output only, never
 on the control port. What they mean for the graph is in

@@ -35,25 +35,21 @@ protected:
 /// companion (and so the node, `node`) whose channel it carries (docs/architecture.md#faults-by-owner).
 class LinkProxy final : public FaultOwner {
 public:
+	/// Takes `proxy` (destroyed with this, even when the constructor throws).
 	LinkProxy(LinkId id, pw_proxy* proxy, LinkEvents& events, std::string node = {})
 		: id_(id), proxy_(proxy), events_(events), node_(std::move(node)) {
 		listen<ProxyCallbacks<LinkProxy>{.removed = guarded<&LinkProxy::onRemoved>,
-		                                 .error = guarded<&LinkProxy::onError>}>(proxy_, proxyHook_, this);
-		listen<LinkCallbacks<LinkProxy>{.info = guarded<&LinkProxy::onInfo>}>(proxy_, linkHook_, this);
+		                                 .error = guarded<&LinkProxy::onError>}>(proxy_.get(), proxyListener_, this);
+		listen<LinkCallbacks<LinkProxy>{.info = guarded<&LinkProxy::onInfo>}>(proxy_.get(), linkListener_, this);
 	}
-	~LinkProxy() {
-		silence();
-		pw_proxy_destroy(proxy_);
-	}
+	~LinkProxy() { silence(); } // the listeners first, then the proxy (declared before them)
 	LinkProxy(const LinkProxy&) = delete;
 	LinkProxy& operator=(const LinkProxy&) = delete;
 
 	/// No further events from this proxy.
-	void silence() {
-		if (!listening_) return;
-		listening_ = false;
-		spa_hook_remove(&proxyHook_);
-		spa_hook_remove(&linkHook_);
+	void silence() noexcept {
+		proxyListener_.remove();
+		linkListener_.remove();
 	}
 
 	std::string_view faultNode() const noexcept override { return node_; }
@@ -88,12 +84,11 @@ private:
 	}
 
 	LinkId id_;
-	pw_proxy* proxy_;
+	OwnedProxy proxy_;
 	LinkEvents& events_;
 	std::string node_; // the node whose engine companion this link joins; empty for a route's
-	spa_hook proxyHook_{};
-	spa_hook linkHook_{};
-	bool listening_ = true;
+	Listener proxyListener_;
+	Listener linkListener_;
 	bool active_ = false;
 };
 

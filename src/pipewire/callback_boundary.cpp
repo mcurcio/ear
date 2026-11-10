@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdio>
 #include <exception>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -17,6 +18,8 @@ namespace {
 std::atomic<bool> engaged{false}; // an engine (or a test) holds the boundary
 std::atomic<Faults*> installed{nullptr};
 std::atomic<std::thread::id> mainThread{};
+std::atomic<std::size_t> heldNow{0}; // registrations held
+std::atomic<std::size_t> throwAt{0}; // the seam: the registration that throws once held, counted down; 0 none
 
 /// With no Faults installed (an engine made without one): today's outcome, the process ends, with a line naming the
 /// callback first among the crash's last words.
@@ -59,6 +62,37 @@ void uninstall() noexcept {
 	engaged.store(false, std::memory_order_release);
 }
 
+namespace {
+std::atomic<bool> callbackArmed{false}; // read by every guarded callback: the seam's string only when armed
+std::string armedCallback;              // main thread
+} // namespace
+
+void throwInCallback(std::string_view callback) {
+	armedCallback = std::string(callback);
+	callbackArmed.store(!armedCallback.empty(), std::memory_order_release);
+}
+
+void injectedIn(std::string_view callback) {
+	if (!callbackArmed.load(std::memory_order_acquire) || !onMainThread() || armedCallback != callback) return;
+	callbackArmed.store(false, std::memory_order_release);
+	armedCallback.clear();
+	throw std::runtime_error("injected");
+}
+
+void throwAfterRegistration(std::size_t n) noexcept { throwAt.store(n, std::memory_order_release); }
+
+std::size_t registrationsHeld() noexcept { return heldNow.load(std::memory_order_acquire); }
+
+void held() {
+	heldNow.fetch_add(1, std::memory_order_acq_rel);
+	std::size_t at = throwAt.load(std::memory_order_acquire);
+	while (at != 0 && !throwAt.compare_exchange_weak(at, at - 1, std::memory_order_acq_rel)) {
+	}
+	if (at == 1) throw std::runtime_error("injected after a registration");
+}
+
+void released() noexcept { heldNow.fetch_sub(1, std::memory_order_acq_rel); }
+
 void entered() noexcept {
 	// A callback made while an exception unwinds (pw_filter_destroy, in a destructor, telling a state change) must not
 	// forget the place that exception is carrying.
@@ -70,11 +104,12 @@ void report(std::string_view callback, FaultOwner* owner) noexcept {
 	std::string where;
 	if (onMainThread()) {
 		// The place the throw left; else the call still open around this callback (one PipeWire made inside it). Only
-		// NodeHost leaves a place (a scope a throw ended, or its rethrow putting one back), so a throw that carries one
-		// came out of NodeHost, whose state is every node's: its bug, whichever adapter's callback it came out of
-		// (docs/architecture.md#faults-by-owner).
+		// core's dispatchers leave a place (a scope a throw ended, or NodeHost's rethrow putting one back), so a throw
+		// that carries one came out of core, whose state is every node's: its bug, whichever adapter's callback it came
+		// out of (docs/architecture.md#faults-by-owner).
 		const auto at = MainLoopActivity::takeThrown();
 		if (at) owner = nullptr;
+		if (owner != nullptr && !owner->firstFault()) return; // its node already fails: said once
 		where = MainLoopActivity::describe(at ? *at : MainLoopActivity::save());
 	}
 	static LastWords lastWords;
@@ -92,6 +127,20 @@ void report(std::string_view callback, FaultOwner* owner) noexcept {
 } // namespace ear::pipewire::boundary
 
 namespace ear::pipewire {
+
+void RecordThenEnd::caught(std::string_view callback, std::string_view where, std::string_view detail,
+                           std::string_view node, bool owned) noexcept {
+	try {
+		record_(InternalError{.callback = callback, .node = node, .where = where, .what = detail, .fatal = !owned});
+	} catch (...) { // no memory for the record: the line below still says it, or the node's failure does
+	}
+	if (owned) return;
+	try {
+		lastWords_(faultLine(callback, where, detail));
+	} catch (...) {
+	}
+	std::terminate(); // inside the handler: terminate's own message still names what was thrown
+}
 
 std::string faultLine(std::string_view callback, std::string_view where, std::string_view detail) {
 	std::string line = "ear: internal error in ";

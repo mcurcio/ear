@@ -575,7 +575,7 @@ least change made (the built rule is `docs/architecture.md#faults-by-owner`):
   factory and an engine companion adapter refuse only through their events, so a throw is their bug, and NodeHost
   already strands nothing where it calls them: R4b routes them by owner (`PortBlockFactory::make`,
   `SoundCardCompanions::make`, `RtpReceiverCompanions::make`: the record with the flush item as where, the node `lost`,
-  nothing rethrown). An adapter call that interrupts NodeHost's own update (a block's `drive`, `fadeOut`, `settle` or
+  nothing rethrown). Safe only once every adapter constructor is exception-safe, which the review below made true. An adapter call that interrupts NodeHost's own update (a block's `drive`, `fadeOut`, `settle` or
   `carryLatency` while NodeHost carries out a machine's actions) stays NodeHost's: what NodeHost had half-done is
   every node's, which is section 9's reason for ending the process.
 - **The record.** A `diagnostic` code, `ear.internal-error`, with `node` when it fails one, `callback`, and `detail`
@@ -587,6 +587,52 @@ least change made (the built rule is `docs/architecture.md#faults-by-owner`):
   control port, so the JSON-RPC wire, `web/src/protocol.ts` and the editor are unchanged and no feature name is
   needed: a node fails `lost` with a new text, and `reason.code` and its detail were open already. The records' `v`
   stays 1 (additive).
+
+Found in R4b's review, each fixed at its root class:
+
+- **A refusal did not survive a nested context call.** `acquire(RecordingRequest)` is a context call inside which
+  `openRecording` is another; the inner `guarded()` cleared the refusal's identity, so the outer one took a recording
+  adapter's `EMFILE` for NodeHost's bug and ended ear. A refusal is now known by its identity until the type's call
+  ends (nothing clears it in between), so it passes as itself through every nesting; `std::bad_alloc` from NodeHost's
+  own code inside a context call is exhaustion, not a bug, and fails the node `start-failed` as a refusal does.
+- **Running on after a factory's throw assumed exception-safe constructors**, and none was: a block's constructor
+  registered its levels entry, two event sources and the filter's listener (its realtime `process` among it), an
+  engine companion its event source and core listener before making its body, a card's body its listeners before
+  configuring its ports; a later throw left each registered on freed memory. The root fix is in the boundary: every
+  registration fills a handle its owner holds (`LoopSource` for `addEvent`, `addTimer` and `addSignal`; `Listener`
+  for each `listen`; `LevelsEntry` for the levels registry; `OwnedProxy`, `OwnedRegistry` and the filter's
+  `unique_ptr` for what they listen to), declared in registration order with the object before its listeners, so any
+  constructor unwinds what it registered. The registrations take the handle as their first argument rather than
+  returning it, so the seam below can throw after the owner holds it. Every adapter is converted, not only the four
+  made in the flush.
+- **Two seams prove it** (`docs/testing.md#a-fault-on-purpose`): `boundary::throwAfterRegistration(n)` with
+  `registrationsHeld()`, run after each registration of a block, a card and an RTP receiver; and
+  `boundary::throwInCallback(name)`, a throw inside a named real callback, which tests each owner (a block, an RTP
+  receiver's body, its lifecycle with a sync in flight, its link, a card's body, a route link). Not every tail is
+  covered: a throw after the last registration of a constructor is the same unwinding as after any other.
+- **"No place, so the adapter's" was unsound for route links.** A route link's event tells `Links`' listeners (the
+  reconciler, and through it the route status listeners), which are core and leave no place. Any core dispatcher an
+  adapter's callback reaches must leave the mark, not only NodeHost: `Links` tells its listeners inside a
+  `MainLoopActivity::Scope` (`tell route links`). The audit found no other: blocks and engine companions tell only
+  NodeHost (whose inputs keep a place), bodies and links tell their companion, and levels are rung from the data loop
+  outside the boundary.
+- **A block lost for good stayed in the graph**, its half-changed state still reachable by its next request, which a
+  teardown's silence could leave uncompleted until the data loop was judged wedged for every node. On its fault it
+  now leaves: the listener at once (removing a hook inside its own event is allowed), then, at its next main-loop
+  event, outside the filter's events, the filter and any invoke still queued; requests from then on are applied on
+  the main thread and completed by signal. An owner's faults are said once (`FaultOwner::firstFault`), so a callback
+  that keeps throwing writes no unpaced stream of records. An engine companion keeps its first fault's detail when
+  the loss path runs again.
+- **An adapter that returned nothing** was a rule broken by the type (the null check sat outside `adapter()`), and a
+  null handoff was dereferenced. The checks moved inside the adapter's call (its bug, with a record), and the
+  registry's look-ups (core's, `adapterFor`) moved out of it.
+- **The forked crash test proved nothing**, since the boundary's own last words end the process for every fault. The
+  Faults ear runs with is now `RecordThenEnd` in `ear/pipewire/faults.hpp` (main.cpp gives it the record and the last
+  words), so the child runs under it: a fault taken for an owner would return and the child would exit 91. Its owned
+  path is tested in-process.
+- **The no-node records were alike.** `fatal: true` marks the one after which ear ends; a route link's has none.
+  `docs/output-records.md` says the node's `lost` follows unless the node is already being stopped, restarted or
+  removed.
 
 ## 5. Class 3: tests that depend on the host
 

@@ -6,13 +6,14 @@
 namespace ear {
 /// One caught bug of ear's own: the callback or adapter call that threw ("FilterPortBlock::onStateChanged",
 /// "SinkAdapter::make"); the node it fails, or empty when it fails none (a route's link) or ends the process; where the
-/// main loop was when it was thrown (MainLoopActivity's "<call> <node>", or empty); and what it said. Every view lives
-/// only for the call it is passed to.
+/// main loop was when it was thrown (MainLoopActivity's "<call> <node>", or empty); what it said; and whether ear ends
+/// right after it (no owner but ear's core). Every view lives only for the call it is passed to.
 struct InternalError {
 	std::string_view callback;
 	std::string_view node;
 	std::string_view where;
 	std::string_view what;
+	bool fatal = false;
 };
 /// Where a caught bug is told (standard output's encoder). Called on the thread that caught it, which may not be the
 /// main loop's: the callback boundary reports on whichever thread its callback ran.

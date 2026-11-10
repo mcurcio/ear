@@ -154,32 +154,6 @@ private:
 	std::unique_ptr<ear::Timer> timer_;
 };
 
-/// Where the engine's callback boundary reports a caught exception, split by owner
-/// (docs/architecture.md#faults-by-owner): first the ear.internal-error record. A fault an adapter owns then returns,
-/// and the adapter fails its node. Any other ends the process: the capture writes out what is queued (the record among
-/// it) and what its pipes hold, then the line naming the callback and where the main loop was, straight to the real
-/// standard error (never through a pipe whose thread could take it and lose it as the process dies); then
-/// std::terminate adds its own message, naming what was thrown.
-class ReportFaults final : public ear::pipewire::Faults {
-public:
-	ReportFaults(ear::output::DescriptorCapture& capture, ear::control::StatusLog& log)
-		: capture_(capture), log_(log) {}
-	void caught(std::string_view callback, std::string_view where, std::string_view detail, std::string_view node,
-	            bool owned) noexcept override {
-		try {
-			log_.internalError(ear::InternalError{.callback = callback, .node = node, .where = where, .what = detail});
-		} catch (...) { // no memory for the record: the line below still says it, or the node's failure does
-		}
-		if (owned) return;
-		capture_.lastWords(ear::pipewire::faultLine(callback, where, detail));
-		std::terminate();
-	}
-
-private:
-	ear::output::DescriptorCapture& capture_;
-	ear::control::StatusLog& log_;
-};
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -284,7 +258,12 @@ int main(int argc, char** argv) {
 
 	// Declaration order is boot order; destruction runs the other way: port, gateway, keeper, core,
 	// adapters, control thread, main-loop executor, engine.
-	ReportFaults faults(*capture, log);
+	// Where the engine's callback boundary reports a caught exception, split by owner
+	// (docs/architecture.md#faults-by-owner): the record first; a fault no adapter owns then has the capture write out
+	// what is queued (the record among it) and what its pipes hold, then its line straight to the real standard error
+	// (never through a pipe whose thread could take it and lose it as the process dies), and ends the process.
+	ear::pipewire::RecordThenEnd faults([&log](const ear::InternalError& error) { log.internalError(error); },
+	                                    [&capture](std::string_view line) { capture->lastWords(line); });
 	auto created =
 		ear::pipewire::Engine::create({binaryDirectory() / "engine.conf", format.rate, format.maxBlock, &faults});
 	if (!created) {
