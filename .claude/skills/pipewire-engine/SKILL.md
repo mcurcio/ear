@@ -372,6 +372,14 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   re-anchors; each jump must be time the graph really lost, never an engine miscount), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
+- **S6 (cycle facts, tag `[s6]`, its first case also `[s2]`)**: the driver reports every cycle a node
+  misses (`incomplete`, before the next `start`), across planned stalls of 1.5 to 150 cycles in each
+  node of a chain and a sibling beside a busy thread per core; the `TRIGGERED` recovery loses nothing;
+  `clock.cycle` is the listener's count plus a fixed offset; a running node's position jumps by whole
+  missed cycles only. Non-whole jumps come from the default `resync.ms` or the driver restarting (it
+  stops only when it drives no node; an inactive node misses uncut cycles instead). A follower can
+  read no mark of the recovery (`XRUN_RECOVER` is cleared before followers run). A listener must not
+  read the driver's clock through a filter's mapping once that filter is gone (it crashed).
 - After a 2 s data-loop stall the dummy driver resyncs (an error of about -96,000 frames) and then
   resets about 70 times within 7 ms; the bounds treat it as no wedge while the loop answers invokes.
 

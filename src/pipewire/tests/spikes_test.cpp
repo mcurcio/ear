@@ -16,6 +16,10 @@
 //    occur on any host: its played count keeps to the clock across cycles an xrun cuts short, and the node after it
 //    hears its frame of each position. And what a node reads after its upstream ran a cycle it did not: the upstream's
 //    frames of the cycle it runs, never the cut one's (docs/engine.md#the-one-data-loop-and-invokes).
+//  - S6: what the internal clock reports of every cycle (docs/engine.md#the-one-data-loop-and-invokes and
+//    #the-internal-clock): every cycle a node misses is one it reported cut short, clock.cycle moves with its starts, a
+//    running node's position jumps by whole missed cycles only, and what makes the other jumps (a restart, the default
+//    resync.ms).
 // Everything here is test-only: the probes are bare pw_filters (probes.hpp, shared with port_block_test.cpp), S2's
 // take-up block implements a deferred take-up itself (FilterPortBlock applies its drive in its invoke instead,
 // docs/engine.md#drive-and-fade), and S5's source keeps its ring itself. Every wait is event-gated: the main loop runs
@@ -38,12 +42,14 @@
 #include <random>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
 #include <pthread.h>
 
 #include <pipewire/filter.h>
+#include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
@@ -1000,6 +1006,238 @@ public:
 	std::atomic<std::uint64_t> cycles{0};
 };
 
+// ---------------------------------------------------------------------------------------------------------------------
+// S6
+
+/// S6's account of the internal clock, from its own realtime events (impl-node.c, node_ready): each cycle it starts
+/// (`start`, after clock.cycle++ and before any follower is triggered), each it reports cut short (`incomplete`, in the
+/// next node_ready before that cycle's `start`) and each it reports complete (`complete`: from the driver's own process
+/// once every follower finished, or from the recovery in the next node_ready, which runs with
+/// SPA_IO_CLOCK_FLAG_XRUN_RECOVER set on the driver's clock). Cycles are numbered from 1 by its own count, as
+/// cycle-facts' DriverCuts would; it reads the driver's clock (clock.cycle, the flag) through the pointer a probe's
+/// process was handed, which is the driver's shared position that every follower reads.
+class S6Driver {
+public:
+	S6Driver(Engine& engine, std::size_t capacity)
+		: cut_(capacity), completes_(capacity), recovered_(capacity), clockCycle_(capacity), clockKnown_(capacity) {
+		struct Search {
+			pw_impl_node* found = nullptr;
+		} search;
+		pw_context_for_each_global(
+			engine.context(),
+			[](void* data, pw_global* global) {
+				if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Node)) return 0;
+				auto* node = static_cast<pw_impl_node*>(pw_global_get_object(global));
+				const char* name = pw_properties_get(pw_impl_node_get_properties(node), PW_KEY_NODE_NAME);
+				if (name == nullptr || std::string_view(name) != "Dummy-Driver") return 0;
+				static_cast<Search*>(data)->found = node;
+				return 1;
+			},
+			&search);
+		if (search.found == nullptr) FAIL("the engine holds no node named Dummy-Driver");
+		node_ = search.found;
+		events_.version = PW_VERSION_IMPL_NODE_RT_EVENTS;
+		events_.start = &S6Driver::onStart;
+		events_.complete = &S6Driver::onComplete;
+		events_.incomplete = &S6Driver::onIncomplete;
+		pw_impl_node_add_rt_listener(node_, &hook_, &events_, this);
+	}
+	S6Driver(const S6Driver&) = delete;
+	S6Driver& operator=(const S6Driver&) = delete;
+	~S6Driver() { pw_impl_node_remove_rt_listener(node_, &hook_); }
+
+	/// Data thread, from a probe's process: the driver's clock as followers see it (a probe's mapping of it).
+	void see(const spa_io_clock& clock) noexcept {
+		if (forgotten_.load(std::memory_order_relaxed)) return;
+		const spa_io_clock* none = nullptr;
+		clock_.compare_exchange_strong(none, &clock, std::memory_order_relaxed);
+	}
+	/// Wakes `waiter` at every cycle's start (an eventfd write on the data thread), for a test with no probe running.
+	void wakeOnStart(Waiter* waiter) noexcept { waiter_.store(waiter, std::memory_order_relaxed); }
+	/// Main thread, before the probes go: the listener stops reading their mapping of the clock, which goes with them.
+	void forget() noexcept {
+		forgotten_.store(true, std::memory_order_relaxed);
+		clock_.store(nullptr, std::memory_order_relaxed);
+	}
+	/// Cycles started since this listened; inside a process, the one running. Any thread.
+	std::uint64_t started() const noexcept { return started_.load(std::memory_order_acquire); }
+	bool held(std::uint64_t g) const noexcept { return g > 0 && g <= cut_.size(); }
+	bool cut(std::uint64_t g) const noexcept { return held(g) && cut_[g - 1].load(std::memory_order_acquire) != 0; }
+	int completes(std::uint64_t g) const noexcept {
+		return held(g) ? completes_[g - 1].load(std::memory_order_acquire) : -1;
+	}
+	/// Its complete came from the recovery (XRUN_RECOVER set): cut short, or the driver's own wake not yet run.
+	bool recovered(std::uint64_t g) const noexcept {
+		return held(g) && recovered_[g - 1].load(std::memory_order_acquire) != 0;
+	}
+	std::optional<std::uint32_t> clockCycle(std::uint64_t g) const noexcept {
+		if (!held(g) || clockKnown_[g - 1].load(std::memory_order_acquire) == 0) return std::nullopt;
+		return clockCycle_[g - 1].load(std::memory_order_acquire);
+	}
+	std::uint64_t cuts() const noexcept { return cuts_.load(std::memory_order_acquire); }
+
+private:
+	static void onStart(void* data) noexcept {
+		auto* self = static_cast<S6Driver*>(data);
+		const std::uint64_t g = self->started_.load(std::memory_order_relaxed) + 1;
+		if (self->held(g)) {
+			if (const spa_io_clock* clock = self->clock_.load(std::memory_order_relaxed)) {
+				self->clockCycle_[g - 1].store(clock->cycle, std::memory_order_relaxed);
+				self->clockKnown_[g - 1].store(1, std::memory_order_relaxed);
+			}
+		}
+		self->started_.store(g, std::memory_order_release);
+		if (Waiter* waiter = self->waiter_.load(std::memory_order_relaxed)) waiter->wake();
+	}
+	static void onComplete(void* data) noexcept {
+		auto* self = static_cast<S6Driver*>(data);
+		const std::uint64_t g = self->started_.load(std::memory_order_relaxed);
+		if (!self->held(g)) return;
+		self->completes_[g - 1].fetch_add(1, std::memory_order_release);
+		const spa_io_clock* clock = self->clock_.load(std::memory_order_relaxed);
+		if (clock != nullptr && (clock->flags & SPA_IO_CLOCK_FLAG_XRUN_RECOVER) != 0)
+			self->recovered_[g - 1].store(1, std::memory_order_release);
+	}
+	static void onIncomplete(void* data) noexcept {
+		auto* self = static_cast<S6Driver*>(data);
+		const std::uint64_t g = self->started_.load(std::memory_order_relaxed);
+		if (self->held(g)) self->cut_[g - 1].store(1, std::memory_order_release);
+		self->cuts_.fetch_add(1, std::memory_order_release);
+	}
+
+	pw_impl_node* node_ = nullptr;
+	pw_impl_node_rt_events events_{};
+	spa_hook hook_{};
+	std::atomic<const spa_io_clock*> clock_{nullptr};
+	std::atomic<bool> forgotten_{false};
+	std::atomic<Waiter*> waiter_{nullptr};
+	std::vector<std::atomic<std::uint8_t>> cut_;
+	std::vector<std::atomic<int>> completes_;
+	std::vector<std::atomic<std::uint8_t>> recovered_;
+	std::vector<std::atomic<std::uint32_t>> clockCycle_;
+	std::vector<std::atomic<std::uint8_t>> clockKnown_;
+	std::atomic<std::uint64_t> started_{0};
+	std::atomic<std::uint64_t> cuts_{0};
+};
+
+/// One cycle a probe ran, as its process saw the driver's clock.
+struct S6Run {
+	std::uint64_t graph;    // S6Driver::started() inside the process: the driver's cycle by the listener's count
+	std::uint64_t position; // clock.position
+	std::uint64_t duration; // clock.duration
+	std::uint64_t xrun;     // clock.xrun (set only by an ALSA driver)
+	std::int64_t rawNs;     // CLOCK_MONOTONIC_RAW at entry
+	std::uint32_t clockCycle;
+	std::uint32_t flags; // clock.flags
+};
+
+/// S6's probe: records every cycle it runs while `recording`, and stalls the data thread at its planned runs.
+class S6Probe final : public ProbeCode {
+public:
+	S6Probe(Waiter& waiter, S6Driver& driver, const std::atomic<bool>& recording, std::size_t capacity, StallPlan plan)
+		: waiter_(waiter), driver_(driver), recording_(recording), runs_(capacity), stalls_(std::move(plan)) {}
+	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
+	           std::uint32_t frames) noexcept override {
+		driver_.see(clock);
+		for (float* out : outputs) std::fill_n(out, frames, 0.0F);
+		if (recording_.load(std::memory_order_acquire)) {
+			const std::size_t n = count_.load(std::memory_order_relaxed);
+			if (n < runs_.size()) {
+				timespec now{};
+				clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+				runs_[n] = S6Run{driver_.started(),
+				                 clock.position,
+				                 clock.duration,
+				                 clock.xrun,
+				                 static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec,
+				                 clock.cycle,
+				                 clock.flags};
+				count_.store(n + 1, std::memory_order_release);
+				stalls_(n, clock.duration, kRate);
+			} else {
+				full_.store(true, std::memory_order_relaxed);
+			}
+		}
+		waiter_.wake();
+	}
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	const S6Run& run(std::size_t n) const noexcept { return runs_[n]; }
+	bool full() const noexcept { return full_.load(std::memory_order_relaxed); }
+	std::size_t stalls() const noexcept { return stalls_.made(); }
+	std::size_t planned() const noexcept { return stalls_.plan().size(); }
+
+private:
+	Waiter& waiter_;
+	S6Driver& driver_;
+	const std::atomic<bool>& recording_;
+	std::vector<S6Run> runs_;
+	std::atomic<std::size_t> count_{0};
+	std::atomic<bool> full_{false};
+	Stalls stalls_;
+};
+
+/// What S6 finds in one probe's runs against the driver's account.
+struct S6Findings {
+	std::size_t runs = 0;
+	std::size_t gaps = 0;      // consecutive runs more than one graph cycle apart
+	std::size_t missed = 0;    // graph cycles between them
+	std::size_t missedCut = 0; // of them, reported cut short
+	std::size_t silent = 0;    // of them, not reported cut short: a silent loss
+	std::size_t twice = 0;     // a run in the same or an earlier graph cycle than the last
+	std::size_t notWhole = 0;  // a position jump other than the missed cycles' frames
+	std::size_t recoverSeen = 0;
+	std::size_t xrunSeen = 0;
+	std::vector<std::uint32_t> offsets; // distinct clock.cycle - graph (mod 2^32)
+	std::string firstSilent, firstNotWhole;
+};
+
+S6Findings judgeS6(const S6Probe& probe, const S6Driver& driver) {
+	S6Findings found;
+	found.runs = probe.count();
+	for (std::size_t n = 0; n < found.runs; ++n) {
+		const S6Run& run = probe.run(n);
+		const auto offset = static_cast<std::uint32_t>(run.clockCycle - static_cast<std::uint32_t>(run.graph));
+		if (std::ranges::find(found.offsets, offset) == found.offsets.end()) found.offsets.push_back(offset);
+		if ((run.flags & SPA_IO_CLOCK_FLAG_XRUN_RECOVER) != 0) ++found.recoverSeen;
+		if (run.xrun != 0) ++found.xrunSeen;
+		if (n == 0) continue;
+		const S6Run& last = probe.run(n - 1);
+		if (run.graph <= last.graph) {
+			++found.twice;
+			continue;
+		}
+		const std::uint64_t missed = run.graph - last.graph - 1;
+		if (missed > 0) ++found.gaps;
+		found.missed += missed;
+		for (std::uint64_t g = last.graph + 1; g < run.graph; ++g) {
+			if (driver.cut(g)) {
+				++found.missedCut;
+				continue;
+			}
+			if (found.silent++ == 0)
+				found.firstSilent = "run " + std::to_string(n) + ": graph cycle " + std::to_string(g) + " of " +
+				                    std::to_string(last.graph) + ".." + std::to_string(run.graph) +
+				                    " not cut, completes " + std::to_string(driver.completes(g)) + ", recovered " +
+				                    std::to_string(driver.recovered(g) ? 1 : 0);
+		}
+		const auto jump =
+			static_cast<std::int64_t>(run.position) - static_cast<std::int64_t>(last.position + last.duration);
+		if (jump != static_cast<std::int64_t>(missed * last.duration) && found.notWhole++ == 0)
+			found.firstNotWhole = "run " + std::to_string(n) + ": jump " + std::to_string(jump) + " frames across " +
+			                      std::to_string(missed) + " missed cycles of " + std::to_string(last.duration) +
+			                      ", raw " + std::to_string(run.rawNs - last.rawNs) + " ns since the last";
+	}
+	return found;
+}
+
+/// Stalls at runs `first`, `first + every`, ..., cycling through `lengths` (in cycles), `count` of them.
+StallPlan s6Plan(std::size_t first, std::size_t every, std::size_t count, const std::vector<double>& lengths) {
+	std::vector<StallPlan::At> at;
+	for (std::size_t k = 0; k < count; ++k)
+		at.push_back({first + k * every, StallLength::cycles(lengths[k % lengths.size()])});
+	return StallPlan::at(std::move(at));
+}
+
 } // namespace
 
 TEST_CASE(
@@ -1614,4 +1852,253 @@ TEST_CASE("S3: the engine has one data loop, context.num-data-loops = 1, and blo
 	CHECK(dataThreads == std::vector<std::string>{theLoop}); // one data thread in the process, the blocks' loop's
 	CHECK(other.empty());                                    // no node names any other loop
 	CHECK(named.find("fpp.rtp") != std::string::npos);       // rtp-source names its loop itself
+}
+
+// S6 (docs/design/cycle-facts.md, "Found in S6"): what PipeWire 1.4.2 reports of every graph cycle, as the design's
+// DriverCuts and CycleAccount would read it.
+namespace {
+constexpr std::size_t kS6Cycles = 1 << 17; // graph cycles the listener keeps: 175 s at S2's block
+constexpr std::size_t kS6Runs = 1 << 16;   // runs each probe keeps
+constexpr std::uint64_t kS6Graph = 6000;   // graph cycles recorded at least (8 s at S2's block)
+} // namespace
+
+TEST_CASE("S6: every graph cycle a node misses is one the driver reported cut short, across stalls of 1.5 to 150 "
+          "cycles in each node of a chain and a sibling, beside a busy thread per core",
+          "[spike][s2][s6]") {
+	// u → m → d, and s beside them (the driver's follower only), at S2's block beside a busy thread per core. Each
+	// probe stalls the data thread at its own planned runs, 1.5 to 150 cycles: a stall in u or m cuts the cycle after it
+	// (docs/engine.md#the-one-data-loop-and-invokes) and longer ones make the driver's catch-up burst (its timer, armed
+	// on the last timeout plus a cycle, fires back to back); a stall in d, the last node, finishes the graph after the
+	// next timeout is ready, so node_ready finds the driver TRIGGERED and runs its recovery without reporting a cut. The
+	// host adds its own cuts. Per probe, between any two cycles it ran, every graph cycle it did not run must be one the
+	// driver reported cut short (`incomplete`): the design's `missedCut == missed`. Also gathered: clock.cycle against
+	// the listener's count, the position's jumps against the missed cycles' frames, and whether a follower ever reads
+	// a mark of the recovery (XRUN_RECOVER in clock.flags, clock.xrun).
+	auto engine = engineAt(kS2Block);
+	Waiter waiter(*engine);
+	Wiring wiring(*engine, waiter);
+	S6Driver driver(*engine, kS6Cycles);
+	std::atomic<bool> recording{false};
+	S6Probe upCode(waiter, driver, recording, kS6Runs,
+	               s6Plan(20, 61, 36, {1.5, 1.5, 2.5, 4.0, 10.0, 40.0, 1.5, 150.0, 1.5}));
+	S6Probe midCode(waiter, driver, recording, kS6Runs, s6Plan(40, 97, 16, {1.5, 3.0}));
+	S6Probe downCode(waiter, driver, recording, kS6Runs, s6Plan(30, 89, 16, {1.5, 2.5}));
+	S6Probe sideCode(waiter, driver, recording, kS6Runs, s6Plan(50, 131, 10, {1.5, 6.0}));
+	Probe up(*engine, waiter, "u", 0, 1, upCode);
+	Probe mid(*engine, waiter, "m", 1, 1, midCode);
+	Probe down(*engine, waiter, "d", 1, 0, downCode);
+	Probe side(*engine, waiter, "s", 0, 1, sideCode);
+	const struct Forget {
+		S6Driver& driver;
+		~Forget() { driver.forget(); } // before the probes go
+	} forget{driver};
+	REQUIRE(waiter.until([&] { return up.streaming() && mid.streaming() && down.streaming() && side.streaming(); }));
+	REQUIRE(wiring.link(waiter, {"u", "out.1"}, {"m", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"m", "out.1"}, {"d", "in.1"}));
+	const std::uint64_t settled = driver.started();
+	REQUIRE(waiter.until([&] { return driver.started() > settled + 16; }));
+
+	const std::array<const S6Probe*, 4> codes{&upCode, &midCode, &downCode, &sideCode};
+	const std::array<const char*, 4> names{"u", "m", "d", "s"};
+	std::optional<BusyCores> busy;
+	busy.emplace();
+	const std::uint64_t from = driver.started();
+	recording.store(true, std::memory_order_release);
+	const auto start = std::chrono::steady_clock::now();
+	const bool done = waiter.until(
+		[&] {
+			bool made = true, full = false;
+			for (const S6Probe* code : codes) {
+				made = made && code->stalls() >= code->planned();
+				full = full || code->full();
+			}
+			return (made && driver.started() >= from + kS6Graph) || full || driver.started() + 1000 >= kS6Cycles;
+		},
+		90s);
+	recording.store(false, std::memory_order_release);
+	const double seconds = millisecondsSince(start) / 1000.0;
+	const std::size_t busyThreads = busy->count();
+	busy.reset();
+	const std::uint64_t until = driver.started();
+	REQUIRE(waiter.until([&] { return driver.started() > until + 2; })); // every recorded cycle's cut is told
+	REQUIRE(done);
+	for (const S6Probe* code : codes) {
+		REQUIRE_FALSE(code->full());
+		REQUIRE(code->stalls() == code->planned());
+	}
+	REQUIRE(driver.started() + 2 < kS6Cycles);
+
+	// The driver's own account of every cycle recorded.
+	std::size_t cuts = 0, triggered = 0, notOnce = 0, cycleUnknown = 0;
+	std::vector<std::uint32_t> offsets;
+	for (std::uint64_t g = from + 1; g <= until; ++g) {
+		if (driver.cut(g)) ++cuts;
+		else if (driver.recovered(g)) ++triggered; // the TRIGGERED path: complete from the recovery, no cut
+		if (driver.completes(g) != 1) ++notOnce;
+		if (const auto cycle = driver.clockCycle(g)) {
+			const auto offset = static_cast<std::uint32_t>(*cycle - static_cast<std::uint32_t>(g));
+			if (std::ranges::find(offsets, offset) == offsets.end()) offsets.push_back(offset);
+		} else {
+			++cycleUnknown;
+		}
+	}
+	std::printf("S6: %" PRIu64 " graph cycles in %.1f s beside %zu busy threads: %zu reported cut short, %zu completed "
+	            "by the TRIGGERED recovery, %zu not completed exactly once; clock.cycle - the listener's count: %zu "
+	            "distinct (%u)\n",
+	            until - from, seconds, busyThreads, cuts, triggered, notOnce, offsets.size(),
+	            offsets.empty() ? 0U : offsets[0]);
+	CHECK(notOnce == 0);
+	CHECK(cycleUnknown == 0);
+	CHECK(offsets.size() == 1);
+	CHECK(cuts >= upCode.planned() + midCode.planned() + sideCode.planned());
+
+	for (std::size_t p = 0; p < codes.size(); ++p) {
+		const S6Findings found = judgeS6(*codes[p], driver);
+		std::printf(
+			"S6 %s: %zu runs, %zu gaps over %zu missed graph cycles, %zu of them cut, %zu silent; %zu runs not "
+			"after the last; %zu jumps not the missed cycles' frames; XRUN_RECOVER read in %zu runs, clock.xrun "
+			"set in %zu; clock.cycle - graph: %zu distinct (%u)\n",
+			names[p], found.runs, found.gaps, found.missed, found.missedCut, found.silent, found.twice, found.notWhole,
+			found.recoverSeen, found.xrunSeen, found.offsets.size(), found.offsets.empty() ? 0U : found.offsets[0]);
+		INFO("probe " << names[p] << ": first silent loss: " << found.firstSilent);
+		INFO("first jump not whole cycles: " << found.firstNotWhole);
+		CHECK(found.silent == 0);
+		CHECK(found.twice == 0);
+		CHECK(found.notWhole == 0);
+		CHECK(found.recoverSeen == 0); // a follower never runs inside the recovery: no mark to read
+		CHECK(found.xrunSeen == 0);
+		CHECK(found.offsets == offsets); // clock.cycle and the listener's count move together, a fixed offset apart
+	}
+}
+
+TEST_CASE("S6: a node taken out of the graph misses cycles the driver never cut, and the internal clock started again "
+          "re-anchors its position on the raw clock, a jump of any number of frames with no cycle missed",
+          "[spike][s6]") {
+	// Two ways a node stops hearing the clock without a stall. (a) Its pw_filter made inactive: the dummy driver keeps
+	// running (the inactive node's activation is INACTIVE, so node_ready skips it), and the node, active again, has
+	// missed every cycle started meanwhile, none of them cut, its position moved by exactly their frames: the design's
+	// `absent`. (b) Every node it drives gone: it stops (state IDLE), and started again node-driver.c's do_start clears
+	// last_time, so its first timeout puts the position on the raw clock (on_timeout: position = current_position)
+	// instead of moving it on by a cycle. The next node's first run is then the driver's next cycle by count, with the
+	// position moved by the raw time the clock stood still: the design's `reposition`, any number of frames.
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Registry registry(*engine, waiter);
+	S6Driver driver(*engine, 1 << 16);
+	driver.forget();             // probes come and go here: the listener never reads a probe's mapping of the clock
+	driver.wakeOnStart(&waiter); // (a) waits for cycles no probe runs
+	const std::atomic<bool> recording{true};
+	const auto rawNow = [] {
+		timespec now{};
+		clock_gettime(CLOCK_MONOTONIC_RAW, &now);
+		return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
+	};
+	const auto running = [&] { return registry.state("Dummy-Driver") == PW_NODE_STATE_RUNNING; };
+
+	// (a) inactive, three times.
+	{
+		S6Probe code(waiter, driver, recording, 1 << 14, StallPlan{});
+		Probe probe(*engine, waiter, "p", 0, 1, code);
+		REQUIRE(waiter.until([&] { return probe.streaming() && code.count() >= 16 && running(); }));
+		for (int round = 0; round < 3; ++round) {
+			const std::size_t before = code.count();
+			probe.setActive(false);
+			const std::uint64_t startedThen = driver.started();
+			REQUIRE(waiter.until([&] { return driver.started() >= startedThen + 64; })); // the driver runs on
+			const std::int64_t reactivatedNs = rawNow();
+			probe.setActive(true);
+			REQUIRE(waiter.until([&] { return code.count() >= before + 16; }));
+			std::size_t k = before;
+			while (k < code.count() && code.run(k).rawNs < reactivatedNs) ++k;
+			REQUIRE(k > 0);
+			REQUIRE(k < code.count());
+			const S6Run& last = code.run(k - 1);
+			const S6Run& next = code.run(k);
+			const std::uint64_t missed = next.graph - last.graph - 1;
+			std::uint64_t cut = 0;
+			for (std::uint64_t g = last.graph + 1; g < next.graph; ++g) cut += driver.cut(g) ? 1 : 0;
+			const auto jump =
+				static_cast<std::int64_t>(next.position) - static_cast<std::int64_t>(last.position + last.duration);
+			std::printf("S6 inactive %d: %" PRIu64 " cycles missed, %" PRIu64 " of them cut; jump %" PRId64
+			            " frames (%" PRId64 " blocks); clock.cycle +%u\n",
+			            round, missed, cut, jump, jump / static_cast<std::int64_t>(kBlock),
+			            next.clockCycle - last.clockCycle);
+			INFO("inactive round " << round);
+			CHECK(missed >= 64);
+			CHECK(cut == 0);
+			CHECK(jump == static_cast<std::int64_t>(missed * last.duration));
+			CHECK(next.clockCycle - last.clockCycle == missed + 1);
+		}
+	}
+
+	// (b) gone, then a new node, three times; each new node's first run against the last node's last.
+	std::optional<S6Run> last;
+	for (int round = 0; round <= 3; ++round) {
+		auto code = std::make_unique<S6Probe>(waiter, driver, recording, 1 << 14, StallPlan{});
+		auto probe = std::make_unique<Probe>(*engine, waiter, "p", 0, 1, *code);
+		REQUIRE(waiter.until([&] { return probe->streaming() && code->count() >= 16 && running(); }));
+		if (last) {
+			const S6Run& next = code->run(0);
+			const std::uint64_t missed = next.graph - last->graph - 1;
+			const auto jump =
+				static_cast<std::int64_t>(next.position) - static_cast<std::int64_t>(last->position + last->duration);
+			const std::int64_t rawFrames = (next.rawNs - last->rawNs) * kRate / 1'000'000'000;
+			std::printf("S6 restart %d: %" PRIu64 " cycles started between the two nodes; jump %" PRId64
+			            " frames (%" PRId64 " blocks and %" PRId64 " frames), raw time between the runs %" PRId64
+			            " frames; clock.cycle +%u\n",
+			            round, missed, jump, jump / static_cast<std::int64_t>(kBlock),
+			            jump % static_cast<std::int64_t>(kBlock), rawFrames, next.clockCycle - last->clockCycle);
+			INFO("restart round " << round);
+			CHECK(missed == 0);
+			CHECK(next.clockCycle == last->clockCycle + 1);
+			CHECK(std::abs(jump + static_cast<std::int64_t>(last->duration) - rawFrames) <=
+			      static_cast<std::int64_t>(kBlock));
+		}
+		probe.reset();
+		const bool stopped = waiter.until([&] { return registry.state("Dummy-Driver") != PW_NODE_STATE_RUNNING; });
+		INFO("round " << round);
+		REQUIRE(stopped);
+		last = code->run(code->count() - 1); // its very last run, now none can follow
+	}
+}
+
+TEST_CASE("S6: with node-driver.c's default resync.ms a stall past 10 ms moves the position by a jump that is not "
+          "whole cycles",
+          "[spike][s6]") {
+	// engine.conf without its resync.ms (docs/engine.md#the-internal-clock): what the sendspin clock test ran on when
+	// it saw jumps of 1127, 1156 and 1189 frames (5bf75b4d1e, an hour before c1bb9d246b set resync.ms). Past 10 ms of
+	// error the driver puts the position on the raw clock, so a 30 ms stall's jump is the raw time it lost, not whole
+	// cycles, and the catch-up burst after it steps the position back at the next reset.
+	ear::test::TempFolder folder("s6-resync");
+	std::string conf;
+	{
+		std::ifstream in(EAR_ENGINE_CONF);
+		for (std::string line; std::getline(in, line);)
+			if (line.find("resync.ms") == std::string::npos) conf += line + "\n";
+	}
+	const std::filesystem::path path = folder.path() / "engine.conf";
+	std::ofstream(path) << conf;
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"})
+		unsetenv(name);
+	auto made = Engine::create(EngineSettings{path.string(), kRate, kBlock});
+	if (!made) FAIL("Engine::create: " << made.error().detail);
+	auto engine = std::move(*made);
+	Waiter waiter(*engine);
+	S6Driver driver(*engine, 1 << 16);
+	driver.forget(); // it needs only the listener's count, never the clock's mapping
+	const std::atomic<bool> recording{true};
+	S6Probe code(
+		waiter, driver, recording, 1 << 14,
+		StallPlan::at({{100, StallLength::of(30ms)}, {300, StallLength::of(30ms)}, {500, StallLength::of(30ms)}}));
+	Probe probe(*engine, waiter, "p", 0, 1, code);
+	REQUIRE(waiter.until([&] { return code.stalls() == 3 && code.count() >= 700; }, 30s));
+	const S6Findings found = judgeS6(code, driver);
+	std::size_t back = 0;
+	for (std::size_t n = 1; n < found.runs; ++n) back += code.run(n).position <= code.run(n - 1).position ? 1 : 0;
+	std::printf("S6 default resync.ms: %zu runs, %zu jumps not the missed cycles' frames (first: %s), %zu steps back, "
+	            "%zu missed graph cycles, %zu silent\n",
+	            found.runs, found.notWhole, found.firstNotWhole.c_str(), back, found.missed, found.silent);
+	CHECK(found.notWhole > 0);
+	CHECK(found.silent == 0);
 }

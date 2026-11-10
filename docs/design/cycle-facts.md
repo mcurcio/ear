@@ -1,15 +1,15 @@
 # Cycle facts, one test judge and a sample-rate type
 
 Status: designed to module level (2026-11-10), not built; Q-CF1 and Q-CF2 answered, diagnostics counters added
-(section 8). Its steps (section 9) follow `root-classes.md`'s and come
-before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
+(section 8); spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked). Its steps
+(section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
 `docs/architecture.md#the-callback-boundary` and `docs/writing-a-node-type.md#sources`; this page cites them and says
 only what changes. When it is built it is deleted, and what lasts moves into those pages.
 
 [V] = verified in the code or PipeWire 1.4.2's source named, as of this page's writing; [U] = unverified, with the step
-that checks it (most are spike S6's, section 9).
+that checks it. S6 has checked every [U] that was its own (section 9.1).
 
 ## 1. The owner's words that bind this page
 
@@ -121,8 +121,9 @@ and still `lastCut` (a head of a chain whose tail lost the last cycle).
 cycle and moves the position by one block (`node-driver.c` `on_timeout`: `position = clock->position +
 clock->duration`, `resync.ms` beyond any stall) [V], so a forward jump of exactly the missed cycles is time lost. The
 sendspin clock test saw jumps of 1127, 1156 and 1189 frames on an idle host (`clock_test.cpp`'s comment) that this
-model calls `reposition`; S6 finds what made them (a driver restart's `last_time = 0` re-anchors the position on raw
-time) before anything relies on the split [U].
+model calls `reposition`: S6 found them made by node-driver.c's default `resync.ms`, which `engine.conf` did not yet
+override when they were seen, and reproduced them; with the shipped setting every jump of a running block is whole
+missed cycles (section 9.1) [V].
 
 ### 4.2 Where they are produced: one owner, on the data loop
 
@@ -142,9 +143,13 @@ time) before anything relies on the split [U].
   and leaked on a wedged loop, as every such call in the boundary is.
 - `PIPEWIRE_DEBUG`'s own xrun log is untouched; `DriverCuts` adds nothing to the data thread but two atomic stores.
 
-Why its own count and not `clock.cycle`: `clock.cycle` is a `uint32_t` in the driver's position, which a filter's
-`process` reads too [U], and S6 checks it against `started_`; the incomplete event carries no cycle number, so the listener must count cycles
+Why its own count and not `clock.cycle`: the incomplete event carries no cycle number, so the listener must count cycles
 itself to say which was cut, and a block naming its cycle by the same counter makes the two agree by construction.
+`clock.cycle` (a `uint32_t` in the driver's position, which a filter's `process` reads too) moves with it exactly: S6
+found it the listener's count plus a fixed offset in every cycle of every probe, and 1.4.2 writes it in one place only,
+`node_ready`'s `clock.cycle++` just before `start` (`impl-node.c`), never resetting it [V]. The listener cannot read
+`clock.cycle` itself: the server side's position is private to `impl-node.c`, and a filter's mapping of it goes away
+with the filter (S6 crashed reading it after its probes were destroyed), so `DriverCuts` keeps its own count.
 
 **`CycleAccount`** (`ear_core`, pure) replaces `CycleContinuity`: given one `DriverTick` per cycle (driver id, the
 listener's cycle number, position, frames, raw start) and a `CutRecord`, it returns that cycle's `CycleFacts` and
@@ -614,8 +619,8 @@ every count of a node on that node (its `counters`, its companions' entries, its
 handoff's drops stay in `node.gone`'s `droppedFrames` until 3c retires handoffs.
 
 `repositions` and `driverChanges` are per node because each block sees its own; on the tracking dummy both stay zero
-(spike S6 says whether the 1127-frame jumps come from a driver restart, which would count here), and a non-zero value is
-a finding, not noise.
+(S6, section 9.1: the 1127-frame jumps were the default `resync.ms`'s, and the driver restarts only when it drives no
+node, so no running block sees a restart), and a non-zero value is a finding, not noise.
 
 `overruns` measures the block's own work, from its entry to its end, not from the cycle's start: a late wake is the
 host's and shows as the graph's `cutCycles`, not as the node's fault. It is the count behind the code
@@ -785,7 +790,7 @@ R5d).
 
 | Step | What | Deletes | Behaviour |
 |---|---|---|---|
-| **S6** | Spike (`spikes_test.cpp`, test only): on 1.4.2, with induced stalls and a busy thread per core, (a) every cycle a block misses is reported `incomplete` before the next `start`; (b) `clock.cycle` against the listener's count; (c) jumps are whole missed cycles on the dummy, and what makes the others (the 1127-frame jumps: a driver restart's re-anchoring?); (d) the `TRIGGERED` recovery path in `node_ready` loses no follower cycle. Findings go into this page | nothing | none |
+| **S6** | **Done** (9.1). Spike (`spikes_test.cpp`, test only): on 1.4.2, with induced stalls and a busy thread per core, (a) every cycle a block misses is reported `incomplete` before the next `start`; (b) `clock.cycle` against the listener's count; (c) jumps are whole missed cycles on the dummy, and what makes the others (the 1127-frame jumps: a driver restart's re-anchoring?); (d) the `TRIGGERED` recovery path in `node_ready` loses no follower cycle. Findings go into this page | nothing | none |
 | **C1** | `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
 | **C2** | `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
@@ -807,6 +812,78 @@ of each other and may land at any point; C7 before C2 would let C2 add its liste
 text guard. D1 follows C2 and C4b (it reads the facts and `absent`); D2 follows D1, D3 follows D2. C1 to C4 come before 3c, which
 moves `sendspin` onto a source, so C4a's rule moves into `SourceRing` once, already on facts; the D steps may land
 before or after 3c (3c's library log adds no framework counter: re-locks are status, 8.1).
+
+### 9.1 Found in S6
+
+Three test cases in `spikes_test.cpp` (tag `[s6]`; the first also `[s2]`, so serial), kept as regressions: they read
+PipeWire through a test-only realtime listener on the internal clock (`S6Driver`, the shape `DriverCuts` will have,
+plus the `complete` event and the driver's clock flags) and bare probes (`probes.hpp`, which gained `setActive`), with
+no product change. PipeWire 1.4.2's `impl-node.c` (`node_ready`, `process_node`, `trigger_targets`), `private.h`
+(`trigger_target_v1`, the activation states) and `node-driver.c` (`on_timeout`, `do_start`) were read beside them.
+
+- **(a) Every cycle a node misses is reported cut short; no silent loss was found.** The chain u → m → d and a sibling s
+  at a 64-frame block beside a busy thread per core, each probe stalling the data thread at its own planned runs (1.5
+  to 150 cycles: 78 stalls a run), and the host's own stalls with them. Over 30 runs beside `yes` × 5 on 4 cores:
+  180,044 graph cycles, 40,397 cut short, and 119,573 cycles missed by some probe between two it ran, **every one
+  reported `incomplete`**; no probe ran a cycle twice or out of order. Idle runs agree. Why it holds, from the source:
+  every follower has the driver as a target (`to_driver_peer`) and the driver counts them (`state->pending`), so the
+  driver's activation is `FINISHED` only when every non-async follower finished the cycle; `node_ready` emits
+  `incomplete` for any other state but `TRIGGERED`. The paths the design worried about:
+  - *The `TRIGGERED` path* (the graph's last node finished, but the driver's own wake had not run when the next timeout
+    came): no `incomplete`, and correctly so, since every follower finished. S6 makes it on purpose by stalling d, the
+    last node: 606 such cycles over the 30 runs (about 20 a run, d's 16 planned and the host's), none missed by any
+    probe. Every cycle got exactly one `complete` (a cut one from the recovery, with `XRUN_RECOVER` set).
+  - *The driver's timer firing twice before the data thread wakes*: it cannot. The timer is a one-shot absolute
+    timerfd (`set_timeout`, `SPA_FD_TIMER_ABSTIME`), re-armed at the last deadline plus a cycle, and `on_timeout`
+    ignores the expiration count: one timeout is one `node_ready`, one `start` and one block of position. After a stall
+    the deadline is in the past, so the timeouts fire back to back (the catch-up burst); during it the timer is ready
+    before the second node of a chain is, so most burst cycles are cut after the head, and each is reported (S6's 150-
+    cycle stalls).
+  - *A follower still running when the next cycle starts*: not on one data loop. `node_ready` runs on the same thread,
+    so it waits for the follower's `process` to return; a follower triggered but not yet woken is reset to
+    `NOT_TRIGGERED` (counted in its own `xrun_count`), its stale eventfd later finds it not triggered and runs nothing,
+    and the driver, not `FINISHED`, reports the cycle cut.
+  - *A cut cycle a node still ran*: the driver's cut means some node did not finish, not that every node missed it (a
+    run counted 1,148 cuts and the chain's tail missed 1,146 of them). `missed` counts only what the block missed, and
+    `lastCut` (4.1) is what tells nodes after it may not have heard: no change.
+- **The inside-ports test's rare case** (`root-classes.md` 5.5: an unclean recorder cycle across graph cycles not
+  all cut, once in about 240 loaded runs) was not reproduced: the test passed 400 runs of 400 beside `yes` × 5 on 4 cores,
+  and S6's probes, the same shape of chain, never lost a cycle silently. Its failure predates the message that names
+  each cycle's cut and completes, so its cause is not known; nothing S6 saw points at PipeWire. If it recurs, the
+  message now says what the driver saw.
+- **(b) `clock.cycle` is the listener's count plus a fixed offset**, in every cycle the listener saw start and every run
+  of every probe (offset 0 here: the listener was made before the driver's first cycle). Not diverging, not offset by
+  a cut, a burst or the `TRIGGERED` path. It wraps at 2^32 cycles (66 days at 64 frames, 265 at 256). The design's
+  choice of the listener's own count stands (4.2 says why it must).
+- **(c) What makes a jump that is not whole cycles.** With `engine.conf`'s `resync.ms`, none on a running block: the 30
+  loaded runs' 119,573 missed cycles each moved the position by exactly its frames, as `on_timeout` adds
+  `clock.duration` per timeout. Two causes exist, and neither reaches a running block:
+  - *The default `resync.ms`* (10 ms). The sendspin clock test's comment with 1127, 1156 and 1189 frames came in
+    5bf75b4d1e, an hour before c1bb9d246b set `resync.ms` beyond any stall. S6 runs `engine.conf` without the setting:
+    each 30 ms stall makes a jump of the raw time lost (1,450 to 1,460 frames), and the reset after the catch-up burst
+    steps the position back (3 times in 3 stalls).
+  - *The driver started again.* The dummy stops when it drives no node (all gone: state `IDLE`), and `do_start`
+    clears `last_time`, so its first timeout puts the position on the raw clock (`position = current_position`). The
+    next node's first run is the next cycle by count (none missed) with the position moved by the raw time between,
+    which is less than a cycle when the gap is short: S6 measured jumps of -138 to -151 frames, a step back. A block
+    keeps the driver running (every block is always-processing), so only a block made after every other one went sees
+    it, and its first cycle is `start` anyway. `reposition` keeps its place for it.
+  - *A node made inactive* (`pw_filter_set_active(false)`) does **not** stop the driver: node_ready skips an
+    `INACTIVE` activation, the driver runs on, and the node, active again, missed every cycle started meanwhile, none of
+    them cut, its position moved by exactly their frames: the design's `absent`, confirmed as a real shape (a paused
+    block is the product's case of it).
+- **(d) No mark a block can read on a lost cycle, reliable or not.** `SPA_IO_CLOCK_FLAG_XRUN_RECOVER` is set on the
+  driver's clock only around the driver's own `process_node` in `node_ready`'s recovery and cleared before any follower
+  is triggered: no probe ever read it in any run. `clock.xrun` stays 0 (only an ALSA driver sets it), and the
+  `xrun_count` node_ready adds is on the late follower's own activation, which a filter does not see. What a block can
+  read is `clock.cycle` and `clock.position`, which say that cycles were missed, not whether they were cut. So Q-CF3's
+  option (b) does not exist on 1.4.2; since S6 found no silent loss, Q-CF3 is not asked (section 11).
+
+**What changes in this design:** nothing in its interfaces. `CycleAccount`'s causes stand as 4.1 has them (`catchUp`
+and `absent` both seen as designed; `reposition` only from a restart or the default `resync.ms`, so a non-zero
+`repositions` counter is a finding); `DriverCuts` needs only `start` and `incomplete`, as 4.2 says, and must not read
+the clock through a filter's mapping (above). Its listener should be made before the first block, as 4.2 already
+orders, so blocks' first cycles have numbers.
 
 ## 10. Decided here (technical)
 
@@ -830,18 +907,19 @@ to that node beyond it), as a recommendation he can still overturn.
 **Q-CF2 (answered, 2026-11-10).** After a stall longer than a node's buffer, should what ear reports as played keep in
 step with the clock? The owner: keep in step (section 4.4).
 
-**Q-CF3. If PipeWire turns out to lose a cycle without reporting it, what should the tests do?**
+**Q-CF3. If PipeWire turns out to lose a cycle without reporting it, what should the tests do?** *Not asked: S6 found
+no such path (9.1). Kept for the day a PipeWire bump or a failure shows one; option (b) has no mark to read on 1.4.2.*
 
 *Background.* The judge excuses only cycles PipeWire's driver says it cut. Spike S6 checks that PipeWire 1.4.2 always
 says so. If it finds a path where a cycle goes missing silently, there are three ways on.
 
-*Scenario.* S6 finds that, when the driver's timer fires twice before the audio thread wakes, one cycle is lost with no
-report, on loaded CI runners about once a minute.
+*Scenario* (hypothetical; S6 found the opposite: the timer cannot fire twice into one cycle, 9.1). A cycle is lost with
+no report, on loaded CI runners about once a minute.
 
 *Options.* (a) Carry a small patch to PipeWire: exact, but ear would build PipeWire itself instead of using Debian's
 package (a longer image build, one more pin to bump). (b) Excuse such a cycle only where PipeWire leaves a mark a block can
 read on it (S6 looks for one, such as the clock's recovery flag), counted and reported: nearly as strict, no patch,
-and it holds only if the mark is reliable. (c) Report it upstream and let those tests fail on loaded runners until it is fixed.
+and it holds only if the mark is reliable (S6: none exists on 1.4.2). (c) Report it upstream and let those tests fail on loaded runners until it is fixed.
 
 *Recommendation: (b) if S6 shows the mark is reliable, else (a)*, with the upstream report either way. Only asked if
 S6 finds such a path.

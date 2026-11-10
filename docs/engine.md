@@ -283,6 +283,14 @@ stall). Without the reset the driver catches up on its own timer: the blocks run
 timeout of the burst, each cycle they run skips one block, the position never steps back, and the
 phase to the raw clock is kept within a frame after stalls of up to a few seconds.
 
+**When it stops.** The dummy stops (state `IDLE`) only when it drives no node at all; a node made
+inactive (`pw_filter_set_active(false)`) is skipped and the driver runs on, so that node, active
+again, has missed cycles none of which were cut, its position moved by exactly their frames. Started
+again, `do_start` clears `last_time`, so the first timeout puts the position on the raw clock instead
+of moving it on by a cycle: no cycle missed, the position moved by the raw time it stood still, which
+is less than a cycle (a step back) when the gap is short. Every block is always-processing, so the
+driver never restarts under a running block (S6).
+
 **The limit.** The catch-up burst after any pause is inherent to `node-driver.c` whatever
 `resync.ms` is (about 187 timeouts per second of pause at 48000/256), and each feeds the loop its
 clamped 1 ms error, so a pause of tens of seconds or more winds it up and slews the graph by 0.1 to
@@ -737,6 +745,16 @@ Verified by `spikes_test.cpp` (S1 to S3, and S5's part B) against 1.4.2's `loop.
   in their info; `pw_filter`s name no loop.
 - After a 2 s data-loop stall the driver catches up as [above](#the-internal-clock); the bounds treat
   it as no wedge while the loop answers invokes.
+- **The driver reports every cycle a node misses** (S6). Every follower is a target of the driver,
+  which counts them, so a cycle any node has not finished when the next timeout comes is reported
+  `incomplete` in that `node_ready`, before the next `start` (`impl-node.c`). Over 30 runs of a chain
+  and a sibling stalling at planned cycles beside a busy thread per core (180,044 cycles, 40,397 cut),
+  every cycle a node missed between two it ran had been reported; none silently. The `TRIGGERED`
+  recovery (the last node finished, the driver's own wake not yet run) reports nothing and loses
+  nothing; every cycle is told `complete` once. A timeout is one cycle (a one-shot absolute timer,
+  its expiration count ignored), and `clock.cycle` moves with every `start`, never reset. No follower
+  can read a mark of the recovery: `SPA_IO_CLOCK_FLAG_XRUN_RECOVER` is cleared before any follower is
+  triggered, and `clock.xrun` stays 0 on the dummy.
 
 **Data-loop callbacks never throw.** A filter's `process` and every invoke that runs on the data loop
 (a block's requests and its blocking flush, the denormal flush, the scheduling read) are registered

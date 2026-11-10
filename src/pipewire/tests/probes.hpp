@@ -62,6 +62,9 @@ public:
 	pw_loop* dataLoop() const { return pw_filter_get_data_loop(filter_); }
 	/// The probe's engine node's global id (pw_filter_get_node_id), once bound.
 	std::uint32_t nodeId() const { return pw_filter_get_node_id(filter_); }
+	/// Takes the probe out of the graph (false) or puts it back (true): pw_filter_set_active. S6 stops the internal
+	/// clock this way, when the probe is the only node it drives.
+	void setActive(bool active) { REQUIRE(pw_filter_set_active(filter_, active) >= 0); }
 
 private:
 	void* addPort(pw_direction direction, const char* bank, std::size_t member) {
