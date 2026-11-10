@@ -278,6 +278,13 @@ What R3 built differs from 3.3 and 3.4 here; `docs/engine.md#dating` describes i
 - **A name `<chrono>` exposed.** `latency.hpp` now includes `<chrono>`, which in libstdc++ brings `<iomanip>`, and
   `graph_file_model.cpp`'s own `quoted(std::string_view)` called with a `std::string` then found `std::quoted` by
   argument-dependent lookup and stopped compiling; it is `knoblyQuoted` now.
+- **`Played`'s cross-thread test judged by the host (review).** `source_ring_test.cpp`'s "Played is read whole on
+  another thread while cycles publish it" failed once under another build's load. Not a torn read: `Played` is a
+  sequence lock over atomics, the writer's release fence before its stores paired with the reader's acquire fence
+  after its loads, and with nothing downstream every whole value holds `heardRawNs == totalFrames` frames exactly, so
+  a mixed pair cannot pass unseen. What the host decided was whether the reader ran at all: 20,000 cycles take
+  milliseconds, so a reader not yet scheduled made `reads > 0` fail. The cycles now start once the reader has read and
+  go on until it has read 1,000 times more while they publish, a deadline only failing the test.
 - **`sendspin`'s capture still ignores its upstream** (3.1): `ToServer` passes no upstream to `enteredRawNs`, and
   `docs/node-types.md#clock` now says so; 3c's sink brings it (`node-primitives.md` 6.5 gained the line).
 

@@ -4,6 +4,7 @@
 // drop, Played and its dating, a closed ring, positions past 2^32, and Played read whole from another thread.
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <span>
@@ -371,16 +372,27 @@ TEST_CASE("Played is read whole on another thread while cycles publish it", "[so
 			reads.fetch_add(1, std::memory_order_relaxed);
 		}
 	});
+	// Gated on the reader, never on how the host schedules it: cycles start once it has read, and go on (at least
+	// 20,000) until it has read 1,000 times more while they publish. A deadline only fails the test.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	const auto overdue = [&] { return std::chrono::steady_clock::now() > deadline; };
+	while (reads.load(std::memory_order_relaxed) == 0 && !overdue()) std::this_thread::yield();
+	const std::uint64_t readsBefore = reads.load(std::memory_order_relaxed);
 	Bank bank(1, 16);
 	std::uint64_t position = 0;
-	for (int round = 0; round < 20'000; ++round) {
+	bool late = readsBefore == 0;
+	for (int round = 0; !late && (round < 20'000 || reads.load(std::memory_order_relaxed) - readsBefore < 1'000);
+	     ++round) {
 		ring.offer(stream(position, 16), 16);
 		ring.play(bank.view(), cycleAt(position, 16));
 		position += 16;
+		if (round % 1024 == 0) late = overdue();
 	}
 	done.store(true, std::memory_order_release);
 	reader.join();
-	CHECK(reads.load() > 0);
+	INFO("the reader read " << readsBefore << " times before the cycles and " << reads.load() - readsBefore
+	                        << " while they published");
+	REQUIRE_FALSE(late);
 	CHECK(torn.load() == 0);
 	CHECK(ring.played().totalFrames == position);
 }
