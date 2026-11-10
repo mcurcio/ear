@@ -4,6 +4,7 @@
 // FrameClock's units and its two dating rules. What must not compile is in compile_fail/latency_bad.cpp.
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -209,6 +210,75 @@ TEST_CASE("FrameClock gives what each site's one division gave", "[latency]") {
 			REQUIRE(clock.ns(frames) == frames * 1'000'000'000 / std::int64_t{rate});
 		for (std::int64_t ms = 0; ms <= 2000; ++ms)
 			REQUIRE(clock.frames(std::chrono::milliseconds{ms}) == ms * rate / 1000);
+	}
+}
+
+namespace {
+
+using Wide = __int128;
+constexpr Wide nsPerSecond = 1'000'000'000;
+constexpr Wide int64Max = std::numeric_limits<std::int64_t>::max();
+constexpr Wide int64Min = std::numeric_limits<std::int64_t>::min();
+
+// Every rate a graph may run at, the real ones and the awkward small ones (1 Hz: whole seconds; 3 and 7 Hz: thirds and
+// sevenths of a second, which no ns count holds exactly).
+constexpr std::uint32_t oracleRates[] = {1,     2,     3,     7,      8000,   11025,  16000,  22050,  32000, 44100,
+                                         48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000};
+
+bool fits(Wide value) { return value >= int64Min && value <= int64Max; }
+
+// The counts where a conversion can go wrong: zero, one frame either way, a whole number of seconds and one frame
+// either side of it, where frames * 1e9 leaves int64 (about 9.2e9), and the largest count whose result still fits.
+std::vector<Wide> edgeCounts(std::uint32_t rate, Wide perSecond, Wide largest) {
+	std::vector<Wide> counts{0, 1, -1, largest, largest - 1, -largest, -largest + 1};
+	for (const Wide k : {Wide{1}, Wide{2}, Wide{1000}, Wide{86'400}, Wide{86'400} * 365})
+		for (const Wide d : {Wide{-1}, Wide{0}, Wide{1}}) {
+			counts.push_back(perSecond * k + d);
+			counts.push_back(-(perSecond * k + d));
+		}
+	for (const Wide around :
+	     {int64Max / nsPerSecond, int64Max / nsPerSecond + 1, int64Max / Wide{rate}, int64Max / Wide{rate} + 1})
+		for (const Wide d : {Wide{-1}, Wide{0}, Wide{1}}) {
+			counts.push_back(around + d);
+			counts.push_back(-(around + d));
+		}
+	return counts;
+}
+
+} // namespace
+
+// The exact quotient, truncated toward zero, worked out in 128 bits (where no count here overflows) against FrameClock
+// in 64: ns(frames) for every frame count whose ns fit int64, and frames(duration) for every duration that is an
+// int64, including those past int64_max / rate where ns * rate would overflow.
+TEST_CASE("FrameClock agrees with the exact quotient at every rate and every edge count", "[latency]") {
+	for (const std::uint32_t rate : oracleRates) {
+		INFO("at " << rate << " Hz");
+		const FrameClock clock(rate);
+		// ns(frames): the largest frame count whose time fits is int64_max * rate / 1e9.
+		for (const Wide frames : edgeCounts(rate, rate, int64Max * Wide{rate} / nsPerSecond)) {
+			const Wide exact = frames * nsPerSecond / Wide{rate};
+			if (!fits(frames) || !fits(exact)) continue;
+			INFO("frames " << static_cast<std::int64_t>(frames));
+			REQUIRE(clock.ns(static_cast<std::int64_t>(frames)) == static_cast<std::int64_t>(exact));
+		}
+		// frames(duration): every int64 duration fits once converted, so int64_max itself is an edge.
+		for (const Wide ns : edgeCounts(rate, nsPerSecond, int64Max)) {
+			if (!fits(ns)) continue;
+			const Wide exact = ns * Wide{rate} / nsPerSecond;
+			INFO("ns " << static_cast<std::int64_t>(ns));
+			REQUIRE(clock.frames(std::chrono::nanoseconds{static_cast<std::int64_t>(ns)}) ==
+			        static_cast<std::int64_t>(exact));
+		}
+		// Negative and sub-millisecond durations: a frame's length either side, and a millisecond's.
+		const Wide frameNs = nsPerSecond / Wide{rate};
+		for (const Wide ns :
+		     {Wide{1}, Wide{999'999}, Wide{1'000'000}, frameNs - 1, frameNs, frameNs + 1, 2 * frameNs + 1})
+			for (const Wide sign : {Wide{1}, Wide{-1}}) {
+				const Wide signedNs = sign * ns;
+				INFO("ns " << static_cast<std::int64_t>(signedNs));
+				REQUIRE(clock.frames(std::chrono::nanoseconds{static_cast<std::int64_t>(signedNs)}) ==
+				        static_cast<std::int64_t>(signedNs * Wide{rate} / nsPerSecond));
+			}
 	}
 }
 

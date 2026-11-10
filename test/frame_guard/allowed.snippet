@@ -1,0 +1,18 @@
+// Look-alikes the guard lets through: a dereference, comparisons, calls, other names, comments and strings,
+// and the clock-unit conversions that carry no rate.
+streamAsked = *stream.sample_rate == format.rate && channels == 2;
+const FrameClock clock(format.rate);
+const auto fade = std::max(static_cast<std::uint32_t>(clock.frames(std::chrono::milliseconds{5})), 1U);
+const auto window = std::max(levelWindowFrames(format.rate), 1U);
+const double drift = cycle.rateDiff * 2.0;
+const auto values = generate * iterate / separate;
+timespec value{static_cast<time_t>(ns / 1'000'000'000), static_cast<long>(ns % 1'000'000'000)};
+const std::int64_t now = static_cast<std::int64_t>(t.tv_sec) * 1'000'000'000 + t.tv_nsec;
+const std::int64_t ms = ns / 1'000'000;
+const auto text = "audio.rate = 48000 * 2 / rate";
+// frames * 1e9 / rate, in a comment
+/* rate * 5 / 1000, in a block comment */
+/* a block comment
+   rate * 5 / 1000 on its second line */
+const auto rate = std::to_string(format.rate);
+raw.rate = rate_;

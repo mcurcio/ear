@@ -544,16 +544,17 @@ graph's rate; nothing else in ear multiplies or divides by a rate to get one fro
   dated from its newest anchor with no upstream yet (its `to` bank is not a sink's, so the capture
   latency a card adds is not counted yet: [node-types.md](node-types.md#clock)).
 
-The sites: a sink chunk's split (`ThreadSink` advances both start times by `ns(done)`), `SourceRing`
-(`Played` and its 5 ms fades), `sendspin` (its progress, its capture's stamps, its feed's 40 ms floor,
-the 500 ms handoff, the 100 ms pieces and the lead it reports, rounded up to whole ms), the block's
-and the type harness's 5 ms fade and the harness's clock (its position as both start times), an RTP
-receiver's buffer (`latencyMs` as frames) and `file`'s 2 s ring. Two conversions are not frames
-and time at the graph's rate and stay where they are: a peer's latency in ns at the port
-(`latency_spa.hpp`, rounded to the nearest frame, [above](#latency-per-bank-pair)) and the level
-window (`levelWindowFrames`, a stated display rate rounded up, [below](#levels)). Every site's case
-is a row of `FrameClock`'s tables in `ear_core_tests` (`latency_test.cpp`), with one test that it
-gives what each site's own division gave wherever that did not overflow.
+The rule is a guard, not a list: the frame guard (`test/frame_guard.cmake`, the CTest
+`ear_frames_through_frame_clock`) refuses any line in `src/` outside `latency.hpp` and
+`latency.cpp` where a rate (an identifier spelled `rate`, `…_rate`, `…Rate`, `frequency`,
+`…_frequency` or `…Frequency`) is an operand of `*`, `/` or `%`; its header says what it cannot see
+(a rate under another name, a literal rate). Two conversions are not frames and time at the
+graph's rate, and the guard names them as its only exceptions: a peer's latency in PipeWire's units
+converted at the port (`latency_spa.hpp`, rounded to the nearest frame,
+[above](#latency-per-bank-pair)) and the level window (`levels.cpp`'s `levelWindowFrames`, a stated
+display rate rounded up, [below](#levels)). `ear_core_tests` checks `FrameClock` against the exact
+quotient worked out in 128 bits, at every rate from 1 Hz to 768 kHz and at each count where a
+conversion can go wrong ([testing.md](testing.md#what-each-test-program-proves)).
 
 ## Engine companions
 

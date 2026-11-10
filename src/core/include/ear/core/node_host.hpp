@@ -163,8 +163,9 @@ public:
 	virtual void drive(DriveRequest request, std::move_only_function<void(std::uint64_t taken)> done) = 0;
 	/// Main thread; returns at once. From the next cycle every faded output ramps linearly to zero over 5 ms
 	/// (FrameClock::frames, at least 1 frame) and stays there, the code still running; `done()` runs on the main loop
-	/// once a cycle ended at zero (a cycle too large to run counts as one). A block that is not processing (not STREAMING, or no data loop)
-	/// completes it by signal, never inline, and so does a block that leaves STREAMING before the fade ended.
+	/// once a cycle ended at zero (a cycle too large to run counts as one). A block that is not processing (not
+	/// STREAMING, or no data loop) completes it by signal, never inline, and so does a block that leaves STREAMING
+	/// before the fade ended.
 	virtual void fadeOut(std::move_only_function<void()> done) = 0;
 	/// Main thread: runs every `done` whose request the data loop already completed, as the block's completion event
 	/// would. A caller calls it before judging any bound, so a main loop that stalled never mistakes a

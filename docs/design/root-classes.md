@@ -245,17 +245,14 @@ What R2 built differs from 3.3 and 3.4 here; `docs/engine.md#latency-per-bank-pa
 
 What R3 built differs from 3.3 and 3.4 here; `docs/engine.md#dating` describes it.
 
-- **The class was wider than dating.** Besides 3.4's three sites (`handoffs.cpp`'s `framesNs`, `SourceRing`'s
-  `Played`, `SendspinCode`'s progress) and `ToServer`'s stamp, eight places turned a duration into frames or frames
-  into time by hand, each with its own division: the block's, `SourceRing`'s and the type harness's 5 ms fade
-  (`rate * 5 / 1000`, three copies), the harness's clock (`position * 1e9 / rate` for both start times and `nextNs`),
-  `sendspin`'s feed floor (`rate * 40 / 1000`), its handoff (`rate / 2`), its pieces (`rate / 10`) and its reported
-  lead (`(frames * 1000 + rate - 1) / rate`, ms rounded up), `file`'s ring (`ringSeconds * rate`) and an RTP
-  receiver's buffer (`latencyMs * rate / 1000`, 3.6's "kept"). Each now goes through `FrameClock`, so 3.2's "no other
-  file divides by `1'000'000'000`" holds for frames: what still does converts a clock's own units (a `timespec`, a
-  peer's ns in `latency_spa.hpp`), not frames.
+- **The class was wider than dating.** Besides 3.4's three sites and `ToServer`'s stamp, eight places turned a
+  duration into frames or frames into time by hand, each with its own division (fades, the harness's clock, buffer and
+  piece sizes, an RTP receiver's buffer: 3.6's "kept" among them). All go through `FrameClock`, and the rule is no
+  longer a list: the frame guard refuses arithmetic with a rate anywhere in `src/` but `FrameClock` and two named
+  exceptions (`docs/engine.md#dating` holds the rule, the exceptions and the guard's limit). Run over the tree before
+  R3, it names exactly the fifteen lines R3 moved.
 - **`FrameClock::frames(duration)`**, added: a `std::chrono::nanoseconds` as whole frames, truncated toward zero.
-  Every duration-to-frames site above uses it; each gave the same truncated quotient.
+  Every duration-to-frames site uses it; each gave the same truncated quotient.
 - **`enteredRawNs`' offset is `std::int64_t`**, not 3.3's `std::uint32_t`: `ToServer` dates a frame from the newest
   capture anchor, and the handoff's thread often hands on frames taken before it (a negative offset). `heardRawNs`
   keeps `std::uint32_t` (an offset into the cycle that played).
@@ -263,17 +260,15 @@ What R3 built differs from 3.3 and 3.4 here; `docs/engine.md#dating` describes i
   frames (53 hours at 48 kHz, 27 at 96 kHz) the product leaves `int64`, undefined behaviour. No site reaches it today
   (each converts an offset into a cycle or a ring, or the harness's position, which no test runs that long), so it is
   fixed in the one home rather than reported: `ns` and `frames` convert whole seconds and the remainder apart, which
-  gives the same truncated quotient wherever the old product fit. A table row per size past it, and one test that
-  every site's old division and `FrameClock` agree at every rate from 1 Hz to 768 kHz, pin both.
+  gives the same truncated quotient wherever the old product fit. A table row per size past it, and a check against
+  the exact quotient in 128 bits at every rate from 1 Hz to 768 kHz and each edge count, pin both.
 - **No date moved.** Each site's old arithmetic was one truncating division of the same whole count, so each gives
   what it gave (the test above). `requiredLeadMs` now rounds `FrameClock::ns` up to whole ms; that equals its old
   `ceil(frames * 1000 / rate)` for every rate below 1 MHz (a truncated ns can sit on a whole ms only when the frames
-  are a whole ms), pinned by its rows at 44.1 and 48 kHz.
+  are a whole ms), checked against the old formula at every rate up to 999,999 Hz.
 - **No clock domain is mixed.** Every date is on `CLOCK_MONOTONIC_RAW`, from `GraphCycle::startRawNs` (or the anchor
   copied from it); the library's own clock is that one (sendspin-cpp's `platform/time.h`), and the server's time is
   converted only by the library (`get_client_time`), never compared with ours.
-- **Kept, not frames and time at the graph's rate:** `latency_spa.hpp`'s ns-to-frames (PipeWire's units, rounded to
-  the nearest frame, 3.2's one place the units meet) and `levelWindowFrames` (`ceil(rate / 30)`, a display rate).
 - **A name `<chrono>` exposed.** `latency.hpp` now includes `<chrono>`, which in libstdc++ brings `<iomanip>`, and
   `graph_file_model.cpp`'s own `quoted(std::string_view)` called with a `std::string` then found `std::quoted` by
   argument-dependent lookup and stopped compiling; it is `knoblyQuoted` now.
@@ -569,6 +564,8 @@ R5d: the system tests).
 | `sendspin/tests/clock_test.cpp:233-234` | The tracking loop reaching the raw rate, else `WARN` and go on | Fail naming the event; the wait itself is ear's own event |
 | `sendspin/tests/clock_test.cpp` "within 1 ms" cases | Bad cycles counted on the host's schedule | Judge over the ledger's clean cycles to a planned count |
 | `test/system/sendspin_*` ramps ("1 s of the 1.5 s played") | A late join under load | Wait for 1 s of judged frames, as many seconds of play as it takes |
+| `test/system/sendspin_streams_test.cpp:66`, the capture's stamp span within 50 ms of its frames' length | That no cycle was skipped while it captured: a skip under load moves the stamps on by the graph's lost time but not the frames (the stamps are dated by each cycle's start), so the span outgrows the length; failed once at 80 ms under an overlapping build (building R3) | Judge the span over the ledger's clean cycles, or add the skipped cycles' frames to the length |
+| `test/system/sendspin_streams_test.cpp:71`, `captureToArrivalBoundUs` (500 ms) | How soon the server reads the first chunk after its capture: the handoff's thread, the worker and the socket, all the host's schedule | Bound it by the events it passes through (the handoff's wake, the library's send) or make it `negative` with its reason |
 | `test/system/sendspin_floods_test.cpp`, renewal every 500 ms | A race between renewal and closing, sized to the host | Renew on the transport's close of the last socket (an event), not a period |
 | `test/system/sendspin_floods_test.cpp`, the thread peak sampled 3,000 times at 1 ms | A sampled peak can miss a breach (passes by luck, never fails by it) | `negative`; the bound is proven where it is enforced, in the transport's own tests |
 | `test/system/white_to_file_test.cpp:46`, `graph_file_test.cpp:101` | A 1 s recording window | Wait for the WAV to hold the frames the check needs (its size, polled as an event) |

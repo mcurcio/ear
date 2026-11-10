@@ -136,6 +136,28 @@ TEST_CASE("The lead a player reports covers what still plays after a clear, what
 	CHECK(requiredLeadMs(4'000'000'000U, 4096, 48000) == UINT16_MAX); // past what the field holds: its most
 }
 
+// requiredLeadMs rounds FrameClock's truncated ns up to whole ms. That equals the exact ceil(frames * 1000 / rate), its
+// formula before FrameClock, for every rate below 1 MHz: a truncated ns can sit on a whole ms only when the frames last
+// a whole ms (with frames * 1000 = k * rate + r and 0 < r < rate, the frames last at least 1e6 / rate > 1 ns past k ms),
+// so rounding up never falls short. At 1 MHz and above it would not hold, and no graph runs there.
+TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate below 1 MHz", "[sendspin][code]") {
+	const auto before = [](std::uint64_t frames, std::uint64_t rate) {
+		return static_cast<std::uint16_t>(std::min<std::uint64_t>((frames * 1000 + rate - 1) / rate, UINT16_MAX));
+	};
+	for (const std::uint32_t rate : {1U, 3U, 7U, 8000U, 11025U, 22050U, 32000U, 44100U, 48000U, 88200U, 96000U, 176400U,
+	                                 192000U, 352800U, 384000U, 705600U, 768000U, 999'999U}) {
+		INFO("at " << rate << " Hz");
+		for (const std::uint32_t maxBlock : {1U, 64U, 256U, 1024U, 4096U, 8192U}) {
+			std::vector<std::uint32_t> feeds{0, 1, rate / 1000, rate, rate - 1, rate + 1, 4'000'000'000U};
+			for (std::uint32_t feed = 0; feed <= 200'000; feed += 97) feeds.push_back(feed);
+			for (const std::uint32_t feed : feeds) {
+				INFO("feed " << feed << ", block " << maxBlock);
+				REQUIRE(requiredLeadMs(feed, maxBlock, rate) == before(std::uint64_t{feed} + maxBlock, rate));
+			}
+		}
+	}
+}
+
 TEST_CASE("A position ahead by a block skips that block and counts it played", "[sendspin][code]") {
 	Rig rig;
 	rig.write(3 * block);
