@@ -395,7 +395,7 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero, and a drive cancels a fade-out still waiting, as the real block does), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |

@@ -101,7 +101,7 @@ public:
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
 		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
 		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()), outputPeers_(outputs_.size()),
-		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), ramp_(format.rate), fadeMask_(outputs_.size(), 0),
+		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), fade_(format.rate), fadeMask_(outputs_.size(), 0),
 		  sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
 		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
@@ -397,16 +397,13 @@ private:
 	void apply() noexcept {
 		const std::uint64_t until = published_.load(std::memory_order_acquire);
 		std::uint64_t drained = drained_.load(std::memory_order_relaxed);
-		std::uint64_t completed = completed_.load(std::memory_order_relaxed);
 		for (; drained < until; ++drained) {
 			Request& request = ring_[drained % kRing];
 			if (request.kind == Kind::fade) {
 				request.cancelled = false;
-				ramp_.fadeOut();
+				fade_.fadeOut();
 				continue;
 			}
-			for (std::uint64_t pending = completed; pending < drained; ++pending)
-				ring_[pending % kRing].cancelled = true;
 			code_.store(request.code, std::memory_order_release);
 			// The taps change with the code, in this invoke: copied into storage sized at make.
 			sinkCount_ = std::min(request.sinkCount, sinks_.size());
@@ -419,23 +416,23 @@ private:
 				fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
 				anyFaded = anyFaded || fadeMask_[i] != 0;
 			}
-			ramp_.driven(anyFaded);
+			// The fade-outs waiting, the newest requests before this one, are cancelled (BlockFade's rule).
+			const std::uint64_t cancelled = fade_.driven(anyFaded);
+			for (std::uint64_t pending = drained - cancelled; pending < drained; ++pending)
+				ring_[pending % kRing].cancelled = true;
 			request.takenAt = continuity_.nextPosition();
 			takenAt_.store(continuity_.nextPosition(), std::memory_order_release);
-			completed = drained + 1;
 		}
 		drained_.store(drained, std::memory_order_release);
-		if (completed < drained && !processing_.load(std::memory_order_acquire)) {
-			ramp_.silenced(); // no cycle will come to end it
-			completed = drained;
-		}
-		completed_.store(completed, std::memory_order_release);
+		if (!processing_.load(std::memory_order_acquire)) fade_.notProcessing(); // no cycle will come to end them
+		// Requests complete in order and only fade-outs wait, so every request before the waiting ones is complete.
+		completed_.store(drained - fade_.waiting(), std::memory_order_release);
 	}
 
-	/// Realtime thread, after the code: the fade's ramp on the faded outputs (FadeRamp), and a fade-out acknowledged at
-	/// the end of the first cycle that ended at zero.
+	/// Realtime thread, after the code: the fade on the faded outputs (BlockFade), and the fade-outs waiting
+	/// acknowledged at the end of the first cycle that ended at zero.
 	void applyFade(std::uint32_t frames) noexcept {
-		if (ramp_.apply(outputs_, fadeMask_, frames).outEnded) acknowledgeFade();
+		if (fade_.apply(outputs_, fadeMask_, frames).acknowledged > 0) acknowledgeFade();
 	}
 
 	/// Realtime thread: every pending fade-out is done.
@@ -485,10 +482,7 @@ private:
 				}
 			}
 			// It wrote zeros: a fade-out ends here.
-			if (ramp_.fadingOut()) {
-				ramp_.silenced();
-				acknowledgeFade();
-			}
+			if (fade_.wroteZeros() > 0) acknowledgeFade();
 		}
 		// Every block of one driver sees the same clock position, so every block's windows end at
 		// the same multiples of windowFrames_, whenever the block was made.
@@ -628,7 +622,7 @@ private:
 		std::move_only_function<void(std::uint64_t)> driven;
 		std::move_only_function<void()> faded;
 	};
-	FadeRamp ramp_;                                 // data loop only
+	BlockFade fade_;                                // data loop only
 	std::vector<std::uint8_t> fadeMask_;            // per output; data loop only
 	std::vector<SinkBinding> sinks_;                // the applied drive's taps, sized at make; data loop only
 	std::size_t sinkCount_ = 0;                     // how many of sinks_ are bound; data loop only

@@ -196,6 +196,50 @@ TEST_CASE("FadeRamp: in from zero over its frames after a drive, out from the ga
 	std::ranges::fill(faded, 1.0F);
 	CHECK(ramp.apply(outputs, mask, 1).outEnded);
 	CHECK(faded[0] == 0.0F);
+
+	// A cycle of no samples changes nothing and reports the gain the ramp holds.
+	ramp.driven(true);
+	ramp.apply(outputs, mask, 3); // at 3/5
+	ramp.fadeOut();
+	applied = ramp.apply(outputs, mask, 0);
+	CHECK(applied.lastGain == Approx(0.6F));
+	CHECK_FALSE(applied.outEnded);
+}
+
+TEST_CASE("BlockFade: fade-outs wait until a cycle ends at zero, a cycle too large to run or a block not processing "
+          "acknowledges them, and a drive applied while they wait cancels them",
+          "[block_rules]") {
+	BlockFade fade(1000); // 5 frames
+	std::vector<float> samples(8, 1.0F);
+	const std::array<std::span<float>, 1> outputs{samples};
+	const std::array<std::uint8_t, 1> mask{1};
+
+	fade.driven(true);
+	fade.apply(outputs, mask, 8); // in, then full
+	fade.fadeOut();
+	fade.fadeOut();
+	CHECK(fade.waiting() == 2);
+	CHECK(fade.apply(outputs, mask, 3).acknowledged == 0); // 5/5, 4/5, 3/5: not yet at zero
+	CHECK(fade.apply(outputs, mask, 3).acknowledged == 2); // 2/5, 1/5, zero: both, the oldest first
+	CHECK(fade.waiting() == 0);
+	CHECK(fade.apply(outputs, mask, 3).acknowledged == 0); // nothing waits
+
+	fade.driven(true);
+	fade.fadeOut();
+	CHECK(fade.driven(true) == 1); // cancelled
+	CHECK(fade.waiting() == 0);
+	CHECK(fade.notProcessing() == 0);
+
+	fade.fadeOut();
+	CHECK(fade.notProcessing() == 1);
+	std::ranges::fill(samples, 1.0F);
+	fade.apply(outputs, mask, 1);
+	CHECK(samples[0] == 0.0F); // silenced at once
+
+	fade.driven(true);
+	CHECK(fade.wroteZeros() == 0); // no fade-out under way
+	fade.fadeOut();
+	CHECK(fade.wroteZeros() == 1);
 }
 
 TEST_CASE("CycleContinuity: a discontinuity on the first cycle, a drive's first, a new driver's, a position jump and "

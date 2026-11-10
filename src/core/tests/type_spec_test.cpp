@@ -307,6 +307,38 @@ TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle tha
 	CHECK(harness.phase() == "stopped");
 }
 
+TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the real block's does: a fade left "
+          "unacknowledged for 100 ms, then a start, fades in from zero and leaves nothing to acknowledge",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
+	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}, .autoComplete = false});
+	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness->completeBarrier(); // the drive
+	REQUIRE(harness.phase() == "running");
+	std::ranges::fill(harness.input(in, 0), 1.0F);
+	harness.process(16);
+	REQUIRE(harness.stop()); // the fade-out waits: no cycle comes to end it
+	harness->advance(std::chrono::milliseconds{100});
+	// NodeHost took the silence unfaded: the drive cancelled the fade-out, whose acknowledgement never comes.
+	REQUIRE_FALSE(harness->diagnostics().empty());
+	CHECK(harness->diagnostics().back().code == "ear.fade-unacknowledged");
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error);
+	harness->completeBarrier(); // the silence
+	CHECK(harness.phase() == "stopped");
+	REQUIRE(harness.start());
+	harness->completeBarrier(); // the start's drive
+	REQUIRE(harness.phase() == "running");
+	harness.process(8);
+	// The engine's rule: the new code ramps in from zero over 5 frames, exact at both ends.
+	for (std::uint32_t i = 0; i < 8; ++i) {
+		INFO("sample " << i);
+		CHECK(harness.output(out, 0)[i] == Approx(2.0F * static_cast<float>(std::min(i, 5U)) / 5.0F));
+	}
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error); // still nothing waits
+}
+
 TEST_CASE("The harness plays what a test feeds a source into its bank before the code, by the source's own rules",
           "[type-spec]") {
 	// At 1000 Hz a fade is 5 frames and a frame lasts 1 ms.

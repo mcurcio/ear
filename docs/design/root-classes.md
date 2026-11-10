@@ -850,12 +850,20 @@ What R7 built differs from 7.2 here; `docs/writing-a-node-type.md#testing-a-type
   engine adapter ignores the field.
 - **Three more rules the harness modelled by hand**, each moved onto `ear/core/block_rules.hpp`, which
   `port_blocks.cpp` and the harness both call:
-  - *The fade* (`FadeRamp`). The harness's fade-out was a step: at the acknowledgement it set the gain to zero, so
-    the cycles between a fade-out and its acknowledgement played at full gain; the real block ramps down from the gain
-    it has and acknowledges at the cycle that ended at zero. The harness now ramps, and with `autoComplete` off a cycle
-    ending the ramp acknowledges every pending fade-out, as the block's does (the test's `acknowledgeFade()` stands for
-    a block not processing: zero at once). With `autoComplete` on nothing a test sees changed: the fade-out completes
-    at once at zero, as on a block not processing. No test ran with `autoComplete` off.
+  - *The fade and when a fade-out completes* (`FadeRamp` inside `BlockFade`). The harness's fade-out was a step: at
+    the acknowledgement it set the gain to zero, so the cycles between a fade-out and its acknowledgement played at
+    full gain; the real block ramps down from the gain it has. And the harness kept its own rule for when a fade-out
+    completes, which diverged: a drive applied while a fade-out waits cancels it in the block (it completes, its
+    `done` never runs), and `NodeHost` does drive then: when a fade goes unacknowledged for 100 ms it writes
+    `ear.fade-unacknowledged` and drives the silence unfaded. The harness left the fade-out pending, so a later
+    `acknowledgeFade()` completed a stale one and told `NodeHost` it had faded at the wrong time. `BlockFade` is now
+    the one rule, which `port_blocks.cpp`'s `apply()` and the harness both call: each fade-out waits; the first cycle
+    ending at zero, a cycle too large to run (written as zeros) or a block not processing acknowledges every one
+    waiting; a drive cancels them. The block marks what it returns in its request ring, the harness in its pending
+    list. `autoComplete` is a block not processing (a fade-out acknowledged at once, at zero), so nothing a test sees
+    with it on changed; with it off a cycle ending the ramp acknowledges, `acknowledgeFade()` acknowledges as a block
+    not processing, and a drive cancels (`type_spec_test.cpp` checks a fade left unacknowledged for 100 ms, then a
+    start). No test ran with `autoComplete` off before.
   - *The discontinuity* (`CycleContinuity`). The harness set `discontinuity` on its very first cycle only; the block
     sets it on each drive's first cycle too (a start, a restart, a re-drive), after a position jump, a new driver and a
     cycle too large to run. So a type's tests never saw the flag a chunk carries after a stop and a start; they do now
@@ -875,13 +883,16 @@ What R7 built differs from 7.2 here; `docs/writing-a-node-type.md#testing-a-type
   frame in order in the WAV, each call dated by its own first frame). One change to what a test reads: a sink's
   `chunks` are the consumer's calls, so only those a begun consumer took (the fake recorded writes before begin too;
   none happen, since the drive waits for readiness).
+- **A cycle too large to run** is refused by the harness (`process` takes at most `maxBlock` frames, a
+  `std::logic_error`), so its path in `BlockFade` (`wroteZeros`) and `CycleContinuity` (the next cycle a
+  discontinuity) runs only in the block and in `block_rules_test.cpp`; a type's code never sees such a cycle.
 - **Out of scope, named.** The legacy handoff's fake (`FakeHandoff`) hands every write whole where `ThreadHandoff`
   splits at its ring's end: only `sendspin` uses a handoff, `sendspin` is not run in the harness (`notYetInHarness`),
   and 3c replaces its handoff with a sink, which then runs the rules above. The harness's clock (one driver, contiguous
   positions, both clocks equal and starting at zero) is the harness's own world, not a rule it copies: it feeds
   `CycleContinuity` the cycles it makes. A drive applied while a fade-out is pending cancels it in the block; the
-  harness applies a drive at once and leaves a pending fade-out to the test, a case `NodeHost` never makes (it drives
-  only after the fade-out's acknowledgement).
+  harness applies a drive at once, where the block applies it in its next invoke; what it does to the fade-outs
+  waiting is the shared rule above.
 
 ## 8. Order
 

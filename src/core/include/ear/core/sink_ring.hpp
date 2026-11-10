@@ -1,7 +1,7 @@
 // Every rule of a sink's rings, pure (docs/engine.md#sinks): the frame ring and the stamp ring beside it, the two
-// dropping together, each stamp paired with its frames, and each chunk cut where the ring wraps (cutChunk). ear_pipewire's
-// ThreadSink wraps one with its thread and wake, and the type harness's sink wraps one drained at once on the test's
-// thread, so a type's tests get the chunks the engine hands, split where it splits them
+// dropping together, each stamp paired with its frames, and each chunk cut where the ring wraps (cutChunk).
+// ear_pipewire's ThreadSink wraps one with its thread and wake, and the type harness's sink wraps one drained at once
+// on the test's thread, so a type's tests get the chunks the engine hands, split where it splits them
 // (docs/writing-a-node-type.md#testing-a-type). One writer (the block's tap, realtime) and one reader (the sink's
 // thread); nothing here locks, allocates or waits but the constructor.
 #pragma once
@@ -58,7 +58,11 @@ public:
 			const std::uint32_t read = stampsRead_.load(std::memory_order_relaxed);
 			if (read == stampsWritten_.load(std::memory_order_acquire)) return;
 			const Stamped stamped = stamps_[read & (stamps_.size() - 1)];
-			const ChunkCut cut = cutChunk(stamped.stamp, stamped.frames, contiguousFrames(), clock_);
+			const std::uint32_t contiguous = contiguousFrames();
+			// A stamp's frames are in the ring before the stamp is published, so some lie before its end; were none
+			// there, nothing is handed and the stamp waits rather than a call reading past what the ring holds.
+			if (contiguous == 0) return;
+			const ChunkCut cut = cutChunk(stamped.stamp, stamped.frames, contiguous, clock_);
 			hand(consume, cut.first, cut.firstFrames);
 			if (cut.second) hand(consume, *cut.second, cut.secondFrames);
 			stampsRead_.store(read + 1, std::memory_order_release);

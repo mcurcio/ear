@@ -538,10 +538,10 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
 **Found building 3b.3.** The engine companions are built on the declared interfaces with no declaration changed
 (what lasts is `docs/engine.md#engine-companions` and `docs/writing-a-node-type.md#engine-companions`):
 
-- `CompanionTarget` names the bank's direction and ports but not its name, which the one-companion check and
-  `beyond`'s key need. `NodeHost` keeps the bank's name beside each asked companion (its private `EngineAsk`: shape,
-  target, bank), and the harness's fake engine companion finds its bank by the target's ports. Nothing outside needs
-  the name.
+- `CompanionTarget` named the bank's direction and ports but not its name, which the one-companion check and
+  `beyond`'s key need, so `NodeHost` kept the name beside each asked companion and the harness's fake found its bank
+  by the target's ports. Root classes R7 moved the name into the target (`CompanionTarget::insideBank`), which the
+  harness reads ([root-classes.md](root-classes.md#73-found-building-r7)).
 - D-3b14 is checked for every kind against every kind (it was a source against an outside node only): an engine
   companion, a sink or a source on a bank that already has one is `a second companion on bank <bank>`, the built
   one-name check first (so two receivers on one bank still read `a second resource named <node>.rtp ...`).

@@ -1,8 +1,8 @@
 // The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
 // (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file. Where a fake must act as the engine
-// does it calls the engine's own rule, never a copy: the block's fade, continuity and stamps (ear/core/block_rules.hpp),
-// its latency (workOut), a sink's rings (SinkRing), a source's (SourceRing), and an engine companion's bank as NodeHost
-// names it (CompanionTarget::insideBank).
+// does it calls the engine's own rule, never a copy: the block's fade and when its fade-outs complete, its continuity
+// and stamps (ear/core/block_rules.hpp), its latency (workOut), a sink's rings (SinkRing), a source's (SourceRing),
+// and an engine companion's bank as NodeHost names it (CompanionTarget::insideBank).
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
@@ -111,10 +111,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 								 EngineDiagnosticListener {
 	// ---- The fakes ----
 
-	/// The node's one block: a drive applies its code at once (its fade-in and its first cycle's discontinuity with it), a
-	/// fade-out ramps the faded outputs down from the next cycle; each request completes on the main loop, at once
-	/// (autoComplete: as a block not processing completes it, a fade-out at zero at once) or when the test says, in the
-	/// order asked, and a fade-out also when a cycle ended it at zero, as the real block acknowledges it.
+	/// The node's one block: a drive applies its code at once (its fade-in and its first cycle's discontinuity with
+	/// it), a fade-out ramps the faded outputs down from the next cycle. A drive or silence completes on the main loop at
+	/// once (autoComplete) or when the test says. A fade-out completes by the real block's rule (BlockFade): at once
+	/// with autoComplete (a block not processing), else when a cycle ends it at zero or the test acknowledges it (a
+	/// block not processing then), and a drive applied while it waits cancels it (its `done` never runs).
 	struct FakeBlock final : PortBlock {
 		explicit FakeBlock(Impl& h) : harness(h) {}
 		~FakeBlock() override { harness.block = nullptr; }
@@ -125,18 +126,17 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			std::ranges::fill(harness.fadeMask, std::uint8_t{0});
 			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
 				harness.fadeMask[i] = request.faded[i] ? 1 : 0;
-			harness.ramp.driven(std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
+			const std::uint64_t cancelled = harness.fade.driven(
+				std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
+			harness.dropFades(cancelled);
 			harness.continuity.driven();
 			const std::uint64_t taken = harness.continuity.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
-			harness.ramp.fadeOut();
-			harness.request(true, [&h = harness, done = std::move(done)]() mutable {
-				// Acknowledged: the faded outputs are at zero from here on (already, when a cycle ended the ramp).
-				h.ramp.silenced();
-				done();
-			});
+			harness.fade.fadeOut();
+			harness.pending.push_back(PendingRequest{true, std::move(done)});
+			if (harness.options.autoComplete) harness.completeFades(harness.fade.notProcessing());
 		}
 		void carryLatency(const LatencyPlan& plan) override {
 			// As the real block: worked out at once (a plan that does not fit the ports throws here), with no peer on
@@ -191,10 +191,11 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	};
 
 	/// A sink over core's own SinkRing (docs/writing-a-node-type.md#testing-a-type), its consumer on the test's thread:
-	/// begin calls the consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap writes
-	/// the ring by its rules (the two rings dropping together) and drains it at once, so the consumer gets each chunk as
-	/// the engine's sink hands it, in two calls where it wraps the ring's end, each call copied into the companion; close
-	/// finishes a consumer that began, marks the companion destroyed and posts `closed` with the frames dropped.
+	/// begin calls the consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap
+	/// writes the ring by its rules (the two rings dropping together) and drains it at once, so the consumer gets each
+	/// chunk as the engine's sink hands it, in two calls where it wraps the ring's end, each call copied into the
+	/// companion; close finishes a consumer that began, marks the companion destroyed and posts `closed` with the
+	/// frames dropped.
 	struct FakeSink final : Sink, SinkTap {
 		FakeSink(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
 			: harness(h), index(i), rules(channels, frames, rate) {
@@ -449,7 +450,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		  registry(options.recordings != nullptr
 	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, sources, *options.recordings)
 	                   : ResourceRegistry(cards, receivers, handoffs, sinks, sources)),
-		  graph(catalogue), ramp(options.format.rate),
+		  graph(catalogue), fade(options.format.rate),
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
@@ -478,6 +479,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	}
 
 	// ---- Requests ----
+	/// A drive or a silence: completed at once (autoComplete) or when the test says.
 	void request(bool isFade, std::move_only_function<void()> done) {
 		if (options.autoComplete) executor.post(std::move(done));
 		else pending.push_back(PendingRequest{isFade, std::move(done)});
@@ -490,6 +492,26 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		pending.erase(found);
 		executor.post(std::move(done));
 		executor.pump();
+	}
+	/// The oldest `count` fade-outs pending, which BlockFade completed: each `done` is posted (acknowledged), or none
+	/// is (cancelled by a drive). Never pumped here: a fake's call inside NodeHost's turn only posts, as the real block
+	/// signals.
+	void finishFades(std::uint64_t count, bool acknowledged) {
+		for (auto it = pending.begin(); it != pending.end() && count > 0;) {
+			if (!it->fade) {
+				++it;
+				continue;
+			}
+			if (acknowledged) executor.post(std::move(it->done));
+			it = pending.erase(it);
+			--count;
+		}
+	}
+	void completeFades(std::uint64_t count) {
+		if (count > 0) finishFades(count, true);
+	}
+	void dropFades(std::uint64_t count) {
+		if (count > 0) finishFades(count, false);
 	}
 
 	// ---- The node ----
@@ -539,6 +561,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		stopped = true;
 		host->stopAll(graph.close(), [] {});
 		executor.pump();
+		fade.notProcessing(); // the fade-outs pending complete with the rest
 		for (int rounds = 0; rounds < 1000 && !pending.empty(); ++rounds) {
 			auto done = std::move(pending.front().done);
 			pending.pop_front();
@@ -578,7 +601,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	LatencyFacts facts; // workOut's for `plan`, with no peers; empty before the first plan
 	std::deque<PendingRequest> pending;
 	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
-	FadeRamp ramp;                      // the real block's fade
+	BlockFade fade;                     // the real block's fade and its rule for fade-outs
 	CycleContinuity continuity;         // the real block's discontinuity rule, on one driver
 	std::uint64_t position = 0;
 
@@ -682,7 +705,13 @@ void NodeHarness::lose(std::string_view bank, std::string detail) {
 	impl_->executor.pump();
 }
 
-void NodeHarness::acknowledgeFade() { impl_->completeOldest(true); }
+void NodeHarness::acknowledgeFade() {
+	// As a block not processing: every fade-out waiting ends at zero now.
+	const std::uint64_t acknowledged = impl_->fade.notProcessing();
+	if (acknowledged == 0) throw std::logic_error("no fade-out is pending");
+	impl_->completeFades(acknowledged);
+	impl_->executor.pump();
+}
 
 void NodeHarness::completeBarrier() { impl_->completeOldest(false); }
 
@@ -724,8 +753,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
-	// The fade, by the real block's own ramp.
-	const FadeRamp::Applied faded = h.ramp.apply(out, h.fadeMask, frames);
+	// The fade, by the real block's own rule.
+	const BlockFade::Applied faded = h.fade.apply(out, h.fadeMask, frames);
 	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
 	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
 	if (h.driven != nullptr)
@@ -737,16 +766,9 @@ void NodeHarness::process(std::uint32_t frames) {
 		}
 	h.position += frames;
 	h.lastFrames = frames;
-	// A cycle that ended a fade-out at zero acknowledges every fade-out pending, as the real block's does.
-	if (faded.outEnded && std::ranges::any_of(h.pending, &PendingRequest::fade)) {
-		for (auto it = h.pending.begin(); it != h.pending.end();) {
-			if (!it->fade) {
-				++it;
-				continue;
-			}
-			h.executor.post(std::move(it->done));
-			it = h.pending.erase(it);
-		}
+	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
+	if (faded.acknowledged > 0) {
+		h.completeFades(faded.acknowledged);
 		h.executor.pump();
 	}
 }

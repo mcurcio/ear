@@ -358,9 +358,11 @@ so a drive or fade never waits for a cycle that will not come.
   playback bank fades too); the new code ramps in linearly over 5 ms (`rate * 5 / 1000` frames,
   exact at both ends). `fadeOut(done)` ramps the faded outputs to zero from the next cycle, from the
   gain they have (5 ms from full), the code still running, and completes once a cycle ended at zero,
-  or at once on a block not processing. A sink's bank is never faded. The ramp is core's `FadeRamp`
-  (`ear/core/block_rules.hpp`), beside the discontinuity rule (`CycleContinuity`) and the stamps a
-  sink's chunk and a source's cycle carry; the type harness's block runs the same.
+  or at once on a block not processing; a drive applied while fade-outs wait cancels them (their
+  `done` never runs: `NodeHost` drives a silence unfaded when a fade goes unacknowledged). A sink's
+  bank is never faded. The ramp and that rule are core's `BlockFade` (`ear/core/block_rules.hpp`),
+  beside the discontinuity rule (`CycleContinuity`) and the stamps a sink's chunk and a source's
+  cycle carry; the type harness's block runs the same.
 - **Bounds and the wedge.** A fade not acknowledged in 100 ms is `ear.fade-unacknowledged`; a drive
   or silence not completed in 5 s is `ear.barrier-overdue` and then, once, `ear.data-loop-wedged`.
   Each bound first runs every `done` the data loop already completed, and is judged after a grace
@@ -569,7 +571,7 @@ and RTP receivers are the two kinds. A type asks with its bank and a shape (`com
 `SoundCardShape{card}`, `RtpReceiverShape{...}`); a card's direction is its bank's (playback on an
 inside output bank, capture on an inside input bank), and an inside bank has at most one companion
 of any kind ([writing-a-node-type.md](writing-a-node-type.md#engine-companions)). `NodeHost` works
-out each one's `CompanionTarget` (its engine name, the block, the bank's direction and ports) and,
+out each one's `CompanionTarget` (its engine name, the block, the bank's direction, ports and name) and,
 once the block is ready, hands it with the shape to the kind's `EngineCompanionAdapter`
 (`AlsaSoundCards`, `RtpReceivers`), which tells `ready` and `lost` through `EngineCompanionEvents`.
 Both kinds share one lifecycle (`NodeHost` in `ear_core`, `joinEngineCompanion` in `ear_pipewire`),

@@ -1,7 +1,8 @@
-// The rules a port block applies each cycle, pure (docs/engine.md#port-blocks): the fade's ramp
-// (docs/engine.md#drive-and-fade), when a cycle is a discontinuity (docs/engine.md#graphcycle), and the stamp a sink's
-// chunk and a source's cycle carry (docs/engine.md#sinks, docs/engine.md#sources). ear_pipewire's block and the type
-// harness's fake block both run these, so a type's tests see what the engine does (docs/writing-a-node-type.md#testing-a-type).
+// The rules a port block applies each cycle, pure (docs/engine.md#port-blocks): the fade's ramp and when a fade-out
+// completes (docs/engine.md#drive-and-fade), when a cycle is a discontinuity (docs/engine.md#graphcycle), and the
+// stamp a sink's chunk and a source's cycle carry (docs/engine.md#sinks, docs/engine.md#sources). ear_pipewire's block
+// and the type harness's fake block both run these, so a type's tests see what the engine does
+// (docs/writing-a-node-type.md#testing-a-type).
 // Realtime-safe: nothing here locks, allocates or waits. Each object belongs to one thread, the one that runs the
 // block's cycles (the data loop, or the test's thread in the harness).
 #pragma once
@@ -9,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <span>
+#include <utility>
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
@@ -53,7 +55,7 @@ public:
 	Applied apply(std::span<const std::span<float>> outputs, std::span<const std::uint8_t> mask,
 	              std::uint32_t frames) noexcept {
 		if (mode_ == Mode::none) return {1.0F, false};
-		float gain = 1.0F;
+		float gain = static_cast<float>(at_) / static_cast<float>(frames_); // no sample: the gain it holds
 		for (std::uint32_t i = 0; i < frames; ++i) {
 			gain = static_cast<float>(at_) / static_cast<float>(frames_);
 			for (std::size_t o = 0; o < outputs.size() && o < mask.size(); ++o)
@@ -70,6 +72,59 @@ private:
 	std::uint32_t frames_;
 	Mode mode_ = Mode::none;
 	std::uint32_t at_ = 0; // the gain's numerator: the next sample's gain is at_ / frames_
+};
+
+/// A block's fade and the fade-outs it owes an answer (docs/engine.md#drive-and-fade). Requests are applied in the
+/// order asked; a drive completes when applied, a fade-out waits. Every fade-out waiting is acknowledged (its `done`
+/// runs) by the first cycle that ends at zero, by a cycle too large to run (written as zeros), or at once when the
+/// block is not processing; a drive applied while fade-outs wait cancels them (they complete, their `done` never
+/// runs). Each call returns how many waiting fade-outs it completed, the oldest first: the block marks them in its
+/// request ring, the harness in its pending list.
+class BlockFade {
+public:
+	/// `rate` > 0: the graph's.
+	explicit BlockFade(std::uint32_t rate) noexcept : ramp_(rate) {}
+
+	/// A fade-out applied: it ramps from the next sample, and waits.
+	void fadeOut() noexcept {
+		ramp_.fadeOut();
+		++waiting_;
+	}
+	/// A drive applied: its code ramps in (with anything faded); the fade-outs waiting are cancelled.
+	std::uint64_t driven(bool anyFaded) noexcept {
+		ramp_.driven(anyFaded);
+		return std::exchange(waiting_, 0);
+	}
+	/// What one cycle's fade did, and the fade-outs the cycle acknowledged by ending at zero.
+	struct Applied {
+		float lastGain;
+		std::uint64_t acknowledged;
+	};
+	/// One cycle the code ran: FadeRamp::apply.
+	Applied apply(std::span<const std::span<float>> outputs, std::span<const std::uint8_t> mask,
+	              std::uint32_t frames) noexcept {
+		const FadeRamp::Applied applied = ramp_.apply(outputs, mask, frames);
+		return {applied.lastGain, applied.outEnded ? std::exchange(waiting_, 0) : 0};
+	}
+	/// A cycle too large to run, every output written as zeros: a fade-out under way ends at zero there.
+	std::uint64_t wroteZeros() noexcept {
+		if (!ramp_.fadingOut()) return 0;
+		ramp_.silenced();
+		return std::exchange(waiting_, 0);
+	}
+	/// The block is not processing, so no cycle will come to end a fade-out: the fade-outs waiting end at zero now.
+	std::uint64_t notProcessing() noexcept {
+		if (waiting_ == 0) return 0;
+		ramp_.silenced();
+		return std::exchange(waiting_, 0);
+	}
+	/// Fade-outs applied and not yet completed.
+	std::uint64_t waiting() const noexcept { return waiting_; }
+	std::uint32_t frames() const noexcept { return ramp_.frames(); }
+
+private:
+	FadeRamp ramp_;
+	std::uint64_t waiting_ = 0;
 };
 
 /// When a cycle is a discontinuity to the code (GraphCycle::discontinuity, docs/engine.md#graphcycle): the block's

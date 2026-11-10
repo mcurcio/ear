@@ -121,9 +121,10 @@ public:
 	/// The engine companion on `bank` is lost: the node fails engine-refused with `detail`. std::logic_error for a sink
 	/// or a source, which the framework never loses (their type's code says lost through the node's handle).
 	void lose(std::string_view bank, std::string detail);
-	/// With autoComplete off: the fade-out posted is acknowledged (its faded outputs at zero at once, as a block not
-	/// processing acknowledges one); the request posted (a drive or a silence) completes. std::logic_error when none is
-	/// pending (a fade-out a cycle ended at zero was acknowledged then).
+	/// With autoComplete off: every fade-out waiting is acknowledged (its faded outputs at zero at once, as a block not
+	/// processing acknowledges them); the oldest request posted (a drive or a silence) completes. std::logic_error when
+	/// none waits: a cycle that ended a fade-out at zero acknowledged it, and a drive applied while it waited cancelled
+	/// it (its `done` never ran), both by the real block's rule (BlockFade).
 	void acknowledgeFade();
 	void completeBarrier();
 	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, and each
@@ -132,10 +133,11 @@ public:
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
 	/// with a GraphCycle the harness advances on one driver (a discontinuity on the first cycle and on each drive's
 	/// first, by CycleContinuity), each bound source first played into its bank's input buffers (its SourceCycle's
-	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the faded
-	/// outputs by the real block's FadeRamp (in over 5 ms from each drive; a fade-out ramps down from the next cycle and,
-	/// once a cycle ended it at zero, is acknowledged); then each bound sink's tap, its stamp's upstreamFrames the most
-	/// capture latency workOut gives its bank, as a real block with no peers tells (docs/engine.md#latency-per-bank-pair).
+	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the
+	/// faded outputs by the real block's BlockFade (in over 5 ms from each drive; a fade-out ramps down from the next
+	/// cycle and, once a cycle ended it at zero, is acknowledged); then each bound sink's tap, its stamp's
+	/// upstreamFrames the most capture latency workOut gives its bank, as a real block with no peers tells
+	/// (docs/engine.md#latency-per-bank-pair).
 	void process(std::uint32_t frames = 0);
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.
