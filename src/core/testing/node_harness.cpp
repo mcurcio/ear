@@ -1,5 +1,8 @@
 // The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
-// (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file.
+// (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file. Where a fake must act as the engine
+// does it calls the engine's own rule, never a copy: the block's fade, continuity and stamps (ear/core/block_rules.hpp),
+// its latency (workOut), a sink's rings (SinkRing), a source's (SourceRing), and an engine companion's bank as NodeHost
+// names it (CompanionTarget::insideBank).
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
@@ -15,7 +18,9 @@
 #include <utility>
 
 #include "../legacy_instance.hpp"
+#include "ear/core/block_rules.hpp"
 #include "ear/core/lifecycle.hpp"
+#include "ear/core/sink_ring.hpp"
 #include "ear/core/source_ring.hpp"
 
 namespace ear::testing {
@@ -106,9 +111,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 								 EngineDiagnosticListener {
 	// ---- The fakes ----
 
-	/// The node's one block: a drive applies its code at once (and resets the fade-in), a fade-out silences the faded
-	/// outputs from the next cycle; each request completes on the main loop, at once (autoComplete) or when the test
-	/// says, in the order asked.
+	/// The node's one block: a drive applies its code at once (its fade-in and its first cycle's discontinuity with it), a
+	/// fade-out ramps the faded outputs down from the next cycle; each request completes on the main loop, at once
+	/// (autoComplete: as a block not processing completes it, a fade-out at zero at once) or when the test says, in the
+	/// order asked, and a fade-out also when a cycle ended it at zero, as the real block acknowledges it.
 	struct FakeBlock final : PortBlock {
 		explicit FakeBlock(Impl& h) : harness(h) {}
 		~FakeBlock() override { harness.block = nullptr; }
@@ -116,19 +122,19 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.driven = request.code;
 			harness.bound.assign(request.sinks.begin(), request.sinks.end()); // the taps change with the code
 			harness.boundSources.assign(request.sources.begin(), request.sources.end());
-			std::ranges::fill(harness.fadeMask, false);
+			std::ranges::fill(harness.fadeMask, std::uint8_t{0});
 			for (std::size_t i = 0; i < harness.fadeMask.size() && i < request.faded.size(); ++i)
-				harness.fadeMask[i] = request.faded[i];
-			harness.fade = std::ranges::any_of(harness.fadeMask, std::identity{}) ? Fade::in : Fade::none;
-			harness.fadeAt = 0;
-			const std::uint64_t taken = harness.position;
+				harness.fadeMask[i] = request.faded[i] ? 1 : 0;
+			harness.ramp.driven(std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
+			harness.continuity.driven();
+			const std::uint64_t taken = harness.continuity.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
+			harness.ramp.fadeOut();
 			harness.request(true, [&h = harness, done = std::move(done)]() mutable {
-				// Acknowledged: the faded outputs are at zero from here on.
-				h.fade = Fade::out;
-				h.fadeAt = 0;
+				// Acknowledged: the faded outputs are at zero from here on (already, when a cycle ended the ramp).
+				h.ramp.silenced();
 				done();
 			});
 		}
@@ -175,26 +181,23 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			CompanionKind kind = CompanionKind::rtpReceiver;
 			if constexpr (std::is_same_v<Shape, SoundCardShape>)
 				kind = target.bank == Direction::output ? CompanionKind::cardPlayback : CompanionKind::cardCapture;
-			harness.companionList.push_back(CompanionFake{kind,
-			                                              harness.bankOf(target.bank, target.blockPorts),
-			                                              target.engineNode,
-			                                              shape,
-			                                              true,
-			                                              false,
-			                                              false,
-			                                              {}});
+			if (target.insideBank.empty()) throw std::logic_error("an engine companion asked for on no inside bank");
+			harness.companionList.push_back(
+				CompanionFake{kind, target.insideBank, target.engineNode, shape, true, false, false, {}});
 			harness.engineEvents.push_back(&events);
 			return std::make_unique<FakeEngineCompanion>(harness, harness.companionList.size() - 1);
 		}
 		Impl& harness;
 	};
 
-	/// A sink whose consumer runs on the test's thread (docs/writing-a-node-type.md#testing-a-type): begin calls the
-	/// consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap copies each chunk
-	/// into its companion and hands it to the consumer at once; close finishes a consumer that began, marks the
-	/// companion destroyed and posts `closed(0)`.
+	/// A sink over core's own SinkRing (docs/writing-a-node-type.md#testing-a-type), its consumer on the test's thread:
+	/// begin calls the consumer's begin at once (or, with holdSinks, at ready(bank)), then posts `begun`; the tap writes
+	/// the ring by its rules (the two rings dropping together) and drains it at once, so the consumer gets each chunk as
+	/// the engine's sink hands it, in two calls where it wraps the ring's end, each call copied into the companion; close
+	/// finishes a consumer that began, marks the companion destroyed and posts `closed` with the frames dropped.
 	struct FakeSink final : Sink, SinkTap {
-		FakeSink(Impl& h, std::size_t i, std::size_t n) : harness(h), index(i), channels(n) {
+		FakeSink(Impl& h, std::size_t i, std::uint32_t channels, std::uint32_t frames, std::uint32_t rate)
+			: harness(h), index(i), rules(channels, frames, rate) {
 			harness.sinkFakes[index] = this;
 		}
 		~FakeSink() override { harness.sinkFakes.erase(index); }
@@ -212,38 +215,46 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			harness.executor.post(std::exchange(begun, nullptr));
 		}
 		void close(std::move_only_function<void(std::uint64_t)> closed) override {
+			drain();
 			if (began) consumer->finish();
+			finished = true;
 			harness.companionList.at(index).destroyed = true;
-			harness.executor.post([closed = std::move(closed)]() mutable { closed(0); });
+			harness.executor.post(
+				[closed = std::move(closed), dropped = rules.droppedFrames()]() mutable { closed(dropped); });
 		}
-		std::uint64_t droppedFrames() const noexcept override { return 0; } // it takes every chunk
+		std::uint64_t droppedFrames() const noexcept override { return rules.droppedFrames(); }
 		void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 		           const ChunkStamp& stamp) noexcept override {
-			SeenChunk seen{std::vector<float>(static_cast<std::size_t>(frames) * channels, 0.0F), frames, stamp};
-			for (std::size_t channel = 0; channel < channels && channel < bank.size(); ++channel)
-				for (std::uint32_t frame = 0; frame < frames; ++frame)
-					seen.interleaved[frame * channels + channel] = bank[channel][frame];
-			if (began)
-				consumer->consume(Chunk{.interleaved = seen.interleaved,
-				                        .frames = frames,
-				                        .position = stamp.position,
-				                        .startNs = stamp.startNs,
-				                        .startRawNs = stamp.startRawNs,
-				                        .upstreamFrames = stamp.upstreamFrames,
-				                        .discontinuity = stamp.discontinuity});
-			harness.companionList.at(index).chunks.push_back(std::move(seen));
+			if (rules.write(bank, frames, stamp)) drain();
+		}
+		/// What the sink's thread does when woken: every chunk to a consumer that began and has not finished, else
+		/// skipped.
+		void drain() {
+			if (!began || finished) return rules.discard();
+			rules.drain([&](const Chunk& chunk) {
+				harness.companionList.at(index).chunks.push_back(
+					SeenChunk{{chunk.interleaved.begin(), chunk.interleaved.end()},
+				              chunk.frames,
+				              ChunkStamp{.position = chunk.position,
+				                         .startNs = chunk.startNs,
+				                         .startRawNs = chunk.startRawNs,
+				                         .discontinuity = chunk.discontinuity,
+				                         .upstreamFrames = chunk.upstreamFrames}});
+				consumer->consume(chunk);
+			});
 		}
 		Impl& harness;
 		std::size_t index;
-		std::size_t channels;
+		SinkRing rules;
 		std::unique_ptr<SinkConsumer> consumer;
 		std::move_only_function<void()> begun; // until its consumer begins
 		bool began = false;
+		bool finished = false;
 	};
 	struct FakeSinks final : SinkAdapter {
 		explicit FakeSinks(Impl& h) : harness(h) {}
 		std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
-		                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override { // never splits
+		                           std::uint32_t capacityFrames, std::uint32_t rate) override {
 			CompanionFake fake{CompanionKind::sink,
 			                   std::string(bank),
 			                   node + "." + std::string(bank),
@@ -254,7 +265,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			                   {}};
 			harness.companionList.push_back(std::move(fake));
 			harness.engineEvents.push_back(nullptr); // a sink has no engine companion's events
-			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels);
+			return std::make_unique<FakeSink>(harness, harness.companionList.size() - 1, channels,
+			                                  harness.options.sinkRingFrames.value_or(capacityFrames), rate);
 		}
 		Impl& harness;
 	};
@@ -431,15 +443,14 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		std::unique_ptr<const NodeConfig> inner;
 	};
 
-	enum class Fade { none, in, out };
-
 	Impl(const NodeType& t, Options o)
 		: type(t), options(std::move(o)), clock(executor), blocks(*this), cards(*this), receivers(*this),
 		  handoffs(*this), sinks(*this), sources(*this),
 		  registry(options.recordings != nullptr
 	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, sources, *options.recordings)
 	                   : ResourceRegistry(cards, receivers, handoffs, sinks, sources)),
-		  graph(catalogue), host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
+		  graph(catalogue), ramp(options.format.rate),
+		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
 		host->subscribeDiagnostics(*this);
@@ -500,16 +511,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		inputs.assign(inputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		outputs.assign(outputNames.size(), std::vector<float>(options.format.maxBlock, 0.0F));
 		lastGain.assign(outputNames.size(), 1.0F);
-		fadeMask.assign(outputNames.size(), false);
-	}
-	/// The inside bank of `direction` whose ports an engine companion joins: a CompanionTarget names its ports, not its
-	/// bank.
-	std::string bankOf(Direction direction, const std::vector<PortName>& blockPorts) const {
-		if (!blockPorts.empty())
-			for (const Ports::Bank& bank : config->ports().banks())
-				if (bank.reach == PortBank::Reach::inside && bank.direction == direction && bank.ports == blockPorts)
-					return bank.name;
-		throw std::logic_error("an engine companion joins ports of no inside bank of the node");
+		fadeMask.assign(outputNames.size(), 0);
 	}
 	/// What the real block with no peers tells on output port `output` (outputs then insideOutputs; its capture latency)
 	/// and on input port `input` (its playback latency): workOut's, as the plan was last carried
@@ -575,11 +577,10 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	LatencyPlan plan;
 	LatencyFacts facts; // workOut's for `plan`, with no peers; empty before the first plan
 	std::deque<PendingRequest> pending;
-	std::vector<bool> fadeMask;
-	Fade fade = Fade::none;
-	std::uint32_t fadeAt = 0;
+	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
+	FadeRamp ramp;                      // the real block's fade
+	CycleContinuity continuity;         // the real block's discontinuity rule, on one driver
 	std::uint64_t position = 0;
-	bool firstCycle = true;
 
 	std::vector<CompanionFake> companionList;
 	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
@@ -705,59 +706,49 @@ void NodeHarness::process(std::uint32_t frames) {
 	// The harness's clock starts at zero and runs at exactly the graph's rate (docs/engine.md#dating).
 	const FrameClock clock(h.options.format.rate);
 	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.position));
+	const CycleContinuity::Step step = h.continuity.next(0, h.position, frames, h.options.format.maxBlock);
 	const GraphCycle cycle{.startNs = at,
 	                       .position = h.position,
 	                       .startRawNs = at,
 	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.position + frames)),
-	                       .discontinuity = h.firstCycle};
+	                       .xruns = h.continuity.xruns(),
+	                       .discontinuity = step.discontinuity};
 	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SourceBinding& binding : h.boundSources) {
 			std::vector<std::span<float>> bank;
 			for (std::size_t c = 0; c < binding.channels && binding.firstInput + c < h.inputs.size(); ++c)
 				bank.emplace_back(h.inputs[binding.firstInput + c].data(), frames);
-			binding.tap->play(bank, SourceCycle{.position = cycle.position,
-			                                    .frames = frames,
-			                                    .startRawNs = cycle.startRawNs,
-			                                    .discontinuity = cycle.discontinuity,
-			                                    .downstream = h.toldOnInput(binding.firstInput)});
+			binding.tap->play(bank, sourceCycle(cycle, frames, h.toldOnInput(binding.firstInput)));
 		}
 	if (h.driven != nullptr) h.driven->process(in, out, frames, cycle);
 	else
 		for (auto& span : out) std::ranges::fill(span, 0.0F);
-	// The fade, as the real block applies it (port_blocks.cpp): sample by sample, exact at both ends.
-	const std::uint32_t fadeFrames =
-		std::max(static_cast<std::uint32_t>(clock.frames(std::chrono::milliseconds{5})), 1U);
-	for (std::uint32_t i = 0; i < frames; ++i) {
-		if (h.fade == Impl::Fade::none) break;
-		const float gain = static_cast<float>(h.fadeAt) / static_cast<float>(fadeFrames);
-		for (std::size_t o = 0; o < out.size(); ++o)
-			if (h.fadeMask[o]) {
-				out[o][i] = h.fadeAt == 0 ? 0.0F : out[o][i] * gain;
-				if (i + 1 == frames) h.lastGain[o] = gain;
-			}
-		if (h.fade == Impl::Fade::in && ++h.fadeAt >= fadeFrames) {
-			h.fade = Impl::Fade::none;
-			for (std::size_t o = 0; o < out.size(); ++o)
-				if (h.fadeMask[o]) h.lastGain[o] = 1.0F;
-		}
-	}
+	// The fade, by the real block's own ramp.
+	const FadeRamp::Applied faded = h.ramp.apply(out, h.fadeMask, frames);
+	for (std::size_t o = 0; o < out.size(); ++o) h.lastGain[o] = h.fadeMask[o] != 0 ? faded.lastGain : 1.0F;
 	// Each sink's tap after the fade (a sink's bank is never faded), as the real block writes it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SinkBinding& binding : h.bound) {
 			std::vector<std::span<const float>> bank;
 			for (std::size_t c = 0; c < binding.channels && binding.firstOutput + c < out.size(); ++c)
 				bank.emplace_back(out[binding.firstOutput + c]);
-			binding.tap->write(bank, frames,
-			                   ChunkStamp{.position = cycle.position,
-			                              .startNs = cycle.startNs,
-			                              .startRawNs = cycle.startRawNs,
-			                              .discontinuity = cycle.discontinuity,
-			                              .upstreamFrames = h.toldOnOutput(binding.firstOutput).maxFrames});
+			binding.tap->write(bank, frames, chunkStamp(cycle, h.toldOnOutput(binding.firstOutput)));
 		}
 	h.position += frames;
-	h.firstCycle = false;
 	h.lastFrames = frames;
+	// A cycle that ended a fade-out at zero acknowledges every fade-out pending, as the real block's does.
+	if (faded.outEnded && std::ranges::any_of(h.pending, &PendingRequest::fade)) {
+		for (auto it = h.pending.begin(); it != h.pending.end();) {
+			if (!it->fade) {
+				++it;
+				continue;
+			}
+			h.executor.post(std::move(it->done));
+			it = h.pending.erase(it);
+		}
+		h.executor.pump();
+	}
 }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {

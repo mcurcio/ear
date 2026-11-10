@@ -1,6 +1,7 @@
 // The interim sinks (docs/engine.md#sinks): the real ThreadSinks, first on its own thread with a test's main loop
 // (order, stamps, a chunk wrapping the ring's end, the two rings dropping together, close draining then finishing,
-// begin before the first consume and `begun` behind a lost said inside begin, no allocation on the tap), then through a
+// begin before the first consume and `begun` behind a lost said inside begin, no allocation on the tap, and the same
+// cycles through the type harness's sink handed alike, call by call), then through a
 // real block on the in-process engine (a ramp recorded through the sink starts at the first driven sample and ends at
 // the last, across a stop and a start, under an invoke storm; each chunk stamped with the capture latency the block
 // tells on the sink's bank; the dropped count read while the block writes). Every wait is event-gated: a test waits for
@@ -27,8 +28,10 @@
 #include "catch2/catch.hpp"
 #include "ear/pipewire/handoffs.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "ear/testing/type_harness.hpp"
 #include "engine_harness.hpp"
 #include "inducers.hpp"
 
@@ -461,6 +464,113 @@ TEST_CASE("A sink's tap allocates nothing", "[sink]") {
 	REQUIRE(shared.waitFor([&] { return shared.frames == kBlock * kBlocks; }));
 	CHECK(closeAndWait(loop, *sink) == 0);
 	CHECK(allocations == 0);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The sink's conformance (docs/writing-a-node-type.md#testing-a-type): the same cycles through the real ThreadSink and
+// through the type harness's sink hand a consumer the same calls, split at the ring's end in the same places.
+
+// Named, never unnamed: a type spec is a template key (type_spec.hpp says why).
+namespace sink_conformance {
+
+using namespace ear;
+
+inline constexpr auto record = bank::input<"record">;
+inline constexpr auto writer = bank::insideOutput<"writer">;
+inline constexpr TypeSpec spec{.settings = SettingsTable<>{"recorder"}, .banks = Banks<record, writer>{}};
+using Checked = CheckedOf<spec>;
+
+/// Where the type's consumer records: the test sets it before the harness configures the node.
+Shared* recorded = nullptr;
+/// What the type declares on its path into the sink, so the stamps carry an upstream latency that is not zero.
+inline constexpr Latency kDeclared{30, 40};
+
+/// file's shape: a sink on `writer` fed by the pass-through from `record`, its consumer the test's.
+struct Recorder {
+	static Members<spec> ports(const Checked&) { return {record(members(2)), writer(members(2))}; }
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		cx.sink(writer, SinkShape{.frames = 4096}).consumedBy(std::make_unique<TestConsumer>(*recorded));
+		cx.use(passThrough({bankPair(record, writer)}));
+		cx.declareLatency(record, writer, kDeclared);
+		return Configured::applied();
+	}
+};
+
+} // namespace sink_conformance
+
+TEST_CASE("A chunk split at the ring's end reaches its consumer the same through ThreadSink and through the type "
+          "harness's sink: the same calls, frames, positions, start times, latency and discontinuities",
+          "[sink][conformance]") {
+	namespace conform = sink_conformance;
+	// A 256-frame ring and 100-frame cycles, as the wrap test above: chunks split at the ring's end at varying offsets.
+	constexpr std::uint32_t kRing = 256;
+	constexpr std::uint32_t kBlock = 100;
+	constexpr std::uint32_t kBlocks = 12;
+	const FrameClock clock(kTestRate);
+
+	Shared throughHarness;
+	conform::recorded = &throughHarness;
+	{
+		ear::testing::TypeHarness<conform::spec, conform::Recorder> harness(
+			{.format = {.rate = kTestRate, .maxBlock = kBlock}, .node = "rec", .sinkRingFrames = kRing});
+		REQUIRE_FALSE(harness.parse({}));
+		harness.add();
+		harness.blockReady();
+		REQUIRE(harness.phase() == "running");
+		for (std::uint32_t b = 0; b < kBlocks; ++b) {
+			for (std::uint32_t c = 0; c < 2; ++c) {
+				const std::span<float> in = harness.input(conform::record, c);
+				for (std::uint32_t f = 0; f < kBlock; ++f)
+					in[f] = static_cast<float>((std::uint64_t{b} * kBlock + f) * 2 + c);
+			}
+			harness.process(kBlock);
+		}
+		harness.remove();
+		CHECK(harness.droppedFrames() == 0);
+	}
+	conform::recorded = nullptr;
+
+	// The engine's sink, written as the real block writes it: each cycle stamped with its position, both clocks at the
+	// graph's rate from zero (the harness's clock), a discontinuity on the first cycle after the drive, and the most of
+	// the latency declared on the sink's bank, which a block with no peers tells there.
+	PipeWire pipewire;
+	TestLoop loop;
+	ThreadSinks sinks(loop);
+	Shared throughEngine;
+	auto sink = sinks.make("rec", "writer", 2, kRing, kTestRate);
+	beginAndWait(loop, *sink, std::make_unique<TestConsumer>(throughEngine));
+	Signal signal(kBlock);
+	for (std::uint32_t b = 0; b < kBlocks; ++b) {
+		const std::uint64_t at = std::uint64_t{b} * kBlock;
+		const std::int64_t startNs = clock.ns(static_cast<std::int64_t>(at));
+		sink->tap().write(signal.block(at, kBlock), kBlock,
+		                  ChunkStamp{.position = at,
+		                             .startNs = startNs,
+		                             .startRawNs = startNs,
+		                             .discontinuity = b == 0,
+		                             .upstreamFrames = conform::kDeclared.maxFrames});
+		// Each chunk waits for the last to arrive, so the ring never fills and nothing drops.
+		REQUIRE(throughEngine.waitFor([&] { return throughEngine.frames == at + kBlock; }));
+	}
+	CHECK(closeAndWait(loop, *sink) == 0);
+
+	const std::scoped_lock lock(throughEngine.mutex, throughHarness.mutex);
+	checkChunksAgainstSignal(throughEngine.chunks);
+	REQUIRE(throughEngine.chunks.size() > kBlocks); // some cycles were split
+	REQUIRE(throughHarness.chunks.size() == throughEngine.chunks.size());
+	for (std::size_t i = 0; i < throughEngine.chunks.size(); ++i) {
+		const Got& engine = throughEngine.chunks[i];
+		const Got& harness = throughHarness.chunks[i];
+		INFO("call " << i << " at " << engine.position);
+		CHECK(harness.frames == engine.frames);
+		CHECK(harness.position == engine.position);
+		CHECK(harness.startNs == engine.startNs);
+		CHECK(harness.startRawNs == engine.startRawNs);
+		CHECK(harness.upstreamFrames == engine.upstreamFrames);
+		CHECK(harness.discontinuity == engine.discontinuity);
+		CHECK(harness.interleaved == engine.interleaved);
+	}
+	CHECK(throughHarness.calls == throughEngine.calls); // begin, each consume, finish
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

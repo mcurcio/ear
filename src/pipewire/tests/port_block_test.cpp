@@ -30,11 +30,13 @@
 #endif
 
 #include "catch2/catch.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "ear/testing/type_harness.hpp"
 #include "inducers.hpp"
 #include "latency_table.hpp"
 #include "probes.hpp"
@@ -1234,7 +1236,101 @@ TEST_CASE("The latency model's table through a real block: every port tells work
 			INFO("the sink on the inside output bank at " << first);
 			CHECK(upstream == model.told[inputCount + first].maxFrames);
 		}
+
+		// The harness's side: its block works a plan out by workOut with no peer on any port (nothing is linked to it),
+		// so the row's plan with no peer through a real block must give what workOut gives with none.
+		INFO("with no peer, as in the type harness");
+		const std::vector<std::optional<Latency>> noInputs(row.inputPeers.size());
+		const std::vector<std::optional<Latency>> noOutputs(row.outputPeers.size());
+		const LatencyFacts alone = workOut(ports, row.plan, noInputs, noOutputs);
+		const RealBlockLatency realAlone =
+			throughRealBlock(*engine, waiter, blocks, wiring, settled, "alone" + std::to_string(r), ports, row.plan,
+		                     inUnits(noInputs, SPA_DIRECTION_OUTPUT), inUnits(noOutputs, SPA_DIRECTION_INPUT));
+		CHECK(realAlone.heard == alone.told);
+		CHECK(realAlone.downstream == alone.downstream);
+		for (const auto& [first, downstream] : realAlone.fed) CHECK(downstream == alone.told[first]);
+		for (const auto& [first, upstream] : realAlone.stamped)
+			CHECK(upstream == alone.told[inputCount + first].maxFrames);
 	}
+}
+
+// Named, never unnamed: a type spec is a template key (type_spec.hpp says why).
+namespace latency_conformance {
+
+using namespace ear;
+
+inline constexpr auto in = bank::input<"in">;
+inline constexpr auto out = bank::output<"out">;
+inline constexpr auto toDevice = bank::insideOutput<"to_device">;
+inline constexpr auto fromDevice = bank::insideInput<"from_device">;
+inline constexpr TypeSpec spec{.settings = SettingsTable<>{"conform"}, .banks = Banks<in, out, toDevice, fromDevice>{}};
+using Checked = CheckedOf<spec>;
+
+/// Takes every chunk and keeps none.
+struct Discard final : SinkConsumer {
+	void consume(const Chunk&) override {}
+	void finish() override {}
+};
+
+/// A sink and a source on inside banks, each paired with a public bank by the pass-through, a path declared on each:
+/// so the plan NodeHost builds carries a pair, an onPair delay both ways and a source's beyond.
+struct Conform {
+	static Members<spec> ports(const Checked&) {
+		return {in(members(2)), out(members(2)), toDevice(members(2)), fromDevice(members(2))};
+	}
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		cx.sink(toDevice, SinkShape{.frames = 1024}).consumedBy(std::make_unique<Discard>());
+		cx.source(fromDevice, SourceShape{.frames = 1000});
+		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+		cx.declareLatency(in, toDevice, Latency{30, 40});
+		cx.declareLatency(fromDevice, out, Latency{7, 9});
+		return Configured::applied();
+	}
+};
+
+} // namespace latency_conformance
+
+// The harness's side of the latency model's conformance, through its own NodeHost: the plan a type's configuration
+// builds in the type harness, carried on a real block with no peer, stamps a sink's chunks and dates a source's Played
+// as the harness's block did (docs/writing-a-node-type.md#testing-a-type, docs/engine.md#latency-per-bank-pair).
+TEST_CASE("The plan a type builds in the harness, carried on a real block with no peer, gives its sink's stamps and "
+          "its source's playback latency what the harness gave them",
+          "[port_blocks][latency][conformance]") {
+	namespace conform = latency_conformance;
+	ear::testing::TypeHarness<conform::spec, conform::Conform> harness({.format = kFormat});
+	REQUIRE_FALSE(harness.parse({}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	const std::vector<float> fed(static_cast<std::size_t>(kBlock) * 2, 0.5F);
+	REQUIRE(harness.feed(conform::fromDevice, fed) == kBlock);
+	harness.process(kBlock);
+	const Ports ports = harness->ports();
+	const LatencyPlan plan = harness->latencyPlan();
+	REQUIRE(harness.companion(conform::toDevice).chunks.size() == 1);
+	const std::uint32_t harnessUpstream = harness.companion(conform::toDevice).chunks[0].stamp.upstreamFrames;
+	const Played harnessPlayed = harness.played(conform::fromDevice);
+	harness.remove();
+
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	ear::pipewire::testing::Quiescence settled(*engine, waiter);
+	const std::vector<std::optional<spa_latency_info>> noInputs(ports.inputs().size() + ports.insideInputs().size());
+	const std::vector<std::optional<spa_latency_info>> noOutputs(ports.outputs().size() + ports.insideOutputs().size());
+	const RealBlockLatency real =
+		throughRealBlock(*engine, waiter, blocks, wiring, settled, "conform", ports, plan, noInputs, noOutputs);
+	REQUIRE(real.stamped.size() == 1);
+	REQUIRE(real.fed.size() == 1);
+	CHECK(real.stamped[0].second == harnessUpstream);
+	CHECK(harnessUpstream != 0); // the declared path reaches the sink's bank
+	const Latency downstream = real.fed[0].second;
+	CHECK(downstream.maxFrames != 0); // the declared path reaches the source's bank
+	// The harness's cycle started at zero on its clock: its source played kBlock frames, heard once what lies
+	// downstream of its bank has played.
+	CHECK(harnessPlayed == Played{kBlock, FrameClock(kRate).heardRawNs(0, kBlock, downstream)});
 }
 
 // A peer's negative latency is clamped to zero at the port, before what lies in series beyond the bank adds to it: an

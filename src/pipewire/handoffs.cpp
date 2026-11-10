@@ -1,17 +1,15 @@
 // The realtime to ordinary-thread handoff (the legacy handoff `sendspin` still uses). JACK's disk-writer pattern: the
 // realtime writer interleaves into a FrameRing and wakes the handoff's own pw_thread_loop with pw_loop_signal_event;
 // that thread hands what is in the ring to the consumer. A full ring drops frames and counts them. The interim sinks
-// (ThreadSinks; docs/engine.md#sinks) are the same ring, wake and thread, with a stamp ring beside the frame ring, a
-// consumer that begins on the sink's thread, and the tap the port block writes.
+// (ThreadSinks; docs/engine.md#sinks) are the same wake and thread around core's SinkRing (every rule of a sink's two
+// rings, which the type harness's sink wraps too), a consumer that begins on the sink's thread, and the tap the port
+// block writes.
 #include "ear/pipewire/handoffs.hpp"
 
-#include <algorithm>
 #include <atomic>
-#include <bit>
 #include <cerrno>
 #include <cstddef>
 #include <string>
-#include <vector>
 #include <system_error>
 #include <utility>
 
@@ -19,7 +17,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/core/frame_ring.hpp"
-#include "ear/core/latency.hpp"
+#include "ear/core/sink_ring.hpp"
 
 namespace ear::pipewire {
 namespace {
@@ -115,16 +113,15 @@ private:
 	std::move_only_function<void(std::uint64_t)> closed_; // main thread only
 };
 
-/// One interim sink: ThreadHandoff's ring and thread, plus a stamp ring, so the sink's thread hands its consumer one
-/// stamped chunk per cycle the tap wrote (docs/engine.md#sinks). Every `begun` and `closed` is posted through the
+/// One interim sink: ThreadHandoff's wake and thread around a SinkRing, so the sink's thread hands its consumer one
+/// stamped chunk per cycle the tap wrote, in two calls where it wraps the ring's end (docs/engine.md#sinks). Every `begun` and `closed` is posted through the
 /// main-loop Executor, after the consumer's begin or finish returned, so a lost() its consumer said inside begin() (the
 /// node's InsidesEvents, the same FIFO) always lands first.
 class ThreadSink final : public Sink, public SinkTap {
 public:
 	ThreadSink(Executor& mainLoop, const NodeName& node, std::string_view bank, std::uint32_t channels,
 	           std::uint32_t capacityFrames, std::uint32_t rate)
-		: mainLoop_(mainLoop), clock_(std::max<std::uint32_t>(rate, 1)), ring_(channels, capacityFrames),
-		  stamps_(std::bit_ceil(std::max<std::uint32_t>(64, ring_.capacityFrames() / 32))) {
+		: mainLoop_(mainLoop), rules_(channels, capacityFrames, rate) {
 		const std::string name = node + "." + std::string(bank); // its engine name
 		thread_ = pw_thread_loop_new(name.c_str(), nullptr);
 		if (thread_ == nullptr) throw std::system_error(errno, std::generic_category(), "sink thread " + name);
@@ -161,32 +158,15 @@ public:
 		signal();
 	}
 
-	std::uint64_t droppedFrames() const noexcept override { return dropped_.load(std::memory_order_relaxed); }
+	std::uint64_t droppedFrames() const noexcept override { return rules_.droppedFrames(); }
 
-	/// Realtime: the two rings drop together (docs/engine.md#sinks). With no free stamp entry nothing is written and
-	/// the whole chunk is dropped; else the frames the frame ring has room for are written and stamped.
+	/// Realtime: the two rings drop together (SinkRing::write); the thread is woken when a frame was taken.
 	void write(std::span<const std::span<const float>> bank, std::uint32_t frames,
 	           const ChunkStamp& stamp) noexcept override {
-		const std::uint32_t written = stampsWritten_.load(std::memory_order_relaxed);
-		if (written - stampsRead_.load(std::memory_order_acquire) >= stamps_.size()) {
-			dropped_.fetch_add(frames, std::memory_order_relaxed);
-			return;
-		}
-		const std::uint32_t accepted = ring_.writePlanar(bank, frames);
-		if (accepted < frames) dropped_.fetch_add(frames - accepted, std::memory_order_relaxed);
-		if (accepted == 0) return;
-		stamps_[written & (stamps_.size() - 1)] = Stamped{stamp, accepted};
-		stampsWritten_.store(written + 1, std::memory_order_release);
-		signal();
+		if (rules_.write(bank, frames, stamp)) signal();
 	}
 
 private:
-	/// What the tap pushed beside one cycle's frames: its stamp and how many frames the frame ring took.
-	struct Stamped {
-		ChunkStamp stamp;
-		std::uint32_t frames;
-	};
-
 	void signal() noexcept { pw_loop_signal_event(pw_thread_loop_get_loop(thread_), wake_); }
 
 	/// The sink's thread: begin once asked, every stamped chunk to the consumer, then (closing) finish once.
@@ -202,45 +182,16 @@ private:
 		if (closing && !finished_) {
 			finished_ = true;
 			if (began_) consumer_->finish(); // only a consumer that began
-			mainLoop_.post([closed = std::move(closed_), dropped = dropped_.load(std::memory_order_relaxed)]() mutable {
-				closed(dropped);
-			});
+			mainLoop_.post(
+				[closed = std::move(closed_), dropped = rules_.droppedFrames()]() mutable { closed(dropped); });
 		}
 	}
 
-	/// Pairs each stamp with its frames, in order. Frames that no begun consumer can take (none began, or it finished)
-	/// are skipped.
+	/// Every stamped chunk to a begun consumer, in order; frames that no begun consumer can take (none began, or it
+	/// finished) are skipped.
 	void drain() {
-		for (;;) {
-			const std::uint32_t read = stampsRead_.load(std::memory_order_relaxed);
-			if (read == stampsWritten_.load(std::memory_order_acquire)) return;
-			const Stamped stamped = stamps_[read & (stamps_.size() - 1)];
-			if (began_ && !finished_) consume(stamped);
-			else ring_.skip(stamped.frames);
-			stampsRead_.store(read + 1, std::memory_order_release);
-		}
-	}
-
-	/// One chunk, in two calls when its frames wrap the ring's end: the second's position and start times advanced by
-	/// the first's frames (at the graph's rate, docs/engine.md#dating), so each call's start is its own first frame's,
-	/// and its discontinuity false (docs/engine.md#sinks).
-	void consume(const Stamped& stamped) {
-		std::uint32_t done = 0;
-		while (done < stamped.frames) {
-			const std::span<const float> run = ring_.readSpan();
-			const std::uint32_t frames =
-				std::min(stamped.frames - done, static_cast<std::uint32_t>(run.size() / ring_.channels()));
-			if (frames == 0) return; // never: a chunk's frames are in the ring before its stamp
-			consumer_->consume(Chunk{.interleaved = run.first(static_cast<std::size_t>(frames) * ring_.channels()),
-			                         .frames = frames,
-			                         .position = stamped.stamp.position + done,
-			                         .startNs = stamped.stamp.startNs + clock_.ns(done),
-			                         .startRawNs = stamped.stamp.startRawNs + clock_.ns(done),
-			                         .upstreamFrames = stamped.stamp.upstreamFrames,
-			                         .discontinuity = done == 0 && stamped.stamp.discontinuity});
-			ring_.skip(frames);
-			done += frames;
-		}
+		if (began_ && !finished_) rules_.drain([this](const Chunk& chunk) { consumer_->consume(chunk); });
+		else rules_.discard();
 	}
 
 	/// Stops the thread (joining it) before anything it reads goes.
@@ -253,12 +204,7 @@ private:
 	}
 
 	Executor& mainLoop_;
-	FrameClock clock_; // the graph's rate
-	FrameRing ring_;
-	std::vector<Stamped> stamps_; // a power of two entries
-	alignas(64) std::atomic<std::uint32_t> stampsWritten_{0};
-	alignas(64) std::atomic<std::uint32_t> stampsRead_{0};
-	std::atomic<std::uint64_t> dropped_{0};
+	SinkRing rules_;
 	std::atomic<bool> beginAsked_{false};
 	std::atomic<bool> closing_{false};
 	std::unique_ptr<SinkConsumer> consumer_;              // set before beginAsked_; then the sink's thread's

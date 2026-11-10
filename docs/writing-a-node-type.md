@@ -242,6 +242,9 @@ cx.use(passThrough({bankPair(record, writer)}));
   does not date audio ignores it (`file`'s `WavWriter` does).
 - The frame ring and the stamp ring drop together (no frame without its stamp); dropped frames are
   counted (readable at any time by the framework) and reported as the node's `dropped=` at removal.
+- These rules are core's `SinkRing` (`ear/core/sink_ring.hpp`, each chunk cut by `cutChunk` in
+  `ear/core/sink.hpp`), which the engine's sink and the harness's both run, so a type's tests get the
+  calls the engine makes, split chunks included.
 - A sink's bank is never faded, so a recording keeps exact samples.
 
 ## Sources
@@ -392,19 +395,19 @@ fakes allow. Banks are named by the spec's handles.
 
 | Call | What |
 |---|---|
-| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete`, and `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return) |
+| `TypeHarness h({.format = {48000, 256}, .node = "x", .recordings = &adapter})` | Options: format, node name, a recordings adapter (none: every recording refused), `autoComplete` (off: each fade-out and barrier waits for the test, or a fade-out for a cycle that ends it at zero), `holdSinks` (each sink's consumer begins only at `h.ready(bank)`, not at configure's return), and `sinkRingFrames` (each sink's ring in frames instead of the size the type asked for, rounded up to a power of two as the engine's is: cycles that do not divide it make the sink split chunks at its end) |
 | `h.parse(settings)` | The type's parse: nothing, or the refusal's text |
 | `h.add()`, `h.add({.disabled = true})` | Adds the node and configures it |
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
-| `h.process(frames)` | One cycle: each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the 5 ms fade applied; each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)) |
+| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`): `discontinuity` on the first cycle and on each drive's first; each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
 | `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |
 | `h->unwritten()`, `h->notes()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness` |
-| `h.companion(bank)` | What was made on a bank: its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them |
+| `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
 
 The harness does not see a class's `start()` and `stop()`; their pairing is tested in

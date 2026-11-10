@@ -9,9 +9,11 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 #include "ear/core/graph_spec.hpp"
+#include "ear/core/latency.hpp"
 namespace ear {
 
 // ---- What a type writes against ----
@@ -73,7 +75,33 @@ struct ChunkStamp {
 	std::int64_t startRawNs;
 	bool discontinuity;
 	std::uint32_t upstreamFrames;
+	friend bool operator==(const ChunkStamp&, const ChunkStamp&) = default;
 };
+
+/// The calls one stamped cycle becomes when `contiguous` of its `frames` lie before the ring's end
+/// (docs/engine.md#sinks): one, or two, the second's position and start times advanced by the first's frames at the
+/// graph's rate and its discontinuity false, so each call's start is its own first frame's.
+struct ChunkCut {
+	ChunkStamp first;
+	std::uint32_t firstFrames;
+	std::optional<ChunkStamp> second;
+	std::uint32_t secondFrames;
+};
+/// The one home of that rule: SinkRing (ear/core/sink_ring.hpp) cuts every chunk with it, and so the engine's sinks and
+/// the type harness's both. `contiguous` 0 is taken as no wrap: a ring that holds the chunk's frames always has some
+/// before its end.
+constexpr ChunkCut cutChunk(const ChunkStamp& stamp, std::uint32_t frames, std::uint32_t contiguous,
+                            FrameClock clock) noexcept {
+	if (contiguous == 0 || contiguous >= frames) return ChunkCut{stamp, frames, std::nullopt, 0};
+	const std::int64_t advanced = clock.ns(contiguous);
+	return ChunkCut{stamp, contiguous,
+	                ChunkStamp{.position = stamp.position + contiguous,
+	                           .startNs = stamp.startNs + advanced,
+	                           .startRawNs = stamp.startRawNs + advanced,
+	                           .discontinuity = false,
+	                           .upstreamFrames = stamp.upstreamFrames},
+	                frames - contiguous};
+}
 
 /// The realtime end of one sink. The port block calls write() once per cycle the code it was driven with ran, after
 /// that code, with the sink's inside output bank's spans (an unlinked one's scratch included).

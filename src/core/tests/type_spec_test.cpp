@@ -1,6 +1,7 @@
 // The type SPI (docs/writing-a-node-type.md#the-class; docs/writing-a-node-type.md): a spec, a class with configure and
 // its hooks, makeNodeType, Io by bank and the harness that runs a type over a real NodeHost without PipeWire. What must
 // not compile is compile_fail/type_spec_bad.cpp's.
+#include <algorithm>
 #include <concepts>
 #include <cstdint>
 #include <expected>
@@ -255,6 +256,55 @@ TEST_CASE("The harness stamps each sink chunk with the most capture latency the 
 	REQUIRE(harness.companion(toDevice).chunks.size() == 2);
 	CHECK(harness.companion(toDevice).chunks[0].stamp.upstreamFrames == 40);
 	CHECK(upstreams == std::vector<std::uint32_t>{40, 40}); // the consumer's chunks carry the stamp's
+}
+
+TEST_CASE("The harness's cycles are discontinuities where the real block's are: the first, and each drive's first",
+          "[type-spec]") {
+	upstreams.clear();
+	Harness harness;
+	REQUIRE_FALSE(harness.parse({{"mode", "sink"}, {"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness.process(16);
+	harness.process(16);
+	REQUIRE(harness.stop());
+	harness.process(16); // stopped: the sink is unbound
+	REQUIRE(harness.start());
+	harness.process(16);
+	harness.process(16);
+	const auto& chunks = harness.companion(toDevice).chunks; // a stop closes nothing: the same sink
+	REQUIRE(chunks.size() == 4);
+	CHECK(chunks[0].stamp.discontinuity);
+	CHECK_FALSE(chunks[1].stamp.discontinuity);
+	CHECK(chunks[2].stamp.discontinuity); // the start's drive
+	CHECK(chunks[2].stamp.position == 48);
+	CHECK_FALSE(chunks[3].stamp.discontinuity);
+}
+
+TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle that ends it at zero acknowledges it, as "
+          "the real block's does",
+          "[type-spec]") {
+	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
+	Harness harness(testing::HarnessOptions{.format = {.rate = 1000, .maxBlock = 16}, .autoComplete = false});
+	REQUIRE_FALSE(harness.parse({{"channels", 1}}));
+	harness.add();
+	harness.blockReady();
+	harness->completeBarrier(); // the drive
+	REQUIRE(harness.phase() == "running");
+	std::ranges::fill(harness.input(in, 0), 1.0F);
+	harness.process(16); // in over 5 frames, then full
+	CHECK(harness->lastFadeGain("out.1") == 1.0F);
+	REQUIRE(harness.stop());
+	harness.process(2); // 5/5 then 4/5
+	CHECK(harness.output(out, 0)[0] == 2.0F);
+	CHECK(harness.output(out, 0)[1] == Approx(1.6F));
+	CHECK(harness->lastFadeGain("out.1") == Approx(0.8F));
+	harness.process(4); // 3/5, 2/5, 1/5 and zero: acknowledged at this cycle's end
+	CHECK(harness.output(out, 0)[2] == Approx(0.4F));
+	CHECK(harness.output(out, 0)[3] == 0.0F);
+	CHECK_THROWS_AS(harness->acknowledgeFade(), std::logic_error); // nothing left to acknowledge
+	harness->completeBarrier(); // the silence the acknowledgement let NodeHost ask for
+	CHECK(harness.phase() == "stopped");
 }
 
 TEST_CASE("The harness plays what a test feeds a source into its bank before the code, by the source's own rules",

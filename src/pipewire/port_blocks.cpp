@@ -7,7 +7,8 @@
 // invoke: each source (docs/engine.md#sources) is played into the block's own scratch for its inside input bank before
 // the code, told the downstream latency the block last told on that bank, and each sink's tap (docs/engine.md#sinks) is
 // written after the code and the fade, stamped with the upstream latency the block last told on its bank; both every
-// cycle that code runs.
+// cycle that code runs. The fade's ramp, each cycle's discontinuity and both stamps are core's block rules
+// (ear/core/block_rules.hpp), which the type harness's block runs too.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -32,6 +33,7 @@
 #include <spa/utils/result.h>
 
 #include "callback_boundary.hpp"
+#include "ear/core/block_rules.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
 #include "engine_property_set.hpp"
@@ -99,10 +101,8 @@ public:
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
 		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
 		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()), outputPeers_(outputs_.size()),
-		  inputTold_(inputs_.size()), outputTold_(outputs_.size()),
-		  fadeFrames_(
-			  std::max(static_cast<std::uint32_t>(FrameClock(format.rate).frames(std::chrono::milliseconds{5})), 1U)),
-		  fadeMask_(outputs_.size(), 0), sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
+		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), ramp_(format.rate), fadeMask_(outputs_.size(), 0),
+		  sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
 		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -402,7 +402,7 @@ private:
 			Request& request = ring_[drained % kRing];
 			if (request.kind == Kind::fade) {
 				request.cancelled = false;
-				fade_ = Fade::out;
+				ramp_.fadeOut();
 				continue;
 			}
 			for (std::uint64_t pending = completed; pending < drained; ++pending)
@@ -413,43 +413,29 @@ private:
 			std::copy_n(request.sinks, sinkCount_, sinks_.begin());
 			sourceCount_ = std::min(request.sourceCount, sources_.size());
 			std::copy_n(request.sources, sourceCount_, sources_.begin());
-			fresh_ = true; // the new code's first cycle is a discontinuity to it
+			continuity_.driven(); // the new code's first cycle is a discontinuity to it
 			bool anyFaded = false;
 			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
 				fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
 				anyFaded = anyFaded || fadeMask_[i] != 0;
 			}
-			fade_ = anyFaded ? Fade::in : Fade::none;
-			fadeAt_ = 0;
-			request.takenAt = nextPosition_;
-			takenAt_.store(nextPosition_, std::memory_order_release);
+			ramp_.driven(anyFaded);
+			request.takenAt = continuity_.nextPosition();
+			takenAt_.store(continuity_.nextPosition(), std::memory_order_release);
 			completed = drained + 1;
 		}
 		drained_.store(drained, std::memory_order_release);
 		if (completed < drained && !processing_.load(std::memory_order_acquire)) {
-			fadeAt_ = 0; // no cycle will come to end it
+			ramp_.silenced(); // no cycle will come to end it
 			completed = drained;
 		}
 		completed_.store(completed, std::memory_order_release);
 	}
 
-	/// Realtime thread, after the code: the fade's gain on the faded outputs, sample by sample (fadeAt_ / fadeFrames_,
-	/// exact at both ends), and a fade-out acknowledged at the end of the first cycle that ended at zero.
+	/// Realtime thread, after the code: the fade's ramp on the faded outputs (FadeRamp), and a fade-out acknowledged at
+	/// the end of the first cycle that ended at zero.
 	void applyFade(std::uint32_t frames) noexcept {
-		if (fade_ == Fade::none) return;
-		for (std::uint32_t i = 0; i < frames; ++i) {
-			const float gain = static_cast<float>(fadeAt_) / static_cast<float>(fadeFrames_);
-			for (std::size_t o = 0; o < outputs_.size(); ++o) {
-				if (fadeMask_[o] != 0) outputs_[o][i] = fadeAt_ == 0 ? 0.0f : outputs_[o][i] * gain;
-			}
-			if (fade_ == Fade::in && fadeAt_ < fadeFrames_) {
-				++fadeAt_;
-			} else if (fade_ == Fade::out && fadeAt_ > 0) {
-				--fadeAt_;
-			}
-		}
-		if (fade_ == Fade::in && fadeAt_ == fadeFrames_) fade_ = Fade::none;
-		if (fade_ == Fade::out && fadeAt_ == 0) acknowledgeFade();
+		if (ramp_.apply(outputs_, fadeMask_, frames).outEnded) acknowledgeFade();
 	}
 
 	/// Realtime thread: every pending fade-out is done.
@@ -468,17 +454,9 @@ private:
 	void onProcess(spa_io_position* position) noexcept {
 		const spa_io_clock& clock = position->clock;
 		const auto frames = static_cast<std::uint32_t>(clock.duration);
-		// The clock moved on by the last cycle's frames on the same driver, or it did not: a new driver, a stall caught up.
-		const bool sameDriver = cycles_ > 0 && clock.id == lastDriver_;
-		// A new code's first cycle, and the cycle after one too large to run, are discontinuities to the code too.
-		const bool discontinuity = !sameDriver || clock.position != nextPosition_ || fresh_ || skipped_;
-		if (sameDriver && clock.position > nextPosition_) ++xruns_;
-		fresh_ = false;
-		skipped_ = frames > maxBlock_;
-		++cycles_;
-		lastDriver_ = clock.id;
-		nextPosition_ = clock.position + clock.duration;
-		if (frames <= maxBlock_) {
+		// The clock moved on by the last cycle's frames on the same driver, or it did not (CycleContinuity's rule).
+		const CycleContinuity::Step step = continuity_.next(clock.id, clock.position, frames, maxBlock_);
+		if (step.runs) {
 			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock
 			// (docs/engine.md#the-internal-clock); both clocks are read together here, so a late wake cancels out. The
 			// raw read sits between two monotonic ones, and the offset is taken from their midpoint, so a preemption
@@ -496,8 +474,8 @@ private:
 			                                .rateDiff = clock.rate_diff,
 			                                .driverId = clock.id,
 			                                .nextNs = static_cast<std::int64_t>(clock.next_nsec),
-			                                .xruns = xruns_,
-			                                .discontinuity = discontinuity,
+			                                .xruns = continuity_.xruns(),
+			                                .discontinuity = step.discontinuity,
 			                                .downstream = downstreamNow_});
 		} else {
 			for (void* port : outputPorts_) {
@@ -507,8 +485,8 @@ private:
 				}
 			}
 			// It wrote zeros: a fade-out ends here.
-			if (fade_ == Fade::out) {
-				fadeAt_ = 0;
+			if (ramp_.fadingOut()) {
+				ramp_.silenced();
 				acknowledgeFade();
 			}
 		}
@@ -545,11 +523,7 @@ private:
 			const Latency downstream =
 				unpacked(inputToldNow_[binding.firstInput].load(std::memory_order_acquire)); // the bank's told
 			binding.tap->play(std::span<const std::span<float>>(sourceSpans_.data(), binding.channels),
-			                  SourceCycle{.position = cycle.position,
-			                              .frames = frames,
-			                              .startRawNs = cycle.startRawNs,
-			                              .discontinuity = cycle.discontinuity,
-			                              .downstream = downstream});
+			                  sourceCycle(cycle, frames, downstream));
 			for (std::size_t c = 0; c < binding.channels; ++c) inputs_[binding.firstInput + c] = sourceSpans_[c];
 		}
 		if (AudioCode* code = code_.load(std::memory_order_acquire)) {
@@ -569,11 +543,7 @@ private:
 			const Latency upstream =
 				unpacked(outputToldNow_[binding.firstOutput].load(std::memory_order_acquire)); // the bank's told
 			binding.tap->write(std::span<const std::span<const float>>(tapSpans_.data(), binding.channels), frames,
-			                   ChunkStamp{.position = cycle.position,
-			                              .startNs = cycle.startNs,
-			                              .startRawNs = cycle.startRawNs,
-			                              .discontinuity = cycle.discontinuity,
-			                              .upstreamFrames = upstream.maxFrames});
+			                   chunkStamp(cycle, upstream));
 		}
 		// Public ports only: inputs_ and outputs_ list the public ports before the inside ones.
 		for (std::size_t i = 0; i < publicInputs_; ++i) meters_[i].add(inputs_[i]);
@@ -608,13 +578,7 @@ private:
 	RegisteredBlock registered_;
 	Ports ports_;
 	std::uint32_t rate_;
-	// The clock as the realtime side last saw it.
-	std::uint64_t cycles_ = 0;
-	std::uint32_t lastDriver_ = 0;
-	std::uint64_t nextPosition_ = 0;
-	std::uint64_t xruns_ = 0;
-	bool fresh_ = false;   // drive() installed a code since the last cycle (data loop only)
-	bool skipped_ = false; // the last cycle was too large to run
+	CycleContinuity continuity_; // the clock as the realtime side last saw it; data loop only
 	// Latency: each output's downstream, published by the main thread for the realtime side (packed), and the copy
 	// a cycle hands its code; then, on the main thread only, what each port's peers report, what each port told them
 	// last, and the run's plan, from which workOut works the rest out.
@@ -640,7 +604,6 @@ private:
 
 	// The asynchronous drive and fade (see pump()).
 	enum class Kind : std::uint8_t { drive, fade };
-	enum class Fade : std::uint8_t { none, in, out };
 	static constexpr std::size_t kRing = 8; // docs/design/companions.md: a first choice
 	/// One request in the ring: what the main thread hands, then what the data loop writes back.
 	struct Request {
@@ -665,7 +628,7 @@ private:
 		std::move_only_function<void(std::uint64_t)> driven;
 		std::move_only_function<void()> faded;
 	};
-	std::uint32_t fadeFrames_;
+	FadeRamp ramp_;                                 // data loop only
 	std::vector<std::uint8_t> fadeMask_;            // per output; data loop only
 	std::vector<SinkBinding> sinks_;                // the applied drive's taps, sized at make; data loop only
 	std::size_t sinkCount_ = 0;                     // how many of sinks_ are bound; data loop only
@@ -674,8 +637,6 @@ private:
 	std::size_t sourceCount_ = 0;                   // how many of sources_ are bound; data loop only
 	std::vector<std::vector<float>> sourceScratch_; // per inside input port: what a source plays; data loop only
 	std::vector<std::span<float>> sourceSpans_;     // one source's bank, built per cycle; data loop only
-	Fade fade_ = Fade::none;                        // data loop only
-	std::uint32_t fadeAt_ = 0; // the fade's position, 0 (silent) to fadeFrames_ (full); data loop only
 	std::array<Request, kRing> ring_{};
 	std::atomic<std::uint64_t> published_{0}; // requests the main thread pushed into the ring
 	std::atomic<std::uint64_t> drained_{0};   // requests the data loop applied

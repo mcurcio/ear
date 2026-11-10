@@ -289,6 +289,34 @@ TEST_CASE("File: every cycle the code drove reaches the sink, none after the sto
 	checkFrames(readWav(dir.path() / "rec.wav"), left, right);
 }
 
+TEST_CASE("File writes every frame in order when its sink hands chunks split at the ring's end", "[file]") {
+	TempFolder dir{"split"};
+	Recordings recordings(dir.path());
+	// A 256-frame ring and 100-frame cycles: the sink hands most cycles in two calls, as the engine's does
+	// (docs/engine.md#sinks).
+	auto harness = std::make_unique<Harness>(
+		Harness::Options{.node = "rec", .recordings = recordings.adapter.get(), .sinkRingFrames = 256});
+	REQUIRE_FALSE(harness->parse({{"path", "rec.wav"}}));
+	constexpr std::uint32_t kBlock = 100;
+	constexpr std::uint32_t kBlocks = 10;
+	harness->add();
+	harness->blockReady();
+	std::vector<float> left;
+	std::vector<float> right;
+	for (std::uint32_t block = 0; block < kBlocks; ++block)
+		feed(*harness, std::uint64_t{block} * kBlock, kBlock, left, right);
+	const ear::testing::CompanionFake& sink = harness->companion(file::writer);
+	CHECK(sink.chunks.size() > kBlocks); // some cycles were split
+	std::uint64_t next = 0;
+	for (const auto& chunk : sink.chunks) {
+		CHECK(chunk.stamp.position == next); // each call dated by its own first frame
+		next += chunk.frames;
+	}
+	harness->remove();
+	CHECK(harness->droppedFrames() == 0);
+	checkFrames(readWav(dir.path() / "rec.wav"), left, right);
+}
+
 TEST_CASE("File: a path it cannot open is Configured::failed and asks for no sink", "[file]") {
 	TempFolder dir{"unopenable"};
 	Recordings recordings(dir.path());

@@ -356,8 +356,11 @@ so a drive or fade never waits for a cycle that will not come.
 
 - **Fades.** A drive names which outputs it fades (public outputs, then inside outputs, so a card's
   playback bank fades too); the new code ramps in linearly over 5 ms (`rate * 5 / 1000` frames,
-  exact at both ends). `fadeOut(done)` ramps the faded outputs to zero over 5 ms from the next cycle,
-  the code still running, and completes once a cycle ended at zero. A sink's bank is never faded.
+  exact at both ends). `fadeOut(done)` ramps the faded outputs to zero from the next cycle, from the
+  gain they have (5 ms from full), the code still running, and completes once a cycle ended at zero,
+  or at once on a block not processing. A sink's bank is never faded. The ramp is core's `FadeRamp`
+  (`ear/core/block_rules.hpp`), beside the discontinuity rule (`CycleContinuity`) and the stamps a
+  sink's chunk and a source's cycle carry; the type harness's block runs the same.
 - **Bounds and the wedge.** A fade not acknowledged in 100 ms is `ear.fade-unacknowledged`; a drive
   or silence not completed in 5 s is `ear.barrier-overdue` and then, once, `ear.data-loop-wedged`.
   Each bound first runs every `done` the data loop already completed, and is judged after a grace
@@ -379,7 +382,9 @@ each bound inside bank's frames into its sink's frame ring with a stamp (positio
 `discontinuity` on the first cycle after any drive, `upstreamFrames`) in the stamp ring beside it,
 and wakes the sink's thread (`pw_loop_signal_event`, an eventfd write; tested to allocate nothing).
 So a sink takes exactly the cycles its code drove. The two rings drop together; a full one counts
-dropped frames, which `Sink::droppedFrames()` reads at any time (an atomic) and the close reports. A
+dropped frames, which `Sink::droppedFrames()` reads at any time (an atomic) and the close reports.
+Every rule of the two rings, the drop, the pairing and the cut below, is core's `SinkRing`
+(`ear/core/sink_ring.hpp`), which `ThreadSink` and the type harness's sink both wrap. A
 sink's first chunk after a block's first drive carries the clock's real position, which may differ
 from that drive's take-up position when no cycle ran before it.
 
@@ -391,7 +396,7 @@ the bank's at the cycle the chunk was taken. So a consumer dates a chunk without
 first frame entered the graph at `FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames})`
 ([below](#dating)). A chunk that wraps the ring's end is handed in two calls, and the second's
 `position`, `startNs` and `startRawNs` are advanced by the first's frames at the graph's rate (the
-adapter is given it), so the rule holds for each call. The block converts each peer's latency to frames at its port before it combines any
+adapter is given it; `cutChunk` in `ear/core/sink.hpp`), so the rule holds for each call. The block converts each peer's latency to frames at its port before it combines any
 ([below](#latency-per-bank-pair)), so when a bank's paths differ the value is the exact most over
 them, not PipeWire's field-by-field bound (quanta, frames and ns apart). A wedged data loop stops
 the telling to peers, but the block still works its latency out and publishes it, so chunks follow

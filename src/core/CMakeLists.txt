@@ -28,6 +28,7 @@ add_library(ear_core STATIC
 # each header on its own, so none depends on what an includer happened to include first. The
 # test executable depends on that target, so "make test" builds it.
 target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
+	include/ear/core/block_rules.hpp
 	include/ear/core/command_error.hpp
 	include/ear/core/companions.hpp
 	include/ear/core/desired_graph.hpp
@@ -50,6 +51,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/rtp_receiver.hpp
 	include/ear/core/settings_table.hpp
 	include/ear/core/sink.hpp
+	include/ear/core/sink_ring.hpp
 	include/ear/core/sound_card.hpp
 	include/ear/core/source.hpp
 	include/ear/core/source_ring.hpp
@@ -71,6 +73,7 @@ if(BUILD_TESTS)
 	target_link_libraries(ear_type_harness PUBLIC ear_core)
 
 	add_executable(ear_core_tests
+		tests/block_rules_test.cpp
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
 		tests/graph_spec_test.cpp

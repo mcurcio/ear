@@ -126,7 +126,8 @@ protected:
 /// Where an engine companion goes, worked out by the framework from the bank: its one engine name, the block it joins
 /// (its name, and its engine node's global id, PortBlock::blockId, which its links name:
 /// docs/architecture.md#phases-states-and-what-is-wanted), the bank's direction, and the block's ports it joins,
-/// channel i to blockPorts[i].
+/// channel i to blockPorts[i], and the inside bank's name, which NodeHost keeps for the companion it asked for (an
+/// adapter in the engine reads its ports; the type harness's fake reads the name, so it never works a bank out again).
 struct CompanionTarget {
 	NodeName engineNode;              // "<node>.playback" | "<node>.capture" | "<node>.rtp"
 	NodeName blockNode;               // the node's name, its block's
@@ -134,6 +135,7 @@ struct CompanionTarget {
 	std::vector<PortName> blockPorts; // the bank's ports
 	AudioFormat format;
 	std::uint32_t blockId = 0xFFFFFFFFU; // PortBlock::blockId; no id: the join cannot link and the companion is lost
+	std::string insideBank{};            // the inside bank's name: one engine companion per bank
 };
 
 /// One engine kind's adapter. Each strips nothing it did not set: it never sets node.force-quantum, node.force-rate,

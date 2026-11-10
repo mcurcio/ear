@@ -5,8 +5,9 @@ harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 b
 `FrameClock`, `docs/engine.md#dating`; section 3.7), R4a built (section 4.5 says what changed from 4.3), R4c built (a
 type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R5a built
 (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
-5.5) and R6 built (the property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3);
-the rest designed, not built. Its steps are taken between slice 3b.4 and
+5.5), R6 built (the property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3)
+and R7 built (the harness runs the engine's own rules: `docs/writing-a-node-type.md#testing-a-type`,
+`docs/engine.md#sinks`; section 7.3); the rest designed, not built. Its steps are taken between slice 3b.4 and
 slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
@@ -828,6 +829,59 @@ ChunkCut cutChunk(const ChunkStamp& stamp, std::uint32_t frames, std::uint32_t c
 
 **R7** (after R2 and R3): `cutChunk`, `ThreadSink` and the harness on it, the harness's ring size and companion bank,
 the conformance tests.
+
+### 7.3 Found building R7
+
+What R7 built differs from 7.2 here; `docs/writing-a-node-type.md#testing-a-type`, `docs/engine.md#sinks` and
+`docs/engine.md#drive-and-fade` describe it.
+
+- **`cutChunk` as designed, inside a pure `SinkRing`.** `cutChunk` is 7.2's signature, `constexpr` in `sink.hpp`
+  (`ChunkStamp` gained `operator==`). Calling it from two places would still have left the rest of the sink's rules
+  copied: the two rings dropping together, each stamp paired with its frames, frames skipped with no begun consumer.
+  So every one of them is core's `SinkRing` (`ear/core/sink_ring.hpp`, the D-3b4 pattern `SourceRing` set), which
+  cuts with `cutChunk`; `ThreadSink` keeps only its thread and wake around one, and the harness's `FakeSink` wraps one
+  drained at once on the test's thread. So the harness's sink now also drops by the engine's rule and reports what it
+  dropped at the close (it reported 0 always).
+- **The ring size** is `HarnessOptions::sinkRingFrames` (`std::optional`; none: the size the type asked for, as the
+  engine), rounded up to a power of two as `FrameRing` rounds the engine's. A power-of-two ring never splits cycles of
+  a power-of-two `maxBlock`, so a test sees splits with cycles that do not divide it (`process(100)`).
+- **The companion's bank** rides in `CompanionTarget::insideBank`, which `NodeHost` fills from the ask; `EngineAsk`'s
+  own `bank` is gone (the target's is its one home). The harness's `bankOf`, which matched ports, is deleted. An
+  engine adapter ignores the field.
+- **Three more rules the harness modelled by hand**, each moved onto `ear/core/block_rules.hpp`, which
+  `port_blocks.cpp` and the harness both call:
+  - *The fade* (`FadeRamp`). The harness's fade-out was a step: at the acknowledgement it set the gain to zero, so
+    the cycles between a fade-out and its acknowledgement played at full gain; the real block ramps down from the gain
+    it has and acknowledges at the cycle that ended at zero. The harness now ramps, and with `autoComplete` off a cycle
+    ending the ramp acknowledges every pending fade-out, as the block's does (the test's `acknowledgeFade()` stands for
+    a block not processing: zero at once). With `autoComplete` on nothing a test sees changed: the fade-out completes
+    at once at zero, as on a block not processing. No test ran with `autoComplete` off.
+  - *The discontinuity* (`CycleContinuity`). The harness set `discontinuity` on its very first cycle only; the block
+    sets it on each drive's first cycle too (a start, a restart, a re-drive), after a position jump, a new driver and a
+    cycle too large to run. So a type's tests never saw the flag a chunk carries after a stop and a start; they do now
+    (`type_spec_test.cpp`). No shipped type's test relied on the old value (`file` ignores it).
+  - *The stamps* (`chunkStamp`, `sourceCycle`): the most of the bank's told latency into a chunk's stamp, the told
+    latency into a source's cycle, written out by hand on both sides.
+- **Latency's conformance did not compare with the harness** (R2 compared the block with `workOut` only, the harness
+  "by construction"). Closed two ways: each table row runs a second time with no peer through a real block against
+  `workOut` with none (the harness's whole latency rule), and a type's configuration in the harness (a sink and a
+  source, a pair, a declared path each way, a source's beyond) has the plan `NodeHost` built carried on a real block
+  with no peer, its sink's stamp and its source's `Played` compared with the harness's (`port_block_test.cpp`).
+- **The sink's conformance** (`sink_test.cpp`): the same cycles (100 frames into a 256-frame ring) through
+  `ThreadSink` and through the harness's sink, a type's pass-through feeding it with a declared path, compared call by
+  call: frames, position, both start times, `upstreamFrames`, `discontinuity` and samples.
+- **Split chunks in a type's tests: no test relied on the harness never splitting.** No shipped type's test sets a ring
+  size, so each runs as before; `file_test.cpp` gained a case through a 256-frame ring and 100-frame cycles (every
+  frame in order in the WAV, each call dated by its own first frame). One change to what a test reads: a sink's
+  `chunks` are the consumer's calls, so only those a begun consumer took (the fake recorded writes before begin too;
+  none happen, since the drive waits for readiness).
+- **Out of scope, named.** The legacy handoff's fake (`FakeHandoff`) hands every write whole where `ThreadHandoff`
+  splits at its ring's end: only `sendspin` uses a handoff, `sendspin` is not run in the harness (`notYetInHarness`),
+  and 3c replaces its handoff with a sink, which then runs the rules above. The harness's clock (one driver, contiguous
+  positions, both clocks equal and starting at zero) is the harness's own world, not a rule it copies: it feeds
+  `CycleContinuity` the cycles it makes. A drive applied while a fade-out is pending cancels it in the block; the
+  harness applies a drive at once and leaves a pending fade-out to the test, a case `NodeHost` never makes (it drives
+  only after the fade-out's acknowledgement).
 
 ## 8. Order
 

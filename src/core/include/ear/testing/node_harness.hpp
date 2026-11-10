@@ -6,12 +6,14 @@
 // the transition it asked for applied as far as the fakes allow. The harness does not observe a class's start() and
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
 // build them (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's
-// readiness deadline included (docs/engine.md#readiness-deadlines). The sink fake runs a consumer on the test's
-// thread: begin at configure's return (or, with holdSinks, at ready(bank)), each chunk at once from the tap written
-// after the fade in process(), stamped with the upstream latency workOut gives its bank under the latency plan
-// (ear/core/latency.hpp; the harness has no peers), finish at the close. The source fake is core's own SourceRing
-// (every source rule), its writer never waiting: the test feeds it (feed), process() plays it into its bank before the
-// code, and the test reads what it played (played, shortfall).
+// readiness deadline included (docs/engine.md#readiness-deadlines). Where a fake acts as the engine does it runs the
+// engine's own rule: the block's fade, discontinuity and stamps (ear/core/block_rules.hpp), its latency (workOut, with
+// no peers), and an engine companion's bank as NodeHost names it. The sink fake is core's own SinkRing (every rule of a
+// sink's rings) with its consumer on the test's thread: begin at configure's return (or, with holdSinks, at
+// ready(bank)), each chunk drained at once from the tap written after the fade in process(), in two calls where it
+// wraps the ring's end (a ring of sinkRingFrames, or the type's own size), finish at the close. The source fake is
+// core's own SourceRing (every source rule), its writer never waiting: the test feeds it (feed), process() plays it
+// into its bank before the code, and the test reads what it played (played, shortfall).
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -32,7 +34,8 @@
 #include "ear/core/source.hpp"
 namespace ear::testing {
 
-/// One chunk a sink's fake handed its consumer (on the test's thread, at once), copied.
+/// One call a sink's fake made of its consumer's consume (on the test's thread, at once), copied, with the stamp it
+/// carried: a chunk split at the ring's end is two, the second's stamp advanced (docs/engine.md#sinks).
 struct SeenChunk {
 	std::vector<float> interleaved;
 	std::uint32_t frames;
@@ -73,6 +76,10 @@ struct HarnessOptions {
 	RecordingAdapter* recordings = nullptr; // null: every recording is refused ("no recordings folder"); until 3c
 	bool autoComplete = true;               // fades acknowledged and barriers completed as soon as posted
 	bool holdSinks = false; // each sink's consumer begins only at ready(bank), not at configure's return
+	/// Each sink's ring in frames, in place of the size the type asked for (rounded up to a power of two, as the
+	/// engine's is): a ring that a test's cycles do not divide makes the sink hand chunks split at its end, as the
+	/// engine's does (docs/engine.md#sinks).
+	std::optional<std::uint32_t> sinkRingFrames;
 };
 /// How add() adds the node.
 struct AddOptions {
@@ -114,19 +121,21 @@ public:
 	/// The engine companion on `bank` is lost: the node fails engine-refused with `detail`. std::logic_error for a sink
 	/// or a source, which the framework never loses (their type's code says lost through the node's handle).
 	void lose(std::string_view bank, std::string detail);
-	/// With autoComplete off: the fade-out posted is acknowledged; the request posted (a drive or a silence) completes.
-	/// std::logic_error when none is pending.
+	/// With autoComplete off: the fade-out posted is acknowledged (its faded outputs at zero at once, as a block not
+	/// processing acknowledges one); the request posted (a drive or a silence) completes. std::logic_error when none is
+	/// pending (a fade-out a cycle ended at zero was acknowledged then).
 	void acknowledgeFade();
 	void completeBarrier();
 	/// The fake clock moves on; timers due fire (the 100 ms, 5 s and 10 s bounds, waitingFor's 2 s, and each
 	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s).
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
-	/// with a GraphCycle the harness advances, each bound source first played into its bank's input buffers (its
-	/// SourceCycle's downstream the playback latency workOut gives its bank under the plan, with no peers); then the
-	/// fade's gain on the faded outputs, as a real block applies it (a 5 ms ramp from each drive, and to zero before
-	/// each silence); then each bound sink's tap, its stamp's upstreamFrames the most capture latency workOut gives its
-	/// bank, as a real block with no peers tells (docs/engine.md#latency-per-bank-pair).
+	/// with a GraphCycle the harness advances on one driver (a discontinuity on the first cycle and on each drive's
+	/// first, by CycleContinuity), each bound source first played into its bank's input buffers (its SourceCycle's
+	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the faded
+	/// outputs by the real block's FadeRamp (in over 5 ms from each drive; a fade-out ramps down from the next cycle and,
+	/// once a cycle ended it at zero, is acknowledged); then each bound sink's tap, its stamp's upstreamFrames the most
+	/// capture latency workOut gives its bank, as a real block with no peers tells (docs/engine.md#latency-per-bank-pair).
 	void process(std::uint32_t frames = 0);
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.

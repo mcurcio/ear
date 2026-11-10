@@ -862,12 +862,11 @@ struct NodeHost::Impl {
 			SourceBinding binding{};
 		};
 
-		/// One engine companion a configuration asked for, until its block is ready: its shape, where it goes, and the
-		/// inside bank it joins (one companion per bank).
+		/// One engine companion a configuration asked for, until its block is ready: its shape, and where it goes, the
+		/// inside bank it joins named in it (one companion per bank).
 		struct EngineAsk {
 			EngineCompanionShape shape;
 			CompanionTarget target;
-			std::string bank;
 		};
 
 		/// One declareLatency: the bank it is declared on and, for a typed declaration, the input bank its path
@@ -1193,9 +1192,12 @@ struct NodeHost::Impl {
 			const NodeName engineNode = name_ + "." + std::string(engineSuffix(shape, bank.direction));
 			requireOneName(engineNode);
 			requireFreeBank(bank);
-			config_->engineAsks.push_back(
-				EngineAsk{std::move(shape),
-			              CompanionTarget{engineNode, name_, bank.direction, bank.ports, host_.format}, bank.name});
+			config_->engineAsks.push_back(EngineAsk{std::move(shape), CompanionTarget{.engineNode = engineNode,
+			                                                                          .blockNode = name_,
+			                                                                          .bank = bank.direction,
+			                                                                          .blockPorts = bank.ports,
+			                                                                          .format = host_.format,
+			                                                                          .insideBank = bank.name}});
 		}
 
 		/// One engine name per resource of a configuration: an engine companion's "<node>.<suffix>" and a sink's or
@@ -1216,7 +1218,7 @@ struct NodeHost::Impl {
 		void requireFreeBank(const Ports::Bank& bank) const {
 			const bool taken =
 				std::ranges::any_of(config_->engineAsks,
-			                        [&](const EngineAsk& asked) { return asked.bank == bank.name; }) ||
+			                        [&](const EngineAsk& asked) { return asked.target.insideBank == bank.name; }) ||
 				std::ranges::any_of(config_->sinks, [&](const auto& slot) { return slot->bank == bank.name; }) ||
 				std::ranges::any_of(config_->sources, [&](const auto& slot) { return slot.bank == bank.name; });
 			if (taken) throw std::logic_error("a second companion on bank " + bank.name);
@@ -1247,7 +1249,7 @@ struct NodeHost::Impl {
 				if (const auto* receiver = std::get_if<RtpReceiverShape>(&asked.shape)) {
 					const auto buffered = static_cast<std::uint32_t>(
 						FrameClock(host_.format.rate).frames(std::chrono::milliseconds{receiver->latencyMs}));
-					plan.beyond.emplace_back(asked.bank, Delay{Latency{buffered, buffered}});
+					plan.beyond.emplace_back(asked.target.insideBank, Delay{Latency{buffered, buffered}});
 				}
 			for (const DeclaredLatency& declared : c.latency) {
 				if (declared.from) {
