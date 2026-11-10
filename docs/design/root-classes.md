@@ -347,7 +347,11 @@ template <class Fn> auto callType(std::string_view hook, Fn&& fn) -> std::expect
   by one through it; `Faults` is implemented in `main.cpp` as today's outcome made explicit: write the callback and node
   into the crash's last words, then `std::terminate()` (the handler `main.cpp:216` installs). The guard lands with it.
 - **R4b**: the owner's answer (section 9) replaces R4a's `Faults` and makes blocks, engine companions and links
-  `FaultOwner`s, routed to their node's `lost`.
+  `FaultOwner`s, routed to their node's `lost`. Inside a type's call, NodeHost's `guarded()` (the wrapper of every
+  context call) wraps a throw that is not a rule the type broke (one of NodeHost's own or an adapter's, such as a sink
+  adapter's `std::logic_error` inside `cx.sink`) in a private `EarFault` carrying its owner, so `callType` can tell it
+  from the type's throw and route it by owner rather than fail the node as a broken rule, which is what R4c leaves
+  (pinned by the test "An adapter's own std::logic_error inside a context call fails the node as a broken rule").
 - **R4c** (behaviour-free but for the consumer; **built**, as
   `docs/writing-a-node-type.md#rules-the-framework-enforces` describes, with the changes in 4.6): NodeHost's type
   calls go through `callType`; `ThreadSink` calls the consumer through it and reports a fault as the sink's loss.
@@ -418,8 +422,19 @@ boundary `docs/architecture.md#the-callback-boundary`):
   legacy handoff's consumer runs on its handoff's thread as a sink's does. A legacy recipe that broke a rule and caught
   it ran on; it now fails as `configure` does. Not routed, each for its reason: a code's `release` and `process` are
   `noexcept` by signature (checked at compile time); destructors (the instance, the code, a consumer, a run object) are
-  `noexcept`, so a throw there is the language's `std::terminate`; and a type's `ports` and `check` run at parse, in the
-  desired graph, outside NodeHost (a throw there leaves `NodeType::parse`'s caller: a step of its own if wanted).
+  `noexcept`, so a throw there is the language's `std::terminate`; and `ports_ = config->ports()` in `Node::add` reads a
+  config parse already made and read (the desired graph reads every config's ports to plan), so a `ports()` that
+  throws is refused at parse first.
+- **A type's throw at parse (found in review).** A type's text rows' parse functions, its `check`, its `ports` and a
+  legacy type's config run in `NodeType::parse` as an edit is planned, on the main loop, outside NodeHost; a throw
+  there reached the boundary and ended ear, so a hand edit could crash-loop the container. `NodeType::parse` (the one
+  function the desired graph and the harness both call) now runs them through the same `caughtFrom` and refuses the
+  edit as `invalid-settings` with `<type> threw: <what>`, as any invalid setting is; `caughtFrom` and `whatOf` moved to
+  a private header (`src/core/caught.hpp`) for it.
+- **No consumer's throw goes unrecorded (found in review).** A consumer that throws while its configuration still takes
+  facts but a failure, a disable or a removal already outranks a fault (a teardown's fade, before its silence closes
+  the channel) would have been dropped by the machine with no record; it is a `log` record then, as during the
+  teardown.
 - **A `prepare` that throws in the batch that drives.** The machine answers every resource ready with the prepare and,
   the block being ready, the drive in one batch, so a fault told after the batch finds the drive in flight. The drive of
   an unprepared code carries no code (`DriveRequest{nullptr}`, a barrier like a silence); the fault, heard once the batch
@@ -453,7 +468,8 @@ boundary `docs/architecture.md#the-callback-boundary`):
   throw like any other.
 - **What an operator sees.** A code whose `prepare` throws, and a sink's consumer that throws in `begin` or `consume`,
   ended the process; each now fails only its node (`start-failed`, or `lost` once rested) with what threw, and a
-  `finish` that throws is a `log` record. No record kind is added and the wire is unchanged: section 9 adds
+  `finish` that throws is a `log` record. An edit naming a type that throws at parse is refused (`invalid-settings`), an
+  existing code, where ear ended before. No record kind is added and the wire is unchanged: section 9 adds
   `ear.internal-error` only with R4b.
 
 ## 5. Class 3: tests that depend on the host

@@ -420,15 +420,17 @@ struct TestSink final : Sink, SinkTap {
 struct TestSinks final : SinkAdapter {
 	Log& log;
 	Executor& mainLoop;
-	bool throwInMake = false;    // make() throws, as an adapter that cannot start a thread
-	bool holdBegin = false;      // a consumer begins only when the test says (TestSink::runBegin)
-	bool holdClose = false;      // a close reports only when the test says (TestSink::runClose)
-	std::uint64_t dropped = 0;   // what each sink reports refused at its close
-	std::vector<TestSink*> made; // every sink made, in order (a destroyed one dangles: unused)
+	bool throwInMake = false;     // make() throws, as an adapter that cannot start a thread
+	bool breakRuleInMake = false; // make() throws std::logic_error, as an adapter with a bug of its own
+	bool holdBegin = false;       // a consumer begins only when the test says (TestSink::runBegin)
+	bool holdClose = false;       // a close reports only when the test says (TestSink::runClose)
+	std::uint64_t dropped = 0;    // what each sink reports refused at its close
+	std::vector<TestSink*> made;  // every sink made, in order (a destroyed one dangles: unused)
 	TestSinks(Log& l, Executor& m) : log(l), mainLoop(m) {}
 	std::unique_ptr<Sink> make(const NodeName& node, std::string_view bank, std::uint32_t channels,
 	                           std::uint32_t capacityFrames, std::uint32_t /*rate*/) override {
 		if (throwInMake) throw std::system_error(EAGAIN, std::generic_category(), "no thread for " + node);
+		if (breakRuleInMake) throw std::logic_error("the sink adapter broke its own rule for " + node);
 		const std::string name = node + "." + std::string(bank);
 		log.push_back("sink " + name + " " + std::to_string(channels) + " channels " + std::to_string(capacityFrames) +
 		              " frames");
@@ -5193,6 +5195,7 @@ TEST_CASE("A sink's consumer that throws fails its node with what it threw, neve
 TEST_CASE("A legacy handoff's consumer that throws fails its node, and is still finished once at the teardown",
           "[node_host][legacy][type-throw]") {
 	Fixture f;
+	addRunning(f, "ok", std::make_shared<ProbeConfig>(f.log));
 	auto config = std::make_shared<TestConfig>(f.log);
 	config->handoffs = 1;
 	addRunning(f, "old", config);
@@ -5209,6 +5212,8 @@ TEST_CASE("A legacy handoff's consumer that throws fails its node, and is still 
 	f.settle();
 	CHECK(failureOf(f, "old") == "lost: the handoff record's consumer threw in consume: disk full");
 	CHECK(config->consumer.finished == 1);
+	CHECK(failureOf(f, "ok").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -5235,6 +5240,77 @@ TEST_CASE("A type's std::logic_error is a fact about its node, while ear's own s
 	CHECK(failureOf(f, "amp") == "engine-refused: making the port block threw: a block made twice for amp");
 	CHECK(failureOf(f, "probe") == "start-failed: start threw: bad state");
 	f.blocks.breakRuleInMake = false;
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A consumer's throw the machine would drop, during a removal's fade, is a log record",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withThrowingSink(f.log, "consume");
+	addRunning(f, "rec", config);
+	f.blocks.hold = true; // the fade's acknowledgement waits for the test
+	f.host.nodeRemoved("rec");
+	f.settle();
+	REQUIRE(f.blocks.held.size() == 1); // fading: the channel still takes facts
+	f.sinks.made.at(0)->feed(64);       // the sink's thread hands it the fade's chunk; it throws
+	f.settle();
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].text == "the sink pb's consumer threw in consume: disk full");
+	CHECK(logs.entries[0].node == NodeName("rec"));
+	f.blocks.hold = false;
+	while (!f.blocks.held.empty()) {
+		f.blocks.complete(0);
+		f.settle();
+	}
+	CHECK(countOf(f.log, "node rec gone dropped=0") == 1);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A consumer's throw from a configuration being torn down for a restart lands nothing on the next one",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	TestLog logs;
+	f.host.subscribeLog(logs);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withThrowingSink(f.log, "consume");
+	f.sinks.holdClose = true; // every sink drains on its thread until the test says
+	addRunning(f, "rec", config);
+	REQUIRE(f.host.restart("rec"));
+	f.settle();
+	REQUIRE(countOf(f.log, "sink rec.pb close") == 1);
+	TestSink& old = *f.sinks.made.at(0);
+	old.feed(64); // a chunk drained at the close throws
+	old.runClose();
+	f.settle();
+	REQUIRE(f.sinks.made.size() == 2); // the next configuration's sink, made once the old one closed
+	CHECK(failureOf(f, "rec").empty());
+	CHECK(f.host.health().at(0).state == NodeState::running);
+	REQUIRE(logs.entries.size() == 1);
+	CHECK(logs.entries[0].text == "the sink pb's consumer threw in consume: disk full");
+	f.stopAll();
+	f.settle();
+	f.sinks.made.at(1)->runClose();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("An adapter's own std::logic_error inside a context call fails the node as a broken rule, not thrown out "
+          "(pinned: the owner's answer C, built by R4b, changes this on purpose)",
+          "[node_host][sink][type-throw]") {
+	Fixture f;
+	f.sinks.breakRuleInMake = true;
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSink(f.log);
+	f.add("rec", config); // nothing thrown out of NodeHost
+	CHECK(failureOf(f, "rec") == "start-failed: configure threw: the sink adapter broke its own rule for rec");
+	CHECK_FALSE(MainLoopActivity::takeThrown());
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

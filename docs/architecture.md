@@ -170,8 +170,10 @@ catch of its own, before any boundary: its hooks, its code's `prepare` and a leg
 close on the main loop, and a sink's or legacy handoff's consumer on that one's thread. What a type
 throws there, a `std::logic_error` included, is a fact about its node
 ([writing-a-node-type.md](writing-a-node-type.md#rules-the-framework-enforces)), and the rest of the
-graph runs on. So a throw that leaves NodeHost, or a sink's or handoff's own code, for the boundary
-is ear's own bug (or an adapter's), never a type's.
+graph runs on. A type's code run at parse (its settings' parse functions, `check`, `ports`) goes
+through the same catch in `NodeType::parse`, and what it throws refuses the edit as
+`invalid-settings`. So a throw that leaves NodeHost, or a sink's or handoff's own code, for the
+boundary is ear's own bug (or an adapter's), never a type's.
 
 ## How a change moves
 

@@ -24,6 +24,7 @@
 
 #include "catch2/catch.hpp"
 #include "ear/core/desired_graph.hpp"
+#include "ear/core/lifecycle.hpp"
 #include "ear/core/node_catalogue.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
@@ -761,4 +762,86 @@ TEST_CASE("Stopping 16 nodes costs about one fade, one cycle and one batch of de
 		CHECK(took < std::chrono::seconds(2));
 		CHECK(host.leaked() == 0);
 	}
+}
+
+namespace {
+
+/// A sink's consumer that throws on its first chunk, on the real sink's thread, as one with a bug.
+class ThrowingConsumer final : public SinkConsumer {
+public:
+	void consume(const Chunk&) override { throw std::runtime_error("disk full"); }
+	void finish() override {}
+};
+
+/// A class's instance with a sink on its inside output bank "tap", consumed by a ThrowingConsumer, and a code that
+/// writes every output.
+class ThrowingSinkInstance final : public ErasedInstance {
+public:
+	Configured configure(InstanceContexts& cx) override {
+		cx.create.sink("tap", SinkShape{.frames = 4096}).consumedBy(std::make_unique<ThrowingConsumer>());
+		cx.create.use(std::make_unique<LevelCode>());
+		return Configured::applied();
+	}
+};
+
+class ThrowingSinkConfig final : public NodeConfig {
+public:
+	const Ports& ports() const override { return ports_; }
+	std::unique_ptr<ErasedInstance> make(NodeContext&) const override {
+		return std::make_unique<ThrowingSinkInstance>();
+	}
+
+private:
+	Ports ports_{{{Direction::output, "tap", {"1"}, PortBank::Reach::inside}}};
+};
+
+} // namespace
+
+// A type's throw is a fact about its node (docs/writing-a-node-type.md#rules-the-framework-enforces): a sink consumer
+// that throws on the real sink's thread fails only its node, through NodeHost's catch, never the callback boundary
+// (which, with no Faults installed, would end this test program).
+TEST_CASE("A sink consumer that throws on its real sink thread fails only its node, and the graph runs on",
+          "[engine][sink]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	ThreadHandoffs handoffs(engine->mainLoop());
+	AlsaSoundCards cards(*engine);
+	RtpReceivers receivers(*engine);
+	MainLoopExecutor mainLoop(*engine);
+	ThreadSinks sinks(mainLoop);
+	EventSources sources;
+	ResourceRegistry resources(cards, receivers, handoffs, sinks, sources);
+	NodeCatalogue catalogue{{}};
+	DesiredGraph graph(catalogue);
+	HealthWake health(waiter);
+	NodeHost host(kFormat, blocks, resources, mainLoop, mainLoop);
+	host.subscribe(health);
+	host.nodeAdded(NodeSpec{"ok", "level", {}}, std::make_shared<LevelConfig>());
+	host.nodeAdded(NodeSpec{"rec", "test", {}}, std::make_shared<ThrowingSinkConfig>());
+	const auto of = [&](const NodeName& name) -> std::optional<NodeHealth> {
+		for (const NodeHealth& each : host.health())
+			if (each.name == name) return each;
+		return std::nullopt;
+	};
+	REQUIRE(waiter.until(
+		[&] {
+			const auto rec = of("rec");
+			return rec && rec->state == NodeState::failed && of("ok") && of("ok")->state == NodeState::running;
+		},
+		10s));
+	const auto rec = of("rec");
+	REQUIRE(rec->reason);
+	// lost once rested; start-failed if the first chunk beat the drive's completion to the main loop
+	CHECK((rec->reason->code == FailureReason::Code::lost || rec->reason->code == FailureReason::Code::startFailed));
+	CHECK(rec->reason->detail == "the sink tap's consumer threw in consume: disk full");
+	CHECK(of("ok")->state == NodeState::running);
+	bool gone = false;
+	host.stopAll(graph.close(), [&] {
+		gone = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return gone; }, 10s));
+	CHECK(host.leaked() == 0);
 }

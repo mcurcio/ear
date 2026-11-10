@@ -76,6 +76,7 @@
 #include "ear/core/main_loop_activity.hpp"
 #include "ear/core/node_lifecycle.hpp"
 #include "ear/core/pass_through.hpp"
+#include "caught.hpp"
 
 namespace ear {
 namespace {
@@ -101,33 +102,8 @@ lc::Fact factOf(const FailureReason& reason, lc::Fact fact) noexcept {
 	return reason.code == FailureReason::Code::engineRefused ? lc::Fact::engine : fact;
 }
 
-/// What a caught exception says, for a detail.
-std::string whatOf(const std::exception_ptr& thrown) {
-	try {
-		std::rethrow_exception(thrown);
-	} catch (const std::exception& error) {
-		return error.what();
-	} catch (...) {
-		return "an exception that is no std::exception";
-	}
-}
-
-/// Runs a type's code and says what it threw instead of letting it pass: the one catch every call into a type's code
-/// goes through, on whatever thread calls it (NodeHost's hooks on the main loop, a consumer on its sink's or handoff's
-/// thread), so a type's throw is a fact about its node and never reaches the callback boundary
-/// (docs/writing-a-node-type.md#rules-the-framework-enforces).
-template <typename Call> auto caughtFrom(Call&& call) -> std::expected<std::invoke_result_t<Call>, std::string> {
-	try {
-		if constexpr (std::is_void_v<std::invoke_result_t<Call>>) {
-			std::forward<Call>(call)();
-			return {};
-		} else {
-			return std::forward<Call>(call)();
-		}
-	} catch (...) {
-		return std::unexpected(whatOf(std::current_exception()));
-	}
-}
+using detail::caughtFrom;
+using detail::whatOf;
 
 /// A hook of a type's code NodeHost calls on the main loop: its name in a fault's detail ("<name> threw: <what>"), the
 /// call MainLoopActivity names while it runs (a string literal: only its address is kept), and whether it is timed
@@ -1881,10 +1857,17 @@ struct NodeHost::Impl {
 		}
 
 		/// A consumer of the configuration threw while facts reach it (Channel::threw): it fails as a hook that throws
-		/// does (start-failed before it rested, lost after).
+		/// does (start-failed before it rested, lost after). One the machine would drop, since a failure, a disable or a
+		/// removal already outranks it (a teardown's fade, before its silence closes the channel), is a log record
+		/// instead, so no throw goes unrecorded.
 		void consumerThrew(std::string detail) {
 			host_.inputFor(serial_, [generation = config_->generation, detail = std::move(detail)](Node& node) mutable {
-				if (node.current(generation)) node.feed(node.aggregate_.fault(lc::Fact::hookThrew, std::move(detail)));
+				if (!node.current(generation)) return;
+				if (node.aggregate_.intent() >= lc::Intent::fail) {
+					node.host_.logged(LogEntry{LogLevel::error, "ear", std::move(detail), {}, node.name_});
+					return;
+				}
+				node.feed(node.aggregate_.fault(lc::Fact::hookThrew, std::move(detail)));
 			});
 		}
 
@@ -2004,10 +1987,10 @@ struct NodeHost::Impl {
 
 	/// One input at a time: one that arrives while another is handled, from an action or a callback inside it,
 	/// or while a flush item runs, is handled after it, in arrival order (by drain()). An input that throws (ear's
-	/// own bug, or an adapter's: a type's throw never leaves callType) does not strand the inputs queued behind it, which may be
-	/// other nodes' (a stop whose allGone would then never run): they are handled first, and the first exception is
-	/// rethrown once the queue is empty, with the place it was thrown from. The node it was thrown out of is left as the
-	/// throw left it.
+	/// own bug, or an adapter's: a type's throw never leaves callType) does not strand the inputs queued behind it,
+	/// which may be other nodes' (a stop whose allGone would then never run): they are handled first, and the first
+	/// exception is rethrown once the queue is empty, with the place it was thrown from. The node it was thrown out of
+	/// is left as the throw left it.
 	void input(std::move_only_function<void()> work) {
 		inputs.push_back(std::move(work));
 		if (handling || inItem) return;

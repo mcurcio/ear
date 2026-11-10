@@ -61,6 +61,24 @@ class CardType final : public NodeTypeOf<cardTable> {
 	}
 };
 
+/// Text that throws when it reads "boom", as a type's parse with a bug.
+std::optional<std::string> throwingText(std::string_view text) {
+	if (text == "boom") throw std::runtime_error("parse blew up");
+	return std::string(text);
+}
+
+constexpr auto modeRow = setting::optional("mode", setting::text<throwingText>("text"));
+constexpr SettingsTable<modeRow> faultyTable{"faulty"};
+
+/// A type with bugs: its row's parse throws for "boom", and its make for {"mode": "make"}.
+class FaultyType final : public NodeTypeOf<faultyTable> {
+	MadeConfig make(const NodeName&, const Checked& settings) const override {
+		if (const auto mode = settings.get<modeRow>(); mode && *mode == "make")
+			throw std::logic_error("no ports for it");
+		return std::make_unique<TestConfig>(Ports{{{Direction::output, "out", {"1"}}}});
+	}
+};
+
 std::vector<std::unique_ptr<const NodeType>> testTypes() {
 	std::vector<std::unique_ptr<const NodeType>> types;
 	types.push_back(std::make_unique<CardType>());
@@ -158,6 +176,27 @@ TEST_CASE("A wanted node of a known type is added once and told once", "[desired
 		CHECK(f.recorder.nodes.size() == 1);
 		CHECK(f.graph.nodes().at(0).spec == noiseSpec);
 	}
+}
+
+TEST_CASE("A type that throws at parse refuses the edit as invalid settings, and the graph runs on as it was",
+          "[desired_graph][type-throw]") {
+	std::vector<std::unique_ptr<const NodeType>> types = testTypes();
+	types.push_back(std::make_unique<FaultyType>());
+	NodeCatalogue catalogue{std::move(types)};
+	DesiredGraph graph{catalogue};
+	apply(graph, {noiseSpec}, {});
+	for (const auto& [mode, detail] : std::vector<std::pair<std::string, std::string>>{
+			 {"boom", "faulty threw: parse blew up"}, {"make", "faulty threw: no ports for it"}}) {
+		INFO(mode);
+		const auto result = graph.plan(std::vector<NodeSpec>{noiseSpec, {"bad", "faulty", {{"mode", mode}}}}, {});
+		const auto& invalid = planErrorOf<InvalidSettings>(result);
+		CHECK(invalid.node == "bad");
+		CHECK(invalid.detail == detail);
+		REQUIRE(graph.nodes().size() == 1);
+		CHECK(graph.nodes().at(0).spec == noiseSpec);
+	}
+	apply(graph, {noiseSpec, {"good", "faulty", {{"mode", "quiet"}}}}, {}); // the type is refused only where it threw
+	CHECK(graph.nodes().size() == 2);
 }
 
 TEST_CASE("A wanted route is checked at both ends: node, port and direction", "[desired_graph]") {
