@@ -55,6 +55,11 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   and waits until `clean()` reaches the number it planned.
 - **`StallingCode`** is an `AudioCode` that writes silence, records into its ledger and stalls at
   its plan's cycles (by ledger index).
+- **`DriverCycles`** (`src/pipewire/tests/engine_harness.hpp`, the engine tests only) listens to the
+  internal clock's driver in this process (PipeWire's realtime `start` and `incomplete` events on
+  `Dummy-Driver`): it counts the graph cycles started and keeps which were cut short. A code reads
+  `started()` in its `process()` to name the cycle it ran in; `cutShort()` of that says whether the
+  nodes after it may have lost it. It is the ledger of a node that runs no code of ear's (a card).
 - **Judged to a planned count.** A check that holds only where the clock did not jump (a take-up's
   first cycle at the published position, a ramp continuing across a cycle boundary) is judged where
   the cycles themselves say so: a ledger's clean cycles, the block's own `xruns` unchanged since its
@@ -68,7 +73,18 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   is, the position may never lead the raw clock by more than the driver's 1 ms clamp and its wake
   latency (two cycles' room), so a host's stall is excused and an engine that jumps further than time
   went fails. S5 reads `CLOCK_MONOTONIC_RAW` itself; part A reads it in its code too, never the
-  driver's own stamp.
+  driver's own stamp, and so do the card tests' codes, which count a discontinuity only when it is
+  not such a jump.
+- **A chain is judged where its last node says so.** Each code in a chain counts only the cycles it
+  runs, and a cycle cut short is run by an upstream prefix only
+  ([engine.md](engine.md#the-one-data-loop-and-invokes)), so a ramp at its head moves on by a block
+  its tail never hears. A sample within a cycle is judged every time; a cycle boundary only where the
+  last node's own record shows nothing was lost before it: the recorder's clean cycles (the ramp
+  through a block's inside ports), or, where the last node is a card, the ramp's blocks missing from
+  the card's file each of a cycle `DriverCycles` found cut short (counted, not judged), any other
+  gap or repeat a break. Either way the test waits for a planned count of judged boundaries (32),
+  requires that its ledger did not fill first, and still fails a block dropped or repeated on a
+  clean cycle.
 
 ### A writer's own event
 
@@ -140,6 +156,12 @@ CMake splits a name at it. A test case whose load would starve the realtime-time
 is named by tag in `ear_catch_tests(<target> SERIAL <tag>)`, which gives it CTest's `RUN_SERIAL`
 (only the `[s2]` spikes in `ear_pipewire_tests`: S2 and S5). `test/main.cpp` turns off Catch's
 POSIX signal handlers, which do not compile against glibc 2.34 and newer (Catch 2.13.5 fixes it).
+It is Catch's runner, with one check before any test runs: Catch 2.12's console reporter indents a
+failing test's header after the name's first `": "`, in a column 79 wide: an indent of 79 or more
+aborts the process (an `assert`) and one of 78 loops forever printing `-`, either way before the
+failing check is printed. So a test program holding a name whose first `": "` ends past column 69
+(less than 10 columns left) refuses to run, naming it (exit 3), and its discovery fails the build.
+Keep a test name's first `": "` early, or leave it out.
 
 Beside the executables, `test/CMakeLists.txt` runs the sleep guard and its own tests
 ([above](#the-sleep-guard)), the frame guard and its own (in the table below), `ear --help` (the binary loads its shared libraries), `ear_carried_patch_check` runs what configure asks of a tree that must carry a patch,

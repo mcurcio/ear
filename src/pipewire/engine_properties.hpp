@@ -99,7 +99,7 @@ inline constexpr std::string_view livePorts = "Live ports name their node, port 
 inline constexpr std::string_view linkCarries =
 	"A link carries a source block's ramp to a sink block sample for sample";
 inline constexpr std::string_view cardFollows = "A playback card becomes ready, every channel's link active, and then "
-												"follows: the internal clock drives it and every port block";
+												"follows, the internal clock driving it and every port block";
 inline constexpr std::string_view cardAlone =
 	"A card running alone holds no port block: they stay on the dummy until it is ready";
 inline constexpr std::string_view cardJoins =

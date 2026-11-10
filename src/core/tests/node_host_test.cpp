@@ -2381,7 +2381,7 @@ TEST_CASE("Nothing from an old run lands on a new one, even when it closed at on
 	CHECK(f.allGone == 1);
 }
 
-TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a restart and a removal: before release, "
+TEST_CASE("Every teardown starts with the barrier, a drive of no code, for a restart and a removal, before release, "
           "before anything is freed and before the block is destroyed",
           "[node_host][teardown]") {
 	Fixture f;
@@ -2682,8 +2682,8 @@ void addRunning(Fixture& f, const NodeName& name, std::shared_ptr<const NodeConf
 
 } // namespace
 
-TEST_CASE("PipeWire's object changes of one turn run together in one flush, destroys first: engine companions, then "
-          "blocks, then makes",
+TEST_CASE("PipeWire's object changes of one turn run together in one flush, destroys first (engine companions, then "
+          "blocks), then makes",
           "[node_host][flush]") {
 	Fixture f;
 	addRunning(f, "a", withPlayback(f.log));

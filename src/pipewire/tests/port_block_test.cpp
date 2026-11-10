@@ -191,24 +191,36 @@ public:
 	void release() noexcept override {}
 };
 
-/// Records its first input's samples (up to a fixed capacity).
+/// Records its first input's samples (up to a fixed capacity), and each cycle whose samples it recorded whole in its
+/// ledger, with the index of its first sample.
 class Recorder final : public AudioCode {
 public:
-	explicit Recorder(Waiter& waiter) : waiter_(waiter), samples_(8 * kRate) {}
+	explicit Recorder(Waiter& waiter, std::size_t capacity = 8 * kRate)
+		: waiter_(waiter), samples_(capacity), ledger_(capacity / kBlock), cycleStart_(capacity / kBlock) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>>,
-	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
-		std::size_t at = recorded_.load(std::memory_order_relaxed);
+	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
+		const std::size_t from = recorded_.load(std::memory_order_relaxed);
+		std::size_t at = from;
 		for (std::uint32_t i = 0; i < frames && at < samples_.size(); ++i) samples_[at++] = inputs[0][i];
+		if (at == from + frames && ledger_.count() < ledger_.capacity()) {
+			cycleStart_[ledger_.count()] = from; // before record() publishes the cycle
+			ledger_.record(cycle, frames);
+		}
 		recorded_.store(at, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::span<const float> samples() const { return {samples_.data(), recorded_.load(std::memory_order_acquire)}; }
+	/// The cycles recorded whole, and where cycle `n`'s samples begin in samples().
+	const CycleLedger& ledger() const { return ledger_; }
+	std::size_t cycleStart(std::size_t n) const { return cycleStart_[n]; }
 
 private:
 	Waiter& waiter_;
 	std::vector<float> samples_;
+	CycleLedger ledger_;
+	std::vector<std::size_t> cycleStart_;
 	std::atomic<std::size_t> recorded_{0};
 };
 
@@ -637,17 +649,40 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	REQUIRE(wiring.link(waiter, {"card", "to_card.1"}, {"rec", "record.left"}));
 	CHECK(wiring.ports.find("card", "to_card.1")->direction == Direction::output);
 
-	constexpr std::size_t kWanted = 32 * kBlock;
-	REQUIRE(waiter.until([&] {
-		const auto samples = recorder.samples();
-		return samples.size() - std::min(firstSound(samples), samples.size()) >= kWanted;
-	}));
+	// The ramp, the pass-through and the recorder each count only the cycles they run. A cycle cut short is run by an
+	// upstream prefix of the chain only (docs/engine.md#the-one-data-loop-and-invokes), so one a host's stall cuts after
+	// the ramp moves the ramp on unheard, and the recorder, last in the chain, misses it: its next cycle is not clean in
+	// its ledger. So a cycle boundary is judged only on the recorder's clean cycles, to a planned count of them; within
+	// every cycle it heard, the ramp is whole. A block the chain drops or repeats on a clean cycle is still a break.
+	constexpr std::size_t kWanted = 32; // clean cycle boundaries judged, after the first sound
+	const CycleLedger& ledger = recorder.ledger();
+	const auto judged = [&] {
+		const std::size_t first = firstSound(recorder.samples());
+		std::size_t clean = 0;
+		for (std::size_t n = 0; n < ledger.count(); ++n)
+			if (ledger[n].clean && recorder.cycleStart(n) > first) ++clean;
+		return clean;
+	};
+	REQUIRE(waiter.until([&] { return judged() >= kWanted || ledger.full(); }, 30s));
+	{
+		INFO("the recorder filled its " << ledger.capacity() << " cycles before " << kWanted << " clean ones came");
+		REQUIRE_FALSE(ledger.full());
+	}
 	const auto samples = recorder.samples();
 	const std::size_t first = firstSound(samples);
-	std::size_t breaks = 0;
-	for (std::size_t i = first + 1; i < samples.size(); ++i) {
-		if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+	REQUIRE(first < samples.size());
+	std::size_t breaks = 0, unjudged = 0;
+	for (std::size_t n = 0; n < ledger.count(); ++n) {
+		const std::size_t start = recorder.cycleStart(n);
+		const std::size_t end = start + ledger[n].frames;
+		if (end <= first + 1) continue;
+		for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
+			if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+		if (start <= first) continue;
+		if (!ledger[n].clean) ++unjudged; // a cycle lost before it: the boundary is not the chain's to keep
+		else if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
 	}
+	INFO(unjudged << " cycle boundaries after a lost cycle, not judged");
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
 
@@ -926,7 +961,7 @@ private:
 
 } // namespace
 
-TEST_CASE("A companion's latency beyond an inside bank is added in series to that bank's peers: told on the paired "
+TEST_CASE("A companion's latency beyond an inside bank is added in series to that bank's peers, told on the paired "
           "output to the next block, and downstream of an inside output to its code and to what feeds the paired input",
           "[port_blocks][latency]") {
 	auto engine = makeEngine();

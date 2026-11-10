@@ -499,7 +499,7 @@ struct Recorder {
 } // namespace sink_conformance
 
 TEST_CASE("A chunk split at the ring's end reaches its consumer the same through ThreadSink and through the type "
-          "harness's sink: the same calls, frames, positions, start times, latency and discontinuities",
+          "harness's sink, with the same calls, frames, positions, start times, latency and discontinuities",
           "[sink][conformance]") {
 	namespace conform = sink_conformance;
 	// A 256-frame ring and 100-frame cycles, as the wrap test above: chunks split at the ring's end at varying offsets.

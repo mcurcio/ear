@@ -784,6 +784,33 @@ in `docs/testing.md#making-the-rare-event`.
   be time the raw clock shows was lost since the last cycle's end, within two cycles and the driver's 1 ms clamp
   (idle: 0 and 5 frames at most). The writer's wait ended by the close is now told apart from one ended by its
   patience (`waitsWoken`), and the year-long patience is checked directly (`waitDeadline`).
+- **Found after R5b: two block chains still judged every boundary.** `port_block_test.cpp`'s ramp through a block's
+  inside ports and `sound_card_test.cpp`'s ramp onto the card's channel 2 counted every sample step as a break. Each
+  code counts only the cycles it runs, so a cycle a starved data thread cut short after the ramp moved it on by a block
+  the tail never heard: both failed within 10 to 60 repeats beside 8 busy processes on 4 cores, at the R7 head too. The
+  port block chain now judges a boundary only on its recorder's clean cycles, as the engine's ramp test does; the
+  recorder is the chain's last node, and a cut cycle is run by an upstream prefix only, so it misses every cycle lost
+  anywhere in the chain. A card runs no code of ear's to keep a ledger, so the engine tests gained `DriverCycles`: the
+  driver's own realtime `incomplete` event names each cycle cut short, the ramp records the graph cycle each of its
+  cycles ran in, and a jump in the card's file is excused only where every block missing from it ran in a cut cycle.
+  Both wait for 32 judged boundaries.
+- **Found after R5b: more of the class, by a sweep of `ear_pipewire_tests`.** The card tests' `discontinuities() == 0`
+  ("the card joining moved no clock", "a card that loses a link ... leaves the clock alone") counted a host's catch-up
+  jump as a discontinuity too; each code now counts only those the raw clock does not excuse, as S5 judges a jump, and
+  the rest aside. `source_test.cpp`'s bound source required an unbroken Played count against the first position and no
+  shortfall, with its writer a plain thread on an 8,192-frame ring, so a writer or data thread starved past 170 ms
+  failed it; it is now judged by part A's source rule (`judgeSource`, shared) and dst by part A's listener rule, to a
+  planned 200 cycles played whole. Its date was checked on every cycle too, but Played is dated by the last frame a
+  cycle played, so a cycle a starved writer left short is dated earlier by what it lacked (failed 3 in 30 under load):
+  the date is judged on the cycles the source played every frame of. Still owed, found by the same sweep and not fixed here: `rtp_receiver_test.cpp`'s
+  tone fits every tenth with no ledger, so a cycle the recorder missed or a receiver underrun fails a tenth.
+- **Found after R5b: a failure Catch could not print.** Under load the card's lost-link test failed and the process
+  aborted inside Catch 2.12's console reporter (an `assert` in its text column) before printing the failing check: the
+  reporter indents a failing test's header after its first ": ", and asserts that indent is under the column's width
+  (`CATCH_CONFIG_CONSOLE_WIDTH - 1`, 79), which seven names passed; an indent of 78 (an eighth name) loops forever
+  printing "-" instead. `test/main.cpp` is now Catch's runner with a check first: a test program holding a name whose
+  first ": " leaves under 10 columns refuses to run (exit 3, naming each), so catch_discover_tests fails the build; the
+  eight were renamed. A wider console would only move the limit.
 
 ## 6. Class 4: PipeWire properties
 

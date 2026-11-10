@@ -307,7 +307,7 @@ TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle tha
 	CHECK(harness.phase() == "stopped");
 }
 
-TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the real block's does: a fade left "
+TEST_CASE("A drive applied while the harness's fade-out waits cancels it, as the real block's does, so a fade left "
           "unacknowledged for 100 ms, then a start, fades in from zero and leaves nothing to acknowledge",
           "[type-spec]") {
 	// At 1000 Hz a fade is 5 frames. out = 2 * in, faded.
