@@ -1,7 +1,9 @@
 // A sendspin node's clock (docs/node-types.md#clock): the real engine, a real port
 // block driven by the real code, the real library behind the real worker, and the real server playing a ramp in which
 // every frame names its place, so output time can be held against the time filter's prediction, cycle by cycle. Every
-// wait is event-gated; a deadline only fails the test.
+// wait is event-gated; a deadline only fails the test. What the host does (a stalled data thread, a jump of the clock) is
+// recorded in a cycle ledger and only makes a test play longer: each judges a planned count of cycles the host left alone
+// (docs/testing.md#making-the-rare-event).
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -15,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -31,6 +34,7 @@
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
 #include "feed.hpp"
+#include "inducers.hpp"
 #include "sendspin_code.hpp"
 #include "sendspin_server.hpp"
 #include "settings.hpp"
@@ -43,9 +47,20 @@ using namespace ear::pipewire;
 using namespace ear::pipewire::testing;
 using namespace ear::sendspin;
 using namespace std::chrono_literals;
+using ear::test::CycleLedger;
 using ear::test::SendspinTestServer;
 
 constexpr std::uint32_t kFeedFrames = 2048;
+/// The cycles each timing test judges: about four seconds of cycles the host left alone, each 3 s into the ramp and
+/// 1.5 s past anything the host did. However often the host disturbs the clock, the stream plays on until they are.
+constexpr std::size_t kPlannedCycles = 750;
+/// The stream the timing tests ask for: far longer than they need on a quiet host, so a loaded one still reaches
+/// kPlannedCycles before it ends. They stop judging once they have, and the rig stops the worker mid-stream.
+constexpr double kStreamSeconds = 90.0;
+/// How long a disturbance of the clock (a skip, a jump, a stall) excuses what follows it: the library catching up with
+/// its clock after the feed ran dry, and the internal clock catching up by whole blocks (engine.conf's resync.ms keeps
+/// its phase to the raw clock).
+constexpr std::int64_t kSettleNs = 1500000000;
 
 /// One cycle as the real code left it.
 struct Cycle {
@@ -59,6 +74,9 @@ struct Cycle {
 	std::uint32_t firstIndex;  // the ramp index that one names
 	std::uint32_t lastIndex;   // the ramp index the last of them names
 	bool ramp;                 // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
+	bool clean;                // the ledger's word: it followed the cycle before it with nothing lost
+	std::uint32_t zeros;       // frames of exact silence in it: once the ramp has begun, what the feed did not hold
+	std::uint32_t skipped;     // frames the code skipped in it for the graph's jump (SendspinCode::lastSkipped)
 };
 
 /// The ramp index a frame names, or nothing when it is no exact ramp frame (or silence).
@@ -72,10 +90,10 @@ std::optional<std::uint32_t> indexOf(float left, float right) {
 	return word(lo) | (word(hi) << 16U);
 }
 
-/// Runs the real code and records what it output, into memory made before it runs.
+/// Runs the real code and records what it output, and each cycle in a ledger, into memory made before it runs.
 class Tap final : public AudioCode {
 public:
-	Tap(AudioCode& code, Waiter& waiter) : code_(code), waiter_(waiter), cycles_(kCapacity) {}
+	Tap(SendspinCode& code, Waiter& waiter) : code_(code), waiter_(waiter), ledger_(kCapacity), cycles_(kCapacity) {}
 	void prepare(const AudioFormat& format) override { code_.prepare(format); }
 	void release() noexcept override { code_.release(); }
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
@@ -83,6 +101,7 @@ public:
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
+		ledger_.record(cycle, frames);
 		Cycle& out = cycles_[at];
 		out.startRawNs = cycle.startRawNs;
 		out.position = cycle.position;
@@ -90,15 +109,21 @@ public:
 		out.delayFrames = cycle.downstreamOf(0).maxFrames;
 		out.driverId = cycle.driverId;
 		out.got = 0;
+		out.zeros = 0;
+		out.skipped = code_.lastSkipped();
 		out.firstAt = 0;
 		out.firstIndex = 0;
 		out.lastIndex = 0;
 		out.ramp = true;
+		out.clean = ledger_[at].clean;
 		// Zeros, ramp, zeros: silence the library primed with, or what the feed did not hold.
 		for (std::uint32_t i = 0; i < frames; ++i) {
 			const float left = outputs[0][i];
 			const float right = outputs[1][i];
-			if (left == 0.0F && right == 0.0F) continue;
+			if (left == 0.0F && right == 0.0F) {
+				++out.zeros;
+				continue;
+			}
 			const auto index = indexOf(left, right);
 			if (!index) {
 				out.ramp = false;
@@ -118,11 +143,12 @@ public:
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
 	const Cycle& at(std::size_t index) const { return cycles_[index]; }
-	static constexpr std::size_t kCapacity = 60 * kRate / kBlock;
+	static constexpr std::size_t kCapacity = 150 * kRate / kBlock;
 
 private:
-	AudioCode& code_;
+	SendspinCode& code_;
 	Waiter& waiter_;
+	CycleLedger ledger_; // the data thread's alone; each Cycle carries its word
 	std::vector<Cycle> cycles_;
 	std::atomic<std::size_t> count_{0};
 };
@@ -228,28 +254,34 @@ struct Rig {
 		std::erase(code, '-');
 		server.send("code " + code);
 		REQUIRE(waiter.until([&] { return notes.heard("connected \"ear-test-server\" paired"); }, 20s));
-		// Not a check: on a loaded host the data thread's stalls can keep two seconds without a jump from coming, and
-		// the test then judges what it can (the docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
-		if (!waiter.until([&] { return tracksRawClock(); }, 20s))
-			WARN("the graph did not settle on the raw clock's rate within 20 s");
+		// ear's own event: the internal clock's loop reaching the raw clock's rate. Measured over the cycles the host
+		// left alone, so a loaded host only delays it; the deadline only fails the test.
+		const bool tracking = waiter.until([&] { return tracksRawClock(); }, 60s);
+		INFO("the graph's rate over its clean cycles never came within 20 ppm of the raw clock's");
+		REQUIRE(tracking);
 		server.send("play " + std::to_string(seconds));
 		REQUIRE(server.waitForEvent("play-start ", 20s).has_value());
 	}
 
-	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the last two seconds of cycles. The
-	/// internal clock starts at the rate of CLOCK_MONOTONIC and its loop takes seconds to reach the raw clock's
-	/// (docs/engine.md#the-internal-clock); until it has, the library sees the graph off by however far
-	/// NTP slews CLOCK_MONOTONIC on the host (140 ppm seen) and corrects by interpolating frames.
+	/// Whether the graph has run at its rate on the raw clock, within 20 ppm, over the clean cycles of the last two
+	/// seconds, which must be most of them. The internal clock starts at the rate of CLOCK_MONOTONIC and its loop takes
+	/// seconds to reach the raw clock's (docs/engine.md#the-internal-clock); until it has, the library sees the graph off
+	/// by however far NTP slews CLOCK_MONOTONIC on the host (140 ppm seen) and corrects by interpolating frames. Each
+	/// clean cycle counts against the one before it: a jump the host made says nothing of the loop's rate, and a window
+	/// with one in it is still read.
 	bool tracksRawClock() const {
 		constexpr std::size_t window = 2 * kRate / kBlock;
 		const std::size_t count = tap.count();
 		if (count < window + 1) return false;
-		const Cycle& first = tap.at(count - 1 - window);
-		const Cycle& last = tap.at(count - 1);
-		if (last.position - first.position != std::uint64_t{window} * kBlock) return false; // a jump: look again later
-		const double frames = static_cast<double>(last.position - first.position);
-		const double seconds = static_cast<double>(last.startRawNs - first.startRawNs) / 1e9;
-		return std::abs(frames / seconds / kRate - 1.0) < 20e-6;
+		std::uint64_t frames = 0;
+		std::int64_t ns = 0;
+		for (std::size_t i = count - window; i < count; ++i) {
+			if (!tap.at(i).clean) continue;
+			frames += tap.at(i - 1).frames;
+			ns += tap.at(i).startRawNs - tap.at(i - 1).startRawNs;
+		}
+		if (frames < std::uint64_t{window} * kBlock * 3 / 4 || ns <= 0) return false; // too few: look again later
+		return std::abs(static_cast<double>(frames) / (static_cast<double>(ns) / 1e9) / kRate - 1.0) < 20e-6;
 	}
 
 	/// The ramp reached the output.
@@ -359,14 +391,18 @@ struct TestCard {
 
 struct Errors {
 	std::size_t judged = 0;
-	std::size_t afterFirst3s = 0; // the cycles that could have been judged, skipped ones' 1.5 s among them
+	std::size_t afterFirst3s = 0; // the cycles that could have been judged, those the host disturbed among them
 	std::uint32_t mostDelayFrames = 0;
 	std::uint32_t leastDelayFrames = UINT32_MAX;
 	std::size_t driverChanges = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
-	std::size_t skips = 0;
+	std::size_t skips = 0;        // forward jumps within the feed, which the code skips
+	std::size_t shortSkips = 0;   // of them, those the feed held less than: the code skipped all it held
+	std::size_t disturbances = 0; // cycles the ledger did not call clean: what the host did to the graph
+	std::size_t dryCycles = 0;    // cycles mid-ramp the feed did not fill: what the host did to the worker
 	std::size_t badCycles = 0;
+	std::size_t excusedSteps = 0;        // steps the library took catching up after a jump past the feed
 	std::vector<std::uint32_t> badSteps; // each step's size, so a red names it
 	std::uint64_t contiguousFrames = 0;  // and how long they took: the graph's real rate
 	std::int64_t contiguousNs = 0;
@@ -377,66 +413,117 @@ struct Errors {
 	}
 };
 
+/// What a red needs to say about the judging: a report for the failure's message, never a warning of its own.
+std::string describe(const Errors& errors) {
+	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
+	std::ostringstream text;
+	text << "judged " << errors.judged << " of " << errors.afterFirst3s << " cycles (planned " << kPlannedCycles
+		 << "), downstream " << errors.leastDelayFrames << " to " << errors.mostDelayFrames << " frames, within 1 ms "
+		 << errors.within << ", p50 " << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99)
+		 << " us, worst " << errors.worstUs << " us, skips " << errors.skips << " (short " << errors.shortSkips << ")"
+		 << ", disturbed cycles " << errors.disturbances << ", dry cycles " << errors.dryCycles << ", bad cycles "
+		 << errors.badCycles << ", steps excused after a jump " << errors.excusedSteps << ", the graph's rate "
+		 << static_cast<double>(errors.contiguousFrames) / seconds << " Hz, bad steps:";
+	for (const std::uint32_t step : errors.badSteps) text << " " << step;
+	return text.str();
+}
+
 /// Reads cycles as they arrive and holds each ramp cycle's output time against the time filter's prediction, at that
-/// moment, for the stamp the server sent its frames with.
+/// moment, for the stamp the server sent its frames with. What the host did is read from the ledger's word on each
+/// cycle: a cycle is judged only when it is clean, 3 s into the ramp and 1.5 s past the last cycle that was not.
 class Judge {
 public:
 	explicit Judge(Rig& rig) : rig_(rig) {}
 
 	/// Every cycle not read yet.
 	void read() {
-		for (; next_ < rig_.tap.count(); ++next_) one(rig_.tap.at(next_));
+		for (; next_ < rig_.tap.count(); ++next_) one(next_, rig_.tap.at(next_));
 	}
 
 	/// How many whole cycles in a row have held the ramp exact, each stepping by +1 from the last.
 	std::size_t plusOneRun() const { return plusOneRun_; }
+	/// The cycle at which plusOneRun() last reached `run`.
+	std::optional<std::size_t> runReachedAt(std::size_t run) const {
+		return plusOneRun_ >= run ? std::optional<std::size_t>(next_ - 1 - (plusOneRun_ - run)) : std::nullopt;
+	}
 	void restartRun() noexcept { plusOneRun_ = 0; }
 	/// The newest ramp index out.
 	std::uint32_t lastIndex() const { return lastIndex_.value_or(0); }
+	/// The newest cycle the ledger did not call clean, by index.
+	std::optional<std::size_t> lastDisturbed() const { return lastDisturbed_; }
 
 	Errors errors;
 
 private:
-	void one(const Cycle& cycle) {
-		std::int64_t skipped = 0; // the frames the code skips in this cycle: the graph's forward jump
-		if (previous_ && cycle.position != previous_->position + previous_->frames) {
+	void one(std::size_t index, const Cycle& cycle) {
+		std::int64_t skipped = 0; // the graph's forward jump within the feed, which the code skips
+		bool jumpPastFeed = false;
+		if (previous_ && !cycle.clean) {
+			// Whatever the host did, the time around it is not judged: a skip, a stall, a jump.
+			++errors.disturbances;
+			lastDisturbanceNs_ = cycle.startRawNs;
+			lastDisturbed_ = index;
 			const auto gap = static_cast<std::int64_t>(cycle.position) -
 			                 static_cast<std::int64_t>(previous_->position + previous_->frames);
 			if (gap > 0 && gap <= kFeedFrames) {
 				++errors.skips;
-				lastSkipNs_ = cycle.startRawNs;
 				skipped = gap;
+				// The code skips the jump, or all the feed held when that was less (a worker the host held up), and never
+				// more.
+				if (cycle.skipped < gap) ++errors.shortSkips;
+				if (cycle.skipped > gap) errors.badSteps.push_back(cycle.skipped);
+			} else if (gap != 0 || cycle.driverId != previous_->driverId) {
+				// Past the feed, or backward: a new clock to the code, which skips nothing; the library then catches up
+				// with its clock in its own steps (sendspin skill, threads and clock).
+				jumpPastFeed = true;
+				lastJumpNs_ = cycle.startRawNs;
 			}
 		}
-		// The ramp ran dry in the last cycle: the feed held less than a skip took, and the library, told nothing played
-		// while it was dry, drops what it holds to catch up with its clock.
-		const bool afterDry = previous_ && previous_->got == 0 && lastIndex_.has_value();
+		// Mid-ramp, the feed did not fill this cycle: it held less than a skip took, or the worker that fills it was held
+		// up by the host. Told nothing played while it was dry, the library drops what it holds to catch up with its
+		// clock, so this too starts the time that is not judged, and excuses the catching up after it.
+		const bool afterDry = previousDry_;
+		previousDry_ = lastIndex_ && cycle.zeros > 0;
+		if (previousDry_) {
+			++errors.dryCycles;
+			lastDisturbanceNs_ = cycle.startRawNs;
+			lastDisturbed_ = index;
+		}
 		if (previous_ && cycle.driverId != previous_->driverId) ++errors.driverChanges;
-		if (previous_ && cycle.position == previous_->position + previous_->frames) {
+		if (previous_ && cycle.clean) {
 			errors.contiguousFrames += previous_->frames;
 			errors.contiguousNs += cycle.startRawNs - previous_->startRawNs;
 		}
 		previous_ = cycle;
+		pendingSkipped_ += cycle.skipped; // a skip in a cycle that played nothing moves the next ramp frame on
 		if (cycle.got == 0) {
 			plusOneRun_ = 0;
 			return;
 		}
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
+		const bool settling = lastDisturbanceNs_ && cycle.startRawNs - *lastDisturbanceNs_ <= kSettleNs;
 		if (lastIndex_) {
 			const auto step = cycle.firstIndex - *lastIndex_;
 			// The library's dropped frame: frame n goes and n+1 is blended, so no ramp frame names n or n+1. Inside a cycle
 			// that is only a bad cycle; when the blend falls on the cycle's edge, the indices either side of it are 3 apart.
 			const bool blendOnEdge = step == 3 && !(cycle.ramp && lastCycleRamp_);
-			// A skip moves the ramp on by exactly the frames the graph jumped. A stalled data thread makes the internal
+			// A skip moves the ramp on by exactly the frames the code skipped for it (lastSkipped: the jump, or all the
+			// feed held). A stalled data thread makes the internal
 			// clock jump by the time it lost, any number of frames (1127, 1156, 1189 seen on an idle host), not only
-			// whole cycles. Resuming after the ramp ran dry is the library's own catching up, right after a skip only.
-			const bool skip = skipped > 0 && step == 1 + skipped;
-			const bool caughtUp = afterDry && lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000;
-			if (step != 1 && !skip && !caughtUp && !blendOnEdge) errors.badSteps.push_back(step);
+			// whole cycles. Resuming after the ramp ran dry is the library's own catching up, right after a disturbance
+			// only.
+			const bool skip = pendingSkipped_ > 0 && step == 1 + static_cast<std::uint32_t>(pendingSkipped_);
+			const bool caughtUp = afterDry && settling;
+			// After a jump past the feed nothing is skipped, and what the library then does to catch up is its own.
+			const bool catchingUp =
+				step != 1 && !jumpPastFeed && lastJumpNs_ && cycle.startRawNs - *lastJumpNs_ <= kSettleNs;
+			if (catchingUp) ++errors.excusedSteps;
+			if (step != 1 && !skip && !caughtUp && !blendOnEdge && !catchingUp) errors.badSteps.push_back(step);
 			plusOneRun_ = step == 1 && cycle.ramp && cycle.got == cycle.frames ? plusOneRun_ + 1 : 0;
 		}
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
+		pendingSkipped_ = 0;
 
 		const std::int64_t rampUs = sentUs(cycle.firstIndex);
 		// When the first of them is heard: at the block's port, plus what lies downstream of it.
@@ -447,11 +534,8 @@ private:
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
-		if (lastSkipNs_ && cycle.startRawNs - *lastSkipNs_ <= 1500000000) return;
+		if (!cycle.clean || settling) return;
 		++errors.judged;
-		// Judged as the timing is: not within 1.5 s of a skip, a stall the internal clock caught up by whole blocks
-		// (engine.conf's resync.ms: it keeps its phase to the raw clock), after which the feed may have run dry and the
-		// library catches up with its clock.
 		if (!cycle.ramp) ++errors.badCycles;
 		if (std::abs(errorUs) < 1000.0) ++errors.within;
 		if (std::abs(errorUs) > std::abs(errors.worstUs)) errors.worstUs = errorUs;
@@ -493,34 +577,31 @@ private:
 	std::optional<std::uint32_t> lastIndex_;
 	bool lastCycleRamp_ = true;
 	std::optional<std::int64_t> firstFrameNs_;
-	std::optional<std::int64_t> lastSkipNs_;
+	std::optional<std::int64_t> lastDisturbanceNs_;
+	std::optional<std::int64_t> lastJumpNs_;
+	std::optional<std::size_t> lastDisturbed_;
 	std::size_t plusOneRun_ = 0;
+	bool previousDry_ = false;
+	std::int64_t pendingSkipped_ = 0; // skipped since the last ramp frame out
 };
 
-void report(const Errors& errors) {
-	const double seconds = static_cast<double>(errors.contiguousNs) / 1e9;
-	WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, downstream "
-	               << errors.leastDelayFrames << " to " << errors.mostDelayFrames << " frames, within 1 ms "
-	               << errors.within << ", p50 " << errors.percentile(0.5) << " us, p99 " << errors.percentile(0.99)
-	               << " us, worst " << errors.worstUs << " us, skips " << errors.skips << ", bad cycles "
-	               << errors.badCycles << ", bad steps " << errors.badSteps.size() << ", the graph's rate "
-	               << static_cast<double>(errors.contiguousFrames) / seconds << " Hz");
+/// Judges cycles as they come until the planned count is judged: however often the host disturbs the clock, the
+/// stream plays on until then. The deadline only fails the test.
+void judgePlanned(Rig& rig, Judge& judge) {
+	const bool judged = rig.waiter.until(
+		[&] {
+			judge.read();
+			return judge.errors.judged >= kPlannedCycles || rig.notes.heard("stream-ended");
+		},
+		150s);
+	INFO(describe(judge.errors));
+	REQUIRE(judged);
+	REQUIRE(judge.errors.judged >= kPlannedCycles);
 }
 
 void checkSync(const Errors& errors) {
-	report(errors);
-	// A host that skips all the time leaves little to judge: a cycle or two passing proves nothing. A tenth is about
-	// half a second's worth of cycles; a host worse than that fails here, without a bug (the
-	// docs/engine.md#xruns-on-a-loaded-host-are-not-bugs trap).
-	INFO("judged " << errors.judged << " of " << errors.afterFirst3s << ", within " << errors.within);
-	REQUIRE(errors.afterFirst3s > 0);
-	REQUIRE(static_cast<double>(errors.judged) >= 0.1 * static_cast<double>(errors.afterFirst3s));
+	INFO(describe(errors));
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
-	INFO("bad steps: " << [&] {
-		std::string steps;
-		for (const std::uint32_t step : errors.badSteps) steps += std::to_string(step) + " ";
-		return steps;
-	}());
 	CHECK(errors.badSteps.empty());
 	// A frame the library interpolates to correct an error past 100 us is no exact ramp frame, and is allowed: CI's
 	// amd64 host sits at -88 us and made two in one run, and at +84 us it dropped one. More than a few would be
@@ -533,14 +614,10 @@ void checkSync(const Errors& errors) {
 TEST_CASE("On the dummy driver, audio leaves the block within 1 ms of the time filter's prediction",
           "[sendspin][clock]") {
 	Rig rig;
-	rig.play(8.0);
+	rig.play(kStreamSeconds);
 	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
-	const auto finished = [&] {
-		judge.read();
-		return rig.notes.heard("stream-ended");
-	};
-	REQUIRE(rig.waiter.until(finished, 30s));
+	judgePlanned(rig, judge);
 	CHECK(rig.notes.heard("stream flac 48000 2 24"));
 	checkSync(judge.errors);
 }
@@ -555,14 +632,10 @@ TEST_CASE("Through a following test card, audio is dated by the card's latency a
           "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	rig.play(8.0);
+	rig.play(kStreamSeconds);
 	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
-	const auto finished = [&] {
-		judge.read();
-		return rig.notes.heard("stream-ended");
-	};
-	REQUIRE(rig.waiter.until(finished, 30s));
+	judgePlanned(rig, judge);
 	CHECK(rig.notes.heard("stream flac 48000 2 24"));
 	// ALSA's playback node reports at least a quantum (alsa-pcm-sink.c), and the card's latency is the same all along.
 	CHECK(judge.errors.leastDelayFrames >= kBlock);
@@ -574,7 +647,7 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
           "[sendspin][clock][cards]") {
 	Rig rig;
 	TestCard card(rig);
-	rig.play(8.0);
+	rig.play(kStreamSeconds);
 	Judge judge(rig);
 	INFO("the node said:\n" << rig.notes.all());
 	// Well into the stream: two seconds of the ramp are out.
@@ -589,6 +662,7 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 	REQUIRE(node.has_value());
 	const auto links = card.registry.linksOf(*node);
 	REQUIRE_FALSE(links.empty());
+	const std::size_t cut = rig.tap.count(); // no cycle after the cut is recorded before this
 	REQUIRE(card.registry.destroy(links.front()));
 	REQUIRE(rig.waiter.until([&] {
 		judge.read();
@@ -598,14 +672,23 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 
 	// Losing the card cuts the audio path but leaves its latency (PipeWire never tells the block that the last link went,
 	// so the downstream latency the node's frames are dated by stays, stale). Any correction the library makes comes from
-	// the cut, a frame per chunk: a chunk is about five blocks, so three in a row hold it.
-	CHECK(rig.waiter.until(
+	// the cut, a frame per chunk: a chunk is about five blocks, so three in a row hold it. The 3 s are the graph's,
+	// counted in cycles from the cut, or from the last cycle the host disturbed after it (which the library recovers
+	// from as it does from the cut); a host that keeps disturbing the clock only makes the wait longer.
+	REQUIRE(rig.waiter.until(
 		[&] {
 			judge.read();
 			return judge.plusOneRun() >= 3;
 		},
-		3s));
-	report(judge.errors);
+		60s));
+	const std::size_t reached = *judge.runReachedAt(3);
+	std::size_t from = cut;
+	if (const auto disturbed = judge.lastDisturbed(); disturbed && *disturbed > from && *disturbed < reached)
+		from = *disturbed;
+	INFO(describe(judge.errors));
+	INFO("the run of three came at cycle " << reached << ", counted from cycle " << from << " (the cut at " << cut
+	                                       << ")");
+	CHECK(reached - from <= 3 * kRate / kBlock);
 	// The internal clock drove all along: neither the card's links nor its loss moved the clock.
 	CHECK(judge.errors.driverChanges == 0);
 }

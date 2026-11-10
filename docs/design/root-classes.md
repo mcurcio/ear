@@ -6,9 +6,10 @@ harness on `workOut`, `docs/engine.md#latency-per-bank-pair`; section 3.6), R3 b
 type's throw is its node's fact, `docs/writing-a-node-type.md#rules-the-framework-enforces`; section 4.6), R4b built
 (faults split by owner, `docs/architecture.md#faults-by-owner`; section 4.7), R5a built
 (its tools and guard: `docs/testing.md#the-tools`, section 5.4), R5b built (`ear_pipewire_tests` audited, section
-5.5), R6 built (the property table: `docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3)
-and R7 built (the harness runs the engine's own rules: `docs/writing-a-node-type.md#testing-a-type`,
-`docs/engine.md#sinks`; section 7.3); the rest designed, not built. Its steps are taken between slice 3b.4 and
+5.5), R5c built (`ear_node_sendspin_tests` audited, section 5.6), R6 built (the property table:
+`docs/engine.md#properties-ear-sets`, section 6.5 says what changed from 6.3) and R7 built (the harness runs the engine's
+own rules: `docs/writing-a-node-type.md#testing-a-type`, `docs/engine.md#sinks`; section 7.3); the rest designed, not
+built. Its steps are taken between slice 3b.4 and
 slice 3c
 ([README](README.md)). The built system it changes is described in `docs/engine.md`, `docs/writing-a-node-type.md`,
 `docs/testing.md` and `docs/output-records.md`; this page cites them and says only what changes.
@@ -835,6 +836,52 @@ in `docs/testing.md#making-the-rare-event`.
   did not fail the build (review): Catch.cmake takes the listing's exit code as a count of tests, so the executable
   dropped out of ctest with no word. So `test/catch_tests_guard.cmake` now also fails any executable's build whose
   discovery found no test, whatever the cause. A `SECTION`'s name is known only once it runs and is not checked.
+
+### 5.6 Found building R5c
+
+`ear_node_sendspin_tests` has no `luck` or `owed` entry left in `test/sleeps.txt`; what the tests wait for and judge is in
+`docs/testing.md#the-tools` and the `sendspin` skill's Tests.
+
+- **The tracking wait failed on jumps, not on the loop.** "Two seconds without a jump" may never come on a loaded host,
+  which is why it was a `WARN`. The rate is now measured over the clean cycles of the last two seconds (each against the
+  one before it, at least three quarters of them), so a jump says nothing either way, and the wait is a `REQUIRE` with a
+  60 s deadline naming the event.
+- **The "within 1 ms" cases judged a fraction, not a count.** They required a tenth of the cycles after 3 s to be judged
+  over a fixed 8 s stream, and treated only skips within the feed as the host's: a stall past 43 ms (a jump past the feed,
+  a new clock to the code) made the library's catch-up a bad step. Each cycle now carries the ledger's word; every cycle
+  that is not clean starts the 1.5 s the timing is excused for, a jump past the feed excuses the library's steps for as
+  long (counted as `excusedSteps`, never judged clean), a skip within the feed must still move the ramp by exactly the
+  frames, and a test plays a 90 s stream until 750 cycles are judged. The report is the failure's `INFO`.
+- **The host starves the worker too, not only the data thread.** Under a load of 11 on 4 cores, 4 runs in 20 failed with
+  graph cycles all clean: the worker that fills the feed was held up, the feed ran dry mid-ramp, and the library, told
+  nothing played, dropped what it held (steps of 256 and of a chunk, 4609, and 21 ms off for a dozen cycles). A cycle
+  that holds silence once the ramp has begun is now a disturbance as a skip is (`dryCycles`): it starts the 1.5 s not
+  judged and excuses the catching up after it. A bug that keeps the feed dry still fails: the planned count never comes.
+- **A skip moves the ramp by what the code skipped, which the test could not see.** A jump within the feed is skipped
+  only as far as the feed holds (steps of 256 for a jump past what a starved worker had written). A second product seam,
+  `SendspinCode::lastSkipped()` (a member the data thread writes and the tap reads on it, after `process()`), gives the
+  frames skipped; the step must be exactly one more (carried over cycles that played nothing), the skip never more than
+  the jump, and the short ones are counted.
+- **Not fixed: the library losing sync.** At loads of 10 to 17 on 4 cores (the briefed busy thread per core plus one,
+  and two other builders), the library's time filter says `Lost sync` on standard error and re-locks off by tens of
+  milliseconds for longer than the 1.5 s excused: a run then fails "within 1 ms" though every judged cycle is clean. It
+  is the library's own event, printed, not given to ear; judging it needs the library's log routed through a callback
+  (the carried patch the `sendspin` skill says slice 3c owes). Until then such a failure is rerun alone
+  (`docs/testing.md#the-rules`).
+- **Not explained: a step of 256 on a clean cycle.** With the seams above, 1 run in 20 at a load of 10 still showed one
+  step of 256 with no jump, no dry cycle and no short skip around it. A candidate is the library dropping what the feed
+  would not take within the 20 ms `on_audio_write` gives it; the worker counts nothing that would show it. Owed: a count
+  of writes the feed gave up on, and the step judged against it.
+- **"Within 3 s" was wall time.** A lost card's recovery is counted in graph cycles from the cut, or from the last cycle
+  the host disturbed after it, which the library recovers from as it does from the cut.
+- **The feed's negative needed a product seam, as the source's did.** `Feed::waitsBegun()` and `waitsWoken()` (writer
+  side only, off the realtime path) replace the 50 ms sleep and the `< patience / 2` wall-time checks.
+- **The skip under root became an ordinary user.** `WithoutFilePrivileges` drops the file capabilities from the test's
+  own thread with the raw `capset` (a `setuid` would change every thread and could not be undone), so the read-only cases
+  run under root; it is shared with `ear_folder_tests` (5.7).
+- **The flood's thread bound is proven where it is enforced.** `transport_test.cpp` holds twice a room of 2 with listed
+  sockets whose threads cannot end, and a flood of 50 upgrades after them adds no thread: four, exactly. The system
+  test's sampled peak stays a `negative`.
 
 ## 6. Class 4: PipeWire properties
 

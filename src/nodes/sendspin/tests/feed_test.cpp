@@ -59,15 +59,14 @@ void writeRamp(Feed& feed, std::uint32_t total, std::uint32_t chunk) {
 	}
 }
 
-/// Once the writer says it waits, and well past its second look at the ring, so only a wake can end its wait. The sleep only
-/// strengthens this: without it the test could pass on that second look, never on anything else.
+/// Once the writer has begun its wait on the room, past its second look at the ring, so only a wake (or its patience) can
+/// end it: the writer's own event (docs/testing.md#a-writers-own-event), never a guess that it has got there.
 bool writerIsInItsWait(const Feed& feed) {
 	const auto until = std::chrono::steady_clock::now() + 10s;
-	while (!feed.writerWaiting()) {
+	while (feed.waitsBegun() == 0) {
 		if (std::chrono::steady_clock::now() >= until) return false;
 		std::this_thread::yield();
 	}
-	std::this_thread::sleep_for(50ms);
 	return true;
 }
 
@@ -125,6 +124,7 @@ TEST_CASE("A full feed's write returns 0 at its patience", "[feed]") {
 	const auto before = std::chrono::steady_clock::now();
 	CHECK(feed.write(samples, 16, 20ms) == 0);
 	CHECK(std::chrono::steady_clock::now() - before >= 20ms);
+	CHECK(feed.waitsWoken() == 0); // its patience ended every wait it began
 	CHECK(feed.write(samples, 16, 0ms) == 0);
 }
 
@@ -145,11 +145,11 @@ TEST_CASE("A full feed's write wakes on a read and takes what fits", "[feed]") {
 	std::array<float, 256> left{};
 	std::array<float, 256> right{};
 	const std::array<std::span<float>, 2> out{left, right};
-	const auto before = std::chrono::steady_clock::now();
 	CHECK(feed.read(out, 256) == 256);
 	writer.join();
 	CHECK(accepted == 256);
-	CHECK(std::chrono::steady_clock::now() - before < patience / 2); // the wake ended it, not its patience
+	CHECK(feed.waitsBegun() == 1);
+	CHECK(feed.waitsWoken() == 1); // the wake ended it, not its patience
 }
 
 TEST_CASE("After clear the next read returns nothing, and what is written after it plays", "[feed]") {
@@ -184,7 +184,6 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	const auto patience = 20s;
 	std::thread writer([&] { accepted = feed.write(samples, 16, patience); });
 	REQUIRE(writerIsInItsWait(feed));
-	const auto before = std::chrono::steady_clock::now();
 	feed.clear();
 	std::array<float, 8> left{};
 	std::array<float, 8> right{};
@@ -192,7 +191,8 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	CHECK(feed.read(out, 8) == 0);
 	writer.join();
 	CHECK(accepted == 16);
-	CHECK(std::chrono::steady_clock::now() - before < patience / 2);
+	CHECK(feed.waitsBegun() == 1);
+	CHECK(feed.waitsWoken() == 1); // the read that applied the clear woke it, not its patience
 }
 
 TEST_CASE("skip discards the oldest frames and says how many", "[feed]") {

@@ -28,6 +28,7 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	// A skipped cycle's frames are counted played: the audio moves on with the graph, and the library sees only the
 	// jump.
 	const std::uint32_t skipped = feed_.skip(missedFrames(cycle));
+	lastSkipped_ = skipped;
 	started_ = true;
 	nextPosition_ = cycle.position + frames;
 

@@ -212,6 +212,11 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **A stream started right after a role change joins the ramp late** (at frame 16608 of 72000, each run), so `play` waits for
   the role, by a 5 ms poll: `aiosendspin` has no event for it. Under load it can still join late, so the tests ask for 1 s of the 1.5 s. The encoder also holds back the stream's tail, so 68607 of 72000
   frames arrive.
+- **The clock tests judge only cycles the host left alone.** Each cycle goes in a `CycleLedger`; a cycle is judged when it is
+  clean, 3 s into the ramp and 1.5 s past the last that was not (or that held silence mid-ramp: the worker starved), and a
+  test plays a 90 s stream until it has judged 750. Before
+  playing they wait for the internal clock to reach the raw clock's rate over the clean cycles of two seconds, and fail naming
+  it if it never does. A host that stalls makes them take longer, never fail.
 - **Tests running side by side (`ctest --parallel`) share one network.** A browser would dial its neighbours' nodes, so `--discover` takes the
   instance to look for. Keep the default port 8928 out of every test but "a connect to it is refused". A test's listening port comes from below the kernel's
   outgoing range (`freeTcpPort`), or a neighbour's flood can hold it as a socket's near end.

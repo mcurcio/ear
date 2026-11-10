@@ -61,7 +61,8 @@ std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t fram
 			return 0;
 		}
 		pollfd ready{room_.fd(), POLLIN, 0};
-		::poll(&ready, 1, static_cast<int>(left.count()));
+		waitsBegun_.fetch_add(1, std::memory_order_release);
+		if (::poll(&ready, 1, static_cast<int>(left.count())) > 0) waitsWoken_.fetch_add(1, std::memory_order_release);
 		room_.drain();
 		writerWaits_.store(false, std::memory_order_relaxed);
 	}

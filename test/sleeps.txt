@@ -25,11 +25,7 @@ induce | src/pipewire/tests/spikes_test.cpp | nanosleep(&twoSeconds, nullptr); |
 pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | the invoke storm's rate between bursts of posts (the storm is the load S2 and S5 make on purpose)
 pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | S2's posts 200 us apart during the stall, so 3,000 of them span 0.6 s inside it
 
-# ear_node_sendspin_tests (R5c)
-negative | src/nodes/sendspin/tests/feed_test.cpp | std::this_thread::sleep_for(50ms); | past the writer's second look at the ring, once it says it waits, so only a wake ends its wait (its comment)
-luck | src/nodes/sendspin/tests/clock_test.cpp | WARN("the graph did not settle on the raw clock's rate within 20 s"); | goes on unsettled under load; R5c: fail naming the event, the wait being ear's own
-owed | src/nodes/sendspin/tests/clock_test.cpp | WARN("judged " << errors.judged << " of " << errors.afterFirst3s << " cycles, downstream " | a report on every run, not a warning; R5c: INFO or a printf, and the judging over the ledger's clean cycles
-owed | src/nodes/sendspin/tests/keys_test.cpp | WARN("root writes a read-only folder; this case needs an ordinary user"); | a skip under root, which docs/testing.md forbids; R5c: fail naming why, or drop the privilege
+# ear_node_sendspin_tests (audited, R5c): none left
 
 # ear_system_tests (R5d)
 negative | test/system/sendspin_floods_test.cpp | std::this_thread::sleep_for(1ms); | the thread peak sampled while the flood runs: can miss a breach, never invent one; R5d proves the bound in the transport's own tests

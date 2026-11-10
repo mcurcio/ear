@@ -1,9 +1,12 @@
 // The transport (cmake/ixwebsocket-limits.patch; docs/node-types.md#library-facts-and-carried-patches): the sockets an
 // address, or the room, holds are those their peers have not closed, whether or not their own threads have seen the
-// close yet; and an open connection whose socket is closed under it ends.
+// close yet; every listed socket, closed or not, counts against twice the room, so a flood starts no thread past it;
+// and an open connection whose socket is closed under it ends.
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -84,9 +87,23 @@ void reset(int fd) {
 	::close(fd);
 }
 
+/// This process's threads.
+std::size_t threadsNow() {
+	const std::filesystem::directory_iterator tasks("/proc/self/task");
+	return static_cast<std::size_t>(std::distance(begin(tasks), end(tasks)));
+}
+
+/// What answeredAfterClosing saw.
+struct AfterClosing {
+	std::size_t answered = 0;     // of the upgrades tried after the rounds
+	std::size_t threadsAdded = 0; // threads this process gained from the server's start to the last of those
+};
+
 /// On a server of `maxConnections`, `rounds` times: holds `count` upgraded sockets from 127.0.0.1 and closes them all with
-/// a reset while their threads cannot see it. Then upgrades one more: whether it was answered.
-bool answeredAfterClosing(std::size_t maxConnections, std::size_t count, std::size_t rounds = 1) {
+/// a reset while their threads cannot see it. Then tries `more` upgrades, each closed before the next: how many were
+/// answered, and how many threads the server holds then, every socket's still blocked where the test holds it, so none
+/// can end and the count is exact.
+AfterClosing tryAfterClosing(std::size_t maxConnections, std::size_t count, std::size_t rounds, std::size_t more) {
 	const std::uint16_t port = freePort();
 	ix::WebSocketServer server(port, "127.0.0.1", 64, maxConnections);
 
@@ -107,6 +124,7 @@ bool answeredAfterClosing(std::size_t maxConnections, std::size_t count, std::si
 		});
 	REQUIRE(server.listen().first);
 	server.start();
+	const std::size_t threadsBefore = threadsNow();
 	const auto release = [&] {
 		{
 			const std::scoped_lock lock(mutex);
@@ -140,12 +158,21 @@ bool answeredAfterClosing(std::size_t maxConnections, std::size_t count, std::si
 	}
 
 	// All upgraded, so none can give way, and all still listed: only their being closed lets one more in.
-	const int next = upgrade(port);
-	const bool nextAnswered = next >= 0 && answered(next);
-	if (next >= 0) reset(next);
+	AfterClosing seen;
+	for (std::size_t i = 0; i < more; ++i) {
+		const int next = upgrade(port);
+		if (next >= 0 && answered(next)) ++seen.answered;
+		if (next >= 0) reset(next);
+	}
+	seen.threadsAdded = threadsNow() - threadsBefore;
 	release();
 	server.stop();
-	return nextAnswered;
+	return seen;
+}
+
+/// One upgrade after the rounds: whether it was answered.
+bool answeredAfterClosing(std::size_t maxConnections, std::size_t count, std::size_t rounds = 1) {
+	return tryAfterClosing(maxConnections, count, rounds, 1).answered == 1;
 }
 
 } // namespace
@@ -168,6 +195,16 @@ TEST_CASE("Sockets their peers have closed still count against twice the room in
 	// A room of 2: two rounds of two, each closed before the next, leave four listed and none open, so the room has space
 	// but twice the room is reached, and the fifth is refused. The bound is checked before the room's open count.
 	CHECK_FALSE(answeredAfterClosing(2, 2, 2));
+}
+
+TEST_CASE("A flood past twice the room starts no thread beyond it", "[sendspin][transport]") {
+	// The bound the system test's flood samples from outside (sendspin_floods_test.cpp), proven where it is enforced: two
+	// rounds of two fill twice a room of 2 with listed sockets, each thread held where it cannot end, and a flood of
+	// upgrades after them is refused before any thread of its own starts, so the server holds four threads, exactly.
+	constexpr std::size_t room = 2;
+	const AfterClosing seen = tryAfterClosing(room, room, 2, 50);
+	CHECK(seen.answered == 0);
+	CHECK(seen.threadsAdded <= 2 * room);
 }
 
 namespace {

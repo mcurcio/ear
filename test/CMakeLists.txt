@@ -109,7 +109,8 @@ target_include_directories(ear_ws_client INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/
 target_link_libraries(ear_ws_client INTERFACE Boost::beast)
 
 # ear_temp_folder: the tests' temporary folder (test/support/temp_folder.hpp, header-only), for every test
-# program that makes folders on disk.
+# program that makes folders on disk, and WithoutFilePrivileges (without_file_privileges.hpp), for a case that needs a
+# folder it cannot write under root too (docs/testing.md#an-ordinary-users-folder).
 add_library(ear_temp_folder INTERFACE)
 target_include_directories(ear_temp_folder INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 
@@ -153,8 +154,9 @@ target_include_directories(ear_cycle_table INTERFACE "${CMAKE_CURRENT_SOURCE_DIR
 target_link_libraries(ear_cycle_table INTERFACE ear_core)
 
 # ear_test_support_tests: the tools themselves, on cycles and samples made by hand.
-add_executable(ear_test_support_tests support/tests/inducers_test.cpp support/tests/statistics_test.cpp)
-target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_statistics ear_catch_main)
+add_executable(ear_test_support_tests support/tests/inducers_test.cpp support/tests/statistics_test.cpp
+	support/tests/without_file_privileges_test.cpp)
+target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_statistics ear_temp_folder ear_catch_main)
 ear_catch_tests(ear_test_support_tests)
 
 # The sleep guard (docs/testing.md#the-sleep-guard): every sleep and WARN in the tests and their support listed in

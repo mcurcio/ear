@@ -18,6 +18,7 @@
 #include "ear/nodes/sendspin.hpp"
 #include "key_store.hpp"
 #include "temp_folder.hpp"
+#include "without_file_privileges.hpp"
 
 namespace {
 
@@ -191,10 +192,7 @@ TEST_CASE("A directory, a symlink out and a file over 64 KiB each fail open with
 TEST_CASE("A read-only folder fails open with the folder's detail, and later fails a write without "
           "losing the blob",
           "[sendspin][keys]") {
-	if (::geteuid() == 0) {
-		WARN("root writes a read-only folder; this case needs an ordinary user");
-		return;
-	}
+	const ear::test::WithoutFilePrivileges asAnOrdinaryUser; // first, so the rig is gone before they come back
 	Rig rig;
 	const auto folderPath = rig.root / "config";
 	SECTION("nothing there yet") {

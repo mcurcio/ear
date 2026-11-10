@@ -29,6 +29,9 @@ public:
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override;
 	void release() noexcept override;
+	/// Test seam (docs/testing.md#a-writers-own-event): the frames the last process() skipped for the graph's jump, all
+	/// the feed held when that was less than the jump. The data thread's own; read on it, after process().
+	std::uint32_t lastSkipped() const noexcept { return lastSkipped_; }
 
 private:
 	/// How many frames the driver missed since last cycle: 0 unless the graph's position moved ahead by no more than
@@ -44,5 +47,6 @@ private:
 	bool started_ = false;
 	std::uint64_t nextPosition_ = 0;
 	std::uint64_t totalFrames_ = 0;
+	std::uint32_t lastSkipped_ = 0; // test seam: lastSkipped()
 };
 } // namespace ear::sendspin
