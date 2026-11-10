@@ -773,7 +773,8 @@ Proposed, not over-built (`docs/editor.md` changes with it):
   started"). Hidden when the last minute had none.
 - Gated on the `counters` feature; an unknown counter is listed in the panel by name.
 
-Whether the editor shows these unasked, or only in the side panel, is Q-CF4 (section 11).
+Decided by the owner (Q-CF4, section 11): the side panel always holds the totals, and the canvas marks and badge
+show only while something happened in the last minute.
 
 ## 9. Migration
 
@@ -794,7 +795,7 @@ R5d).
 | **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `excusedSteps`, the 600 ms and 0.5 s windows | none |
 | **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
-| **D3** | The editor (8.5), as Q-CF4 decides; `docs/editor.md` | nothing | the marks and badge |
+| **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |
 | **C6a** | `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
 | **C6b** | `AudioFormat::rate` and every rate to `SampleRate`; the `.hz()` check | `frame_guard.cmake`, `test/frame_guard/`, the `uint32_t` constructor | none |
 | **C7** | The callback poison | `test/pipewire/callback_guard.cmake` and its snippets | none |
@@ -845,7 +846,9 @@ and it holds only if the mark is reliable. (c) Report it upstream and let those 
 *Recommendation: (b) if S6 shows the mark is reliable, else (a)*, with the upstream report either way. Only asked if
 S6 finds such a path.
 
-**Q-CF4. Should the editor show dropouts and a node's missed cycles without being asked?**
+**Q-CF4. Should the editor show dropouts and a node's missed cycles without being asked?** *Answered: panel plus
+recent — the totals in the side panel, and the canvas's marks and badge only while something happened in the last
+minute (8.5).*
 
 *Background.* With section 8 ear counts the graph's dropouts (the host held up ear's audio thread, every output went
 quiet for a moment) and, per node, cycles that node missed on its own or in which its work ran too long. The editor can
