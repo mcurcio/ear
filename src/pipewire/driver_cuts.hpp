@@ -29,27 +29,25 @@ public:
 	static std::expected<std::unique_ptr<DriverCuts>, EngineError> listen(pw_context* context);
 	DriverCuts(const DriverCuts&) = delete;
 	DriverCuts& operator=(const DriverCuts&) = delete;
-	/// Main thread: the listener off the driver, waiting on the data loop. Never destroyed once that loop is wedged:
-	/// the engine leaks it (release()), since the data loop would still call into it.
+	/// Main thread: the listener off the driver, waiting on the data loop; on a wedged loop the boundary keeps the
+	/// listener and the ring it tells for good (RealtimeListener), so this goes at once either way.
 	~DriverCuts() = default;
 
-	std::uint64_t started() const noexcept override { return ring_.started(); }
-	std::optional<bool> cut(std::uint64_t cycle) const noexcept override { return ring_.cut(cycle); }
-	std::uint64_t cutsSoFar() const noexcept override { return ring_.cutsSoFar(); }
-	std::uint64_t newestWhole() const noexcept override { return ring_.newestWhole(); }
+	std::uint64_t started() const noexcept override { return ring().started(); }
+	std::optional<bool> cut(std::uint64_t cycle) const noexcept override { return ring().cut(cycle); }
+	std::uint64_t cutsSoFar() const noexcept override { return ring().cutsSoFar(); }
+	std::uint64_t newestWhole() const noexcept override { return ring().newestWhole(); }
 	/// The internal clock's global id, which a cycle's clock.id names when it drives.
 	std::uint32_t clockId() const noexcept { return clockId_; }
 
 private:
 	DriverCuts(pw_impl_node* clock, std::uint32_t clockId);
-	/// Data thread: the driver starts a cycle.
-	void onStart() noexcept { ring_.start(); }
-	/// Data thread: the running cycle was cut short (a follower had not finished it when the next began).
-	void onIncomplete() noexcept { ring_.incomplete(); }
+	/// The ring the driver's events tell (start: a cycle starts; incomplete: the running one was cut short), held by
+	/// the listener.
+	const CutRing& ring() const noexcept { return *listener_.target(); }
 
-	CutRing ring_;
 	std::uint32_t clockId_;
-	RealtimeListener listener_; // last: off the driver before the ring goes
+	RealtimeListener<CutRing> listener_;
 };
 
 } // namespace ear::pipewire

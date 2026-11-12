@@ -32,9 +32,9 @@ std::expected<std::unique_ptr<DriverCuts>, EngineError> DriverCuts::listen(pw_co
 DriverCuts::DriverCuts(pw_impl_node* clock, std::uint32_t clockId) : clockId_(clockId) {
 	// Added by an invoke posted on the data loop before any block exists, and every block's node reaches the driver by
 	// invokes posted after it, which that loop runs in posting order: the listener hears every block's first cycle.
-	listenRealtime<NodeRealtimeCallbacks<DriverCuts>{
-		.start = realtime<&DriverCuts::onStart>, .incomplete = realtime<&DriverCuts::onIncomplete>}>(clock, listener_,
-	                                                                                                 this);
+	listenRealtime<NodeRealtimeCallbacks<CutRing>{
+		.start = realtime<&CutRing::start>, .incomplete = realtime<&CutRing::incomplete>}>(clock, listener_,
+	                                                                                       std::make_unique<CutRing>());
 }
 
 } // namespace ear::pipewire

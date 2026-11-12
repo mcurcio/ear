@@ -1108,43 +1108,50 @@ TEST_CASE("A fault on a wedged data loop makes no blocking step into it: the own
 
 namespace {
 
-/// Counts the internal clock's cycle starts on the data thread, through the boundary's realtime listener, waking
-/// `waiter` (if any) at each.
-class StartCounter {
+/// The target of a realtime listener on the internal clock: counts its cycle starts, on the data thread, into a count
+/// outside it (which outlives the listener), waking `waiter` (if any) at each.
+class Starts {
 public:
-	StartCounter(pw_impl_node* clock, Waiter* waiter) : waiter_(waiter) {
-		listenRealtime<NodeRealtimeCallbacks<StartCounter>{.start = realtime<&StartCounter::onStart>}>(clock, listener,
-		                                                                                               this);
-	}
-	std::uint64_t starts() const noexcept { return starts_.load(std::memory_order_acquire); }
-	RealtimeListener listener; // last: off the clock before the count goes
-
-private:
+	Starts(std::atomic<std::uint64_t>& count, Waiter* waiter) : count_(count), waiter_(waiter) {}
 	void onStart() noexcept {
-		starts_.fetch_add(1, std::memory_order_release);
+		count_.fetch_add(1, std::memory_order_release);
 		if (waiter_ != nullptr) waiter_->wake();
 	}
-	Waiter* waiter_;
-	std::atomic<std::uint64_t> starts_{0};
-};
 
-/// Counts its own cycles, for a test that needs the graph to run and something to wait on.
+private:
+	std::atomic<std::uint64_t>& count_;
+	Waiter* waiter_;
+};
+constexpr NodeRealtimeCallbacks<Starts> startsEvents{.start = realtime<&Starts::onStart>};
+
+/// Counts its own cycles, and keeps the number its first cycle's facts stated and whether each later one stated a
+/// larger one, for a test that needs the graph to run and something to wait on.
 class Ticking final : public AudioCode {
 public:
 	explicit Ticking(Waiter& waiter) : waiter_(waiter) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const ear::GraphCycle&) noexcept override {
+	             const ear::GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const std::uint64_t number = cycle.facts.graphCycle;
+		if (cycles_.load(std::memory_order_relaxed) == 0) first_.store(number, std::memory_order_relaxed);
+		else if (number <= last_) increasing_.store(false, std::memory_order_relaxed);
+		last_ = number;
 		cycles_.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t cycles() const noexcept { return cycles_.load(std::memory_order_acquire); }
+	/// The first cycle's number, and whether every later one's was larger (read after cycles(), acquire).
+	std::uint64_t first() const noexcept { return first_.load(std::memory_order_relaxed); }
+	bool increasing() const noexcept { return increasing_.load(std::memory_order_relaxed); }
 
 private:
 	Waiter& waiter_;
 	std::atomic<std::uint64_t> cycles_{0};
+	std::atomic<std::uint64_t> first_{0};
+	std::atomic<bool> increasing_{true};
+	std::uint64_t last_ = 0; // data thread
 };
 
 } // namespace
@@ -1163,7 +1170,11 @@ TEST_CASE("The engine numbers the internal clock's cycles from its start: a bloc
 	BlockEvents events(waiter);
 	auto block = makeDriven(blocks, "numbered", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
 	REQUIRE(waiter.until([&] { return code.cycles() >= 16; }));
-	CHECK(engine->cuts().started() >= 16);
+	// The block's facts carry the numbers: its first cycle's is one (the listener heard it start), every later one's
+	// larger, never zero.
+	CHECK(code.first() > 0);
+	CHECK(code.increasing());
+	CHECK(engine->cuts().started() >= code.first() + 15);
 	CHECK(engine->cuts().newestWhole() < engine->cuts().started());
 }
 
@@ -1211,44 +1222,72 @@ TEST_CASE("A realtime listener on an engine node hears its cycles while held, an
 	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
 	REQUIRE(clock != nullptr);
 	const std::size_t before = boundary::registrationsHeld();
-	StartCounter counter(clock, &waiter);
+	std::atomic<std::uint64_t> starts{0};
+	RealtimeListener<Starts> listener;
+	listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(starts, &waiter));
 	CHECK(boundary::registrationsHeld() == before + 1);
-	REQUIRE(waiter.until([&] { return counter.starts() >= 8; }));
-	CHECK_FALSE(counter.listener.remove()); // off the clock: a blocking invoke the data loop ran
+	REQUIRE(waiter.until([&] { return starts.load() >= 8; }));
+	CHECK_FALSE(listener.remove()); // off the clock, a blocking invoke the data loop ran, and its target freed
+	CHECK_FALSE(listener);
 	CHECK(boundary::registrationsHeld() == before);
 	// Removal returned once the data loop let go, so no start reaches it after, however many cycles run.
-	const std::uint64_t heard = counter.starts();
+	const std::uint64_t heard = starts.load();
 	const std::uint64_t cycles = code.cycles();
 	REQUIRE(waiter.until([&] { return code.cycles() >= cycles + 8; }));
-	CHECK(counter.starts() == heard);
+	CHECK(starts.load() == heard);
 }
 
 // docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: removing a realtime listener waits on the data
-// loop, so on a wedged one it is left on its node's list, which waits on nothing, and its owner is leaked with it.
-TEST_CASE("Removing a realtime listener on a wedged loop: it waits on nothing and is left on its node, with its owner",
-          "[engine][boundary][wedge][cycle_facts]") {
+// loop, so on a wedged one its hook is left on the node, and the boundary keeps the hook and its target for good: the
+// handle and whatever owned it may go, and the data loop, running again, still calls a live target.
+TEST_CASE(
+	"Removing a realtime listener on a wedged loop: it waits on nothing, and the boundary keeps it and its target",
+	"[engine][boundary][wedge][cycle_facts]") {
+	// Outlives the engine: the kept target counts into it for as long as the clock runs.
+	static std::atomic<std::uint64_t> keptStarts{0};
 	auto engine = makeEngine();
+	Waiter waiter(*engine);
 	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
 	REQUIRE(clock != nullptr);
 	const std::size_t before = boundary::registrationsHeld();
-	auto* counter =
-		new StartCounter(clock, nullptr); // leaked: left on the clock's list, as a wedged loop's objects are
+	const std::size_t keptBefore = boundary::keptForeverCount();
 	std::atomic<bool> hold{true};
-	pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
-	REQUIRE(dataLoop != nullptr);
-	pw_loop_invoke(
-		dataLoop,
-		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
-			static_cast<std::atomic<bool>*>(data)->wait(true);
-			return 0;
-		},
-		0, nullptr, 0, false, &hold);
-	markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+	{
+		RealtimeListener<Starts> listener;
+		listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(keptStarts, nullptr));
+		pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+		REQUIRE(dataLoop != nullptr);
+		pw_loop_invoke(
+			dataLoop,
+			[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+				static_cast<std::atomic<bool>*>(data)->wait(true);
+				return 0;
+			},
+			0, nullptr, 0, false, &hold);
+		markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
 
-	CHECK(counter->listener.remove()); // returns: nothing waited on the stuck loop
-	CHECK(boundary::registrationsHeld() == before);
+		CHECK(listener.remove()); // returns: nothing waited on the stuck loop
+		CHECK_FALSE(listener);
+		CHECK(boundary::registrationsHeld() == before);
+		CHECK(boundary::keptForeverCount() == keptBefore + 1);
+		// A listener that left a hook is never attached again: the boundary keeps that one.
+		CHECK_THROWS_AS(listenRealtime<startsEvents>(clock, listener, std::make_unique<Starts>(keptStarts, nullptr)),
+		                std::logic_error);
+		CHECK(boundary::registrationsHeld() == before);
+	} // the handle goes, with nothing of its own to leak
 
 	hold = false;
 	hold.notify_all();
-	boundary::clearDataLoopWedged(); // the loop runs again: the teardown below destroys what it holds
+	boundary::clearDataLoopWedged();
+	// The loop runs again: the kept hook is still on the clock, its target alive and counting.
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "after", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	const std::uint64_t ticks = code.cycles();
+	const std::uint64_t counted = keptStarts.load();
+	// Each cycle the code runs after the count was read started after it, but for the first.
+	REQUIRE(waiter.until([&] { return code.cycles() >= ticks + 9; }));
+	CHECK(keptStarts.load() >= counted + 8);
 }

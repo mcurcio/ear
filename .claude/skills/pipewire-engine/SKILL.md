@@ -151,7 +151,8 @@ core's `CycleAccount` over the engine's record of the internal clock's cuts: `Dr
 (`Engine::cuts().started()` inside `process`), never `clock.cycle`; never read the clock through a
 filter's mapping from the listener (it goes with the filter); the listener must be added before the
 first block (an async invoke the data loop runs before any block's node reaches the driver);
-removing it is a blocking invoke, so on a wedged loop it is left and the record leaked. `discontinuity`
+removing it is a blocking invoke, so on a wedged loop the hook is left and the boundary keeps it and the
+ring it tells (the `RealtimeListener` holds its target, so no owner has to leak itself). `discontinuity`
 is `facts.discontinuity()`; `xruns` keeps counting one per forward jump.
 
 ## Latency, per bank pair

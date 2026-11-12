@@ -2,6 +2,7 @@
 // each with the reason it must be refused; docs/architecture.md#the-callback-boundary). With no case defined this is
 // the control, and it must compile: what the cases break is only what they name. Syntax only: nothing here runs.
 #include <cstdint>
+#include <memory>
 
 #include "callback_boundary.hpp"
 
@@ -38,7 +39,8 @@ struct Other {
 };
 
 [[maybe_unused]] void registrations(pw_loop* loop, pw_data_loop* data, pw_filter* filter, Listener& hook,
-                                    LoopSource& source, pw_impl_node* clock, RealtimeListener& rtHook, Owner& owner) {
+                                    LoopSource& source, pw_impl_node* clock, RealtimeListener<Owner>& rtHook,
+                                    Owner& owner) {
 	// The control: each registration as ear makes it. The data loop takes only realtime<>, every other loop guarded<>.
 	addEvent(source, loop, guarded<&Owner::onEvent>, &owner);
 	addTimer(source, loop, guarded<&Owner::onTimeout>, &owner);
@@ -48,7 +50,8 @@ struct Other {
 	installLog<LogCallbacks{.log = realtimeFunction<&logNoexcept>}>(SPA_LOG_LEVEL_WARN);
 	listen<FilterCallbacks<Owner>{.stateChanged = guarded<&Owner::onState>, .process = realtime<&Owner::onProcess>}>(
 		filter, hook, &owner);
-	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = realtime<&Owner::onStart>}>(clock, rtHook, &owner);
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = realtime<&Owner::onStart>}>(clock, rtHook,
+	                                                                                 std::make_unique<Owner>());
 
 #ifdef EAR_CASE_raw_event
 	// A raw function pointer is no Guarded: it has no catch.
@@ -97,10 +100,11 @@ struct Other {
 #endif
 #ifdef EAR_CASE_guarded_node_event
 	// An engine node's realtime events are told on the data loop: realtime<> only.
-	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = guarded<&Owner::onStart>}>(clock, rtHook, &owner);
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = guarded<&Owner::onStart>}>(clock, rtHook,
+	                                                                                std::make_unique<Owner>());
 #endif
 #ifdef EAR_CASE_raw_node_event
-	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = &Owner::rawStart}>(clock, rtHook, &owner);
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = &Owner::rawStart}>(clock, rtHook, std::make_unique<Owner>());
 #endif
 #ifdef EAR_CASE_wrong_signature
 	// A timer's member takes the expirations.

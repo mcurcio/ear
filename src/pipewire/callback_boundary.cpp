@@ -3,6 +3,7 @@
 // something, from whichever thread it ran on.
 #include "callback_boundary.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <exception>
@@ -20,9 +21,10 @@ namespace {
 std::atomic<bool> engaged{false}; // an engine (or a test) holds the boundary
 std::atomic<Faults*> installed{nullptr};
 std::atomic<std::thread::id> mainThread{};
-std::atomic<bool> wedged{false};     // the data loop runs no invoke
-std::atomic<std::size_t> heldNow{0}; // registrations held
-std::atomic<std::size_t> throwAt{0}; // the seam: the registration that throws once held, counted down; 0 none
+std::atomic<bool> wedged{false};       // the data loop runs no invoke
+std::atomic<std::size_t> heldNow{0};   // registrations held
+std::atomic<std::size_t> throwAt{0};   // the seam: the registration that throws once held, counted down; 0 none
+std::atomic<std::size_t> keptCount{0}; // realtime listeners left on a wedged data loop
 
 /// With no Faults installed (an engine made without one): today's outcome, the process ends, with a line naming the
 /// callback first among the crash's last words.
@@ -93,6 +95,19 @@ void clearDataLoopWedged() noexcept { wedged.store(false, std::memory_order_rele
 void throwAfterRegistration(std::size_t n) noexcept { throwAt.store(n, std::memory_order_release); }
 
 std::size_t registrationsHeld() noexcept { return heldNow.load(std::memory_order_acquire); }
+
+namespace {
+// What keptForever took, reachable for the process's life (a leak checker sees them held, not lost); past its room a
+// left listener is still never freed, only no longer listed.
+std::array<std::atomic<void*>, 64> kept{};
+} // namespace
+
+void keptForever(void* left) noexcept {
+	const std::size_t at = keptCount.fetch_add(1, std::memory_order_acq_rel);
+	if (at < kept.size()) kept[at].store(left, std::memory_order_release);
+}
+
+std::size_t keptForeverCount() noexcept { return keptCount.load(std::memory_order_acquire); }
 
 void held() {
 	heldNow.fetch_add(1, std::memory_order_acq_rel);

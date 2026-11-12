@@ -226,6 +226,13 @@ TEST_CASE("A cut record read from another thread while cycles wrap its ring neve
 	std::uint64_t answered = 0;
 	std::uint64_t wrong = 0;
 	std::uint64_t asked = 0;
+	// On a loaded host the writer may run all its cycles while the reader waits for a core, so the reader sweeps the
+	// ring once more after the writer is done: every answer then is the finished record's, and none is missing.
+	std::uint64_t askedAfter = 0;
+	const auto more = [&] {
+		if (!done.load(std::memory_order_acquire)) return true;
+		return answered == 0 && askedAfter++ < cutRecordCycles + 64;
+	};
 	do {
 		const std::uint64_t started = cuts.started();
 		// Behind the writer by one to the ring's reach and a little past it, so slots are reused under the reader.
@@ -236,7 +243,7 @@ TEST_CASE("A cut record read from another thread while cycles wrap its ring neve
 			if (*was != isCut(cycle)) ++wrong;
 		}
 		++asked;
-	} while (!done.load(std::memory_order_acquire));
+	} while (more());
 	writer.join();
 	INFO("asked " << asked << ", answered " << answered);
 	CHECK(wrong == 0);

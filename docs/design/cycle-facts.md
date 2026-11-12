@@ -980,11 +980,14 @@ must know.
 - **The block needs the internal clock's id**, which 6.4's `const CutRecord&` does not carry (a tick's `graphCycle` is
   0 off the internal clock). `Engine` gains `internalClockId()` beside `cuts()`; the block numbers a cycle only when
   `clock.id` is that id.
-- **The handle is `RealtimeListener`** (6.4's `RegisteredRtListener`), and its `remove()` says whether it was left on
-  the node (a wedged loop), so its owner knows to leak itself. `Engine`'s teardown releases (leaks) `DriverCuts` when
-  the loop is marked wedged, before destroying it otherwise. Adding is PipeWire's asynchronous invoke, so `listen` does
-  not wait: the data loop runs it before any block's node reaches the driver (posting order), and a test checks
-  `started()` is 0 until the first block.
+- **The handle is `RealtimeListener<Target>`** (6.4's `RegisteredRtListener`), and it holds the target its callbacks
+  reach (`DriverCuts`' is its `CutRing`, whose `start` and `incomplete` are the realtime members) as well as the hook.
+  On a wedged loop `remove()` (`[[nodiscard]]`, true when left) hands both to the boundary (`keptForever`), which
+  never frees them, so the leak is structural: whoever owns the listener may go at once and none can forget, and a
+  listener that left one refuses to attach again. `DriverCuts` is destroyed as usual on a wedged loop. Adding is
+  PipeWire's asynchronous invoke, so `listen` does not wait: the data loop runs it before any block's node reaches the
+  driver (posting order); a test checks `started()` is 0 before the first block, and that the block's facts number
+  its first cycle above 0 and every later one higher.
 - **The node is found through the boundary.** `pw_context_for_each_global` takes a C function, so the lookup by
   `node.name` (`engineNode`) lives in `callback_boundary.cpp`; the guard does not list that call (it registers
   nothing that outlives it). The name is `engine_names.hpp`'s `internalClockNode`, checked at compile time against the
@@ -996,13 +999,17 @@ must know.
   1.5-cycle stall: a longer one leaves the catch-up's cuts to the loop's order), a cut after the block ran (its own
   stall, a tail after it), or a pause of at most 16 cycles, one of those a step. Four rows qualify: start and drive,
   one cut, a pause, a cut after. Three things the engine cannot make literally, so the runner says how it judges them:
-  the cycle numbers (the engine's count since its start) are checked one on from the block's last cycle and its missed
-  ones; a pause stands for as many cycles as the engine took to make the block active again (at least the row's),
+  the cycle numbers (the engine's count since its start) are checked against the driver's own position, which the
+  tracking dummy moves on by one quantum each cycle it starts, so the position less the number's quanta is the same
+  in every cycle; a pause stands for as many cycles as the engine took to make the block active again (at least the row's),
   its `missed`, `jumpFrames` and `lostRawNs` scaled to them; `lostRawNs` is the driver's planned starts apart, checked
   within its 1 ms clamp. Between steps the block runs cycles the runner does not judge (links settling, a drive or a
   pause on its way): each step's facts are against the block's cycle before it, so only `graphCycle` differs from the
-  row. An attempt the host spoiled (a cut the row did not plan, or a cycle run before the first drive was applied, so
-  the first step is no `start`) is made again, up to eight times, and the test fails naming why if none was clean.
+  row. Each planned cut must be recorded on the cycle it was made in (a 1.5-cycle stall cuts on any host, so a missing
+  one is the record's fault and fails at once, and a host's cut elsewhere cannot stand in for it), and the record
+  must count at least the planned cuts. An attempt the host spoiled (more cuts than planned, or a cycle run before the
+  first drive was applied, so the first step is no `start`) is made again, up to eight times, and the test fails
+  naming why if none was clean.
 - **The pause is made with `pw_impl_node_set_active(false)`** on the block's engine node (S6's shape), on a block linked
   to nothing: made inactive, a linked block would hold its peers back. A test's `EngineNodes::suspend` would not do:
   nothing brings a suspended node back.

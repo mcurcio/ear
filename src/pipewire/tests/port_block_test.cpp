@@ -32,6 +32,7 @@
 #include <xmmintrin.h>
 #endif
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "cycle_table.hpp"
 #include "ear/core/lifecycle.hpp"
@@ -1632,11 +1633,11 @@ private:
 };
 
 /// A probe downstream of a block: records every frame its inputs received, with the frame's clock position.
-class Listener final : public ear::pipewire::testing::ProbeCode {
+class ProbeListener final : public ear::pipewire::testing::ProbeCode {
 public:
 	/// `capacity` frames: by default 6 s of them; a test that repeats a take-up until it has the clean ones it planned
 	/// gives itself more.
-	Listener(Waiter& waiter, std::size_t inputs, std::size_t capacity = 6 * kRate)
+	ProbeListener(Waiter& waiter, std::size_t inputs, std::size_t capacity = 6 * kRate)
 		: waiter_(waiter), capacity_(capacity), positions_(capacity), samples_(inputs, std::vector<float>(capacity)) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const>,
 	           std::uint32_t frames) noexcept override {
@@ -1794,7 +1795,7 @@ TEST_CASE("A fade-out reaches exactly 0 over 5 ms and is acknowledged in the cyc
 	Constant one(waiter, 1.0F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 2);
+	ProbeListener listener(waiter, 2);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 2, 0, listener);
 	auto block = blocks.make("fader", Ports{{{Direction::output, "out", {"a", "b"}}}}, kFormat, events);
 	const bool faded[] = {true, false}; // out.a fades, out.b never does
@@ -1974,7 +1975,7 @@ TEST_CASE("Every drive fades in over 5 ms and cancels a pending fade-out", "[blo
 	Constant one(waiter, 1.0F);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1, 30 * kRate);
+	ProbeListener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("fader", oneOutput, kFormat, events);
 	const bool faded[] = {true};
@@ -2076,7 +2077,7 @@ TEST_CASE("The published position is where the new code's first sample is", "[bl
 	Wiring wiring(*engine, waiter);
 	BlockEvents events(waiter);
 	Done done(waiter);
-	Listener listener(waiter, 1, 30 * kRate);
+	ProbeListener listener(waiter, 1, 30 * kRate);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	auto block = blocks.make("source", oneOutput, kFormat, events);
 	REQUIRE(wiring.link(waiter, {"source", "out.a"}, {"listener", "in.1"}));
@@ -2274,7 +2275,7 @@ TEST_CASE("A block's id is its engine node's global id once STREAMING, and a lin
 	first->drive(DriveRequest{&older, {}}, done.drive(1));
 	auto second = blocks.make("twin", oneOutput, kFormat, newerEvents);
 	second->drive(DriveRequest{&newer, {}}, done.drive(2));
-	Listener listener(waiter, 1);
+	ProbeListener listener(waiter, 1);
 	ear::pipewire::testing::Probe probe(*engine, waiter, "listener", 1, 0, listener);
 	REQUIRE(waiter.until([&] {
 		return olderEvents.readyCount == 1 && newerEvents.readyCount == 1 && probe.streaming() &&
@@ -2443,6 +2444,7 @@ constexpr int kAttempts = 8;              // attempts at a row before its host s
 struct Seen {
 	std::size_t step = kBetween;
 	CycleFacts facts;
+	std::uint64_t position = 0;
 	std::uint64_t xruns = 0;
 	bool discontinuity = false;
 	std::uint64_t cutsSoFar = 0;
@@ -2481,6 +2483,7 @@ public:
 			step = next_;
 		seen_[at] = Seen{.step = step,
 		                 .facts = cycle.facts,
+		                 .position = cycle.position,
 		                 .xruns = cycle.xruns,
 		                 .discontinuity = cycle.discontinuity,
 		                 .cutsSoFar = cuts_.cutsSoFar()};
@@ -2568,28 +2571,6 @@ private:
 	RowRun& run_;
 };
 
-/// The engine node named `name` in this process (tests drive PipeWire directly; the product's lookup is the boundary's
-/// engineNode).
-pw_impl_node* nodeNamed(Engine& engine, const std::string& name) {
-	struct Search {
-		const std::string* name;
-		pw_impl_node* found = nullptr;
-	} search{&name};
-	pw_context_for_each_global(
-		engine.context(),
-		[](void* data, pw_global* global) {
-			if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Node)) return 0;
-			auto* node = static_cast<pw_impl_node*>(pw_global_get_object(global));
-			const char* named = pw_properties_get(pw_impl_node_get_properties(node), PW_KEY_NODE_NAME);
-			auto* self = static_cast<Search*>(data);
-			if (named == nullptr || *self->name != named) return 0;
-			self->found = node;
-			return 1;
-		},
-		&search);
-	return search.found;
-}
-
 /// The engine at the table's format: its quantum the table's cycle, so the rows' frames are the engine's.
 std::unique_ptr<Engine> makeTableEngine() {
 	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
@@ -2654,7 +2635,7 @@ Attempt attemptRow(Engine& engine, Waiter& waiter, FilterPortBlocks& blocks, Wir
 	const std::size_t linked = run.count();
 	REQUIRE(waiter.until([&] { return run.count() >= linked + 4; }));
 	run.arm();
-	pw_impl_node* judgedNode = nodeNamed(engine, judged);
+	pw_impl_node* judgedNode = engineNode(engine.context(), judged);
 	REQUIRE(judgedNode != nullptr);
 	for (std::size_t s = 1; s < row.steps.size(); ++s) {
 		const CycleStep& step = row.steps[s];
@@ -2679,12 +2660,28 @@ Attempt attemptRow(Engine& engine, Waiter& waiter, FilterPortBlocks& blocks, Wir
 		REQUIRE(at != attempt.seen.end());
 		attempt.stepAt.push_back(static_cast<std::size_t>(at - attempt.seen.begin()));
 	}
-	// The host may cut a cycle the row did not plan, anywhere from the cycle before the second step to the last step's
-	// entry: the facts of the steps after it are then the host's, not the row's.
+	// Each planned cut is recorded on the cycle it was made in, whatever else the host cut: a 1.5-cycle stall cuts the
+	// cycle it stalls in on any host (docs/engine.md#the-one-data-loop-and-invokes), so a planned cut missing is the
+	// record's fault, never the host's. The head stalls in the cycle after the step before a cut; the judged block in a
+	// step cut after it.
+	for (std::size_t s = 0; s < row.steps.size(); ++s) {
+		const CycleStep& step = row.steps[s];
+		std::optional<std::uint64_t> planned;
+		if (step.lostCut > 0 && s > 0) planned = attempt.seen.at(attempt.stepAt[s - 1]).facts.graphCycle + 1;
+		if (step.cutAfter) planned = attempt.seen.at(attempt.stepAt[s]).facts.graphCycle;
+		if (!planned) continue;
+		INFO("the cut planned around step " << s << ", of graph cycle " << *planned);
+		CHECK(engine.cuts().cut(*planned) == std::optional<bool>(true));
+	}
+	// From the cycle before the second step to the last step's entry the record counts the planned cuts, and any more
+	// the host made: fewer is a cut the record lost, which fails; more, a host's cut, spoils the attempt (the facts of
+	// the steps after it are the host's, not the row's).
 	REQUIRE(attempt.stepAt.at(1) > 0);
 	const std::uint64_t cutsMade =
 		attempt.seen.at(attempt.stepAt.back()).cutsSoFar - attempt.seen.at(attempt.stepAt.at(1) - 1).cutsSoFar;
-	if (attempt.spoiled.empty() && cutsMade != plannedCuts)
+	INFO("the driver cut " << cutsMade << " cycles where the row plans " << plannedCuts);
+	REQUIRE(cutsMade >= plannedCuts);
+	if (attempt.spoiled.empty() && cutsMade > plannedCuts)
 		attempt.spoiled =
 			"the driver cut " + std::to_string(cutsMade) + " cycles where the row plans " + std::to_string(plannedCuts);
 	std::size_t lostCuts = 0, cutAfters = 0;
@@ -2731,12 +2728,8 @@ TEST_CASE("The cycle table through a real block: every row an engine can make st
 			CycleFacts expected = step.facts;
 			INFO("step " << s << ", the row's " << ear::test::describe(expected) << "; stated "
 			             << ear::test::describe(seen.facts));
-			// Numbered by the engine's record: the listener's count since the engine started, one on from the block's
-			// last cycle and the cycles it missed.
+			// Numbered by the engine's record (checked against the position below), never 0 on the internal clock.
 			CHECK(seen.facts.graphCycle > 0);
-			if (attempt.stepAt[s] > 0)
-				CHECK(seen.facts.graphCycle ==
-				      attempt.seen[attempt.stepAt[s] - 1].facts.graphCycle + 1 + seen.facts.missed);
 			expected.graphCycle = seen.facts.graphCycle;
 			// A pause stands for as many cycles as the engine took to make the block active again.
 			if (step.lostUnscheduled > 0) {
@@ -2752,9 +2745,20 @@ TEST_CASE("The cycle table through a real block: every row an engine can make st
 			expected.lostRawNs = seen.facts.lostRawNs;
 			CHECK(seen.facts == expected);
 		}
-		// GraphCycle's two older members, as the facts give them, over every cycle the code ran.
-		for (const cc::Seen& seen : attempt.seen) CHECK(seen.discontinuity == seen.facts.discontinuity());
-		CHECK(attempt.seen.at(attempt.stepAt.back()).xruns - attempt.seen.at(attempt.stepAt.front()).xruns ==
+		// GraphCycle's two older members, as the facts give them, over every cycle the code ran; and its numbers against
+		// the driver's own position: the tracking dummy moves it on by one quantum each cycle it starts
+		// (docs/engine.md#the-internal-clock), so the position less the number's quanta never changes.
+		const std::uint64_t base =
+			attempt.seen.front().position - attempt.seen.front().facts.graphCycle * ear::test::cycleTableFrames;
+		std::size_t offBase = 0;
+		for (const cc::Seen& seen : attempt.seen) {
+			CHECK(seen.discontinuity == seen.facts.discontinuity());
+			offBase += seen.position - seen.facts.graphCycle * ear::test::cycleTableFrames != base ? 1 : 0;
+		}
+		CHECK(offBase == 0);
+		// The row's xruns over the span its cuts are judged in (from the cycle before the second step: the first step
+		// is whole to the next, and what the host did while the chain settled is no step's).
+		CHECK(attempt.seen.at(attempt.stepAt.back()).xruns - attempt.seen.at(attempt.stepAt.at(1) - 1).xruns ==
 		      row.xruns);
 	}
 	CHECK(made == 4); // start and drive, one cut, a pause, a cut after the block ran
@@ -2767,6 +2771,7 @@ namespace {
 struct Numbered {
 	std::uint64_t recordStarted = 0;
 	std::uint64_t listenerStarted = 0;
+	std::uint64_t position = 0;
 	CycleFacts facts;
 };
 
@@ -2781,7 +2786,7 @@ public:
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at < seen_.size()) {
-			seen_[at] = Numbered{record_.started(), listener_.started(), cycle.facts};
+			seen_[at] = Numbered{record_.started(), listener_.started(), cycle.position, cycle.facts};
 			count_.store(at + 1, std::memory_order_release);
 		}
 		waiter_.wake();
@@ -2827,13 +2832,16 @@ TEST_CASE("The engine's record of the internal clock's cuts agrees with the driv
 	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
 	REQUIRE(tail.count() > 1);
 
-	// Both count every start; the record began with the engine, the listener later, so they differ by a constant.
+	// Both count every start; the record began with the engine, the listener later, so they differ by a constant. And
+	// the facts' number against the driver's own position: the tracking dummy moves it on by one block each cycle it
+	// starts (docs/engine.md#the-internal-clock), so the position less the number's blocks never changes.
 	const std::uint64_t offset = tail[0].recordStarted - tail[0].listenerStarted;
+	const std::uint64_t base = tail[0].position - tail[0].facts.graphCycle * kBlock;
 	std::size_t catchUps = 0;
 	for (std::size_t i = 0; i < tail.count(); ++i) {
 		INFO("the tail's cycle " << i << ": " << ear::test::describe(tail[i].facts));
-		CHECK(tail[i].facts.graphCycle == tail[i].recordStarted);
 		CHECK(tail[i].recordStarted - tail[i].listenerStarted == offset);
+		CHECK(tail[i].position - tail[i].facts.graphCycle * kBlock == base);
 		// Every cycle the tail missed the driver cut: a host's stall is reported as surely as the head's.
 		if (i > 0) CHECK(tail[i].facts.causes.only(CycleCause::catchUp));
 		if (tail[i].facts.causes.has(CycleCause::catchUp)) ++catchUps;

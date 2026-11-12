@@ -126,8 +126,10 @@ to `ear_pipewire`), with no exception:
   the context's `pw_data_loop` or a filter's) and only `realtime<>`; a filter's `process` entry
   takes only `realtime<>` and every other table entry only `guarded<>`. Each registration fills a
   handle its owner holds, which removes it when destroyed ([below](#faults-by-owner)); a realtime
-  listener's (`RealtimeListener`) is removed by a blocking invoke on the data loop, so on a wedged
-  loop it is left on its node and its owner leaked with it. The engine finds one of its own nodes
+  listener (`RealtimeListener<Target>`) holds the target its callbacks reach as well as its hook, and
+  is removed by a blocking invoke on the data loop, so on a wedged loop the hook is left on its node
+  and the boundary keeps hook and target for the process's life: its owner may go at once and cannot
+  forget to leak what the loop reaches, and a listener that left one is never attached again. The engine finds one of its own nodes
   by name through the boundary too (`engineNode`), whose walk of the context's globals calls a
   function of the boundary's own. A raw function pointer, a
   method that can throw, or an object of another class than the member's does not compile

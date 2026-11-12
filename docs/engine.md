@@ -328,13 +328,18 @@ so every block's first cycle is numbered. `node_ready` (`impl-node.c`) tells `st
 `clock.cycle++` and before any follower is triggered, and a cycle's `incomplete` in the next
 `node_ready` before that cycle's `start`, all on the data thread: so inside cycle N every cut of a
 cycle before N is recorded. The listener tells a `CutRing` (`ear/core/cut_ring.hpp`, the type
-harness's record too): two atomic stores a cycle, no allocation. Cycles are numbered by the
+harness's record too), with no allocation, lock or wait: a cycle's start is a relaxed load of the
+count and of the last cycle's bit, a release store of the newest whole cycle when that one was not
+cut, a release store of the count, a release fence and an atomic AND clearing the new cycle's bit;
+a cut is an atomic OR setting the running cycle's bit and, the first time, a release store of the
+count of cuts. Cycles are numbered by the
 listener's own count from the engine's start (`Engine::cuts().started()`), never by `clock.cycle`:
 `incomplete` names no cycle, and the server side's position is private to `impl-node.c` (a
 filter's mapping of it goes with the filter, S6). A block names its cycle by that count when
 `clock.id` is the internal clock's (`Engine::internalClockId`), else 0. Removing the listener is a
-blocking invoke on the data loop, so on a wedged loop it is left on the clock and the record leaked
-with it, as everything that loop holds.
+blocking invoke on the data loop, so on a wedged loop the hook is left on the clock and the boundary
+keeps it and the ring it tells for good (`RealtimeListener`), as everything that loop holds is
+leaked.
 
 The dummy's `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into
 its own clock, never into the driver's position.

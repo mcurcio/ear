@@ -164,9 +164,8 @@ struct Engine::Impl {
 	LoopSource sigterm;
 
 	~Impl() {
-		// First, while the internal clock it listens to exists. On a wedged data loop its listener is left on the clock,
-		// so it is leaked with it, as everything that loop holds is (docs/engine.md#graphcycle).
-		if (boundary::dataLoopWedged()) static_cast<void>(cuts.release());
+		// First, while the internal clock it listens to exists (on a wedged data loop its listener and ring are kept by
+		// the boundary: docs/engine.md#graphcycle).
 		cuts.reset();
 		if (loop != nullptr) {
 			sigint.reset();

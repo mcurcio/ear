@@ -19,6 +19,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -85,6 +86,11 @@ void throwAfterRegistration(std::size_t n) noexcept;
 /// How many registrations are held now (sources and listeners the boundary made, and port blocks' levels entries):
 /// a test's count that an owner whose constructor threw left none behind.
 std::size_t registrationsHeld() noexcept;
+/// Main thread: a realtime listener's hook and target left on a wedged data loop, taken for the process's life (never
+/// freed, as the data loop may still call into them).
+void keptForever(void* left) noexcept;
+/// How many keptForever took: a test's count that a listener left on a wedged loop was kept, not freed.
+std::size_t keptForeverCount() noexcept;
 /// Main thread (markDataLoopWedged): the data loop runs no invoke. From then on every step that would wait on it is
 /// skipped here, in the one place each such step is taken, and what it would have released is leaked: a blocking
 /// invoke into it (invoke with `block`), the removal of a listener bound to it (a filter's: its process callback is
@@ -389,39 +395,56 @@ private:
 	bool dataLoopBound_ = false;
 };
 
-/// A realtime listener the boundary added to an engine node, held by its owner: destroying it (or remove()) takes it
-/// off the node's list on the data loop, a blocking invoke (pw_impl_node_remove_rt_listener). The node must outlive it,
-/// and so must its owner while it is on the list, since the data loop calls into both. On a wedged data loop it is left
-/// on the list, which waits on nothing, and its owner must then leak itself with it (as every object a wedged loop
-/// holds is leaked: docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog).
-class RealtimeListener {
+/// A realtime listener the boundary added to an engine node, and the target its callbacks reach, both held by it (never
+/// by the owner of the listener): destroying it (or remove()) takes the hook off the node's list on the data loop, a
+/// blocking invoke (pw_impl_node_remove_rt_listener), then frees the target. The node must outlive it. On a wedged data
+/// loop the removal would wait for good, so the hook is left on the list and the boundary keeps the hook and its
+/// target for the process's life, which the data loop may still call into: whoever owns the listener may go at once,
+/// and no owner can forget to leak what it reaches (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog).
+/// A listener that left one is never attached again.
+template <class Target> class RealtimeListener {
 public:
 	RealtimeListener() = default;
 	RealtimeListener(const RealtimeListener&) = delete;
 	RealtimeListener& operator=(const RealtimeListener&) = delete;
-	~RealtimeListener() { remove(); }
-	explicit operator bool() const noexcept { return node_ != nullptr; }
-	/// Main thread. Whether it was left on the node's list for good (a wedged data loop): its owner must not go.
-	bool remove() noexcept {
-		if (node_ == nullptr) return false;
+	~RealtimeListener() { static_cast<void>(remove()); }
+	explicit operator bool() const noexcept { return held_ != nullptr; }
+	/// The target its callbacks reach; null when nothing is attached.
+	Target* target() const noexcept { return held_ != nullptr ? held_->target.get() : nullptr; }
+	/// Main thread. Whether the hook was left on the node's list for good (a wedged data loop), kept by the boundary
+	/// with its target.
+	[[nodiscard]] bool remove() noexcept {
+		if (held_ == nullptr) return false;
 		const bool left = boundary::dataLoopWedged();
-		if (!left) pw_impl_node_remove_rt_listener(node_, &hook_);
-		node_ = nullptr;
+		if (left) {
+			left_ = true;
+			boundary::keptForever(held_.release()); // never freed: the data loop may still call into it
+		} else {
+			pw_impl_node_remove_rt_listener(held_->node, &held_->hook);
+			held_.reset();
+		}
 		boundary::released();
 		return left;
 	}
-	/// The registrations' own: the hook to attach to `node` (detached first), then attached() once it is posted.
-	spa_hook& attach(pw_impl_node* node) noexcept {
-		remove();
-		hook_ = spa_hook{};
-		node_ = node;
-		return hook_;
+	/// The registrations' own: holds `target` and a fresh hook for `node` (what it held before removed first), then
+	/// attached() once the hook is posted. std::logic_error once a hook was left: the boundary keeps that one.
+	spa_hook& attach(pw_impl_node* node, std::unique_ptr<Target> target) {
+		if (left_) throw std::logic_error("a realtime listener left on a wedged data loop is not attached again");
+		if (remove()) throw std::logic_error("a realtime listener left on a wedged data loop is not attached again");
+		held_ = std::make_unique<Held>(node, std::move(target));
+		return held_->hook;
 	}
 	void attached() { boundary::held(); }
 
 private:
-	pw_impl_node* node_ = nullptr;
-	spa_hook hook_{};
+	struct Held {
+		Held(pw_impl_node* on, std::unique_ptr<Target> reached) : node(on), target(std::move(reached)) {}
+		pw_impl_node* node;
+		spa_hook hook{};
+		std::unique_ptr<Target> target;
+	};
+	std::unique_ptr<Held> held_;
+	bool left_ = false;
 };
 
 /// Destroys a proxy ear made (its registry's too: a registry is a proxy); leaks it on a wedged data loop (above).
@@ -577,11 +600,13 @@ void listen(pw_impl_module* module, Listener& listener, typename decltype(Table)
 	listener.attached();
 }
 
-/// An engine node's realtime events, on the data loop (the internal clock's: docs/engine.md#graphcycle). The listener
-/// is added by an asynchronous invoke on that loop, so it hears every cycle a node made after this call runs.
+/// An engine node's realtime events, on the data loop (the internal clock's: docs/engine.md#graphcycle), each called on
+/// `target`, which the listener holds from here on. The hook is added by an asynchronous invoke on that loop, so it
+/// hears every cycle a node made after this call runs.
 template <auto Table>
 	requires isTable<decltype(Table), NodeRealtimeCallbacks>
-void listenRealtime(pw_impl_node* node, RealtimeListener& listener, typename decltype(Table)::Class* self) {
+void listenRealtime(pw_impl_node* node, RealtimeListener<typename decltype(Table)::Class>& listener,
+                    std::unique_ptr<typename decltype(Table)::Class> target) {
 	static constexpr pw_impl_node_rt_events events = [] {
 		pw_impl_node_rt_events table{};
 		table.version = PW_VERSION_IMPL_NODE_RT_EVENTS;
@@ -589,7 +614,8 @@ void listenRealtime(pw_impl_node* node, RealtimeListener& listener, typename dec
 		table.incomplete = Table.incomplete.function;
 		return table;
 	}();
-	pw_impl_node_add_rt_listener(node, &listener.attach(node), &events, self);
+	spa_hook& hook = listener.attach(node, std::move(target));
+	pw_impl_node_add_rt_listener(node, &hook, &events, listener.target());
 	listener.attached();
 }
 

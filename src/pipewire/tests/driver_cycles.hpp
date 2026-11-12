@@ -12,6 +12,7 @@
 #include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 
+#include "../callback_boundary.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 
@@ -31,22 +32,8 @@ public:
 	using Wake = void (*)(void* context) noexcept;
 	DriverCycles(Engine& engine, std::size_t capacity, Wake wake = nullptr, void* context = nullptr)
 		: cut_(capacity), completed_(capacity), wake_(wake), context_(context) {
-		struct Search {
-			pw_impl_node* found = nullptr;
-		} search;
-		pw_context_for_each_global(
-			engine.context(),
-			[](void* data, pw_global* global) {
-				if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Node)) return 0;
-				auto* node = static_cast<pw_impl_node*>(pw_global_get_object(global));
-				const char* name = pw_properties_get(pw_impl_node_get_properties(node), PW_KEY_NODE_NAME);
-				if (name == nullptr || std::string_view(name) != "Dummy-Driver") return 0;
-				static_cast<Search*>(data)->found = node;
-				return 1;
-			},
-			&search);
-		if (search.found == nullptr) FAIL("the engine holds no node named Dummy-Driver");
-		node_ = search.found;
+		node_ = engineNode(engine.context(), "Dummy-Driver");
+		if (node_ == nullptr) FAIL("the engine holds no node named Dummy-Driver");
 		events_.version = PW_VERSION_IMPL_NODE_RT_EVENTS;
 		events_.start = &DriverCycles::onStart;
 		events_.complete = &DriverCycles::onComplete;
