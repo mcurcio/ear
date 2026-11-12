@@ -119,26 +119,49 @@ TEST_CASE("A skip a frame either way of whole blocks is a bad step, as is a step
 	}
 }
 
-TEST_CASE("A late hard sync the library logged accounts for one drop up to its lateness, and no other step",
+TEST_CASE("A loss the library logged accounts for one forward step, by its size where it fits and apart where not",
           "[system][sendspin][ramp]") {
 	// 5312 us late at 48 kHz: 254.976 frames, of which the library drops the whole 254.
 	const auto dropped = [](std::uint32_t frames, std::vector<std::int64_t> logged) {
 		return checkRamp(wavOf({whole(100), whole(101 + frames), whole(102 + frames)}), std::move(logged));
 	};
-	SECTION("its drop") {
-		const RampCheck ramp = dropped(254, {-5312});
-		INFO(ramp);
-		CHECK(ramp.badSteps == 0);
-		CHECK(ramp.hardSyncSteps == 1);
+	const auto wholeChunks = [](std::uint32_t frames) { return static_cast<std::uint32_t>(2 * chunkFrames + frames); };
+	SECTION("its drop, and whole chunks before it") {
+		for (const std::uint32_t frames : {std::uint32_t{254}, wholeChunks(254)}) {
+			const RampCheck ramp = dropped(frames, {-5312});
+			INFO(frames << ": " << ramp);
+			CHECK(ramp.badSteps == 0);
+			CHECK(ramp.hardSyncSteps == 1);
+			CHECK(ramp.stepsInLoss == 0);
+		}
 	}
-	SECTION("more than it dropped") { CHECK(dropped(255, {-5312}).badSteps == 1); }
-	SECTION("a line that inserted silence, not dropped") { CHECK(dropped(254, {5312}).badSteps == 1); }
+	SECTION("a loss that began with silence, no more than the silence") {
+		const RampCheck ramp = dropped(254, {5312});
+		INFO(ramp);
+		CHECK(ramp.hardSyncSteps == 1);
+		CHECK(ramp.stepsInSilentLoss == 1);
+	}
+	SECTION("more than its line says: the loss's later hard syncs, counted apart") {
+		for (const std::int64_t us : {std::int64_t{-5312}, std::int64_t{5312}}) {
+			const RampCheck ramp = dropped(wholeChunks(255), {us});
+			INFO(us << ": " << ramp);
+			CHECK(ramp.badSteps == 0);
+			CHECK(ramp.hardSyncSteps == 0);
+			CHECK(ramp.stepsInLoss == 1);
+		}
+	}
 	SECTION("no line") { CHECK(dropped(254, {}).badSteps == 1); }
-	SECTION("one line, two drops") {
+	SECTION("one line, two steps") {
 		const RampCheck ramp =
 			checkRamp(wavOf({whole(100), whole(355), whole(356), whole(610)}), std::vector<std::int64_t>{-5312});
 		CHECK(ramp.hardSyncSteps == 1);
 		CHECK(ramp.badSteps == 1);
+	}
+	SECTION("a step back, line or none") {
+		const RampCheck ramp =
+			checkRamp(wavOf({whole(1000), whole(900), whole(901)}), std::vector<std::int64_t>{-5312});
+		CHECK(ramp.badSteps == 1);
+		CHECK(ramp.stepsInLoss == 0);
 	}
 }
 

@@ -21,11 +21,26 @@
 
 namespace ear::test {
 
+namespace detail {
+/// The real standard error while a StandardErrorLines holds descriptor 2, else -1.
+inline std::atomic<int> realStandardError{-1};
+} // namespace detail
+
+/// The descriptor a child process should get as its standard error: the real one, never the pipe a StandardErrorLines
+/// reads. A child given the pipe would hold its write end, so the reader could not see its end while the child lived,
+/// and its lines would be taken for the library's. A spawner dups this to the child's descriptor 2
+/// (`posix_spawn_file_actions_adddup2`), as SendspinTestServer does.
+inline int childStandardError() noexcept {
+	const int real = detail::realStandardError.load(std::memory_order_acquire);
+	return real >= 0 ? real : STDERR_FILENO;
+}
+
 /// Standard error goes through a pipe for this object's life. Each whole line that holds one of `markers` is kept,
 /// stamped with the value `stamp` holds when it was read (a count the test keeps, such as cycles recorded), and every
 /// line that does not start with one of `swallowed` is passed on to the real standard error: what the test asked the
 /// library to say is the test's alone, everything else is still shown. Make it before the library's threads start and
-/// let it go after they stop.
+/// let it go after they stop. One at a time in a process. A child process spawned meanwhile gets the real standard
+/// error (childStandardError), never the pipe: the pipe's end comes only when every write end is gone.
 class StandardErrorLines {
 public:
 	struct Line {
@@ -38,7 +53,7 @@ public:
 		int ends[2];
 		if (::pipe2(ends, O_CLOEXEC) != 0) throw std::runtime_error("StandardErrorLines: pipe2 failed");
 		std::fflush(stderr);
-		saved_ = ::dup(STDERR_FILENO);
+		saved_ = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 0); // a child gets it only as childStandardError()
 		if (saved_ < 0 || ::dup2(ends[1], STDERR_FILENO) != STDERR_FILENO) {
 			::close(ends[0]);
 			::close(ends[1]);
@@ -46,10 +61,12 @@ public:
 		}
 		::close(ends[1]);
 		read_ = ends[0];
+		detail::realStandardError.store(saved_, std::memory_order_release);
 		reader_ = std::thread([this] { run(); });
 	}
 	~StandardErrorLines() {
 		std::fflush(stderr);
+		detail::realStandardError.store(-1, std::memory_order_release);
 		::dup2(saved_, STDERR_FILENO); // the pipe's last write end goes: the reader sees its end
 		reader_.join();
 		::close(read_);

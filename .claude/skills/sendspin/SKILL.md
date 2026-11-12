@@ -219,7 +219,7 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
   dry, or holding the library's silence), and a test plays a 90 s stream until it has judged 750. Before playing they wait
   for the internal clock to reach the raw clock's rate over the clean cycles of two seconds, and fail naming it if it never
   does. Every step and stretch of silence is accounted for by the code's skips and feed reads (`lastSkipped()`,
-  `lastGot()`) or by the library's own lines, read from standard error at verbose (`docs/testing.md#the-librarys-own-word`):
+  `lastHeld()`, `lastGot()`) or by the library's own lines, read from standard error at verbose (`docs/testing.md#the-librarys-own-word`):
   `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips unlogged. A skip that takes the library's
   soft-sync frame with it moves the ramp one less (an insert) or one more (a drop) than its frames.
 - **The source's stamps are judged step by step:** the server says each chunk (`source-chunk <frames> <stamp> <lag>`); each

@@ -29,6 +29,7 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	// jump.
 	const std::uint32_t skipped = feed_.skip(missedFrames(cycle));
 	lastSkipped_ = skipped;
+	lastHeld_ = feed_.heldAtSkip();
 	started_ = true;
 	nextPosition_ = cycle.position + frames;
 

@@ -1,6 +1,7 @@
 // The tests' way to run the sendspin test server (sendspin_server.py), the real SendspinServer in the image's venv:
 // spawn it, send it a command per line, wait for an event it prints. Every wait is for an event; its deadline only fails
-// the test. Standard error stays the test's. Header-only, used by ear_node_sendspin's clock tests and the system tests.
+// the test. Its standard error is the test's real one (childStandardError). Header-only, used by ear_node_sendspin's
+// clock tests and the system tests.
 #pragma once
 
 #include <cerrno>
@@ -18,6 +19,8 @@
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include "standard_error_lines.hpp"
 
 extern char** environ;
 
@@ -41,6 +44,9 @@ public:
 		posix_spawn_file_actions_init(&actions);
 		posix_spawn_file_actions_adddup2(&actions, in[0], STDIN_FILENO);
 		posix_spawn_file_actions_adddup2(&actions, out[1], STDOUT_FILENO);
+		// Its own standard error, never a pipe a test reads the library's lines from (standard_error_lines.hpp).
+		if (const int error = childStandardError(); error != STDERR_FILENO)
+			posix_spawn_file_actions_adddup2(&actions, error, STDERR_FILENO);
 		std::vector<std::string> command{EAR_SENDSPIN_SERVER_PYTHON, "-I", EAR_SENDSPIN_SERVER_SCRIPT, "--listen", "0"};
 		command.insert(command.end(), arguments.begin(), arguments.end());
 		std::vector<char*> argv;

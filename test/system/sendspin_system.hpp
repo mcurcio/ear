@@ -214,6 +214,10 @@ struct RampCheck {
 	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
 								   // a logged hard sync's drop
 	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
+	std::size_t stepsInSilentLoss = 0; // of them, those inside a loss that began with silence (lossDropFrames)
+	std::size_t stepsInLoss = 0; // forward steps past what a line says, one per logged loss: unbounded by its line
+	std::vector<std::string> stepsInLossSeen;
+	std::vector<std::int64_t> lostSyncUs; // what the library logged, as checkRamp was given it
 	std::size_t zeroFramesInside = 0;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
@@ -224,10 +228,15 @@ struct RampCheck {
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-		<< ", bad steps " << ramp.badSteps << ", steps of a logged hard sync " << ramp.hardSyncSteps
+		<< ", bad steps " << ramp.badSteps << ", steps of a logged hard sync " << ramp.hardSyncSteps << " ("
+		<< ramp.stepsInSilentLoss << " in a loss that began with silence)"
 		<< ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex
 		<< ", frames of the last run " << ramp.lastRunFrames << ", bad steps seen:";
 	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
+	out << ", steps in a logged loss past its line " << ramp.stepsInLoss << ":";
+	for (const std::string& step : ramp.stepsInLossSeen) out << " " << step;
+	out << ", lost sync logged (us):";
+	for (const std::int64_t us : ramp.lostSyncUs) out << " " << us;
 	return out;
 }
 
@@ -236,8 +245,9 @@ inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 inline std::size_t blendLimit(std::size_t frames) { return frames / chunkFrames + 2; }
 
 /// What the library logged as `Lost sync (<n>us off)` lines, which ear prints as log records from standard error: each
-/// n below zero is a hard sync that dropped up to n us of a late chunk's front (sendspin-cpp's sync_task.cpp), the one
-/// step the ramp may take besides a skip's, and only as far as its line says.
+/// n below zero is a hard sync that dropped up to n us of a late chunk's front, after skipping unlogged every whole
+/// chunk too late to play (sendspin-cpp's sync_task.cpp), the one step the ramp may take besides a skip's, and only as
+/// far as its line says.
 inline std::vector<std::int64_t> lostSyncUs(const ChildProcess& ear) {
 	std::vector<std::int64_t> said;
 	const std::string& out = ear.output();
@@ -247,9 +257,15 @@ inline std::vector<std::int64_t> lostSyncUs(const ChildProcess& ear) {
 	return said;
 }
 
-/// The frames a hard sync logged as `n` us late may drop: the late time in whole frames, as the library works it out
-/// from the same number (sync_task.cpp: `late_frames`, of which it drops what the chunk holds).
-inline std::int64_t hardSyncDropFrames(std::int64_t lateUs) { return -lateUs * graphFrequency / 1000000; }
+/// The frames a loss logged as `n` us off may take back by a drop before the library says it regained sync: for a late
+/// line its own drop, the late time in whole frames as the library works it out from the same number (sync_task.cpp:
+/// `late_frames`, of which it drops what the chunk holds); for an early one (`n` above zero, silence added), no more than the silence it added. The library
+/// logs only a loss's first hard sync, so a drop inside a loss that began with silence says nothing of its own (seen
+/// once under load: `Lost sync (90691us off)`, then a step of a chunk and 99 frames); ear prints no `Regained sync`, so
+/// the loss's end is not known either. An interim bound, owed with ear's own records (root-classes.md 5.7).
+inline std::int64_t lossDropFrames(std::int64_t offUs) {
+	return (offUs < 0 ? -offUs : offUs) * graphFrequency / 1000000;
+}
 
 /// The step between two exact ramp frames, signed: a frame that names an earlier index is a step back, never a long
 /// step forward round the 32-bit index.
@@ -363,10 +379,12 @@ inline bool endStream(ChildProcess& ear, SendspinTestServer& server, const std::
 	return waitForNthLine(ear, ended, before, playDeadline).has_value();
 }
 
-/// `lateHardSyncsUs`: what the library logged (lostSyncUs); each late one accounts for one forward step up to its drop.
-inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lateHardSyncsUs = {}) {
-	std::erase_if(lateHardSyncsUs, [](std::int64_t us) { return us >= 0; });
+/// `lostSyncsUs`: what the library logged (lostSyncUs); each line accounts for one forward step of whole chunks and up to
+/// its drop (lossDropFrames).
+inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs = {}) {
 	RampCheck result;
+	result.lostSyncUs = lostSyncsUs;
+	std::erase_if(lostSyncsUs, [](std::int64_t us) { return us == 0; });
 	const auto frames = static_cast<std::size_t>(wav.info.frames);
 	std::size_t first = frames;
 	std::size_t last = 0;
@@ -395,14 +413,27 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lateHardSyn
 		if (previous) {
 			const std::int64_t step = rampStep(*previous, *index);
 			// A late hard sync's drop, the smallest logged that covers it, each line once.
-			const auto covers = [&](std::int64_t us) { return step > 1 && step - 1 <= hardSyncDropFrames(us); };
-			const auto logged = std::ranges::min_element(lateHardSyncsUs, [&](std::int64_t a, std::int64_t b) {
-				return covers(a) != covers(b) ? covers(a) : hardSyncDropFrames(a) < hardSyncDropFrames(b);
+			// The library first skips, unlogged, every whole chunk too late to play, then drops the late front of the next
+			// and says how late that was: whole chunks and at most that drop.
+			const auto covers = [&](std::int64_t us) {
+				return step > 1 && (step - 1) % chunkFrames <= lossDropFrames(us);
+			};
+			const auto logged = std::ranges::min_element(lostSyncsUs, [&](std::int64_t a, std::int64_t b) {
+				return covers(a) != covers(b) ? covers(a) : lossDropFrames(a) < lossDropFrames(b);
 			});
-			const bool hardSync = logged != lateHardSyncsUs.end() && covers(*logged) && !isSkipStep(step);
+			const bool hardSync = logged != lostSyncsUs.end() && covers(*logged) && !isSkipStep(step);
 			if (hardSync) {
 				++result.hardSyncSteps;
-				lateHardSyncsUs.erase(logged);
+				if (*logged > 0) ++result.stepsInSilentLoss;
+				lostSyncsUs.erase(logged);
+			} else if (step > 1 && !isSkipStep(step) && !(afterBlend && step == 3) && !lostSyncsUs.empty()) {
+				// A forward step past what any line says, inside a loss the library logged: its later hard syncs in the
+				// same loss say nothing at warn, so the line is the only evidence, and it accounts for one such step,
+				// counted apart: an interim limit (root-classes.md 5.7).
+				++result.stepsInLoss;
+				if (result.stepsInLossSeen.size() < 8)
+					result.stepsInLossSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));
+				lostSyncsUs.erase(lostSyncsUs.begin());
 			} else if (step != 1 && !isSkipStep(step) && !(afterBlend && step == 3)) {
 				++result.badSteps;
 				if (result.badStepsSeen.size() < 8)

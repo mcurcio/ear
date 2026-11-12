@@ -273,10 +273,23 @@ and each test splits off the rest:
 | `source_test.cpp` part A and the bound source | `judgeSource`'s raw-clock block, its own jump arithmetic | facts per cycle into the judge; the source-rule model stays (it is what is tested) and reads `causes` | the raw read in the code, `mostOverLost`, `unlost` |
 | `spikes_test.cpp` S5 | its own raw-clock rule | stays a spike of PipeWire (it is not a block); it reads `DriverCuts` for the cut count | the duplicate raw rule |
 | `engine_test.cpp` ramp, `sink_test.cpp` take-ups | `CycleLedger::clean`, `xruns` | `CycleLedger` records facts, `clean` is `whole()`; the judge | the ledger's own clean rule and `stalled` special case |
-| `sendspin/tests/clock_test.cpp` | `Judge` with 1.5 s windows, `excusedSteps`, `dryCycles`, `lastSkipped` | 5.4 | `kSettleNs`, `lastSkipped()`, the window logic |
+| `sendspin/tests/clock_test.cpp` | `Judge` with 1.5 s windows, the library's lines read from standard error, `lossSteps`, `dryCycles`, `lastSkipped`, `lastHeld`, `lastGot` | 5.4 | `kSettleNs`, `lastSkipped()`, `lastHeld()`, the window logic (below) |
 | `rtp_receiver_test.cpp`, `test/system/rtp_test.cpp` | clean cycles plus 0.5 s, late sends within 600 ms | 5.4 | the two fixed windows |
 | `test/system/*` ramps and stamps | `isSkipStep`, the 200 µs step | the counters and records (section 8) | both |
 | The branch's `DriverCycles` | the only reader of the driver's account | `DriverCuts`, in the product | `src/pipewire/tests/driver_cycles.hpp` |
+
+The windows the R5 review left in those tests, each with what it becomes and the step that does it:
+
+| Window | Where | Why it is there | Becomes | Step |
+|---|---|---|---|---|
+| `kSettleNs` (1.5 s after any disturbance, dry cycle, logged hard sync or step) | `clock_test.cpp` | the library re-aligning after it, in its own time | `librarySettle`, declared in the library's units (chunks) and counted (5.4); the graph's own disturbance excuses only its cycles | C3c |
+| `lossSteps` (a step of exactly what was lost, a soft-sync frame either way, with a library line near it) | `clock_test.cpp` | the library catching up after a dry cycle or a forward jump | `librarySettle`'s step, bounded by the cut's `jumpFrames` or the feed's dry count | C3c |
+| `dryCycles` from `lastGot() < frames` | `clock_test.cpp` | the worker starved, read from the code's seam | the feed's own dry count (5.4), a dry cycle excused only where it moved | C3c |
+| `kLogReach` (a line matched within the feed and a chunk of cycles from where it was read) and `kLogLag` (32 cycles of reading lag) | `clock_test.cpp` | a library line is stamped with the cycle count when the reading thread got it, not where its audio plays | deleted: the library's log through a callback (the carried patch slice 3c owes) stamped with the feed's write position, so a line names the frame it acts on | C3c, after 3c's patch |
+| `inLoss` (a loss from its line less `kLogLag` to its end plus `kLogLag`) | `clock_test.cpp` | the same stamping | the loss's frames, from the stamped lines; timing inside it stays unjudged, declared as `librarySettle` | C3c, after 3c's patch |
+| `kLateHeardWithin` (600 ms) and `kSettleFrames` (0.5 s) | `rtp_receiver_test.cpp`; 600 ms and 0.2 s in `test/system/rtp_test.cpp` | a late send heard up to the buffer later, and the resampler settling | the receiver's configured latency through `FrameClock` (5.4), the same reach both ways; the settling as `expected` once per start | C3c |
+| `heldBy` (a tenth's time as when the WAV was first seen to hold it, looked at every 50 ms) | `test/system/rtp_test.cpp` | ear is another process, with no ledger the test can read | the counters and records (section 8), each late tenth matched to a record | D2 |
+| A `Lost sync` line matched by size to any step it covers | `test/system/sendspin_system.hpp` | ear prints the library's warning with no position | the line stamped with the frames written when ear printed it, its drop exact | D2, C3c |
 
 ## 6. Interfaces
 
@@ -808,7 +821,7 @@ R5d).
 | **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
-| **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `excusedSteps`, the 600 ms and 0.5 s windows | none |
+| **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `lossSteps`, `kLogReach`, `kLogLag`, `inLoss`'s lag, the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
 | **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |

@@ -30,9 +30,11 @@ public:
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override;
 	void release() noexcept override;
 	/// Test seams (docs/testing.md#a-writers-own-event): the frames the last process() skipped for the graph's jump, all
-	/// the feed held when that was less than the jump; and the frames it read from the feed to its outputs, the rest of
-	/// the cycle zeros because the feed held no more. The data thread's own; read on it, after process().
+	/// the feed held when that was less than the jump; what the feed held as it skipped; and the frames it read from the
+	/// feed to its outputs, the rest of the cycle zeros because the feed held no more. The data thread's own; read on it,
+	/// after process().
 	std::uint32_t lastSkipped() const noexcept { return lastSkipped_; }
+	std::uint32_t lastHeld() const noexcept { return lastHeld_; }
 	std::uint32_t lastGot() const noexcept { return lastGot_; }
 
 private:
@@ -49,7 +51,8 @@ private:
 	bool started_ = false;
 	std::uint64_t nextPosition_ = 0;
 	std::uint64_t totalFrames_ = 0;
-	std::uint32_t lastSkipped_ = 0; // test seams: lastSkipped() and lastGot()
+	std::uint32_t lastSkipped_ = 0; // test seams: lastSkipped(), lastGot() and lastHeld()
 	std::uint32_t lastGot_ = 0;
+	std::uint32_t lastHeld_ = 0;
 };
 } // namespace ear::sendspin

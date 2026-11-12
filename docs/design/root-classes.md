@@ -878,19 +878,22 @@ in `docs/testing.md#making-the-rare-event`.
   the library skips unlogged, `sync_task.cpp`: "This chunk will arrive too late to be played, skip it!", the ramp then
   going on at a chunk the server sent, less that drop's prefix), else it fails naming its cycle beside the filter's
   moves and the reports' drift, and a report that moves by 1 ms or more between clean cycles fails as ear's.
-- **What each excuse is now bound by.** A short skip must leave the feed empty (`lastGot() == 0` that cycle). A cycle
-  is dry only when `lastGot()` is less than its frames, and dry cycles are reported as a share of the ramp's; silence
-  in a cycle fed whole is the library's, matched to the frames its hard syncs logged adding, and any it did not log
-  fails (`unexplainedSilence`). A forward step is passed only as a skip's frames exactly, a skip that took one of the
-  library's soft-sync frames with it (one less than its frames for an inserted frame, which names no index, or one
-  more for a dropped one: the library's rule, not seen in the 60 runs, counted), logged drops and whole late chunks
-  exactly, or after a dry cycle or a jump past the feed within what was lost (the frames the feed lacked, or the time
-  the raw clock lost, never the position's move, which can go back) and one chunk the library held; every one is
-  counted, and a step back, or of 0, always fails. Timing is not judged within a loss of sync, by the library's own
-  lines, nor 1.5 s after anything above.
-- **"Within 3 s" was wall time.** A lost card's recovery is counted in graph cycles from the cut, moved on only by a
-  cycle the ledger says the host disturbed after it, never by a dry cycle (reported beside it); runs from before the cut,
-  read later, count for nothing.
+- **What each excuse is now bound by (second review: no excuse wider than its evidence).** A skip must be exactly the
+  smaller of the jump and what the feed held as it skipped (a third seam, `lastHeld()`, read where `Feed::skip` reads
+  it, so no write between can blur it). A cycle is dry only when `lastGot()` is less than its frames, and dry cycles are
+  reported as a share of the ramp's; silence in a cycle fed whole is the library's, matched to the frames its hard
+  syncs logged adding, and any it did not log fails (`unexplainedSilence`). A forward step is passed only as:
+  a skip's frames exactly; a skip that took one of the library's soft-sync frames with it (one less than its frames
+  for an inserted frame, which names no index, or one more for a dropped one: the library's rule, not seen in the 60
+  runs, counted); logged drops exactly, with whole chunks the library skips unlogged as too late only inside a loss it
+  logged or after frames were lost (the only times a chunk can come too late); or, after a dry cycle or a forward jump
+  past the feed, exactly what was lost (the frames the feed lacked, or the time the raw clock lost, never the
+  position's move) give or take one soft-sync frame, counted apart (`lossSteps`) and failing unless the library logged
+  something within reach of it. A backward jump or a new driver excuses no forward frame, and a step back, or of 0,
+  always fails. Timing is not judged within a loss of sync, by the library's own lines, nor 1.5 s after anything above.
+- **"Within 3 s" was wall time.** A lost card's recovery is counted in graph cycles from the cut to the run of three,
+  less the cycles the ledger says the host disturbed between (each its own cycle, no more): 3 s of the rest at most. A
+  dry cycle counts like any other and is reported; runs from before the cut, read later, count for nothing.
 - **The feed's negative needed a product seam, as the source's did.** `Feed::waitsBegun()` and `waitsWoken()` (writer
   side only, off the realtime path) replace the 50 ms sleep and the `< patience / 2` wall-time checks.
 - **The skip under root became an ordinary user.** `WithoutFilePrivileges` drops the file capabilities from the test's
@@ -912,11 +915,12 @@ tests in `ear_pipewire_tests` judge only what the host left alone.
   half in one run for the depth test; a second of the new stream's run after a lost server, counted from the frames
   written before it). Ending by stream/end keeps the WAV free of the stop's fade.
 - **The source's stamp span became steps.** `sendspin_server.py` says each source chunk (`source-chunk`) instead of the
-  span at the end. A step longer than the last chunk by a block or more is a skip (counted, and all of them together no
-  more than the time between the first chunk's arrival and the last's on the server's clock); any other step off the
-  chunk's length by more than 200 us fails; the test streams until a second of frames came on clean steps. The 500 ms
-  arrival bound became the quickest chunk's (250 ms), waited for over the stream: only a stamp on another clock or
-  carrying an offset keeps every chunk above it; no chunk may arrive before its stamp.
+  span at the end. A step longer than the last chunk by whole blocks, within 200 us, is a skip (the graph's jumps are
+  whole cycles, spike S6; counted, and all of them together no more than the time between the first chunk's arrival
+  and the last's on the server's clock); any other step off the chunk's length by more than 200 us fails; the test
+  streams until a second of frames came on clean steps. The 500 ms arrival bound became the quickest chunk's (250 ms),
+  waited for over the stream: only a stamp on another clock or carrying an offset keeps every chunk above it; no chunk
+  may arrive before its stamp.
 - **Holders renew on the transport's close.** A renewing round half-closes its sockets and reads each until the
   transport closes its end, then opens the next; the holder test checks none was left. The slow upgrade's `took < 3 s`
   (the peers' rounds on the host's schedule) became "the rounds asked for, or those within 2 s, at least one".
@@ -924,24 +928,47 @@ tests in `ear_pipewire_tests` judge only what the host left alone.
   `noiseRmsWithin`, and so does the source's recorded channel.
 - **The RTP receiver has no counters a test can read**, so the sender counts its own late sends (`lateSends()`, over
   10 ms late), and only one later than the receiver's latency (100 ms, its headroom) excuses a tenth: a later one is
-  in time for the buffer. A new test holds the sender 20 ms on purpose (`holdOnce`) and requires the tone clean, no tenth
-  excused for the sender. The engine tests' recorder keeps a ledger: a tenth is judged when its cycles and the half
-  second before it are clean and no such late send lies within 600 ms before it, to a planned ten, sending 25 s. The
-  system test has no ledger (ear is another process): it excuses tenths only by late sends, timed by when the WAV was
-  first seen to hold them, which is coarse (a 50 ms look, and the sink's lag before it) and can place a late send
-  against the wrong tenth; a stall of ear's own data thread is not seen there at all. Both are judged where they can
-  be, in `ear_pipewire_tests`.
+  in time for the buffer. A new test holds the sender 20 ms on purpose (`holdOnce`) and requires the tenths from the
+  hold to the hold and the buffer after it judged clean, playing the stream again until the host leaves them judgeable.
+  The engine tests' recorder keeps a ledger: a tenth is judged when its cycles and the half second before it are clean
+  and no such late send lies within 600 ms before it, to a planned ten, sending 25 s. The system test has no ledger (ear
+  is another process): it excuses tenths only by late sends, timed by when the WAV was first seen to hold them, which
+  is coarse (a 50 ms look, and the sink's lag before it) and can place a late send against the wrong tenth; a stall of
+  ear's own data thread is not seen there at all. Both are judged where they can be, in `ear_pipewire_tests`.
+- **Interim limit: lateness between 20 and 100 ms.** Only a 20 ms hold is proven clean; that a late send up to the
+  receiver's whole 100 ms leaves the tone clean is assumed from the buffer's size, not shown. Owed with the single
+  judge (`cycle-facts.md` 5.4: the late sends' reach becomes the receiver's configured latency through `FrameClock`),
+  by holds across that range.
 - **The ramp judge's steps are whole blocks or what the library logged.** Under load the depth test saw steps of 256
   and 512 at cycle boundaries, 4 runs in 20, and the first cut let any step within a frame of whole blocks through.
   Spike S6 (`cycle-facts.md` 9.1) showed that with `engine.conf`'s `resync.ms` a running block's jumps are whole blocks
   exactly, so the frame either way is gone (review): `isSkipStep` is one more than whole blocks, on a signed step, so a
   step back never passes as a skip round the 32-bit index. A step of 256 or 512 is then no skip. In the WAV it is judged
   against what ear prints of the library (its warnings, as log records): each `Lost sync (<n>us off)` with `n` below
-  zero accounts for one forward step of at most `n` us in whole frames, as the library works out `late_frames`
-  (`lostSyncUs`, `hardSyncDropFrames`), and anything else fails naming its step. Twenty runs of the system tests beside `yes` × 5 on 4 cores (loads 9 to 13) failed no ramp check. ear runs the library at
-  warn, so a hard sync inside a loss already begun says nothing: the depth test, whose ask can set off a re-alignment
+  zero accounts for one forward step of whole chunks (those the library skips unlogged as too late before it drops)
+  and at most `n` us in whole frames, as the library works out `late_frames` (`lostSyncUs`, `lossDropFrames`), and
+  anything else fails naming its step and the lines ear printed. A line above zero (a loss that began with silence)
+  accounts for one such step of no more than the silence it added, counted apart (`stepsInSilentLoss`): the library
+  logs only a loss's first hard sync, and one loaded run (load 16) showed `Lost sync (90691us off)` and then a step of
+  a chunk and 99 frames, a drop inside the loss that said nothing. A forward step past what any line says, while a line is left, takes
+  that line and is counted apart (`stepsInLoss`, the steps listed in the report): another loaded run (load 13) showed
+  `Lost sync (-12162us off)`, its 583 frames of silence, and then a step of 3,400, the loss's later drops, which the
+  library logs only at verbose. One step per line, forward only; a step back still fails. The whole chunks were found by the second review's
+  loaded runs (load 17): steps of 9,598 to 15,932 frames, two or three chunks and a few hundred frames; in the clock
+  test's matching run the logged drop (3,978 frames for `-82895us`) sat inside a skip's step, so a drop is matched
+  there with the code's skipped frames on either side of it. Twenty runs of the system tests
+  beside `yes` × 5 on 4 cores (loads 9 to 13) failed no ramp check. ear runs the library at warn, so a hard sync inside a loss already begun says nothing: the depth test, whose ask can set off a re-alignment
   (a drop of 4666 frames after 7229 of silence was seen once under load), judges its frames exact over two and a half
   seconds in one run, not the steps between runs, until the library's log reaches ear (slice 3c).
+- **Interim limit: a `Lost sync` line is matched by size, not by place.** A step it accounts for may be less than
+  `lossDropFrames(n)`, where the library's drop is exact (`late_frames`) and can be less only where the chunk ended;
+  and the line is matched to whichever step it covers, not to the step at the frames ear had written when it printed
+  it. Both are owed with ear's own records (`cycle-facts.md` D2, and C3c for the judge): the exact size, and the line
+  stamped with the WAV frames held when ear printed it. A loss that began with silence bounds its drop by the silence
+  only by reading of the library, not by its word, and a step inside a loss past what its line says
+  (`stepsInLoss`) is bounded by nothing but the line's being there, one step each: the library's later hard syncs in a
+  loss reach ear only at verbose. The depth test's evidence for a re-alignment that logs nothing
+  is the notes of one loaded run (above), not a check.
 - **More than the table named.** `sendspin_connections_test.cpp`'s `fillBacklog` took a connect not finished within
   200 ms as dropped; it now asks the listener (`TCP_INFO`: the accept queue against its bound). `output_writer_test.cpp`'s
   50 ms became the writer's own event: a page of room, a line of two pages, and the page filling again; the test then

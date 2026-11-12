@@ -195,19 +195,22 @@ TEST_CASE("A clear frees room for a writer that waits", "[feed]") {
 	CHECK(feed.waitsWoken() == 1); // the read that applied the clear woke it, not its patience
 }
 
-TEST_CASE("skip discards the oldest frames and says how many", "[feed]") {
+TEST_CASE("skip discards the oldest frames and says how many, and what it held", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;
 	fill(samples, 0, 10);
 	REQUIRE(feed.write(samples, 10, 0ms) == 10);
 	CHECK(feed.skip(4) == 4);
+	CHECK(feed.heldAtSkip() == 10);
 	std::array<float, 8> left{};
 	std::array<float, 8> right{};
 	const std::array<std::span<float>, 2> out{left, right};
 	CHECK(feed.read(out, 2) == 2);
 	CHECK(left[0] == 4.0F);
 	CHECK(feed.skip(100) == 4);
+	CHECK(feed.heldAtSkip() == 4);
 	CHECK(feed.skip(100) == 0);
+	CHECK(feed.heldAtSkip() == 0);
 }
 
 TEST_CASE("read and skip allocate nothing", "[feed]") {

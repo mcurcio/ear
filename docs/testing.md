@@ -107,9 +107,10 @@ began, each past its last look at the ring, so only a play, the close or its pat
 checks `waitDeadline(milliseconds::max())` is a year away. The `sendspin` node's feed has the same
 two, `Feed::waitsBegun()` and `Feed::waitsWoken()`, counted on the writer's side: `feed_test.cpp`
 waits for the first before it reads or clears, and judges by the second that the wake ended the
-wait, not its patience. Its audio code says what its last cycle skipped for the graph's jump and
-read from the feed (`SendspinCode::lastSkipped()` and `lastGot()`, read on the data thread after
-`process()`), which the clock tests hold each ramp step and each report of what played against.
+wait, not its patience. Its audio code says what its last cycle skipped for the graph's jump, what
+the feed held as it skipped and what it read from the feed (`SendspinCode::lastSkipped()`,
+`lastHeld()` and `lastGot()`, read on the data thread after `process()`), which the clock tests
+hold each skip, each ramp step and each report of what played against.
 
 ### The library's own word
 
@@ -120,8 +121,11 @@ for, and, once the worker has set the library's level, raise it to verbose, so e
 its frames and each loss of sync its start and end, each stamped with the cycles recorded when it
 was read. A step or a stretch of silence the cycles do not explain is judged against those lines:
 excused exactly as far as they say, never further, and counted. The system tests read what ear
-prints (its warnings, as log records): each `Lost sync (<n>us off)` with `n` below zero accounts for
-one drop of at most `n` us in whole frames, as the library works it out.
+prints (its warnings, as log records): each `Lost sync (<n>us off)` accounts for one forward step of
+whole chunks (skipped as too late) and a drop of at most `|n|` us in whole frames, as the library
+works it out; a line above zero (silence added) is counted apart, and a forward step past what any
+line says takes a line left and is counted apart too (`stepsInLoss`): interim bounds, as the
+library's later hard syncs in a loss reach ear only at verbose.
 
 ### Waiting for what ear wrote
 
@@ -144,7 +148,8 @@ nothing a test can read. The RTP tone tests judge a tenth of a second only when 
 the receiver's latency (its headroom) lies within the buffer's reach before it and, in
 `ear_pipewire_tests`, every cycle of it and of the half second before it is clean in the
 recorder's ledger; they judge a planned ten tenths, the sender sending on until then. `holdOnce`
-holds the sender on purpose, and a hold inside the headroom must leave the tone clean.
+holds the sender on purpose, and a hold inside the headroom must leave the tone clean: the
+tenths it reaches are judged, the stream played again until the host leaves them judgeable.
 
 ### An ordinary user's folder
 

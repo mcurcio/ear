@@ -13,7 +13,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -86,6 +85,7 @@ struct Cycle {
 	bool clean;                // the ledger's word: it followed the cycle before it with nothing lost
 	std::uint32_t zeros;       // frames of exact silence in it
 	std::uint32_t skipped;     // frames the code skipped in it for the graph's jump (SendspinCode::lastSkipped)
+	std::uint32_t held;        // frames the feed held as it skipped (SendspinCode::lastHeld)
 	std::uint32_t fed;         // frames the code read from the feed (SendspinCode::lastGot): fewer than frames is dry
 	bool published;            // the code told the library of this cycle (it skipped or read something)
 	PlayProgress progress;     // what it told, when it did
@@ -125,6 +125,7 @@ public:
 		out.got = 0;
 		out.zeros = 0;
 		out.skipped = code_.lastSkipped();
+		out.held = code_.lastHeld();
 		out.fed = code_.lastGot();
 		out.published = out.skipped + out.fed > 0;
 		// The code published just now, on this thread, so the newest value is this cycle's.
@@ -472,13 +473,12 @@ struct Errors {
 	std::size_t dryCycles = 0;    // cycles the feed did not fill (lastGot() < frames): what the host did to the worker
 	std::size_t librarySilence = 0; // cycles fed whole that held silence: the library's own (a hard sync's)
 	std::size_t badCycles = 0;
-	std::size_t excusedSteps = 0;  // forward steps within what was lost before them: dry frames or a jump, and a chunk
-	std::size_t hardSyncSteps = 0; // forward steps exactly a logged hard sync's drops
+	std::size_t lossSteps = 0;       // forward steps of exactly what was lost before them, a soft-sync frame either way
+	std::size_t hardSyncSteps = 0;   // forward steps exactly a logged hard sync's drops
 	std::size_t hardSyncSilence = 0; // frames of library silence a logged hard sync added
 	std::size_t lateChunks = 0;      // whole chunks the library skipped unlogged as too late, inside a logged step
 	std::size_t skipsOverBlend = 0;  // skips that took a soft-sync frame with them
-	std::uint64_t mostLost = 0;    // the most frames lost before an excused step: the raw clock's lost time, dry frames
-	std::uint64_t mostExcused = 0; // the longest step excused after a loss, in frames past the skips
+	std::uint64_t mostLost = 0;      // the most frames lost before such a step: the raw clock's lost time, dry frames
 	// The code's reports on consecutive clean cycles fed whole: how far each report's finish time moved from the last
 	// one's plus a cycle's frames, the worst seen and those of a millisecond or more, with the cycle. Ear's own reports
 	// stepping (a block's 5.3 ms, say) would be ear's bug, whatever the library then did.
@@ -515,12 +515,12 @@ std::string describe(const Errors& errors) {
 	             ? 100.0 * static_cast<double>(errors.dryCycles) / static_cast<double>(errors.rampCycles)
 	             : 0.0)
 		 << "%), library silence " << errors.librarySilence << ", bad cycles " << errors.badCycles
-		 << ", steps excused after a loss " << errors.excusedSteps << " (the longest " << errors.mostExcused
-		 << " frames, the most lost " << errors.mostLost << "), steps of a logged hard sync " << errors.hardSyncSteps
-		 << " (of " << errors.loggedDrops << " logged drops), silence a logged hard sync added "
-		 << errors.hardSyncSilence << " frames (of " << errors.loggedSilences << " logged), whole late chunks "
-		 << errors.lateChunks << ", skips over a soft-sync frame " << errors.skipsOverBlend
-		 << ", worst drift of the code's reports " << errors.worstProgressDriftUs << " us, the graph's rate "
+		 << ", steps of the frames lost " << errors.lossSteps << " (the most lost " << errors.mostLost
+		 << "), steps of a logged hard sync " << errors.hardSyncSteps << " (of " << errors.loggedDrops
+		 << " logged drops), silence a logged hard sync added " << errors.hardSyncSilence << " frames (of "
+		 << errors.loggedSilences << " logged), whole late chunks " << errors.lateChunks
+		 << ", skips over a soft-sync frame " << errors.skipsOverBlend << ", worst drift of the code's reports "
+		 << errors.worstProgressDriftUs << " us, the graph's rate "
 		 << static_cast<double>(errors.contiguousFrames) / seconds << " Hz";
 	const auto list = [&](const char* title, const std::vector<std::string>& items) {
 		text << "\n" << title << ":";
@@ -567,10 +567,11 @@ public:
 	}
 	/// The newest ramp index out.
 	std::uint32_t lastIndex() const { return lastIndex_.value_or(0); }
-	/// The newest cycle before `before` the ledger did not call clean, read so far: what the host did to the graph.
-	std::optional<std::size_t> lastDisturbedBefore(std::size_t before) const {
-		const auto at = std::ranges::lower_bound(disturbed_, before);
-		return at == disturbed_.begin() ? std::nullopt : std::optional<std::size_t>(*std::prev(at));
+	/// Cycles from `from` up to and not including `to` the ledger did not call clean, read so far: what the host did to
+	/// the graph.
+	std::size_t disturbedBetween(std::size_t from, std::size_t to) const {
+		return static_cast<std::size_t>(
+			std::ranges::count_if(disturbed_, [&](std::size_t at) { return at >= from && at < to; }));
 	}
 	/// Dry cycles from cycle `from` up to and not including `to`, read so far.
 	std::size_t dryBetween(std::size_t from, std::size_t to) const {
@@ -589,7 +590,6 @@ private:
 
 	void one(std::size_t index, const Cycle& cycle) {
 		std::int64_t gap = 0;
-		bool jumpPastFeed = false;
 		if (previous_ && !cycle.clean) {
 			// Whatever the host did to the graph, the time around it is not judged: a skip, a stall, a jump.
 			++errors.disturbances;
@@ -598,25 +598,22 @@ private:
 			      static_cast<std::int64_t>(previous_->position + previous_->frames);
 			if (gap > 0 && gap <= kFeedFrames) {
 				++errors.skips;
-				// The code skips the jump, or all the feed held when that was less, and then the feed is empty; never
-				// more than the jump.
-				if (cycle.skipped > gap)
+				// The code skips the jump, or all the feed held as it skipped when that was less: exactly the smaller.
+				const auto wanted = std::min<std::int64_t>(gap, cycle.held);
+				if (cycle.skipped != wanted)
 					errors.bad.push_back("skip of " + std::to_string(cycle.skipped) + " for a jump of " +
-					                     std::to_string(gap) + " at " + std::to_string(index));
-				if (cycle.skipped < gap) {
-					++errors.shortSkips;
-					if (cycle.fed != 0)
-						errors.bad.push_back("short skip with the feed not empty at " + std::to_string(index));
-				}
+					                     std::to_string(gap) + " with " + std::to_string(cycle.held) + " held at " +
+					                     std::to_string(index));
+				if (cycle.skipped < gap) ++errors.shortSkips;
 			} else if (gap != 0 || cycle.driverId != previous_->driverId) {
 				// Past the feed, or backward: a new clock to the code, which skips nothing; the library catches up with
 				// its clock in its own steps, within the time the raw clock says the graph lost (a position can move
 				// back, the raw clock cannot).
-				jumpPastFeed = true;
+				// A backward jump, or a new driver, lost nothing forward the library could catch up: it excuses no step.
 				const std::int64_t lostNs =
 					cycle.startRawNs - previous_->startRawNs - FrameClock(kRate).ns(previous_->frames);
-				if (lostNs > 0)
-					lost_ += static_cast<std::uint64_t>(FrameClock(kRate).frames(std::chrono::nanoseconds(lostNs))) + 1;
+				if (gap > 0 && lostNs > 0)
+					lost_ += static_cast<std::uint64_t>(FrameClock(kRate).frames(std::chrono::nanoseconds(lostNs)));
 			}
 			disturbed_.push_back(index);
 		}
@@ -656,7 +653,7 @@ private:
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
 		// The chunks the server sent up to this cycle's first frame, which the step and the timing are judged by.
 		const std::int64_t rampUs = sentUs(cycle.firstIndex);
-		if (lastIndex_) checkStep(index, cycle, jumpPastFeed);
+		if (lastIndex_) checkStep(index, cycle);
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
 		lastRampCycle_ = index;
@@ -683,7 +680,7 @@ private:
 	}
 
 	/// Each step from the last ramp frame out to this cycle's first is accounted for by exactly one rule.
-	void checkStep(std::size_t index, const Cycle& cycle, bool jumpPastFeed) {
+	void checkStep(std::size_t index, const Cycle& cycle) {
 		const std::int64_t step = static_cast<std::int64_t>(cycle.firstIndex) - static_cast<std::int64_t>(*lastIndex_);
 		const auto broken = [&](const char* what) {
 			errors.bad.push_back(std::string(what) + " " + std::to_string(step) + " at " + std::to_string(index));
@@ -721,19 +718,24 @@ private:
 		// skips unlogged as too late to play (sync_task.cpp, "This chunk will arrive too late to be played, skip it!")
 		// by whole chunks more: the frame after them begins a chunk the server sent, less the prefix the last logged
 		// drop took of it.
-		if (takeDrops(index, cycle.firstIndex, forward)) {
+		if (takeDrops(index, cycle.firstIndex, forward, static_cast<std::uint64_t>(pendingSkipped_),
+		              inLoss(index) || lost_ > 0)) {
 			++errors.hardSyncSteps;
 			lastDisturbanceNs_ = cycle.startRawNs;
 			note("logged hard sync");
 			return;
 		}
-		// After what was lost before it (the frames the feed lacked, or the graph's jump past the feed), the library
-		// catches up with its clock: by no more than that and a chunk it held.
-		if ((lost_ > 0 || jumpPastFeed) && forward <= lost_ + kChunkFrames) {
-			++errors.excusedSteps;
+		// After what was lost before it (the frames the feed lacked, or the raw clock's time a forward jump past the feed
+		// lost), the library catches up with its clock by exactly that, give or take one soft-sync frame (an inserted one
+		// names no index, a dropped one two). It does so by a hard sync, so a line of its own lies within reach: one that
+		// does not is no catch-up the library made.
+		if (lost_ > 0 && forward + 1 >= lost_ && forward <= lost_ + 1) {
+			++errors.lossSteps;
 			errors.mostLost = std::max(errors.mostLost, lost_);
-			errors.mostExcused = std::max(errors.mostExcused, forward);
-			note("after a loss");
+			note("the frames lost");
+			if (!loggedNear(index))
+				errors.bad.push_back("a step of the " + std::to_string(lost_) + " frames lost at " +
+				                     std::to_string(index) + " with nothing the library logged near it");
 			return;
 		}
 		std::string where = " (skipped " + std::to_string(pendingSkipped_) + ", lost " + std::to_string(lost_);
@@ -781,8 +783,12 @@ private:
 
 	/// Takes logged drops (oldest first, within reach of cycle `index`) and whole late chunks that together make
 	/// `frames`, the ramp then going on at frame `next`: true if some prefix of the drops leaves a whole number of chunks,
-	/// and `next` lies that drop's frames into a chunk the server sent (none when it dropped a whole chunk).
-	bool takeDrops(std::size_t index, std::uint32_t next, std::uint64_t frames) {
+	/// and `next` lies that drop's frames into a chunk the server sent (none when it dropped a whole chunk), or up to
+	/// `skipped` more, the frames the code skipped in the same step that fell after the drop. Whole chunks the library
+	/// skips unlogged are taken only when `chunksMayGo`: inside a loss it logged, or after frames were lost, the only
+	/// times a chunk can come too late to play.
+	bool takeDrops(std::size_t index, std::uint32_t next, std::uint64_t frames, std::uint64_t skipped,
+	               bool chunksMayGo) {
 		std::erase_if(drops_, [&](const Logged& line) { return line.cycle + kLogReach < index; });
 		const auto into = [&]() -> std::optional<std::uint64_t> {
 			for (const SentChunk& chunk : sent_)
@@ -799,7 +805,9 @@ private:
 			const std::uint64_t lastDrop = used > 0 ? drops_[used - 1].left : 0;
 			const std::uint64_t prefix = lastDrop % kChunkFrames;
 			const std::uint64_t chunks = (frames - sum) / kChunkFrames;
-			if ((frames - sum) % kChunkFrames != 0 || (used == 0 && chunks == 0) || !into || *into != prefix) continue;
+			if ((frames - sum) % kChunkFrames != 0 || (used == 0 && chunks == 0) || !into || *into < prefix ||
+			    *into - prefix > skipped || (chunks > 0 && !chunksMayGo))
+				continue;
 			errors.lateChunks += chunks;
 			drops_.erase(drops_.begin(), drops_.begin() + static_cast<std::ptrdiff_t>(used));
 			return true;
@@ -833,11 +841,18 @@ private:
 		return true;
 	}
 
+	/// Whether the library logged anything of its sync task (a hard sync, a loss or its end) within reach of cycle `index`.
+	bool loggedNear(std::size_t index) const {
+		return std::ranges::any_of(heard_,
+		                           [&](std::size_t at) { return at <= index + kLogLag && index <= at + kLogReach; });
+	}
+
 	/// New lines of the library's log, into the drops and silences still to be matched.
 	void readLog() {
 		const std::vector<LibraryLog::Line> lines = log_.lines();
 		for (; logRead_ < lines.size(); ++logRead_) {
 			const LibraryLog::Line& line = lines[logRead_];
+			heard_.push_back(line.cycle);
 			const auto frames = static_cast<std::uint64_t>(std::max<std::int64_t>(line.value, 0));
 			if (line.kind == LibraryLog::Kind::drop) {
 				drops_.push_back({line.cycle, frames, frames});
@@ -934,6 +949,7 @@ private:
 	std::uint64_t told_ = 0;          // the frames the code last told the library were played
 	std::vector<std::size_t> dry_;
 	std::vector<std::size_t> disturbed_; // cycles the ledger did not call clean
+	std::vector<std::size_t> heard_;     // the cycle each line of the library's log was read at
 };
 
 /// Judges cycles as they come until the planned count is judged: however often the host disturbs the clock, the
@@ -1027,9 +1043,9 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 	// Losing the card cuts the audio path but leaves its latency (PipeWire never tells the block that the last link went,
 	// so the downstream latency the node's frames are dated by stays, stale). Any correction the library makes comes from
 	// the cut, a frame per chunk: a chunk is about five blocks, so three in a row hold it. The 3 s are the graph's,
-	// counted in cycles from the cut, or from the last cycle the ledger says the host disturbed the graph after it
-	// (which the library recovers from as it does from the cut); a host that keeps disturbing the clock only makes the
-	// wait longer. A cycle the starved worker left dry moves nothing: it is reported, and inside the 3 s.
+	// counted in the cycles from the cut to the run, less those the ledger says the host disturbed (each its own cycle,
+	// no more): a host that keeps disturbing the clock only makes the wait longer. A cycle the starved worker left dry is
+	// counted like any other, and reported.
 	REQUIRE(rig.waiter.until(
 		[&] {
 			judge.read();
@@ -1037,12 +1053,11 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 		},
 		60s));
 	const std::size_t reached = *judge.runReachedAt(3);
-	std::size_t from = cut;
-	if (const auto disturbed = judge.lastDisturbedBefore(reached); disturbed && *disturbed > from) from = *disturbed;
+	const std::size_t disturbed = judge.disturbedBetween(cut, reached);
 	INFO(describe(judge.errors));
-	INFO("the run of three came at cycle " << reached << ", counted from cycle " << from << " (the cut at " << cut
-	                                       << "), dry cycles from the cut to it " << judge.dryBetween(cut, reached));
-	CHECK(reached - from <= 3 * kRate / kBlock);
+	INFO("the run of three came at cycle " << reached << ", the cut at " << cut << ", the host disturbed " << disturbed
+	                                       << " cycles between, dry cycles between " << judge.dryBetween(cut, reached));
+	CHECK(reached - cut - disturbed <= 3 * kRate / kBlock);
 	// Every step before and after the cut was one a rule accounts for.
 	CHECK(judge.errors.bad.empty());
 	// The internal clock drove all along: neither the card's links nor its loss moved the clock.

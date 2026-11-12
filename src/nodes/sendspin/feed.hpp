@@ -30,6 +30,8 @@ public:
 	/// or a clear ended rather than the patience. Counted on the writer's side, never the realtime one.
 	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
 	std::uint64_t waitsWoken() const noexcept { return waitsWoken_.load(std::memory_order_acquire); }
+	/// Test seam: what the feed held at the last skip(), after any clear; the reading thread's own, read on it.
+	std::uint32_t heldAtSkip() const noexcept { return heldAtSkip_; }
 
 private:
 	bool applyClear() noexcept;
@@ -40,5 +42,6 @@ private:
 	std::atomic<std::uint64_t> clearTo_{0};    // pending bit, and the ring's write position when it was asked
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
+	std::uint32_t heldAtSkip_ = 0; // reader only
 };
 } // namespace ear::sendspin

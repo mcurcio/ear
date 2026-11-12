@@ -257,6 +257,7 @@ struct TonesJudged {
 	std::size_t judged = 0;
 	std::size_t excusedBySender = 0;
 	std::size_t excusedByLedger = 0;
+	std::vector<std::size_t> judgedAt; // each judged tenth's first frame
 };
 
 /// Each channel carries its tone, judged in tenths of a second from frame `from` until kPlannedTenths are judged: the
@@ -294,6 +295,7 @@ TonesJudged judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, 
 			continue;
 		}
 		++seen.judged;
+		seen.judgedAt.push_back(at);
 		for (std::size_t channel = 0; channel < 2; ++channel) {
 			const auto window = graph.recorder.frames(channel, at, tenth);
 			const auto fit = ear::test::fitSine(window, tones[channel].wanted, kRate);
@@ -432,24 +434,40 @@ TEST_CASE("A receiver's engine node carries no property that forces or locks the
 TEST_CASE("A sender held 20 ms and then catching up is heard as a clean tone: its lateness is inside the buffer",
           "[rtp][channels]") {
 	// The excuse the tone tests give a late send starts past the receiver's headroom; a hold inside it, made here on
-	// purpose, must leave the tone clean, every tenth judged across it.
-	Graph graph;
-	ReceiverEvents events(graph.waiter, graph.registry);
-	const std::uint16_t port = ear::test::freeUdpPort();
-	const auto receiver = graph.makeReceiver(port, RtpEncoding::l24, kRate, events);
-	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
-	REQUIRE(events.lostDetail.value_or("") == "");
-	RtpSender sender(port, RtpPcm::l24, kRate, RtpTone{{750.0, 1500.0}, kAmplitude});
-	sender.holdOnce(kRate, 20ms); // a second in, inside the judged span below
-	sender.send(25 * kRate);
-	REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
-	const std::size_t from = graph.recorder.first() + kRate / 2;
-	const TonesJudged seen = judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, 20);
-	const auto late = sender.lateSends();
-	INFO(late.size() << " late sends");
-	CHECK_FALSE(late.empty()); // the hold was made
-	CHECK(seen.excusedBySender == 0);
-	CHECK_FALSE(events.lostDetail.has_value());
+	// purpose, must leave the tone clean. What proves it is the tenths from the hold to the hold and the buffer after it
+	// judged clean: when the host made them unjudgeable (its own late send past the headroom, or a cycle not clean), the
+	// stream is played again, until they are. The deadline only fails the test.
+	constexpr auto hold = 20ms;
+	constexpr std::size_t tenth = kRate / 10;
+	const auto until = std::chrono::steady_clock::now() + 120s;
+	std::size_t tries = 0;
+	for (bool covered = false; !covered;) {
+		INFO("try " << tries + 1);
+		REQUIRE(std::chrono::steady_clock::now() < until);
+		++tries;
+		Graph graph;
+		ReceiverEvents events(graph.waiter, graph.registry);
+		const std::uint16_t port = ear::test::freeUdpPort();
+		const auto receiver = graph.makeReceiver(port, RtpEncoding::l24, kRate, events);
+		REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+		REQUIRE(events.lostDetail.value_or("") == "");
+		RtpSender sender(port, RtpPcm::l24, kRate, RtpTone{{750.0, 1500.0}, kAmplitude});
+		sender.holdOnce(kRate, hold); // a second in: five tenths into the judged span below
+		sender.send(25 * kRate);
+		REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
+		const std::size_t from = graph.recorder.first() + kRate / 2;
+		const TonesJudged seen = judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, 20);
+		const auto late = sender.lateSends();
+		INFO(late.size() << " late sends, " << seen.excusedBySender << " tenths excused for the sender");
+		CHECK_FALSE(late.empty()); // the hold was made
+		CHECK_FALSE(events.lostDetail.has_value());
+		// The tenths the hold reaches: from its frame to as far again as the hold and the buffer last.
+		const std::size_t heldAt = from + kRate / 2;
+		const std::size_t reach = heldAt + static_cast<std::size_t>((hold + kReceiverHeadroom).count()) * kRate / 1000;
+		covered = true;
+		for (std::size_t at = heldAt; at < reach; at += tenth)
+			covered = covered && std::ranges::find(seen.judgedAt, at) != seen.judgedAt.end();
+	}
 }
 
 TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]") {

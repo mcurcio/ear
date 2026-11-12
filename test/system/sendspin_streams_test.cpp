@@ -30,19 +30,19 @@ constexpr std::int64_t stampSlackUs = 200;
 /// clock or carrying an offset can keep above it; a loaded host only slows the others.
 constexpr std::int64_t quickestArrivalBoundUs = 250000;
 
-/// A skipped cycle moves the stamps on by at least its own length: the graph lost a cycle or more.
-constexpr std::int64_t blockUs = std::int64_t{blockSize} * 1000000 / graphFrequency;
+/// A block's time in nanoseconds, kept exact: k blocks are k times this, rounded once.
+constexpr std::int64_t blockNs = std::int64_t{blockSize} * 1000000000 / graphFrequency;
 
 /// The source's chunks as they arrive, judged against their stamps: each step from the last stamp is the last chunk's
-/// length (a clean step), or more by at least a block when cycles were skipped (counted, and in all no more than the
-/// time that passed on the server's clock: the frames skip nothing, the stamps move on by the graph's lost time), and
-/// never anything else.
+/// length (a clean step), or more by whole blocks when cycles were skipped (counted, and in all no more than the time
+/// that passed on the server's clock: the frames skip nothing, the stamps move on by the graph's lost time, which is
+/// whole cycles: spike S6 in spikes_test.cpp), each within the slack, and never anything else.
 struct SourceStamps {
 	std::size_t chunks = 0;
 	std::size_t cleanFrames = 0; // frames whose chunk followed the last with a clean step
-	std::size_t skips = 0;       // steps longer by a block or more: the host skipped cycles while capturing
+	std::size_t skips = 0;       // steps longer by whole blocks: the host skipped cycles while capturing
 	std::int64_t skippedUs = 0;  // what those steps added: the graph's lost time
-	std::size_t offSteps = 0;    // any other step, longer by less than a block or shorter: not the frames' time
+	std::size_t offSteps = 0;    // any other step: not the frames' time
 	std::int64_t worstCleanUs = 0;
 	std::int64_t quickestLagUs = INT64_MAX;
 	std::int64_t leastLagUs = INT64_MAX; // arrival - stamp: below 0 the stamp is in the server's future
@@ -60,7 +60,10 @@ struct SourceStamps {
 		if (lastStampUs) {
 			const std::int64_t lengthUs = static_cast<std::int64_t>(lastFrames) * 1000000 / graphFrequency;
 			const std::int64_t excessUs = stampUs - *lastStampUs - lengthUs;
-			if (excessUs >= blockUs - stampSlackUs) {
+			// The whole blocks nearest the excess, and how far it lies from them.
+			const std::int64_t blocks = (excessUs * 1000 + blockNs / 2) / blockNs;
+			const std::int64_t offUs = excessUs - blocks * blockNs / 1000;
+			if (excessUs > 0 && blocks >= 1 && std::abs(offUs) <= stampSlackUs) {
 				++skips;
 				skippedUs += excessUs;
 			} else if (excessUs > stampSlackUs || excessUs < -stampSlackUs) {
