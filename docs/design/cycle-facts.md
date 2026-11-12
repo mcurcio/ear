@@ -1,7 +1,9 @@
 # Cycle facts, one test judge and a sample-rate type
 
-Status: designed to module level (2026-11-10), not built; Q-CF1 and Q-CF2 answered, diagnostics counters added
-(section 8); spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked). Its steps
+Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, diagnostics counters added (section 8);
+spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked); step C1 built (section
+9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
+and `docs/testing.md`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -791,7 +793,7 @@ R5d).
 | Step | What | Deletes | Behaviour |
 |---|---|---|---|
 | **S6** | **Done** (9.1). Spike (`spikes_test.cpp`, test only): on 1.4.2, with induced stalls and a busy thread per core, (a) every cycle a block misses is reported `incomplete` before the next `start`; (b) `clock.cycle` against the listener's count; (c) jumps are whole missed cycles on the dummy, and what makes the others (the 1127-frame jumps: a driver restart's re-anchoring?); (d) the `TRIGGERED` recovery path in `node_ready` loses no follower cycle. Findings go into this page | nothing | none |
-| **C1** | `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
+| **C1** | **Done** (9.2). `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
 | **C2** | `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
@@ -884,6 +886,53 @@ and `absent` both seen as designed; `reposition` only from a restart or the defa
 `repositions` counter is a finding); `DriverCuts` needs only `start` and `incomplete`, as 4.2 says, and must not read
 the clock through a filter's mapping (above). Its listener should be made before the first block, as 4.2 already
 orders, so blocks' first cycles have numbers.
+
+### 9.2 Found building C1
+
+What C1 built is described where it lives (`docs/writing-a-node-type.md#lost-cycles`, `docs/testing.md`'s
+`ear_core_tests` row, the headers); this section keeps only where it departs from sections 4 and 6, and what the steps
+after it must know.
+
+- **`xruns` keeps today's count, not a sum of `missed`.** 4.2 says `xruns` becomes a running sum of `missed`; C1 and
+  C2 both promise the old members keep their values, and the sum would count a three-cycle stall three times where
+  today's block counts the jump once. `CycleAccount::xruns()` (an addition to 6.2) counts what `CycleContinuity` counted:
+  one per forward jump on the same driver. C2 keeps it so; whether it ever becomes the sum is moot, since C4b removes it.
+- **One reach for every cut record, and it is one short of 2^16.** `cutRecordCycles` (2^16, an addition to 6.2's
+  header) is declared beside `CutRecord`, so the harness's record and `DriverCuts` answer for the same cycles and the
+  harness states what the engine would for the longest stall too. A ring of 2^16 slots holds the running cycle in the
+  oldest one's slot, so a record answers for the 65,535 cycles before the running one (6.4's "older than `started_ -
+  2^16`" is one off). The table's 70,000-cut row pins it: `missedCut` 65,535. C2's `DriverCuts` must give the same.
+- **A stall past the record is `absent`.** By 4.1's rule an unconfirmed catch-up is `absent`, so a stall longer than
+  the record (87 s at 64 frames, 350 s at 256) is called a pause: C3a's judge would fail it, and D1's `missedCycles`
+  (`missed - missedCut`) would count its unknown part against the node. Built as designed; whether such a stall wants a
+  cause of its own (or the judge an "unknown" verdict) is open for C3a and D1.
+- **The missed cycles' frames are this cycle's.** 6.2 leaves `missed * frames` unspecified: the rule takes each missed
+  cycle to have the frames of the cycle that states them, for `catchUp`'s exactness and for `missed` off the numbered
+  clock (whole cycles of a forward jump). ear forces one quantum (`docs/engine.md#the-quantum-guard`), so they agree on
+  the engine; the harness's `loseCycles` moves the clock by the next `process()`'s frames to match.
+- **What is worked out where.** `jumpFrames` and `lostRawNs` only on the same driver (0 on `start` and
+  `driverChange`), `lastCut` whenever the last cycle had a number, across a driver change too (it is a fact of the last
+  cycle, not of the clock).
+- **`CycleContinuity` misses one cause.** With no cycle numbers it cannot see cycles missed with no move (the
+  `reposition` 4.1 gives `missed > 0` and no jump), so the wrapper pins every row's discontinuity but that one, where
+  it says whole. No shipped path makes it (S6: every missed cycle moved the position), and C2 gives the block numbers.
+- **`HarnessCuts` is public** (`ear/testing/harness_cuts.hpp`, `ear_type_harness`), not private to the harness: the
+  table's runner in `ear_core_tests` keeps one to script ticks, so the record the harness reads and the one the rule is
+  tested against are one class. It is told as `DriverCuts` will be (`start()`, then `incomplete()` for the running
+  cycle).
+- **`NodeHarness::facts()`** (an addition to 6.3): the last `process()`'s facts. `GraphCycle::facts` is C2's (adding it
+  now would hand every real code empty facts), so until then a type's test reads them here; the table's harness runner
+  also checks that the code's `GraphCycle::discontinuity` agrees.
+- **What the harness cannot make**: a cycle over `maxBlock` (`process()` refuses it, as before), a cut of the cycle the
+  block ran (`lastCut`) and cycle numbers that move without the clock. The table marks no rows by hand: each step says
+  whether the harness can make it (`CycleStep::inHarness()`), and three rows are core's alone. C2's engine runner should
+  derive its rows the same way.
+- **The harness's times follow time, not position.** Its `startNs` and `startRawNs` were the position's time; they now
+  count the frames of time gone (cycles run and lost), which differ from the position only after `reposition` or on
+  another driver. Before any of the new calls every cycle is as it was. Its driver id stays 0, the numbered clock.
+- **Small additions to 6.2**: `CycleCause | CycleCause`, `CycleCauses::bits()` (for a test's message, never a rule),
+  default member initializers on `DriverTick` and `CutRecord::Count`. `CycleContinuity`'s account is made on a nominal
+  `FrameClock`: it is given no raw time and reads only the causes.
 
 ## 10. Decided here (technical)
 

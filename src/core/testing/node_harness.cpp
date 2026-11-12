@@ -1,8 +1,9 @@
 // The node harness (ear/testing/node_harness.hpp): one real NodeHost over in-memory fakes, on the test's one thread
 // (docs/writing-a-node-type.md#testing-a-type). Each fake is private to this file. Where a fake must act as the engine
-// does it calls the engine's own rule, never a copy: the block's fade and when its fade-outs complete, its continuity
-// and stamps (ear/core/block_rules.hpp), its latency (workOut), a sink's rings (SinkRing), a source's (SourceRing),
-// and an engine companion's bank as NodeHost names it (CompanionTarget::insideBank).
+// does it calls the engine's own rule, never a copy: the block's fade and when its fade-outs complete, its cycle facts
+// (CycleAccount, ear/core/cycle_facts.hpp) and stamps (ear/core/block_rules.hpp), its latency (workOut), a sink's rings
+// (SinkRing), a source's (SourceRing), and an engine companion's bank as NodeHost names it
+// (CompanionTarget::insideBank).
 #include "ear/testing/node_harness.hpp"
 
 #include <algorithm>
@@ -19,12 +20,17 @@
 
 #include "../legacy_instance.hpp"
 #include "ear/core/block_rules.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/sink_ring.hpp"
 #include "ear/core/source_ring.hpp"
+#include "ear/testing/harness_cuts.hpp"
 
 namespace ear::testing {
 namespace {
+
+/// The driver the harness's cycles run on until changeDriver: the internal clock, the one whose cycles are numbered.
+constexpr std::uint32_t internalClock = 0;
 
 /// The main loop: queues posts, from any thread; the harness runs them on the test's thread until none is left.
 class ManualExecutor final : public Executor {
@@ -129,8 +135,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 			const std::uint64_t cancelled = harness.fade.driven(
 				std::ranges::any_of(harness.fadeMask, [](std::uint8_t faded) { return faded != 0; }));
 			harness.dropFades(cancelled);
-			harness.continuity.driven();
-			const std::uint64_t taken = harness.continuity.nextPosition();
+			harness.account.driven();
+			const std::uint64_t taken = harness.account.nextPosition();
 			harness.request(false, [done = std::move(done), taken]() mutable { done(taken); });
 		}
 		void fadeOut(std::move_only_function<void()> done) override {
@@ -450,7 +456,7 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		  registry(options.recordings != nullptr
 	                   ? ResourceRegistry(cards, receivers, handoffs, sinks, sources, *options.recordings)
 	                   : ResourceRegistry(cards, receivers, handoffs, sinks, sources)),
-		  graph(catalogue), fade(options.format.rate),
+		  graph(catalogue), fade(options.format.rate), account(FrameClock(options.format.rate), &cuts),
 		  host(std::make_unique<NodeHost>(options.format, blocks, registry, executor, clock)) {
 		host->subscribe(*this);
 		host->subscribeNotes(*this);
@@ -602,8 +608,16 @@ struct NodeHarness::Impl final : NodeHealthListener,
 	std::deque<PendingRequest> pending;
 	std::vector<std::uint8_t> fadeMask; // per output, outputs then insideOutputs: the last drive's faded ones
 	BlockFade fade;                     // the real block's fade and its rule for fade-outs
-	CycleContinuity continuity;         // the real block's discontinuity rule, on one driver
-	std::uint64_t position = 0;
+	// The fake block's cycles (docs/writing-a-node-type.md#lost-cycles): its graph's cut record, the real block's rule
+	// that states each cycle's facts, and the clock the next process() runs on.
+	HarnessCuts cuts;
+	CycleAccount account;
+	std::uint64_t position = 0;   // the driver's frames at the next cycle's start
+	std::uint64_t timeFrames = 0; // the raw clock at the next cycle's start, in frames since the harness began
+	std::uint32_t driverId = internalClock;
+	std::uint32_t lostCut = 0;         // cycles loseCycles lost since the last process(), cut short
+	std::uint32_t lostUnscheduled = 0; // and those the block was not scheduled for
+	CycleFacts lastFacts;
 
 	std::vector<CompanionFake> companionList;
 	std::vector<EngineCompanionEvents*> engineEvents; // per companion; null once destroyed (or none)
@@ -732,16 +746,35 @@ void NodeHarness::process(std::uint32_t frames) {
 		std::fill_n(buffer.begin(), frames, std::numeric_limits<float>::quiet_NaN());
 		out.emplace_back(buffer.data(), frames);
 	}
-	// The harness's clock starts at zero and runs at exactly the graph's rate (docs/engine.md#dating).
+	// The harness's clock starts at zero and runs at exactly the graph's rate (docs/engine.md#dating). Each cycle lost
+	// since the last started on it with this cycle's frames (ear forces one quantum), moving the position and the time
+	// on by them, as the tracking dummy's catch-up does (docs/writing-a-node-type.md#lost-cycles).
 	const FrameClock clock(h.options.format.rate);
-	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.position));
-	const CycleContinuity::Step step = h.continuity.next(0, h.position, frames, h.options.format.maxBlock);
+	for (std::uint32_t i = 0; i < h.lostCut + h.lostUnscheduled; ++i) {
+		h.cuts.start();
+		if (i < h.lostCut) h.cuts.incomplete();
+		h.position += frames;
+		h.timeFrames += frames;
+	}
+	h.lostCut = 0;
+	h.lostUnscheduled = 0;
+	h.cuts.start();
+	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.timeFrames));
+	const CycleAccount::Step step =
+		h.account.next(DriverTick{.driverId = h.driverId,
+	                              .graphCycle = h.driverId == internalClock ? h.cuts.started() : 0,
+	                              .position = h.position,
+	                              .frames = frames,
+	                              .startRawNs = at},
+	                   h.options.format.maxBlock);
+	h.lastFacts = step.facts;
 	const GraphCycle cycle{.startNs = at,
 	                       .position = h.position,
 	                       .startRawNs = at,
-	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.position + frames)),
-	                       .xruns = h.continuity.xruns(),
-	                       .discontinuity = step.discontinuity};
+	                       .driverId = h.driverId,
+	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.timeFrames + frames)),
+	                       .xruns = h.account.xruns(),
+	                       .discontinuity = step.facts.discontinuity()};
 	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SourceBinding& binding : h.boundSources) {
@@ -765,6 +798,7 @@ void NodeHarness::process(std::uint32_t frames) {
 			binding.tap->write(bank, frames, chunkStamp(cycle, h.toldOnOutput(binding.firstOutput)));
 		}
 	h.position += frames;
+	h.timeFrames += frames;
 	h.lastFrames = frames;
 	// A cycle that ended a fade-out at zero acknowledged every fade-out waiting.
 	if (faded.acknowledged > 0) {
@@ -772,6 +806,23 @@ void NodeHarness::process(std::uint32_t frames) {
 		h.executor.pump();
 	}
 }
+
+void NodeHarness::loseCycles(std::uint32_t count, Lost how) {
+	(how == Lost::cut ? impl_->lostCut : impl_->lostUnscheduled) += count;
+}
+
+void NodeHarness::changeDriver(std::uint32_t id) { impl_->driverId = id; }
+
+void NodeHarness::reposition(std::int64_t frames) {
+	Impl& h = *impl_;
+	if (frames < 0 && static_cast<std::uint64_t>(-frames) > h.position)
+		throw std::logic_error("reposition() before the driver's first frame");
+	h.position += static_cast<std::uint64_t>(frames);
+}
+
+const CutRecord& NodeHarness::cuts() const noexcept { return impl_->cuts; }
+
+const CycleFacts& NodeHarness::facts() const noexcept { return impl_->lastFacts; }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->requireAdded();

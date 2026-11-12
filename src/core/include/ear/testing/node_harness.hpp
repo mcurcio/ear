@@ -7,13 +7,14 @@
 // stop(): their pairing is node_host_test.cpp's. Not yet: feeds, holds and runLoops, which come with the slices that
 // build them (docs/design/). The fake clock (advance) runs every main-loop timer NodeHost arms, each companion's
 // readiness deadline included (docs/engine.md#readiness-deadlines). Where a fake acts as the engine does it runs the
-// engine's own rule: the block's fade, discontinuity and stamps (ear/core/block_rules.hpp), its latency (workOut, with
-// no peers), and an engine companion's bank as NodeHost names it. The sink fake is core's own SinkRing (every rule of a
-// sink's rings) with its consumer on the test's thread: begin at configure's return (or, with holdSinks, at
-// ready(bank)), each chunk drained at once from the tap written after the fade in process(), in two calls where it
-// wraps the ring's end (a ring of sinkRingFrames, or the type's own size), finish at the close. The source fake is
-// core's own SourceRing (every source rule), its writer never waiting: the test feeds it (feed), process() plays it
-// into its bank before the code, and the test reads what it played (played, shortfall).
+// engine's own rule: the block's fade and stamps (ear/core/block_rules.hpp), its cycle facts (CycleAccount, over the
+// harness's own cut record: loseCycles), its latency (workOut, with no peers), and an engine companion's bank as
+// NodeHost names it. The sink fake is core's own SinkRing (every rule of a sink's rings) with its consumer on the
+// test's thread: begin at configure's return (or, with holdSinks, at ready(bank)), each chunk drained at once from the
+// tap written after the fade in process(), in two calls where it wraps the ring's end (a ring of sinkRingFrames, or the
+// type's own size), finish at the close. The source fake is core's own SourceRing (every source rule), its writer never
+// waiting: the test feeds it (feed), process() plays it into its bank before the code, and the test reads what it
+// played (played, shortfall).
 #pragma once
 #include <chrono>
 #include <cstddef>
@@ -27,6 +28,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/companions.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/node_lifecycle.hpp"
@@ -67,6 +69,12 @@ struct SeenHandoff {
 	std::string bank;
 	std::uint32_t channels;
 	std::uint32_t capacityFrames;
+};
+
+/// How a lost cycle was lost, for NodeHarness::loseCycles (docs/writing-a-node-type.md#lost-cycles).
+enum class Lost : std::uint8_t {
+	cut,          // the driver cut it short: a stall of the graph
+	notScheduled, // the driver ran it whole without the block: the block was paused
 };
 
 /// How a harness runs (outside the class, so a default argument can use its member initializers).
@@ -131,14 +139,30 @@ public:
 	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s).
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
-	/// with a GraphCycle the harness advances on one driver (a discontinuity on the first cycle and on each drive's
-	/// first, by CycleContinuity), each bound source first played into its bank's input buffers (its SourceCycle's
+	/// with a GraphCycle the harness advances on its driver, its facts (facts()) stated by the real block's rule,
+	/// CycleAccount (a discontinuity on the first cycle, each drive's first, and wherever loseCycles, changeDriver or
+	/// reposition made one), each bound source first played into its bank's input buffers (its SourceCycle's
 	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the
 	/// faded outputs by the real block's BlockFade (in over 5 ms from each drive; a fade-out ramps down from the next
 	/// cycle and, once a cycle ended it at zero, is acknowledged); then each bound sink's tap, its stamp's
 	/// upstreamFrames the most capture latency workOut gives its bank, as a real block with no peers tells
 	/// (docs/engine.md#latency-per-bank-pair).
 	void process(std::uint32_t frames = 0);
+	/// `count` graph cycles start without the fake block running them: the next process() comes after them, its
+	/// position and time moved on by their frames (that cycle's). `Lost::cut` marks each cut short in the harness's
+	/// CutRecord, `Lost::notScheduled` leaves them whole; the next process() states them (catchUp, or absent when any
+	/// was not cut). Calls add up until that process().
+	void loseCycles(std::uint32_t count, Lost how = Lost::cut);
+	/// The next process() and those after it run on driver `id` (a card made driver): driverChange, and no graph cycle
+	/// numbers but on the harness's own clock (id 0, where it starts).
+	void changeDriver(std::uint32_t id);
+	/// The next process()'s position moves by `frames` on the same driver with no cycle missed and no time gone:
+	/// reposition. std::logic_error for a move before the driver's first frame.
+	void reposition(std::int64_t frames);
+	/// The CutRecord the fake block's account reads.
+	const CutRecord& cuts() const noexcept;
+	/// The facts of the last process()'s cycle (none before the first).
+	const CycleFacts& facts() const noexcept;
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);

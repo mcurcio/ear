@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <span>
 #include <utility>
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
@@ -130,11 +131,12 @@ private:
 /// When a cycle is a discontinuity to the code (GraphCycle::discontinuity, docs/engine.md#graphcycle): the block's
 /// first cycle, a new code's first, a new driver's first, a position that did not move on by the last cycle's frames,
 /// and the cycle after one too large to run. Counts the cycles that started ahead of where the last ended on the same
-/// driver (GraphCycle::xruns).
+/// driver (GraphCycle::xruns). It is CycleAccount (ear/core/cycle_facts.hpp) with no cut known and no graph cycle
+/// numbers, read for its discontinuity alone, so the block and the harness's fake block keep one rule.
 class CycleContinuity {
 public:
 	/// A drive installed a code: its first cycle is a discontinuity to it.
-	void driven() noexcept { fresh_ = true; }
+	void driven() noexcept { account_.driven(); }
 
 	/// One cycle of `frames` at `position` on driver `driverId`, in the order cycles come.
 	struct Step {
@@ -142,27 +144,17 @@ public:
 		bool runs; // at most maxBlock frames: the code runs it (a larger cycle is written as zeros)
 	};
 	Step next(std::uint32_t driverId, std::uint64_t position, std::uint32_t frames, std::uint32_t maxBlock) noexcept {
-		const bool sameDriver = cycles_ > 0 && driverId == lastDriver_;
-		const bool discontinuity = !sameDriver || position != nextPosition_ || fresh_ || skipped_;
-		if (sameDriver && position > nextPosition_) ++xruns_;
-		fresh_ = false;
-		skipped_ = frames > maxBlock;
-		++cycles_;
-		lastDriver_ = driverId;
-		nextPosition_ = position + frames;
-		return {discontinuity, !skipped_};
+		const CycleAccount::Step step = account_.next(
+			DriverTick{.driverId = driverId, .graphCycle = 0, .position = position, .frames = frames}, maxBlock);
+		return {step.facts.discontinuity(), step.runs};
 	}
 	/// Where the next cycle starts on the same driver: the position a drive applied now takes effect from.
-	std::uint64_t nextPosition() const noexcept { return nextPosition_; }
-	std::uint64_t xruns() const noexcept { return xruns_; }
+	std::uint64_t nextPosition() const noexcept { return account_.nextPosition(); }
+	std::uint64_t xruns() const noexcept { return account_.xruns(); }
 
 private:
-	std::uint64_t cycles_ = 0;
-	std::uint32_t lastDriver_ = 0;
-	std::uint64_t nextPosition_ = 0;
-	std::uint64_t xruns_ = 0;
-	bool fresh_ = false;   // a drive installed a code since the last cycle
-	bool skipped_ = false; // the last cycle was too large to run
+	// Given no raw time, so only lostRawNs, which this never reads, depends on the clock's rate.
+	CycleAccount account_{FrameClock(1), nullptr};
 };
 
 /// The stamp a sink's tap is written with for `cycle` (docs/engine.md#sinks): the cycle's facts and the most of the

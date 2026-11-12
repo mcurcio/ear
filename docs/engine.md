@@ -314,7 +314,7 @@ The block makes one `GraphCycle` a cycle (`port_blocks.cpp`, `onProcess`), so no
 | `driverId` | `clock.id`, the driver's global id: another driver is another clock |
 | `nextNs` | `clock.next_nsec` |
 | `xruns` | Cycles that started ahead of where the last ended on the same driver. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node), so the block counts these; each cycle run during a stall's catch-up skips one block |
-| `discontinuity` | The block's first cycle, a new code's first cycle, a new driver, any position jump, and the cycle after one too large for the block |
+| `discontinuity` | The block's first cycle, a new code's first cycle, a new driver, any position jump, and the cycle after one too large for the block (`CycleContinuity`: the cycle facts' rule with no cut known, [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) |
 | `downstream` | The latency downstream of each output port ([below](#latency-per-bank-pair)) |
 
 The dummy's `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into
