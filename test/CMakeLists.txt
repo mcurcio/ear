@@ -127,6 +127,11 @@ target_compile_definitions(ear_sendspin_server INTERFACE
 	EAR_SENDSPIN_SERVER_PYTHON="${EAR_SENDSPIN_SERVER_PYTHON}"
 	EAR_SENDSPIN_SERVER_SCRIPT="${CMAKE_CURRENT_SOURCE_DIR}/support/sendspin_server.py")
 
+# ear_standard_error_lines: what a library in the test's process prints, read as events (test/support/
+# standard_error_lines.hpp, header-only), for the sendspin clock tests (docs/testing.md#the-librarys-own-word).
+add_library(ear_standard_error_lines INTERFACE)
+target_include_directories(ear_standard_error_lines INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+
 # ear_node_types_tests: what holds for every node type together (each type's own tests are in src/nodes/<type>).
 add_subdirectory(nodes)
 

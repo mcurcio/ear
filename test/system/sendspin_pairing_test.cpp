@@ -69,7 +69,7 @@ TEST_CASE("A wrong code then the right one pairs in band, and a ramp the server 
 	const Wav wav = readWav(directory.recordings() / "rec.wav");
 	CHECK(wav.info.samplerate == static_cast<int>(graphFrequency));
 	REQUIRE(wav.info.channels == 2);
-	const RampCheck ramp = checkRamp(wav);
+	const RampCheck ramp = checkRamp(wav, lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
@@ -281,7 +281,7 @@ TEST_CASE("One dialling and one listening node have separate identities, on one 
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	for (const char* file : {"out.wav", "in.wav"}) {
-		const RampCheck ramp = checkRamp(readWav(directory.recordings() / file));
+		const RampCheck ramp = checkRamp(readWav(directory.recordings() / file), lostSyncUs(ear));
 		INFO(file << ": " << ramp);
 		CHECK(ramp.rampFrames >= rampFramesAtLeast);
 		CHECK(ramp.badFrames == 0);

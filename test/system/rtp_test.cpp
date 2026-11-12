@@ -33,6 +33,9 @@ using namespace ear::test;
 constexpr std::uint32_t graphFrequency = 48000;
 constexpr std::uint32_t blockSize = 256;
 constexpr double amplitude = 0.5;
+/// The rtp node's receive buffer: the graph file names no latencyMs, so the node's default (docs/node-types.md#rtp). A
+/// packet late by less is still in time for it.
+constexpr std::chrono::milliseconds receiverHeadroom{100};
 
 /// rtp node "fpp" (any address, `port`, L24, two channels, no rate: the graph frequency) routed
 /// channel for channel into file node "rec" (rec.wav in the recordings folder).
@@ -110,10 +113,11 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 
-	// The sender sends on until the WAV holds the planned tenths, each judged only when no packet went out late by more
-	// than the sender's bound within its buffer's reach before it (the sender's own counter of what the host did to
-	// it; docs/testing.md#making-the-rare-event). A tenth's time is when the WAV was first seen to hold it, looked at
-	// every 10 ms. Long enough that a loaded host still leaves a second alone.
+	// The sender sends on until the WAV holds the planned tenths, each judged only when no packet went out later than
+	// the receiver's latency (100 ms, its headroom) within its buffer's reach before it (the sender's own counter of
+	// what the host did to it; docs/testing.md#the-senders-own-counter). A tenth's time is when the WAV was first seen
+	// to hold it, looked at every 50 ms: coarse, and later than its frames were made by the sink's lag, so the window
+	// reaches 600 ms before it. Long enough that a loaded host still leaves a second alone.
 	RtpSender sender(port, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
 	sender.send(graphFrequency * 25);
 	const auto path = directory.recordings() / "rec.wav";
@@ -121,6 +125,7 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	std::vector<std::size_t> tenths;                                                  // judged, by first frame
 	std::size_t excused = 0;
 	std::optional<std::size_t> next; // the next tenth to judge, once the first sound is known
+	std::size_t framesHeld = 0;      // so far
 	const auto heldBy = [&](std::size_t frame) {
 		for (const auto& [frames, at] : looks)
 			if (frames > frame) return at;
@@ -128,22 +133,20 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	};
 	const bool held = waitForWav(
 		path,
-		[&](const Wav& wav) {
-			const auto frames = static_cast<std::size_t>(wav.info.frames);
-			looks.emplace_back(frames, std::chrono::steady_clock::now());
-			if (!next) {
-				for (std::size_t frame = 0; frame < frames && !next; ++frame)
-					if (wav.samples[frame * 2] != 0.0F || wav.samples[frame * 2 + 1] != 0.0F)
-						next = frame + graphFrequency / 5; // after the receiver's first 0.2 s
-				if (!next) return false;
-			}
-			// A frame being written may be torn: judge a tenth once a block past it is held too.
-			while (tenths.size() < plannedTenths && *next + tenth + blockSize <= frames) {
+		[&](std::span<const float> fresh, std::size_t channels) {
+			for (std::size_t at = 0; at + 1 < fresh.size() && !next; at += channels)
+				if (fresh[at] != 0.0F || fresh[at + 1] != 0.0F)
+					next = framesHeld + at / channels + graphFrequency / 5; // after the receiver's first 0.2 s
+			framesHeld += fresh.size() / channels;
+			looks.emplace_back(framesHeld, std::chrono::steady_clock::now());
+			if (!next) return false;
+			while (tenths.size() < plannedTenths && *next + tenth <= framesHeld) {
 				const auto from = heldBy(*next) - std::chrono::milliseconds(600); // its buffer, and the write's lag
 				const auto to = heldBy(*next + tenth);
 				const auto late = sender.lateSends();
-				const bool senderLate = std::ranges::any_of(
-					late, [&](const RtpSender::LateSend& send) { return send.at >= from && send.at <= to; });
+				const bool senderLate = std::ranges::any_of(late, [&](const RtpSender::LateSend& send) {
+					return send.late > receiverHeadroom && send.at >= from && send.at <= to;
+				});
 				if (senderLate) ++excused;
 				else tenths.push_back(*next);
 				*next += tenth;

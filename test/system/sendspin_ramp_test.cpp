@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
+#include <utility>
 #include <vector>
 
 #include "sendspin_system.hpp"
@@ -105,16 +106,38 @@ TEST_CASE("A skip's block multiple is still allowed", "[system][sendspin][ramp]"
 	CHECK(ramp.lastRunFrames == 3);
 }
 
-TEST_CASE("A skip of whole blocks to within a frame either way is allowed, and a step further off is not",
+TEST_CASE("A skip a frame either way of whole blocks is a bad step, as is a step back of whole blocks",
           "[system][sendspin][ramp]") {
-	for (const std::uint32_t skipped : {blockSize - 1, blockSize + 1, 2 * blockSize - 1, 3 * blockSize + 1}) {
-		const RampCheck ramp = check({whole(100), whole(101 + skipped), whole(102 + skipped)});
-		INFO(skipped << ": " << ramp);
-		CHECK(ramp.badSteps == 0);
+	// A running block jumps by whole blocks exactly (spike S6 in spikes_test.cpp); and the index is 32 bits, so a step
+	// back must not pass as a skip round it.
+	for (const std::int64_t step : {std::int64_t{blockSize}, std::int64_t{blockSize} + 2, 2 * std::int64_t{blockSize},
+	                                -std::int64_t{blockSize} + 1}) {
+		const auto next = static_cast<std::uint32_t>(1000 + step);
+		const RampCheck ramp = check({whole(1000), whole(next), whole(next + 1)});
+		INFO(step << ": " << ramp);
+		CHECK(ramp.badSteps == 1);
 	}
-	for (const std::uint32_t skipped : {blockSize - 2, blockSize + 2, blockSize / 2, std::uint32_t{2}}) {
-		const RampCheck ramp = check({whole(100), whole(101 + skipped), whole(102 + skipped)});
-		INFO(skipped << ": " << ramp);
+}
+
+TEST_CASE("A late hard sync the library logged accounts for one drop up to its lateness, and no other step",
+          "[system][sendspin][ramp]") {
+	// 5312 us late at 48 kHz: 254.976 frames, of which the library drops the whole 254.
+	const auto dropped = [](std::uint32_t frames, std::vector<std::int64_t> logged) {
+		return checkRamp(wavOf({whole(100), whole(101 + frames), whole(102 + frames)}), std::move(logged));
+	};
+	SECTION("its drop") {
+		const RampCheck ramp = dropped(254, {-5312});
+		INFO(ramp);
+		CHECK(ramp.badSteps == 0);
+		CHECK(ramp.hardSyncSteps == 1);
+	}
+	SECTION("more than it dropped") { CHECK(dropped(255, {-5312}).badSteps == 1); }
+	SECTION("a line that inserted silence, not dropped") { CHECK(dropped(254, {5312}).badSteps == 1); }
+	SECTION("no line") { CHECK(dropped(254, {}).badSteps == 1); }
+	SECTION("one line, two drops") {
+		const RampCheck ramp =
+			checkRamp(wavOf({whole(100), whole(355), whole(356), whole(610)}), std::vector<std::int64_t>{-5312});
+		CHECK(ramp.hardSyncSteps == 1);
 		CHECK(ramp.badSteps == 1);
 	}
 }

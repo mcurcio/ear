@@ -33,6 +33,7 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	nextPosition_ = cycle.position + frames;
 
 	const std::uint32_t got = feed_.read(outputs, frames);
+	lastGot_ = got;
 	if (skipped == 0 && got == 0) return;
 
 	totalFrames_ += static_cast<std::uint64_t>(skipped) + got;

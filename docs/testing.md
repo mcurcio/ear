@@ -107,17 +107,29 @@ began, each past its last look at the ring, so only a play, the close or its pat
 checks `waitDeadline(milliseconds::max())` is a year away. The `sendspin` node's feed has the same
 two, `Feed::waitsBegun()` and `Feed::waitsWoken()`, counted on the writer's side: `feed_test.cpp`
 waits for the first before it reads or clears, and judges by the second that the wake ended the
-wait, not its patience. Its audio code says what its last cycle skipped for the graph's jump
-(`SendspinCode::lastSkipped()`, read on the data thread after `process()`), which the clock tests
-hold each ramp step against.
+wait, not its patience. Its audio code says what its last cycle skipped for the graph's jump and
+read from the feed (`SendspinCode::lastSkipped()` and `lastGot()`, read on the data thread after
+`process()`), which the clock tests hold each ramp step and each report of what played against.
+
+### The library's own word
+
+What the `sendspin` library does it says only on standard error. The clock tests route standard
+error through a pipe for the rig's life (`StandardErrorLines`, `test/support/standard_error_lines.hpp`:
+outside the node's folder, which never names standard error), pass on all but the lines they asked
+for, and, once the worker has set the library's level, raise it to verbose, so each hard sync says
+its frames and each loss of sync its start and end, each stamped with the cycles recorded when it
+was read. A step or a stretch of silence the cycles do not explain is judged against those lines:
+excused exactly as far as they say, never further, and counted. The system tests read what ear
+prints (its warnings, as log records): each `Lost sync (<n>us off)` with `n` below zero accounts for
+one drop of at most `n` us in whole frames, as the library works it out.
 
 ### Waiting for what ear wrote
 
 A system test that needs a recording waits for the WAV to hold it, never for a window of wall
-time: `waitForWav(path, enough, patience)` (`test/system/ear_system.hpp`) reads what the file node
-has written so far by its RIFF chunks (`readWavSoFar`: every whole frame past the data chunk's
-start, as the header's sizes are filled in only at the end) every 10 ms until `enough` holds;
-the finished file is what the test judges. `waitForNoiseSecond` waits for a second of a route's
+time: `waitForWav(path, enough, patience)` (`test/system/ear_system.hpp`) follows what the file node
+appends (`WavFollower`: the data chunk found once by its RIFF chunks, as the header's sizes are
+filled in only at the end, then only the new whole frames each look) every 50 ms, telling `enough`
+the new frames, until it holds; the finished file is what the test judges. `waitForNoiseSecond` waits for a second of a route's
 noise; the `sendspin` tests play a long stream (`playLong`) until `waitForRamp` sees the exact
 ramp frames they need in it, then end it (`endStream`), so a server that joined its ramp late on
 a loaded host only plays longer. The source's audio is judged chunk by chunk as the test server
@@ -128,10 +140,11 @@ says each one arrived (`source-chunk`), until a second of frames came on clean s
 A receiver's output can be judged only where its input came in time. The RTP test sender
 (`test/support/rtp_tone.hpp`) counts each packet it sent later than due by more than
 `RtpSender::lateSendBound` (`lateSends()`: when, and how late), as module-rtp-source counts
-nothing a test can read. The RTP tone tests judge a tenth of a second only when no late send lies
-within the receiver's buffer's reach before it and, in `ear_pipewire_tests`, every cycle of it and
-of the half second before it is clean in the recorder's ledger; they judge a planned ten tenths,
-the sender sending on until then.
+nothing a test can read. The RTP tone tests judge a tenth of a second only when no send later than
+the receiver's latency (its headroom) lies within the buffer's reach before it and, in
+`ear_pipewire_tests`, every cycle of it and of the half second before it is clean in the
+recorder's ledger; they judge a planned ten tenths, the sender sending on until then. `holdOnce`
+holds the sender on purpose, and a hold inside the headroom must leave the tone clean.
 
 ### An ordinary user's folder
 

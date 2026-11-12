@@ -18,6 +18,7 @@
 #include <functional>
 #include <iterator>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -233,62 +234,97 @@ inline Wav readWav(const std::filesystem::path& path) {
 	return wav;
 }
 
-/// What a 32-bit float WAV a file node is still writing holds so far, read by its RIFF chunks rather than its header's
-/// sizes, which the writer fills in only when it finishes: its frames are every whole frame past the data chunk's start.
-/// Nothing until its header is written. A frame being written as it is read may be torn, so this decides only when to
-/// stop waiting; the finished file is what a test judges.
-inline std::optional<Wav> readWavSoFar(const std::filesystem::path& path) {
-	std::ifstream file(path, std::ios::binary);
-	const std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-	const auto word = [&](std::size_t at, std::size_t size) {
-		std::uint32_t value = 0;
-		for (std::size_t i = 0; i < size; ++i) value |= static_cast<std::uint32_t>(bytes[at + i]) << (8U * i);
-		return value;
-	};
-	if (bytes.size() < 12 || std::memcmp(bytes.data(), "RIFF", 4) != 0 || std::memcmp(bytes.data() + 8, "WAVE", 4) != 0)
-		return std::nullopt;
-	Wav wav;
-	for (std::size_t at = 12; at + 8 <= bytes.size(); at += 8 + word(at + 4, 4) + (word(at + 4, 4) & 1U)) {
-		if (std::memcmp(bytes.data() + at, "fmt ", 4) == 0 && at + 16 <= bytes.size()) {
-			wav.info.channels = static_cast<int>(word(at + 10, 2));
-			wav.info.samplerate = static_cast<int>(word(at + 12, 4));
-		} else if (std::memcmp(bytes.data() + at, "data", 4) == 0) {
-			if (wav.info.channels <= 0) return std::nullopt;
-			const std::size_t frameBytes = static_cast<std::size_t>(wav.info.channels) * sizeof(float);
-			const std::size_t frames = (bytes.size() - (at + 8)) / frameBytes;
-			wav.info.frames = static_cast<sf_count_t>(frames);
-			wav.samples.resize(frames * static_cast<std::size_t>(wav.info.channels));
-			std::memcpy(wav.samples.data(), bytes.data() + at + 8, frames * frameBytes);
-			return wav;
-		}
-	}
-	return std::nullopt;
-}
+/// A 32-bit float WAV a file node is still writing, followed by what is appended to it: its RIFF chunks are read once
+/// for the data chunk's start (the header's sizes are filled in only when the writer finishes), then each look reads only
+/// the bytes past where the last one stopped, whole frames only, so following it costs ear nothing. An appended byte is
+/// written before the file grows over it, so a frame read is a frame written. The finished file is what a test judges.
+class WavFollower {
+public:
+	explicit WavFollower(std::filesystem::path path) : path_(std::move(path)) {}
 
-/// Until what a file node has written of `path` satisfies `enough`: the WAV holding what a check needs is the event, so
-/// a loaded host only makes the wait longer; `patience` only fails the test.
-inline bool waitForWav(const std::filesystem::path& path, const std::function<bool(const Wav&)>& enough,
+	/// The whole frames appended since the last look, interleaved (empty before the header is written).
+	std::span<const float> next() {
+		fresh_.clear();
+		std::ifstream file(path_, std::ios::binary);
+		if (!file) return {};
+		if (offset_ == 0 && !findData(file)) return {};
+		file.clear();
+		file.seekg(static_cast<std::streamoff>(offset_));
+		const std::size_t frameBytes = static_cast<std::size_t>(channels_) * sizeof(float);
+		std::vector<char> bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+		const std::size_t frames = bytes.size() / frameBytes;
+		fresh_.resize(frames * static_cast<std::size_t>(channels_));
+		std::memcpy(fresh_.data(), bytes.data(), frames * frameBytes);
+		offset_ += frames * frameBytes;
+		frames_ += frames;
+		return fresh_;
+	}
+	int channels() const noexcept { return channels_; }
+	/// Frames read so far.
+	std::size_t frames() const noexcept { return frames_; }
+
+private:
+	bool findData(std::ifstream& file) {
+		std::vector<unsigned char> bytes(4096);
+		file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+		bytes.resize(static_cast<std::size_t>(file.gcount()));
+		const auto word = [&](std::size_t at, std::size_t size) {
+			std::uint32_t value = 0;
+			for (std::size_t i = 0; i < size; ++i) value |= static_cast<std::uint32_t>(bytes[at + i]) << (8U * i);
+			return value;
+		};
+		if (bytes.size() < 12 || std::memcmp(bytes.data(), "RIFF", 4) != 0 ||
+		    std::memcmp(bytes.data() + 8, "WAVE", 4) != 0)
+			return false;
+		for (std::size_t at = 12; at + 8 <= bytes.size(); at += 8 + word(at + 4, 4) + (word(at + 4, 4) & 1U)) {
+			if (std::memcmp(bytes.data() + at, "fmt ", 4) == 0 && at + 16 <= bytes.size()) {
+				channels_ = static_cast<int>(word(at + 10, 2));
+			} else if (std::memcmp(bytes.data() + at, "data", 4) == 0) {
+				if (channels_ <= 0) return false;
+				offset_ = at + 8;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	std::filesystem::path path_;
+	std::size_t offset_ = 0; // past the last whole frame read; 0 until the data chunk is found
+	int channels_ = 0;
+	std::size_t frames_ = 0;
+	std::vector<float> fresh_;
+};
+
+/// Until what a file node appends to `path` satisfies `enough`, told only the new frames each look (`enough` keeps its
+/// own count): the WAV holding what a check needs is the event, so a loaded host only makes the wait longer;
+/// `patience` only fails the test.
+inline bool waitForWav(const std::filesystem::path& path,
+                       const std::function<bool(std::span<const float> fresh, std::size_t channels)>& enough,
                        std::chrono::milliseconds patience) {
+	WavFollower wav(path);
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
-		if (const std::optional<Wav> wav = readWavSoFar(path); wav && enough(*wav)) return true;
+		const std::span<const float> fresh = wav.next();
+		if (wav.channels() > 0 && enough(fresh, static_cast<std::size_t>(wav.channels()))) return true;
 		if (std::chrono::steady_clock::now() >= until) return false;
-		std::this_thread::sleep_for(10ms); // between looks at the WAV, which decide
+		std::this_thread::sleep_for(50ms); // between looks at the WAV, which decide
 	}
 }
 
-/// Frames of channel `channel` (of two) from its first non-zero sample on: how much of a route's noise a WAV holds.
-inline std::size_t framesFromFirstSound(const Wav& wav, int channel) {
-	const auto frames = static_cast<std::size_t>(wav.info.frames);
-	for (std::size_t frame = 0; frame < frames; ++frame)
-		if (wav.samples[frame * 2 + static_cast<std::size_t>(channel)] != 0.0F) return frames - frame;
-	return 0;
-}
-
-/// Until the WAV a file node writes at `path` holds a second of noise on channel `noisy` (of two), at `rate`: the
-/// recording window checkNoiseOnOneChannel needs, waited for as an event.
+/// Until the WAV a file node writes at `path` holds a second of noise on channel `noisy`, at `rate`: the recording
+/// window checkNoiseOnOneChannel needs, waited for as an event.
 inline bool waitForNoiseSecond(const std::filesystem::path& path, int noisy, std::uint32_t rate) {
-	return waitForWav(path, [&](const Wav& wav) { return framesFromFirstSound(wav, noisy) >= rate; }, 4 * deadline);
+	std::optional<std::size_t> sound; // frames of it so far, once heard
+	return waitForWav(
+		path,
+		[&](std::span<const float> fresh, std::size_t channels) {
+			for (std::size_t at = static_cast<std::size_t>(noisy); at < fresh.size(); at += channels) {
+				if (sound) ++*sound;
+				else if (fresh[at] != 0.0F) sound = 1;
+			}
+			return sound.value_or(0) >= rate;
+		},
+		4 * deadline);
 }
 
 /// A finished 32-bit float stereo WAV at `rate` with uniform white noise on channel `noisy` for at

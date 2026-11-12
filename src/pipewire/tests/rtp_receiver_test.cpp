@@ -41,6 +41,9 @@ using ear::test::RtpSender;
 using ear::test::RtpTone;
 
 constexpr double kAmplitude = 0.5;
+/// The receivers' latency (their shape's latencyMs): a packet late by less than this is still in time for the buffer,
+/// which is what it is for, so only lateness beyond it excuses a tenth.
+constexpr std::chrono::milliseconds kReceiverHeadroom{100};
 
 /// Records the block's inside inputs (from_rtp.1, from_rtp.2) into buffers made before it runs,
 /// up to kCapacity frames, and notes the first frame that is not silent and every onset: a frame
@@ -205,7 +208,9 @@ struct Graph {
 		auto receiver = receivers.make(
 			CompanionTarget{
 				"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, block->blockId()},
-			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, rate, 100}, events);
+			RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), port, encoding, rate,
+		                     static_cast<std::uint32_t>(kReceiverHeadroom.count())},
+			events);
 		events.insideMake = false;
 		return receiver;
 	}
@@ -247,36 +252,48 @@ constexpr std::size_t kPlannedTenths = 10;
 constexpr std::size_t kSettleFrames = kRate / 2;
 constexpr auto kLateHeardWithin = 600ms;
 
+/// How the tenths went: judged, and passed over for what the sender's host or the block's did.
+struct TonesJudged {
+	std::size_t judged = 0;
+	std::size_t excusedBySender = 0;
+	std::size_t excusedByLedger = 0;
+};
+
 /// Each channel carries its tone, judged in tenths of a second from frame `from` until kPlannedTenths are judged: the
 /// receiver steers its resampler by the packets' arrival, so its rate wobbles by parts in ten thousand, which over a
 /// whole second moves a sine's phase too far for one fit (a different frequency, such as an unresampled 816 Hz for
 /// 750 Hz, still fails every tenth). A tenth is judged only when the host left it alone: every cycle of it, and of the
 /// half second before it, clean in the recorder's ledger (a stalled data thread starves or floods the receiver's
-/// buffer), and no packet the sender sent late by more than its bound within kLateHeardWithin before it (the
+/// buffer), and no packet the sender sent later than the receiver's headroom within kLateHeardWithin before it (the
 /// sender's own counter of what the host did to it). Anything else in a tenth is the receiver's, and judged.
-void judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const std::array<Tone, 2>& tones) {
+TonesJudged judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const std::array<Tone, 2>& tones,
+                       std::size_t planned = kPlannedTenths) {
 	constexpr std::size_t tenth = kRate / 10;
 	std::string profile;
 	std::array<double, 2> worstAmplitude{kAmplitude, kAmplitude};
 	std::array<double, 2> worstResidual{};
 	std::array<double, 2> worstOther{};
-	std::size_t judged = 0;
-	std::size_t excused = 0;
-	for (std::size_t at = from; judged < kPlannedTenths; at += tenth) {
-		INFO("judged " << judged << " tenths, excused " << excused << ", from frame " << from);
+	TonesJudged seen;
+	for (std::size_t at = from; seen.judged < planned; at += tenth) {
+		INFO("judged " << seen.judged << " tenths, excused for the sender " << seen.excusedBySender
+		               << ", for the block " << seen.excusedByLedger << ", from frame " << from);
 		REQUIRE(at + tenth <= Recorder::kCapacity);
 		REQUIRE(graph.recorded(at + tenth, 30s));
 		const auto startsAt = graph.recorder.startOf(at);
 		const auto endsAt = graph.recorder.startOf(at + tenth - 1);
 		const auto late = sender.lateSends();
 		const bool senderLate = std::ranges::any_of(late, [&](const RtpSender::LateSend& send) {
-			return send.at >= startsAt - kLateHeardWithin && send.at <= endsAt;
+			return send.late > kReceiverHeadroom && send.at >= startsAt - kLateHeardWithin && send.at <= endsAt;
 		});
-		if (senderLate || !graph.recorder.clean(at, tenth, kSettleFrames)) {
-			++excused;
+		if (senderLate) {
+			++seen.excusedBySender;
 			continue;
 		}
-		++judged;
+		if (!graph.recorder.clean(at, tenth, kSettleFrames)) {
+			++seen.excusedByLedger;
+			continue;
+		}
+		++seen.judged;
 		for (std::size_t channel = 0; channel < 2; ++channel) {
 			const auto window = graph.recorder.frames(channel, at, tenth);
 			const auto fit = ear::test::fitSine(window, tones[channel].wanted, kRate);
@@ -288,7 +305,9 @@ void judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const s
 				std::max(worstOther[channel], ear::test::fitSine(window, tones[channel].other, kRate).amplitude);
 		}
 	}
-	INFO("amplitude/residual per judged tenth, channel 1,2: " << profile << "(excused " << excused << ")");
+	INFO("amplitude/residual per judged tenth, channel 1,2: " << profile << "(excused for the sender "
+	                                                          << seen.excusedBySender << ", for the block "
+	                                                          << seen.excusedByLedger << ")");
 	for (std::size_t channel = 0; channel < 2; ++channel) {
 		INFO("from_rtp." << channel + 1 << ": " << tones[channel].wanted << " Hz, not " << tones[channel].other
 		                 << " Hz");
@@ -296,6 +315,7 @@ void judgeTones(Graph& graph, const RtpSender& sender, std::size_t from, const s
 		CHECK(worstResidual[channel] < 0.1);
 		CHECK(worstOther[channel] < 0.01);
 	}
+	return seen;
 }
 
 /// Sends `seconds` of 750 Hz on channel 1 and 1500 Hz on channel 2 at `rate` in `pcm` to a
@@ -368,7 +388,8 @@ TEST_CASE("A receiver joins its block by the block's id: beside an older block o
 	ReceiverEvents events(graph.waiter, graph.registry);
 	const auto receiver = graph.receivers.make(
 		CompanionTarget{"fpp.rtp", "fpp", Direction::input, {"from_rtp.1", "from_rtp.2"}, kFormat, newerId},
-		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate, 100},
+		RtpReceiverShape{*RtpAddress::parse("0.0.0.0"), ear::test::freeUdpPort(), RtpEncoding::l24, kRate,
+	                     static_cast<std::uint32_t>(kReceiverHeadroom.count())},
 		events);
 	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
@@ -406,6 +427,29 @@ TEST_CASE("A receiver's engine node carries no property that forces or locks the
 		INFO(key);
 		CHECK_FALSE(props->contains(key));
 	}
+}
+
+TEST_CASE("A sender held 20 ms and then catching up is heard as a clean tone: its lateness is inside the buffer",
+          "[rtp][channels]") {
+	// The excuse the tone tests give a late send starts past the receiver's headroom; a hold inside it, made here on
+	// purpose, must leave the tone clean, every tenth judged across it.
+	Graph graph;
+	ReceiverEvents events(graph.waiter, graph.registry);
+	const std::uint16_t port = ear::test::freeUdpPort();
+	const auto receiver = graph.makeReceiver(port, RtpEncoding::l24, kRate, events);
+	REQUIRE(graph.waiter.until([&] { return events.settled(); }));
+	REQUIRE(events.lostDetail.value_or("") == "");
+	RtpSender sender(port, RtpPcm::l24, kRate, RtpTone{{750.0, 1500.0}, kAmplitude});
+	sender.holdOnce(kRate, 20ms); // a second in, inside the judged span below
+	sender.send(25 * kRate);
+	REQUIRE(graph.waiter.until([&] { return graph.recorder.first() != Recorder::kNone; }));
+	const std::size_t from = graph.recorder.first() + kRate / 2;
+	const TonesJudged seen = judgeTones(graph, sender, from, {Tone{750.0, 1500.0}, Tone{1500.0, 750.0}}, 20);
+	const auto late = sender.lateSends();
+	INFO(late.size() << " late sends");
+	CHECK_FALSE(late.empty()); // the hold was made
+	CHECK(seen.excusedBySender == 0);
+	CHECK_FALSE(events.lostDetail.has_value());
 }
 
 TEST_CASE("A sender that restarts with a new SSRC is heard again", "[rtp][ssrc]") {

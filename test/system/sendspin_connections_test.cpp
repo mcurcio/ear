@@ -192,7 +192,7 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(deadline) == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);

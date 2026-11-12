@@ -51,6 +51,9 @@ public:
 	/// Starts sending `frames` frames (a whole number of packets, rounded up) and returns at once.
 	/// Once only.
 	void send(std::uint64_t frames);
+	/// Before send(): the sender's thread holds `hold` before the packet that carries frame `frame`, then sends what fell
+	/// due meanwhile at once, as a sender stalled and catching up does: a late send made on purpose.
+	void holdOnce(std::uint64_t frame, std::chrono::milliseconds hold);
 	/// The sender's thread has sent every frame; false when `deadline` passed first (fails a test,
 	/// never paces one).
 	bool waitSent(std::chrono::milliseconds deadline);
@@ -162,6 +165,10 @@ struct RtpSender::Impl {
 			const std::chrono::duration<double> due(static_cast<double>(sent + framesPerPacket) / rate);
 			const auto dueAt = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due);
 			std::this_thread::sleep_until(dueAt);
+			if (holdFor.count() > 0 && sent + framesPerPacket > holdAt) {
+				std::this_thread::sleep_for(holdFor); // the stall holdOnce asked for, on purpose
+				holdFor = {};
+			}
 			const auto bytes = packet(sent);
 			::sendto(socket.fd(), bytes.data(), bytes.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
 			if (const auto now = std::chrono::steady_clock::now(); now - dueAt > lateSendBound) {
@@ -187,6 +194,8 @@ struct RtpSender::Impl {
 	std::condition_variable doneChanged;
 	bool done = false;
 	std::vector<LateSend> late; // under mutex
+	std::uint64_t holdAt = 0;   // holdOnce: set before the thread starts
+	std::chrono::milliseconds holdFor{0};
 };
 
 inline RtpSender::RtpSender(std::uint16_t port, RtpPcm pcm, std::uint32_t rate, RtpTone tone, std::uint32_t ssrc)
@@ -206,6 +215,12 @@ inline void RtpSender::send(std::uint64_t frames) {
 inline bool RtpSender::waitSent(std::chrono::milliseconds deadline) {
 	std::unique_lock lock(impl_->mutex);
 	return impl_->doneChanged.wait_for(lock, deadline, [&] { return impl_->done; });
+}
+
+inline void RtpSender::holdOnce(std::uint64_t frame, std::chrono::milliseconds hold) {
+	if (impl_->thread.joinable()) throw std::logic_error("RtpSender::holdOnce: before send");
+	impl_->holdAt = frame;
+	impl_->holdFor = hold;
 }
 
 inline std::vector<RtpSender::LateSend> RtpSender::lateSends() const {

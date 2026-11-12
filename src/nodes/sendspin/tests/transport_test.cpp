@@ -95,12 +95,12 @@ std::size_t threadsNow() {
 
 /// What answeredAfterClosing saw.
 struct AfterClosing {
-	std::size_t answered = 0;     // of the upgrades tried after the rounds
-	std::size_t threadsAdded = 0; // threads this process gained from the server's start to the last of those
+	std::size_t answered = 0;      // of the upgrades tried after the rounds
+	std::int64_t threadsAdded = 0; // threads this process gained from the server's start to the last of those
 };
 
 /// On a server of `maxConnections`, `rounds` times: holds `count` upgraded sockets from 127.0.0.1 and closes them all with
-/// a reset while their threads cannot see it. Then tries `more` upgrades, each closed before the next: how many were
+/// a reset while their threads cannot see it. Then tries `more` upgrades, all held open until counted: how many were
 /// answered, and how many threads the server holds then, every socket's still blocked where the test holds it, so none
 /// can end and the count is exact.
 AfterClosing tryAfterClosing(std::size_t maxConnections, std::size_t count, std::size_t rounds, std::size_t more) {
@@ -158,13 +158,17 @@ AfterClosing tryAfterClosing(std::size_t maxConnections, std::size_t count, std:
 	}
 
 	// All upgraded, so none can give way, and all still listed: only their being closed lets one more in.
+	// Every one of them stays open until the threads are counted: one closed early could have had a thread that ended
+	// before the count, and so hide it.
 	AfterClosing seen;
+	std::vector<int> tried;
 	for (std::size_t i = 0; i < more; ++i) {
 		const int next = upgrade(port);
 		if (next >= 0 && answered(next)) ++seen.answered;
-		if (next >= 0) reset(next);
+		if (next >= 0) tried.push_back(next);
 	}
-	seen.threadsAdded = threadsNow() - threadsBefore;
+	seen.threadsAdded = static_cast<std::int64_t>(threadsNow()) - static_cast<std::int64_t>(threadsBefore);
+	for (const int fd : tried) reset(fd);
 	release();
 	server.stop();
 	return seen;
@@ -204,7 +208,7 @@ TEST_CASE("A flood past twice the room starts no thread beyond it", "[sendspin][
 	constexpr std::size_t room = 2;
 	const AfterClosing seen = tryAfterClosing(room, room, 2, 50);
 	CHECK(seen.answered == 0);
-	CHECK(seen.threadsAdded <= 2 * room);
+	CHECK(seen.threadsAdded == static_cast<std::int64_t>(2 * room));
 }
 
 namespace {

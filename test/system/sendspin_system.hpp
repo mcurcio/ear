@@ -13,11 +13,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
 #include <optional>
 #include <ostream>
 #include <random>
+#include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -206,10 +208,12 @@ inline constexpr std::size_t chunkFrames = 4608;
 /// no plain k + 0.5: 0x7FFF to 0x8000 gives left -0.5 (32767 and -32768), and 0xFFFF to 0x10000 gives left -0.5 and right
 /// h + 0.5, the one blend with both channels fractional.
 struct RampCheck {
-	std::size_t rampFrames = 0; // exact ramp frames
-	std::size_t blends = 0;     // blends accepted by their shape; those over the limit also count in badFrames
-	std::size_t badFrames = 0;  // frames neither of those, and each blend past blendLimit()
-	std::size_t badSteps = 0;   // steps between exact frames that are neither +1, a block's multiple nor a drop's 3
+	std::size_t rampFrames = 0;    // exact ramp frames
+	std::size_t blends = 0;        // blends accepted by their shape; those over the limit also count in badFrames
+	std::size_t badFrames = 0;     // frames neither of those, and each blend past blendLimit()
+	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
+								   // a logged hard sync's drop
+	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
 	std::size_t zeroFramesInside = 0;
 	std::uint32_t firstIndex = 0;
 	std::uint32_t lastIndex = 0;
@@ -220,9 +224,9 @@ struct RampCheck {
 /// What a red needs to say about a ramp.
 inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 	out << "ramp frames " << ramp.rampFrames << ", blends " << ramp.blends << ", not ramp " << ramp.badFrames
-		<< ", bad steps " << ramp.badSteps << ", zeros inside " << ramp.zeroFramesInside << ", indices "
-		<< ramp.firstIndex << " to " << ramp.lastIndex << ", frames of the last run " << ramp.lastRunFrames
-		<< ", bad steps seen:";
+		<< ", bad steps " << ramp.badSteps << ", steps of a logged hard sync " << ramp.hardSyncSteps
+		<< ", zeros inside " << ramp.zeroFramesInside << ", indices " << ramp.firstIndex << " to " << ramp.lastIndex
+		<< ", frames of the last run " << ramp.lastRunFrames << ", bad steps seen:";
 	for (const std::string& step : ramp.badStepsSeen) out << " " << step;
 	return out;
 }
@@ -231,16 +235,32 @@ inline std::ostream& operator<<(std::ostream& out, const RampCheck& ramp) {
 /// it are corrections the library's rule cannot make, so they fail as frames off the ramp, in every test that asks for none.
 inline std::size_t blendLimit(std::size_t frames) { return frames / chunkFrames + 2; }
 
-/// Whether a step between exact ramp frames is one a skip makes: the node skips the frames the graph jumped, and the
-/// internal clock catches a stall up by the time it lost, whole blocks to within a frame either way (a step of 256 and
-/// of 512, a block and two less one, seen four times in 20 runs under load; the WAV carries no positions to tell the
-/// exact jump, which the clock tests judge frame for frame, docs/node-types.md#clock).
-inline bool isSkipStep(std::uint32_t step) {
-	if (step + 1 < blockSize) return false;
-	const std::uint32_t skipped = step - 1;
-	const std::uint32_t off = skipped % blockSize;
-	return off == 0 || off == 1 || off == blockSize - 1;
+/// What the library logged as `Lost sync (<n>us off)` lines, which ear prints as log records from standard error: each
+/// n below zero is a hard sync that dropped up to n us of a late chunk's front (sendspin-cpp's sync_task.cpp), the one
+/// step the ramp may take besides a skip's, and only as far as its line says.
+inline std::vector<std::int64_t> lostSyncUs(const ChildProcess& ear) {
+	std::vector<std::int64_t> said;
+	const std::string& out = ear.output();
+	constexpr std::string_view marker = "Lost sync (";
+	for (std::size_t at = out.find(marker); at != std::string::npos; at = out.find(marker, at + 1))
+		said.push_back(std::strtoll(out.c_str() + at + marker.size(), nullptr, 10));
+	return said;
 }
+
+/// The frames a hard sync logged as `n` us late may drop: the late time in whole frames, as the library works it out
+/// from the same number (sync_task.cpp: `late_frames`, of which it drops what the chunk holds).
+inline std::int64_t hardSyncDropFrames(std::int64_t lateUs) { return -lateUs * graphFrequency / 1000000; }
+
+/// The step between two exact ramp frames, signed: a frame that names an earlier index is a step back, never a long
+/// step forward round the 32-bit index.
+inline std::int64_t rampStep(std::uint32_t from, std::uint32_t to) {
+	return static_cast<std::int64_t>(to) - static_cast<std::int64_t>(from);
+}
+
+/// Whether a step between exact ramp frames is a skip's: the node skips the frames the graph jumped, and with
+/// engine.conf's resync.ms a running block's jumps are whole blocks, exactly (spike S6 in spikes_test.cpp, every missed
+/// cycle of 30 loaded runs; the frames off whole blocks it once saw came from PipeWire's default resync.ms).
+inline bool isSkipStep(std::int64_t step) { return step > 1 && (step - 1) % blockSize == 0; }
 
 /// The ramp index a frame names, if it names one: both channels whole samples.
 inline std::optional<std::uint32_t> rampIndexOf(float left, float right) {
@@ -284,36 +304,54 @@ inline bool isBlend(const Wav& wav, std::size_t frame) {
 	return false;
 }
 
-inline RampCheck checkRamp(const Wav& wav);
+/// How far the ramp has come in what a file node has written, counted as the frames arrive: exact ramp frames, and those
+/// since the last step that is neither +1 nor a block's multiple (a new stream, a drop). Only when to stop waiting;
+/// checkRamp judges the finished file.
+struct RampSoFar {
+	std::size_t rampFrames = 0;
+	std::size_t lastRunFrames = 0;
+	std::optional<std::uint32_t> lastIndex;
+	void take(std::span<const float> fresh, std::size_t channels) {
+		for (std::size_t at = 0; at + 1 < fresh.size(); at += channels) {
+			const std::optional<std::uint32_t> index = rampIndexOf(fresh[at], fresh[at + 1]);
+			if (!index || (fresh[at] == 0.0F && fresh[at + 1] == 0.0F)) continue;
+			const std::int64_t step = lastIndex ? rampStep(*lastIndex, *index) : 1;
+			lastRunFrames = step == 1 || isSkipStep(step) || step == 3 ? lastRunFrames + 1 : 1;
+			lastIndex = index;
+			++rampFrames;
+		}
+	}
+};
 
-/// Until what the file node has written of `path` holds the ramp `enough` asks for, judged by checkRamp on the frames so
-/// far from frame `from` on (docs/testing.md#making-the-rare-event: the WAV holding the frames is the event). The stream
-/// must be playing, and long enough (playLong).
-inline bool waitForRamp(const std::filesystem::path& path, const std::function<bool(const RampCheck&)>& enough,
+/// Until what the file node appends to `path`, from its frame `from` on, holds the ramp `enough` asks for
+/// (docs/testing.md#waiting-for-what-ear-wrote: the WAV holding the frames is the event). The stream must be playing, and
+/// long enough (playLong).
+inline bool waitForRamp(const std::filesystem::path& path, const std::function<bool(const RampSoFar&)>& enough,
                         std::size_t from = 0) {
+	RampSoFar ramp;
+	std::size_t seen = 0;
 	return waitForWav(
 		path,
-		[&](const Wav& wav) {
-			const auto frames = static_cast<std::size_t>(wav.info.frames);
-			if (from == 0 || from >= frames) return from < frames && enough(checkRamp(wav));
-			Wav tail;
-			tail.info = wav.info;
-			tail.info.frames = static_cast<sf_count_t>(frames - from);
-			tail.samples.assign(wav.samples.begin() + static_cast<std::ptrdiff_t>(from * 2), wav.samples.end());
-			return enough(checkRamp(tail));
+		[&](std::span<const float> fresh, std::size_t channels) {
+			const std::size_t frames = fresh.size() / channels;
+			const std::size_t skip = from > seen ? std::min(from - seen, frames) : 0;
+			seen += frames;
+			ramp.take(fresh.subspan(skip * channels), channels);
+			return enough(ramp);
 		},
 		rampDeadline);
 }
 
 /// The frames the file node has written of `path` so far.
 inline std::size_t wavFramesSoFar(const std::filesystem::path& path) {
-	const std::optional<Wav> wav = readWavSoFar(path);
-	return wav ? static_cast<std::size_t>(wav->info.frames) : 0;
+	WavFollower wav(path);
+	wav.next();
+	return wav.frames();
 }
 
 /// Until the WAV at `path` holds `frames` exact ramp frames.
 inline bool waitForRampFrames(const std::filesystem::path& path, std::size_t frames = rampFramesAtLeast) {
-	return waitForRamp(path, [frames](const RampCheck& ramp) { return ramp.rampFrames >= frames; });
+	return waitForRamp(path, [frames](const RampSoFar& ramp) { return ramp.rampFrames >= frames; });
 }
 
 /// Ends the stream the server plays to its current client, and waits for node `node` to say so: stream/end clears what
@@ -325,7 +363,9 @@ inline bool endStream(ChildProcess& ear, SendspinTestServer& server, const std::
 	return waitForNthLine(ear, ended, before, playDeadline).has_value();
 }
 
-inline RampCheck checkRamp(const Wav& wav) {
+/// `lateHardSyncsUs`: what the library logged (lostSyncUs); each late one accounts for one forward step up to its drop.
+inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lateHardSyncsUs = {}) {
+	std::erase_if(lateHardSyncsUs, [](std::int64_t us) { return us >= 0; });
 	RampCheck result;
 	const auto frames = static_cast<std::size_t>(wav.info.frames);
 	std::size_t first = frames;
@@ -353,8 +393,17 @@ inline RampCheck checkRamp(const Wav& wav) {
 			continue;
 		}
 		if (previous) {
-			const std::uint32_t step = *index - *previous;
-			if (step != 1 && !isSkipStep(step) && !(afterBlend && step == 3)) {
+			const std::int64_t step = rampStep(*previous, *index);
+			// A late hard sync's drop, the smallest logged that covers it, each line once.
+			const auto covers = [&](std::int64_t us) { return step > 1 && step - 1 <= hardSyncDropFrames(us); };
+			const auto logged = std::ranges::min_element(lateHardSyncsUs, [&](std::int64_t a, std::int64_t b) {
+				return covers(a) != covers(b) ? covers(a) : hardSyncDropFrames(a) < hardSyncDropFrames(b);
+			});
+			const bool hardSync = logged != lateHardSyncsUs.end() && covers(*logged) && !isSkipStep(step);
+			if (hardSync) {
+				++result.hardSyncSteps;
+				lateHardSyncsUs.erase(logged);
+			} else if (step != 1 && !isSkipStep(step) && !(afterBlend && step == 3)) {
 				++result.badSteps;
 				if (result.badStepsSeen.size() < 8)
 					result.badStepsSeen.push_back(std::to_string(step) + " at " + std::to_string(frame));

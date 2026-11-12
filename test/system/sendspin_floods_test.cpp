@@ -223,7 +223,7 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	ear.signal(SIGTERM);
 	REQUIRE_SEEN(ear, ear.waitForExit(stopBound) == 0);
 	CHECK(ear.hasLine("node rec removed dropped=0"));
-	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"));
+	const RampCheck ramp = checkRamp(readWav(directory.recordings() / "rec.wav"), lostSyncUs(ear));
 	INFO(ramp);
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);

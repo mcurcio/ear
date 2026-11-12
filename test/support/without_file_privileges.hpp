@@ -4,6 +4,8 @@
 #pragma once
 
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -31,7 +33,14 @@ public:
 			lowered[CAP_TO_INDEX(capability)].effective &= ~CAP_TO_MASK(capability);
 		if (::syscall(SYS_capset, &header_, lowered) != 0) fail("capset");
 	}
-	~WithoutFilePrivileges() { ::syscall(SYS_capset, &header_, saved_); }
+	/// A thread left without them would run every later case as an ordinary user, unseen: that ends the run instead.
+	~WithoutFilePrivileges() {
+		if (::syscall(SYS_capset, &header_, saved_) != 0) {
+			std::fprintf(stderr, "WithoutFilePrivileges: capset could not restore the test thread's capabilities: %s\n",
+			             std::strerror(errno));
+			std::abort();
+		}
+	}
 	WithoutFilePrivileges(const WithoutFilePrivileges&) = delete;
 	WithoutFilePrivileges& operator=(const WithoutFilePrivileges&) = delete;
 
