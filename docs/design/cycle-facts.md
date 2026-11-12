@@ -138,8 +138,9 @@ missed cycles (section 9.1) [V].
   bit of the cycle it starts, then `started_ + 1` with release.
 - `incomplete` (data thread, in the next `node_ready`, before that cycle's `start` [V]): marks cycle `started_` cut.
   So when any block runs cycle N, every cut of cycles below N is already recorded, on the same thread.
-- Storage made at create: a ring of 2^16 cut bits (8 KiB, about 350 s at 48 kHz / 256) and the running count of cuts.
-  A cycle older than the ring has no answer, so a block that missed more is not `confirmed` for the part past it.
+- Storage made at create: a ring of 2^16 cut bits (8 KiB, about 350 s at 48 kHz / 256), the running count of cuts
+  and the newest whole cycle. The counts have no reach, so a stall of any length is confirmed or not exactly; only
+  which cycle was cut, asked of the ring, has one (9.2).
 - Registered with a new boundary entry, `listenRealtime<Table>(pw_impl_node*, ...)`, whose table entries take only
   `realtime<>` members; removal (`pw_impl_node_remove_rt_listener`, a blocking invoke on the data loop [V]) is skipped
   and leaked on a wedged loop, as every such call in the boundary is.
@@ -338,7 +339,7 @@ struct CycleFacts {
 	std::uint64_t graphCycle = 0;   // the internal clock's cycle number; 0: not on it, or not told (a test's own cycle)
 	std::uint32_t missed = 0;       // cycles started on the same driver since the block last ran one
 	std::uint32_t missedCut = 0;    // of them, cut short by the driver's own account
-	bool lastCut = false;           // the cycle the block last ran was cut short after it
+	std::optional<bool> lastCut;    // the cycle the block last ran was cut short after it; none: nothing can answer
 	std::int64_t jumpFrames = 0;    // position minus the last cycle's end, same driver (0 otherwise)
 	std::int64_t lostRawNs = 0;     // raw time from the last cycle's end to this start, beyond its frames
 	CycleCauses causes{};
@@ -349,19 +350,18 @@ struct CycleFacts {
 };
 
 /// Which graph cycles the driver cut short. Implemented by ear_pipewire's DriverCuts and the harness's HarnessCuts.
-/// Written only on the thread that runs the cycles; every member is safe from any thread (acquire reads).
+/// Written only on the thread that runs the cycles; read from any thread by the contract in 6.4 (as built: the
+/// header's comment).
 class CutRecord {
 public:
 	/// Cycles started so far; inside a cycle, the number of the one running.
 	virtual std::uint64_t started() const noexcept = 0;
-	/// Whether cycle `cycle` was cut short; none for one still running, 0, or older than what the record keeps.
+	/// Whether cycle `cycle` was cut short; none unless the ring keeps it (cutRecordKeeps).
 	virtual std::optional<bool> cut(std::uint64_t cycle) const noexcept = 0;
-	/// Cuts among cycles [from, to): its count and how many of them the record could answer for. O((to - from) / 64).
-	struct Count {
-		std::uint32_t cut;
-		std::uint32_t known;
-	};
-	virtual Count count(std::uint64_t from, std::uint64_t to) const noexcept = 0;
+	/// Cycles cut short so far, each once. No reach.
+	virtual std::uint64_t cutsSoFar() const noexcept = 0;
+	/// The newest cycle before the running one that ran whole (0: none). No reach.
+	virtual std::uint64_t newestWhole() const noexcept = 0;
 
 protected:
 	~CutRecord() = default;
@@ -397,7 +397,7 @@ public:
 
 `CycleAccount` needs `FrameClock` (it includes `latency.hpp`). The causes' rule, in order: no last cycle → `start`;
 driver id differs → `driverChange` (nothing else is worked out: another clock); else `jumpFrames` and `missed` from the
-tick; `missed > 0` and `jumpFrames == missed * frames` → `catchUp` if `confirmed()` else `absent`; any other non-zero
+tick; `missed > 0` and a forward jump of exactly `missed` whole cycles (`jumpFrames > 0`, `% frames == 0`, `/ frames == missed`: 9.2) → `catchUp` if `confirmed()` else `absent`; any other non-zero
 jump, or `missed > 0` with no jump → `reposition`; then `drive` and `oversized` added as flags. A block on another
 driver than the internal clock (no shipped path makes one: the dummy always drives, `docs/engine.md#the-internal-clock`)
 gets `graphCycle == 0`, so `missed` comes from the position alone and nothing is `confirmed`.
@@ -443,24 +443,31 @@ public:
 	~DriverCuts(); // main thread: removes the listener through the boundary (leaked on a wedged loop)
 	std::uint64_t started() const noexcept override;
 	std::optional<bool> cut(std::uint64_t cycle) const noexcept override;
-	Count count(std::uint64_t from, std::uint64_t to) const noexcept override;
-	std::uint64_t cuts() const noexcept; // every cut since listen, for a test's report
+	std::uint64_t cutsSoFar() const noexcept override;
+	std::uint64_t newestWhole() const noexcept override;
 
 private:
-	void onStart() noexcept;      // realtime<>: clear the new cycle's bit, then started_ + 1 (release)
-	void onIncomplete() noexcept; // realtime<>: set cycle started_'s bit (release), cuts_ + 1
+	/// realtime<>: newestWhole_ = started_ if its bit is clear; started_ + 1 (release); a release fence; clear the new
+	/// cycle's bit.
+	void onStart() noexcept;
+	/// realtime<>: set cycle started_'s bit; if it was clear, cutsSoFar_ + 1 (release). Idempotent.
+	void onIncomplete() noexcept;
 	std::vector<std::atomic<std::uint64_t>> bits_; // sized at listen, never resized
 	std::atomic<std::uint64_t> started_{0};
-	std::atomic<std::uint64_t> cuts_{0};
+	std::atomic<std::uint64_t> cutsSoFar_{0};
+	std::atomic<std::uint64_t> newestWhole_{0};
 	RegisteredRtListener hook_; // the boundary's handle
 };
 } // namespace ear::pipewire
 ```
 
-Memory order: the data thread writes a bit with release before (for `start`) or after (for `incomplete`) touching
-`started_`; a reader on another thread loads `started_` with acquire, then the bits; a reader on the data thread (the
-blocks) sees program order. A cycle number older than `started_ - 2^16` answers none. `count` walks at most the ring's
-1,024 words, on the data thread only when a block missed that many cycles (a stall of minutes).
+Memory order (as built in `HarnessCuts`, the contract in `CutRecord`'s header comment): `started_`, `cutsSoFar_`
+and `newestWhole_` are stored with release and loaded with acquire; a new cycle's slot is cleared only after
+`started_` moved on and a release fence. A reader on another thread reads `cut(c)` like a seqlock: `started_`
+(acquire), the bit, an acquire fence, `started_` again, and answers only when both readings keep `c`
+(`cutRecordKeeps`: begun, not running, fewer than 2^16 behind), so a slot cleared for a newer cycle is never read as
+the old one's. A reader on the data thread (the blocks) sees program order. Nothing walks the ring: the account
+counts cuts over any span from `cutsSoFar` and `newestWhole` (9.2).
 
 The port block takes `const CutRecord&` from the engine at make (`FilterPortBlocks` already holds the `Engine&`) and in
 `onProcess` builds the `DriverTick` from `clock` and `cuts.started()` where it calls `CycleContinuity::next` today.
@@ -897,15 +904,29 @@ after it must know.
   C2 both promise the old members keep their values, and the sum would count a three-cycle stall three times where
   today's block counts the jump once. `CycleAccount::xruns()` (an addition to 6.2) counts what `CycleContinuity` counted:
   one per forward jump on the same driver. C2 keeps it so; whether it ever becomes the sum is moot, since C4b removes it.
-- **One reach for every cut record, and it is one short of 2^16.** `cutRecordCycles` (2^16, an addition to 6.2's
-  header) is declared beside `CutRecord`, so the harness's record and `DriverCuts` answer for the same cycles and the
-  harness states what the engine would for the longest stall too. A ring of 2^16 slots holds the running cycle in the
-  oldest one's slot, so a record answers for the 65,535 cycles before the running one (6.4's "older than `started_ -
-  2^16`" is one off). The table's 70,000-cut row pins it: `missedCut` 65,535. C2's `DriverCuts` must give the same.
-- **A stall past the record is `absent`.** By 4.1's rule an unconfirmed catch-up is `absent`, so a stall longer than
-  the record (87 s at 64 frames, 350 s at 256) is called a pause: C3a's judge would fail it, and D1's `missedCycles`
-  (`missed - missedCut`) would count its unknown part against the node. Built as designed; whether such a stall wants a
-  cause of its own (or the judge an "unknown" verdict) is open for C3a and D1.
+- **Cuts are counted for any span, not walked in the ring** (the review's root fix: as first built, a stall past the
+  ring was `absent`, a pause to C3a's judge and D1's counters). `CutRecord` has no `count(from, to)`; it keeps two
+  monotonic values written on the data thread, `cutsSoFar` (once per cut cycle, however often `incomplete` is told)
+  and `newestWhole` (set at each start to the cycle before when that one was not cut). `CycleAccount` keeps, for the
+  last cycle L it ran, `cutsSoFar` read at L's entry; at cycle N the difference D counts L's cut and the missed
+  cycles'. Every missed cycle was cut exactly when `newestWhole` ≤ L, and then `missedCut = missed` and `lastCut = D -
+  missed`, for any span. Only when some missed cycle ran whole is the ring asked whether L was cut (`missedCut = D -
+  cut(L)`); past its reach, D = 0 and D = missed still decide it, and only 0 < D < missed leaves `lastCut` none and
+  `missedCut` a lower bound (D - 1). Nothing walks the ring on the data thread. The ring stays for which-cycle
+  questions (`cut(c)`, `blockMissing`). `cutRecordCycles` (2^16) and `cutRecordKeeps` are declared beside
+  `CutRecord`: a ring of 2^16 slots answers for the 65,535 cycles before the running one (6.4's "older than
+  `started_ - 2^16`" was one off). Rows pin it: 70,000 cuts are `catchUp` with `missedCut` 70,000; a pause past the
+  ring is `absent` with `lastCut` false; past the ring with one cycle not cut, `lastCut` none and `missedCut` 69,998.
+  C2's `DriverCuts` must give the same.
+- **`lastCut` is `std::optional<bool>`**: `false` on a block's first cycle, none with no record, after an unnumbered
+  cycle, or in the undecided case above. `CutRecord`'s cross-thread contract (seqlock reads of `cut`) is written in its
+  header and `HarnessCuts` keeps it with atomics; a test reads a record from another thread while three ring-lengths of
+  cycles are written and requires no wrong answer.
+- **catchUp and absent need a forward jump of whole cycles.** The test is `jumpFrames > 0`, `jumpFrames % frames ==
+  0` and `jumpFrames / frames == missed`, with no signed product, so a cycle of no frames (a row) or any jump cannot
+  overflow into a false match. `jumpFrames` is worked out modulo 2^64: exact for any jump under 2^63 frames, which is
+  also the limit of the claim that `CycleContinuity` decides as before (its old `position > nextPosition` and the
+  wrapper's `jumpFrames > 0` agree below it).
 - **The missed cycles' frames are this cycle's.** 6.2 leaves `missed * frames` unspecified: the rule takes each missed
   cycle to have the frames of the cycle that states them, for `catchUp`'s exactness and for `missed` off the numbered
   clock (whole cycles of a forward jump). ear forces one quantum (`docs/engine.md#the-quantum-guard`), so they agree on
@@ -923,15 +944,23 @@ after it must know.
 - **`NodeHarness::facts()`** (an addition to 6.3): the last `process()`'s facts. `GraphCycle::facts` is C2's (adding it
   now would hand every real code empty facts), so until then a type's test reads them here; the table's harness runner
   also checks that the code's `GraphCycle::discontinuity` agrees.
-- **What the harness cannot make**: a cycle over `maxBlock` (`process()` refuses it, as before), a cut of the cycle the
-  block ran (`lastCut`) and cycle numbers that move without the clock. The table marks no rows by hand: each step says
-  whether the harness can make it (`CycleStep::inHarness()`), and three rows are core's alone. C2's engine runner should
-  derive its rows the same way.
+- **What the harness cannot make**: a cycle over `maxBlock` (`process()` refuses it, as before) or of no frames (0
+  means `maxBlock` there), lost cycles of other frames than the next one's, a cut of the cycle the block ran
+  (`lastCut`) and cycle numbers that move without the clock. The table marks no rows by hand: each step says whether
+  the harness can make it (`CycleStep::inHarness()`); 14 of the 21 rows run in the harness, all through `CycleAccount`
+  and `CycleContinuity`, each checking the `xruns` its cycles count. C2's engine runner should derive its rows the same
+  way. `loseCycles` refuses (`std::logic_error`) more than 2^32 - 1 lost cycles before one `process()`.
+- **Off the numbered clock** (after `changeDriver`) a loss is `absent` and a reposition by whole cycles reads as that
+  many missed (`absent`): the harness's header and `docs/writing-a-node-type.md#lost-cycles` say `catchUp` and a pure
+  `reposition` hold on the numbered clock only, and rows pin both. A driver change in the same step as a loss is
+  `driverChange` alone.
+- **A quantum change across a loss fails toward `reposition`**: the jump is not whole cycles of the new frames. ear
+  forces one quantum, so the engine never makes it; a row pins the direction.
 - **The harness's times follow time, not position.** Its `startNs` and `startRawNs` were the position's time; they now
   count the frames of time gone (cycles run and lost), which differ from the position only after `reposition` or on
   another driver. Before any of the new calls every cycle is as it was. Its driver id stays 0, the numbered clock.
 - **Small additions to 6.2**: `CycleCause | CycleCause`, `CycleCauses::bits()` (for a test's message, never a rule),
-  default member initializers on `DriverTick` and `CutRecord::Count`. `CycleContinuity`'s account is made on a nominal
+  default member initializers on `DriverTick`. `CycleContinuity`'s account is made on a nominal
   `FrameClock`: it is given no raw time and reads only the causes.
 
 ## 10. Decided here (technical)

@@ -808,7 +808,10 @@ void NodeHarness::process(std::uint32_t frames) {
 }
 
 void NodeHarness::loseCycles(std::uint32_t count, Lost how) {
-	(how == Lost::cut ? impl_->lostCut : impl_->lostUnscheduled) += count;
+	Impl& h = *impl_;
+	if (count > std::numeric_limits<std::uint32_t>::max() - h.lostCut - h.lostUnscheduled)
+		throw std::logic_error("loseCycles() past 2^32 - 1 cycles before one process()");
+	(how == Lost::cut ? h.lostCut : h.lostUnscheduled) += count;
 }
 
 void NodeHarness::changeDriver(std::uint32_t id) { impl_->driverId = id; }

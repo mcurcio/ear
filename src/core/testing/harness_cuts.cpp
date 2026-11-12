@@ -1,7 +1,6 @@
-// The type harness's cut record (ear/testing/harness_cuts.hpp).
+// The type harness's cut record (ear/testing/harness_cuts.hpp), by CutRecord's contract (ear/core/cycle_facts.hpp).
 #include "ear/testing/harness_cuts.hpp"
 
-#include <algorithm>
 #include <cstddef>
 
 namespace ear::testing {
@@ -13,34 +12,35 @@ constexpr std::size_t word(std::uint64_t cycle) noexcept {
 }
 } // namespace
 
-HarnessCuts::HarnessCuts() : bits_(cutRecordCycles / wordBits, 0) {}
+HarnessCuts::HarnessCuts() : bits_(cutRecordCycles / wordBits) {}
+
+bool HarnessCuts::bitOf(std::uint64_t cycle) const noexcept {
+	return (bits_[word(cycle)].load(std::memory_order_relaxed) & bit(cycle)) != 0;
+}
 
 void HarnessCuts::start() noexcept {
-	++started_;
-	bits_[word(started_)] &= ~bit(started_);
+	const std::uint64_t running = started_.load(std::memory_order_relaxed);
+	if (running > 0 && !bitOf(running)) newestWhole_.store(running, std::memory_order_release);
+	started_.store(running + 1, std::memory_order_release);
+	// The slot is cleared after started() moved on, so a reader that sees it cleared sees the new started() too.
+	std::atomic_thread_fence(std::memory_order_release);
+	bits_[word(running + 1)].fetch_and(~bit(running + 1), std::memory_order_relaxed);
 }
 
 void HarnessCuts::incomplete() noexcept {
-	if (started_ > 0) bits_[word(started_)] |= bit(started_);
+	const std::uint64_t running = started_.load(std::memory_order_relaxed);
+	if (running == 0) return;
+	const std::uint64_t was = bits_[word(running)].fetch_or(bit(running), std::memory_order_relaxed);
+	if ((was & bit(running)) == 0)
+		cutsSoFar_.store(cutsSoFar_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
 }
 
 std::optional<bool> HarnessCuts::cut(std::uint64_t cycle) const noexcept {
-	// The running cycle's slot is the oldest's too, so the record answers for the cutRecordCycles - 1 before it.
-	if (cycle == 0 || cycle >= started_ || started_ - cycle >= cutRecordCycles) return std::nullopt;
-	return (bits_[word(cycle)] & bit(cycle)) != 0;
-}
-
-CutRecord::Count HarnessCuts::count(std::uint64_t from, std::uint64_t to) const noexcept {
-	Count counted;
-	// Only the cycles the record keeps can answer, so a span of a long stall walks the record at most once.
-	if (started_ >= cutRecordCycles) from = std::max(from, started_ - cutRecordCycles + 1);
-	to = std::min(to, started_);
-	for (std::uint64_t cycle = from; cycle < to; ++cycle)
-		if (const std::optional<bool> was = cut(cycle)) {
-			++counted.known;
-			if (*was) ++counted.cut;
-		}
-	return counted;
+	if (!cutRecordKeeps(cycle, started_.load(std::memory_order_acquire))) return std::nullopt;
+	const bool was = bitOf(cycle);
+	std::atomic_thread_fence(std::memory_order_acquire);
+	if (!cutRecordKeeps(cycle, started_.load(std::memory_order_relaxed))) return std::nullopt;
+	return was;
 }
 
 } // namespace ear::testing

@@ -2,10 +2,12 @@
 // rule, CycleAccount, over the harness's cut record; through CycleContinuity, the real block's discontinuity, which must
 // put every discontinuity where the table's facts do; and through the type harness, whose loseCycles, changeDriver and
 // reposition make each row it can. Then the pieces: the causes as a set, the cut record and an account with no record.
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "catch2/catch.hpp"
@@ -50,11 +52,12 @@ public:
 	explicit Script(testing::HarnessCuts& cuts) : cuts_(cuts) {}
 	DriverTick before(const test::CycleStep& step) {
 		if (step.driver) driver_ = *step.driver;
+		const std::uint32_t lostFrames = step.lostFrames.value_or(step.frames);
 		for (std::uint32_t i = 0; i < step.lostCut + step.lostUnscheduled; ++i) {
 			cuts_.start();
 			if (i < step.lostCut) cuts_.incomplete();
-			position_ += step.frames;
-			time_ += step.frames;
+			position_ += lostFrames;
+			time_ += lostFrames;
 		}
 		for (std::uint32_t i = 0; i < step.numbersOnly; ++i) cuts_.start();
 		position_ = static_cast<std::uint64_t>(static_cast<std::int64_t>(position_) + step.reposition);
@@ -89,7 +92,7 @@ TEST_CASE("Every row of the cycle table states its facts through CycleAccount", 
 		// A row the block passes by stating nothing proves nothing: each expects some fact after its first cycle.
 		bool states = false;
 		for (std::size_t i = 1; i < row.steps.size(); ++i)
-			states = states || row.steps[i].facts.discontinuity() || row.steps[i].facts.lastCut;
+			states = states || row.steps[i].facts.discontinuity() || row.steps[i].facts.lastCut.value_or(false);
 		REQUIRE(states);
 		testing::HarnessCuts cuts;
 		Script script(cuts);
@@ -106,6 +109,7 @@ TEST_CASE("Every row of the cycle table states its facts through CycleAccount", 
 			CHECK(account.nextPosition() == tick.position + tick.frames);
 			script.after(step);
 		}
+		CHECK(account.xruns() == row.xruns);
 	}
 }
 
@@ -126,10 +130,13 @@ TEST_CASE("CycleContinuity, the real block's rule, puts each discontinuity the c
 				continuity.next(tick.driverId, tick.position, tick.frames, test::cycleTableFormat.maxBlock);
 			// Cycles missed with no move are known only by their numbers, which the real block is not given yet: it
 			// sees a whole cycle there, and the table's rule a reposition.
-			CHECK(got.discontinuity == (step.numbersOnly == 0 && step.facts.discontinuity()));
+			const bool onlyNumbersShow = step.facts.missed > 0 && step.facts.jumpFrames == 0 &&
+			                             step.facts.graphCycle != 0 && step.facts.causes.only(CycleCause::reposition);
+			CHECK(got.discontinuity == (step.facts.discontinuity() && !onlyNumbersShow));
 			CHECK(got.runs == step.runs);
 			script.after(step);
 		}
+		CHECK(continuity.xruns() == row.xruns);
 	}
 }
 
@@ -166,9 +173,11 @@ TEST_CASE("The type harness states the facts of every cycle table row it can mak
 			CHECK(seen->discontinuity == step.facts.discontinuity());
 			CHECK(harness->cuts().started() >= step.facts.graphCycle);
 		}
+		REQUIRE(seen);
+		CHECK(seen->xruns == row.xruns);
 		++made;
 	}
-	CHECK(made >= 10); // the rows only a script of ticks makes are three
+	CHECK(made == 14); // the rows only a script of ticks makes are seven
 }
 
 TEST_CASE("Causes are a set", "[cycle_facts]") {
@@ -190,30 +199,77 @@ TEST_CASE("Causes are a set", "[cycle_facts]") {
 	CHECK(CycleFacts{}.confirmed());
 }
 
-TEST_CASE("The harness's cut record answers for the cycles it keeps and none other", "[cycle_facts]") {
+TEST_CASE("The harness's cut record answers for the cycles its ring keeps and counts every cut once", "[cycle_facts]") {
 	testing::HarnessCuts cuts;
 	CHECK(cuts.started() == 0);
 	cuts.incomplete(); // before any cycle: nothing
+	CHECK(cuts.cutsSoFar() == 0);
 	CHECK_FALSE(cuts.cut(0));
 	cuts.start();
 	cuts.incomplete();
+	cuts.incomplete(); // told twice, counted once
+	CHECK(cuts.cutsSoFar() == 1);
+	CHECK(cuts.newestWhole() == 0);
 	cuts.start();
+	CHECK(cuts.newestWhole() == 0); // cycle 1 was cut
 	CHECK(cuts.started() == 2);
 	CHECK(cuts.cut(1) == std::optional<bool>(true));
 	CHECK_FALSE(cuts.cut(2)); // still running
 	CHECK_FALSE(cuts.cut(3)); // not started
 	cuts.start();
+	CHECK(cuts.newestWhole() == 2);
 	CHECK(cuts.cut(2) == std::optional<bool>(false));
-	CHECK(cuts.count(1, 3).cut == 1);
-	CHECK(cuts.count(1, 3).known == 2);
-	CHECK(cuts.count(1, 9).known == 2); // the running cycle and those not started have no answer
 	// Cycle 1's slot is used again by cycle 1 + cutRecordCycles: that one is not cut, and cycle 1 has no answer.
 	while (cuts.started() < 2 + cutRecordCycles) cuts.start();
 	CHECK_FALSE(cuts.cut(1));
 	CHECK_FALSE(cuts.cut(2));
 	CHECK(cuts.cut(3) == std::optional<bool>(false)); // the oldest it keeps
 	CHECK(cuts.cut(1 + cutRecordCycles) == std::optional<bool>(false));
-	CHECK(cuts.count(0, cuts.started()).known == cutRecordCycles - 1);
+	CHECK(cuts.cutsSoFar() == 1); // the count has no reach
+	CHECK(cutRecordKeeps(3, 2 + cutRecordCycles));
+	CHECK_FALSE(cutRecordKeeps(2, 2 + cutRecordCycles));
+	CHECK_FALSE(cutRecordKeeps(0, 5));
+	CHECK_FALSE(cutRecordKeeps(5, 5));
+}
+
+TEST_CASE("A cut record read from another thread while cycles wrap its ring never answers wrongly", "[cycle_facts]") {
+	// The writer tells cycles whose cuts follow a pattern, wrapping the ring three times; the reader asks about cycles
+	// behind the writer the whole while. Every answer must be the pattern's or none (CutRecord's seqlock contract),
+	// whatever the interleaving. The reader stops when the writer has finished, never on time.
+	const auto isCut = [](std::uint64_t cycle) { return cycle % 3 == 0 || cycle % 7 == 0; };
+	constexpr std::uint64_t cycles = 3 * cutRecordCycles;
+	testing::HarnessCuts cuts;
+	std::atomic<bool> done{false};
+	std::thread writer([&] {
+		for (std::uint64_t cycle = 1; cycle <= cycles; ++cycle) {
+			cuts.start();
+			if (isCut(cycle)) cuts.incomplete();
+		}
+		done.store(true, std::memory_order_release);
+	});
+	std::uint64_t answered = 0;
+	std::uint64_t wrong = 0;
+	std::uint64_t asked = 0;
+	do {
+		const std::uint64_t started = cuts.started();
+		// Behind the writer by one to the ring's reach and a little past it, so slots are reused under the reader.
+		const std::uint64_t behind = 1 + asked % (cutRecordCycles + 64);
+		const std::uint64_t cycle = started > behind ? started - behind : 1;
+		if (const std::optional<bool> was = cuts.cut(cycle)) {
+			++answered;
+			if (*was != isCut(cycle)) ++wrong;
+		}
+		++asked;
+	} while (!done.load(std::memory_order_acquire));
+	writer.join();
+	INFO("asked " << asked << ", answered " << answered);
+	CHECK(wrong == 0);
+	REQUIRE(answered > 0);
+	CHECK(cuts.cutsSoFar() == [&] {
+		std::uint64_t n = 0;
+		for (std::uint64_t cycle = 1; cycle <= cycles; ++cycle) n += isCut(cycle) ? 1 : 0;
+		return n;
+	}());
 }
 
 TEST_CASE("An account with no cut record confirms nothing and knows no last cut", "[cycle_facts]") {
@@ -225,7 +281,7 @@ TEST_CASE("An account with no cut record confirms nothing and knows no last cut"
 	const CycleFacts facts = account.next(tick(3, 480), 256).facts;
 	CHECK(facts.missed == 1);
 	CHECK(facts.missedCut == 0);
-	CHECK_FALSE(facts.lastCut);
+	CHECK_FALSE(facts.lastCut.has_value());
 	CHECK(facts.causes == CycleCauses(CycleCause::absent));
 	CHECK(account.xruns() == 1);
 }

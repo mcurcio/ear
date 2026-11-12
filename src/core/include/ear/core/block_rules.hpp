@@ -132,7 +132,8 @@ private:
 /// first cycle, a new code's first, a new driver's first, a position that did not move on by the last cycle's frames,
 /// and the cycle after one too large to run. Counts the cycles that started ahead of where the last ended on the same
 /// driver (GraphCycle::xruns). It is CycleAccount (ear/core/cycle_facts.hpp) with no cut known and no graph cycle
-/// numbers, read for its discontinuity alone, so the block and the harness's fake block keep one rule.
+/// numbers, read for its discontinuity alone, so the block and the harness's fake block keep one rule (its jump is
+/// worked out modulo 2^64, so it decides as a plain comparison of positions would for any jump under 2^63 frames).
 class CycleContinuity {
 public:
 	/// A drive installed a code: its first cycle is a discontinuity to it.

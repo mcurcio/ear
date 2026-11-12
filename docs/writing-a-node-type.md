@@ -406,7 +406,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
 | `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), `discontinuity` where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
-| `h->loseCycles(n, Lost::cut)`, `h->loseCycles(n, Lost::notScheduled)`, `h->changeDriver(id)`, `h->reposition(frames)` | Before the next `process()`: `n` graph cycles start without the block (its position and time move on by that cycle's frames), each cut short or each run whole without it (paused); the block runs on another driver from then on; its position moves with no cycle missed and no time gone ([below](#lost-cycles)) |
+| `h->loseCycles(n, Lost::cut)`, `h->loseCycles(n, Lost::notScheduled)`, `h->changeDriver(id)`, `h->reposition(frames)` | Before the next `process()`: `n` graph cycles start without the block (its position and time move on by that cycle's frames; past 2^32 - 1 before one `process()`, `std::logic_error`), each cut short or each run whole without it (paused); the block runs on another driver from then on; its position moves with no cycle missed and no time gone ([below](#lost-cycles)) |
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
@@ -430,21 +430,32 @@ of which graph cycles the driver cut short.
 |---|---|
 | `graphCycle` | The graph cycle it ran in, counted from 1; 0 off the clock that numbers them |
 | `missed`, `missedCut` | Graph cycles started on the same driver since the block last ran one, and how many of them the driver cut short; `confirmed()` when every one was |
-| `lastCut` | The cycle the block last ran was cut short after it, so nodes after it may not have heard it |
-| `jumpFrames`, `lostRawNs` | The position against where the last cycle ended, and the raw time from that end to this start, on the same driver (0 otherwise) |
-| `causes` | Why it is a discontinuity, a set: `start` (the block's first), `drive` (a new code's first), `driverChange`, `catchUp` (missed cycles, all cut, the position moved by exactly their frames), `absent` (as `catchUp`, but some not cut: the block was not scheduled), `oversized` (after a cycle too large for the block), `reposition` (any other move: back, or not whole cycles, or cycles missed with no move). `whole()` is none, `discontinuity()` any |
+| `lastCut` | The cycle the block last ran was cut short after it, so nodes after it may not have heard it: `false` on the block's first cycle, none where nothing can answer (no record, the last cycle unnumbered, or the one undecided case below) |
+| `jumpFrames`, `lostRawNs` | The position against where the last cycle ended (exact for any jump under 2^63 frames), and the raw time from that end to this start, on the same driver (0 otherwise) |
+| `causes` | Why it is a discontinuity, a set: `start` (the block's first), `drive` (a new code's first), `driverChange`, `catchUp` (missed cycles, all cut, the position moved forward by exactly that many of this cycle's frames), `absent` (as `catchUp`, but some not cut: the block was not scheduled), `oversized` (after a cycle too large for the block), `reposition` (any other move: back, or not whole cycles, or cycles missed with no move). `whole()` is none, `discontinuity()` any |
 
-Off the numbered clock the missed cycles come from the position alone (whole cycles of this one's
-frames: ear forces one quantum, [engine.md](engine.md#the-quantum-guard)) and none is confirmed. A
-record keeps the newest `cutRecordCycles` (2^16) cycles, so a stall longer than that is `absent`,
-the cycles it still knows counted in `missedCut`. The real block's `discontinuity` is
+Off the numbered clock the missed cycles come from the position alone (a forward jump of whole
+cycles of this one's frames) and none is confirmed, so there a loss is always `absent` and a
+reposition by whole cycles reads as that many missed. ear forces one quantum
+([engine.md](engine.md#the-quantum-guard)), so a loss's cycles have this cycle's frames; were the
+quantum to change across one, the rule fails toward `reposition`, never toward an excused
+`catchUp`. The cuts are counted for any span, with no reach: a record keeps two running counts
+(`cutsSoFar`, every cut once, and `newestWhole`, the newest cycle that ran whole), and the account
+takes their difference since the last cycle's entry, so a stall of any length is `catchUp` with
+every cycle counted. Only its ring of `cutRecordCycles` (2^16) slots, which answers which cycle
+was cut (`cut(cycle)`), has a reach, and it is asked only when some missed cycle was not cut:
+past its reach, with some but not all of the cuts since the last cycle, whether that cycle was one
+of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). The real block's `discontinuity` is
 `CycleContinuity`, this rule with no cut record and no cycle numbers, read for its discontinuity
 alone; it puts every discontinuity where the facts do but one: cycles missed with no move, which
 only the cycle numbers it is not given show ([engine.md](engine.md#graphcycle)).
 
 The harness's fake block runs `CycleAccount` over its own `HarnessCuts`
 (`ear/testing/harness_cuts.hpp`), told as the engine's driver tells: a cycle starts, then may be
-marked cut. `loseCycles`, `changeDriver` and `reposition` make the facts a type must survive, and
+marked cut. It keeps `CutRecord`'s contract for readers on other threads (the header says how), so
+a test may read it while cycles run. `loseCycles`, `changeDriver` and `reposition` make the facts
+a type must survive (`catchUp` and a pure `reposition` on the harness's own, numbered clock only;
+after `changeDriver`, as above), and
 `facts()` is what the last `process()` stated, so a type's tests can lose a cycle and check what
 its code does with the discontinuity the engine would hand it. The rows every runner of the rule
 must agree on are `test/support/cycle_table.hpp`'s ([testing.md](testing.md#what-each-test-program-proves)).

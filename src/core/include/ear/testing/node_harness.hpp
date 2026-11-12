@@ -150,14 +150,17 @@ public:
 	void process(std::uint32_t frames = 0);
 	/// `count` graph cycles start without the fake block running them: the next process() comes after them, its
 	/// position and time moved on by their frames (that cycle's). `Lost::cut` marks each cut short in the harness's
-	/// CutRecord, `Lost::notScheduled` leaves them whole; the next process() states them (catchUp, or absent when any
-	/// was not cut). Calls add up until that process().
+	/// CutRecord, `Lost::notScheduled` leaves them whole; the next process() states them: on the harness's own clock
+	/// (numbered), catchUp, or absent when any was not cut; after changeDriver (unnumbered) always absent, since nothing
+	/// is confirmed off the numbered clock. Calls add up until that process(); std::logic_error past 2^32 - 1.
 	void loseCycles(std::uint32_t count, Lost how = Lost::cut);
 	/// The next process() and those after it run on driver `id` (a card made driver): driverChange, and no graph cycle
 	/// numbers but on the harness's own clock (id 0, where it starts).
 	void changeDriver(std::uint32_t id);
 	/// The next process()'s position moves by `frames` on the same driver with no cycle missed and no time gone:
-	/// reposition. std::logic_error for a move before the driver's first frame.
+	/// reposition on the harness's own clock, whose numbers say no cycle was missed. After changeDriver (unnumbered) a
+	/// forward move by whole cycles reads as that many missed (absent), any other move as reposition.
+	/// std::logic_error for a move before the driver's first frame.
 	void reposition(std::int64_t frames);
 	/// The CutRecord the fake block's account reads.
 	const CutRecord& cuts() const noexcept;
