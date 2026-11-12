@@ -1,9 +1,9 @@
 // The cycle facts' table (header-only; the target ear_cycle_table puts it on the include path): scripts of cycles, one
 // row per cause and per shape of loss, each step with the facts the block must state for it, and each row with the
 // xruns its cycles count (docs/writing-a-node-type.md#lost-cycles). ear_core_tests runs every row through
-// CycleAccount, through CycleContinuity (the real block's discontinuity today, which must agree with every row's but
-// for cycles missed with no move, which only cycle numbers show) and, for each row the type harness can make, through
-// NodeHarness (src/core/tests/cycle_facts_test.cpp), so the rule, the block and the harness cannot drift apart.
+// CycleAccount and, for each row the type harness can make, through NodeHarness (src/core/tests/cycle_facts_test.cpp);
+// ear_pipewire_tests runs each row an engine can make through a real block (src/pipewire/tests/port_block_test.cpp), so
+// the rule, the block and the harness cannot drift apart.
 #pragma once
 
 #include <cstdint>
@@ -23,6 +23,8 @@ inline constexpr AudioFormat cycleTableFormat{.rate = 48000, .maxBlock = 256};
 inline constexpr std::uint32_t cycleTableFrames = 240;
 /// The driver the rows start on, the harness's own clock (numbered cycles).
 inline constexpr std::uint32_t cycleTableClock = 0;
+/// The most cycles a pause an engine makes stands for: a test's pause lasts a few cycles, never minutes.
+inline constexpr std::uint32_t cycleTableEnginePause = 16;
 
 /// One cycle the block runs, what happened before it, and the facts it must state.
 struct CycleStep {
@@ -45,6 +47,18 @@ struct CycleStep {
 	bool inHarness() const noexcept {
 		return frames > 0 && frames <= cycleTableFormat.maxBlock && !lostFrames && numbersOnly == 0 && !cutAfter;
 	}
+	/// An engine can make this step through a real block on the internal clock, at the graph's one quantum
+	/// (cycleTableFrames, docs/engine.md#the-quantum-guard): a drive; one cycle cut, by a stall of the block upstream
+	/// (a 1.5-cycle stall cuts exactly the cycle it stalls in, docs/engine.md#the-one-data-loop-and-invokes; a longer
+	/// one leaves how many the catch-up cuts to the loop's order); a cut after the block ran its cycle, by a stall of
+	/// its own with a block after it; or a pause, the block made inactive, which misses as many cycles as the engine
+	/// took to make it active again (at least lostUnscheduled, its facts scaled to them). Never two of those at once,
+	/// another driver, a reposition or a number without a move: the dummy always drives and moves on by its frames.
+	bool onEngine() const noexcept {
+		const int losses = (lostCut > 0 ? 1 : 0) + (lostUnscheduled > 0 ? 1 : 0) + (drive ? 1 : 0);
+		return frames == cycleTableFrames && !lostFrames && numbersOnly == 0 && !driver && reposition == 0 &&
+		       lostCut <= 1 && lostUnscheduled <= cycleTableEnginePause && losses <= 1;
+	}
 };
 
 struct CycleRow {
@@ -54,6 +68,11 @@ struct CycleRow {
 	bool inHarness() const noexcept {
 		for (const CycleStep& step : steps)
 			if (!step.inHarness()) return false;
+		return true;
+	}
+	bool onEngine() const noexcept {
+		for (const CycleStep& step : steps)
+			if (!step.onEngine()) return false;
 		return true;
 	}
 };

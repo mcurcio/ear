@@ -10,6 +10,8 @@
 #include <string>
 #include <thread>
 
+#include <pipewire/impl.h>
+
 #include "ear/core/main_loop_activity.hpp"
 
 namespace ear::pipewire::boundary {
@@ -136,6 +138,30 @@ void report(std::string_view callback, FaultOwner* owner) noexcept {
 } // namespace ear::pipewire::boundary
 
 namespace ear::pipewire {
+
+namespace {
+struct NodeSearch {
+	std::string_view name;
+	pw_impl_node* found = nullptr;
+};
+
+/// PipeWire calls it for each global, on the calling thread: nothing here throws.
+int matchNode(void* data, pw_global* global) noexcept {
+	if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Node)) return 0;
+	auto* search = static_cast<NodeSearch*>(data);
+	auto* node = static_cast<pw_impl_node*>(pw_global_get_object(global));
+	const char* name = pw_properties_get(pw_impl_node_get_properties(node), PW_KEY_NODE_NAME);
+	if (name == nullptr || std::string_view(name) != search->name) return 0;
+	search->found = node;
+	return 1;
+}
+} // namespace
+
+pw_impl_node* engineNode(pw_context* context, std::string_view name) noexcept {
+	NodeSearch search{.name = name};
+	pw_context_for_each_global(context, &matchNode, &search);
+	return search.found;
+}
 
 void RecordThenEnd::caught(std::string_view callback, std::string_view where, std::string_view detail,
                            std::string_view node, bool owned) noexcept {

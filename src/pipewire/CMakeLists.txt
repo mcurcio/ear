@@ -3,10 +3,12 @@
 # RTP receivers and the main-loop executor (docs/architecture.md#packages, docs/node-types.md#rtp).
 # engine_names.hpp, link_proxy.hpp, engine_companions.hpp, latency_spa.hpp, engine_properties.hpp (every PipeWire
 # property ear sets, docs/engine.md#properties-ear-sets), engine_property_set.hpp (the only writer of them) and
-# callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary) are private to
-# this package: its sources include them by path.
+# callback_boundary.hpp (every C callback ear gives PipeWire, docs/architecture.md#the-callback-boundary) and
+# driver_cuts.hpp (the internal clock's cuts, docs/engine.md#graphcycle) are private to this package: its sources
+# include them by path.
 add_library(ear_pipewire STATIC
 	callback_boundary.cpp
+	driver_cuts.cpp
 	engine.cpp
 	engine_companions.cpp
 	engine_log.cpp
@@ -62,10 +64,10 @@ if(BUILD_TESTS)
 	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders;
 	# ear_type_harness: ear/testing/drive_now.hpp, a block driven and waited for; ear_output: the main-loop watchdog
 	# (StallWatch) over the real main loop, as main.cpp wires it; ear_inducers: planned data-thread stalls and the cycle
-	# ledger (docs/testing.md#making-the-rare-event); ear_latency_table: the latency model's rows, run through a real
-	# block.
-	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main
-		PkgConfig::PIPEWIRE ear_rtp_tone ear_temp_folder ear_type_harness ear_output ear_inducers ear_latency_table)
+	# ledger (docs/testing.md#making-the-rare-event); ear_latency_table and ear_cycle_table: the latency model's rows
+	# and the cycle facts' rows, run through a real block.
+	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main PkgConfig::PIPEWIRE ear_rtp_tone
+		ear_temp_folder ear_type_harness ear_output ear_inducers ear_latency_table ear_cycle_table)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
 	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it). The property table's tests read
 	# docs/engine.md, whose tables must list its rows.
@@ -105,6 +107,8 @@ if(BUILD_TESTS)
 	ear_callback_boundary_compile_fail(realtime-in-guarded-entry "could not convert '[^']*realtime<.* to '[^']*GuardedSlot<")
 	ear_callback_boundary_compile_fail(raw-log-method "could not convert '[^']*logNoexcept' from")
 	ear_callback_boundary_compile_fail(log-method-not-noexcept "must be noexcept: the data loop never throws")
+	ear_callback_boundary_compile_fail(guarded-node-event "could not convert '[^']*guarded<.* to '[^']*RealtimeSlot<")
+	ear_callback_boundary_compile_fail(raw-node-event "could not convert '[^']*rawStart' from 'void \\(\\*\\)")
 	# What must not compile about the property table (docs/engine.md#properties-ear-sets):
 	# tests/compile_fail/engine_properties_bad.cpp says what each case is. property() refuses a key by calling a function
 	# that is not constexpr, named for the reason, so each regex is that function's name, which the compiler's error

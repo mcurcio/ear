@@ -19,7 +19,9 @@ struct Owner {
 	void onWrongTimer(int /*signal*/) {}
 	void onInvokeTimer(std::uint64_t /*expirations*/) noexcept {}
 	void onStateNoexcept(pw_filter_state /*old*/, pw_filter_state /*state*/, const char* /*error*/) noexcept {}
+	void onStart() noexcept {}
 	static void raw(void* /*data*/, std::uint64_t /*count*/) {}
+	static void rawStart(void* /*data*/) noexcept {}
 	static int rawInvoke(spa_loop* /*loop*/, bool /*async*/, std::uint32_t /*seq*/, const void* /*data*/,
 	                     std::size_t /*size*/, void* /*user*/) {
 		return 0;
@@ -36,7 +38,7 @@ struct Other {
 };
 
 [[maybe_unused]] void registrations(pw_loop* loop, pw_data_loop* data, pw_filter* filter, Listener& hook,
-                                    LoopSource& source, Owner& owner) {
+                                    LoopSource& source, pw_impl_node* clock, RealtimeListener& rtHook, Owner& owner) {
 	// The control: each registration as ear makes it. The data loop takes only realtime<>, every other loop guarded<>.
 	addEvent(source, loop, guarded<&Owner::onEvent>, &owner);
 	addTimer(source, loop, guarded<&Owner::onTimeout>, &owner);
@@ -46,6 +48,7 @@ struct Other {
 	installLog<LogCallbacks{.log = realtimeFunction<&logNoexcept>}>(SPA_LOG_LEVEL_WARN);
 	listen<FilterCallbacks<Owner>{.stateChanged = guarded<&Owner::onState>, .process = realtime<&Owner::onProcess>}>(
 		filter, hook, &owner);
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = realtime<&Owner::onStart>}>(clock, rtHook, &owner);
 
 #ifdef EAR_CASE_raw_event
 	// A raw function pointer is no Guarded: it has no catch.
@@ -91,6 +94,13 @@ struct Other {
 #endif
 #ifdef EAR_CASE_log_method_not_noexcept
 	installLog<LogCallbacks{.log = realtimeFunction<&logThrowing>}>(SPA_LOG_LEVEL_WARN);
+#endif
+#ifdef EAR_CASE_guarded_node_event
+	// An engine node's realtime events are told on the data loop: realtime<> only.
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = guarded<&Owner::onStart>}>(clock, rtHook, &owner);
+#endif
+#ifdef EAR_CASE_raw_node_event
+	listenRealtime<NodeRealtimeCallbacks<Owner>{.start = &Owner::rawStart}>(clock, rtHook, &owner);
 #endif
 #ifdef EAR_CASE_wrong_signature
 	// A timer's member takes the expirations.

@@ -142,6 +142,18 @@ the block. Both clocks are read mono, raw, mono, and the offset taken from the m
 `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into its own
 clock, never into the driver's position.
 
+**`GraphCycle::facts`** (`docs/engine.md#graphcycle`, `docs/writing-a-node-type.md#lost-cycles`) is
+core's `CycleAccount` over the engine's record of the internal clock's cuts: `DriverCuts`
+(`driver_cuts.hpp`, private), made in `Engine::create` before any block, found by `node.name`
+(`internalClockNode`; none is an `EngineError`), listening to the dummy's realtime `start` and
+`incomplete` through the boundary's `listenRealtime` (realtime entries only; the guard refuses a raw
+`pw_impl_node_add_rt_listener`). Traps: number a block's cycle by the listener's own count
+(`Engine::cuts().started()` inside `process`), never `clock.cycle`; never read the clock through a
+filter's mapping from the listener (it goes with the filter); the listener must be added before the
+first block (an async invoke the data loop runs before any block's node reaches the driver);
+removing it is a blocking invoke, so on a wedged loop it is left and the record leaked. `discontinuity`
+is `facts.discontinuity()`; `xruns` keeps counting one per forward jump.
+
 ## Latency, per bank pair
 
 A port block connects with `PW_FILTER_FLAG_CUSTOM_LATENCY`. Without it `pw_filter` merges every

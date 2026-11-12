@@ -13,6 +13,10 @@ inline constexpr char graphGroup[] = "ear.graph";
 /// (docs/engine.md#the-internal-clock).
 inline constexpr int cardPriority = 1;
 
+/// The internal clock's node.name (engine.conf's Dummy-Driver, a row of the property table): the engine finds it by
+/// this to hear which cycles it cut short (driver_cuts.hpp).
+inline constexpr char internalClockNode[] = "Dummy-Driver";
+
 /// The internal clock's clock.name: support.node.driver names it "clock.system.<clock.id>", and
 /// engine.conf sets clock.id = monotonic-raw. A following ALSA node whose own clock.name is this
 /// one believes it shares the driver's clock and turns its rate matching off (alsa-pcm.c,

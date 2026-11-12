@@ -32,7 +32,8 @@ changing this code.
 | The wedge mark | `data_loop_wedge.hpp` | Once the data loop is judged wedged, the adapters stop calling into it |
 | Main-loop executor | `main_loop_executor.cpp` | Work posted from any thread runs on the main loop |
 | The callback boundary | `callback_boundary.hpp`, `faults.hpp` | Every C function ear gives PipeWire or alsa-lib, with no exception: `guarded<>` (caught, reported to the engine's `Faults`), `realtime<>` on the data loop (a `DataLoop` takes nothing else), `realtimeFunction<>` for the log and alsa-lib's handler ([architecture.md](architecture.md#the-callback-boundary)) |
-| Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's name |
+| The internal clock's cuts | `driver_cuts.hpp` | `DriverCuts`: a realtime listener on the dummy driver's `start` and `incomplete` events, the record every block numbers its cycles by and reads its cuts from ([below](#graphcycle)) |
+| Shared names | `engine_names.hpp` | The graph group's name, a card's driver priority, the internal clock's node and clock names |
 | The property table | `engine_properties.hpp`, `engine_property_set.cpp` | Every PipeWire property ear sets, in `engine.conf` or in code, and every one it never sets; a key is a `PropertyKey` only the table makes, and only `engine_property_set` writes properties ([below](#properties-ear-sets)) |
 
 `main.cpp` passes `<directory of /proc/self/exe>/engine.conf`; the tests pass the source tree's
@@ -313,9 +314,27 @@ The block makes one `GraphCycle` a cycle (`port_blocks.cpp`, `onProcess`), so no
 | `rateDiff` | `clock.rate_diff` |
 | `driverId` | `clock.id`, the driver's global id: another driver is another clock |
 | `nextNs` | `clock.next_nsec` |
-| `xruns` | Cycles that started ahead of where the last ended on the same driver. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node), so the block counts these; each cycle run during a stall's catch-up skips one block |
-| `discontinuity` | The block's first cycle, a new code's first cycle, a new driver, any position jump, and the cycle after one too large for the block (`CycleContinuity`: the cycle facts' rule with no cut known, [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) |
+| `facts` | What the cycle states ([writing-a-node-type.md](writing-a-node-type.md#lost-cycles)): `CycleAccount` over the tick (`clock.id`, the cycle's number, `clock.position`, `clock.duration`, `startRawNs`) and the engine's record of the internal clock's cuts (below) |
+| `xruns` | Cycles that started ahead of where the last ended on the same driver, one a jump however many cycles it missed (`CycleAccount::xruns`, over the same cycles as `facts`). PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node), so the block counts these; each cycle run during a stall's catch-up skips one block |
+| `discontinuity` | `facts.discontinuity()`: the block's first cycle, a new code's first cycle, a new driver, cycles missed or any position jump, and the cycle after one too large for the block |
 | `downstream` | The latency downstream of each output port ([below](#latency-per-bank-pair)) |
+
+**The internal clock's cuts.** `Engine::create` finds the dummy by its `node.name`
+(`engine_names.hpp`'s `internalClockNode`, the property table's row; none is an `EngineError`) and
+adds `DriverCuts`, a realtime listener on its `start` and `incomplete` events, through the callback
+boundary's `listenRealtime` ([architecture.md](architecture.md#the-callback-boundary)), before any
+block exists: the add is an invoke the data loop runs before any block's node reaches the driver,
+so every block's first cycle is numbered. `node_ready` (`impl-node.c`) tells `start` after
+`clock.cycle++` and before any follower is triggered, and a cycle's `incomplete` in the next
+`node_ready` before that cycle's `start`, all on the data thread: so inside cycle N every cut of a
+cycle before N is recorded. The listener tells a `CutRing` (`ear/core/cut_ring.hpp`, the type
+harness's record too): two atomic stores a cycle, no allocation. Cycles are numbered by the
+listener's own count from the engine's start (`Engine::cuts().started()`), never by `clock.cycle`:
+`incomplete` names no cycle, and the server side's position is private to `impl-node.c` (a
+filter's mapping of it goes with the filter, S6). A block names its cycle by that count when
+`clock.id` is the internal clock's (`Engine::internalClockId`), else 0. Removing the listener is a
+blocking invoke on the data loop, so on a wedged loop it is left on the clock and the record leaked
+with it, as everything that loop holds.
 
 The dummy's `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into
 its own clock, never into the driver's position.
@@ -369,8 +388,8 @@ so a drive or fade never waits for a cycle that will not come.
   or at once on a block not processing; a drive applied while fade-outs wait cancels them (their
   `done` never runs: `NodeHost` drives a silence unfaded when a fade goes unacknowledged). A sink's
   bank is never faded. The ramp and that rule are core's `BlockFade` (`ear/core/block_rules.hpp`),
-  beside the discontinuity rule (`CycleContinuity`) and the stamps a sink's chunk and a source's
-  cycle carry; the type harness's block runs the same.
+  beside the stamps a sink's chunk and a source's cycle carry, and each cycle's facts are core's
+  `CycleAccount` ([above](#graphcycle)); the type harness's block runs the same.
 - **Bounds and the wedge.** A fade not acknowledged in 100 ms is `ear.fade-unacknowledged`; a drive
   or silence not completed in 5 s is `ear.barrier-overdue` and then, once, `ear.data-loop-wedged`.
   Each bound first runs every `done` the data loop already completed, and is judged after a grace

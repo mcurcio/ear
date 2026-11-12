@@ -1,7 +1,7 @@
 // The rules a port block applies each cycle, pure (docs/engine.md#port-blocks): the fade's ramp and when a fade-out
-// completes (docs/engine.md#drive-and-fade), when a cycle is a discontinuity (docs/engine.md#graphcycle), and the
-// stamp a sink's chunk and a source's cycle carry (docs/engine.md#sinks, docs/engine.md#sources). ear_pipewire's block
-// and the type harness's fake block both run these, so a type's tests see what the engine does
+// completes (docs/engine.md#drive-and-fade), and the stamp a sink's chunk and a source's cycle carry
+// (docs/engine.md#sinks, docs/engine.md#sources); each cycle's facts are CycleAccount's (ear/core/cycle_facts.hpp).
+// ear_pipewire's block and the type harness's fake block both run these, so a type's tests see what the engine does
 // (docs/writing-a-node-type.md#testing-a-type).
 // Realtime-safe: nothing here locks, allocates or waits. Each object belongs to one thread, the one that runs the
 // block's cycles (the data loop, or the test's thread in the harness).
@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <span>
 #include <utility>
-#include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp"
 #include "ear/core/node_type.hpp"
 #include "ear/core/sink.hpp"
@@ -126,36 +125,6 @@ public:
 private:
 	FadeRamp ramp_;
 	std::uint64_t waiting_ = 0;
-};
-
-/// When a cycle is a discontinuity to the code (GraphCycle::discontinuity, docs/engine.md#graphcycle): the block's
-/// first cycle, a new code's first, a new driver's first, a position that did not move on by the last cycle's frames,
-/// and the cycle after one too large to run. Counts the cycles that started ahead of where the last ended on the same
-/// driver (GraphCycle::xruns). It is CycleAccount (ear/core/cycle_facts.hpp) with no cut known and no graph cycle
-/// numbers, read for its discontinuity alone, so the block and the harness's fake block keep one rule (its jump is
-/// worked out modulo 2^64, so it decides as a plain comparison of positions would for any jump under 2^63 frames).
-class CycleContinuity {
-public:
-	/// A drive installed a code: its first cycle is a discontinuity to it.
-	void driven() noexcept { account_.driven(); }
-
-	/// One cycle of `frames` at `position` on driver `driverId`, in the order cycles come.
-	struct Step {
-		bool discontinuity;
-		bool runs; // at most maxBlock frames: the code runs it (a larger cycle is written as zeros)
-	};
-	Step next(std::uint32_t driverId, std::uint64_t position, std::uint32_t frames, std::uint32_t maxBlock) noexcept {
-		const CycleAccount::Step step = account_.next(
-			DriverTick{.driverId = driverId, .graphCycle = 0, .position = position, .frames = frames}, maxBlock);
-		return {step.facts.discontinuity(), step.runs};
-	}
-	/// Where the next cycle starts on the same driver: the position a drive applied now takes effect from.
-	std::uint64_t nextPosition() const noexcept { return account_.nextPosition(); }
-	std::uint64_t xruns() const noexcept { return account_.xruns(); }
-
-private:
-	// Given no raw time, so only lostRawNs, which this never reads, depends on the clock's rate.
-	CycleAccount account_{FrameClock(1), nullptr};
 };
 
 /// The stamp a sink's tap is written with for `cycle` (docs/engine.md#sinks): the cycle's facts and the most of the

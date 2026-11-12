@@ -8,6 +8,9 @@
 struct pw_loop;
 struct pw_context;
 struct pw_core;
+namespace ear {
+class CutRecord;
+}
 namespace ear::pipewire {
 class Faults;
 struct EngineSettings {
@@ -42,6 +45,11 @@ public:
 	void onStopSignal(std::function<void()> handler); // SIGINT/SIGTERM, as main-loop events
 	/// Main thread. How the thread that runs the port blocks' process() is scheduled.
 	Scheduling dataThreadScheduling() const;
+	/// Which graph cycles the internal clock cut short, counted from the engine's start (docs/engine.md#graphcycle):
+	/// written on the data thread, read on any by CutRecord's contract. For this package's adapters and its tests.
+	const CutRecord& cuts() const noexcept;
+	/// The internal clock's global id: a cycle whose clock.id is this one is numbered by cuts().
+	std::uint32_t internalClockId() const noexcept;
 	pw_loop* mainLoop() const noexcept; // for this package's adapters only
 	pw_context* context() const noexcept;
 	pw_core* core() const noexcept;

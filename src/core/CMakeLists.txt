@@ -6,6 +6,7 @@
 add_library(ear_core STATIC
 	command_error.cpp
 	companions.cpp
+	cut_ring.cpp
 	desired_graph.cpp
 	graph_status.cpp
 	latency.cpp
@@ -31,6 +32,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/block_rules.hpp
 	include/ear/core/command_error.hpp
 	include/ear/core/companions.hpp
+	include/ear/core/cut_ring.hpp
 	include/ear/core/cycle_facts.hpp
 	include/ear/core/desired_graph.hpp
 	include/ear/core/executor.hpp
@@ -66,7 +68,7 @@ if(BUILD_TESTS)
 	# ear_type_harness: running a node type without PipeWire (ear/testing/, docs/writing-a-node-type.md#testing-a-type),
 	# for each type's own tests (ear_node_type() links it) and the all-type tests. Test support, so built with the tests
 	# only; like ear_core it starts no thread of its own and touches no file.
-	add_library(ear_type_harness STATIC testing/harness_cuts.cpp testing/node_harness.cpp)
+	add_library(ear_type_harness STATIC testing/node_harness.cpp)
 	target_sources(ear_type_harness PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 		include/ear/testing/drive_now.hpp
 		include/ear/testing/harness_cuts.hpp

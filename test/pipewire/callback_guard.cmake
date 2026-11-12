@@ -8,8 +8,8 @@
 # PipeWire themselves). A line naming a way to hand PipeWire a callback is printed with its place, and the script fails,
 # as it does when ROOT and GLOB leave it no file to check (a guard over nothing passes nothing): a loop source, invoke
 # or locked call (pw_loop_add_*, spa_loop_add_source, spa_loop_utils_add_*, pw_loop_invoke, pw_data_loop_invoke,
-# spa_loop_invoke, pw_loop_locked, spa_loop_locked, pw_work_queue_add); a listener (any *_add_listener or
-# *_add_object_listener, its parenthesis on this line or the next, or spa_hook_list_append); a stream or filter made
+# spa_loop_invoke, pw_loop_locked, spa_loop_locked, pw_work_queue_add); a listener (any *_add_listener,
+# *_add_object_listener or *_add_rt_listener, its parenthesis on this line or the next, or spa_hook_list_append); a stream or filter made
 # with its events (pw_stream_new_simple, pw_filter_new_simple); an interface implemented (SPA_INTERFACE_INIT,
 # SPA_CALLBACKS_INIT, spa_callbacks, a spa_*_methods or pw_*_methods table); PipeWire's log (pw_log_set); alsa-lib's
 # error handler (snd_lib_error_set_handler). The compile-time half is the boundary's types: its functions refuse a raw
@@ -33,7 +33,7 @@ set(rules
 	"${before}spa_loop_utils_add_"
 	"${before}(pw_loop_invoke|pw_data_loop_invoke|spa_loop_invoke)${after}"
 	"${before}(pw_loop_locked|spa_loop_locked|pw_work_queue_add)${after}"
-	"_add_(object_)?listener${after}"
+	"_add_(object_|rt_)?listener${after}"
 	"${before}spa_hook_list_append${after}"
 	"${before}(pw_stream_new_simple|pw_filter_new_simple)${after}"
 	"${before}(SPA_INTERFACE_INIT|SPA_CALLBACKS_INIT|spa_callbacks)${after}"

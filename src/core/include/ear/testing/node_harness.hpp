@@ -139,7 +139,8 @@ public:
 	/// companion's readiness deadline: a card's 10 s, an RTP receiver's and a sink's consumer's 5 s).
 	void advance(std::chrono::milliseconds by);
 	/// One cycle of `frames` (0: maxBlock) through the code the fake block was driven with, outputs NaN-filled first,
-	/// with a GraphCycle the harness advances on its driver, its facts (facts()) stated by the real block's rule,
+	/// with a GraphCycle the harness advances on its driver, its facts (GraphCycle::facts, and facts()) stated by the
+	/// real block's rule,
 	/// CycleAccount (a discontinuity on the first cycle, each drive's first, and wherever loseCycles, changeDriver or
 	/// reposition made one), each bound source first played into its bank's input buffers (its SourceCycle's
 	/// downstream the playback latency workOut gives its bank under the plan, with no peers); then the fade on the
@@ -164,7 +165,7 @@ public:
 	void reposition(std::int64_t frames);
 	/// The CutRecord the fake block's account reads.
 	const CutRecord& cuts() const noexcept;
-	/// The facts of the last process()'s cycle (none before the first).
+	/// The facts of the last process()'s cycle, as its code's GraphCycle carried them (none before the first).
 	const CycleFacts& facts() const noexcept;
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.

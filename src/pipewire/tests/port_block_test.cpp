@@ -1,6 +1,7 @@
 // FilterPortBlocks on the real in-process engine (docs/engine.md#port-blocks): levels on the graph clock, complete
 // snapshots, the drive barrier, a lost block, inside ports and the graph group; each cycle's clock facts, latency
-// carried per bank pair, and denormals flushed on the data thread; docs/engine.md#drive-and-fade: the asynchronous
+// carried per bank pair, the cycle facts' table through a real block, and denormals flushed on the data thread;
+// docs/engine.md#drive-and-fade: the asynchronous
 // drive applied in its invoke, the fade, settle(), one invoke in flight per block, takenAt and blockId. Every wait is
 // event-gated: the main loop runs until the events a test waits for have arrived; the deadline only fails the test. The
 // Waiter and makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
@@ -11,6 +12,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <functional>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -21,6 +23,7 @@
 #include <thread>
 #include <vector>
 
+#include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 #include <spa/node/command.h>
 #include <spa/param/latency-utils.h>
@@ -30,6 +33,7 @@
 #endif
 
 #include "catch2/catch.hpp"
+#include "cycle_table.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
@@ -2412,4 +2416,440 @@ TEST_CASE(
 	INFO("judged " << judged << " cycles, worst rate " << worstPpm << " ppm off the raw clock");
 	REQUIRE(judged > 100);
 	CHECK(worstPpm < 150.0);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The cycle facts' conformance (docs/writing-a-node-type.md#lost-cycles, docs/engine.md#graphcycle): every row of the
+// cycle table (test/support/cycle_table.hpp, which ear_core_tests runs through CycleAccount and the type harness) that
+// an engine can make (CycleStep::onEngine), through a real block on the internal clock, its cycles numbered and its
+// cuts read from the engine's own record (Engine::cuts), so the block's account cannot drift from the rule's table.
+
+namespace cycle_conformance {
+
+using namespace ear;
+using namespace ear::pipewire;
+using ear::test::CycleRow;
+using ear::test::CycleStep;
+using ear::test::StallLength;
+using ear::test::StallPlan;
+using ear::test::Stalls;
+
+constexpr std::size_t kBetween = std::numeric_limits<std::size_t>::max(); // a cycle that is no step of the row
+constexpr std::size_t kMostCycles = 8192; // the judged block's cycles one attempt records at most
+constexpr int kAttempts = 8;              // attempts at a row before its host spoiled every one
+
+/// One cycle the judged block's code ran in an attempt: the row's step it is (kBetween while the test waits between
+/// steps: links settling, a drive or a pause on its way), what its GraphCycle stated, and the record's cuts at its entry.
+struct Seen {
+	std::size_t step = kBetween;
+	CycleFacts facts;
+	std::uint64_t xruns = 0;
+	bool discontinuity = false;
+	std::uint64_t cutsSoFar = 0;
+};
+
+/// A stall of one and a half cycles each time it is asked: the one that cuts the cycle it stalls in short straight after
+/// its node (docs/engine.md#the-one-data-loop-and-invokes).
+class CuttingStall {
+public:
+	/// Data thread.
+	void operator()(std::uint32_t frames) noexcept { stalls_(asked_++, frames, test::cycleTableFormat.rate); }
+	std::size_t made() const noexcept { return stalls_.made(); }
+
+private:
+	Stalls stalls_{StallPlan::every(1, 0, std::numeric_limits<std::size_t>::max(), StallLength::cycles(1.5))};
+	std::size_t asked_ = 0;
+};
+
+/// One attempt at a row: which of the judged block's cycles is which step, and what the head and the judged block do on
+/// the data thread around them, keyed by the steps themselves (the head stalls in the cycle after the step before a
+/// cut; the judged block in a step that is cut after it). Written on the data thread; read on the main thread.
+class RowRun {
+public:
+	RowRun(const CycleRow& row, const CutRecord& cuts, Waiter& waiter)
+		: row_(row), cuts_(cuts), waiter_(waiter), seen_(kMostCycles) {}
+
+	/// Data thread, the judged block's code, one cycle: `driveStep` is the step whose drive installed the code, `first`
+	/// its first cycle. Stalls in a step cut after it.
+	void judged(std::size_t driveStep, bool first, const GraphCycle& cycle, std::uint32_t frames) noexcept {
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at >= seen_.size()) return;
+		std::size_t step = kBetween;
+		if (first) step = driveStep;
+		else if (next_ < row_.steps.size() && armed_.load(std::memory_order_acquire) && !row_.steps[next_].drive &&
+		         (row_.steps[next_].lostUnscheduled == 0 || resumed_.load(std::memory_order_acquire)))
+			step = next_;
+		seen_[at] = Seen{.step = step,
+		                 .facts = cycle.facts,
+		                 .xruns = cycle.xruns,
+		                 .discontinuity = cycle.discontinuity,
+		                 .cutsSoFar = cuts_.cutsSoFar()};
+		lastGraphCycle_.store(cycle.facts.graphCycle, std::memory_order_release);
+		count_.store(at + 1, std::memory_order_release);
+		if (step != kBetween) {
+			next_ = step + 1;
+			reached_.store(next_, std::memory_order_release);
+			if (next_ < row_.steps.size() && row_.steps[next_].lostCut > 0)
+				headStall_.store(true, std::memory_order_release);
+			if (row_.steps[step].cutAfter) judgedStaller_(frames);
+		}
+		waiter_.wake();
+	}
+	/// Data thread, the head's code, one cycle (it runs first in every cycle the chain runs).
+	void head(std::uint32_t frames) noexcept {
+		headCycle_.store(cuts_.started(), std::memory_order_release);
+		if (headStall_.exchange(false, std::memory_order_acq_rel)) headStaller_(frames);
+		waiter_.wake();
+	}
+
+	/// Main thread: the steps after the first may be taken from now on (the chain is linked and settled).
+	void arm() noexcept { armed_.store(true, std::memory_order_release); }
+	/// Main thread: the judged block, made inactive, has missed the cycles its pause stands for; its next cycle is the
+	/// pause's step.
+	void resume() noexcept { resumed_.store(true, std::memory_order_release); }
+	/// Steps recorded so far.
+	std::size_t reached() const noexcept { return reached_.load(std::memory_order_acquire); }
+	bool done() const noexcept { return reached() == row_.steps.size() || count() == seen_.size(); }
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	std::span<const Seen> seen() const noexcept { return {seen_.data(), count()}; }
+	std::uint64_t headCycle() const noexcept { return headCycle_.load(std::memory_order_acquire); }
+	std::uint64_t lastGraphCycle() const noexcept { return lastGraphCycle_.load(std::memory_order_acquire); }
+	std::size_t headStalls() const noexcept { return headStaller_.made(); }
+	std::size_t judgedStalls() const noexcept { return judgedStaller_.made(); }
+
+private:
+	const CycleRow& row_;
+	const CutRecord& cuts_;
+	Waiter& waiter_;
+	std::vector<Seen> seen_;
+	std::atomic<std::size_t> count_{0};
+	std::size_t next_ = 0; // data thread: the step the judged block's next cycle may be
+	std::atomic<std::size_t> reached_{0};
+	std::atomic<bool> armed_{false};
+	std::atomic<bool> resumed_{false};
+	std::atomic<bool> headStall_{false};
+	std::atomic<std::uint64_t> headCycle_{0};
+	std::atomic<std::uint64_t> lastGraphCycle_{0};
+	CuttingStall headStaller_;
+	CuttingStall judgedStaller_;
+};
+
+/// The judged block's code for the step its drive is for: silence on its output, every cycle told to the run.
+class RowCode final : public AudioCode {
+public:
+	RowCode(RowRun& run, std::size_t step) : run_(run), step_(step) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		run_.judged(step_, std::exchange(first_, false), cycle, frames);
+	}
+	void release() noexcept override {}
+
+private:
+	RowRun& run_;
+	std::size_t step_;
+	bool first_ = true;
+};
+
+/// The head's code: silence, each cycle told to the run.
+class HeadCode final : public AudioCode {
+public:
+	explicit HeadCode(RowRun& run) : run_(run) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		run_.head(frames);
+	}
+	void release() noexcept override {}
+
+private:
+	RowRun& run_;
+};
+
+/// The engine node named `name` in this process (tests drive PipeWire directly; the product's lookup is the boundary's
+/// engineNode).
+pw_impl_node* nodeNamed(Engine& engine, const std::string& name) {
+	struct Search {
+		const std::string* name;
+		pw_impl_node* found = nullptr;
+	} search{&name};
+	pw_context_for_each_global(
+		engine.context(),
+		[](void* data, pw_global* global) {
+			if (!pw_global_is_type(global, PW_TYPE_INTERFACE_Node)) return 0;
+			auto* node = static_cast<pw_impl_node*>(pw_global_get_object(global));
+			const char* named = pw_properties_get(pw_impl_node_get_properties(node), PW_KEY_NODE_NAME);
+			auto* self = static_cast<Search*>(data);
+			if (named == nullptr || *self->name != named) return 0;
+			self->found = node;
+			return 1;
+		},
+		&search);
+	return search.found;
+}
+
+/// The engine at the table's format: its quantum the table's cycle, so the rows' frames are the engine's.
+std::unique_ptr<Engine> makeTableEngine() {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	auto engine = Engine::create(EngineSettings{EAR_ENGINE_CONF, test::cycleTableFormat.rate, test::cycleTableFrames});
+	if (!engine) FAIL("Engine::create: " << engine.error().detail);
+	return std::move(*engine);
+}
+
+/// What one attempt at a row found: why the host spoiled it (empty: it did not), else each step's cycle.
+struct Attempt {
+	std::string spoiled;
+	std::vector<Seen> seen;
+	std::vector<std::size_t> stepAt; // each step's index in `seen`
+};
+
+/// One attempt at `row` through fresh blocks: a head, the judged block and, where the row cuts a cycle, a tail, linked
+/// head to judged to tail; the judged block driven at once, so its first cycle is the first step (start and drive),
+/// then each later step made as onEngine says.
+Attempt attemptRow(Engine& engine, Waiter& waiter, FilterPortBlocks& blocks, Wiring& wiring, const CycleRow& row,
+                   const std::string& tag) {
+	bool cuts = false;
+	bool pauses = false;
+	std::uint64_t plannedCuts = 0;
+	for (const CycleStep& step : row.steps) {
+		cuts = cuts || step.lostCut > 0 || step.cutAfter;
+		pauses = pauses || step.lostUnscheduled > 0;
+		plannedCuts += step.lostCut + (step.cutAfter ? 1 : 0);
+	}
+	RowRun run(row, engine.cuts(), waiter);
+	HeadCode headCode(run);
+	std::vector<std::unique_ptr<RowCode>> codes;
+	for (std::size_t s = 0; s < row.steps.size(); ++s)
+		if (row.steps[s].drive) codes.push_back(std::make_unique<RowCode>(run, s));
+	Done done(waiter);
+	BlockEvents headEvents(waiter), judgedEvents(waiter), tailEvents(waiter);
+	const std::string head = "head" + tag, judged = "judged" + tag, tail = "tail" + tag;
+	// Declared after every code they run, so they go first: no process() runs a freed code.
+	auto headBlock = blocks.make(head, Ports{{{Direction::output, "out", {"a"}}}}, test::cycleTableFormat, headEvents);
+	REQUIRE(ear::testing::driveNow(*headBlock, &headCode));
+	std::unique_ptr<PortBlock> tailBlock;
+	if (cuts)
+		tailBlock = blocks.make(tail, Ports{{{Direction::input, "in", {"a"}}}}, test::cycleTableFormat, tailEvents);
+	// A paused block is linked to nothing: made inactive, a linked one would hold its peers back too.
+	const Ports judgedPorts = pauses ? Ports{{{Direction::output, "out", {"a"}}}}
+	                                 : Ports{{{Direction::input, "in", {"a"}}, {Direction::output, "out", {"a"}}}};
+	auto judgedBlock = blocks.make(judged, judgedPorts, test::cycleTableFormat, judgedEvents);
+	std::size_t nextCode = 0;
+	judgedBlock->drive(DriveRequest{codes.at(nextCode++).get(), {}}, done.drive(0));
+	REQUIRE(waiter.until([&] { return done.has(0) && run.reached() >= 1; }));
+	Attempt attempt;
+	// Taken at 0 is a drive applied before the block's first cycle (a block's first cycle starts where the driver's
+	// raw-clock position is, never at 0): else the block ran a cycle with no code first, and its first step is no start.
+	if (done.takens.at(0) != 0) attempt.spoiled = "the block ran a cycle before its first drive was applied";
+	if (cuts) {
+		REQUIRE(wiring.link(waiter, {head, "out.a"}, {judged, "in.a"}));
+		REQUIRE(wiring.link(waiter, {judged, "out.a"}, {tail, "in.a"}));
+	}
+	// A few cycles after the links, so the steps after the first run on a settled chain.
+	const std::size_t linked = run.count();
+	REQUIRE(waiter.until([&] { return run.count() >= linked + 4; }));
+	run.arm();
+	pw_impl_node* judgedNode = nodeNamed(engine, judged);
+	REQUIRE(judgedNode != nullptr);
+	for (std::size_t s = 1; s < row.steps.size(); ++s) {
+		const CycleStep& step = row.steps[s];
+		if (!step.drive && step.lostUnscheduled == 0) continue; // made on the data thread
+		REQUIRE(waiter.until([&] { return run.reached() >= s; }));
+		if (step.drive) {
+			judgedBlock->drive(DriveRequest{codes.at(nextCode++).get(), {}}, done.drive(static_cast<int>(s)));
+			continue;
+		}
+		// The pause: made inactive, as a session manager pauses a node (docs/engine.md#the-internal-clock), until the
+		// head has run as many cycles past the judged block's last as the step stands for, then active again.
+		REQUIRE(pw_impl_node_set_active(judgedNode, false) == 0);
+		REQUIRE(waiter.until([&] { return run.headCycle() > run.lastGraphCycle() + step.lostUnscheduled; }));
+		run.resume();
+		REQUIRE(pw_impl_node_set_active(judgedNode, true) == 0);
+	}
+	REQUIRE(waiter.until([&] { return run.done(); }, 10s));
+	REQUIRE(run.reached() == row.steps.size()); // not the ledger filled first
+	attempt.seen.assign(run.seen().begin(), run.seen().end());
+	for (std::size_t s = 0; s < row.steps.size(); ++s) {
+		const auto at = std::ranges::find(attempt.seen, s, &Seen::step);
+		REQUIRE(at != attempt.seen.end());
+		attempt.stepAt.push_back(static_cast<std::size_t>(at - attempt.seen.begin()));
+	}
+	// The host may cut a cycle the row did not plan, anywhere from the cycle before the second step to the last step's
+	// entry: the facts of the steps after it are then the host's, not the row's.
+	REQUIRE(attempt.stepAt.at(1) > 0);
+	const std::uint64_t cutsMade =
+		attempt.seen.at(attempt.stepAt.back()).cutsSoFar - attempt.seen.at(attempt.stepAt.at(1) - 1).cutsSoFar;
+	if (attempt.spoiled.empty() && cutsMade != plannedCuts)
+		attempt.spoiled =
+			"the driver cut " + std::to_string(cutsMade) + " cycles where the row plans " + std::to_string(plannedCuts);
+	std::size_t lostCuts = 0, cutAfters = 0;
+	for (const CycleStep& step : row.steps) {
+		lostCuts += step.lostCut;
+		cutAfters += step.cutAfter ? 1 : 0;
+	}
+	CHECK(run.headStalls() == lostCuts);
+	CHECK(run.judgedStalls() == cutAfters);
+	return attempt;
+}
+
+} // namespace cycle_conformance
+
+TEST_CASE("The cycle table through a real block: every row an engine can make states the row's facts, its cycles "
+          "numbered and its cuts read from the internal clock's own record",
+          "[port_blocks][cycle_facts]") {
+	namespace cc = cycle_conformance;
+	auto engine = cc::makeTableEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	const std::vector<ear::test::CycleRow> rows = ear::test::cycleRows();
+	std::size_t made = 0;
+	for (std::size_t r = 0; r < rows.size(); ++r) {
+		const ear::test::CycleRow& row = rows[r];
+		if (!row.onEngine()) continue;
+		INFO(row.what);
+		++made;
+		cc::Attempt attempt;
+		std::vector<std::string> spoiled;
+		for (int a = 0; a < cc::kAttempts; ++a) {
+			attempt = cc::attemptRow(*engine, waiter, blocks, wiring, row, std::to_string(r) + "-" + std::to_string(a));
+			if (attempt.spoiled.empty()) break;
+			spoiled.push_back(attempt.spoiled);
+		}
+		INFO("attempts the host spoiled: " << spoiled.size()
+		                                   << (spoiled.empty() ? "" : ", the last: " + spoiled.back()));
+		REQUIRE(attempt.spoiled.empty());
+		for (std::size_t s = 0; s < row.steps.size(); ++s) {
+			const ear::test::CycleStep& step = row.steps[s];
+			const cc::Seen& seen = attempt.seen.at(attempt.stepAt[s]);
+			CycleFacts expected = step.facts;
+			INFO("step " << s << ", the row's " << ear::test::describe(expected) << "; stated "
+			             << ear::test::describe(seen.facts));
+			// Numbered by the engine's record: the listener's count since the engine started, one on from the block's
+			// last cycle and the cycles it missed.
+			CHECK(seen.facts.graphCycle > 0);
+			if (attempt.stepAt[s] > 0)
+				CHECK(seen.facts.graphCycle ==
+				      attempt.seen[attempt.stepAt[s] - 1].facts.graphCycle + 1 + seen.facts.missed);
+			expected.graphCycle = seen.facts.graphCycle;
+			// A pause stands for as many cycles as the engine took to make the block active again.
+			if (step.lostUnscheduled > 0) {
+				const std::int64_t missed = seen.facts.missed;
+				CHECK(missed >= step.lostUnscheduled);
+				expected.missed = seen.facts.missed;
+				expected.jumpFrames = step.facts.jumpFrames / step.lostUnscheduled * missed;
+				expected.lostRawNs = step.facts.lostRawNs / step.lostUnscheduled * missed;
+			}
+			// The raw time lost is the driver's planned starts apart, steered by its loop, which moves a cycle's start by
+			// at most its 1 ms clamp (docs/engine.md#the-internal-clock).
+			CHECK(std::abs(seen.facts.lostRawNs - expected.lostRawNs) <= 1'000'000);
+			expected.lostRawNs = seen.facts.lostRawNs;
+			CHECK(seen.facts == expected);
+		}
+		// GraphCycle's two older members, as the facts give them, over every cycle the code ran.
+		for (const cc::Seen& seen : attempt.seen) CHECK(seen.discontinuity == seen.facts.discontinuity());
+		CHECK(attempt.seen.at(attempt.stepAt.back()).xruns - attempt.seen.at(attempt.stepAt.front()).xruns ==
+		      row.xruns);
+	}
+	CHECK(made == 4); // start and drive, one cut, a pause, a cut after the block ran
+}
+
+namespace {
+
+/// One cycle of a chain's tail: the engine's record's count and a test listener's, both read in its process, and the
+/// facts its GraphCycle stated.
+struct Numbered {
+	std::uint64_t recordStarted = 0;
+	std::uint64_t listenerStarted = 0;
+	CycleFacts facts;
+};
+
+/// The tail's code: silence, each cycle numbered by both listeners, into storage made beforehand.
+class Numbering final : public AudioCode {
+public:
+	Numbering(Waiter& waiter, const CutRecord& record, const DriverCycles& listener, std::size_t capacity)
+		: waiter_(waiter), record_(record), listener_(listener), seen_(capacity) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		const std::size_t at = count_.load(std::memory_order_relaxed);
+		if (at < seen_.size()) {
+			seen_[at] = Numbered{record_.started(), listener_.started(), cycle.facts};
+			count_.store(at + 1, std::memory_order_release);
+		}
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
+	const Numbered& operator[](std::size_t i) const noexcept { return seen_[i]; }
+
+private:
+	Waiter& waiter_;
+	const CutRecord& record_;
+	const DriverCycles& listener_;
+	std::vector<Numbered> seen_;
+	std::atomic<std::size_t> count_{0};
+};
+
+} // namespace
+
+// The engine's record of the internal clock's cuts (docs/engine.md#graphcycle) against DriverCycles, a listener of the
+// same driver's events the test makes itself: every cycle a block runs is numbered by the record's count as the driver
+// started it, and the two say the same of every cycle both heard, cut or not. The chain's head stalls four times, so
+// cuts are made every run, and the tail states each as catchUp (docs/writing-a-node-type.md#lost-cycles).
+TEST_CASE("The engine's record of the internal clock's cuts agrees with the driver's own events, cycle for cycle, and "
+          "a chain's tail states each cut as a catchUp",
+          "[port_blocks][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	DriverCycles listener(*engine, 1U << 15U);
+	StallingCode head(1024, StallPlan::every(40, 20, 4, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	Numbering tail(waiter, engine->cuts(), listener, 1024);
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	head.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return head.stalls() == 4 && head.ledger().count() >= 200; }));
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+	REQUIRE(tail.count() > 1);
+
+	// Both count every start; the record began with the engine, the listener later, so they differ by a constant.
+	const std::uint64_t offset = tail[0].recordStarted - tail[0].listenerStarted;
+	std::size_t catchUps = 0;
+	for (std::size_t i = 0; i < tail.count(); ++i) {
+		INFO("the tail's cycle " << i << ": " << ear::test::describe(tail[i].facts));
+		CHECK(tail[i].facts.graphCycle == tail[i].recordStarted);
+		CHECK(tail[i].recordStarted - tail[i].listenerStarted == offset);
+		// Every cycle the tail missed the driver cut: a host's stall is reported as surely as the head's.
+		if (i > 0) CHECK(tail[i].facts.causes.only(CycleCause::catchUp));
+		if (tail[i].facts.causes.has(CycleCause::catchUp)) ++catchUps;
+	}
+	CHECK(catchUps >= 4);
+	// The same cuts of every cycle both have finished hearing (a cycle's cut is told before the next one's start).
+	const std::uint64_t heard = std::min<std::uint64_t>(listener.started(), 1U << 15U);
+	REQUIRE(heard > 2);
+	std::uint64_t listenerCuts = 0;
+	std::uint64_t mismatches = 0;
+	for (std::uint64_t g = 1; g + 1 < heard; ++g) {
+		const std::optional<bool> recorded = engine->cuts().cut(g + offset);
+		REQUIRE(recorded.has_value());
+		listenerCuts += listener.cutShort(g) ? 1 : 0;
+		mismatches += *recorded != listener.cutShort(g) ? 1 : 0;
+	}
+	CHECK(mismatches == 0);
+	CHECK(listenerCuts >= 4);
 }

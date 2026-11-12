@@ -3,7 +3,9 @@
 Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, diagnostics counters added (section 8);
 spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked); step C1 built (section
 9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
-and `docs/testing.md`), the rest not. Its steps
+and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
+`GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`), the
+rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -801,7 +803,7 @@ R5d).
 |---|---|---|---|
 | **S6** | **Done** (9.1). Spike (`spikes_test.cpp`, test only): on 1.4.2, with induced stalls and a busy thread per core, (a) every cycle a block misses is reported `incomplete` before the next `start`; (b) `clock.cycle` against the listener's count; (c) jumps are whole missed cycles on the dummy, and what makes the others (the 1127-frame jumps: a driver restart's re-anchoring?); (d) the `TRIGGERED` recovery path in `node_ready` loses no follower cycle. Findings go into this page | nothing | none |
 | **C1** | **Done** (9.2). `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
-| **C2** | `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
+| **C2** | **Done** (9.3). `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
@@ -963,10 +965,53 @@ after it must know.
   default member initializers on `DriverTick`. `CycleContinuity`'s account is made on a nominal
   `FrameClock`: it is given no raw time and reads only the causes.
 
+### 9.3 Found building C2
+
+What C2 built is described where it lives (`docs/engine.md#graphcycle`, `docs/architecture.md#the-callback-boundary`,
+`docs/writing-a-node-type.md#lost-cycles`, `docs/testing.md`'s `ear_pipewire_tests` and callback guard rows, the
+`pipewire-engine` skill); this section keeps only where it departs from sections 4 and 6, and what the steps after it
+must know.
+
+- **One record class, `CutRing`** (`ear/core/cut_ring.hpp`, `ear_core`). 6.4 gives `DriverCuts` its own bits and
+  counts; C2 moved C1's `HarnessCuts` into core as `CutRing` (`HarnessCuts` is now an alias of it) and `DriverCuts`
+  holds one and forwards, telling it from `onStart` and `onIncomplete`. So the writer's memory order and the seqlock
+  read have one home, and C1's cross-thread test covers the engine's record too. `DriverCuts` stays a `CutRecord` of
+  its own, private to `ear_pipewire`, and adds `clockId()`.
+- **The block needs the internal clock's id**, which 6.4's `const CutRecord&` does not carry (a tick's `graphCycle` is
+  0 off the internal clock). `Engine` gains `internalClockId()` beside `cuts()`; the block numbers a cycle only when
+  `clock.id` is that id.
+- **The handle is `RealtimeListener`** (6.4's `RegisteredRtListener`), and its `remove()` says whether it was left on
+  the node (a wedged loop), so its owner knows to leak itself. `Engine`'s teardown releases (leaks) `DriverCuts` when
+  the loop is marked wedged, before destroying it otherwise. Adding is PipeWire's asynchronous invoke, so `listen` does
+  not wait: the data loop runs it before any block's node reaches the driver (posting order), and a test checks
+  `started()` is 0 until the first block.
+- **The node is found through the boundary.** `pw_context_for_each_global` takes a C function, so the lookup by
+  `node.name` (`engineNode`) lives in `callback_boundary.cpp`; the guard does not list that call (it registers
+  nothing that outlives it). The name is `engine_names.hpp`'s `internalClockNode`, checked at compile time against the
+  property table's row.
+- **The block reads both clocks every cycle**, not only on cycles it runs: `CycleAccount` needs the raw start for a
+  cycle too large to run as well. Three vDSO reads on such a cycle; nothing else changes.
+- **Which rows an engine makes** is `CycleStep::onEngine()`, derived from the steps as C1's `inHarness()` is: the
+  table's quantum (the runner's engine runs at the table's 48 kHz / 240), a drive, one cycle cut (a head's
+  1.5-cycle stall: a longer one leaves the catch-up's cuts to the loop's order), a cut after the block ran (its own
+  stall, a tail after it), or a pause of at most 16 cycles, one of those a step. Four rows qualify: start and drive,
+  one cut, a pause, a cut after. Three things the engine cannot make literally, so the runner says how it judges them:
+  the cycle numbers (the engine's count since its start) are checked one on from the block's last cycle and its missed
+  ones; a pause stands for as many cycles as the engine took to make the block active again (at least the row's),
+  its `missed`, `jumpFrames` and `lostRawNs` scaled to them; `lostRawNs` is the driver's planned starts apart, checked
+  within its 1 ms clamp. Between steps the block runs cycles the runner does not judge (links settling, a drive or a
+  pause on its way): each step's facts are against the block's cycle before it, so only `graphCycle` differs from the
+  row. An attempt the host spoiled (a cut the row did not plan, or a cycle run before the first drive was applied, so
+  the first step is no `start`) is made again, up to eight times, and the test fails naming why if none was clean.
+- **The pause is made with `pw_impl_node_set_active(false)`** on the block's engine node (S6's shape), on a block linked
+  to nothing: made inactive, a linked block would hold its peers back. A test's `EngineNodes::suspend` would not do:
+  nothing brings a suspended node back.
+- **`stalls_` (D1) is not added**; nothing reads it before D1.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
-- The listener counts cycles itself; blocks name their cycle by its count, not `clock.cycle` (6.4).
+- The listener counts cycles itself; blocks name their cycle by its count, not `clock.cycle` (6.4). Built in C2.
 - `absent` and `reposition` are causes of their own, so a pause and a re-anchoring are never excused as a stall.
 - The judge excuses by cause and count, never by time; downstream dynamics are split off and named (5.4).
 - An induced plan is the default, so every timing test proves its excuse path each run.

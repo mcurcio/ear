@@ -1,8 +1,7 @@
 // What each graph cycle states, and the one rule that states it (docs/writing-a-node-type.md#lost-cycles): CycleFacts,
 // their causes, the record of which cycles the driver cut short (CutRecord, implemented where cuts are known) and
-// CycleAccount, which works a block's facts out from its driver's ticks. The type harness's fake block runs it today,
-// and the real block's discontinuity (CycleContinuity, ear/core/block_rules.hpp) is CycleAccount with no cuts, so the
-// two cannot disagree.
+// CycleAccount, which works a block's facts out from its driver's ticks. The engine's port block and the type harness's
+// fake block both run it, each over a CutRing (ear/core/cut_ring.hpp), so the two cannot disagree.
 // Pure and realtime-safe: nothing here locks, allocates or waits. A CycleAccount belongs to the one thread that runs
 // its block's cycles.
 #pragma once
@@ -77,8 +76,8 @@ constexpr bool cutRecordKeeps(std::uint64_t cycle, std::uint64_t started) noexce
 	return cycle != 0 && cycle < started && started - cycle < cutRecordCycles;
 }
 
-/// Which graph cycles the driver cut short. Implemented by the type harness's HarnessCuts (and, once built, the
-/// engine's listener on the internal clock).
+/// Which graph cycles the driver cut short. Implemented by CutRing (ear/core/cut_ring.hpp), which the engine tells
+/// from the internal clock's own events (docs/engine.md#graphcycle) and the type harness from its fake driver.
 ///
 /// Written only on the thread that runs the cycles, as the driver tells: a cycle starts (newestWhole moves to the
 /// cycle before it if that one was not cut, then started() moves on, published with release, then the new cycle's
@@ -125,7 +124,7 @@ struct DriverTick {
 /// jump, or cycles missed with no jump, is reposition. ear forces one quantum (docs/engine.md#the-quantum-guard), so a
 /// loss's cycles have this cycle's frames; were the quantum to change across a loss, the jump would not be whole
 /// cycles of the new frames and the rule fails toward reposition, never toward an excused catchUp. Then drive and
-/// oversized as flags. The discontinuities are where CycleContinuity puts them (docs/engine.md#graphcycle).
+/// oversized as flags (docs/engine.md#graphcycle).
 ///
 /// The cuts are counted for any span from two counts (CutRecord::cutsSoFar, newestWhole), never by walking the ring:
 /// with L the last cycle the block ran and N this one, the cuts since L's entry are those of L and of the missed

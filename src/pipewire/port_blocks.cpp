@@ -7,8 +7,9 @@
 // invoke: each source (docs/engine.md#sources) is played into the block's own scratch for its inside input bank before
 // the code, told the downstream latency the block last told on that bank, and each sink's tap (docs/engine.md#sinks) is
 // written after the code and the fade, stamped with the upstream latency the block last told on its bank; both every
-// cycle that code runs. The fade's ramp, each cycle's discontinuity and both stamps are core's block rules
-// (ear/core/block_rules.hpp), which the type harness's block runs too.
+// cycle that code runs. The fade's ramp and both stamps are core's block rules (ear/core/block_rules.hpp), and each
+// cycle's facts core's CycleAccount over the engine's record of the internal clock's cuts (ear/core/cycle_facts.hpp,
+// docs/engine.md#graphcycle), which the type harness's block runs too.
 #include "ear/pipewire/port_blocks.hpp"
 
 #include <algorithm>
@@ -34,6 +35,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/core/block_rules.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/internal_error.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_names.hpp"
@@ -136,6 +138,7 @@ public:
 		  outputs_(ports.outputs().size() + ports.insideOutputs().size()), publicInputs_(ports.inputs().size()),
 		  publicOutputs_(ports.outputs().size()), meters_(ports.inputs().size() + ports.outputs().size()),
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
+		  cuts_(engine.cuts()), internalClock_(engine.internalClockId()), account_(FrameClock(format.rate), &cuts_),
 		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
 		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()), outputPeers_(outputs_.size()),
 		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), fade_(format.rate), fadeMask_(outputs_.size(), 0),
@@ -477,7 +480,7 @@ private:
 			std::copy_n(request.sinks, sinkCount_, sinks_.begin());
 			sourceCount_ = std::min(request.sourceCount, sources_.size());
 			std::copy_n(request.sources, sourceCount_, sources_.begin());
-			continuity_.driven(); // the new code's first cycle is a discontinuity to it
+			account_.driven(); // the new code's first cycle is a discontinuity to it
 			bool anyFaded = false;
 			for (std::size_t i = 0; i < fadeMask_.size(); ++i) {
 				fadeMask_[i] = i < request.fadedCount && request.faded[i] ? 1 : 0;
@@ -487,8 +490,8 @@ private:
 			const std::uint64_t cancelled = fade_.driven(anyFaded);
 			for (std::uint64_t pending = drained - cancelled; pending < drained; ++pending)
 				ring_[pending % kRing].cancelled = true;
-			request.takenAt = continuity_.nextPosition();
-			takenAt_.store(continuity_.nextPosition(), std::memory_order_release);
+			request.takenAt = account_.nextPosition();
+			takenAt_.store(account_.nextPosition(), std::memory_order_release);
 		}
 		drained_.store(drained, std::memory_order_release);
 		if (!processing_.load(std::memory_order_acquire)) fade_.notProcessing(); // no cycle will come to end them
@@ -518,28 +521,37 @@ private:
 	void onProcess(spa_io_position* position) noexcept {
 		const spa_io_clock& clock = position->clock;
 		const auto frames = static_cast<std::uint32_t>(clock.duration);
-		// The clock moved on by the last cycle's frames on the same driver, or it did not (CycleContinuity's rule).
-		const CycleContinuity::Step step = continuity_.next(clock.id, clock.position, frames, maxBlock_);
+		// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock
+		// (docs/engine.md#the-internal-clock); both clocks are read together here, so a late wake cancels out. The raw
+		// read sits between two monotonic ones, and the offset is taken from their midpoint, so a preemption between
+		// reads skews it by half at most (node-driver.c, get_nsec_offset).
+		const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
+		const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
+		const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
+		const std::int64_t mono = monoBefore + (monoAfter - monoBefore) / 2;
+		const auto startNs = static_cast<std::int64_t>(clock.nsec);
+		const std::int64_t startRawNs = startNs + (raw - mono);
+		// The cycle names itself by the record's count, which the driver's start moved on just before it triggered the
+		// followers, on this thread (docs/engine.md#graphcycle); a cycle of another driver has no number.
+		const CycleAccount::Step step =
+			account_.next(DriverTick{.driverId = clock.id,
+		                             .graphCycle = clock.id == internalClock_ ? cuts_.started() : 0,
+		                             .position = clock.position,
+		                             .frames = frames,
+		                             .startRawNs = startRawNs},
+		                  maxBlock_);
 		if (step.runs) {
-			// The driver's clock.nsec is CLOCK_MONOTONIC even while it tracks the raw clock
-			// (docs/engine.md#the-internal-clock); both clocks are read together here, so a late wake cancels out. The
-			// raw read sits between two monotonic ones, and the offset is taken from their midpoint, so a preemption
-			// between reads skews it by half at most (node-driver.c, get_nsec_offset).
-			const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-			const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
-			const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
-			const std::int64_t mono = monoBefore + (monoAfter - monoBefore) / 2;
-			const auto startNs = static_cast<std::int64_t>(clock.nsec);
 			for (std::size_t i = 0; i < downstreamNow_.size(); ++i)
 				downstreamNow_[i] = unpacked(downstream_[i].load(std::memory_order_acquire));
 			processCycle(frames, GraphCycle{.startNs = startNs,
 			                                .position = clock.position,
-			                                .startRawNs = startNs + (raw - mono),
+			                                .startRawNs = startRawNs,
 			                                .rateDiff = clock.rate_diff,
 			                                .driverId = clock.id,
 			                                .nextNs = static_cast<std::int64_t>(clock.next_nsec),
-			                                .xruns = continuity_.xruns(),
-			                                .discontinuity = step.discontinuity,
+			                                .xruns = account_.xruns(),
+			                                .discontinuity = step.facts.discontinuity(),
+			                                .facts = step.facts,
 			                                .downstream = downstreamNow_});
 		} else {
 			for (void* port : outputPorts_) {
@@ -639,7 +651,9 @@ private:
 	RegisteredBlock registered_;
 	Ports ports_;
 	std::uint32_t rate_;
-	CycleContinuity continuity_; // the clock as the realtime side last saw it; data loop only
+	const CutRecord& cuts_;       // the engine's record of the internal clock's cuts
+	std::uint32_t internalClock_; // the internal clock's id: its cycles are numbered by cuts_
+	CycleAccount account_;        // each cycle's facts, from the clock as the realtime side last saw it; data loop only
 	// Latency: each output's downstream, published by the main thread for the realtime side (packed), and the copy
 	// a cycle hands its code; then, on the main thread only, what each port's peers report, what each port told them
 	// last, and the run's plan, from which workOut works the rest out.

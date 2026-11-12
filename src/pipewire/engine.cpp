@@ -23,6 +23,7 @@
 #include <spa/utils/result.h>
 
 #include "callback_boundary.hpp"
+#include "driver_cuts.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
 #include "engine_property_set.hpp"
 
@@ -157,11 +158,16 @@ struct Engine::Impl {
 	pw_main_loop* loop = nullptr;
 	pw_context* context = nullptr;
 	pw_core* core = nullptr;
+	std::unique_ptr<DriverCuts> cuts;
 	std::function<void()> stopHandler;
 	LoopSource sigint;
 	LoopSource sigterm;
 
 	~Impl() {
+		// First, while the internal clock it listens to exists. On a wedged data loop its listener is left on the clock,
+		// so it is leaked with it, as everything that loop holds is (docs/engine.md#graphcycle).
+		if (boundary::dataLoopWedged()) static_cast<void>(cuts.release());
+		cuts.reset();
 		if (loop != nullptr) {
 			sigint.reset();
 			sigterm.reset();
@@ -216,6 +222,10 @@ std::expected<std::unique_ptr<Engine>, EngineError> Engine::create(const EngineS
 	if (dataLoop == nullptr || !flushDenormalsOnDataThread(dataLoop)) {
 		return std::unexpected(EngineError{"cannot flush denormals on the engine's data thread"});
 	}
+	// The internal clock's cuts, heard before any block is made, so every block's cycles are numbered from its first.
+	auto cuts = DriverCuts::listen(impl->context);
+	if (!cuts) return std::unexpected(cuts.error());
+	impl->cuts = std::move(*cuts);
 	impl->core = pw_context_connect_self(impl->context, nullptr, 0);
 	if (impl->core == nullptr) {
 		return std::unexpected(EngineError{std::string("cannot connect to the engine: ") + spa_strerror(-errno)});
@@ -261,6 +271,10 @@ Scheduling Engine::dataThreadScheduling() const {
 	if (dataLoop != nullptr) invoke(DataLoop(dataLoop), realtime<&SchedulingRead::read>, &read, true);
 	return read.scheduling();
 }
+
+const CutRecord& Engine::cuts() const noexcept { return *impl_->cuts; }
+
+std::uint32_t Engine::internalClockId() const noexcept { return impl_->cuts->clockId(); }
 
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }
 

@@ -424,7 +424,9 @@ The harness does not see a class's `start()` and `stop()`; their pairing is test
 Each cycle the block runs states what happened since its last: `CycleFacts`
 (`ear/core/cycle_facts.hpp`), worked out by one pure rule, `CycleAccount`, from the driver's tick
 (its id, the graph cycle's number, the position, the frames and the raw start) and a `CutRecord`
-of which graph cycles the driver cut short.
+of which graph cycles the driver cut short. A code reads them in `GraphCycle::facts`; the engine
+numbers its cycles and records its cuts from the internal clock's own events
+([engine.md](engine.md#graphcycle)).
 
 | Fact | Meaning |
 |---|---|
@@ -445,19 +447,18 @@ takes their difference since the last cycle's entry, so a stall of any length is
 every cycle counted. Only its ring of `cutRecordCycles` (2^16) slots, which answers which cycle
 was cut (`cut(cycle)`), has a reach, and it is asked only when some missed cycle was not cut:
 past its reach, with some but not all of the cuts since the last cycle, whether that cycle was one
-of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). The real block's `discontinuity` is
-`CycleContinuity`, this rule with no cut record and no cycle numbers, read for its discontinuity
-alone; it puts every discontinuity where the facts do but one: cycles missed with no move, which
-only the cycle numbers it is not given show ([engine.md](engine.md#graphcycle)).
+of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). `GraphCycle`'s
+older `discontinuity` is `facts.discontinuity()`, and `xruns` counts the cycles that jumped ahead on
+the same driver, one a jump ([engine.md](engine.md#graphcycle)).
 
 The harness's fake block runs `CycleAccount` over its own `HarnessCuts`
-(`ear/testing/harness_cuts.hpp`), told as the engine's driver tells: a cycle starts, then may be
-marked cut. It keeps `CutRecord`'s contract for readers on other threads (the header says how), so
+(`ear/testing/harness_cuts.hpp`), the engine's own record (`CutRing`), told as the engine's driver
+tells: a cycle starts, then may be marked cut. It keeps `CutRecord`'s contract for readers on other threads (the header says how), so
 a test may read it while cycles run. `loseCycles`, `changeDriver` and `reposition` make the facts
 a type must survive (`catchUp` and a pure `reposition` on the harness's own, numbered clock only;
 after `changeDriver`, as above), and
-`facts()` is what the last `process()` stated, so a type's tests can lose a cycle and check what
-its code does with the discontinuity the engine would hand it. The rows every runner of the rule
+`facts()` is what the last `process()` stated (its code's `GraphCycle::facts`), so a type's tests
+can lose a cycle and check what its code does with the facts the engine would hand it. The rows every runner of the rule
 must agree on are `test/support/cycle_table.hpp`'s ([testing.md](testing.md#what-each-test-program-proves)).
 
 ### What every type must also pass

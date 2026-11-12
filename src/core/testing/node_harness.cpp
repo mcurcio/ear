@@ -774,7 +774,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	                       .driverId = h.driverId,
 	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.timeFrames + frames)),
 	                       .xruns = h.account.xruns(),
-	                       .discontinuity = step.facts.discontinuity()};
+	                       .discontinuity = step.facts.discontinuity(),
+	                       .facts = step.facts};
 	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
 	if (h.driven != nullptr)
 		for (const SourceBinding& binding : h.boundSources) {

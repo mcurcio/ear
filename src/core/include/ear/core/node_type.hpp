@@ -10,6 +10,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/command_error.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/latency.hpp" // Latency, BankPair
 namespace ear {
 /// One named group of a node's ports, all one way. Each is "<name>.<member>" (portName). A routable bank's ports are
@@ -89,12 +90,15 @@ struct GraphCycle {
 	std::uint32_t driverId = 0;  // the driving node's engine id: another driver is another clock
 	std::int64_t nextNs = 0;     // when the next cycle is due to start, CLOCK_MONOTONIC
 	/// Cycles this block saw start ahead of where the last one ended, on the same driver: the graph lost time (a
-	/// stall). PipeWire gives a block no xrun count of its own, so the framework counts these.
+	/// stall), one a jump however many cycles it missed. PipeWire gives a block no xrun count of its own, so the
+	/// framework counts these (CycleAccount::xruns, over the same cycles as `facts`).
 	std::uint64_t xruns = 0;
-	/// The first cycle the block runs, a new code's first (after any drive), the first after the driver changed, one
-	/// whose position jumped (a stall the driver caught up by whole blocks: the clock did not move on by the last
-	/// cycle's frames), and the one after a cycle too large to run (CycleContinuity, ear/core/block_rules.hpp).
+	/// facts.discontinuity(): the first cycle the block runs, a new code's first (after any drive), the first after the
+	/// driver changed, one that followed a loss or whose position jumped, and the one after a cycle too large to run.
 	bool discontinuity = false;
+	/// What this cycle states (docs/writing-a-node-type.md#lost-cycles): the cycle it ran in, what was missed and cut
+	/// since the block's last, and why it is a discontinuity. Empty in a test's own cycle.
+	CycleFacts facts{};
 	/// One per output port (outputs then insideOutputs, as AudioCode::process's spans): the latency downstream of the
 	/// port's bank, what the ports linked to the bank report (a following card: its buffer), combined over them. Empty
 	/// when nothing tells it (a test's own cycle).

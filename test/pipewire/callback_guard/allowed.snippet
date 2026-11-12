@@ -19,3 +19,5 @@
 	spa_hook_list_clean(&listeners_);
 	pw_loop_invoked_count = 0;
 	std::size_t method_count = 0;
+	listenRealtime<NodeRealtimeCallbacks<Thing>{.start = realtime<&Thing::onStart>}>(clock_, listener_, this);
+	pw_impl_node_remove_rt_listener(clock_, &hook_);

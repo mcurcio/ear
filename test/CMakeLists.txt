@@ -146,7 +146,8 @@ target_include_directories(ear_latency_table INTERFACE "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(ear_latency_table INTERFACE ear_core)
 
 # ear_cycle_table: the cycle facts' table of scripted cycles (test/support/cycle_table.hpp, header-only), run through
-# CycleAccount, CycleContinuity and the type harness by ear_core_tests (docs/testing.md#what-each-test-program-proves).
+# CycleAccount and the type harness by ear_core_tests and through a real port block by ear_pipewire_tests
+# (docs/testing.md#what-each-test-program-proves).
 add_library(ear_cycle_table INTERFACE)
 target_include_directories(ear_cycle_table INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_cycle_table INTERFACE ear_core)

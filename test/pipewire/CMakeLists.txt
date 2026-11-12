@@ -10,7 +10,7 @@ add_test(NAME ear_callbacks_through_the_boundary
 	COMMAND "${CMAKE_COMMAND}" "-DROOT=${PROJECT_SOURCE_DIR}/src" -P "${ear_callback_guard}")
 foreach(spelling pw_loop_add_event pw_loop_add_timer pw_loop_add_signal spa_loop_add_source spa_loop_utils_add
 		pw_loop_invoke pw_data_loop_invoke spa_loop_invoke pw_loop_locked spa_loop_locked pw_work_queue_add
-		filter_listener registry_listener object_listener spa_hook_list_append pw_stream_new_simple
+		filter_listener registry_listener object_listener rt_listener spa_hook_list_append pw_stream_new_simple
 		pw_filter_new_simple spa_interface_init spa_callbacks_init spa_callbacks log_methods pw_log_set
 		snd_lib_error_set_handler split_listener)
 	add_test(NAME ear_callback_guard_refuses_${spelling}

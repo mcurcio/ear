@@ -7,8 +7,8 @@
 //   - realtime<&Class::member>: for the data loop, whose code never throws (docs/engine.md#the-one-data-loop-and-invokes):
 //     the member must be noexcept, and nothing is added around it;
 //   - realtimeFunction<&function>: a noexcept C function a library calls on any thread (the log, alsa-lib's handler).
-// The registration functions below (addEvent, addTimer, addSignal, invoke, listen, installLog, setAlsaErrorHandler)
-// take only those, of the kind their loop allows, so a raw function pointer or the wrong kind does not compile; the
+// The registration functions below (addEvent, addTimer, addSignal, invoke, listen, listenRealtime, installLog,
+// setAlsaErrorHandler) take only those, of the kind their loop allows, so a raw function pointer or the wrong kind does not compile; the
 // test ear_callbacks_through_the_boundary refuses any file under src/ but this one's two and tests that hands a library
 // a callback itself. Private to ear_pipewire: its sources include it by this path.
 #pragma once
@@ -28,6 +28,7 @@
 #include <pipewire/data-loop.h>
 #include <pipewire/filter.h>
 #include <pipewire/impl-module.h>
+#include <pipewire/impl-node.h>
 #include <pipewire/log.h>
 #include <pipewire/pipewire.h>
 #include <spa/support/log.h>
@@ -293,6 +294,13 @@ template <class C> struct LinkCallbacks {
 	GuardedSlot<C, void(const pw_link_info*)> info{};
 };
 
+/// An engine node's realtime events (pw_impl_node_rt_events), told on the data loop: realtime<> entries only.
+template <class C> struct NodeRealtimeCallbacks {
+	using Class = C;
+	RealtimeSlot<C, void()> start{};      // the driver starts a cycle, before any follower is triggered
+	RealtimeSlot<C, void()> incomplete{}; // the running cycle was cut short, told before the next one's start
+};
+
 template <class T, template <class> class Table> inline constexpr bool isTable = false;
 template <class C, template <class> class Table> inline constexpr bool isTable<Table<C>, Table> = true;
 
@@ -379,6 +387,41 @@ private:
 	spa_hook hook_{};
 	bool attached_ = false;
 	bool dataLoopBound_ = false;
+};
+
+/// A realtime listener the boundary added to an engine node, held by its owner: destroying it (or remove()) takes it
+/// off the node's list on the data loop, a blocking invoke (pw_impl_node_remove_rt_listener). The node must outlive it,
+/// and so must its owner while it is on the list, since the data loop calls into both. On a wedged data loop it is left
+/// on the list, which waits on nothing, and its owner must then leak itself with it (as every object a wedged loop
+/// holds is leaked: docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog).
+class RealtimeListener {
+public:
+	RealtimeListener() = default;
+	RealtimeListener(const RealtimeListener&) = delete;
+	RealtimeListener& operator=(const RealtimeListener&) = delete;
+	~RealtimeListener() { remove(); }
+	explicit operator bool() const noexcept { return node_ != nullptr; }
+	/// Main thread. Whether it was left on the node's list for good (a wedged data loop): its owner must not go.
+	bool remove() noexcept {
+		if (node_ == nullptr) return false;
+		const bool left = boundary::dataLoopWedged();
+		if (!left) pw_impl_node_remove_rt_listener(node_, &hook_);
+		node_ = nullptr;
+		boundary::released();
+		return left;
+	}
+	/// The registrations' own: the hook to attach to `node` (detached first), then attached() once it is posted.
+	spa_hook& attach(pw_impl_node* node) noexcept {
+		remove();
+		hook_ = spa_hook{};
+		node_ = node;
+		return hook_;
+	}
+	void attached() { boundary::held(); }
+
+private:
+	pw_impl_node* node_ = nullptr;
+	spa_hook hook_{};
 };
 
 /// Destroys a proxy ear made (its registry's too: a registry is a proxy); leaks it on a wedged data loop (above).
@@ -533,6 +576,26 @@ void listen(pw_impl_module* module, Listener& listener, typename decltype(Table)
 	pw_impl_module_add_listener(module, &listener.attach(), &events, self);
 	listener.attached();
 }
+
+/// An engine node's realtime events, on the data loop (the internal clock's: docs/engine.md#graphcycle). The listener
+/// is added by an asynchronous invoke on that loop, so it hears every cycle a node made after this call runs.
+template <auto Table>
+	requires isTable<decltype(Table), NodeRealtimeCallbacks>
+void listenRealtime(pw_impl_node* node, RealtimeListener& listener, typename decltype(Table)::Class* self) {
+	static constexpr pw_impl_node_rt_events events = [] {
+		pw_impl_node_rt_events table{};
+		table.version = PW_VERSION_IMPL_NODE_RT_EVENTS;
+		table.start = Table.start.function;
+		table.incomplete = Table.incomplete.function;
+		return table;
+	}();
+	pw_impl_node_add_rt_listener(node, &listener.attach(node), &events, self);
+	listener.attached();
+}
+
+/// Main thread: the engine node of this process's context named `name` (node.name), or null. PipeWire walks its
+/// globals with a function of the boundary's own, which cannot throw.
+pw_impl_node* engineNode(pw_context* context, std::string_view name) noexcept;
 
 // Plain C functions ear hands a library as an interface's methods or a handler: PipeWire's log and alsa-lib's error
 // handler, called on any thread, the data loop among them, with C varargs no trampoline can forward. They are

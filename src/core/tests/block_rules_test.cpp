@@ -1,6 +1,6 @@
 // The rules the engine's block and sinks share with the type harness, pure (docs/engine.md#port-blocks): cutChunk and
-// SinkRing (docs/engine.md#sinks), FadeRamp (docs/engine.md#drive-and-fade), CycleContinuity
-// (docs/engine.md#graphcycle) and the stamps. ear_pipewire_tests runs the same through ThreadSink and a real block, and
+// SinkRing (docs/engine.md#sinks), FadeRamp (docs/engine.md#drive-and-fade) and the stamps (each cycle's facts:
+// cycle_facts_test.cpp). ear_pipewire_tests runs the same through ThreadSink and a real block, and
 // compares the harness's sink with ThreadSink.
 #include <algorithm>
 #include <array>
@@ -240,42 +240,6 @@ TEST_CASE("BlockFade: fade-outs wait until a cycle ends at zero, a cycle too lar
 	CHECK(fade.wroteZeros() == 0); // no fade-out under way
 	fade.fadeOut();
 	CHECK(fade.wroteZeros() == 1);
-}
-
-TEST_CASE("CycleContinuity: a discontinuity on the first cycle, a drive's first, a new driver's, a position jump and "
-          "after a cycle too large to run, and xruns only for a jump ahead on the same driver",
-          "[block_rules]") {
-	CycleContinuity continuity;
-	struct Row {
-		const char* what;
-		bool drive; // a drive installed a code before the cycle
-		std::uint32_t driver;
-		std::uint64_t position;
-		std::uint32_t frames;
-		bool discontinuity;
-		bool runs;
-		std::uint64_t xruns;
-	};
-	const std::vector<Row> rows{
-		{"the first cycle", false, 3, 0, 256, true, true, 0},
-		{"the next, contiguous", false, 3, 256, 256, false, true, 0},
-		{"a drive's first", true, 3, 512, 256, true, true, 0},
-		{"then contiguous", false, 3, 768, 256, false, true, 0},
-		{"a jump ahead: an xrun", false, 3, 2048, 256, true, true, 1},
-		{"a new driver: no xrun", false, 4, 9000, 256, true, true, 1},
-		{"too large to run", false, 4, 9256, 1024, false, false, 1},
-		{"the cycle after it", false, 4, 10280, 256, true, true, 1},
-		{"a jump back on the same driver: no xrun", false, 4, 100, 256, true, true, 1},
-	};
-	for (const Row& row : rows) {
-		INFO(row.what);
-		if (row.drive) continuity.driven();
-		const CycleContinuity::Step step = continuity.next(row.driver, row.position, row.frames, 256);
-		CHECK(step.discontinuity == row.discontinuity);
-		CHECK(step.runs == row.runs);
-		CHECK(continuity.xruns() == row.xruns);
-		CHECK(continuity.nextPosition() == row.position + row.frames);
-	}
 }
 
 TEST_CASE("The stamps carry the cycle's facts and the most of the latency told on the bank", "[block_rules]") {

@@ -107,7 +107,8 @@ to `ear_pipewire`), with no exception:
   main loop was when it was thrown (below), and then to the object itself when its class is a
   `FaultOwner`: an adapter whose state is one node's ([below](#faults-by-owner)).
 - **`realtime<&Class::member>`** is for the data loop: a filter's `process`, a block's request
-  invoke and its blocking flush, and the engine's denormal and scheduling invokes. The member must
+  invoke and its blocking flush, the engine's denormal and scheduling invokes, and the internal
+  clock's `start` and `incomplete` events. The member must
   be `noexcept` and nothing is added around it: realtime code never throws, and a throw there is
   `std::terminate` ([engine.md](engine.md#the-one-data-loop-and-invokes)).
 - **`realtimeFunction<&function>`** is for the plain C functions a library calls on any thread, the
@@ -116,13 +117,19 @@ to `ear_pipewire`), with no exception:
   (`setAlsaErrorHandler`). The function must be `noexcept`; nothing is added.
 - **Registering** is only through `addEvent`, `addTimer`, `addSignal`, `invoke`, one `listen` per
   events table (`FilterCallbacks`, `ProxyCallbacks`, `NodeCallbacks`, `LinkCallbacks`,
-  `RegistryCallbacks`, `CoreCallbacks`, `ModuleCallbacks`), `installLog` and `setAlsaErrorHandler`,
+  `RegistryCallbacks`, `CoreCallbacks`, `ModuleCallbacks`), `listenRealtime` for an engine node's
+  realtime events (`NodeRealtimeCallbacks`, `realtime<>` entries only: the internal clock's cuts,
+  [engine.md](engine.md#graphcycle)), `installLog` and `setAlsaErrorHandler`,
   which take only those values, and the loop's kind is a type rule: event, timer and signal sources
   (on loops that may run anything: the main loop, a sink's or handoff's thread loop) and an invoke
   on any `pw_loop` take only `guarded<>`; an invoke on the data loop takes a `DataLoop` (made from
   the context's `pw_data_loop` or a filter's) and only `realtime<>`; a filter's `process` entry
   takes only `realtime<>` and every other table entry only `guarded<>`. Each registration fills a
-  handle its owner holds, which removes it when destroyed ([below](#faults-by-owner)). A raw function pointer, a
+  handle its owner holds, which removes it when destroyed ([below](#faults-by-owner)); a realtime
+  listener's (`RealtimeListener`) is removed by a blocking invoke on the data loop, so on a wedged
+  loop it is left on its node and its owner leaked with it. The engine finds one of its own nodes
+  by name through the boundary too (`engineNode`), whose walk of the context's globals calls a
+  function of the boundary's own. A raw function pointer, a
   method that can throw, or an object of another class than the member's does not compile
   (`src/pipewire/tests/compile_fail/callback_boundary_bad.cpp` holds each refused case).
 - **The guard.** The CTest test `ear_callbacks_through_the_boundary`
@@ -130,8 +137,8 @@ to `ear_pipewire`), with no exception:
   library a callback itself: a loop source, invoke or locked call (`pw_loop_add_*`,
   `spa_loop_add_source`, `spa_loop_utils_add_*`, `pw_loop_invoke`, `pw_data_loop_invoke`,
   `spa_loop_invoke`, `pw_loop_locked`, `spa_loop_locked`, `pw_work_queue_add`), a listener (any
-  `*_add_listener` or `*_add_object_listener`, its parenthesis on the same line or not, or
-  `spa_hook_list_append`), a stream or filter made with its events (`pw_stream_new_simple`,
+  `*_add_listener`, `*_add_object_listener` or `*_add_rt_listener`, its parenthesis on the same line
+  or not, or `spa_hook_list_append`), a stream or filter made with its events (`pw_stream_new_simple`,
   `pw_filter_new_simple`), an interface implemented (`SPA_INTERFACE_INIT`, `SPA_CALLBACKS_INIT`,
   `spa_callbacks`, a `spa_*_methods` or `pw_*_methods` table), `pw_log_set` or
   `snd_lib_error_set_handler`. Exempt are exactly `pipewire/callback_boundary.hpp` and `.cpp` and

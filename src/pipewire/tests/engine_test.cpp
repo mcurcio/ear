@@ -9,7 +9,10 @@
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -22,6 +25,7 @@
 #include <unistd.h>
 
 #include <pipewire/filter.h>
+#include <pipewire/impl.h>
 #include <pipewire/pipewire.h>
 
 #include "../callback_boundary.hpp"
@@ -42,6 +46,7 @@
 #include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "inducers.hpp"
+#include "temp_folder.hpp"
 
 namespace {
 using namespace ear;
@@ -1091,6 +1096,157 @@ TEST_CASE("A fault on a wedged data loop makes no blocking step into it: the own
 		waiter.wake();
 	});
 	CHECK(waiter.until([&] { return ran; })); // the main loop's next event runs
+
+	hold = false;
+	hold.notify_all();
+	boundary::clearDataLoopWedged(); // the loop runs again: the teardown below destroys what it holds
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The internal clock's realtime events through the callback boundary (docs/architecture.md#the-callback-boundary,
+// docs/engine.md#graphcycle): the engine's own listener, a realtime listener's life and its removal on a wedged loop.
+
+namespace {
+
+/// Counts the internal clock's cycle starts on the data thread, through the boundary's realtime listener, waking
+/// `waiter` (if any) at each.
+class StartCounter {
+public:
+	StartCounter(pw_impl_node* clock, Waiter* waiter) : waiter_(waiter) {
+		listenRealtime<NodeRealtimeCallbacks<StartCounter>{.start = realtime<&StartCounter::onStart>}>(clock, listener,
+		                                                                                               this);
+	}
+	std::uint64_t starts() const noexcept { return starts_.load(std::memory_order_acquire); }
+	RealtimeListener listener; // last: off the clock before the count goes
+
+private:
+	void onStart() noexcept {
+		starts_.fetch_add(1, std::memory_order_release);
+		if (waiter_ != nullptr) waiter_->wake();
+	}
+	Waiter* waiter_;
+	std::atomic<std::uint64_t> starts_{0};
+};
+
+/// Counts its own cycles, for a test that needs the graph to run and something to wait on.
+class Ticking final : public AudioCode {
+public:
+	explicit Ticking(Waiter& waiter) : waiter_(waiter) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
+	             const ear::GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		cycles_.fetch_add(1, std::memory_order_release);
+		waiter_.wake();
+	}
+	void release() noexcept override {}
+	std::uint64_t cycles() const noexcept { return cycles_.load(std::memory_order_acquire); }
+
+private:
+	Waiter& waiter_;
+	std::atomic<std::uint64_t> cycles_{0};
+};
+
+} // namespace
+
+TEST_CASE("The engine numbers the internal clock's cycles from its start: a block's first cycle has a number, and "
+          "every later one the record's count as it runs",
+          "[engine][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	// Made before any block: the listener was added before the first cycle, so nothing has started yet.
+	CHECK(engine->cuts().started() == 0);
+	CHECK(engine->internalClockId() != 0);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "numbered", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	REQUIRE(waiter.until([&] { return code.cycles() >= 16; }));
+	CHECK(engine->cuts().started() >= 16);
+	CHECK(engine->cuts().newestWhole() < engine->cuts().started());
+}
+
+TEST_CASE("Engine::create fails naming the internal clock when engine.conf makes none", "[engine][cycle_facts]") {
+	for (const char* name : {"XDG_RUNTIME_DIR", "PIPEWIRE_RUNTIME_DIR", "PIPEWIRE_REMOTE", "DBUS_SESSION_BUS_ADDRESS",
+	                         "DBUS_SYSTEM_BUS_ADDRESS"}) {
+		unsetenv(name);
+	}
+	std::ifstream in(EAR_ENGINE_CONF);
+	std::string conf((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const std::string named = "node.name       = Dummy-Driver";
+	const std::size_t at = conf.find(named);
+	REQUIRE(at != std::string::npos);
+	conf.replace(at, named.size(), "node.name       = Another-Driver");
+	const ear::test::TempFolder folder("engine-conf");
+	const std::filesystem::path path = folder.path() / "engine.conf";
+	std::ofstream(path) << conf;
+	const auto engine = Engine::create(EngineSettings{path, kRate, kBlock});
+	REQUIRE_FALSE(engine);
+	CHECK(engine.error().detail ==
+	      "the engine holds no internal clock (Dummy-Driver): engine.conf's context.objects must make it");
+	// It let the boundary go: the next engine is made.
+	CHECK(makeEngine() != nullptr);
+}
+
+TEST_CASE("An engine whose making throws after its clock's listener was added leaves nothing registered",
+          "[engine][faults][cycle_facts]") {
+	const std::size_t before = boundary::registrationsHeld();
+	boundary::throwAfterRegistration(1); // the first registration Engine::create makes: the clock's listener
+	CHECK_THROWS_WITH(makeEngine(), "injected after a registration");
+	boundary::throwAfterRegistration(0);
+	CHECK(boundary::registrationsHeld() == before);
+	CHECK(makeEngine() != nullptr);
+}
+
+TEST_CASE("A realtime listener on an engine node hears its cycles while held, and none once its handle is removed",
+          "[engine][boundary][cycle_facts]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	NoLevelWake wake;
+	FilterPortBlocks blocks(*engine, wake);
+	Ticking code(waiter);
+	BlockEvents events(waiter);
+	auto block = makeDriven(blocks, "ticking", Ports{{{Direction::output, "out", {"a"}}}}, code, events);
+	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
+	REQUIRE(clock != nullptr);
+	const std::size_t before = boundary::registrationsHeld();
+	StartCounter counter(clock, &waiter);
+	CHECK(boundary::registrationsHeld() == before + 1);
+	REQUIRE(waiter.until([&] { return counter.starts() >= 8; }));
+	CHECK_FALSE(counter.listener.remove()); // off the clock: a blocking invoke the data loop ran
+	CHECK(boundary::registrationsHeld() == before);
+	// Removal returned once the data loop let go, so no start reaches it after, however many cycles run.
+	const std::uint64_t heard = counter.starts();
+	const std::uint64_t cycles = code.cycles();
+	REQUIRE(waiter.until([&] { return code.cycles() >= cycles + 8; }));
+	CHECK(counter.starts() == heard);
+}
+
+// docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog: removing a realtime listener waits on the data
+// loop, so on a wedged one it is left on its node's list, which waits on nothing, and its owner is leaked with it.
+TEST_CASE("Removing a realtime listener on a wedged loop: it waits on nothing and is left on its node, with its owner",
+          "[engine][boundary][wedge][cycle_facts]") {
+	auto engine = makeEngine();
+	pw_impl_node* clock = engineNode(engine->context(), "Dummy-Driver");
+	REQUIRE(clock != nullptr);
+	const std::size_t before = boundary::registrationsHeld();
+	auto* counter =
+		new StartCounter(clock, nullptr); // leaked: left on the clock's list, as a wedged loop's objects are
+	std::atomic<bool> hold{true};
+	pw_loop* dataLoop = pw_data_loop_get_loop(pw_context_get_data_loop(engine->context()));
+	REQUIRE(dataLoop != nullptr);
+	pw_loop_invoke(
+		dataLoop,
+		[](spa_loop*, bool, std::uint32_t, const void*, std::size_t, void* data) -> int {
+			static_cast<std::atomic<bool>*>(data)->wait(true);
+			return 0;
+		},
+		0, nullptr, 0, false, &hold);
+	markDataLoopWedged(*engine); // as main.cpp's glue does on ear.data-loop-wedged
+
+	CHECK(counter->listener.remove()); // returns: nothing waited on the stuck loop
+	CHECK(boundary::registrationsHeld() == before);
 
 	hold = false;
 	hold.notify_all();
