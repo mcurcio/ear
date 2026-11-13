@@ -53,28 +53,24 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	lastGot_ = got;
 	view_.consumed(static_cast<std::uint64_t>(skipped) + got);
 	// While a catch-up is untold, the library cannot see a cycle the feed left short either (its zeros are time the
-	// stream lost too), so that is owed as well.
+	// stream lost too), so that is owed as well. A debt is only ever made while the library holds frames it was not told
+	// played, and it is told nothing until the debt is paid, so it never starves while ear owes: the check at the start
+	// is the whole of the rule.
 	if (catchingUp_) owed_ += frames - got;
-	// The library sees itself starved: it realigns on its own, and whatever ear owed is forgotten (it would be paid
-	// twice).
-	lastHeldAtEnd_ = feed_.held();
-	if (view_.starved(lastHeldAtEnd_)) {
-		owed_ = 0;
-		catchingUp_ = false;
-	}
 	// The library is told only from a cycle that lost nothing, once what was owed is paid: a cycle that caught lost time
 	// up is dated by the driver's own clock, behind raw time until its catch-up burst ends
 	// (docs/engine.md#the-internal-clock), and a frame dropped after the library was told it played would be taken from
-	// audio still to play. When it has gone untold for `untoldBound` of the graph's time, the debt is forgotten and no
-	// more is owed until it is told, so the library realigns itself; it is still told only from a cycle that lost
-	// nothing.
+	// audio still to play. When it has gone untold for `untoldBound` of the graph's nominal time (the cycles' starts as
+	// the driver dates them), the debt is forgotten and no more is owed until it is told, and it is told from that cycle
+	// on even if it lost frames: with nothing owed no told frame is dropped, and a host that never runs a whole cycle
+	// would otherwise leave the library untold for good (at a stream's start, never out of its priming).
 	if (view_.untold() > 0 && !untoldSince_) untoldSince_ = startRawNs;
 	if (untoldSince_ && startRawNs - *untoldSince_ >= untoldBound.count() && !owingSuspended_) {
 		owed_ = 0;
 		catchingUp_ = false;
 		owingSuspended_ = true;
 	}
-	if (movedOn || owed_ > 0 || view_.untold() == 0) return;
+	if ((movedOn && !owingSuspended_) || owed_ > 0 || view_.untold() == 0) return;
 	view_.told();
 	untoldSince_.reset();
 	owingSuspended_ = false;

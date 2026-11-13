@@ -119,8 +119,9 @@ that means to an operator:
   nothing once nothing is owed. **ear and the library never both correct the same lost time:** the library realigns
   itself only when it sees itself starved (everything it wrote told played: its floor), so the code keeps that view as
   `LibraryView` (`library_view.hpp`: the feed's frames plus those consumed and untold) and owes nothing while it is
-  starved, forgets the debt at a cycle that ends with it starved, and after `untoldBound` (2 s of the graph's time)
-  untold forgets the debt and owes nothing more until it is told, still told only from a cycle that lost nothing.
+  starved; after `untoldBound` (2 s of the graph's nominal time, the cycles' `startRawNs`) untold it forgets the debt,
+  owes nothing more until it is told, and tells it from that cycle even if it lost frames (else a host with no whole
+  cycle would leave the library in its priming for good).
   Nothing is owed before a stream plays, and a clear forgets it. The library is never told a frame ear did not take
   from what it wrote, and has nothing left to correct: the stall tests (200 ms and 1 s, the feed's writer held through
   the burst by `Feed::holdWriter()` so a remainder is certain) require no correction of its own, back on the server's
@@ -209,7 +210,10 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests;
   ear's stall tests also fail with the floor's reverted (the floor fires while the library still holds frames ear is
   paying for: ear and the library would both correct), and pass with the late chunk's reverted (ear pays the remainder,
-  so no chunk reaches the library late). Run
+  so no chunk reaches the library late). The late chunk's is proven through ear by the clock test "A starving network
+  gap" instead: the test server's `gap <ms>` holds the audio it sends past the server's own late check until the
+  library has starved, then sends it at once with the release placed inside a chunk, and with the patch's change
+  reverted the library skips that chunk whole and adds silence (5 runs of 5). Run
   the library's suite on the patched tree, in the dev image, after a configure has fetched and patched it:
 
   ```bash

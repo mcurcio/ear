@@ -8,14 +8,16 @@ Arguments: --listen 0 [--slow-upgrade <seconds>] [--dial <url>] [--state <dir>] 
 which dials what it finds, among only the instances starting with <prefix>, since tests running side by side share a network.
 Commands: dial <url>, use <client id> (later commands act on that client; each `connected` moves them to the new one), trust (approve the client for unpaired playback), roles (say which roles it holds), play <seconds> (the ramp),
 end (stream/end now), prefer-16 (ask for FLAC 16, as Music Assistant's per-player format setting does), lead (say the player's required_lead_time_ms), pair (a dynamic-code attempt, as Music Assistant starts one), code <digits> (what the operator
-typed: one per round), source-start, source-stop, quit. --name is what the server calls itself. --hold-activate stops each connection after the hellos, before its first server/activate, until the command activate-release: a server the client has proved or not by its Noise handshake, and not yet admitted.
+typed: one per round), gap <ms> (hold the audio sent until the client has starved for about <ms>, then send it at
+once: _Gap), source-start, source-stop, quit. --name is what the server calls itself. --hold-activate stops each connection after the hellos, before its first server/activate, until the command activate-release: a server the client has proved or not by its Noise handshake, and not yet admitted.
 Events: ready <url>, upgrade (a WebSocket upgrade arrived), connected <client id>, trusted, roles <list|none>,
 play-start <us>, chunk-sent <first frame> <frames> <us> (a chunk of the ramp handed to the client, the first of its frames
 stamped to play at <us>), play-finished <frames>, pair-pending (the client held the attempt back), pair-finished,
 pair-failed <reason>, source-started <rate> <channels> <bits>, source-chunk <frames> <stamp, us> <its arrival on this
 server's clock - its stamp, us> (each chunk of the source's audio as it arrives), source-heard (a second of it has arrived),
 source-ended <frames> <left rms> <non-zero right samples>, prefer-16 <true|false: whether the player took it>, lead <ms>,
-disconnected <reason>, activate-held, activate-ended <close|message: what ended the hold, the socket closing or the client saying something>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
+gap-held <us: the stamp the client's audio ends at>, gap-released <chunks> <stamp, us> <duration, us> <us: when, of
+the chunk the release fell in> <us: the first chunk sent>, disconnected <reason>, activate-held, activate-ended <close|message: what ended the hold, the socket closing or the client saying something>, discovered <instance> port=<port> path=<path> name=<name>, service-removed <instance>.
 
 The ramp: left is the low 16 bits of the frame index, right the high 16, so every output frame names its place.
 """
@@ -88,6 +90,36 @@ def _hand_and_say(role: PlayerV1Role, chunk) -> None:  # noqa: ANN001: aiosendsp
 
 
 PlayerV1Role.on_audio_chunk = _hand_and_say
+
+
+class _Gap:
+    """A network gap on the way to the client: audio frames the server sends are held, after its own late check, and
+    then all sent at once, so those whose time has passed reach the client late, as a stalled network delivers them.
+
+    The server drops a chunk already late as it sends it (`_check_late_binary`), so a gap in what it sends never
+    delivers one; a gap after that check does. Only player audio is held: time messages go on, so the client's time
+    filter is undisturbed. The release is placed against the held chunks' stamps (`TestServer.gap`).
+    """
+
+    held: list[tuple] | None = None  # (connection, transport, role, entry, buffer tracker) while held
+    arrived: asyncio.Event | None = None  # set as each frame is held
+    sent_end_us = 0  # the stamp the last audio frame sent ends at
+
+
+_send_binary = SendspinConnection._send_binary_data  # noqa: SLF001
+
+
+async def _send_or_hold(self: SendspinConnection, wsock, role, entry, buffer_tracker) -> None:  # noqa: ANN001
+    if entry.binary is not None and entry.binary.player_audio_header:
+        if _Gap.held is not None:
+            _Gap.held.append((self, wsock, role, entry, buffer_tracker))
+            _Gap.arrived.set()
+            return
+        _Gap.sent_end_us = entry.timestamp_us + (entry.binary.duration_us or 0)
+    await _send_binary(self, wsock, role, entry, buffer_tracker)
+
+
+SendspinConnection._send_binary_data = _send_or_hold  # noqa: SLF001
 
 
 def ramp(start: int, frames: int) -> bytes:
@@ -350,6 +382,48 @@ class TestServer:
         if not task.cancelled() and task.exception() is not None:
             logging.error("a task failed", exc_info=task.exception())
 
+    async def _gap(self, starve_ms: float) -> None:
+        """Holds the audio the server sends until the client has had nothing to play for about `starve_ms`, then sends
+        it all at once (_Gap). The release falls inside a held chunk, past its start by a third of what lies between 5 ms
+        in from either end (the library's hard-sync threshold, sync_task.cpp), so the chunk the client is then playing
+        is late at its start and not at its end: its front is late, the chunks before it wholly so.
+        """
+        clock = self._server.clock
+        _Gap.held = []
+        _Gap.arrived = asyncio.Event()
+        starved_from = _Gap.sent_end_us
+        emit(f"gap-held {starved_from}")
+        due = starved_from + int(starve_ms * 1000)
+        target = None
+        looked = 0
+        while target is None:
+            await _Gap.arrived.wait()
+            _Gap.arrived.clear()
+            for entry in [held[3] for held in _Gap.held[looked:]]:
+                looked += 1
+                duration = entry.binary.duration_us or 0
+                at = entry.timestamp_us + 5000 + (duration - 10000) // 3
+                if entry.timestamp_us >= due - duration and at >= clock.now_us():
+                    target = (entry.timestamp_us, duration, at)
+                    break
+        stamp, duration, at = target
+        await asyncio.sleep(max(at - clock.now_us(), 0) / 1_000_000)
+        count = 0
+        while _Gap.held:
+            connection, wsock, role, entry, buffer_tracker = _Gap.held.pop(0)
+            _Gap.sent_end_us = entry.timestamp_us + (entry.binary.duration_us or 0)
+            await _send_binary(connection, wsock, role, entry, buffer_tracker)
+            count += 1
+            if count == 1:
+                released_at = clock.now_us()
+        _Gap.held = None
+        emit(f"gap-released {count} {stamp} {duration} {at} {released_at}")
+
+    def gap(self, starve_ms: float) -> None:
+        task = asyncio.ensure_future(self._gap(starve_ms))
+        task.add_done_callback(self._done)
+        self._plays.append(task)
+
     def end(self) -> None:
         for play in self._plays:
             play.cancel()
@@ -419,6 +493,8 @@ async def main() -> None:
             server._source_role().request_stop()
         elif command == "play":
             server.play(float(rest[0]))
+        elif command == "gap":
+            server.gap(float(rest[0]))
         elif command == "end":
             server.end()
         elif command == "quit":

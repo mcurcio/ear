@@ -20,8 +20,7 @@ public:
 	/// and what ear took untold (what it is writing at the moment aside, which only adds).
 	std::uint64_t buffered(std::uint32_t held) const noexcept { return held + untold(); }
 	/// The library sees itself starved, and so realigns its next chunk to now on its own: it holds nothing it was not
-	/// told played. Between two cycles the count only grows (the library only writes), so a check at a cycle's end
-	/// holds until the next.
+	/// told played. Between two cycles the count only grows (the library only writes).
 	bool starved(std::uint32_t held) const noexcept { return buffered(held) == 0; }
 
 private:

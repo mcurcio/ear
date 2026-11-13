@@ -330,11 +330,10 @@ TEST_CASE("A catch-up while the library sees itself starved owes nothing: the re
 	CHECK(rig.told() == 2 * block);
 }
 
-// docs/node-types.md#clock: the library goes untold at most untoldBound of the graph's time. Then the debt is forgotten
-// and nothing more is owed until it is told, so the library realigns itself; and it is still told only from a cycle
-// that lost nothing, never from one dated behind raw time.
-TEST_CASE("Untold for untoldBound, the debt is forgotten and nothing more owed, and the library is told only from a "
-          "cycle that lost nothing",
+// docs/node-types.md#clock: the library goes untold at most untoldBound of the graph's nominal time. Then the debt is
+// forgotten and nothing more is owed until it is told, and it is told from that cycle even though it lost frames: with
+// nothing owed, nothing told is dropped after.
+TEST_CASE("Untold for untoldBound, the debt is forgotten and the library told even from a cycle that lost frames",
           "[sendspin][code]") {
 	Rig rig;
 	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
@@ -342,19 +341,49 @@ TEST_CASE("Untold for untoldBound, the debt is forgotten and nothing more owed, 
 	rig.write(3 * block);
 	rig.cycle(at);
 	REQUIRE(rig.told() == block);
-	// A stall the library cannot refill for: every cycle a catch-up, past the bound.
+	// A stall the library cannot refill for: every cycle a catch-up. The first leaves frames untold (a block skipped,
+	// a block read); none is told until the bound.
+	at += 2 * blockNs;
+	const std::int64_t untoldSince = at;
 	std::size_t lossy = 0;
-	for (at += 2 * blockNs; at < untoldBound.count() + 8 * blockNs; at += 2 * blockNs, ++lossy) {
+	for (; at - untoldSince < untoldBound.count(); at += 2 * blockNs, ++lossy) {
 		rig.driver.lose(1, block);
 		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
-		CHECK(rig.told() == block); // never told from a cycle that lost frames
+		CHECK(rig.told() == block);
 	}
-	REQUIRE(lossy > 0);
-	// The first cycle that lost nothing tells; nothing is owed, so what comes next plays from its first frame.
+	REQUIRE(lossy > 1);
+	rig.driver.lose(1, block);
+	REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
+	CHECK(rig.told() == 3 * block); // told at the bound, from a cycle that lost frames
+	// Nothing is owed, so what comes next plays from its first frame.
 	rig.write(block);
-	REQUIRE(rig.cycle(at).whole());
+	REQUIRE(rig.cycle(at + 2 * blockNs).whole());
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
-	CHECK(rig.told() == 4 * block); // a block read, a block skipped and a block read at the first catch-up, and this
+	CHECK(rig.told() == 4 * block);
+}
+
+// docs/node-types.md#clock: a host whose every cycle loses frames still tells the library, once untoldBound has
+// passed, so a stream starting then leaves the library's priming.
+TEST_CASE("A stream that starts under constant loss is told within untoldBound", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	std::int64_t at = 0;
+	rig.cycle(at); // the first cycle, before the stream
+	// From the stream's first frames every cycle is a catch-up of a block; the feed holds what it owes and a block to
+	// play.
+	std::int64_t firstRead = -1;
+	std::uint64_t written = 0;
+	while (rig.told() == 0 && at < 2 * untoldBound.count()) {
+		at += 2 * blockNs;
+		rig.write(2 * block);
+		written += 2 * block;
+		rig.driver.lose(1, block);
+		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
+		if (firstRead < 0) firstRead = at;
+	}
+	CHECK(rig.told() == written);
+	CHECK(at - firstRead >= untoldBound.count());
+	CHECK(at - firstRead < untoldBound.count() + 2 * blockNs);
 }
 
 TEST_CASE("Any other cause is a new clock: a driver change, a reposition and the first cycle skip nothing",

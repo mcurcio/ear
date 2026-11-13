@@ -1261,15 +1261,18 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
      with the feed dry and every frame told owed its jump all the same, and ear dropped the first frames of the refill
      that the library had already placed at now. The root: ear owed with no model of what the library would correct
      itself. Fixed by `LibraryView` (`library_view.hpp`): the library holds the feed's frames plus those consumed and
-     not told, and is starved when that is 0; nothing is owed while it is starved, and a cycle that ends with it starved
-     forgets the debt. One invariant, written in `docs/node-types.md#clock`: ear and the library never both correct the
-     same lost time.
+     not told, and is starved when that is 0; nothing is owed while it is starved. One invariant, written in
+     `docs/node-types.md#clock`: ear and the library never both correct the same lost time. (A second check, forgetting
+     the debt at a cycle that ends with the library starved, was dropped in the follow-up as dead: a debt is made only
+     while the library holds untold frames, and it is told nothing until the debt is paid.)
   6. *The cap fired mid-burst* (the third review). The untold limit, a feed and the longest chunk of cycles, counted
      executed cycles; a burst's cycles are short, so it ran out inside a long stall's burst, forgot the debt and told
      the library from a catch-up cycle dated behind raw time, and the burst's next catch-ups were owed again, caught
-     up by ear and the library both. Fixed: the bound is `untoldBound`, 2 s of the graph's raw time, not cycles; when
-     due the debt is forgotten and nothing more is owed until the library is told, which still happens only from a
-     cycle that lost nothing. 2 s leaves room to pay a 1 s stall's remainder at a feed less a block a cycle.
+     up by ear and the library both. Fixed: the bound is `untoldBound`, 2 s of the graph's nominal time (the cycles'
+     `startRawNs`, as the driver dates them), not cycles; when due the debt is forgotten and nothing more is owed until
+     the library is told, which happens from that cycle even if it lost frames (the follow-up: a host with no lossless
+     cycle for longer would never tell, and at a stream's start the library would never leave its priming; with nothing
+     owed no told frame is dropped). 2 s leaves room to pay a 1 s stall's remainder at a feed less a block a cycle.
   With all six the stall tests (200 ms and 1 s) require every run, with no gate: a remainder above 0 (the feed's writer
   is held from the arming through the burst by `Feed::holdWriter()`, so the burst always drains the feed), back on the
   server's stamps within 2 + ceil(remainder / (feed - block)) blocks of the burst's end (one block for the library to
@@ -1281,9 +1284,22 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   200 ms and 5 of 5 at 1 s; the floor patch's change reverted fails its library test and every stall run (3 of 3 at
   each length); the late-chunk patch's change reverted fails its two library tests, while the stall tests pass (ear
   pays the remainder, so no chunk reaches the library late); the starved rule (5) reverted alone fails its unit row
-  (feed dry and told, a catch-up, a refill: nothing may be dropped); the bound (6) reverted alone, or telling from a
-  lossy cycle at the bound, fails its unit row. The library's two patches remain right for any sink, and the upstream
-  report is drafted in the `sendspin` skill.
+  (feed dry and told, a catch-up, a refill: nothing may be dropped); the bound (6) reverted alone fails its unit row.
+  The library's two patches remain right for any sink, and the upstream report is drafted in the `sendspin` skill.
+- **The late-chunk patch is proven through ear by a network gap** (the C4 follow-up). A stall of ear's never reaches
+  it now that ear pays, so the stall tests could not show it. The real server never sends a chunk already late (its
+  `_check_late_binary`), so a gap in what it sends never delivers one; the test server's `gap` holds the audio frames
+  past that check until the library has starved for about 300 ms, then sends them at once, the release placed a third
+  of the way into a 96 ms chunk (5 ms in from either end, the hard-sync threshold), so which chunk is late at its front
+  is certain. The library floors to now, skips the wholly late chunks, decodes the late one and drops its front: one
+  correction of the lost time, no silence. Measured: 5 of 5 pass; with the patch's change reverted it skips that chunk
+  whole and fills the overshoot with silence, failing 5 of 5. What the test allows besides: the floor puts the next
+  frame at now, but the block plays it from the first cycle to start after the library wrote it, so the stream comes
+  back late by up to a block, or two when its decode and write outlast the cycle it floored in (95 us, 2.08 ms and
+  5.47 ms seen), which the next chunk's sync (its settle threshold 500 us) drops once more: a settle step of under two
+  blocks, back on the stamps within a chunk and two blocks of the recovery. Telling the library
+  on each whole cycle while it is starved (the finish the end of that cycle) would remove that step, at the cost of a
+  tell every cycle while no stream plays; not done.
 - **"Report the whole jump" is caught deterministically by the code's unit tests** (eight checks fail in two of them)
   and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
   one-block catch-up, the two rules tell the same.

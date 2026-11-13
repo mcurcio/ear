@@ -24,8 +24,9 @@ struct CaptureAnchor {
 	std::uint64_t framesWritten;
 	std::int64_t atRawNs;
 };
-/// How long, in the graph's time, the library may go untold while a catch-up's remainder is paid before ear stops owing
-/// and leaves the library to realign itself (docs/node-types.md#clock): past a 1 s stall's burst and its payment.
+/// How long, in the graph's nominal time (`GraphCycle::startRawNs`, the cycles' starts as the driver dates them), the
+/// library may go untold while a catch-up's remainder is paid before ear stops owing, tells it from the next cycle and
+/// leaves it to realign itself (docs/node-types.md#clock): past a 1 s stall's burst and its payment.
 inline constexpr std::chrono::nanoseconds untoldBound = std::chrono::seconds{2};
 class SendspinCode final : public AudioCode {
 public:
@@ -42,10 +43,9 @@ public:
 	/// it, after process().
 	std::uint32_t lastHeld() const noexcept { return lastHeld_; }
 	std::uint32_t lastGot() const noexcept { return lastGot_; }
-	/// Test seams: what the feed held as the last process() began (after any clear) and as it ended, as the code judged
-	/// the library's view by them (LibraryView).
+	/// Test seam: what the feed held as the last process() began (after any clear), as the code judged the library's
+	/// view by it (LibraryView).
 	std::uint32_t lastHeldAtStart() const noexcept { return lastHeldAtStart_; }
-	std::uint32_t lastHeldAtEnd() const noexcept { return lastHeldAtEnd_; }
 
 private:
 	Feed& feed_;
@@ -58,11 +58,10 @@ private:
 	LibraryView view_;                        // what the library believes of what ear took
 	std::uint64_t owed_ = 0;                  // the graph's lost time not yet skipped from the stream
 	bool catchingUp_ = false;                 // a catch-up or pause is owed and not yet told
-	bool owingSuspended_ = false;             // untold for untoldBound: nothing owed until the library is told
+	bool owingSuspended_ = false;             // untold for untoldBound: nothing owed, and told even from a lossy cycle
 	std::optional<std::int64_t> untoldSince_; // the start, on the raw clock, of the first cycle not yet told
-	std::uint32_t lastHeldAtStart_ = 0;       // test seams: lastHeldAtStart() and lastHeldAtEnd()
-	std::uint32_t lastHeldAtEnd_ = 0;
-	std::uint32_t lastGot_ = 0; // test seams: lastGot() and lastHeld()
+	std::uint32_t lastHeldAtStart_ = 0;       // test seam: lastHeldAtStart()
+	std::uint32_t lastGot_ = 0;               // test seams: lastGot() and lastHeld()
 	std::uint32_t lastHeld_ = 0;
 };
 } // namespace ear::sendspin

@@ -46,3 +46,4 @@ induce | test/support/rtp_tone.hpp | std::this_thread::sleep_for(holdFor); // th
 induce | test/support/sendspin_server.py | await asyncio.sleep(self._slow_upgrade) | a slow WebSocket upgrade, made on purpose by the tests that ask for one
 poll | test/support/sendspin_server.py | await asyncio.sleep(0.005) | until the client's player role is active: the library has no event for it
 pace | test/support/sendspin_server.py | await asyncio.sleep(max(left_us / 1_000_000, 0.0) + PLAYED_OUT_MARGIN_S) | a stream ends once it has played out, as a track does
+induce | test/support/sendspin_server.py | await asyncio.sleep(max(at - clock.now_us(), 0) / 1_000_000) | the network gap's end, made on purpose: held audio is released a fixed way into a chunk by its stamp
