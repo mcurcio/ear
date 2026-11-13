@@ -339,16 +339,24 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
   of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
   buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
+- **ear and the library never both correct the same lost time.** The library realigns on its own
+  only when it sees itself starved (its floor: everything it wrote told played, so its next chunk
+  starts at now; `cmake/sendspin-starved-floor.patch`), so ear owes lost time only while the
+  library cannot. The code keeps the library's view as a small model (`library_view.hpp`): what it
+  holds is what the feed holds plus what was consumed (skipped or read) and not yet told, and it
+  sees itself starved when that is 0. The rules below all follow from it.
 - The stream keeps in step with the graph's clock. A cycle that states a catch-up or a pause
   (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, all of them cut
-  or not; [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) owes that much of the
-  stream, however long: the feed's stale audio of that time is skipped at once, and what the feed
-  did not hold is skipped from what the library writes next, before any of it is read. While the
-  catch-up is untold, a cycle the feed leaves short owes its zeros too (the library cannot see them
-  either). A clear ends the stream that owed, and before a stream plays nothing is owed (it has
-  no place on the clock yet: a stall skips only what the feed holds). Any other cause (a driver change, a jump back or by
-  part of a cycle) is a new clock: nothing is owed. A skipped frame not counted would cost 25 ms
-  (the library sees -5.3 ms, drops a chunk and inserts silence).
+  or not; [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) moves the stream on by
+  that much, however long: the feed's stale audio of that time is skipped at once. If the library
+  is not starved, what the feed did not hold is owed and skipped from what the library writes next,
+  before any of it is read, and while that is untold a cycle the feed leaves short owes its zeros
+  too (the library cannot see them either). A cycle that ends with the library starved forgets the
+  debt: the library realigns its next chunk itself, and paying as well would drop what it writes
+  next. A clear ends the stream that owed, and before a stream plays the library is starved, so
+  nothing is owed. Any other cause (a driver change, a jump back or by part of a cycle) is a new
+  clock: nothing is owed. A skipped frame not counted would cost 25 ms (the library sees -5.3 ms,
+  drops a chunk and inserts silence).
 - The library is told what was skipped and read only from a cycle that lost nothing, once nothing
   is owed. *Why:* the driver catches a stall up in a burst that runs the block every other timeout
   ([engine.md](engine.md#the-internal-clock)), whose cycles start on the driver's own time, behind
@@ -356,14 +364,19 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   it, so most of a long stall is owed when the burst ends. The library takes what it is told played
   from what it wrote (clamping at zero with a warning), so a frame dropped after it was told would
   be taken from audio still to play, and a remainder never dropped it would catch up itself with a
-  hard sync. Told once paid, it is told exactly what ear took, with nothing left to correct. At most
-  a feed and the longest chunk (150 ms) of cycles go untold; whatever is still owed then is
-  forgotten and left to the library.
+  hard sync. Told once paid, it is told exactly what ear took, with nothing left to correct.
+- The library goes untold at most `untoldBound` (2 s) of the graph's time (`startRawNs`, not a
+  count of cycles, so a burst of short cycles does not stretch it). Then the debt is forgotten and
+  nothing more is owed until it is told, so the library drains to starved and realigns itself; it
+  is still told only from a cycle that lost nothing. 2 s leaves room to pay a 1 s stall's
+  remainder (about 1 s) at a feed less a block a cycle.
 - After a stall past the feed the stream is back on the server's stamps within a few blocks of the
   burst's end, with no correction by the library: one block for the library to refill the feed the
-  burst drained, one per feed's worth of the remainder paid, and one for the first frame on time to
-  reach the outputs. The clock tests prove it on the real server with a 200 ms stall of the data
-  thread, and the library's two timing patches (below) keep it from correcting what needs none.
+  burst drained, one per feed less a block of the remainder paid (a cycle that skips all the feed
+  holds plays a block of zeros, owed too), and one for the first frame on time to reach the
+  outputs. The clock tests prove it on the real server with stalls of the data thread of 200 ms and
+  1 s, the feed's writer held through the catch-up's burst so a remainder is always left to pay,
+  and the library's two timing patches (below) keep it from correcting what needs none.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it

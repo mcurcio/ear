@@ -51,16 +51,27 @@ bool Feed::takeCleared() noexcept {
 	return std::exchange(clearedSince_, false);
 }
 
+std::uint32_t Feed::tryWrite(std::span<const float> interleaved, std::uint32_t frames) noexcept {
+	return writerHeld_.load(std::memory_order_acquire) ? 0 : ring_.writeInterleaved(interleaved, frames);
+}
+
+void Feed::holdWriter() noexcept { writerHeld_.store(true, std::memory_order_release); }
+
+void Feed::releaseWriter() noexcept {
+	writerHeld_.store(false, std::memory_order_release);
+	wakeWriter();
+}
+
 std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,
                           std::chrono::milliseconds patience) {
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
-		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0 || frames == 0) {
+		if (const std::uint32_t accepted = tryWrite(interleaved, frames); accepted > 0 || frames == 0) {
 			return accepted;
 		}
 		writerWaits_.store(true, std::memory_order_relaxed);
 		std::atomic_thread_fence(std::memory_order_seq_cst);
-		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0) {
+		if (const std::uint32_t accepted = tryWrite(interleaved, frames); accepted > 0) {
 			writerWaits_.store(false, std::memory_order_relaxed);
 			return accepted;
 		}

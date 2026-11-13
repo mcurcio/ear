@@ -150,11 +150,16 @@ began, each past its last look at the ring, so only a play, the close or its pat
 checks `waitDeadline(milliseconds::max())` is a year away. The `sendspin` node's feed has the same
 two, `Feed::waitsBegun()` and `Feed::waitsWoken()`, counted on the writer's side: `feed_test.cpp`
 waits for the first before it reads or clears, and judges by the second that the wake ended the
-wait, not its patience. Its audio code says what the feed held as its last cycle kept time and what
-it read from the feed (`SendspinCode::lastHeld()` and `lastGot()`, read on the data thread after
-`process()`); the clock tests work out from each cycle's facts and the first what it skipped for
-the graph's lost time ([node-types.md](node-types.md#clock)), and hold each ramp step and each
-report of what played against that and the second.
+wait, not its patience. Its audio code says what the feed held as its last cycle kept time, as it
+began and as it ended, and what it read from the feed (`SendspinCode::lastHeld()`,
+`lastHeldAtStart()`, `lastHeldAtEnd()` and `lastGot()`, read on the data thread after `process()`);
+the clock tests work out from each cycle's facts and those, by the code's rule on the library's
+view, what it skipped for the graph's lost time and when it told
+([node-types.md](node-types.md#clock)), and hold each ramp step and each report of what played
+against that. A stall test makes its remainder certain rather than likely: `Feed::holdWriter()`
+makes the writer's writes take nothing until `releaseWriter()` (which wakes it), so with the writer
+held from the arming until the first whole cycle after the stall the catch-up's burst always drains
+the feed, and the test requires a remainder above 0 before it judges the payment.
 
 ### The library's own word
 

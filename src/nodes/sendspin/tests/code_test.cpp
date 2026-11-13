@@ -284,14 +284,13 @@ TEST_CASE("A catch-up of any length is paid from the feed and from what is writt
 		CHECK(rig.left[0] == static_cast<float>(3 * block + capacity + 2 * block + 1));
 		CHECK(rig.told() == 3 * block + capacity + 3 * block);
 	}
-	SECTION("past what the library will write before a feed and the longest chunk of cycles: told then, the rest "
-	        "forgotten") {
+	SECTION("past 2^32 frames: owed whole, never a wrapped few") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
 		const std::array<std::span<float>, 2> outputs{rig.left, rig.right};
 		const std::array<std::span<const float>, 2> inputs{rig.inLeft, rig.inRight};
-		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block; // past 2^32: never a wrapped few
+		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
 		rig.code.process(inputs, outputs, block,
 		                 ear::GraphCycle{.startNs = 0,
 		                                 .position = block + jump,
@@ -300,24 +299,62 @@ TEST_CASE("A catch-up of any length is paid from the feed and from what is writt
 		                                           .missedCut = static_cast<std::uint32_t>(jump / block),
 		                                           .jumpFrames = jump,
 		                                           .causes = ear::CycleCause::catchUp}});
-		CHECK(rig.left[0] == 0.0F);
-		const std::uint64_t within = capacity + static_cast<std::uint64_t>(ear::FrameClock(rate).frames(longestChunk));
-		std::uint64_t cycles = 1;
-		std::uint64_t position = 2 * block + jump;
-		for (; rig.told() == block && cycles * block < within + block; ++cycles, position += block) {
+		CHECK(rig.left[0] == 0.0F); // the two blocks held skipped
+		for (int i = 0; i < 4; ++i) {
 			rig.write(block);
 			rig.code.process(inputs, outputs, block,
-			                 ear::GraphCycle{.startNs = 0, .position = position, .startRawNs = 2000});
+			                 ear::GraphCycle{.startNs = 0,
+			                                 .position = (2 + static_cast<std::uint64_t>(i)) * block + jump,
+			                                 .startRawNs = 2000});
 			CHECK(rig.left[0] == 0.0F); // every block written is owed
 		}
-		CHECK(cycles * block >= within);
-		CHECK(rig.told() == 3 * block + (cycles - 1) * block);
-		// Told, the rest is forgotten: what comes next plays.
-		rig.write(block);
-		rig.code.process(inputs, outputs, block,
-		                 ear::GraphCycle{.startNs = 0, .position = position, .startRawNs = 3000});
-		CHECK(rig.left[0] == static_cast<float>(rig.written - block + 1));
+		CHECK(rig.told() == block);
 	}
+}
+
+// docs/node-types.md#clock: ear and the library never both correct the same lost time. A library that sees itself
+// starved (everything it wrote told played) realigns its next chunk to now on its own, so a catch-up then owes nothing,
+// and what it writes next plays from its first frame.
+TEST_CASE("A catch-up while the library sees itself starved owes nothing: the refill plays whole", "[sendspin][code]") {
+	Rig rig;
+	rig.write(block);
+	rig.cycle(); // read and told: the library holds nothing it was not told played
+	rig.cycle(); // the feed dry: nothing consumed, nothing to tell
+	REQUIRE(rig.told() == block);
+	rig.driver.lose(4, block);
+	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
+	rig.cycle(); // dry again: no zeros owed either
+	rig.write(block);
+	rig.cycle();
+	CHECK(rig.left[0] == static_cast<float>(block + 1)); // nothing dropped
+	CHECK(rig.told() == 2 * block);
+}
+
+// docs/node-types.md#clock: the library goes untold at most untoldBound of the graph's time. Then the debt is forgotten
+// and nothing more is owed until it is told, so the library realigns itself; and it is still told only from a cycle
+// that lost nothing, never from one dated behind raw time.
+TEST_CASE("Untold for untoldBound, the debt is forgotten and nothing more owed, and the library is told only from a "
+          "cycle that lost nothing",
+          "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	std::int64_t at = 0;
+	rig.write(3 * block);
+	rig.cycle(at);
+	REQUIRE(rig.told() == block);
+	// A stall the library cannot refill for: every cycle a catch-up, past the bound.
+	std::size_t lossy = 0;
+	for (at += 2 * blockNs; at < untoldBound.count() + 8 * blockNs; at += 2 * blockNs, ++lossy) {
+		rig.driver.lose(1, block);
+		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
+		CHECK(rig.told() == block); // never told from a cycle that lost frames
+	}
+	REQUIRE(lossy > 0);
+	// The first cycle that lost nothing tells; nothing is owed, so what comes next plays from its first frame.
+	rig.write(block);
+	REQUIRE(rig.cycle(at).whole());
+	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+	CHECK(rig.told() == 4 * block); // a block read, a block skipped and a block read at the first catch-up, and this
 }
 
 TEST_CASE("Any other cause is a new clock: a driver change, a reposition and the first cycle skip nothing",
@@ -417,10 +454,11 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 	CHECK(rig.progress.read()->totalFrames == 2 * block);
 
-	// One while it plays is owed by what comes next; a clear forgets it, and the stream after it plays from its first
-	// frame.
-	rig.driver.lose(1, block);
-	rig.cycle();
+	// One while the library holds frames is owed by what comes next; a clear forgets it, and the stream after it plays
+	// from its first frame.
+	rig.write(block);
+	rig.driver.lose(2, block);
+	rig.cycle(); // the block held skipped, the rest owed
 	rig.write(block);
 	rig.cycle();
 	CHECK(rig.left[0] == 0.0F); // owed
@@ -428,8 +466,8 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	rig.feed.clear();
 	rig.write(block);
 	rig.cycle();
-	CHECK(rig.left[0] == static_cast<float>(5 * block + 1));
-	CHECK(rig.progress.read()->totalFrames == 4 * block);
+	CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
+	CHECK(rig.progress.read()->totalFrames == 5 * block);
 }
 
 TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {

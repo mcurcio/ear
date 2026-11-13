@@ -116,9 +116,15 @@ that means to an operator:
   start on the driver's time, behind raw time, and the burst drains the feed faster than the library refills it. So the
   code owes each catch-up's (and pause's) whole jump, and, while it is untold, each short cycle's zeros; it skips what is
   owed from the feed as the library refills it, before reading, and tells the library only from a cycle that lost
-  nothing once nothing is owed (at most a feed and the longest chunk, 150 ms, of cycles untold; what is owed then is
-  forgotten; nothing is owed before a stream plays, and a clear forgets it). The library is never told a frame ear did not take from what it wrote, and has nothing left to correct:
-  the stall test requires no correction of its own, back on the server's stamps within a few blocks of the burst's end.
+  nothing once nothing is owed. **ear and the library never both correct the same lost time:** the library realigns
+  itself only when it sees itself starved (everything it wrote told played: its floor), so the code keeps that view as
+  `LibraryView` (`library_view.hpp`: the feed's frames plus those consumed and untold) and owes nothing while it is
+  starved, forgets the debt at a cycle that ends with it starved, and after `untoldBound` (2 s of the graph's time)
+  untold forgets the debt and owes nothing more until it is told, still told only from a cycle that lost nothing.
+  Nothing is owed before a stream plays, and a clear forgets it. The library is never told a frame ear did not take
+  from what it wrote, and has nothing left to correct: the stall tests (200 ms and 1 s, the feed's writer held through
+  the burst by `Feed::holdWriter()` so a remainder is certain) require no correction of its own, back on the server's
+  stamps within a few blocks of the burst's end.
   Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed for a change
   of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
@@ -200,7 +206,10 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   fire after a stall; they are the library's own behaviour made right for any sink.
 - **Each patch has a deterministic test in the library's suite**, ear's build compiles none of them: `PlayerHardSync.
   AnEstimateWithFramesBufferedIsNotFloored` (the floor), `AChunkIsTooLateOnlyOnceItsLastFrameIs` and
-  `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests. Run
+  `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests;
+  ear's stall tests also fail with the floor's reverted (the floor fires while the library still holds frames ear is
+  paying for: ear and the library would both correct), and pass with the late chunk's reverted (ear pays the remainder,
+  so no chunk reaches the library late). Run
   the library's suite on the patched tree, in the dev image, after a configure has fetched and patched it:
 
   ```bash

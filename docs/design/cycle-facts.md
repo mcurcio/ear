@@ -1234,7 +1234,7 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   catch-ups (18 of 256 frames); the feed absorbs them unless the library could not refill it between them. So C4a's
   change for a jump past the feed's capacity never happens on the engine; what keeps the stream in step is the per-cycle
   skip, which was the old rule's too.
-- **After a stall the library went off the timeline, four ways, now each fixed at its root.** Measured with the stall
+- **After a stall the library went off the timeline, six ways, now each fixed at its root.** Measured with the stall
   test (a 200 ms stall of the data thread, the real server) before the fixes: 11 of 14 runs took two corrections or
   left silence, and every run played late what the feed had not held.
   1. *Its floor fired during the catch-up burst, not inside the stall.* `starved_playtime_floor` (`sync_task.cpp`, top
@@ -1255,19 +1255,35 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
      each catch-up's and pause's jump, and while the catch-up is untold each short cycle's zeros (the library cannot see
      them either); pays it from the feed as the library refills it, before reading; and tells the library from the
      first cycle that lost nothing once nothing is owed, the finish the end of that cycle, where the library's next
-     frame plays. At most a feed and the longest chunk (150 ms) of cycles go untold; what is owed then is forgotten, so
-     ear never drops a frame after telling it played. A clear forgets the debt, and nothing is owed before a stream
-     plays (since the last clear, a read found frames): a first 20-run batch counted tells that forgot lost time owed
-     from before the ramp began, and a stream starting then would have lost its first frames.
-  With all four the stall test requires every run, with no gate: back on the server's stamps within 2 + ceil(remainder
-  / feed) blocks of the burst's end (one block for the library to refill the feed the burst drained, one per feed of
-  the remainder paid, one for the first frame on time to reach the outputs), no correction of the library's own (its
-  soft-sync blends excused as checkStep counts them: a step of at most 3, at most once a chunk), no silence after, no
-  `Buffered frames underflow`, every report exact, no tell made with lost time still owed, and 750 cycles within 1 ms.
-  It passed 20 runs of 20 on a quiet host (load 2.1 to 2.7, two other agents' idle containers up). With ear's payment
-  reverted it fails (2 runs of 3); each library patch's change reverted alone fails its own
-  deterministic test in the library's suite (`PlayerHardSync.*`). The library's two patches remain right for any sink,
-  and the upstream report is drafted in the `sendspin` skill.
+     frame plays. A clear forgets the debt.
+  5. *A starved library was caught up twice* (the third review). With the floor patched, the library realigns itself
+     exactly when it sees itself starved: everything it wrote told played, so its next chunk starts at now. A catch-up
+     with the feed dry and every frame told owed its jump all the same, and ear dropped the first frames of the refill
+     that the library had already placed at now. The root: ear owed with no model of what the library would correct
+     itself. Fixed by `LibraryView` (`library_view.hpp`): the library holds the feed's frames plus those consumed and
+     not told, and is starved when that is 0; nothing is owed while it is starved, and a cycle that ends with it starved
+     forgets the debt. One invariant, written in `docs/node-types.md#clock`: ear and the library never both correct the
+     same lost time.
+  6. *The cap fired mid-burst* (the third review). The untold limit, a feed and the longest chunk of cycles, counted
+     executed cycles; a burst's cycles are short, so it ran out inside a long stall's burst, forgot the debt and told
+     the library from a catch-up cycle dated behind raw time, and the burst's next catch-ups were owed again, caught
+     up by ear and the library both. Fixed: the bound is `untoldBound`, 2 s of the graph's raw time, not cycles; when
+     due the debt is forgotten and nothing more is owed until the library is told, which still happens only from a
+     cycle that lost nothing. 2 s leaves room to pay a 1 s stall's remainder at a feed less a block a cycle.
+  With all six the stall tests (200 ms and 1 s) require every run, with no gate: a remainder above 0 (the feed's writer
+  is held from the arming through the burst by `Feed::holdWriter()`, so the burst always drains the feed), back on the
+  server's stamps within 2 + ceil(remainder / (feed - block)) blocks of the burst's end (one block for the library to
+  refill the feed the burst drained, one per feed less a block of the remainder paid, since a cycle that skips all the
+  feed holds plays a block of zeros that is owed too, and one for the first frame on time to reach the outputs), no
+  correction of the library's own (its soft-sync blends excused as checkStep counts them: a step of at most 3, at most
+  once a chunk), no silence after, no `Buffered frames underflow`, every report exact, no debt forgotten by the bound
+  while still owed, and 750 cycles within 1 ms. Measured on the final code: ear's payment reverted fails 5 runs of 5 at
+  200 ms and 5 of 5 at 1 s; the floor patch's change reverted fails its library test and every stall run (3 of 3 at
+  each length); the late-chunk patch's change reverted fails its two library tests, while the stall tests pass (ear
+  pays the remainder, so no chunk reaches the library late); the starved rule (5) reverted alone fails its unit row
+  (feed dry and told, a catch-up, a refill: nothing may be dropped); the bound (6) reverted alone, or telling from a
+  lossy cycle at the bound, fails its unit row. The library's two patches remain right for any sink, and the upstream
+  report is drafted in the `sendspin` skill.
 - **"Report the whole jump" is caught deterministically by the code's unit tests** (eight checks fail in two of them)
   and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
   one-block catch-up, the two rules tell the same.

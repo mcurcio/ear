@@ -35,15 +35,23 @@ public:
 	/// or a clear ended rather than the patience. Counted on the writer's side, never the realtime one.
 	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
 	std::uint64_t waitsWoken() const noexcept { return waitsWoken_.load(std::memory_order_acquire); }
+	/// Test seams (docs/testing.md#a-writers-own-event): while held, the writer finds no room, as at a full feed, and
+	/// waits for a release, a read or its patience; a release wakes it. Any thread.
+	void holdWriter() noexcept;
+	void releaseWriter() noexcept;
+	/// Realtime: what the feed holds now (exact on the reading thread).
+	std::uint32_t held() const noexcept { return ring_.writePosition() - ring_.readPosition(); }
 	/// Test seam: what the feed held at the last skip(), after any clear; the reading thread's own, read on it.
 	std::uint32_t heldAtSkip() const noexcept { return heldAtSkip_; }
 
 private:
 	bool applyClear() noexcept;
+	std::uint32_t tryWrite(std::span<const float> interleaved, std::uint32_t frames) noexcept;
 	void wakeWriter() noexcept;
 	FrameRing ring_;
 	EventFd room_; // what the writer waits on
 	std::atomic<bool> writerWaits_{false};
+	std::atomic<bool> writerHeld_{false};      // test seam: holdWriter()
 	std::atomic<std::uint64_t> clearTo_{0};    // pending bit, and the ring's write position when it was asked
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
