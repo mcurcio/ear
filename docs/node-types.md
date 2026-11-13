@@ -359,9 +359,10 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   clock: nothing is owed. A skipped frame not counted would cost 25 ms (the library sees -5.3 ms,
   drops a chunk and inserts silence).
 - What is owed is paid before any frame is read, as one step with the read (`Feed::skipThenRead`),
-  from everything readable: while some is owed after a skip and the library has written since, it
-  skips again, and while any is owed nothing is read, so a frame the library writes is never read
-  ahead of the debt (read, it would pay nothing, and the payment would run slow).
+  from what the feed holds and, if some is still owed, once more from what the library wrote
+  meanwhile (two passes, so the data thread's work is bounded whatever the debt); while any is owed
+  nothing is read, so a frame the library writes is never read ahead of the debt (read, it would
+  pay nothing, and the payment would run slow), and the next cycle pays on.
 - The library is told what was skipped and read only from a cycle that lost nothing and runs on
   time (not `GraphCycle::overdueNs`), once nothing is owed. *Why:* the driver catches a stall up in a burst of timeouts, of which the block runs
   as many as the host lets it, from none to every one ([engine.md](engine.md#the-internal-clock)),

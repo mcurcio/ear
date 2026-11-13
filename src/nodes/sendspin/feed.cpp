@@ -49,14 +49,17 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 Feed::Taken Feed::skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
                                std::uint32_t frames) noexcept {
 	const bool cleared = applyClear();
-	// What it holds now, on the reading thread, is exact: the writer only adds. The debt is paid from everything
-	// readable: while some is still owed after a skip and the writer has added frames since, it skips again, so a frame
-	// is never read, nor left for a later cycle, while the debt it could pay is owed. The read follows only once the
-	// debt is paid; stale audio owed nothing (a starved library's) is skipped as far as the feed holds it.
+	// What it holds now, on the reading thread, is exact: the writer only adds. The debt is paid from what the feed
+	// holds, and if some is still owed, once more from what the writer added during that skip: two passes at most, so
+	// the work is bounded by twice the feed's capacity whatever the debt and however fast the writer (a 1 s stall leaves
+	// about 46000 frames owed). Nothing is read while any is owed, so what the writer adds after the second pass waits
+	// for the next cycle's payment, and no frame is ever read ahead of the debt. Stale audio owed nothing (a starved
+	// library's) is skipped as far as the feed holds it.
 	heldAtSkip_ = held();
 	const std::uint64_t mustPay = std::min(owed, skip);
 	std::uint64_t skipped = 0;
-	for (std::uint32_t holds = heldAtSkip_; skipped < mustPay && holds > 0; holds = held()) {
+	std::uint32_t holds = heldAtSkip_;
+	for (int pass = 0; pass < 2 && skipped < mustPay && holds > 0; ++pass, holds = held()) {
 		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(mustPay - skipped, holds)));
 		if (skipHook_ != nullptr) skipHook_(skipHookContext_);
 	}

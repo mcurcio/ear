@@ -236,8 +236,8 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
 - **A burst that loses nothing is still told nothing.** On a host that runs the block every burst timeout, every cycle
   is whole and nothing is owed, but each is dated behind raw time; the code tells nothing from a cycle whose
   `GraphCycle::overdueNs` is above 0, as from a lossy one (`docs/node-types.md#clock`). The debt is paid in one step with
-  the read (`Feed::skipThenRead`): split into a skip and a read, the writer's frames written between them were read
-  with the debt unpaid.
+  the read (`Feed::skipThenRead`, two skip passes at most, nothing read while owed): split into a skip and a read, the
+  writer's frames written between them were read with the debt unpaid.
 - **The stall tests once took the host's burst for granted** and stalled inside the node's own block: on a GitHub runner
   the block then ran every cycle of the burst, nothing was lost, and the test failed finding no catch-up after the stall
   (`end > stalled + 1`, 1183 > 1183). A stall a test needs lost must be made upstream of the block that must lose it, and

@@ -26,10 +26,10 @@ public:
 		std::uint32_t read;
 	};
 	/// Realtime; no lock, allocation or waiting. Skips up to `skip` of the oldest frames (any count), then reads up to
-	/// `frames`, planar, zeros after what it read. `owed` of the skip is a debt paid before any frame is read, from
-	/// everything readable: while some is owed after a skip and the writer has added frames since, it skips again; and
-	/// while any is owed it reads nothing, so a frame the writer adds is never read ahead of the debt
-	/// (docs/node-types.md#clock).
+	/// `frames`, planar, zeros after what it read. `owed` of the skip is a debt paid before any frame is read: from what
+	/// the feed holds, and if some is still owed, once more from what the writer added meanwhile (two passes, so at most
+	/// twice the capacity a call); while any is owed it reads nothing, so a frame the writer adds is never read ahead of
+	/// the debt, and the next call pays on (docs/node-types.md#clock).
 	Taken skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
 	                   std::uint32_t frames) noexcept;
 	/// Realtime: applies a clear asked for and not yet applied, and says whether any clear was applied since the last

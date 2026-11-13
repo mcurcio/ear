@@ -285,6 +285,48 @@ TEST_CASE("skipThenRead pays a debt from what the writer adds after its skip, th
 	CHECK(feed.heldAtSkip() == 10);
 }
 
+// The payment's work is bounded on the data thread: two passes a call, so a writer that refills the feed after every
+// skip makes a call skip at most twice the capacity, never the whole of a long debt; the next calls pay on, reading
+// nothing until it is paid.
+TEST_CASE("skipThenRead's payment skips at most twice the capacity a call, however fast the writer, and pays a long "
+          "debt over several",
+          "[feed]") {
+	struct Writer {
+		Feed* feed;
+		std::uint32_t from = capacity;
+		static void step(void* self) {
+			auto& writer = *static_cast<Writer*>(self);
+			std::vector<float> samples;
+			fill(samples, writer.from, capacity);
+			writer.from += writer.feed->write(samples, capacity, 0ms);
+		}
+	};
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 0, capacity);
+	REQUIRE(feed.write(samples, capacity, 0ms) == capacity);
+	Writer writer{&feed};
+	feed.onPaymentStep(&Writer::step, &writer);
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	std::uint64_t owed = 5 * capacity;
+	int calls = 0;
+	Feed::Taken taken{};
+	while (owed > 0 && calls < 10) {
+		taken = feed.skipThenRead(owed, owed, out, 8);
+		++calls;
+		INFO("call " << calls << " skipped " << taken.skipped);
+		CHECK(taken.skipped <= 2 * capacity);
+		owed -= taken.skipped;
+		if (owed > 0) CHECK(taken.read == 0);
+	}
+	CHECK(owed == 0);
+	CHECK(calls == 3);
+	CHECK(taken.read == 8); // paid: the read follows in the call that paid the last of it
+	CHECK(left[0] == static_cast<float>(5 * capacity));
+}
+
 // The skip and the read are one step: a writer refilling the feed as fast as it can, woken by the skip, never has a
 // frame read ahead of a debt the feed did not cover. Split into a skip and a read, its frames written between the two
 // were read with the debt unpaid.
