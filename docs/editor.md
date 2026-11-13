@@ -36,6 +36,10 @@ Vitest); it shares no code with the C++, only the wire format and the fixtures i
 - **Node positions live in the browser.** Unplaced nodes are laid out with dagre (sources left,
   sinks right, following the routes); a place the user dragged a node to is kept in the browser
   only, never sent to ear.
+- **The counters are kept, not yet drawn.** With the `counters` feature the graph store keeps the
+  graph's counters and each node's whole, from the snapshot and `node.added`, and replaces those a
+  `counters.changed` names ([control-port.md](control-port.md#counters)); an unknown counter is
+  kept with them. Nothing on the canvas or panel shows them yet.
 - **Levels stay outside React state.** Each `levels` notification replaces a store with
   listeners per port, so at 30 messages a second only the meters and wires whose port changed
   re-render. A closed connection makes every meter read silent until new levels arrive.

@@ -1624,7 +1624,14 @@ from 8.3 and 8.4 as first written (both are corrected in place).
 - **`snapshot.json`'s counters and the reducer.** Every fixture's snapshots and `node.added` carry `counters` (zero
   where nothing was lost); the editor's reducer keeps them whole, an unknown counter among them, and folds
   `counters.changed`, so D3 has totals per node and graph from the first snapshot on.
-- **Proven to fail a broken report**, each injected, run and reverted (the report of this step lists the runs).
+- **Proven to fail a broken report**, each injected, run and reverted: `cycles` counted as a loss, no wire pace, no
+  hold, no hold bound, no record pace, a node's end or the flush writing nothing, a newer node keeping the older's span
+  (each fails `counter_watch_test.cpp`); a port-caused replace beginning a span, a superseded node's end told (NodeHost's
+  counters tests); the snapshot reading no node's counters (`graph_status_test.cpp`); the graph's counters not encoded
+  (`snapshot.json`); `counters.changed` not posted, or a port-caused replace's `node.added` carrying zero
+  (`counters-changed.json`); a record's field missing or wrong (`output-records.json`); the heartbeat not ticking the
+  pacer, or no flush at the stop (`counters_test.cpp`: no record of the stall; the second stall's cuts unwritten); a
+  ramp's skipped blocks not counted (`sendspin_ramp_test.cpp`).
 
 ## 10. Decided here (technical)
 
