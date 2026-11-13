@@ -267,7 +267,7 @@ TEST_CASE("node.stop and node.start through the control port edit nothing, and w
 	const json snapshot = rpc.call("graph.subscribe");
 	REQUIRE(snapshot.contains("result"));
 	CHECK(snapshot["result"]["protocol"] == 1);
-	CHECK(snapshot["result"]["features"] == json::array({"lifecycle"}));
+	CHECK(snapshot["result"]["features"] == json::array({"lifecycle", "counters"}));
 	CHECK(snapshot["result"]["nodes"][0]["phase"] == "running");
 	CHECK(snapshot["result"]["nodes"][0]["wanted"] == "running");
 

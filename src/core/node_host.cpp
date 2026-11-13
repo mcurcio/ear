@@ -2107,6 +2107,7 @@ struct NodeHost::Impl {
 	std::vector<NodeNoteListener*> noteListeners;
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<EngineDiagnosticListener*> engineListeners;
+	std::vector<NodeCountsListener*> countsListeners;
 	std::vector<LogSink*> logSinks;
 	std::vector<InternalErrorListener*> internalErrorListeners;
 	bool wedged = false;                      // the data loop was judged wedged: no PipeWire call is made again
@@ -2281,6 +2282,9 @@ struct NodeHost::Impl {
 				carried.stopHeld = !spec.disabled && older->stopHeld() && !older->disabled();
 				carried.keys = change->keys;
 			}
+			// A node that carries no older node's counts begins a span of its name's counts from zero.
+			if (carried.predecessor == 0)
+				for (auto* listener : countsListeners) listener->countsBegan(added.name());
 			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
 		});
 	}
@@ -2346,6 +2350,10 @@ struct NodeHost::Impl {
 	/// node of a port-caused replace tells nobody, and its successor takes its dropped frames.
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
+		// Its final counts, which counts() no longer answers once it is gone; a superseded node's span is its newer
+		// node's, and a port-caused replace's older node's counts go on in its newer node (below).
+		if (!node.silent() && !node.superseded())
+			for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.counts());
 		if (!node.silent())
 			for (auto* listener : listeners) {
 				if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
@@ -2404,6 +2412,8 @@ void NodeHost::subscribeDiagnostics(NodeDiagnosticListener& listener) {
 void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 	impl_->engineListeners.push_back(&listener);
 }
+
+void NodeHost::subscribeCounts(NodeCountsListener& listener) { impl_->countsListeners.push_back(&listener); }
 
 void NodeHost::subscribeLog(LogSink& sink) { impl_->logSinks.push_back(&sink); }
 

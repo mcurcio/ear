@@ -1,0 +1,264 @@
+{
+  "description": "The feature counters (docs/control-port.md#counters): the snapshot carries the graph's counters and each node's; counters.changed, at most once a second and only when a loss moved, carries the graph's counters whole and the whole counters of each node whose counters changed since the last, and the client replaces the counters it names. A node it names that the client does not hold (ghost, removed and still closing) is ignored. A change of a card's channel count replaces the node, node.removed and node.added, and the node.added carries the counters the newer node carries on from the older (a port-caused replace is the same node to the operator: docs/engine.md#counters), so the next counters.changed moves on from them.",
+  "requests": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"graph.subscribe\"}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"node.update\",\"params\":{\"name\":\"desk\",\"settings\":{\"card\":\"MOTU\",\"playback\":4}}}"
+  ],
+  "messages": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "result": {
+        "protocol": 1,
+        "features": [
+          "lifecycle",
+          "counters"
+        ],
+        "graphFrequency": 48000,
+        "blockSize": 256,
+        "realtime": true,
+        "scheduling": "SCHED_FIFO 88",
+        "types": [
+          "card",
+          "file",
+          "white"
+        ],
+        "nodes": [
+          {
+            "name": "desk",
+            "type": "card",
+            "settings": {
+              "card": "MOTU",
+              "playback": 2
+            },
+            "inputs": [
+              "play.1",
+              "play.2"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            }
+          },
+          {
+            "name": "rec",
+            "type": "file",
+            "settings": {
+              "path": "x.wav"
+            },
+            "inputs": [
+              "record.left",
+              "record.right"
+            ],
+            "outputs": [],
+            "state": "running",
+            "phase": "running",
+            "wanted": "running",
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 33,
+              "overruns": 2,
+              "repositions": 0,
+              "driverChanges": 0
+            }
+          }
+        ],
+        "routes": [],
+        "counters": {
+          "cycles": 18750,
+          "cutCycles": 39,
+          "stalls": 1,
+          "lostMs": 208
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "counters.changed",
+      "params": {
+        "graph": {
+          "cycles": 37500,
+          "cutCycles": 41,
+          "stalls": 2,
+          "lostMs": 218
+        },
+        "nodes": {
+          "rec": {
+            "missedCycles": 33,
+            "overruns": 3,
+            "repositions": 0,
+            "driverChanges": 0
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "counters.changed",
+      "params": {
+        "graph": {
+          "cycles": 56250,
+          "cutCycles": 44,
+          "stalls": 2,
+          "lostMs": 234
+        },
+        "nodes": {
+          "desk": {
+            "missedCycles": 12,
+            "overruns": 0,
+            "repositions": 0,
+            "driverChanges": 0
+          },
+          "ghost": {
+            "missedCycles": 5,
+            "overruns": 0,
+            "repositions": 0,
+            "driverChanges": 0
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.removed",
+      "params": {
+        "name": "desk"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "node.added",
+      "params": {
+        "name": "desk",
+        "type": "card",
+        "settings": {
+          "card": "MOTU",
+          "playback": 4
+        },
+        "inputs": [
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 12,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "id": 2,
+      "result": {}
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "counters.changed",
+      "params": {
+        "graph": {
+          "cycles": 75000,
+          "cutCycles": 44,
+          "stalls": 2,
+          "lostMs": 234
+        },
+        "nodes": {
+          "desk": {
+            "missedCycles": 12,
+            "overruns": 1,
+            "repositions": 0,
+            "driverChanges": 0
+          }
+        }
+      }
+    }
+  ],
+  "graph": {
+    "protocol": 1,
+    "features": [
+      "lifecycle",
+      "counters"
+    ],
+    "graphFrequency": 48000,
+    "blockSize": 256,
+    "realtime": true,
+    "scheduling": "SCHED_FIFO 88",
+    "types": [
+      "card",
+      "file",
+      "white"
+    ],
+    "nodes": [
+      {
+        "name": "desk",
+        "type": "card",
+        "settings": {
+          "card": "MOTU",
+          "playback": 4
+        },
+        "inputs": [
+          "play.1",
+          "play.2",
+          "play.3",
+          "play.4"
+        ],
+        "outputs": [],
+        "state": "starting",
+        "phase": "added",
+        "since": "2026-11-09T10:00:00.000000Z",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 12,
+          "overruns": 1,
+          "repositions": 0,
+          "driverChanges": 0
+        }
+      },
+      {
+        "name": "rec",
+        "type": "file",
+        "settings": {
+          "path": "x.wav"
+        },
+        "inputs": [
+          "record.left",
+          "record.right"
+        ],
+        "outputs": [],
+        "state": "running",
+        "phase": "running",
+        "wanted": "running",
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 33,
+          "overruns": 3,
+          "repositions": 0,
+          "driverChanges": 0
+        }
+      }
+    ],
+    "routes": [],
+    "counters": {
+      "cycles": 75000,
+      "cutCycles": 44,
+      "stalls": 2,
+      "lostMs": 234
+    }
+  }
+}

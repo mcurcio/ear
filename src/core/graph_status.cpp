@@ -19,8 +19,9 @@ NodeHealth healthFromSpec(const NodeSpec& spec) {
 }
 
 GraphStatus::GraphStatus(EngineView engine, const NodeCatalogue& catalogue, const DesiredGraph& desired,
-                         const NodeHost& nodes, const Reconciler& routes)
-	: engine_(std::move(engine)), catalogue_(catalogue), desired_(desired), nodes_(nodes), routes_(routes) {}
+                         const NodeHost& nodes, const Reconciler& routes, const GraphCounterSource* graphCounts)
+	: engine_(std::move(engine)), catalogue_(catalogue), desired_(desired), nodes_(nodes), routes_(routes),
+	  graphCounts_(graphCounts) {}
 
 GraphView GraphStatus::read() const {
 	GraphView view{engine_, {}, {}, {}};
@@ -35,8 +36,11 @@ GraphView GraphStatus::read() const {
 		if (const auto it = latest.find(node.spec.name); it != latest.end()) node.health = std::move(it->second);
 		else node.health = healthFromSpec(node.spec);
 		node.health.superseded = false;
+		node.counts = nodes_.counts(node.spec.name).value_or(NodeCounts{});
 		view.nodes.push_back(std::move(node));
 	}
+
+	if (graphCounts_ != nullptr) view.counts = graphCounts_->graphCounts();
 
 	std::map<Route, RouteStatus> linked;
 	for (auto& status : routes_.status()) linked.insert_or_assign(status.route, std::move(status));

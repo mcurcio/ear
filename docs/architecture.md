@@ -415,7 +415,8 @@ node fails `engine-refused: the data loop is wedged`, a new route is `refused` w
 and what ear would destroy is leaked. ear's stop still writes `ear.conf` and every record, then
 leaves through `std::_Exit(0)` (as it does whenever anything was leaked).
 
-**The main-loop watchdog.** A 100 ms main-loop timer beats a heartbeat; the watchdog thread looks
+**The main-loop watchdog.** A 100 ms main-loop timer beats a heartbeat (and, at each beat, reads
+the diagnostics counters: [engine.md](engine.md#reporting-the-counters)); the watchdog thread looks
 every 250 ms and, once the heartbeat is older than 500 ms, writes `ear.main-loop-stalled` (with
 the call the loop is in, when known), then `ear.main-loop-resumed` once beats return. Any stall
 over 750 ms is seen. It never touches PipeWire or waits on the main loop. *Why:* PipeWire's own

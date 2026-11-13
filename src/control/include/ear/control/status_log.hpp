@@ -14,6 +14,7 @@
 #include <vector>
 #include "ear/control/lifecycle_wire.hpp"
 #include "ear/control/requests.hpp"
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/log.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -66,6 +67,9 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       ear.main-loop-resumed with "ms", the stall's length, both from the watchdog's thread)
 ///                       | ear.internal-error: ear's own bug, caught, with "callback" and, when it fails one, "node"
 ///                       (docs/output-records.md#diagnostic; its detail "<callback> threw[ during <where>]: <what>")
+///                       | ear.graph-lost-cycles (no node: "cycles", "stalls", "ms" since the last, "totalCycles") and
+///                       node <n> ear.node-missed-cycles ("missed", "overruns" since the last, "totalMissed",
+///                       "totalOverruns"), as CounterWatch paces them (docs/engine.md#reporting-the-counters)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -80,6 +84,7 @@ class StatusLog final : public NodeHealthListener,
 						public EngineDiagnosticListener,
 						public ActionListener,
 						public InternalErrorListener,
+						public CounterListener,
 						public LogSink {
 public:
 	static constexpr int logBurst = 32;
@@ -107,6 +112,10 @@ public:
 	/// own thread: a look found the heartbeat
 	/// `ms` old, the main loop `in` a call (MainLoopActivity::current(); empty when between calls); and the beats back
 	/// after a gap of `ms` between the beats either side.
+	/// CounterWatch's records (docs/output-records.md#diagnostic): what the graph lost, and what a node missed or
+	/// overran, since the last such record.
+	void graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) override;
+	void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) override;
 	void mainLoopStalled(std::int64_t ms, std::string_view in);
 	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);

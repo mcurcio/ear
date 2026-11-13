@@ -5,7 +5,9 @@
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 #include "ear/control/graph_file_state.hpp"
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/levels.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/core/reconciler.hpp"
@@ -16,6 +18,7 @@ struct NodeAdded {
 	Ports ports;       // public ports only
 	NodeHealth health; // from the spec alone
 	std::chrono::system_clock::time_point since;
+	NodeCounts counts{}; // feature counters: zero, or for a port-caused replace the older node's, which it carries on
 };
 struct NodeUpdated {
 	NodeName node;
@@ -49,8 +52,15 @@ struct RouteRemoved {
 struct RouteChanged {
 	RouteStatus status;
 };
+/// counters.changed (feature counters, docs/control-port.md#counters): the graph's counters whole, `lostMs` encoded
+/// from its cutCycles, and the whole counters of each node named.
+struct CountersChanged {
+	GraphCounts graph;
+	std::uint64_t lostMs;
+	std::vector<NamedCounts> nodes;
+};
 using GraphEvent = std::variant<NodeAdded, NodeUpdated, NodeRemoved, NodeChanged, NodeStopped, NodeGone, RouteAdded,
-                                RouteRemoved, RouteChanged>;
+                                RouteRemoved, RouteChanged, CountersChanged>;
 class EventSink { // control thread
 public:
 	virtual void graphChanged(GraphEvent event) = 0;

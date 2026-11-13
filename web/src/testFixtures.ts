@@ -2,6 +2,7 @@
 // from protocol 1), read as the wire type, for the UI's tests only. The server's tests (ear_control)
 // run on the same files.
 import edits from "../../test/protocol/edits.json";
+import countersChanged from "../../test/protocol/counters-changed.json";
 import errors from "../../test/protocol/errors.json";
 import graphFile from "../../test/protocol/graph-file.json";
 import levels from "../../test/protocol/levels.json";
@@ -11,7 +12,16 @@ import unknownValues from "../../test/protocol/unknown-values.json";
 import type { ProtocolFixture, ServerMessage, ServerText } from "./protocol";
 
 // JSON imports are typed by their contents (strings widened), so they are read as the wire type.
-export const fixtures = { snapshot, edits, levels, errors, graphFile, lifecycle, unknownValues } as unknown as {
+export const fixtures = {
+  snapshot,
+  edits,
+  levels,
+  errors,
+  graphFile,
+  lifecycle,
+  unknownValues,
+  countersChanged,
+} as unknown as {
   snapshot: ProtocolFixture;
   edits: ProtocolFixture;
   levels: ProtocolFixture;
@@ -19,6 +29,7 @@ export const fixtures = { snapshot, edits, levels, errors, graphFile, lifecycle,
   graphFile: ProtocolFixture;
   lifecycle: ProtocolFixture;
   unknownValues: ProtocolFixture;
+  countersChanged: ProtocolFixture;
 };
 
 /** A fixture's server texts as the messages the client hands on, a batch's in its order. */

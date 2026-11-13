@@ -294,6 +294,14 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 		[](StatusLog& log, Lines&) {
 			log.internalError({.callback = "LinkProxy::onInfo", .node = {}, .where = {}, .what = "bad info"});
 		},
+		[](StatusLog& log, Lines&) {
+			log.graphLostCycles({.cycles = 18750, .cutCycles = 39, .stalls = 1},
+		                        {.cycles = 900, .cutCycles = 39, .stalls = 1}, 208);
+		},
+		[](StatusLog& log, Lines&) {
+			log.nodeMissedCycles("rec", {.missedCycles = 33, .overruns = 2, .repositions = 1},
+		                         {.missedCycles = 33, .overruns = 1, .repositions = 1});
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

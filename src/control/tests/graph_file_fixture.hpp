@@ -121,7 +121,8 @@ inline ear::GraphView graphView(int playback, const std::string& recPath) {
 }
 
 /// snapshot.json's graph, as GraphStatus reads it and the gateway fills it: a card that failed, a running node the
-/// gateway was told of (its since), a node ear.conf disables, a running node and a file node that failed.
+/// gateway was told of (its since), a node ear.conf disables, a running node that missed cycles and overran, a file
+/// node that failed, and the graph's counters.
 inline ear::GraphView snapshotView() {
 	using ear::NodeState;
 	using Code = ear::FailureReason::Code;
@@ -141,7 +142,9 @@ inline ear::GraphView snapshotView() {
 		{quiet, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}, health("quiet", NodeState::disabled)});
 	view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
 	                      ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
-	                      health("rec", NodeState::running)});
+	                      health("rec", NodeState::running),
+	                      std::nullopt,
+	                      ear::NodeCounts{.missedCycles = 33, .overruns = 2}});
 	view.nodes.push_back(
 		{{"tape", "file", {{"path", "nope/t.wav"}}},
 	     ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
@@ -153,6 +156,7 @@ inline ear::GraphView snapshotView() {
 	view.routes.push_back({{{"noise", "noise.mono"}, {"tape", "record.left"}},
 	                       ear::RouteMatch::refused,
 	                       "the engine removed the link before it was active"});
+	view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1}; // lostMs 208: 39 blocks of 256
 	return view;
 }
 

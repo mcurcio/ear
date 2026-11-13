@@ -65,6 +65,23 @@ TEST_CASE("Every graph notification encodes as edits.json has it", "[events][pro
 	CHECK(encoded(NodeGone{"noise", 0}) == m[29]);
 }
 
+TEST_CASE("counters.changed and node.added's counters encode as counters-changed.json has them",
+          "[events][protocol][counters]") {
+	const json m = fixture("counters-changed")["messages"];
+	const std::vector<ear::NamedCounts> rec{{"rec", {.missedCycles = 33, .overruns = 3}}};
+	CHECK(encoded(CountersChanged{{.cycles = 37500, .cutCycles = 41, .stalls = 2}, 218, rec}) == m[1]);
+	const std::vector<ear::NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
+	CHECK(encoded(CountersChanged{{.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two}) == m[2]);
+	const ear::Ports four{{{ear::Direction::input, "play", ear::numbered(4)}}};
+	CHECK(encoded(NodeAdded{{"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+	                        four,
+	                        ear::NodeHealth{"desk"},
+	                        ear::control::testing::reading(0),
+	                        {.missedCycles = 12}}) == m[4]);
+	CHECK(encoded(CountersChanged{{.cycles = 75000, .cutCycles = 44, .stalls = 2}, 234, {}})["params"]["nodes"] ==
+	      json::object()); // no node moved: the graph's alone
+}
+
 TEST_CASE("node.updated says disabled only when true, and each outcome by its name", "[events][lifecycle]") {
 	const json disabled = encoded(NodeUpdated{"porch", json::object(), true, ear::NodeOutcome::disable});
 	CHECK(disabled["params"] == json::parse(R"({"name":"porch","settings":{},"applied":"disable","disabled":true})"));

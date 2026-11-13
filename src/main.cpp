@@ -32,6 +32,7 @@
 #include "ear/config/graph_file_keeper.hpp"
 #include "ear/control/gateway.hpp"
 #include "ear/control/status_log.hpp"
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/graph_view.hpp"
 #include "ear/core/main_loop_activity.hpp"
@@ -137,20 +138,26 @@ private:
 
 /// The main loop's heartbeat (docs/architecture.md#bounds-the-wedged-data-loop-and-the-watchdog): a main-loop timer
 /// that beats the watchdog every 100 ms, armed again each time it runs. Its first beat arms the watchdog, so boot
-/// before the loop runs is no stall.
+/// before the loop runs is no stall. Each beat also ticks the counters' pacer, which reads them there rather than on a
+/// wake-up of its own (docs/engine.md#reporting-the-counters).
 class Heartbeat {
 public:
-	Heartbeat(ear::Timers& timers, ear::output::StallWatch& watch) : timers_(timers), watch_(watch) { arm(); }
+	Heartbeat(ear::Timers& timers, ear::output::StallWatch& watch, ear::CounterWatch& counters)
+		: timers_(timers), watch_(watch), counters_(counters) {
+		arm();
+	}
 
 private:
 	void arm() {
 		timer_ = timers_.after(std::chrono::milliseconds(100), [this] {
 			watch_.beat();
+			counters_.tick();
 			arm();
 		});
 	}
 	ear::Timers& timers_;
 	ear::output::StallWatch& watch_;
+	ear::CounterWatch& counters_;
 	std::unique_ptr<ear::Timer> timer_;
 };
 
@@ -281,7 +288,6 @@ int main(int argc, char** argv) {
 	ear::output::StallWatch stallWatch([] { return ear::MainLoopActivity::current(); },
 	                                   [&log](std::int64_t ms, const std::string& in) { log.mainLoopStalled(ms, in); },
 	                                   [&log](std::int64_t ms) { log.mainLoopResumed(ms); });
-	Heartbeat heartbeat(mainLoop, stallWatch); // not const: its timer re-arms itself
 	// After Engine::create, so its thread inherits the blocked stop signals.
 	ear::server::ControlThread control;
 	ear::server::LevelBell bell;
@@ -300,11 +306,15 @@ int main(int argc, char** argv) {
 	ConfinedRecordings recordingFiles(std::move(*recordings));
 	ear::ResourceRegistry resources(cards, receivers, handoffs, sinks, sources, recordingFiles);
 	ear::NodeHost nodes(format, blocks, resources, mainLoop, mainLoop);
-	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes,
-	                              reconciler);
+	const ear::GraphStatus status({format, scheduling.realtime, scheduling.detail}, catalogue, graph, nodes, reconciler,
+	                              engine.get());
 
 	ear::config::GraphFileKeeper keeper(std::move(first), *config, format, graph, status, nodes, mainLoop);
 	ear::control::MainLoopGateway gateway(mainLoop, control, keeper);
+	// The counters' reports (docs/engine.md#reporting-the-counters): read at the heartbeat, told to the wire and to
+	// standard output.
+	ear::CounterWatch counterWatch(mainLoop, *engine, nodes, format);
+	Heartbeat heartbeat(mainLoop, stallWatch, counterWatch); // not const: its timer re-arms itself
 
 	// Observers hear each change before the subscribers act on it, so a client gets node.added
 	// before the node.state it causes.
@@ -321,6 +331,10 @@ int main(int argc, char** argv) {
 	nodes.subscribeEngineDiagnostics(log); // ear.data-loop-wedged, as a record with no node
 	WedgeMarker wedgeMarker(*engine);
 	nodes.subscribeEngineDiagnostics(wedgeMarker); // then the engine's adapters stop calling into the loop
+	nodes.subscribeCounts(counterWatch);           // where each name's counts begin and end
+	counterWatch.subscribe(gateway);               // counters.changed
+	counterWatch.subscribe(log);                   // ear.graph-lost-cycles, ear.node-missed-cycles
+	gateway.readCounts(nodes);                     // node.added's counters for a port-caused replace
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);
@@ -371,6 +385,9 @@ int main(int argc, char** argv) {
 	engine->run();
 	// The loop has ended and beats no more: the keeper's last write is not a stall.
 	stallWatch.stop();
+
+	// What the counters' records still held back, so the records' sums are the totals (every node's went as it went).
+	counterWatch.flush();
 
 	// The keeper's last write runs as its thread ends; its failure reaches standard output only.
 	if (const auto failed = keeper.join()) log.graphFileWriteFailed(*failed);

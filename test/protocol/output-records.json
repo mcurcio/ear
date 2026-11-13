@@ -739,10 +739,43 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "the graph lost cycles: what the driver cut since the last such record, in how many stalls of the host and the time they lost, and its total cut since ear started; once a catch-up's burst held still, at most one a second (docs/engine.md#reporting-the-counters)",
       "record": {
         "v": 1,
         "seq": 83,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "code": "ear.graph-lost-cycles",
+        "cycles": 39,
+        "stalls": 1,
+        "ms": 208,
+        "totalCycles": 39,
+        "detail": "the host held up the audio thread: 39 cycles cut (208 ms) in 1 stall; 39 cut since ear started",
+        "msg": "ear.graph-lost-cycles: the host held up the audio thread: 39 cycles cut (208 ms) in 1 stall; 39 cut since ear started"
+      }
+    },
+    {
+      "case": "a node missed cycles the driver did not cut, or its own work overran: each since its last such record, and their totals since it was added; at most once per 10 s per node, and at once as it goes",
+      "record": {
+        "v": 1,
+        "seq": 84,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.node-missed-cycles",
+        "missed": 33,
+        "overruns": 1,
+        "totalMissed": 33,
+        "totalOverruns": 2,
+        "detail": "missed 33 cycles it was not scheduled for, overran 1 time; 33 missed and 2 overrun since it was added",
+        "msg": "node rec ear.node-missed-cycles: missed 33 cycles it was not scheduled for, overran 1 time; 33 missed and 2 overrun since it was added"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 85,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

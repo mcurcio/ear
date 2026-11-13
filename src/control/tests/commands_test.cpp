@@ -102,10 +102,25 @@ TEST_CASE("The lifecycle's five methods take a name and nothing else, and node.a
 	CHECK(invalid("node.add", R"({"name": "q", "type": "white", "colour": "red"})") == "/colour: unknown key");
 }
 
-TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle feature", "[commands][lifecycle]") {
+TEST_CASE("The frame: graph.get says protocol 1 and the lifecycle and counters features", "[commands][lifecycle]") {
 	const json graph = encodeGraph(ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {}, {}, {}});
 	CHECK(graph["protocol"] == 1);
-	CHECK(graph["features"] == json::array({"lifecycle"}));
+	CHECK(graph["features"] == json::array({"lifecycle", "counters"}));
+}
+
+TEST_CASE("A snapshot's counters: the graph's with lostMs at its own rate and block size, and every node's",
+          "[commands][counters]") {
+	ear::GraphView view{{{44100, 512}, false, "SCHED_OTHER"}, {}, {}, {}};
+	view.counts = ear::GraphCounts{.cycles = 900, .cutCycles = 10, .stalls = 3};
+	view.nodes.push_back({{"n", "white", json::object()},
+	                      ear::Ports{},
+	                      ear::NodeHealth{"n"},
+	                      std::nullopt,
+	                      ear::NodeCounts{.missedCycles = 1, .overruns = 2, .repositions = 3, .driverChanges = 4}});
+	const json graph = encodeGraph(view);
+	CHECK(graph["counters"] == json::parse(R"({"cycles":900,"cutCycles":10,"stalls":3,"lostMs":116})"));
+	CHECK(graph["nodes"][0]["counters"] ==
+	      json::parse(R"({"missedCycles":1,"overruns":2,"repositions":3,"driverChanges":4})"));
 }
 
 TEST_CASE("Each health member is encoded once for snapshots: state, phase, wanted and blockLost always, since, "
@@ -130,10 +145,12 @@ TEST_CASE("Each health member is encoded once for snapshots: state, phase, wante
 	const json nodes = encodeGraph(view)["nodes"];
 	CHECK(nodes[0] == json::parse(R"({"name":"desk","type":"card","settings":{},"inputs":[],"outputs":[],
 		"state":"stopping","phase":"stopping","since":"2026-11-09T10:00:00.010000Z","wanted":"running","blockLost":true,
-		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true})"));
+		"cause":{"kind":"restarting","restart":{"kind":"settings","keys":["card","playback"]}},"disabled":true,
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0}})"));
 	CHECK(nodes[1] == json::parse(R"({"name":"fpp","type":"rtp","settings":{},"inputs":[],"outputs":[],
 		"state":"starting","phase":"configuring","wanted":"running","blockLost":false,
-		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}]})"));
+		"cause":{"kind":"settings","keys":["port"]},"waitingFor":[{"kind":"companion","name":"fpp.rtp"},{"kind":"block"}],
+		"counters":{"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0}})"));
 }
 
 TEST_CASE("Every missing, extra and mistyped key is invalid params naming its pointer", "[commands]") {

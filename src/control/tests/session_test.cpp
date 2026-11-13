@@ -273,6 +273,94 @@ TEST_CASE("snapshot.json: graph.get and graph.subscribe answer with the whole gr
 	CHECK(w.graph.offLoop == 0);
 }
 
+/// A node's counters by name, as NodeHost answers them.
+struct HandCounts final : ear::NodeCounterSource {
+	std::map<ear::NodeName, ear::NodeCounts> nodes;
+	std::optional<ear::NodeCounts> counts(const ear::NodeName& node) const override {
+		const auto it = nodes.find(node);
+		if (it == nodes.end()) return std::nullopt;
+		return it->second;
+	}
+};
+
+TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a port-caused "
+          "replace's node.added carrying the counts it carries on",
+          "[session][protocol][counters]") {
+	using ear::NamedCounts;
+	using ear::NodeCounts;
+	const json document = fixture("counters-changed");
+	const auto requests = requestsOf(document);
+	World w;
+	w.graph.view = ear::GraphView{{{48000, 256}, true, "SCHED_FIFO 88"}, {"card", "file", "white"}, {}, {}};
+	const auto cardPorts = [](std::uint32_t playback) {
+		return ear::Ports{{{ear::Direction::input, "play", ear::numbered(playback)}}};
+	};
+	w.graph.view.nodes.push_back(
+		{{"desk", "card", {{"card", "MOTU"}, {"playback", 2}}}, cardPorts(2), health("desk", NodeState::running)});
+	w.graph.view.nodes.push_back({{"rec", "file", {{"path", "x.wav"}}},
+	                              ear::Ports{{{ear::Direction::input, "record", {"left", "right"}}}},
+	                              health("rec", NodeState::running),
+	                              std::nullopt,
+	                              NodeCounts{.missedCycles = 33, .overruns = 2}});
+	w.graph.view.counts = ear::GraphCounts{.cycles = 18750, .cutCycles = 39, .stalls = 1};
+	HandCounts counts;
+	w.gateway.readCounts(counts);
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+
+	w.receive(session, requests[0]);
+	w.onMain([&] {
+		const std::vector<NamedCounts> rec{{"rec", {.missedCycles = 33, .overruns = 3}}};
+		w.gateway.countersChanged({.cycles = 37500, .cutCycles = 41, .stalls = 2}, 218, rec);
+	});
+	w.onMain([&] {
+		const std::vector<NamedCounts> two{{"desk", {.missedCycles = 12}}, {"ghost", {.missedCycles = 5}}};
+		w.gateway.countersChanged({.cycles = 56250, .cutCycles = 44, .stalls = 2}, 234, two);
+	});
+	// The channel count changes: a port-caused replace. The gateway hears it before NodeHost does, so the name's counts
+	// are still the older node's, which the newer carries on.
+	counts.nodes["desk"] = NodeCounts{.missedCycles = 12};
+	w.graph.script.push_back({R"(updateNode desk {"card":"MOTU","playback":4})", [&] {
+								  const ear::NodeChange ports{ear::NodeOutcome::restart, {"playback"}, true};
+								  w.gateway.nodeReplacing("desk", ports);
+								  w.gateway.nodeReplaced({"desk", "card", {{"card", "MOTU"}, {"playback", 4}}},
+		                                                 std::make_shared<Config>(cardPorts(4)), ports);
+								  return Result{};
+							  }});
+	w.receive(session, requests[1]);
+	w.onMain([&] {
+		const std::vector<NamedCounts> desk{{"desk", {.missedCycles = 12, .overruns = 1}}};
+		w.gateway.countersChanged({.cycles = 75000, .cutCycles = 44, .stalls = 2}, 234, desk);
+	});
+	checkMessages(out, document["messages"]);
+	CHECK(w.graph.script.empty());
+}
+
+TEST_CASE("A replace that is not port-caused, and a node added, carry zero counters whatever the name counted",
+          "[session][counters]") {
+	World w;
+	w.graph.view = ear::GraphView{{{48000, 256}, false, "SCHED_OTHER"}, {"card", "white"}, {}, {}};
+	HandCounts counts;
+	counts.nodes["x"] = ear::NodeCounts{.overruns = 9};
+	w.gateway.readCounts(counts);
+	RecordingOutbox out;
+	ControlSession session(*w.hub, out);
+	w.receive(session, R"({"jsonrpc":"2.0","id":1,"method":"graph.subscribe"})");
+	w.onMain([&] {
+		const ear::NodeChange type{ear::NodeOutcome::restart, {}, false};
+		w.gateway.nodeReplacing("x", type);
+		w.gateway.nodeReplaced({"x", "white", json::object()},
+		                       std::make_shared<Config>(ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}}),
+		                       type);
+		w.nodeAdded({"y", "white", json::object()}, ear::Ports{{{ear::Direction::output, "noise", {"mono"}}}});
+	});
+	const std::vector<json> got = parsed(out.all);
+	REQUIRE(got.size() == 4); // the snapshot, node.removed, node.added x, node.added y
+	const json zero = json::parse(R"({"missedCycles":0,"overruns":0,"repositions":0,"driverChanges":0})");
+	CHECK(got[2]["params"]["counters"] == zero);
+	CHECK(got[3]["params"]["counters"] == zero);
+}
+
 TEST_CASE("edits.json: each change's notification comes before its statuses and the response", "[session][protocol]") {
 	const json document = fixture("edits");
 	const auto requests = requestsOf(document);

@@ -17,7 +17,8 @@
       "result": {
         "protocol": 1,
         "features": [
-          "lifecycle"
+          "lifecycle",
+          "counters"
         ],
         "graphFrequency": 48000,
         "blockSize": 256,
@@ -40,7 +41,13 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            }
           },
           {
             "name": "rec",
@@ -56,7 +63,13 @@
             "state": "running",
             "phase": "running",
             "wanted": "running",
-            "blockLost": false
+            "blockLost": false,
+            "counters": {
+              "missedCycles": 0,
+              "overruns": 0,
+              "repositions": 0,
+              "driverChanges": 0
+            }
           }
         ],
         "routes": [
@@ -71,7 +84,13 @@
             },
             "status": "linked"
           }
-        ]
+        ],
+        "counters": {
+          "cycles": 0,
+          "cutCycles": 0,
+          "stalls": 0,
+          "lostMs": 0
+        }
       }
     },
     {
@@ -89,7 +108,13 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.000000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        }
       }
     },
     {
@@ -188,7 +213,13 @@
         "phase": "added",
         "since": "2026-11-09T10:00:00.030000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        }
       }
     },
     {
@@ -433,7 +464,8 @@
   "graph": {
     "protocol": 1,
     "features": [
-      "lifecycle"
+      "lifecycle",
+      "counters"
     ],
     "graphFrequency": 48000,
     "blockSize": 256,
@@ -457,7 +489,13 @@
         "phase": "running",
         "since": "2026-11-09T10:00:00.020000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        }
       },
       {
         "name": "rec",
@@ -474,7 +512,13 @@
         "phase": "running",
         "since": "2026-11-09T10:00:00.080000Z",
         "wanted": "running",
-        "blockLost": false
+        "blockLost": false,
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
+        }
       },
       {
         "name": "tape",
@@ -495,6 +539,12 @@
         "reason": {
           "code": "start-failed",
           "detail": "cannot open nope/t.wav: No such file or directory"
+        },
+        "counters": {
+          "missedCycles": 0,
+          "overruns": 0,
+          "repositions": 0,
+          "driverChanges": 0
         }
       }
     ],
@@ -511,6 +561,12 @@
         "status": "refused",
         "detail": "the engine removed the link before it was active"
       }
-    ]
+    ],
+    "counters": {
+      "cycles": 0,
+      "cutCycles": 0,
+      "stalls": 0,
+      "lostMs": 0
+    }
   }
 }

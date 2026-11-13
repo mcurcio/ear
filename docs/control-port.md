@@ -2,8 +2,8 @@
 
 ear serves one TCP port (7777 by default): the graph editor's files over HTTP at `/`, and
 JSON-RPC 2.0 over WebSocket at `/rpc`. Through `/rpc` a client reads and edits the graph and its
-file, streams every change and per-port audio levels, and stops, starts, restarts, disables and
-enables nodes. This page is the wire's one reference, **protocol 1**. Its examples are the fixtures
+file, streams every change, per-port audio levels and the diagnostics counters, and stops, starts,
+restarts, disables and enables nodes. This page is the wire's one reference, **protocol 1**. Its examples are the fixtures
 in `test/protocol/*.json`, which ear's C++ tests and the editor's tests both check: when this page
 and a fixture disagree, the fixture is right.
 
@@ -72,7 +72,7 @@ snapshots include every edit the batch made.
 
 ## Protocol and features
 
-`graph.get` says `"protocol": 1` and `"features": ["lifecycle"]`. An absent `protocol` is 0 (the
+`graph.get` says `"protocol": 1` and `"features": ["lifecycle", "counters"]`. An absent `protocol` is 0 (the
 wire before the lifecycle). The number moves only on a breaking change: removing or renaming a
 method, notification, member or code, changing a member's type, or changing an order guarantee.
 Additive growth is a new **feature** name.
@@ -80,11 +80,14 @@ Additive growth is a new **feature** name.
 - Gate every method and request member on its feature, never on a -32601 probe. `lifecycle` adds
   the health members `phase`, `since`, `wanted`, `cause`, `waitingFor` and `blockLost`; `disabled`
   on a node; `node.start`, `node.stop`, `node.restart`, `node.disable`, `node.enable`, `node.add`'s
-  `disabled`; the codes `node-disabled` and `not-restartable`; and `node.gone`.
+  `disabled`; the codes `node-disabled` and `not-restartable`; and `node.gone`. `counters` adds
+  `counters` on the Graph and on each node of a snapshot and `node.added`, and `counters.changed`
+  ([below](#counters)).
 - **Every enum is open.** `state`, `phase`, `cause.kind`, `waitingFor`'s `kind`, a route's `status`,
-  `reason.code`, `applied`, `severity` and every code may gain values. Draw a value you do not know
-  neutrally (a state as `starting`'s style, a code as its text), and ignore a notification you do
-  not know; never fail on either (`test/protocol/unknown-values.json`).
+  `reason.code`, `applied`, `severity` and every code may gain values, and the counters' names are
+  an open set. Draw a value you do not know
+  neutrally (a state as `starting`'s style, a code as its text, a counter by its name and number),
+  and ignore a notification you do not know; never fail on either (`test/protocol/unknown-values.json`).
 - **A client that sees a higher `protocol`** shows a banner and keeps working with what it
   understands.
 - **Protocol 0 clients** keep working: they see `state` as before plus values they do not know
@@ -96,13 +99,14 @@ Additive growth is a new **feature** name.
 `graph.get` and `graph.subscribe` answer with the Graph (`test/protocol/snapshot.json`):
 
 ```json
-{"protocol": 1, "features": ["lifecycle"],
+{"protocol": 1, "features": ["lifecycle", "counters"],
  "graphFrequency": 48000, "blockSize": 256, "realtime": true, "scheduling": "SCHED_FIFO 88",
  "types": ["card", "file", "white"],
+ "counters": {"cycles": 18750, "cutCycles": 39, "stalls": 1, "lostMs": 208},
  "nodes": [
    {"name": "noise", "type": "white", "settings": {}, "inputs": [], "outputs": ["noise.mono"],
     "state": "running", "phase": "running", "since": "2026-11-09T10:00:00.000000Z", "wanted": "running",
-    "blockLost": false},
+    "blockLost": false, "counters": {"missedCycles": 0, "overruns": 0, "repositions": 0, "driverChanges": 0}},
    {"name": "quiet", "type": "white", "settings": {}, "inputs": [], "outputs": ["noise.mono"],
     "state": "disabled", "phase": "disabled", "wanted": "disabled", "blockLost": false, "disabled": true},
    {"name": "tape", "type": "file", "settings": {"path": "nope/t.wav"},
@@ -120,10 +124,12 @@ Additive growth is a new **feature** name.
 | `graphFrequency`, `blockSize` | The engine's, fixed at boot |
 | `realtime`, `scheduling` | Whether the audio thread is realtime, and its policy (`SCHED_FIFO 88`, `SCHED_OTHER`) |
 | `types` | The node types ear knows |
-| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never on the wire), its [health](#node-health), and `disabled: true` when `ear.conf` disables it |
+| `nodes[]` | Each node: `name`, `type`, `settings` (as in `ear.conf`), `inputs` and `outputs` (public ports only; inside banks are never on the wire), its [health](#node-health), `disabled: true` when `ear.conf` disables it, and its `counters` ([below](#counters)) |
+| `counters` | The graph's counters ([below](#counters)) |
 | `routes[]` | Each route: `from` and `to` (`{node, port}`), `status` (`pending`: an end is not live yet; `linked`; `refused`), `detail` when refused |
 
-One main-loop turn makes the whole snapshot, so its parts agree.
+One main-loop turn makes the whole snapshot, so its parts agree, the counters among them. The
+example abbreviates: every node carries `counters`.
 
 ### Node health
 
@@ -189,7 +195,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 
 | Notification | Params | When |
 |---|---|---|
-| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled) | A node was added |
+| `node.added` | the node as in the Graph, with its health (`phase` `added`, or `disabled` for a node added disabled) and its `counters` (zero, or what a port-caused replace carries on: [below](#counters)) | A node was added |
 | `node.updated` | `{"name", "settings", "applied", "disabled"?}`; `applied`: `restart`, `disable`, `enable` or `stored` (a change to a node that stays disabled) | A node's settings or `disabled` changed |
 | `node.removed` | `{"name"}` | A node was removed (after `route.removed` for its routes). The client drops the node now |
 | `node.state` | `{"name"}` and every health member | Any health member changed |
@@ -199,6 +205,7 @@ edit. Their effect shows as `node.updated` (`applied` and `disabled`) and the he
 | `route.status` | `{"from", "to", "status", "detail"?}` | A route became `pending`, `linked` or `refused` |
 | `graphFile.changed` | GraphFile, `"cause"`, `"droppedEdits"?` | `ear.conf`'s state changed |
 | `levels` | `{"nodes": {"<node>": {"<port>": [peak, rms]}}}` | 30 times a second, to `levels.subscribe` clients |
+| `counters.changed` | `{"graph": {...}, "nodes": {"<node>": {...}}}` | A counter was lost; at most once a second ([below](#counters)) |
 
 A client ignores an event naming a node it does not know. After `node.removed` the removed node's
 `node.state` (`stopping`, cause `removing`), `node.stopped` and `node.gone` name a node the client
@@ -315,6 +322,36 @@ port's level**; an input port's level is what arrives there, the sum when severa
 it. Windows are 1/30 s of graph time, on the same clock positions for every block. Levels never
 queue: a subscriber always gets the newest snapshot, replacing one not yet written.
 
+## Counters
+
+With the feature `counters`, ear reports its diagnostics counters: running totals of what its cycles
+state, the graph's and each node's, which never step back and are never reset
+([engine.md](engine.md#counters) says what each counts and where, and
+[when they are reported](engine.md#reporting-the-counters)). Each is a JSON number.
+
+| Object | Counters |
+|---|---|
+| The Graph's `counters` | `cycles` (cycles the internal clock started since ear started), `cutCycles` (of them, those the driver cut short: a dropout on every output), `stalls` (times the graph fell behind and lost cycles, one each however many it cut), `lostMs` (the time the cut cycles lost) |
+| A node's `counters` | `missedCycles` (cycles its block missed that the driver did not cut), `overruns` (cycles its own work took longer than), `repositions`, `driverChanges`; from its add, across its restarts |
+
+- **On subscribe**, the snapshot carries the graph's counters and each node's, read in the turn
+  that makes it. `node.added` carries the node's: zero for a node added, or, when a node is
+  replaced only because its ports changed (a card's channel count), the counters it carries on
+  from the older node, which is the same node to the operator. So a client holds every node's
+  counters from the moment it holds the node.
+- **`counters.changed`** (`test/protocol/counters-changed.json`) carries the graph's counters
+  whole and, under `nodes`, the whole counters of each node whose counters changed since the last
+  one. It is sent at most once a second, and only when a counter was lost (`cutCycles`, `stalls` or
+  a node's): `cycles` moves every cycle and is never a change alone. It is a sample, not a record
+  of each change: a client replaces the counters it names. It rides the graph's one ordered
+  stream, so a node it names was added before it, and it may repeat what a snapshot already said.
+- **A gone node.** A client drops a node, and its counters, at `node.removed`. A `counters.changed`
+  may still name it while it closes; like every event naming a node the client does not hold,
+  that is ignored. Its last counts reach standard output only
+  ([output-records.md](output-records.md#diagnostic)).
+- **The names are an open set:** a counter a client does not know is shown by its name and number.
+- A client that wants "since I looked" keeps what it last saw and subtracts; there is no reset.
+
 ## Per-client limits and stopping
 
 - One message in flight per connection: the next is read only after every reply to this one is
@@ -359,6 +396,7 @@ breaking change moves `protocol`; anything else is a new feature name
 | `graph-file.json` | `graphFile.*`, edits at the source, hand edits, refusals; also its `requests` and final `file` |
 | `errors.json` | Every refusal code and envelope error |
 | `levels.json` | `levels.subscribe` and `levels` |
+| `counters-changed.json` | The counters in a snapshot, `counters.changed`, one naming a node not held, and a port-caused replace's `node.added` carrying its counters |
 | `unknown-values.json` | Values, members and notifications a client does not know, taken or ignored |
 | `output-records.json` | Standard output's records ([output-records.md](output-records.md)) |
 

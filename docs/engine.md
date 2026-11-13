@@ -401,8 +401,57 @@ older's counts, read from it until it is gone and carried after, and the total n
 replace by another type is a removal and an add, from zero. Nothing resets a counter but its
 owner's end.
 
-Nothing reports them yet: the wire and standard output are slice D2 of
-[the cycle facts design](design/cycle-facts.md#83-how-they-are-reported).
+### Reporting the counters
+
+The counters reach the control port (the feature `counters`:
+[control-port.md](control-port.md#counters)) and standard output (`ear.graph-lost-cycles` and
+`ear.node-missed-cycles`: [output-records.md](output-records.md#diagnostic)) through one pacer on
+the main loop, `CounterWatch` (`ear/core/counter_watch.hpp`). Nothing runs on the data thread for
+them: it writes the counters and is never asked anything.
+
+**When they are read.** At the main loop's heartbeat, the 100 ms timer that already beats the
+watchdog ([architecture.md](architecture.md#bounds-the-wedged-data-loop-and-the-watchdog)): each
+beat reads the graph's counters (`GraphCounterSource`, the engine) and those of every node whose
+span of counts is open (`NodeCounterSource`, NodeHost), all lock-free loads. *Why there and not on
+an event:* the counters move on the data thread, where telling the main loop of each cut or miss
+would be a system call (an eventfd write) in the middle of a stall's catch-up, the moment the
+thread is furthest behind; and a timer of their own would wake the loop again for what the
+heartbeat already gives. The cost of a beat is a handful of atomic loads and a lookup per node.
+
+**Spans.** A name's counts are one span from the add of a node that starts from zero to its end
+([above](#counters): a port-caused replace carries them on). NodeHost tells where each span begins
+(`countsBegan`: a node added, or a name replaced by another type or removed and added again) and
+ends (`countsEnded`, with its final counts, as it goes, before its `nodeGone`), since only NodeHost
+knows a node's life and `NodeHost::counts` no longer answers for a node once it is gone. A
+superseded node's end is not told: its name's span is the newer node's from its add, and what the
+older node moved since its last record is written then, as last read.
+
+**What moves.** A *loss* is `cutCycles` or `stalls` of the graph, or any of a node's four.
+`cycles` moves every cycle and `lostMs` follows `cutCycles`, so neither is a change on its own.
+
+**The wire's pace.** At a beat where a loss moved since the last `counters.changed`, and a second
+has passed since it, one goes out: the graph's counters whole, and the whole counters of each node
+whose counters differ from what the client holds for it (`node.added`'s, then what the last
+`counters.changed` named). So it is at most once a second, never when nothing was lost, and at most
+1.1 s behind a loss.
+
+**The records' pace.** `ear.graph-lost-cycles` is written at a beat where `cutCycles` moved since
+the last such record, the cuts held still over the last beat (or have kept moving for 10 s, a host
+that never lets the graph catch up), and a second has passed since the last. A stall's cuts all
+come in the catch-up's burst after it (the driver runs on the data thread the stall holds:
+[above](#the-internal-clock)), so waiting for them to hold still writes a long stall once, with
+every cycle it cut, not a record a cycle nor one a second while its burst runs.
+`ear.node-missed-cycles` is the same for a node's `missedCycles` and `overruns`, at most once per
+10 s per node (a node that keeps missing must not flood the log), and at its span's end at once,
+pace and hold waived, so a node removed within 10 s of its last record still says what it missed.
+`repositions` and `driverChanges` are the wire's alone. Each record's numbers are what moved since
+the last of its kind, beside the totals; `ms` is the difference of the totals' times, so the
+records' `ms` add up to `lostMs`.
+
+**At a stop**, every node's span ends as it goes, and once the main loop has ended `flush()`
+writes the graph's record still held back, before ear's last record: the records' sums are then
+the totals, which the system tests judge from ([testing.md](testing.md#the-counters-own-word)). The pace
+is the records', not the counters': the counters are exact whatever the records leave out.
 
 ### Denormals
 

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <format>
 #include <functional>
 #include <future>
 #include <map>
@@ -3688,12 +3689,24 @@ TEST_CASE("A change of ports keeps the node's stop and one health stream for the
 	CHECK(f.allGone == 1);
 }
 
+/// What NodeHost tells of each name's span of counts (docs/engine.md#reporting-the-counters), in order.
+struct CountsSpans final : NodeCountsListener {
+	std::vector<std::string> told;
+	void countsBegan(const NodeName& node) override { told.push_back("began " + node); }
+	void countsEnded(const NodeName& node, const NodeCounts& total) override {
+		told.push_back(std::format("ended {} {},{},{},{}", node, total.missedCycles, total.overruns, total.repositions,
+		                           total.driverChanges));
+	}
+};
+
 // docs/engine.md#counters: a node's counters run from its add, its block's kept when the block goes; a port-caused
 // replace is the same node to the operator (one health stream, its dropped frames), so it carries them too, and they
 // never step back on the way; a replace by another type is a new node, from zero.
 TEST_CASE("A node's counters are its block's, kept when the block goes and carried across a change of ports",
           "[node_host][replace][counters]") {
 	Fixture f;
+	CountsSpans spans;
+	f.host.subscribeCounts(spans);
 	CHECK_FALSE(f.host.counts("desk"));
 	addRunning(f, "desk", std::make_shared<TestConfig>(f.log, "two"));
 	CHECK(f.host.counts("desk") == NodeCounts{});
@@ -3724,11 +3737,13 @@ TEST_CASE("A node's counters are its block's, kept when the block goes and carri
 	f.blocks.made.at(1)->counted.repositions = 1;
 	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
 
-	// Removed: still its counts while it stops, its block's kept past the block; none once it is gone.
+	// Removed: still its counts while it stops, its block's kept past the block; none once it is gone, when its span
+	// ends with them. The port-caused replace began no span and ended none: one span, the name's.
 	f.host.nodeRemoved("desk");
 	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
 	f.settle();
 	CHECK_FALSE(f.host.counts("desk"));
+	CHECK(spans.told == std::vector<std::string>{"began desk", "ended desk 11,25,4,4"});
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -3736,6 +3751,8 @@ TEST_CASE("A node's counters are its block's, kept when the block goes and carri
 
 TEST_CASE("A replace by another type starts the name's counters from zero", "[node_host][replace][counters]") {
 	Fixture f;
+	CountsSpans spans;
+	f.host.subscribeCounts(spans);
 	addRunning(f, "x", std::make_shared<TestConfig>(f.log, "old"));
 	f.blocks.made.at(0)->counted = NodeCounts{.missedCycles = 7};
 	const NodeChange type{NodeOutcome::restart, {}, false};
@@ -3746,9 +3763,12 @@ TEST_CASE("A replace by another type starts the name's counters from zero", "[no
 	f.blocks.events.back()->ready();
 	f.settle();
 	CHECK(f.host.counts("x") == NodeCounts{});
+	f.blocks.made.back()->counted = NodeCounts{.overruns = 2};
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
+	// A span each: the older node's ends with nothing told, superseded by the newer of its name, whose span is the name's.
+	CHECK(spans.told == std::vector<std::string>{"began x", "began x", "ended x 0,2,0,0"});
 }
 
 TEST_CASE("A hand edit that keeps a node keeps its stop, and one that renames it drops it", "[node_host][replace]") {

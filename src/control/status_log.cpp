@@ -43,6 +43,11 @@ std::string array(const std::vector<std::string>& values) {
 	return text + ']';
 }
 
+/// "<n> <noun>", the noun plural unless n is 1.
+std::string counted(std::uint64_t n, std::string_view one, std::string_view many) {
+	return std::format("{} {}", n, n == 1 ? one : many);
+}
+
 std::string writeFailedText(const std::string& detail) { return std::format("graph-file write-failed {}", detail); }
 
 std::string portText(const PortRef& port) { return std::format("{}:{}", port.node, port.port); }
@@ -311,6 +316,39 @@ void StatusLog::internalError(const InternalError& error) {
 	std::string msg = error.node.empty() ? std::format("{}: {}", code, detail)
 	                                     : std::format("node {} {}: {}", error.node, code, detail);
 	emit("diagnostic", std::move(record), std::move(msg));
+}
+
+void StatusLog::graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) {
+	constexpr std::string_view code = "ear.graph-lost-cycles";
+	const std::string detail =
+		std::format("the host held up the audio thread: {} cut ({} ms) in {}; {} cut since ear started",
+	                counted(since.cutCycles, "cycle", "cycles"), sinceMs, counted(since.stalls, "stall", "stalls"),
+	                total.cutCycles);
+	emit("diagnostic",
+	     {{"code", json(code)},
+	      {"cycles", json(since.cutCycles)},
+	      {"stalls", json(since.stalls)},
+	      {"ms", json(sinceMs)},
+	      {"totalCycles", json(total.cutCycles)},
+	      {"detail", json(detail)}},
+	     std::format("{}: {}", code, detail));
+}
+
+void StatusLog::nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) {
+	constexpr std::string_view code = "ear.node-missed-cycles";
+	const std::string detail =
+		std::format("missed {} it was not scheduled for, overran {}; {} missed and {} overrun since it was added",
+	                counted(since.missedCycles, "cycle", "cycles"), counted(since.overruns, "time", "times"),
+	                total.missedCycles, total.overruns);
+	emit("diagnostic",
+	     {{"node", json(node)},
+	      {"code", json(code)},
+	      {"missed", json(since.missedCycles)},
+	      {"overruns", json(since.overruns)},
+	      {"totalMissed", json(total.missedCycles)},
+	      {"totalOverruns", json(total.overruns)},
+	      {"detail", json(detail)}},
+	     std::format("node {} {}: {}", node, code, detail));
 }
 
 void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {

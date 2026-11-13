@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include "ear/core/companions.hpp"
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/cycle_counters.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
@@ -288,7 +289,7 @@ inline constexpr std::chrono::milliseconds waitingForPace{1'000};
 /// A hook that ran longer than this on the main loop is ear.hook-slow (docs/writing-a-node-type.md#the-class;
 /// docs/output-records.md#diagnostic).
 inline constexpr std::chrono::milliseconds hookSlowBound{20};
-class NodeHost final : public DesiredNodeListener, public NodeOperations {
+class NodeHost final : public DesiredNodeListener, public NodeOperations, public NodeCounterSource {
 public:
 	/// All outlive it. `mainLoop` runs on the thread that calls everything below; a run reaches it through there (its
 	/// events, its handoffs' and run object's `closed`). `timers` run there too.
@@ -299,6 +300,11 @@ public:
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
+	/// Where each name's span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node
+	/// that does not carry an older node's counts is added, countsEnded with its final counts as it goes, before its
+	/// nodeGone (neither for a superseded node's end, nor for the older node of a port-caused replace). Main thread,
+	/// before the first node.
+	void subscribeCounts(NodeCountsListener& listener);
 	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw
 	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
 	/// thread, before the first node.
@@ -372,7 +378,7 @@ public:
 	/// The node counters of the newest node of this name not yet gone, from its add (docs/engine.md#counters): what its
 	/// block counts now, or counted before it went, plus, for a port-caused replace, what the older node counted (read
 	/// from it until it is gone, then carried), so they never step back; none when no such node is left.
-	std::optional<NodeCounts> counts(const NodeName& node) const;
+	std::optional<NodeCounts> counts(const NodeName& node) const override;
 	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
 	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
 	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp

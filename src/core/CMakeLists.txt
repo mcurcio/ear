@@ -6,6 +6,7 @@
 add_library(ear_core STATIC
 	command_error.cpp
 	companions.cpp
+	counter_watch.cpp
 	cut_ring.cpp
 	desired_graph.cpp
 	graph_status.cpp
@@ -32,6 +33,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/block_rules.hpp
 	include/ear/core/command_error.hpp
 	include/ear/core/companions.hpp
+	include/ear/core/counter_watch.hpp
 	include/ear/core/cut_ring.hpp
 	include/ear/core/cycle_counters.hpp
 	include/ear/core/cycle_facts.hpp
@@ -80,6 +82,7 @@ if(BUILD_TESTS)
 
 	add_executable(ear_core_tests
 		tests/block_rules_test.cpp
+		tests/counter_watch_test.cpp
 		tests/cycle_counters_test.cpp
 		tests/cycle_facts_test.cpp
 		tests/desired_graph_test.cpp

@@ -105,7 +105,37 @@ export interface NodeSpec {
   settings?: JsonObject;
 }
 
-/** A node as snapshots and node.added carry it: its spec, its public ports and its health. */
+/**
+ * The diagnostics counters (feature counters, docs/control-port.md#counters): running totals that never step back, a
+ * JSON number each. The names are an open set: one this editor does not know is kept, and shown by its name and number.
+ */
+export interface Counters {
+  [counter: string]: number;
+}
+
+/** The graph's: what the host did to every output at once. */
+export interface GraphCounters extends Counters {
+  /** Cycles the internal clock started since ear started. */
+  cycles: number;
+  /** Of them, those the driver cut short: a dropout on every output. */
+  cutCycles: number;
+  /** Times the graph fell behind and lost cycles, one each however many cycles it cut. */
+  stalls: number;
+  /** The time those cut cycles lost. */
+  lostMs: number;
+}
+
+/** A node's, from its add: what happened to that node beyond the graph's own losses. */
+export interface NodeCounters extends Counters {
+  /** Cycles its block missed that the driver did not cut (it was not scheduled). */
+  missedCycles: number;
+  /** Cycles in which its own work took longer than the cycle. */
+  overruns: number;
+  repositions: number;
+  driverChanges: number;
+}
+
+/** A node as snapshots and node.added carry it: its spec, its public ports, its health and its counters. */
 export interface GraphNode extends NodeHealth {
   name: string;
   type: string;
@@ -114,6 +144,8 @@ export interface GraphNode extends NodeHealth {
   outputs: string[];
   /** ear.conf disables it (`disabled true;` in its braces). */
   disabled?: true;
+  /** Feature counters: its counters (a port-caused replace's node.added carries those it carries on). */
+  counters?: NodeCounters;
 }
 
 export interface GraphRoute extends RouteEnds {
@@ -135,6 +167,8 @@ export interface Graph {
   types: string[];
   nodes: GraphNode[];
   routes: GraphRoute[];
+  /** Feature counters: the graph's counters, read with the rest. */
+  counters?: GraphCounters;
 }
 
 // ----- The graph file (docs/control-port.md#the-graph-file-over-the-port) -----
@@ -234,6 +268,11 @@ export interface Notifications {
   levels: { nodes: { [node: string]: { [port: string]: Level } } };
   /** Before the node and route events it causes. droppedEdits (disk only): accepted edits not yet written, now gone. */
   "graphFile.changed": GraphFile & { cause: FileChangeCause; droppedEdits?: number };
+  /**
+   * Feature counters, at most once a second and only when a loss moved: the graph's counters whole, and the whole
+   * counters of each node whose counters changed. Replaces the counters it names; a node not held is ignored.
+   */
+  "counters.changed": { graph: GraphCounters; nodes: { [node: string]: NodeCounters } };
 }
 export type NotificationName = keyof Notifications;
 
@@ -364,6 +403,7 @@ const notificationSet: { [N in NotificationName]: true } = {
   "route.status": true,
   levels: true,
   "graphFile.changed": true,
+  "counters.changed": true,
 };
 export const notificationNames = Object.keys(notificationSet) as NotificationName[];
 
@@ -396,6 +436,7 @@ export const controlErrorCodes = Object.keys(controlErrorCodeSet) as ControlErro
 
 /** The features this editor uses when ear says it has them (docs/control-port.md#protocol-and-features). */
 export const lifecycleFeature = "lifecycle";
+export const countersFeature = "counters";
 
 // ----- The conformance fixtures (test/protocol/*.json) -----
 

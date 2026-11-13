@@ -42,7 +42,8 @@ struct MainLoopGateway::Impl {
 	Executor& control;
 	GraphRequests& requests;
 	WallClock clock;
-	EventSink* sink = nullptr; // main loop only
+	EventSink* sink = nullptr;                 // main loop only
+	const NodeCounterSource* counts = nullptr; // main loop only
 	/// Each node's health as last sent (main loop only), forgotten when the node leaves the graph.
 	std::unique_ptr<SentMap> sent = std::make_unique<SentMap>();
 
@@ -81,11 +82,26 @@ void MainLoopGateway::graphFileChanged(const GraphFileChanged& change) {
 
 void MainLoopGateway::graphFileWritten(const std::string&) {}
 
+void MainLoopGateway::readCounts(const NodeCounterSource& nodes) { impl_->counts = &nodes; }
+
 void MainLoopGateway::nodeAdded(const NodeSpec& node, std::shared_ptr<const NodeConfig> config) {
 	const NodeHealth health = healthFromSpec(node);
 	const auto since = impl_->clock();
 	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
 	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since});
+}
+
+void MainLoopGateway::nodeReplaced(const NodeSpec& node, std::shared_ptr<const NodeConfig> config,
+                                   const NodeChange& change) {
+	// Observers hear the replace before NodeHost does, so the name's counts are still the older node's: what the newer
+	// one carries on from.
+	const NodeCounts carried = change.portCaused && impl_->counts != nullptr
+	                               ? impl_->counts->counts(node.name).value_or(NodeCounts{})
+	                               : NodeCounts{};
+	const NodeHealth health = healthFromSpec(node);
+	const auto since = impl_->clock();
+	impl_->sent->insert_or_assign(node.name, Sent{health, since, !node.disabled});
+	impl_->post(NodeAdded{node, config->ports().publicOnly(), health, since, carried});
 }
 
 void MainLoopGateway::nodeUpdated(const NodeSpec& node, std::shared_ptr<const NodeConfig>) {
@@ -126,6 +142,11 @@ void MainLoopGateway::nodeGone(const NodeName& node, std::uint64_t droppedFrames
 }
 
 void MainLoopGateway::routeChanged(const RouteStatus& status) { impl_->post(RouteChanged{status}); }
+
+void MainLoopGateway::countersChanged(const GraphCounts& graph, std::uint64_t lostMs,
+                                      std::span<const NamedCounts> nodes) {
+	impl_->post(CountersChanged{graph, lostMs, {nodes.begin(), nodes.end()}});
+}
 
 void MainLoopGateway::stamp(GraphView& view) const {
 	for (NodeView& node : view.nodes)

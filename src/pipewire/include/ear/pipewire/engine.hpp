@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "ear/core/counter_watch.hpp"
 #include "ear/core/cycle_counters.hpp"
 struct pw_loop;
 struct pw_context;
@@ -31,8 +32,9 @@ struct Scheduling {
 	std::string detail;
 }; // detail: "SCHED_FIFO 88" etc.
 /// PipeWire's engine inside EAR: main loop, context, EAR's own internal connection. No socket
-/// in M1 (core.daemon=false). Main thread only.
-class Engine {
+/// in M1 (core.daemon=false). Main thread only, but for what says any thread. The source of the graph's counters for
+/// the snapshot and their reports (GraphCounterSource, docs/engine.md#reporting-the-counters).
+class Engine final : public GraphCounterSource {
 public:
 	/// If CAP_SYS_NICE is in the process's permitted set, it is made effective before the
 	/// context loads its modules (so module-rt can raise the data thread); absent: no error.
@@ -51,7 +53,7 @@ public:
 	const CutRecord& cuts() const noexcept;
 	/// The graph's counters from the engine's start (docs/engine.md#counters): the cycles the internal clock started, the
 	/// cuts of them and the stalls those made, as cuts() counts them. Any thread.
-	GraphCounts graphCounts() const noexcept;
+	GraphCounts graphCounts() const noexcept override;
 	/// Data thread, inside a cycle of the internal clock: that cycle started on time (GraphCycle::overdueNs 0), so the
 	/// graph is no longer behind and a stall in progress has ended (docs/engine.md#counters). For this package's port
 	/// blocks, which state each cycle's overdue time.

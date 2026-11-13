@@ -73,6 +73,14 @@ use`).
   disabled, then the health. No `action` record: the `graph-file` record says it.
   `node.add` takes `"disabled": true`.
 - Every -32602 carries `data.pointer`, the JSON pointer its message names.
+- **Counters** (feature `counters`): the Graph carries the graph's `counters` (`cycles`, `cutCycles`,
+  `stalls`, `lostMs`) and each node of a snapshot and `node.added` its own (`missedCycles`,
+  `overruns`, `repositions`, `driverChanges`); `counters.changed` to `graph.subscribe` clients, at
+  most once a second and only when one was lost, replaces those it names. CounterWatch
+  (`src/core/counter_watch.cpp`) reads them at the main loop's 100 ms heartbeat; standard output
+  says the same as `ear.graph-lost-cycles` and `ear.node-missed-cycles`
+  (`docs/engine.md#reporting-the-counters`). To see a stall end to end: `kill -STOP` ear for half a
+  second, then `kill -CONT`: one `ear.graph-lost-cycles` record carries every cycle it cut.
 
 ## The graph file over the port
 

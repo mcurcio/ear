@@ -46,7 +46,9 @@ UTF-8 becomes U+FFFD.
 
 The order at boot: `engine` (how the audio thread is scheduled), then `control`, then the first
 `graph-file` (cause `disk`, once the main loop runs) and the records it causes; then a record for
-every change; at a stop, every node's `removed`, then `exit` with status 0.
+every change; at a stop, every node's `removed` (each after the `ear.node-missed-cycles` its going
+wrote, if it missed or overran since its last), the graph's `ear.graph-lost-cycles` still held
+back, then `exit` with status 0.
 
 ### `node`
 
@@ -128,6 +130,7 @@ The framework's own observations. With a node:
 | `ear.barrier-overdue` | `ms` | A drive or silence posted to the data loop did not complete within 5 s; the configuration and block are leaked |
 | `ear.hook-slow` | `ms` | A hook (`configure`, `start` or `stop`, named in `detail`) ran past 20 ms on the main loop; once per node and hook |
 | `ear.internal-error` | `callback` | ear's own bug in one of the node's adapters, caught: `callback` names the callback or adapter call that threw (`FilterPortBlock::onStateChanged`, `SinkAdapter::make`), `detail` reads `<callback> threw[ during <where>]: <what>`. The node's `failed lost` record follows, unless the node is already being stopped, restarted or removed (the fault is then dropped with the rest of its teardown); the rest of the graph runs on. Said once per callback owner (a block, a companion's lifecycle, body or link), however often its callbacks throw |
+| `ear.node-missed-cycles` | `missed`, `overruns`, `totalMissed`, `totalOverruns` | The node's block missed cycles the driver did not cut (it was not scheduled), or its own work overran a cycle: `missed` and `overruns` since its last such record, the totals since it was added ([engine.md](engine.md#counters)). Once its misses held still for a beat, at most once per 10 s per node, and at once as the node goes ([engine.md](engine.md#reporting-the-counters)) |
 
 `msg`: `node <name> <code>: <detail>`. Without a node (`msg`: `<code>: <detail>`):
 
@@ -136,10 +139,12 @@ The framework's own observations. With a node:
 | `ear.data-loop-wedged` | `ms` | Once: the data loop is judged wedged. No further engine change is made, and ear's stop leaves through `_Exit` |
 | `ear.main-loop-stalled` | `ms`, `in`? | The watchdog found the main loop's heartbeat older than 500 ms (`ms` is its age at the look); `in` is the PipeWire call or hook running, when known. Once per stall |
 | `ear.main-loop-resumed` | `ms` | The heartbeat came back; `ms` is the gap between the beats either side |
+| `ear.graph-lost-cycles` | `cycles`, `stalls`, `ms`, `totalCycles` | The host held up the audio thread and the driver cut cycles short, a dropout on every output: `cycles` cut since the last such record, in `stalls` stalls of the host, losing `ms`; `totalCycles` cut since ear started ([engine.md](engine.md#counters)). Once the cuts held still for a beat, so a stall's whole catch-up is one record however many cycles it cut; at most one a second, at least one every 10 s while cuts never stop, and the last held back at a stop ([engine.md](engine.md#reporting-the-counters)). Its sums over a run are the graph's counters |
 | `ear.internal-error` | `callback`, `fatal`? | ear's own bug with no owner but ear's core (NodeHost, a route link's listeners, the main loop's posted work, a sink's thread), caught by the callback boundary: `fatal: true`, and the process ends right after it, with the line below on standard error. Without `fatal`: a route's link whose own callback threw, which fails only that route, and ear runs on |
 
 These name no node or happen while the main loop is stuck, so they are standard output only, never
-on the control port. What they mean for the graph is in
+on the control port; `ear.graph-lost-cycles`' numbers are there as the graph's counters
+([control-port.md](control-port.md#counters)), and `ear.node-missed-cycles`' as the node's. What they mean for the graph is in
 [architecture.md](architecture.md#bounds-the-wedged-data-loop-and-the-watchdog). Who owns an
 `ear.internal-error`, and so whether ear runs on, is
 [architecture.md](architecture.md#faults-by-owner)'s; a node it fails shows on the control port

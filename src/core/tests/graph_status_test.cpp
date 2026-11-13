@@ -87,6 +87,7 @@ using Completions = std::vector<std::move_only_function<void()>>;
 
 struct Block final : PortBlock {
 	Completions& completions;
+	NodeCounts counted; // what counts() answers: the test sets it, as a real block's cycles would
 	explicit Block(Completions& c) : completions(c) {}
 	void drive(DriveRequest, std::move_only_function<void(std::uint64_t)> done) override {
 		completions.push_back([done = std::move(done)]() mutable { done(0); });
@@ -95,16 +96,19 @@ struct Block final : PortBlock {
 	void settle() override {}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
-	NodeCounts counts() const noexcept override { return {}; }
+	NodeCounts counts() const noexcept override { return counted; }
 };
 
 struct Blocks final : PortBlockFactory {
 	std::map<NodeName, PortBlockEvents*> events; // the latest block of each name
+	std::map<NodeName, Block*> made;             // the latest block of each name
 	Completions completions;
 	std::unique_ptr<PortBlock> make(const NodeName& node, const Ports&, const AudioFormat&,
 	                                PortBlockEvents& e) override {
 		events[node] = &e;
-		return std::make_unique<Block>(completions);
+		auto block = std::make_unique<Block>(completions);
+		made[node] = block.get();
+		return block;
 	}
 	/// Runs every completion, and those they cause, in order.
 	void complete() {
@@ -287,6 +291,31 @@ TEST_CASE("The graph read joins the wanted graph with node and route status", "[
 	CHECK(view.routes[0].match == RouteMatch::linked);
 	CHECK(view.routes[1].route == noiseToFr);
 	CHECK(view.routes[1].match == RouteMatch::pending);
+}
+
+/// The graph's counters, set by hand.
+struct HandGraphCounts final : GraphCounterSource {
+	GraphCounts counts;
+	GraphCounts graphCounts() const noexcept override { return counts; }
+};
+
+TEST_CASE("The graph read carries the graph's counters and each node's, read with the rest",
+          "[graph_status][counters]") {
+	Fixture f;
+	HandGraphCounts engine;
+	engine.counts = GraphCounts{.cycles = 900, .cutCycles = 4, .stalls = 1};
+	const GraphStatus status{
+		EngineView{AudioFormat{48000, 256}, true, "SCHED_FIFO 88"}, f.catalogue, f.graph, f.nodes, f.routes, &engine};
+	apply(f.graph, {{"rec", "recorder", noSettings}, {"noise", "source", noSettings}}, {});
+	f.settle();
+	f.blocks.made.at("rec")->counted = NodeCounts{.missedCycles = 3, .overruns = 1};
+	const GraphView view = status.read();
+	CHECK(view.counts == engine.counts);
+	REQUIRE(view.nodes.size() == 2);
+	CHECK(view.nodes[0].spec.name == "noise");
+	CHECK(view.nodes[0].counts == NodeCounts{});
+	CHECK(view.nodes[1].counts == NodeCounts{.missedCycles = 3, .overruns = 1});
+	CHECK(f.status.read().counts == GraphCounts{}); // a read with no source of the graph's counters reads none
 }
 
 TEST_CASE("A removed node still stopping is absent, and a re-added name shows the new node", "[graph_status]") {

@@ -30,7 +30,7 @@ struct NodeCounts {
 struct GraphCounts {
 	std::uint64_t cycles = 0;    // graph cycles the internal clock started
 	std::uint64_t cutCycles = 0; // of them, cut short by the driver's own account
-	std::uint64_t stalls = 0;    // runs of consecutive cut cycles: one stall of the host however many cycles it took
+	std::uint64_t stalls = 0;    // times the graph fell behind and lost cycles: one a stall, however many it cut
 	/// The time the graph lost, encoded from cutCycles and never kept: each cut cycle lost one block of `quantum`
 	/// frames, as ear forces one quantum (docs/engine.md#the-quantum-guard).
 	constexpr std::uint64_t lostMs(FrameClock clock, std::uint32_t quantum) const noexcept {
