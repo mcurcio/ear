@@ -277,6 +277,8 @@ std::uint32_t Engine::internalClockId() const noexcept { return impl_->cuts->clo
 
 GraphCounts Engine::graphCounts() const noexcept { return impl_->cuts->counts(); }
 
+void Engine::cycleOnTime() noexcept { impl_->cuts->onTime(); }
+
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }
 
 pw_context* Engine::context() const noexcept { return impl_->context; }

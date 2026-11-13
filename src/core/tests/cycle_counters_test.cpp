@@ -141,37 +141,79 @@ TEST_CASE("An overrun is work longer than the cycle, and the graph's lost time i
 	CHECK((NodeCounts{1, 2, 3, 4} + NodeCounts{10, 20, 30, 40}) == NodeCounts{11, 22, 33, 44});
 }
 
-TEST_CASE("A cut record counts the cycles started, the cuts once each, and a stall per run of consecutive cuts",
+TEST_CASE("A cut record counts the cycles started, the cuts once each, and a stall per time the graph fell behind",
+          "[cycle_counters]") {
+	// One cycle as the record is told it: whether it started on time (a block stated overdueNs 0) and whether it was cut.
+	struct Cycle {
+		bool onTime;
+		bool cut;
+	};
+	constexpr Cycle whole{true, false};
+	constexpr Cycle stalled{true, true}; // started on time, then held past its end: a stall's first cut
+	constexpr Cycle burstCut{false, true};
+	constexpr Cycle burstWhole{false, false}; // a catch-up's cycle that ran whole while the graph was still behind
+	constexpr Cycle lateCut{false, true};     // a cut whose cycle no block ran on time
+	struct Row {
+		const char* what;
+		std::vector<Cycle> cycles;
+		GraphCounts counts;
+	};
+	const std::vector<Row> rows{
+		{"whole cycles", {whole, whole, whole}, {.cycles = 3}},
+		{"a stall in the first cycle", {stalled, whole}, {.cycles = 2, .cutCycles = 1, .stalls = 1}},
+		{"a stall whose burst cuts every cycle (the cut-every-cycle shape)",
+	     {whole, stalled, burstCut, burstCut, burstCut, whole},
+	     {.cycles = 6, .cutCycles = 4, .stalls = 1}},
+		{"a stall whose burst alternates cut and whole cycles (the dev host's shape): one stall, not one per cut",
+	     {whole, stalled, burstWhole, burstCut, burstWhole, burstCut, burstWhole, burstCut, whole},
+	     {.cycles = 9, .cutCycles = 4, .stalls = 1}},
+		{"a stall whose burst runs whole (the runner's shape)",
+	     {whole, stalled, burstWhole, burstWhole, burstWhole, whole},
+	     {.cycles = 6, .cutCycles = 1, .stalls = 1}},
+		{"two stalls with a cycle on time between",
+	     {stalled, burstCut, whole, stalled, burstWhole, burstCut, whole},
+	     {.cycles = 7, .cutCycles = 4, .stalls = 2}},
+		{"a cut no block ran on time, after the graph caught up",
+	     {whole, lateCut, burstCut, whole, lateCut},
+	     {.cycles = 5, .cutCycles = 3, .stalls = 2}},
+		{"cuts in consecutive cycles that each started on time: a stall each, the graph caught up before each",
+	     {stalled, stalled, stalled, whole},
+	     {.cycles = 4, .cutCycles = 3, .stalls = 3}},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		testing::HarnessCuts cuts;
+		cuts.incomplete(); // before any cycle: nothing
+		cuts.onTime();
+		CHECK(cuts.counts() == GraphCounts{});
+		for (const Cycle& cycle : row.cycles) {
+			cuts.start();
+			if (cycle.onTime) cuts.onTime();
+			if (cycle.cut) {
+				cuts.incomplete();
+				cuts.incomplete(); // told twice, counted once
+			}
+		}
+		CHECK(cuts.counts() == row.counts);
+	}
+}
+
+TEST_CASE("A stall past the cut record's ring is one stall, and the next after a cycle on time is another",
           "[cycle_counters]") {
 	testing::HarnessCuts cuts;
-	CHECK(cuts.counts() == GraphCounts{});
-	cuts.incomplete(); // before any cycle: nothing
-	CHECK(cuts.counts() == GraphCounts{});
-	// Cycles 1 to 12: cut 1 (a stall that is the first cycle), 3 to 5 (one stall of three), 7 (told twice), 9 and 10,
-	// and 12, the running one.
-	const std::vector<bool> cut{true, false, true, true, true, false, true, false, true, true, false, true};
-	for (const bool isCut : cut) {
-		cuts.start();
-		if (isCut) cuts.incomplete();
-		if (isCut && cuts.started() == 7) cuts.incomplete();
-	}
-	CHECK(cuts.counts() == GraphCounts{.cycles = 12, .cutCycles = 8, .stalls = 5});
-	cuts.start(); // 13, after a cut: the next cut is a new stall only if 13 itself was whole
-	cuts.start(); // 14
-	cuts.incomplete();
-	CHECK(cuts.counts() == GraphCounts{.cycles = 14, .cutCycles = 9, .stalls = 6});
-	// Cycle 14's stall goes on past the ring's reach, still one stall: the bit before each cut is read from the ring,
-	// cycle by cycle.
+	cuts.start();
+	cuts.onTime();
 	for (std::uint64_t i = 0; i < cutRecordCycles + 10; ++i) {
 		cuts.start();
 		cuts.incomplete();
 	}
-	CHECK(cuts.counts() ==
-	      GraphCounts{.cycles = 14 + cutRecordCycles + 10, .cutCycles = 9 + cutRecordCycles + 10, .stalls = 6});
-	cuts.start(); // whole
+	CHECK(cuts.counts() == GraphCounts{.cycles = cutRecordCycles + 11, .cutCycles = cutRecordCycles + 10, .stalls = 1});
 	cuts.start();
+	cuts.onTime();
+	cuts.start();
+	cuts.onTime();
 	cuts.incomplete();
-	CHECK(cuts.counts().stalls == 7);
+	CHECK(cuts.counts().stalls == 2);
 }
 
 TEST_CASE("The graph's counters read from another thread never show more stalls than cuts or more cuts than cycles",
@@ -179,9 +221,11 @@ TEST_CASE("The graph's counters read from another thread never show more stalls 
 	testing::HarnessCuts cuts;
 	std::atomic<bool> done{false};
 	std::thread writer([&] {
-		// Every third cycle cut, every fifth cut twice in a row: stalls and cuts move as fast as cycles.
+		// Every third cycle cut, every fifth cut twice in a row, every other cycle on time: stalls and cuts move as fast
+		// as cycles.
 		for (std::uint64_t cycle = 1; cycle <= 3 * cutRecordCycles; ++cycle) {
 			cuts.start();
+			if (cycle % 2 == 0) cuts.onTime();
 			if (cycle % 3 == 0 || cycle % 5 == 0) cuts.incomplete();
 		}
 		done.store(true, std::memory_order_release);

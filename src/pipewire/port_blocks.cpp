@@ -543,6 +543,10 @@ private:
 		                             .frames = frames,
 		                             .startRawNs = startRawNs},
 		                  maxBlock_);
+		// The graph's record learns from the cycle's own overdue time when the graph is no longer behind, which ends a
+		// stall of the host (docs/engine.md#counters).
+		const std::int64_t overdueNs = cycleOverdueNs(mono, clock.next_nsec);
+		if (clock.id == internalClock_ && overdueNs == 0) engine_.cycleOnTime();
 		if (step.runs) {
 			for (std::size_t i = 0; i < downstreamNow_.size(); ++i)
 				downstreamNow_[i] = unpacked(downstream_[i].load(std::memory_order_acquire));
@@ -552,7 +556,7 @@ private:
 			                                .rateDiff = clock.rate_diff,
 			                                .driverId = clock.id,
 			                                .nextNs = static_cast<std::int64_t>(clock.next_nsec),
-			                                .overdueNs = cycleOverdueNs(mono, clock.next_nsec),
+			                                .overdueNs = overdueNs,
 			                                .facts = step.facts,
 			                                .downstream = downstreamNow_});
 		} else {

@@ -33,9 +33,11 @@ void CutRing::incomplete() noexcept {
 	const std::uint64_t was = bits_[word(running)].fetch_or(bit(running), std::memory_order_relaxed);
 	if ((was & bit(running)) != 0) return;
 	cutsSoFar_.store(cutsSoFar_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
-	// The cycle before's cut, if any, was told before this cycle started, on this thread: its bit is final here.
-	if (running == 1 || !bitOf(running - 1))
-		stalls_.store(stalls_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+	// A cut while the graph is still behind from an earlier one (no cycle since started on time) is the same stall of
+	// the host, whatever the burst's cycles between were cut or ran whole (docs/engine.md#counters).
+	if (stalling_) return;
+	stalling_ = true;
+	stalls_.store(stalls_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
 }
 
 GraphCounts CutRing::counts() const noexcept {

@@ -631,7 +631,7 @@ Every counter is a monotonic total read from a fact that already exists; none is
 |---|---|---|---|
 | `cycles` | graph | graph cycles the internal clock started | `DriverCuts::started()` (its `CutRing`'s) |
 | `cutCycles` | graph | cycles the driver reported cut short | `DriverCuts`' cut count (`cutsSoFar`) |
-| `stalls` | graph | runs of consecutive cut cycles (one stall of the host, however many cycles it took) | `DriverCuts`' `CutRing`: a cut whose previous cycle was not cut |
+| `stalls` | graph | times the graph fell behind and lost cycles (one stall of the host, however many cycles it cut) | `DriverCuts`' `CutRing`: a cut while no stall is in progress; a stall lasts until a cycle starts on time (9.12) |
 | `lostMs` | graph | time the graph lost | encoded from `cutCycles` (each cut is one block: `FrameClock::ns`), never kept |
 | `missedCycles` | node | cycles its block missed that the driver did not cut | the block's `CycleFacts`: `missed - missedCut` |
 | `overruns` | node | cycles in which its block's own work (sources, code, fade, taps) took longer than the cycle | the block: one monotonic clock read at the end of `onProcess`, against the entry read it already takes (`cycleOverran`) |
@@ -739,7 +739,8 @@ public:
 };
 } // namespace ear
 
-// ear/core/cut_ring.hpp: CutRing counts stalls in incomplete(), and gains
+// ear/core/cut_ring.hpp: CutRing counts stalls in incomplete(), ended by onTime() (data thread: the running cycle
+// started on time; DriverCuts forwards it, and Engine::cycleOnTime() for the port blocks), and gains
 /// Any thread: the graph's counters from this record, read newest-written first (stalls, cuts, cycles, each acquire),
 /// so any reading has stalls <= cutCycles <= cycles.
 GraphCounts counts() const noexcept;
@@ -805,9 +806,10 @@ public:
   copies through the gateway as every other graph fact. Nothing on the data loop allocates, locks or formats; the
   per-node totals live on the main loop.
 - **The stall count is `CutRing`'s** (so the harness's record keeps it too): in `incomplete()`, when the running cycle
-  is marked cut for the first time and the cycle before it was not cut (or there is none), one relaxed load and a
-  release store more. A cycle's cut is told before the next cycle starts, on the same thread, so the bit of the
-  cycle before is final when a stall's first cut is told.
+  is marked cut for the first time and no stall is in progress, one relaxed load and a release store more, and a
+  stall is then in progress until a cycle starts on time. The port block tells `Engine::cycleOnTime()` when a cycle
+  of the internal clock is not overdue (`GraphCycle::overdueNs` 0), a plain store on the data thread, before that
+  cycle's cut can be told; the harness tells its record at each `process()`.
 - **The port block** reads the monotonic clock once more at the end of `onProcess` (vDSO, no system call), after
   everything the block does in the cycle, the oversized branch's zeros included, and calls
   `counters_.add(step.facts, cycleOverran(end - entry, FrameClock(rate), frames))`, the entry being the monotonic
@@ -1519,6 +1521,19 @@ keeps only where it departs from 8.1, 8.2 and 8.4 as first written (8.4 is corre
   against the writer's order (cycles, then cuts, then stalls, each release), so no reading shows more stalls than
   cuts or more cuts than cycles; 8.4 as first written read them relaxed, with no reader needing two to agree, which
   a reader that subtracts would.
+- **A stall is defined by the graph being behind, not by adjacent cuts** (the D1 review). As first built, a stall was a
+  cut whose cycle before was not cut. After a stall the driver catches up in a burst whose cycles are cut or run whole
+  as the host dispatches them (every one cut, every other, or none but the stalled cycle: 9.9, 9.10), so a run of
+  consecutive cuts made one stall of the host one stall or many by the host's shape. Every burst cycle starts
+  overdue, its next timeout already due, which is `GraphCycle::overdueNs`; so a cut starts a stall only when none
+  is in progress, and the first cycle that starts on time ends it. The fact is the blocks': the driver's `start`
+  event carries no time, and the server side's position, whose `next_nsec` would say it, is private to
+  `impl-node.c` (S6, 9.1). So a port block whose cycle of the internal clock is not overdue tells the record
+  (`Engine::cycleOnTime`), inside that cycle, on the data thread, the record's one writer thread. A cycle no block ran
+  on time keeps a stall going: a burst's cuts before the chain's head ran stay one stall. With no block at all no
+  cycle is cut. Measured on the dev host, a 200 ms stall's burst cut 37 to 39 of its about 40 cycles, every other one
+  held cut on purpose or not, so the adjacency rule counted 1 there too; the record's table holds the shapes that
+  tell the two rules apart.
 - **`GraphCounterSource` waits for D2.** Its one consumer is `CounterWatch` (D2), and an interface lives with its
   consumer, so D1 gives `Engine::graphCounts()` as a plain member, which D2's interface then names.
 - **Every cycle the block's `onProcess` sees is counted**, not only those `processCycle` runs: a cycle too large to
@@ -1544,9 +1559,11 @@ keeps only where it departs from 8.1, 8.2 and 8.4 as first written (8.4 is corre
   "a `PAUSED` block" is a block made inactive. A suspended node is never brought back. Another block runs beside it,
   so the driver has a node to drive and the test's waiter is woken while the paused block runs nothing.
 - **Proven to fail a broken count**, each injected, run and reverted: no stall counted fails the record's table, the
-  harness's cut test and the engine's induced cut (0 stalls against at least 4); every cut a stall fails the table and
-  the harness (on the engine four 1.5-cycle stalls forty cycles apart make as many stalls as cuts, so only the scripted
-  record tells the rule apart); cycles read as cuts fails all three; cut cycles read as stalls fails the table and the
+  harness's cut test and the engine's induced cut (0 stalls against at least 4); every cut a stall fails the table,
+  the harness and the engine's long stall (about 39 stalls against 1); stalls by adjacent cuts (the rule first built)
+  fails the table's burst shapes, but not the engine's long stall on the dev host, whose burst cuts nearly every cycle
+  (adjacency counts 1 there as well); no block telling the record a cycle on time fails the engine's induced cut (one
+  stall against at least 4: the first never ends); cycles read as cuts fails all three; cut cycles read as stalls fails the table and the
   harness; no missed cycle counted fails the table, the harness's pause and the engine's pause (0 against 33); the
   graph's cut cycles counted as a node's fails the table, the harness's cut test and the engine's tail (4 against 0);
   no overrun counted fails the table, the harness's stalling code and the engine's (the wait for three never ends);

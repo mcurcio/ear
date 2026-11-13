@@ -2905,6 +2905,87 @@ TEST_CASE("An induced cut moves the graph's counters and no node's missed cycles
 	CHECK(headBlock->counts().missedCycles == 0);
 }
 
+/// A chain's head that, once armed, stalls the data thread 200 ms in one cycle, then holds every other cycle of the
+/// catch-up's burst 1 ms while its next timeout is already due (GraphCycle::nextNs at or before now), so that cycle is
+/// cut short straight after it on any host and the ones between run as the host lets them: cut and whole cycles
+/// alternate inside one stall of the host, the dev host's natural shape (docs/engine.md#the-internal-clock), made
+/// certain. Its first cycle whose next timeout is not yet due ends the burst.
+class BurstStall final : public AudioCode {
+public:
+	void prepare(const AudioFormat&) override {}
+	void release() noexcept override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		if (!armed_.load(std::memory_order_acquire) || caughtUp_.load(std::memory_order_relaxed)) return;
+		if (!stalled_) {
+			stall_(0, frames, kRate);
+			stalled_ = true;
+			return;
+		}
+		const std::int64_t now =
+			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+				.count(); // CLOCK_MONOTONIC on Linux, as nextNs
+		if (cycle.nextNs <= now) {
+			if (overdue_++ % 2 == 0) holds_(held_++, frames, kRate);
+			return;
+		}
+		caughtUp_.store(true, std::memory_order_release);
+	}
+	/// Main thread: the next cycle stalls.
+	void arm() noexcept { armed_.store(true, std::memory_order_release); }
+	/// Any thread: the burst is over.
+	bool caughtUp() const noexcept { return caughtUp_.load(std::memory_order_acquire); }
+	/// Burst cycles held, once caught up.
+	std::size_t holds() const noexcept { return holds_.made(); }
+
+private:
+	std::atomic<bool> armed_{false};
+	std::atomic<bool> caughtUp_{false};
+	StallPlan holdEach = StallPlan::every(1, 0, ear::test::Stalls::kKept, StallLength::of(1ms));
+	ear::test::Stalls stall_{StallPlan::at({{0, StallLength::of(200ms)}})};
+	ear::test::Stalls holds_{holdEach};
+	bool stalled_ = false;    // the data thread's
+	std::size_t overdue_ = 0; // the data thread's: the burst's cycles so far
+	std::size_t held_ = 0;    // the data thread's: the holds so far, the plan's index
+};
+
+// docs/engine.md#counters: a stall is counted once however its catch-up's burst comes out. One 200 ms stall, its burst
+// cut every other cycle and the cycles between left to the host, is one stall of many cut cycles.
+TEST_CASE("One long stall of the host is one stall, however many of its burst's cycles are cut",
+          "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	BurstStall head;
+	StallingCode tail(4096, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return tail.ledger().count() >= 20; }));
+	const GraphCounts before = engine->graphCounts();
+	head.arm();
+	REQUIRE(waiter.until([&] { return head.caughtUp(); }));
+	const std::size_t caughtAt = tail.ledger().count();
+	REQUIRE(waiter.until([&] { return tail.ledger().count() >= caughtAt + 4; }));
+	const GraphCounts after = engine->graphCounts();
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+
+	INFO("the graph's counters moved from " << before.cycles << " cycles, " << before.cutCycles << " cut, "
+	                                        << before.stalls << " stalls to " << after.cycles << ", " << after.cutCycles
+	                                        << ", " << after.stalls << ", the burst held " << head.holds() << " times");
+	CHECK(head.holds() >= 2);
+	CHECK(after.cutCycles > before.cutCycles + 1);
+	CHECK(after.stalls == before.stalls + 1);
+	CHECK(tailBlock->counts().missedCycles == 0);
+}
+
 // A block made inactive, as a session manager pauses a node (docs/engine.md#the-internal-clock), misses cycles the
 // driver runs whole without it: its missed cycles move by exactly what its cycles state.
 TEST_CASE("A paused block moves its missed cycles by the cycles it was not scheduled for", "[port_blocks][counters]") {

@@ -52,6 +52,10 @@ public:
 	/// The graph's counters from the engine's start (docs/engine.md#counters): the cycles the internal clock started, the
 	/// cuts of them and the stalls those made, as cuts() counts them. Any thread.
 	GraphCounts graphCounts() const noexcept;
+	/// Data thread, inside a cycle of the internal clock: that cycle started on time (GraphCycle::overdueNs 0), so the
+	/// graph is no longer behind and a stall in progress has ended (docs/engine.md#counters). For this package's port
+	/// blocks, which state each cycle's overdue time.
+	void cycleOnTime() noexcept;
 	/// The internal clock's global id: a cycle whose clock.id is this one is numbered by cuts().
 	std::uint32_t internalClockId() const noexcept;
 	pw_loop* mainLoop() const noexcept; // for this package's adapters only

@@ -362,10 +362,10 @@ count one dropout once per node.
 |---|---|---|---|
 | `cycles` | graph | Cycles the internal clock started | The record of its cuts (`CutRing`'s `started`) |
 | `cutCycles` | graph | Of them, those the driver cut short | The record (`cutsSoFar`) |
-| `stalls` | graph | Runs of consecutive cut cycles: one stall of the host, however many cycles it took | The record: a cut whose cycle before was not cut, told in `incomplete` (the cycle before's cut was told before this cycle started, on the same thread) |
+| `stalls` | graph | Times the graph fell behind and lost cycles: one stall of the host, however many cycles it cut and however its catch-up's burst came out | The record: a cut while no stall is in progress starts one; it lasts until a cycle starts on time, its next not yet due (`overdueNs` 0, told by the blocks: below) |
 | `lostMs` | graph | The time the graph lost | Never kept: `GraphCounts::lostMs` encodes it from `cutCycles`, a block each ([the quantum guard](#the-quantum-guard)) |
 | `missedCycles` | node | Cycles its block missed that the driver did not cut (the block was not scheduled: paused) | The block, from each cycle's facts: `missed - missedCut` |
-| `overruns` | node | Cycles in which the block's own work took longer than the cycle | The block: `cycleOverran`, its work timed from the monotonic reading `onProcess` takes for `startRawNs` to one at its very end (sources, code, fade, taps, metering), so a late wake (`overdueNs`, the host's) is never the node's |
+| `overruns` | node | Cycles in which the block's own work took longer than the cycle | The block: `cycleOverran`, its work timed from the monotonic reading `onProcess` takes for `startRawNs` to one at its very end (sources, code, fade, taps, metering), so a late wake (`overdueNs`, the host's) is never the node's. It is wall time: the host preempting the data thread during the block's work counts as an overrun of the block's |
 | `repositions` | node | Cycles stating `reposition` | The block, from the facts |
 | `driverChanges` | node | Cycles stating `driverChange` | The block, from the facts |
 
@@ -376,7 +376,17 @@ the one case its facts leave undecided (a pause past the record's reach with som
 `missedCut` a lower bound, [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)).
 
 **The graph's** run from the engine's start: `Engine::graphCounts()` reads them from the record of
-the internal clock's cuts, which counts the stalls beside the cuts. A reading takes stalls, then
+the internal clock's cuts, which counts the stalls beside the cuts. A stall is defined by the fact the
+graph is behind, not by cuts being adjacent: after a stall the driver catches up in a burst of
+timeouts whose cycles are cut or run whole as the host dispatches them (every one cut, every other
+one, or none but the stalled cycle: [above](#the-internal-clock)), so counting runs of consecutive
+cuts would make one stall of the host one or many by the host's burst shape. Every cycle of the
+burst starts overdue, its next timeout already due, and the first cycle that starts on time ends
+the stall. The driver's `start` event carries no time and its position is private to
+`impl-node.c`, so the record learns it from the port blocks, which state each cycle's overdue time:
+a block whose cycle of the internal clock is not overdue tells the record (`Engine::cycleOnTime`),
+on the data thread, before that cycle's cut can be told. A cycle no block ran on time leaves a
+stall going, so a burst's cut cycles no block ran stay one stall. A reading takes stalls, then
 cuts, then cycles, each an acquire load against the writer's release stores in the other order, so
 no reading shows more stalls than cuts or more cuts than cycles.
 

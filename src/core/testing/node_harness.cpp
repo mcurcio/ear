@@ -774,6 +774,9 @@ void NodeHarness::process(std::uint32_t frames) {
 	                              .startRawNs = at},
 	                   h.options.format.maxBlock);
 	h.lastFacts = step.facts;
+	// The harness's cycles start on time (their overdueNs 0): a stall of its record ends at each process() on its own
+	// clock (docs/engine.md#counters).
+	if (h.driverId == internalClock) h.cuts.onTime();
 	const GraphCycle cycle{.startNs = at,
 	                       .position = h.position,
 	                       .startRawNs = at,

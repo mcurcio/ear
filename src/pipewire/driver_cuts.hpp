@@ -39,6 +39,12 @@ public:
 	std::uint64_t newestWhole() const noexcept override { return ring().newestWhole(); }
 	/// The graph's counters from this record (CutRing::counts; docs/engine.md#counters). Any thread.
 	GraphCounts counts() const noexcept { return ring().counts(); }
+	/// Data thread, inside a cycle of the internal clock: it started on time, so a stall in progress has ended
+	/// (CutRing::onTime). Told by the port blocks, which state each cycle's overdue time; nothing once the listener is
+	/// gone.
+	void onTime() noexcept {
+		if (CutRing* ring = listener_.target()) ring->onTime();
+	}
 	/// The internal clock's global id, which a cycle's clock.id names when it drives.
 	std::uint32_t clockId() const noexcept { return clockId_; }
 
