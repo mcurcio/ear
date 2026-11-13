@@ -613,6 +613,44 @@ has a `{}` default member initializer, so the existing two-member `LatencyPlan{p
   limit at the block size every cycle stays one block. A real card (a USB MOTU) at that limit is the `ear-on-talos`
   skill's check, not run; the fallback stays 3.6's (the limit back to `max(block, 8192)`, the refusal kept).
 
+**3b.5 as built against today's code** (written before building it, 2026-11-13). 3b.5 was planned before the cycle
+facts' counters (`docs/engine.md#reporting-the-counters`), the timing model's T1 to T4 and root classes R7. Against the
+code as they left it:
+
+- **Already done.** `CompanionView`, `NodeCompanionsListener`, `companionKindName`, `companionCounterPace` and
+  `companionDropDiagnosticPace` are landed in `companions.hpp` (the name function built in 3b.4); `Sink::droppedFrames`
+  and `Source::shortfallFrames` are atomics any thread reads (3b.1, 3b.2; T3 kept the shortfall as a transport
+  counter, `timing-model.md` 4.1); `CompanionTarget::insideBank` (R7) names an engine companion's bank and
+  `EngineCompanionEvents::ready` its readiness (3b.3, `joinEngineCompanion`). The module-run converter base (T4) changes
+  nothing here: RTP keeps `CompanionKind::rtpReceiver`, `<node>.rtp` (D-TM11). `SourceClock` changes nothing either: its
+  reports are the type's, never a companion entry's.
+- **What 3b.5 adds, in core.** NodeHost keeps each configuration's companions in request order and tells the list
+  (`NodeHost::subscribeCompanions`, `companionsOf`) whenever an entry is added or removed or its `ready` changes: at
+  configure's applied return (sources ready, the rest not); before the readiness check a companion's `ready` or a sink's
+  `begun` feeds (D-3b10: before the health it allows); empty from teardown step 1, after the `node.state` that began it;
+  kept across a stop. Only the node a client holds tells (neither a superseded node nor the silent older node of a
+  port-caused replace), as the wire keys health by name.
+- **Changed: the counters are sampled by `CounterWatch`, not a timer of NodeHost's.** Since cycle facts D2 the one pacer
+  of counters is `CounterWatch` at the main loop's 100 ms heartbeat, for the reason `docs/engine.md#reporting-the-counters`
+  gives (a timer of their own would wake the loop again for what the heartbeat already gives). 8.6's per-configuration
+  1 s timer would be a second pacer beside it. So `NodeCounterSource` gains `spanCompanions(span)` (the span's newest
+  node's list, counters read then), and at each beat `CounterWatch`:
+  - re-tells a node's list to its `NodeCompanionsListener`s when a sink's `dropped` or a source's `shortfall` moved,
+    at most once per `companionCounterPace` per node, only for the node a client holds (K1; the list's structure stays
+    NodeHost's to tell);
+  - writes `ear.sink-dropped` and `ear.source-shortfall` through `CounterListener::companionFramesLost`, paced as
+    `ear.node-missed-cycles` is (once the count held still a beat or kept moving 10 s, at most once per
+    `companionDropDiagnosticPace` per companion: K2), and at once, pace waived, at the configuration's end, which
+    NodeHost tells with the final counts (`NodeCountsListener::companionsEnded`, at teardown step 5 or a leak), so the
+    records' sums are each configuration's totals.
+  These records go through `CounterListener` (StatusLog already is one), not `NodeDiagnosticListener` as 8.3 planned:
+  a paced counter's record is `CounterWatch`'s, as `ear.node-missed-cycles` is.
+- **Obsolete.** 8.6's "Counters" timer, "the timer is cancelled at the teardown's start", and 8.3's
+  `NodeDiagnosticListener` codes row. The harness keeps no `CounterWatch` (a type's tests read `h.shortfall` and the
+  sink's counts directly), so 8.3's "`advance(ms)` also fires ... the counter sampling" goes; the harness gains
+  `companions()` (NodeHost's list, read fresh) in place of `companionList()`.
+- **No owner question.** The behaviour an operator or client sees is 3.7's K1 and K2; only which class paces it moves.
+
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
 
 | Old | New |
