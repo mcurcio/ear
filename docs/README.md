@@ -22,6 +22,7 @@ These pages describe ear as it is built. Building, testing, CI and releases are 
 | Use or change the graph editor in the browser | [editor.md](editor.md) |
 | Read or parse ear's log | [output-records.md](output-records.md) |
 | Add a node type | [writing-a-node-type.md](writing-a-node-type.md), after [architecture.md](architecture.md#the-node-lifecycle) |
+| Understand how audio time works: one tick, one rate, clocks at the graph's edges | [architecture.md](architecture.md#the-timing-model), then [engine.md](engine.md#the-clock) |
 | Change the engine side, or understand the clock, latency and PipeWire's behaviour | [engine.md](engine.md) |
 | Know what the tests prove and the rules they follow | [testing.md](testing.md) |
 

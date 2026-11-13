@@ -19,6 +19,7 @@ ships as a container image published from GitHub Actions.
 | What | Where |
 |---|---|
 | How ear works, as built: architecture, the graph file, node types, writing a node type, the control port, standard output's records, the engine, the editor, testing | `docs/` ([`docs/README.md`](docs/README.md) is the index and reading order) |
+| The timing model: one tick at one graph rate, clocks and rate conversion only in edge nodes | [`docs/architecture.md#the-timing-model`](docs/architecture.md#the-timing-model) (as built, and where the code still departs); its unbuilt part is [`docs/design/timing-model.md`](docs/design/timing-model.md) |
 | Designs for work not built yet (slices 3b, 3c, 3d, 5, 6, 8, 9, cards and the clock, the root classes behind slice 3's fix clusters) | [`docs/design/`](docs/design/README.md) |
 | Working guides for specific jobs | The skills in `.claude/skills/`: `pipewire-engine` (changing `src/pipewire/` or `engine.conf`, engine traps), `control-port` (talking to port 7777), `sendspin` (pairing and operating a `sendspin` node, the protocol library), `ear-on-talos` (the image on Talos with the MOTU 24Ao, FPP's RTP stream, `sendspin` in a pod) |
 | Research notes | `docs/research/` (`motu-24ao-drivers/`: MOTU's macOS driver against `snd-usb-motu`, and the 24Ao's USB descriptors) |

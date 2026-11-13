@@ -30,8 +30,11 @@ and what a node's life looks like. The details live on their own pages:
 - **Health is the framework's.** A node type reports facts (a resource lost, a note); the node
   framework alone decides a node's state.
 - **PipeWire does the audio; ear does the policy.** PipeWire owns the clock, rate matching,
-  resampling, devices and network audio. ear decides which nodes exist and which links join
-  them. There is no PipeWire daemon, no socket and no session manager.
+  resampling, devices and network audio: every rate conversion is PipeWire's resampler, in a node
+  at the graph's edge. ear decides which nodes exist and which links join them, and a node that
+  brings in a clock of its own decides how that clock meets the graph's tick
+  ([the timing model](#the-timing-model)). There is no PipeWire daemon, no socket and no session
+  manager.
 
 ## Packages
 
@@ -323,6 +326,53 @@ engine refused the link. A wire never depends on a node's state.
    time; the control thread sends the newest to subscribers
    ([control-port.md](control-port.md#levels)).
 
+## The timing model
+
+ear's audio runs on one tick at one rate, and every other clock belongs to the node at the
+graph's edge that brings it in. *Why:* the owner's model, after `sendspin` showed that time the
+framework keeps for a node is kept again by whatever the node talks to, and the two correct the
+same lost time.
+
+1. **The tick.** The framework supplies one tick, the graph cycle, and states its facts at the
+   graph rate: its start on the raw clock, whether it began overdue, and what was lost or cut
+   before it and why (`GraphCycle`: [engine.md](engine.md#graphcycle),
+   [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)). It keeps no audio time for any
+   node.
+2. **Node kinds.** Every node is a source, a sink or a transform. A transform reads its inputs,
+   processes and writes its outputs purely on the tick: it keeps no clock, skips nothing and dates
+   nothing (the pass-through between a node's banks is one). A node at the edge in both directions
+   (a `card`, a `sendspin` node) is a source on its capture side and a sink on its playback side.
+3. **Clocks belong to sources and sinks.** A source or sink with a clock of its own (a server, a
+   network sender, a sound card) reconciles that clock with the tick inside itself: buffering,
+   rate matching, drift, and recovery after lost ticks. A card's ALSA node and an RTP receiver do
+   it in PipeWire ([engine.md](engine.md#sound-cards), [engine.md](engine.md#rtp-receivers));
+   `sendspin` does it in its code ([node-types.md](node-types.md#clock)).
+4. **One rate inside the graph.** Every port in the graph runs at the graph rate, and conversion
+   happens only in edge nodes. The rate is configurable (`graph_frequency` in `ear.conf`, the
+   `--graph-frequency` flag as fallback: [boot](#boot)) but fixed for the engine's life, and it is
+   the only rate allowed ([engine.md](engine.md#the-clock)). A graph of mixed rates, two graphs
+   joined by a converting edge, is out of scope.
+5. **Conversion is a converter companion.** Rate and drift conversion is PipeWire's converter
+   (audioconvert in an adapter, with its resampler) between the node's own side and the graph,
+   hidden from the graph file and owned by the node; the node either sets its ratio or lets it
+   track a rate the node reports. A card's ALSA adapter and an RTP receiver's stream are such
+   converters inside their engine companions ([engine.md](engine.md#engine-companions)). Simple
+   work in code, such as converting a sample format, stays a library function.
+6. **The internal clock drives.** Cards follow it and adapt to the graph, never the reverse
+   ([engine.md](engine.md#the-internal-clock)).
+
+**Where the code still departs**, each removed by
+[`design/timing-model.md`](design/timing-model.md):
+
+- A source's ring (`SourceRing`) still keeps time for its node: its `Played` count and dating,
+  and its skip of a catch-up's jump with the rest owed
+  ([writing-a-node-type.md](writing-a-node-type.md#sources)).
+- `sendspin` still owes lost time, defers its reports and models the library (`LibraryView`,
+  `Feed::skipThenRead`), and carries `sendspin-starved-floor.patch`
+  ([node-types.md](node-types.md#clock)).
+- There is no converter companion for a ring whose clock is a type's own: only cards and RTP
+  receivers convert.
+
 ## The node lifecycle
 
 A node is two things: its **block**, made once and kept for the node's life, and its
@@ -558,5 +608,6 @@ the legacy adapter); recovery of failed nodes; sound cards opened off the main l
 clock anchored to one card; serving PipeWire's socket, a program supervisor and the `airplay`
 type; a login on port 7777; automatic card retry and hotplug; `@include`; undo; changing the graph
 frequency or block size while ear runs; arm64 images; a fault caught at the callback boundary
-failing only the node that owns it (today it ends the process). The design pages for the unbuilt slices
+failing only the node that owns it (today it ends the process); sources that keep no time in the
+framework, and the converter companion ([the timing model](#the-timing-model)). The design pages for the unbuilt slices
 remain in `docs/design/`.
