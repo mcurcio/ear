@@ -1,6 +1,7 @@
 # Companions: slice 3b of the node framework
 
-Status: design, not built; module design in section 8 (2026-11-09), its headers landed as declarations. Slice 3b follows
+Status: steps 3b.0 to 3b.5 built (8.10; 3b.5 on 2026-11-13), the wire, the editor and the words to come; module
+design in section 8 (2026-11-09), its headers landed as declarations. Slice 3b follows
 slice 3a (the lifecycle, built 2026-11-09) and comes before slice 3c (node primitives, `node-primitives.md`), because
 companions remove two of 3c's would-be primitives (feeds and late handoffs) and a third's use (sendspin's bell). The
 built system this page changes is described in `docs/architecture.md`, `docs/engine.md`,
@@ -647,8 +648,8 @@ code as they left it:
   a paced counter's record is `CounterWatch`'s, as `ear.node-missed-cycles` is.
 - **Obsolete.** 8.6's "Counters" timer, "the timer is cancelled at the teardown's start", and 8.3's
   `NodeDiagnosticListener` codes row. The harness keeps no `CounterWatch` (a type's tests read `h.shortfall` and the
-  sink's counts directly), so 8.3's "`advance(ms)` also fires ... the counter sampling" goes; the harness gains
-  `companions()` (NodeHost's list, read fresh) in place of `companionList()`.
+  sink's counts directly), so 8.3's "`advance(ms)` also fires ... the counter sampling" goes; `companionList()` reads
+  NodeHost's list fresh rather than keeping the last one told.
 - **No owner question.** The behaviour an operator or client sees is 3.7's K1 and K2; only which class paces it moves.
 
 **`ear/core/lifecycle.hpp`** (3b.2 for `source`, 3b.3 for the shapes)
@@ -683,7 +684,7 @@ code as they left it:
 | `ResourceRegistry(SoundCardAdapter&, RtpReceiverAdapter&, HandoffAdapter&, SinkAdapter&, RecordingAdapter&)` and the four-argument form | `ResourceRegistry(SoundCardCompanions& cards, RtpReceiverCompanions& receivers, HandoffAdapter& handoffs, SinkAdapter& sinks, SourceAdapter& sources, RecordingAdapter& recordings) noexcept` and the form without recordings [3b.2 adds `sources`; 3b.3 the engine adapters] |
 | `adapterFor(const SoundCardRequest&)`, `adapterFor(const RtpReceiverRequest&)` | `SoundCardCompanions& adapterFor(const SoundCardShape&) const noexcept`, `RtpReceiverCompanions& adapterFor(const RtpReceiverShape&) const noexcept` [3b.3]; adds `SourceAdapter& sources() const noexcept` [3b.2] |
 | `NodeHost` | adds `void subscribeCompanions(NodeCompanionsListener& listener);` (main, before the first node) and `std::vector<CompanionView> companionsOf(const NodeName& node) const;` (main: the newest node of the name's list, empty when none or not configured) [3b.5] |
-| `NodeDiagnosticListener`'s codes | adds `ear.sink-dropped`, `ear.source-shortfall` (fields `frames`, `totalFrames`) [3b.5] |
+| ~~`NodeDiagnosticListener`'s codes~~ | Superseded in 3b.5: `ear.sink-dropped` and `ear.source-shortfall` are `CounterListener::companionFramesLost`'s (see "3b.5 as built" above) |
 | `WaitingFor` | unchanged: `companion` names an engine companion, `consumer` a sink's consumer |
 
 **`ear/core/graph_view.hpp`** (3b.6): `NodeView` adds `std::vector<CompanionView> companions{};`, filled by
@@ -817,11 +818,9 @@ flush (its `lost` is never told: destroying it tells nothing) and closes the sin
 first; the close deadline, 10 s, covers a `begin` that never returns, leaking the configuration as built). A companion
 ready in the same turn the timer fired wins: the timer checks readiness when it runs, never before.
 
-**Counters**: [T] every `companionCounterPace` while a configuration has a sink or a source: each sink's
-`droppedFrames()` and each source's `shortfallFrames()` are read (atomics); a change tells the list; a sink whose count
-grew and that said nothing for `companionDropDiagnosticPace` says `ear.sink-dropped` (detail `<name> dropped <n>
-frames`, fields `frames` since its last diagnostic, `totalFrames`); a source likewise `ear.source-shortfall`. The timer
-is cancelled at the teardown's start.
+**Counters** (as built in 3b.5, in place of a timer of NodeHost's): at each heartbeat `CounterWatch` reads each span's
+list (`spanCompanions`), re-tells it when a counter moved and writes the two records, paced
+(`docs/engine.md#reporting-the-counters`); at teardown step 5 NodeHost tells the final counts (`companionsEnded`).
 
 **A cycle an xrun cuts short**: [D] the block either runs the cycle (its sources played, code run, sinks tapped) or does
 not (none of them). If not, the next cycle's position jumped: each source skips up to its capacity, counted played; each
@@ -939,10 +938,35 @@ makes stale (the rule in `AGENTS.md`).
 | **3b.2 The source** | `source.hpp`, `source_ring.*`, `sources.*`; `DriveRequest::sources`; the block plays sources (8.5); `CreateContext::source`, `CreateOf::source`; `NodeHost`'s source slots (bind, `stopped`, `close` at step 1, freed at step 5, `beyond`); `ResourceRegistry::sources` (main.cpp, the harness, tests' registries); the harness's `feed`, `played`, `shortfall`; `docs/writing-a-node-type.md` gains Sources | Medium: realtime code. No type uses it yet; S5 part A on the real block gates it |
 | **3b.3 Engine companions on shapes** | `companions.hpp`'s engine interfaces replace the `Outside*` ones; shapes replace requests; the legacy acquires go (`node_host_test.cpp`'s legacy card and receiver configs become classes); `engine_companions.*`; `AlsaSoundCards`, `RtpReceivers`; `card`, `rtp`; `docs/engine.md`'s Outside nodes section becomes Engine companions, `docs/writing-a-node-type.md` | Churn: mechanical, but every card and receiver test moves |
 | **3b.4 Readiness deadlines, the quantum guard** | `NodeHost`'s timers per kind and their texts; the harness's clock; `quantum-limit` at the block size; the card seam's refusal; `docs/node-types.md#rtp` (a held port fails after 5 s), `docs/engine.md` | The [U] of 3.6: if cards or rtp-source will not run at the limit, the limit stays `max(block, 8192)` and the step keeps only the refusal |
-| **3b.5 Companions in core's view** | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json` | Low |
+| **3b.5 Companions in core's view** (done, 2026-11-13) | `CompanionView`, `NodeCompanionsListener`, `subscribeCompanions`, `companionsOf`, the counter sampling, the two diagnostics through `StatusLog`; `docs/output-records.md#diagnostic` and `output-records.json`. Found building: below the table | Low |
 | **3b.6 The wire** | feature `companions`; `companions_wire.cpp`; `GraphEvent`, `NodeAdded`, `encodeGraph`, the gateway, `GraphStatus`; `docs/control-port.md`, `test/protocol/companions.json`, `web/src/protocol.ts` in this one commit | Low; the order rules are the subtle part (`gateway_test.cpp`) |
 | **3b.7 The editor's badges** | `companions.ts`, `graph.ts`, `EarNode.tsx`, `Panels.tsx`; `docs/editor.md` | Low |
 | **3b.8 Words** | what lasts of this page moved into the library docs (most already moved step by step), the `pipewire-engine` and `control-port` skills updated, this page deleted and `docs/design/README.md`'s row removed | — |
+
+**Found building 3b.5** (what lasts is `docs/engine.md#companions-in-a-nodes-list` and
+`#reporting-the-counters`, `docs/output-records.md#diagnostic`). Built as "3b.5 as built against today's code" (8.3)
+says, with these settled in the building:
+
+- **The list follows `configuring`, it does not precede it.** The node's aggregate returns a batch's actions before
+  its health, so `configure` runs before the `configuring` it is told in; a list told inside `configure` reached a
+  client while the node still showed `added`. NodeHost tells every structural change at the end of the input's batch
+  (beside `refreshWaiting`), and only a companion's readiness is told early, before the readiness check, so 8.7's
+  order (`configuring`, the list, then the health readiness allows) holds.
+- **Teardown step 1 is where the list empties**: the flag is set where sources are closed (`closeSources`, the one
+  place step 1 begins for every intent but a stop), so a list never outlives its sources' writers.
+- **A list's equality, for NodeHost, ignores the counters**: else every input would re-tell a list whose sink had
+  dropped since, unpaced; counters are `CounterWatch`'s alone.
+- **`CounterListener::companionFramesLost`** carries the companion's whole entry (its kind picks the code) and its
+  record a `companion` field naming it, beyond 3.7's `frames` and `totalFrames`, since one node may have a sink and a
+  source; the detail reads `<companion> dropped <n> frames its ring had no room for; <total> since it was made`, a
+  source `<companion> played <n> frames short while its writer was not idle; ...`.
+- **`NodeCountsListener::companionsEnded`** is told at teardown step 5 and at a leak (the leaked sinks and sources still
+  answer their counts), for every node, a superseded one and the silent older node of a port-caused replace included:
+  records are standard output's, which hears every node. `CounterWatch` then forgets those names, in its records and in
+  what the wire last named, so the next configuration's companions of the same names start from zero.
+- The harness's `companionList()` reads `NodeHost::companionsOf` (no `CounterWatch` in the harness; a type's tests read
+  the counters directly). 3b.6's gateway subscribes to both `NodeHost::subscribeCompanions` and
+  `CounterWatch::subscribeCompanions` with one `NodeCompanionsListener`; until then only the records reach anyone.
 
 ### 8.11 Decided
 
