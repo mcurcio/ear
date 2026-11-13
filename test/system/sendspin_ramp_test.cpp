@@ -371,3 +371,79 @@ TEST_CASE("A skip is paid by the first record written after its cycles were lost
 	CHECK(past[0] == "the skip: 1 of its 1 blocks paid by no record that covers it; the first graph record after it "
 	                 "came past the graph record's lag");
 }
+
+namespace {
+
+/// A ramp the file node recorded across one stall of the whole graph past the sendspin node's feed, its frame 0 at the
+/// fixed instant: a second of ramp; the stall, `stallBlocks` blocks of the WAV's time lost, of which the node skipped
+/// the 8 its feed held (docs/node-types.md#clock); 20 blocks of what the feed held, then 64 zeros (the feed dry); then
+/// the library's one correction of the rest and of the zeros, a hard sync it logged. Then, `dropAfterMs` after the
+/// stall ended, one block dropped with no cut behind it (a product bug), unless `dropAfterMs` is negative; then half a
+/// second more.
+struct StalledRamp {
+	Wav wav;
+	std::vector<std::int64_t> lostSyncsUs;
+	std::int64_t stallEndMs; // when the stall ended, ms after the instant
+};
+
+StalledRamp stalledRamp(std::uint32_t stallBlocks, std::int64_t dropAfterMs) {
+	constexpr std::uint32_t first = 1000; // index 0 is silent
+	constexpr std::uint32_t feedBlocks = 8;
+	constexpr std::uint32_t zeros = 64;
+	const std::uint32_t second = graphFrequency;
+	const std::uint32_t stall = stallBlocks * blockSize;
+	std::vector<Units> frames = run(first, first + second);
+	std::uint32_t index = first + second + feedBlocks * blockSize; // the node's skip of what its feed held
+	frames = joined({frames, run(index, index + 20 * blockSize)});
+	index += 20 * blockSize;
+	frames.insert(frames.end(), zeros, Units{0.0F, 0.0F});
+	index += stall - feedBlocks * blockSize + zeros; // the library's correction: the rest of the stall, and the zeros
+	if (dropAfterMs >= 0) {
+		const auto upTo = static_cast<std::uint32_t>(second + dropAfterMs * graphFrequency / 1000 - frames.size());
+		frames = joined({frames, run(index, index + upTo)});
+		index += upTo + blockSize; // one block dropped
+	}
+	frames = joined({frames, run(index, index + second / 2)});
+	return {wavOf(frames), {-60'000}, 1000 + static_cast<std::int64_t>(stall) * 1000 / graphFrequency};
+}
+
+} // namespace
+
+// After a stall past the sendspin node's feed the WAV loses the whole stall, but the node skips only what its feed held
+// and the library corrects the rest (docs/node-types.md#clock). Each loss is taken as the time the WAV lost there
+// (rampLosses), so the stall's record pays the stall whole with nothing to spare, and a block dropped after it with no
+// cut behind it is paid by nothing: deny by default (docs/testing.md#the-counters-own-word). Revert proof: losses from
+// the skips alone (rampLosses counting only each skip's own blocks) put the drop's window early by the rest of the
+// stall, and the stall's record pays the drop from its spare cycles: the unpaid checks below fail.
+TEST_CASE("A block dropped after a stall past the feed is paid by no record of the stall, and the stall is paid whole",
+          "[system][sendspin][ramp][skips]") {
+	const RecordTime at{std::chrono::seconds(1'800'000'000)};
+	constexpr std::uint32_t stallBlocks = 180; // 960 ms
+	for (const std::int64_t dropAfterMs : {200, 500, 900}) {
+		INFO("the block dropped " << dropAfterMs << " ms after the stall");
+		const StalledRamp stalled = stalledRamp(stallBlocks, dropAfterMs);
+		const RampCheck ramp = checkRamp(stalled.wav, stalled.lostSyncsUs);
+		INFO(ramp);
+		REQUIRE(ramp.badSteps == 0);
+		REQUIRE(ramp.hardSyncSteps == 1);
+		REQUIRE(ramp.skips.size() == 2);
+		// The stall's record, written once its cuts held still, a little after it ended.
+		const json stallRecord = lossRecord(stalled.stallEndMs + 150, stallBlocks);
+		const std::vector<SeenSkip> seen = rampSkipsSeen(at, ramp);
+		REQUIRE(seen.size() == 2);
+		const auto unpaid = unpaidSkipsOf({stallRecord}, seen);
+		INFO(json(unpaid).dump());
+		CHECK(unpaid.size() == 1);
+		if (!unpaid.empty()) CHECK(unpaid[0].starts_with("a skip of 1 blocks at frame "));
+		// With a record of its own the dropped block is paid, as a cut would be.
+		const json dropRecord = lossRecord(stalled.stallEndMs + dropAfterMs + 150, 1);
+		CHECK(unpaidSkipsOf({stallRecord, dropRecord}, seen).empty());
+		// The stall is one loss of its whole length, the skip's 8 blocks and the library's correction of the rest.
+		CHECK(seen[0].blocks == stallBlocks);
+	}
+	// With nothing dropped, the stall alone is paid by its record.
+	const StalledRamp stalled = stalledRamp(stallBlocks, -1);
+	const RampCheck ramp = checkRamp(stalled.wav, stalled.lostSyncsUs);
+	REQUIRE(ramp.skips.size() == 1);
+	CHECK(unpaidSkipsOf({lossRecord(stalled.stallEndMs + 150, stallBlocks)}, rampSkipsSeen(at, ramp)).empty());
+}

@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <ostream>
 #include <random>
@@ -240,6 +241,15 @@ struct RampCheck {
 	std::uint32_t lastIndex = 0;
 	std::size_t lastRunFrames = 0;         // exact frames since the last bad step
 	std::vector<std::string> badStepsSeen; // the first few, "<step> at <frame>", so a red names them
+	/// The stream's drift from the WAV: the frames its index moved past the WAV's own frames since its first exact
+	/// frame, after each exact frame where that changed (a skip, a library's correction, zeros or a blend before it):
+	/// the WAV frame and the drift then. While the library is in sync the drift is the time the WAV lost (the cycles the
+	/// file node did not run), whoever skipped or corrected it.
+	struct Drift {
+		std::size_t frame;
+		std::int64_t drift;
+	};
+	std::vector<Drift> drifts;
 };
 
 /// What a red needs to say about a ramp.
@@ -417,6 +427,8 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 	}
 	if (first == frames) return result;
 	std::optional<std::uint32_t> previous;
+	std::size_t previousFrame = first;
+	std::int64_t drift = 0;
 	bool afterBlend = false;
 	for (std::size_t frame = first; frame <= last; ++frame) {
 		const float left = wav.samples[frame * 2];
@@ -433,6 +445,11 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 		}
 		if (previous) {
 			const std::int64_t step = rampStep(*previous, *index);
+			if (const std::int64_t moved = (step - 1) - static_cast<std::int64_t>(frame - previousFrame - 1);
+			    moved != 0) {
+				drift += moved;
+				result.drifts.push_back({frame, drift});
+			}
 			// A late hard sync's drop, the smallest logged that covers it, each line once.
 			// The library first skips, unlogged, every whole chunk too late to play, then drops the late front of the next
 			// and says how late that was: whole chunks and at most that drop.
@@ -469,6 +486,7 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 		}
 		afterBlend = false;
 		previous = index;
+		previousFrame = frame;
 		result.lastIndex = *index;
 		++result.rampFrames;
 		++result.lastRunFrames;
@@ -481,36 +499,77 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 /// How far before the time a ramp skip's frame was due its cycles may have been lost: the file node's `running` record
 /// is stamped a main-loop turn after the cycle its WAV's first frame came from.
 inline constexpr std::chrono::milliseconds rampDueBefore{100};
-/// How far after its own blocks: the records' and the WAV's clocks, and a beat of slack. The due times are worked out
-/// from the skips the WAV shows, which are the sendspin node's own clock's (docs/node-types.md#clock): it skips at most
-/// the graph's jump (min(jump, what its feed holds)), and a cycle cut after its block shows as the block it lost, so
-/// the skips before a frame never add up to more than the cycles the file node lost before it, and no loss moves a
-/// skip's due time later than its frames were due; a stall past the feed only moves it earlier, by what the node could
-/// not skip. The framework keeps no time for anyone (docs/architecture.md#the-timing-model): a node upstream of the
-/// file with no clock of its own would skip nothing, so this reckoning holds only behind a node whose clock skips the
-/// graph's lost time, as sendspin's does.
+/// How far after the time its lost frames last: the records' and the WAV's clocks, and a beat of slack.
 inline constexpr std::chrono::milliseconds rampDueAfter{100};
+/// How long after a skip the library's correction of what it left is taken to belong to the same loss: the sendspin
+/// node skips at most what its feed holds of a stall (docs/node-types.md#clock), and the library corrects the rest at
+/// the next chunk it syncs, after the feed and the rest of its chunk (26 blocks seen); a second covers it with room.
+inline constexpr std::size_t rampSettleFrames = graphFrequency;
 
-/// The ramp's skips that no record of ear's losses pays (unpaidSkips), named: each skip's cycles were lost from when
-/// the WAV's frame it lands on was due (from the file node `node`'s start, its frames and the blocks the skips before it
-/// took out of the WAV) for as long as its own blocks last, give or take rampDueBefore and rampDueAfter.
+/// What a ramp lost at one skip, as the time the WAV lost there (docs/testing.md#the-counters-own-word).
+struct RampLoss {
+	std::size_t frame;     // the WAV frame the skip lands on
+	std::uint64_t skipped; // the skip's own blocks
+	std::uint64_t frames;  // the frames the WAV lost there, at least the skip's
+	std::uint64_t blocks;  // those in whole blocks, rounded to the nearest and at least the skip's: what records pay
+};
+
+/// Each skip's loss: its own blocks, or, where the stream's drift (RampCheck::drifts) moved further by the time the
+/// library had corrected what the node could not skip (the most the drift reached from the skip until the next skip or
+/// rampSettleFrames on), that whole loss. A stall past the sendspin node's feed is lost whole from the WAV but skipped
+/// only in part (docs/node-types.md#clock): taken from the skips alone, every later due time would come early by the
+/// rest, and the stall's record would keep the rest as cycles to spare for any later skip.
+inline std::vector<RampLoss> rampLosses(const RampCheck& ramp) {
+	std::vector<RampLoss> losses;
+	for (std::size_t k = 0; k < ramp.skips.size(); ++k) {
+		const auto [frame, blocks] = ramp.skips[k];
+		const std::size_t next =
+			k + 1 < ramp.skips.size() ? ramp.skips[k + 1].first : std::numeric_limits<std::size_t>::max();
+		const std::size_t until = std::min(next, frame + rampSettleFrames + 1);
+		std::int64_t before = 0;
+		std::optional<std::int64_t> most;
+		for (const RampCheck::Drift& at : ramp.drifts) {
+			if (at.frame < frame) before = at.drift;
+			else if (at.frame < until) most = std::max(most.value_or(at.drift), at.drift);
+		}
+		const auto skippedFrames = static_cast<std::int64_t>(blocks * blockSize);
+		const std::int64_t lost = std::max(skippedFrames, most.value_or(before + skippedFrames) - before);
+		const auto whole = static_cast<std::uint64_t>((lost + blockSize / 2) / blockSize);
+		losses.push_back({frame, blocks, static_cast<std::uint64_t>(lost), std::max(blocks, whole)});
+	}
+	return losses;
+}
+
+/// The ramp's skips as losses for records to pay, each lost from when the WAV frame it lands on was due (from the file
+/// node's start `began`, its frames and the frames the losses before it took out of the WAV) for as long as its loss
+/// lasts, give or take rampDueBefore and rampDueAfter. The losses are the time the WAV lost (rampLosses), not the
+/// skips alone, so each due time is its frame's own and a record pays only the skips whose window it lies in, a
+/// stall's cycles all going to the stall.
+inline std::vector<SeenSkip> rampSkipsSeen(RecordTime began, const RampCheck& ramp) {
+	const auto ofFrames = [](std::uint64_t frames) {
+		return std::chrono::microseconds(static_cast<std::int64_t>(frames) * 1'000'000 / graphFrequency);
+	};
+	std::vector<SeenSkip> skips;
+	std::uint64_t before = 0;
+	for (const RampLoss& loss : rampLosses(ramp)) {
+		const RecordTime due = began + ofFrames(loss.frame + before);
+		std::string what =
+			"a skip of " + std::to_string(loss.skipped) + " blocks at frame " + std::to_string(loss.frame);
+		if (loss.blocks > loss.skipped)
+			what += " and " + std::to_string(loss.blocks - loss.skipped) + " more blocks the library corrected";
+		skips.push_back({loss.blocks, due - rampDueBefore, due + ofFrames(loss.frames) + rampDueAfter, what});
+		before += loss.frames;
+	}
+	return skips;
+}
+
+/// The ramp's losses that no record of ear's pays (unpaidSkips over rampSkipsSeen), named; the file node `node`'s first
+/// `running` record dates its WAV's first frame.
 inline std::vector<std::string> unpaidRampSkips(const ChildProcess& ear, const RampCheck& ramp,
                                                 const std::string& node = "rec") {
 	const auto began = wavBegan(ear, node);
 	if (!began) return {"no running record of node " + node + ": its WAV's frames have no time"};
-	std::vector<SeenSkip> skips;
-	std::uint64_t before = 0;
-	for (const auto& [frame, blocks] : ramp.skips) {
-		const auto due = *began + std::chrono::microseconds((static_cast<std::int64_t>(frame) +
-		                                                     static_cast<std::int64_t>(before * blockSize)) *
-		                                                    1'000'000 / graphFrequency);
-		const auto lasts =
-			std::chrono::microseconds(static_cast<std::int64_t>(blocks * blockSize) * 1'000'000 / graphFrequency);
-		skips.push_back({blocks, due - rampDueBefore, due + lasts + rampDueAfter,
-		                 "a skip of " + std::to_string(blocks) + " blocks at frame " + std::to_string(frame)});
-		before += blocks;
-	}
-	return unpaidSkips(ear, std::move(skips));
+	return unpaidSkips(ear, rampSkipsSeen(*began, ramp));
 }
 
 } // namespace ear::test

@@ -278,16 +278,18 @@ Each pays from its own cycles (a graph record's cut cycles, a node record's miss
 its own. A first record after the window later than its kind's lag (the longest a record can wait
 for its losses to hold still: 10.3 s for the graph's, 20.3 s for a node's) cannot be the record of
 that loss and pays nothing, named. A skip no record pays fails, named by where it was seen. A
-ramp's skip (`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) was lost from when
-the WAV frame it lands on was due (from the file node's `running` record, its frames and the
-blocks the skips before it took out) for as long as its blocks last, from 100 ms before to 100 ms
-after (`unpaidRampSkips`). The skips it counts are the `sendspin` node's own clock's
-([node-types.md](node-types.md#clock)): it skips at most the graph's jump, and a cycle cut after its
-block shows as the block it lost, so the skips before a frame never add up to more than the cycles
-the file node lost, and no loss moves a skip's due time later than its frames were due (a stall
-past the node's feed only moves it earlier). The framework skips nothing for a node
-([architecture.md](architecture.md#the-timing-model)), so the reckoning holds behind a node whose
-own clock skips the graph's lost time, not behind one with none. A source stamp's
+ramp's skip (`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) is paid as the
+time the WAV lost there (`rampLosses`): its own blocks, or more where the stream's drift from the
+WAV (`RampCheck::drifts`: how far the ramp's index moved past the WAV's frames) moved further
+before the next skip and within a second, which is the library correcting what the `sendspin` node
+could not skip of a stall past its feed ([node-types.md](node-types.md#clock)). That loss was
+lost from when the WAV frame it lands on was due (from the file node's `running` record, its frames
+and the frames the losses before it took out) for as long as it lasts, from 100 ms before to 100 ms
+after (`rampSkipsSeen`, `unpaidRampSkips`). So a stall's record pays the stall whole and keeps no
+cycles to spare, and no later skip's window slides back by what the node did not skip: a block
+dropped after such a stall with no cut behind it fails, named (`sendspin_ramp_test.cpp`). The
+framework skips nothing for a node ([architecture.md](architecture.md#the-timing-model)): the
+skips are the `sendspin` node's own clock's, and the drift its library's. A source stamp's
 (`SourceStamps::seen()`) was lost while its chunk or the one before was captured: from the stamp of
 the chunk before (earlier by the skip's own excess, in case the loss fell inside that chunk),
 read onto the wall clock by the quickest arrival measured (each chunk's lag and when the test read
