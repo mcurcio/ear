@@ -1,7 +1,8 @@
 // The diagnostics counters reported (docs/engine.md#reporting-the-counters): CounterWatch reads the graph's counters and
 // every node's at the main loop's heartbeat, and tells its listeners what moved, at the paces the wire and standard
 // output each take: the control port's counters.changed (docs/control-port.md#counters), and the records
-// ear.graph-lost-cycles and ear.node-missed-cycles (docs/output-records.md#diagnostic). Main thread only: the data thread
+// ear.graph-lost-cycles and ear.node-missed-cycles (docs/output-records.md#diagnostic); and the node's companions'
+// counters, re-told in the node's companion list and as ear.sink-dropped and ear.source-shortfall. Main thread only: the data thread
 // writes the counters and is never asked anything; this reads them through the lock-free reads the counters give.
 #pragma once
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <span>
 #include <vector>
+#include "ear/core/companions.hpp"
 #include "ear/core/cycle_counters.hpp"
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/node_type.hpp"
@@ -33,6 +35,9 @@ public:
 	virtual std::optional<NodeCounts> counts(const NodeName& node) const = 0;
 	/// Main thread. The counts of this span (NodeCountsListener), from its begin; none once it ended.
 	virtual std::optional<NodeCounts> spanCounts(std::uint64_t span) const = 0;
+	/// Main thread. The companions of this span's newest node not yet gone, as NodeHost::companionsOf lists them (a
+	/// sink's `dropped` and a source's `shortfall` read now); empty once it ended or while it has none.
+	virtual std::vector<CompanionView> spanCompanions(std::uint64_t span) const = 0;
 
 protected:
 	~NodeCounterSource() = default;
@@ -50,6 +55,14 @@ public:
 	/// The span's last node is gone, these its final counts, which nothing answers after. Told just before its nodeGone
 	/// or supersededGone, a superseded node's too; not for the older node of a port-caused replace, whose span goes on.
 	virtual void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) = 0;
+	/// A configuration of a node of this span ended (its teardown's step 5, or it was leaked): its sinks' and sources'
+	/// final counts, which nothing answers after (a companion's counters run per configuration). Told before its node's
+	/// countsEnded; for every configuration, a superseded node's and the older node of a port-caused replace's too.
+	virtual void companionsEnded(const NodeName& node, std::uint64_t span, std::span<const CompanionView> finals) {
+		static_cast<void>(node);
+		static_cast<void>(span);
+		static_cast<void>(finals);
+	}
 
 protected:
 	~NodeCountsListener() = default;
@@ -87,6 +100,16 @@ public:
 		static_cast<void>(total);
 		static_cast<void>(since);
 	}
+	/// ear.sink-dropped (a sink: frames its ring had no room for) or ear.source-shortfall (a source: frames played as
+	/// zeros while its writer was not idle): `frames` since the companion's last such record, `totalFrames` since its
+	/// configuration made it.
+	virtual void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+	                                 std::uint64_t totalFrames) {
+		static_cast<void>(node);
+		static_cast<void>(companion);
+		static_cast<void>(frames);
+		static_cast<void>(totalFrames);
+	}
 
 protected:
 	~CounterListener() = default;
@@ -104,7 +127,13 @@ protected:
 ///   stall's cuts all come in the catch-up burst after it, so a long stall is one record) or have kept moving for
 ///   holdBound, at most once per graphRecordPace;
 /// - nodeMissedCycles likewise for a node's missedCycles and overruns, at most once per nodeRecordPace per node, and at
-///   its end at once, pace and hold waived, for what moved since its last record.
+///   its end at once, pace and hold waived, for what moved since its last record;
+/// - its NodeCompanionsListeners the node's whole companion list (spanCompanions) when a sink's `dropped` or a source's
+///   `shortfall` in it differs from what the last list it told named (0 for a companion it never named), at most once
+///   per companionCounterPace per node, only for each name's newest span (K1: what moves a list otherwise, an entry
+///   added or removed or made ready, is NodeHost's to tell);
+/// - companionFramesLost likewise for each sink's and source's count, at most once per companionDropDiagnosticPace per
+///   companion (K2), and at its configuration's end (companionsEnded) at once, pace and hold waived.
 /// flush() writes every record still held back (at a stop, before ear's last record), so the records' sums are the
 /// totals.
 class CounterWatch final : public NodeCountsListener {
@@ -120,6 +149,8 @@ public:
 	CounterWatch& operator=(const CounterWatch&) = delete;
 	~CounterWatch() = default;
 	void subscribe(CounterListener& listener);
+	/// Told a node's list when its companions' counters moved (the list's other changes are NodeHost's).
+	void subscribeCompanions(NodeCompanionsListener& listener);
 	/// The time `cutCycles` cut cycles lost, at this graph's rate and block size.
 	std::uint64_t lostMs(std::uint64_t cutCycles) const noexcept;
 	/// At each heartbeat.
@@ -128,6 +159,7 @@ public:
 	void flush();
 	void countsBegan(const NodeName& node, std::uint64_t span) override;
 	void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) override;
+	void companionsEnded(const NodeName& node, std::uint64_t span, std::span<const CompanionView> finals) override;
 
 private:
 	using Clock = std::chrono::steady_clock;
@@ -145,6 +177,9 @@ private:
 		NodeCounts read{};       // this tick's reading
 		NodeCounts sent{};       // what the client holds: node.added's zeros, then what countersChanged named
 		Paced<NodeCounts> record{};
+		std::map<NodeName, std::uint64_t> companionsSent{}; // each counter as the last list told named it
+		std::optional<Clock::time_point> companionsSentAt{};
+		std::map<NodeName, Paced<std::uint64_t>> companionRecords{}; // by companion, this configuration's
 	};
 	/// Whether a record is due at `now`: moved since it was recorded; settled (no move since the last tick) or moving for
 	/// holdBound; and its pace passed since the last record. Notes when the move was first seen.
@@ -152,12 +187,16 @@ private:
 	bool due(Paced<Counts>& paced, bool moved, bool settled, std::chrono::milliseconds pace, Clock::time_point now);
 	void recordGraph(const GraphCounts& now, std::optional<Clock::time_point> at);
 	void recordNode(const NodeName& name, Span& span, std::optional<Clock::time_point> at);
+	void recordCompanion(const NodeName& node, const CompanionView& companion, std::uint64_t total,
+	                     Paced<std::uint64_t>& paced, std::optional<Clock::time_point> at);
+	void tickCompanions(Span& span, std::span<const CompanionView> companions, Clock::time_point now);
 
 	const Timers& timers_;
 	const GraphCounterSource& graph_;
 	const NodeCounterSource& nodes_;
 	AudioFormat format_;
 	std::vector<CounterListener*> listeners_;
+	std::vector<NodeCompanionsListener*> companionListeners_;
 	std::map<std::uint64_t, Span> spans_; // by span
 	GraphCounts graphSent_{};             // what countersChanged last carried; ear starts from zero
 

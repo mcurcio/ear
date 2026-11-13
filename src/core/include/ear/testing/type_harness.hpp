@@ -40,6 +40,7 @@ public:
 	NodeHealth health() const { return node_->health(); }
 	bool gone() const noexcept { return node_->gone(); }
 	std::uint64_t droppedFrames() const { return node_->droppedFrames(); }
+	std::vector<CompanionView> companionList() const { return node_->companionList(); }
 	std::size_t unwritten() const { return node_->unwritten(); }
 	const std::vector<CompanionFake>& companions() const noexcept { return node_->companions(); }
 	const std::vector<SeenHandoff>& handoffs() const noexcept { return node_->handoffs(); }

@@ -6,8 +6,10 @@
 //
 // Built so far: the shapes and the engine companions' interfaces (docs/engine.md#engine-companions), which NodeHost
 // and ear_pipewire's adapters use, the kinds' readiness bounds, which NodeHost's deadlines use
-// (docs/engine.md#readiness-deadlines), and the module-run converters' latency rule, which NodeHost's latency plan
-// uses; the counters' paces and the wire's view are declarations until the slice's later steps build them.
+// (docs/engine.md#readiness-deadlines), the module-run converters' latency rule, which NodeHost's latency plan uses,
+// and a node's companion list (CompanionView, NodeCompanionsListener), which NodeHost tells and CounterWatch re-tells
+// and paces the counters of (docs/engine.md#companions-in-a-nodes-list); the wire's encoding of it is the slice's next
+// step.
 // Pure: nothing but the standard library and ear_core.
 #pragma once
 #include <chrono>
@@ -86,14 +88,16 @@ inline constexpr std::chrono::milliseconds sinkReadinessBound{5'000};
 /// The bound for `kind`; std::nullopt for a source.
 std::optional<std::chrono::milliseconds> readinessBound(CompanionKind kind) noexcept;
 
-/// How often a node's companion counters are sampled for the wire (K1), and the least time between two
-/// ear.sink-dropped or ear.source-shortfall diagnostics of one companion (K2).
+/// The least time between two lists CounterWatch re-tells for a node whose companions' counters moved (K1), and
+/// between two ear.sink-dropped or ear.source-shortfall records of one companion (K2)
+/// (docs/engine.md#reporting-the-counters).
 inline constexpr std::chrono::milliseconds companionCounterPace{1'000};
 inline constexpr std::chrono::milliseconds companionDropDiagnosticPace{10'000};
 
 // ---- A companion as the wire and the editor see it ----
 
-/// One entry of a node's `companions` (feature `companions`, docs/design/companions.md#37-on-the-wire-and-in-the-editor).
+/// One entry of a node's companion list (docs/engine.md#companions-in-a-nodes-list; on the wire, the feature
+/// `companions` the slice's next step builds).
 struct CompanionView {
 	/// An engine kind's engine node ("<node>.playback", "<node>.capture", "<node>.rtp"); a ring kind's "<node>.<bank>".
 	NodeName name;
@@ -105,9 +109,11 @@ struct CompanionView {
 	friend bool operator==(const CompanionView&, const CompanionView&) = default;
 };
 
-/// Told whenever a node's list changes: an entry added or removed, its `ready` changed, or (sampled at most once per
-/// companionCounterPace) a counter moved. Main thread. A list that shows a companion ready is told before the health
-/// change its readiness allowed; a teardown tells an empty list when it begins. `companions` lives only for the call.
+/// Told a node's whole list whenever it changes (docs/engine.md#companions-in-a-nodes-list): by NodeHost when an entry
+/// is added or removed or its `ready` changed, and by CounterWatch when a counter moved (at most once per
+/// companionCounterPace). Main thread. A list that shows a companion ready is told before the health change its
+/// readiness allowed; a teardown tells an empty list after the health that began it. Only for the node a client holds
+/// (never a superseded node). `companions` lives only for the call.
 class NodeCompanionsListener {
 public:
 	virtual void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) = 0;

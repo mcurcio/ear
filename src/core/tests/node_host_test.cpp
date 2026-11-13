@@ -5654,3 +5654,206 @@ TEST_CASE("A block or an engine companion told faulted fails its node lost: the 
 		CHECK(f.allGone == 1);
 	}
 }
+
+namespace {
+
+/// Each companion list NodeHost tells (docs/engine.md#companions-in-a-nodes-list), as a line in the fixture's log:
+/// "list <node> [<phase last told>] <companion>[?]..." ('?' not ready), so its order against the health is seen.
+struct LoggedLists final : NodeCompanionsListener {
+	Log& log;
+	const TestListener& health;
+	LoggedLists(Log& l, const TestListener& h) : log(l), health(h) {}
+	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override {
+		std::string line = "list " + node;
+		for (auto it = health.told.rbegin(); it != health.told.rend(); ++it)
+			if (it->name == node) {
+				line += " [" + std::string(phaseName(it->phase)) + "]";
+				break;
+			}
+		for (const CompanionView& companion : companions) line += " " + companion.name + (companion.ready ? "" : "?");
+		log.push_back(std::move(line));
+	}
+};
+
+/// What NodeHost tells of a configuration's end, with its ring companions' final counts.
+struct EndedCompanions final : NodeCountsListener {
+	std::vector<std::string> told;
+	void countsBegan(const NodeName&, std::uint64_t) override {}
+	void countsEnded(const NodeName&, std::uint64_t, const NodeCounts&) override {}
+	void companionsEnded(const NodeName& node, std::uint64_t span, std::span<const CompanionView> finals) override {
+		std::string line = std::format("ended {} {}", node, span);
+		for (const CompanionView& companion : finals)
+			line += std::format(" {}={}", companion.name, companion.dropped.value_or(companion.shortfall.value_or(0)));
+		told.push_back(std::move(line));
+	}
+};
+
+/// configure on the probe: a playback card on "pb", then a source on "cap" with no clock, and a code.
+std::function<Configured(InstanceContexts&)> withCardAndSource(Log& log) {
+	return [&log](InstanceContexts& cx) {
+		cx.create.soundCard("pb", SoundCardShape{*CardId::parse("Pro24")});
+		static_cast<void>(cx.create.source("cap", SourceShape{.frames = 1000}, nullptr));
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+}
+
+/// configure on the probe: a source on "cap", then a sink on "pb", and a code.
+std::function<Configured(InstanceContexts&)> withSourceAndSink(Log& log) {
+	return [&log](InstanceContexts& cx) {
+		static_cast<void>(cx.create.source("cap", SourceShape{.frames = 1000}, nullptr));
+		cx.create.sink("pb", SinkShape{.frames = 1024}).consumedBy(std::make_unique<TestSinkConsumer>(log, nullptr));
+		cx.create.use(std::make_unique<TestAudioCode>(log));
+		return Configured::applied();
+	};
+}
+
+std::vector<std::string> listsOf(const Log& log) {
+	std::vector<std::string> lists;
+	for (const std::string& line : log)
+		if (line.starts_with("list ")) lists.push_back(line);
+	return lists;
+}
+
+} // namespace
+
+TEST_CASE("A node's companion list is told at configure's return in request order, a companion ready before the health "
+          "its readiness allows, kept across a stop, and empty after the health that began a teardown",
+          "[node_host][companions]") {
+	Fixture f;
+	LoggedLists lists(f.log, f.listener);
+	f.host.subscribeCompanions(lists);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withCardAndSource(f.log);
+	CHECK(f.host.companionsOf("probe").empty());
+	f.add("probe", config);
+	// At configure's return: the card asked first, not ready; the source ready when made.
+	CHECK(listsOf(f.log) == std::vector<std::string>{"list probe [configuring] probe.playback? probe.cap"});
+	const std::vector<CompanionView> asked = f.host.companionsOf("probe");
+	REQUIRE(asked.size() == 2);
+	CHECK(asked[0] ==
+	      CompanionView{.name = "probe.playback", .kind = CompanionKind::cardPlayback, .bank = "pb", .ready = false});
+	CHECK(asked[1] ==
+	      CompanionView{
+			  .name = "probe.cap", .kind = CompanionKind::source, .bank = "cap", .ready = true, .shortfall = 0});
+	CHECK(f.host.companionsOf("nobody").empty());
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	REQUIRE(f.cards.events.size() == 1);
+	f.log.clear();
+
+	SECTION("ready: the list showing it precedes every health its readiness allowed") {
+		f.cards.events[0]->ready();
+		f.settle();
+		CHECK(listsOf(f.log) == std::vector<std::string>{"list probe [configuring] probe.playback probe.cap"});
+		CHECK(indexOf(f.log, "list probe [configuring] probe.playback probe.cap") <
+		      indexOf(f.log, "prepare 44100/256"));
+		CHECK(f.host.health().at(0).state == NodeState::running);
+		// A stop and a start keep the configuration, so its list: nothing told.
+		f.log.clear();
+		REQUIRE(f.host.stop("probe"));
+		f.settle();
+		REQUIRE(f.host.start("probe"));
+		f.settle();
+		CHECK(listsOf(f.log).empty());
+		CHECK(f.host.companionsOf("probe").size() == 2);
+		// A restart: empty after its stopping, then the next configuration's.
+		f.log.clear();
+		REQUIRE(f.host.restart("probe"));
+		f.settle();
+		CHECK(listsOf(f.log) ==
+		      std::vector<std::string>{"list probe [stopping]", "list probe [configuring] probe.playback? probe.cap"});
+		CHECK(indexOf(f.log, "node probe stopping") < indexOf(f.log, "list probe [stopping]"));
+		CHECK(indexOf(f.log, "list probe [stopping]") < indexOf(f.log, "drive nothing")); // at teardown step 1
+	}
+	SECTION("its deadline: empty after the failure") {
+		f.timers.advance(cardReadinessBound);
+		f.settle();
+		CHECK(listsOf(f.log) == std::vector<std::string>{"list probe [failed]"});
+		CHECK(indexOf(f.log, "node probe failed engine-refused: the card never started: Pro24") <
+		      indexOf(f.log, "list probe [failed]"));
+		CHECK(f.host.companionsOf("probe").empty());
+	}
+	f.log.clear();
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+	CHECK(f.host.companionsOf("probe").empty());
+}
+
+TEST_CASE("A sink's list entry is ready once its consumer began, and a configuration's end tells its ring companions' "
+          "final counts, but NodeHost re-tells no list for a counter alone",
+          "[node_host][companions]") {
+	Fixture f;
+	f.sinks.holdBegin = true;
+	LoggedLists lists(f.log, f.listener);
+	f.host.subscribeCompanions(lists);
+	EndedCompanions ended;
+	f.host.subscribeCounts(ended);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withSourceAndSink(f.log);
+	f.add("probe", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(listsOf(f.log) == std::vector<std::string>{"list probe [configuring] probe.cap probe.pb?"});
+	f.sinks.made.at(0)->runBegin();
+	f.settle();
+	CHECK(listsOf(f.log).back() == "list probe [configuring] probe.cap probe.pb");
+	CHECK(indexOf(f.log, "list probe [configuring] probe.cap probe.pb") < indexOf(f.log, "drive code"));
+	CHECK(f.host.health().at(0).state == NodeState::running);
+
+	// The counters are read whenever the list is: a sink's drops, a source's shortfall.
+	f.sinks.made.at(0)->dropped = 4096;
+	const std::vector<CompanionView> now = f.host.companionsOf("probe");
+	REQUIRE(now.size() == 2);
+	CHECK(now[0].shortfall == 0);
+	CHECK_FALSE(now[0].dropped);
+	CHECK(now[1].dropped == 4096);
+	CHECK_FALSE(now[1].shortfall);
+	CHECK(f.host.spanCompanions(1) == now);
+	CHECK(f.host.spanCompanions(2).empty());
+	f.log.clear();
+	REQUIRE(f.host.stop("probe"));
+	f.settle();
+	CHECK(listsOf(f.log).empty()); // a counter alone is CounterWatch's to re-tell
+
+	// A restart: the configuration's end tells its final counts, after its sink closed and before the next one.
+	CHECK(ended.told.empty());
+	REQUIRE(f.host.restart("probe"));
+	f.settle();
+	CHECK(ended.told == std::vector<std::string>{"ended probe 1 probe.pb=4096 probe.cap=0"});
+	f.sinks.made.at(1)->runBegin();
+	f.settle();
+	f.stopAll();
+	f.settle();
+	CHECK(ended.told.size() == 2);
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("Only the node a client holds tells its list: a replaced node's teardown tells nothing, and its newer node "
+          "tells its own",
+          "[node_host][companions][replace]") {
+	Fixture f;
+	LoggedLists lists(f.log, f.listener);
+	f.host.subscribeCompanions(lists);
+	auto config = std::make_shared<ProbeConfig>(f.log);
+	config->onConfigure = withCardAndSource(f.log);
+	f.add("x", config);
+	f.blocks.events.at(0)->ready();
+	f.settle();
+	CHECK(listsOf(f.log) == std::vector<std::string>{"list x [configuring] x.playback? x.cap"});
+	f.log.clear();
+	const bool portCaused = GENERATE(false, true);
+	INFO((portCaused ? "a port-caused replace" : "a replace by another type"));
+	const NodeChange change{NodeOutcome::restart, {}, portCaused};
+	f.host.nodeReplacing("x", change);
+	f.host.nodeReplaced(NodeSpec{"x", "test", {}}, config, change);
+	f.settle();
+	f.blocks.events.back()->ready();
+	f.settle();
+	// The older node's empty list is never told; the newer node's is, once configured.
+	CHECK(listsOf(f.log) == std::vector<std::string>{"list x [configuring] x.playback? x.cap"});
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}

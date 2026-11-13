@@ -415,7 +415,10 @@ owner's end.
 The counters reach the control port (the feature `counters`:
 [control-port.md](control-port.md#counters)) and standard output (`ear.graph-lost-cycles` and
 `ear.node-missed-cycles`: [output-records.md](output-records.md#diagnostic)) through one pacer on
-the main loop, `CounterWatch` (`ear/core/counter_watch.hpp`). Nothing runs on the data thread for
+the main loop, `CounterWatch` (`ear/core/counter_watch.hpp`), and so do the companions' counters, a
+sink's dropped frames and a source's shortfall (in the node's
+[companion list](#companions-in-a-nodes-list), and as `ear.sink-dropped` and
+`ear.source-shortfall`). Nothing runs on the data thread for
 them: it writes the counters and is never asked anything.
 
 **When they are read.** At the main loop's heartbeat, the 100 ms timer that already beats the
@@ -460,8 +463,24 @@ pace and hold waived, so a node removed within 10 s of its last record still say
 the last of its kind, beside the totals; `ms` is the difference of the totals' times, so the
 records' `ms` add up to `lostMs`.
 
+**The companions' counters** are read at the same beat, each span's newest node's list through
+`NodeCounterSource::spanCompanions`. They count per configuration, not per node: a restart's next
+sink of a name counts from zero. *Why here and not on a timer of NodeHost's:* the same reason as
+above; and a paced counter's report is the pacer's, as a node's misses are.
+
+- **The list.** At a beat where a sink's `dropped` or a source's `shortfall` differs from what the
+  last list `CounterWatch` told for the node named (zero for one it never named), and a second has
+  passed since that one, the node's whole list goes to its `NodeCompanionsListener`s, read then;
+  only for each name's newest span, the node a client holds. A configuration's end forgets what it
+  named, so the next one's companions of the same names start from zero.
+- **The records.** `ear.sink-dropped` and `ear.source-shortfall` are paced as
+  `ear.node-missed-cycles` is, per companion: once its count held still for a beat (or kept moving
+  10 s: a full disk), at most once per 10 s per companion (`companionDropDiagnosticPace`), and at
+  once, pace and hold waived, as its configuration ends (`companionsEnded`, with the final counts),
+  so each configuration's records sum to its totals. A superseded node's records are written too.
+
 **At a stop**, every node's span ends as it goes, and once the main loop has ended `flush()`
-writes the graph's record still held back, before ear's last record: the records' sums are then
+writes the graph's record still held back (and any companion's still held back), before ear's last record: the records' sums are then
 the totals, which the system tests judge from ([testing.md](testing.md#the-counters-own-word)). The pace
 is the records', not the counters': the counters are exact whatever the records leave out.
 
@@ -783,6 +802,40 @@ so its `lost` never comes), and a sink is closed (a `begin` still running finish
 never returns). Meanwhile `waitingFor` shows `companion` or `consumer` after 2 s. A failed node is
 retried only by `node.start`, `node.restart` or a change until recovery is built; a USB card that
 takes longer than 10 s to start fails.
+
+### Companions in a node's list
+
+Every companion a configuration asked for, engine or ring ([sinks](#sinks), [sources](#sources)),
+is in its node's list, as a client will see it (`companions.hpp`: `CompanionView`): its name
+(`<node>.playback`, `<node>.capture`, `<node>.rtp`; a sink's or source's `<node>.<bank>`), its kind
+(`companionKindName`: `card-playback`, `card-capture`, `rtp-receiver`, `sink`, `source`), the
+inside bank it joins, whether it is ready (an engine companion once linked, a sink once its
+consumer began, a source always), and its counter: a sink's `dropped` (`Sink::droppedFrames`), a
+source's `shortfall` (`Source::shortfallFrames`), each counted from its configuration's making.
+`NodeHost::companionsOf(name)` reads the list of the newest node of the name, in request order, the
+counters read then; it is empty before configure returned applied, after it failed, and from
+teardown step 1.
+
+**Who tells it, and when.** `NodeHost` tells its `NodeCompanionsListener`s the whole list whenever
+an entry is added or removed or its `ready` changes, in this order against the node's health:
+
+- after the `configuring` it was asked in (the end of that input's batch);
+- before the health a companion's readiness allows: a ready engine companion or a begun sink is
+  told before the readiness check that prepares and drives the code, so no client sees a node
+  running with companions it believes not ready;
+- empty at teardown step 1 (a restart's, a removal's, a disable's, a failure's), after the
+  `node.state` that began it, so a client never waits for the list to learn of a failure; a stop
+  keeps the configuration, so its list.
+
+Only the node a client holds tells: neither a node superseded by a newer node of its name nor the
+older node of a port-caused replace, as the wire keys a node by its name
+([architecture.md](architecture.md#phases-states-and-what-is-wanted)).
+
+A counter's move alone is `CounterWatch`'s to tell, at the heartbeat
+([reporting the counters](#reporting-the-counters)), since the data thread moves a sink's drops and a source's
+shortfall and nothing tells the main loop of either. As a configuration ends (teardown step 5, or
+when it is leaked) `NodeHost` tells its sinks' and sources' final counts
+(`NodeCountsListener::companionsEnded`), for the records.
 
 ### Sound cards
 

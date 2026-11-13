@@ -303,8 +303,15 @@ public:
 	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node that
 	/// does not carry an older node's counts is added, its serial the span; countsEnded with its final counts as it
 	/// goes, before its nodeGone or supersededGone (not for the older node of a port-caused replace, whose span its newer
-	/// node carries on). Main thread, before the first node.
+	/// node carries on). Main thread, before the first node. Also companionsEnded, with a configuration's sinks' and
+	/// sources' final counts, as it ends (teardown step 5, or a leak).
 	void subscribeCounts(NodeCountsListener& listener);
+	/// Where a node's companion list goes whenever an entry is added or removed or its `ready` changes
+	/// (docs/engine.md#companions-in-a-nodes-list): told at configure's applied return (a source ready, the rest not),
+	/// before the health a companion's readiness allows, and empty at teardown step 1, after the health that began
+	/// the teardown; a stop keeps it. Only the node a client holds tells: never a superseded node, nor the older node of
+	/// a port-caused replace. A move of a counter alone is CounterWatch's to tell. Main thread, before the first node.
+	void subscribeCompanions(NodeCompanionsListener& listener);
 	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw
 	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
 	/// thread, before the first node.
@@ -382,6 +389,12 @@ public:
 	/// The counts of this span of counts (NodeCountsListener): its newest node not yet gone's, carried as counts()
 	/// carries them; none once the span ended.
 	std::optional<NodeCounts> spanCounts(std::uint64_t span) const override;
+	/// The companions of the newest node of this name not yet gone (docs/engine.md#companions-in-a-nodes-list): its
+	/// configuration's, in request order, each sink's `dropped` and source's `shortfall` read now; empty when there is
+	/// no such node, it has no configuration, its configure failed, or its teardown began. Main thread.
+	std::vector<CompanionView> companionsOf(const NodeName& node) const;
+	/// The same for the newest node of this span of counts not yet gone.
+	std::vector<CompanionView> spanCompanions(std::uint64_t span) const override;
 	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
 	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
 	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp

@@ -399,12 +399,19 @@ TEST_CASE("File: a sink whose consumer has not begun within 5 s fails the node s
 	harness->blockReady();
 	CHECK(harness->phase() == "configuring");
 	CHECK_FALSE(harness->companion(file::writer).ready);
+	// Its list as a client will see it: the sink, not ready, nothing dropped.
+	CHECK(
+		harness->companionList() ==
+		std::vector<ear::CompanionView>{
+			{.name = "rec.writer", .kind = ear::CompanionKind::sink, .bank = "writer", .ready = false, .dropped = 0}});
 	harness->node().advance(std::chrono::milliseconds(4'999));
 	CHECK(harness->phase() == "configuring");
 	SECTION("its consumer begins in time") {
 		harness->ready(file::writer);
 		CHECK(harness->companion(file::writer).ready);
 		CHECK(harness->phase() == "running");
+		REQUIRE(harness->companionList().size() == 1);
+		CHECK(harness->companionList()[0].ready);
 		harness->node().advance(std::chrono::milliseconds(10'000));
 		CHECK(harness->phase() == "running");
 	}
@@ -415,6 +422,7 @@ TEST_CASE("File: a sink whose consumer has not begun within 5 s fails the node s
 		CHECK(harness->health().reason->code == ear::FailureReason::Code::startFailed);
 		CHECK(harness->health().reason->detail == "the sink writer's consumer did not begin within 5 s");
 		CHECK(harness->companion(file::writer).destroyed);
+		CHECK(harness->companionList().empty()); // torn down
 	}
 	// A sink is never lost by the framework.
 	CHECK_THROWS_AS(harness->node().lose("writer", "x"), std::logic_error);

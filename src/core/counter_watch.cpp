@@ -24,6 +24,12 @@ NodeCounts minus(const NodeCounts& a, const NodeCounts& b) noexcept {
 	                  .driverChanges = a.driverChanges - b.driverChanges};
 }
 
+/// A ring companion's one counter: a sink's dropped frames, a source's shortfall; none for an engine companion.
+std::optional<std::uint64_t> counterOf(const CompanionView& companion) noexcept {
+	if (companion.dropped) return companion.dropped;
+	return companion.shortfall;
+}
+
 } // namespace
 
 CounterWatch::CounterWatch(const Timers& timers, const GraphCounterSource& graph, const NodeCounterSource& nodes,
@@ -31,6 +37,8 @@ CounterWatch::CounterWatch(const Timers& timers, const GraphCounterSource& graph
 	: timers_(timers), graph_(graph), nodes_(nodes), format_(format) {}
 
 void CounterWatch::subscribe(CounterListener& listener) { listeners_.push_back(&listener); }
+
+void CounterWatch::subscribeCompanions(NodeCompanionsListener& listener) { companionListeners_.push_back(&listener); }
 
 std::uint64_t CounterWatch::lostMs(std::uint64_t cutCycles) const noexcept {
 	return GraphCounts{.cutCycles = cutCycles}.lostMs(FrameClock(format_.rate), format_.maxBlock);
@@ -68,6 +76,41 @@ void CounterWatch::recordNode(const NodeName& name, Span& span, std::optional<Cl
 	span.record.movingSince.reset();
 }
 
+void CounterWatch::recordCompanion(const NodeName& node, const CompanionView& companion, std::uint64_t total,
+                                   Paced<std::uint64_t>& paced, std::optional<Clock::time_point> at) {
+	for (CounterListener* listener : listeners_)
+		listener->companionFramesLost(node, companion, total - paced.recorded, total);
+	paced.recorded = total;
+	if (at) paced.recordedAt = at;
+	paced.movingSince.reset();
+}
+
+void CounterWatch::tickCompanions(Span& span, std::span<const CompanionView> companions, Clock::time_point now) {
+	// The records: each counter once it held still for a beat, at most once per companionDropDiagnosticPace.
+	for (const CompanionView& companion : companions) {
+		const auto total = counterOf(companion);
+		if (!total) continue;
+		Paced<std::uint64_t>& paced = span.companionRecords[companion.name];
+		if (due(paced, *total != paced.recorded, *total == paced.previous, companionDropDiagnosticPace, now))
+			recordCompanion(span.name, companion, *total, paced, now);
+		paced.previous = *total;
+	}
+	// The wire's sample: the whole list when a counter moved from what the last list told, at most once per
+	// companionCounterPace, for the node a client holds.
+	if (span.superseded) return;
+	const bool moved = std::ranges::any_of(companions, [&](const CompanionView& companion) {
+		const auto total = counterOf(companion);
+		if (!total) return false;
+		const auto sent = span.companionsSent.find(companion.name);
+		return *total != (sent == span.companionsSent.end() ? 0 : sent->second);
+	});
+	if (!moved || (span.companionsSentAt && now - *span.companionsSentAt < companionCounterPace)) return;
+	for (const CompanionView& companion : companions)
+		if (const auto total = counterOf(companion)) span.companionsSent[companion.name] = *total;
+	span.companionsSentAt = now;
+	for (NodeCompanionsListener* listener : companionListeners_) listener->companionsChanged(span.name, companions);
+}
+
 void CounterWatch::tick() {
 	const Clock::time_point now = timers_.now();
 	const GraphCounts graph = graph_.graphCounts();
@@ -100,6 +143,7 @@ void CounterWatch::tick() {
 			recordNode(span.name, span, now);
 		span.record.previous = span.read;
 	}
+	for (auto& [id, span] : spans_) tickCompanions(span, nodes_.spanCompanions(id), now);
 }
 
 void CounterWatch::flush() {
@@ -108,6 +152,11 @@ void CounterWatch::flush() {
 	for (auto& [id, span] : spans_) {
 		if (const auto counts = nodes_.spanCounts(id)) span.read = *counts;
 		if (!sameMisses(span.read, span.record.recorded)) recordNode(span.name, span, std::nullopt);
+		for (const CompanionView& companion : nodes_.spanCompanions(id)) {
+			const auto total = counterOf(companion);
+			Paced<std::uint64_t>& paced = span.companionRecords[companion.name];
+			if (total && *total != paced.recorded) recordCompanion(span.name, companion, *total, paced, std::nullopt);
+		}
 	}
 }
 
@@ -125,6 +174,22 @@ void CounterWatch::countsEnded(const NodeName& node, std::uint64_t span, const N
 	ended->second.read = total;
 	if (!sameMisses(total, ended->second.record.recorded)) recordNode(ended->second.name, ended->second, std::nullopt);
 	spans_.erase(ended);
+}
+
+void CounterWatch::companionsEnded(const NodeName& node, std::uint64_t span, std::span<const CompanionView> finals) {
+	const auto ended = spans_.find(span);
+	if (ended == spans_.end()) return;
+	Span& open = ended->second;
+	// What moved since each companion's last record is written now, pace and hold waived; a later configuration's
+	// companions of the same names count from zero, in the records and in what the wire last named alike.
+	for (const CompanionView& companion : finals) {
+		Paced<std::uint64_t>& paced = open.companionRecords[companion.name];
+		if (const auto total = counterOf(companion); total && *total != paced.recorded)
+			for (CounterListener* listener : listeners_)
+				listener->companionFramesLost(node, companion, *total - paced.recorded, *total);
+		open.companionRecords.erase(companion.name);
+		open.companionsSent.erase(companion.name);
+	}
 }
 
 } // namespace ear

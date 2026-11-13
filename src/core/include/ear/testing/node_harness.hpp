@@ -191,6 +191,9 @@ public:
 	std::string_view phase() const;      // phaseName of the last told health
 	bool gone() const noexcept;          // nodeGone was told
 	std::uint64_t droppedFrames() const; // nodeGone's count
+	/// The node's companion list as NodeHost lists it for a client (NodeHost::companionsOf): its configuration's
+	/// companions in request order, each ready or not, a sink's `dropped` and a source's `shortfall` read now.
+	std::vector<CompanionView> companionList() const;
 	const std::vector<std::string>& notes() const noexcept;
 	const std::vector<SeenDiagnostic>& diagnostics() const noexcept;
 

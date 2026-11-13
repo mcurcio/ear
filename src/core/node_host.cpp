@@ -10,7 +10,8 @@
 // legacy start), both implemented here on one set of internals, and gives the code; a rule it breaks at a call or at
 // the return, and a configure that throws, fail the node start-failed. The engine companions it asked for are made
 // once the block is ready; each of them and each sink's consumer has its kind's readiness deadline from the request,
-// past which the node fails (docs/engine.md#readiness-deadlines); once every resource is ready a legacy recipe
+// past which the node fails (docs/engine.md#readiness-deadlines), and every companion is in the node's list a client
+// sees (companionsOf; docs/engine.md#companions-in-a-nodes-list); once every resource is ready a legacy recipe
 // builds the run object (T3), the code is prepared, and once the block is ready it is driven by an asynchronous
 // drive (T5), whose completion the block
 // posts and NodeHost checks against the node's serial, its configuration's generation and the barrier number
@@ -589,6 +590,7 @@ struct NodeHost::Impl {
 				auto& slot = *c.sinks.emplace_back(std::make_unique<SinkSlot>(*this, found.name));
 				slot.sink = std::move(made);
 				slot.binding = SinkBinding{&slot.sink->tap(), found.first, found.ports.size()};
+				c.requestOrder.push_back({Asked::Family::sink, c.sinks.size() - 1});
 				for (std::size_t i = found.first; i < found.first + found.ports.size() && i < c.fadedCount; ++i)
 					c.faded[i] = false;
 				return slot;
@@ -620,6 +622,7 @@ struct NodeHost::Impl {
 				});
 				auto& slot = c.sources.emplace_back(SourceSlot{found.name, std::move(made), {}});
 				slot.binding = SourceBinding{&slot.source->tap(), found.first, found.ports.size()};
+				c.requestOrder.push_back({Asked::Family::source, c.sources.size() - 1});
 				return slot.source->writer();
 			});
 		}
@@ -741,6 +744,7 @@ struct NodeHost::Impl {
 						return;
 					node.config_->engineCompanions[index]->isReady = true;
 					if (index < node.config_->engineDeadlines.size()) node.config_->engineDeadlines[index].reset();
+					node.refreshCompanions(); // the list showing it ready before the health its readiness allows
 					node.checkReady(generation);
 					node.refreshWaiting();
 				});
@@ -984,6 +988,13 @@ struct NodeHost::Impl {
 			CompanionTarget target;
 		};
 
+		/// One companion a configuration asked for, in request order: which of its lists holds it, and where.
+		struct Asked {
+			enum class Family { engine, sink, source };
+			Family family;
+			std::size_t index;
+		};
+
 		/// One declareLatency: the bank it is declared on and, for a typed declaration, the input bank its path
 		/// starts at.
 		struct DeclaredLatency {
@@ -1017,6 +1028,7 @@ struct NodeHost::Impl {
 			std::vector<EngineAsk> engineAsks; // in request order
 			std::vector<std::unique_ptr<Companion>> engineCompanions;
 			std::vector<std::unique_ptr<Timer>> engineDeadlines; // per ask, until it is ready (null once it is)
+			std::vector<Asked> requestOrder; // every companion, as asked: the companions' list's order
 			std::unique_ptr<Timer> deadline;
 			std::unique_ptr<Timer> bound; // the request in flight's bound: the fade's or the barrier's
 			std::chrono::steady_clock::time_point postedAt; // when that request was posted
@@ -1033,6 +1045,7 @@ struct NodeHost::Impl {
 			bool recipeRan = false;       // T3 ran (or there was no recipe)
 			bool prepared = false;
 			bool tearing = false; // teardown step 3 began
+			bool ending = false;  // teardown step 1 began: its companions' list is empty from here
 			std::size_t handoffsClosed = 0;
 			std::size_t sinksClosed = 0;
 		};
@@ -1189,6 +1202,9 @@ struct NodeHost::Impl {
 			if (auto threw = std::exchange(stopThrew_, std::nullopt))
 				feed(aggregate_.fault(lc::Fact::hookThrew, std::move(*threw)));
 			refreshWaiting();
+			// After the batch's health: a configure's list follows its configuring, a teardown's empty list the state
+			// that began it (docs/engine.md#companions-in-a-nodes-list).
+			refreshCompanions();
 		}
 
 		/// Removed (the aggregate's Gone): told gone once its block's destruction ran in the flush, not when
@@ -1313,6 +1329,7 @@ struct NodeHost::Impl {
 			                                                                          .blockPorts = bank.ports,
 			                                                                          .format = host_.format,
 			                                                                          .insideBank = bank.name}});
+			config_->requestOrder.push_back({Asked::Family::engine, config_->engineAsks.size() - 1});
 		}
 
 		/// One engine name per resource of a configuration: an engine companion's "<node>.<suffix>" and a sink's or
@@ -1604,6 +1621,7 @@ struct NodeHost::Impl {
 					return;
 				node.config_->sinks[index]->begun = true;
 				node.config_->sinks[index]->deadline.reset();
+				node.refreshCompanions(); // before the health its readiness allows
 				node.checkReady(generation);
 				node.refreshWaiting();
 			});
@@ -1773,10 +1791,88 @@ struct NodeHost::Impl {
 			for (SourceSlot& slot : config_->sources) slot.source->stopping();
 		}
 
-		/// Teardown step 1: every source's writer closed (a write or idle waiting returns at once). Idempotent.
+		/// Teardown step 1: every source's writer closed (a write or idle waiting returns at once), and the
+		/// configuration's companions leave its list (told at the end of the input, after the health that began the
+		/// teardown). Idempotent.
 		void closeSources() noexcept {
 			if (!config_) return;
+			config_->ending = true;
 			for (SourceSlot& slot : config_->sources) slot.source->close();
+		}
+
+	public:
+		/// The configuration's companions as a client sees them (docs/engine.md#companions-in-a-nodes-list), in request
+		/// order; none before configure returned applied, after it failed, or from teardown step 1.
+		std::vector<CompanionView> companions() const {
+			std::vector<CompanionView> list;
+			if (!config_ || config_->startFailed || config_->ending) return list;
+			const Configuration& c = *config_;
+			for (const Asked& asked : c.requestOrder) switch (asked.family) {
+				case Asked::Family::engine: {
+					if (asked.index >= c.engineAsks.size()) break;
+					const EngineAsk& ask = c.engineAsks[asked.index];
+					list.push_back(CompanionView{
+						.name = ask.target.engineNode,
+						.kind = std::visit([&](const auto& shape) { return engineKind(shape, ask.target.bank); },
+					                       ask.shape),
+						.bank = ask.target.insideBank,
+						.ready = asked.index < c.engineCompanions.size() && c.engineCompanions[asked.index]->isReady});
+					break;
+				}
+				case Asked::Family::sink: {
+					if (asked.index >= c.sinks.size()) break;
+					const SinkSlot& slot = *c.sinks[asked.index];
+					list.push_back(CompanionView{.name = name_ + "." + slot.bank,
+					                             .kind = CompanionKind::sink,
+					                             .bank = slot.bank,
+					                             .ready = slot.begun,
+					                             .dropped = slot.sink->droppedFrames()});
+					break;
+				}
+				case Asked::Family::source: {
+					if (asked.index >= c.sources.size()) break;
+					const SourceSlot& slot = c.sources[asked.index];
+					list.push_back(CompanionView{.name = name_ + "." + slot.bank,
+					                             .kind = CompanionKind::source,
+					                             .bank = slot.bank,
+					                             .ready = true,
+					                             .shortfall = slot.source->shortfallFrames()});
+					break;
+				}
+				}
+			return list;
+		}
+
+	private:
+		/// The list changed in what NodeHost tells (an entry added or removed, or its `ready`), not in a counter alone,
+		/// which CounterWatch samples: told to its listeners, unless a client no longer holds this node.
+		void refreshCompanions() {
+			std::vector<CompanionView> now = companions();
+			const auto sameEntry = [](const CompanionView& a, const CompanionView& b) {
+				return a.name == b.name && a.kind == b.kind && a.bank == b.bank && a.ready == b.ready;
+			};
+			if (std::ranges::equal(now, companionsTold_, sameEntry)) return;
+			companionsTold_ = now;
+			if (!silent_ && !superseded_) host_.companionsChanged(name_, now);
+		}
+
+		/// The configuration ends (teardown step 5, or a leak): its sinks' and sources' final counts, for the records.
+		void companionsEnded() {
+			std::vector<CompanionView> finals;
+			for (const auto& slot : config_->sinks)
+				finals.push_back(CompanionView{.name = name_ + "." + slot->bank,
+				                               .kind = CompanionKind::sink,
+				                               .bank = slot->bank,
+				                               .ready = slot->begun,
+				                               .dropped = slot->sink->droppedFrames()});
+			for (const SourceSlot& slot : config_->sources)
+				finals.push_back(CompanionView{.name = name_ + "." + slot.bank,
+				                               .kind = CompanionKind::source,
+				                               .bank = slot.bank,
+				                               .ready = true,
+				                               .shortfall = slot.source->shortfallFrames()});
+			if (finals.empty()) return;
+			for (auto* listener : host_.countsListeners) listener->companionsEnded(name_, span_, finals);
 		}
 
 		/// A completion as the block runs it on the main loop: an input of its own, heard only by the configuration and
@@ -2020,6 +2116,7 @@ struct NodeHost::Impl {
 			Configuration& c = *config_;
 			c.deadline.reset();
 			c.channel->detach();
+			companionsEnded(); // closed (no tap or play since the barrier), so their counts are final
 			c.code.reset();
 			c.instance.reset();
 			c.sinks.clear();   // each closed (its thread idle) or never begun
@@ -2046,6 +2143,7 @@ struct NodeHost::Impl {
 		void leak() {
 			Configuration& c = *config_;
 			c.channel->detach();
+			companionsEnded(); // their counts as they stand: the configuration is never read again
 			// Deliberately never deleted: the configuration's threads may still touch any of it.
 			static_cast<void>(new Leaked{std::move(c.config), std::move(c.channel), std::move(c.context),
 			                             std::move(c.instance), std::move(c.code), std::move(c.recordings),
@@ -2062,18 +2160,19 @@ struct NodeHost::Impl {
 		std::uint64_t serial_;
 		lc::NodeAggregate aggregate_;
 		Ports ports_;
-		std::shared_ptr<const NodeConfig> queued_; // the newest committed config, the next configure's
-		std::uint64_t version_ = 0;                // queued_'s, as the aggregate compares it
-		std::optional<NodeHealth> told_;           // the health last told
-		NodePhase wantedPhase_ = NodePhase::added; // the phase last told, whose waits are shown
-		std::vector<WaitingFor> waitingShown_;     // what it waits for, as health shows it
-		bool waitingAllowed_ = false;              // the phase has lasted 2 s
-		std::unique_ptr<Timer> phaseTimer_;        // the phase's 2 s
-		std::unique_ptr<Timer> paceTimer_;         // the 1 s pace of a changed list
-		std::uint64_t predecessor_ = 0;            // the port-caused replace's older node, while not gone
-		bool silent_ = false;                      // the older node of a port-caused replace: tells nobody
-		bool superseded_ = false;                  // a newer node of its name was added: standard output alone
-		std::unique_ptr<Configuration> config_;    // the current configuration (at most one)
+		std::shared_ptr<const NodeConfig> queued_;  // the newest committed config, the next configure's
+		std::uint64_t version_ = 0;                 // queued_'s, as the aggregate compares it
+		std::optional<NodeHealth> told_;            // the health last told
+		NodePhase wantedPhase_ = NodePhase::added;  // the phase last told, whose waits are shown
+		std::vector<WaitingFor> waitingShown_;      // what it waits for, as health shows it
+		std::vector<CompanionView> companionsTold_; // its companions' list as last told (or due to be, if silent)
+		bool waitingAllowed_ = false;               // the phase has lasted 2 s
+		std::unique_ptr<Timer> phaseTimer_;         // the phase's 2 s
+		std::unique_ptr<Timer> paceTimer_;          // the 1 s pace of a changed list
+		std::uint64_t predecessor_ = 0;             // the port-caused replace's older node, while not gone
+		bool silent_ = false;                       // the older node of a port-caused replace: tells nobody
+		bool superseded_ = false;                   // a newer node of its name was added: standard output alone
+		std::unique_ptr<Configuration> config_;     // the current configuration (at most one)
 		std::unique_ptr<PortBlock> block_;
 		bool configuring_ = false;         // inside the instance's making and configure: the contexts' calls are valid
 		bool building_ = false;            // inside a legacy recipe: events() is valid
@@ -2117,6 +2216,7 @@ struct NodeHost::Impl {
 	std::vector<NodeDiagnosticListener*> diagnosticListeners;
 	std::vector<EngineDiagnosticListener*> engineListeners;
 	std::vector<NodeCountsListener*> countsListeners;
+	std::vector<NodeCompanionsListener*> companionListeners;
 	std::vector<LogSink*> logSinks;
 	std::vector<InternalErrorListener*> internalErrorListeners;
 	bool wedged = false;                      // the data loop was judged wedged: no PipeWire call is made again
@@ -2325,6 +2425,10 @@ struct NodeHost::Impl {
 		return *reply;
 	}
 
+	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) {
+		for (auto* listener : companionListeners) listener->companionsChanged(node, companions);
+	}
+
 	void noted(const NodeName& node, const std::string& text) {
 		for (auto* listener : noteListeners) listener->nodeSays(node, text);
 	}
@@ -2426,6 +2530,8 @@ void NodeHost::subscribeEngineDiagnostics(EngineDiagnosticListener& listener) {
 
 void NodeHost::subscribeCounts(NodeCountsListener& listener) { impl_->countsListeners.push_back(&listener); }
 
+void NodeHost::subscribeCompanions(NodeCompanionsListener& listener) { impl_->companionListeners.push_back(&listener); }
+
 void NodeHost::subscribeLog(LogSink& sink) { impl_->logSinks.push_back(&sink); }
 
 void NodeHost::subscribeInternalErrors(InternalErrorListener& listener) {
@@ -2498,6 +2604,18 @@ std::optional<NodeCounts> NodeHost::counts(const NodeName& node) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
 		if ((*it)->name() == node && !(*it)->removed()) return (*it)->counts();
 	return std::nullopt;
+}
+
+std::vector<CompanionView> NodeHost::companionsOf(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->companions();
+	return {};
+}
+
+std::vector<CompanionView> NodeHost::spanCompanions(std::uint64_t span) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->span() == span && !(*it)->removed()) return (*it)->companions();
+	return {};
 }
 
 std::vector<NodeHealth> NodeHost::health() const {

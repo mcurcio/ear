@@ -40,7 +40,20 @@ struct HandNodes final : NodeCounterSource {
 		if (it == spans.end()) return std::nullopt;
 		return it->second;
 	}
+	std::map<std::uint64_t, std::vector<CompanionView>> companions; // each span's newest node's list, set by hand
+	std::vector<CompanionView> spanCompanions(std::uint64_t span) const override {
+		const auto it = companions.find(span);
+		if (it == companions.end()) return {};
+		return it->second;
+	}
 };
+
+/// A companion's counter as a line: "<name>=<count>", none for an engine companion.
+std::string text(const CompanionView& c) {
+	if (c.dropped) return std::format("{}={}", c.name, *c.dropped);
+	if (c.shortfall) return std::format("{}={}", c.name, *c.shortfall);
+	return c.name;
+}
 
 std::string text(const NodeCounts& c) {
 	return std::format("{},{},{},{}", c.missedCycles, c.overruns, c.repositions, c.driverChanges);
@@ -62,8 +75,24 @@ struct Told final : CounterListener {
 	void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) override {
 		lines.push_back(std::format("node {} since={} total={}", node, text(since), text(total)));
 	}
+	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+	                         std::uint64_t totalFrames) override {
+		lines.push_back(std::format("{} {} {} frames={} total={}", companionKindName(companion.kind), node,
+		                            companion.name, frames, totalFrames));
+	}
 	/// What was told since the last look.
 	std::vector<std::string> take() { return std::exchange(lines, {}); }
+};
+
+/// Each companion list told, as a line.
+struct ToldLists final : NodeCompanionsListener {
+	std::vector<std::string>& lines;
+	explicit ToldLists(std::vector<std::string>& into) : lines(into) {}
+	void companionsChanged(const NodeName& node, std::span<const CompanionView> companions) override {
+		std::string line = "list " + node;
+		for (const CompanionView& companion : companions) line += " " + text(companion);
+		lines.push_back(std::move(line));
+	}
 };
 
 struct World {
@@ -72,7 +101,11 @@ struct World {
 	HandNodes nodes;
 	CounterWatch watch{timers, graph, nodes, AudioFormat{48000, 256}};
 	Told told;
-	World() { watch.subscribe(told); }
+	ToldLists lists{told.lines};
+	World() {
+		watch.subscribe(told);
+		watch.subscribeCompanions(lists);
+	}
 	/// One heartbeat, 100 ms after the last.
 	void beat() {
 		timers.at += 100ms;
@@ -101,7 +134,15 @@ struct World {
 	/// The span gone, with these final counts.
 	void end(const NodeName& node, std::uint64_t span, NodeCounts total) {
 		nodes.spans.erase(span);
+		nodes.companions.erase(span);
 		watch.countsEnded(node, span, total);
+	}
+	/// The name's newest span's companion list, as NodeHost lists its configuration's companions.
+	std::vector<CompanionView>& companionsOf(const NodeName& node) { return nodes.companions[newest.at(node)]; }
+	/// The configuration of the name's newest span ended, with these final counts: its list is empty from then on.
+	void endConfiguration(const NodeName& node, const std::vector<CompanionView>& finals) {
+		nodes.companions.erase(newest.at(node));
+		watch.companionsEnded(node, newest.at(node), finals);
 	}
 };
 
@@ -288,6 +329,118 @@ TEST_CASE("flush writes every record held back, pace and hold waived, so the rec
 	w.cut(1);
 	w.watch.flush();
 	CHECK(w.told.take() == Lines{"graph cut=5 stalls=1 ms=26 total=5", "node rec since=3,0,0,0 total=3,0,0,0"});
+	w.watch.flush();
+	CHECK(w.told.take().empty());
+}
+
+namespace {
+
+CompanionView sink(const NodeName& name, std::uint64_t dropped) {
+	return CompanionView{.name = name, .kind = CompanionKind::sink, .bank = "b", .ready = true, .dropped = dropped};
+}
+CompanionView source(const NodeName& name, std::uint64_t shortfall) {
+	return CompanionView{
+		.name = name, .kind = CompanionKind::source, .bank = "b", .ready = true, .shortfall = shortfall};
+}
+CompanionView card(const NodeName& name) {
+	return CompanionView{.name = name, .kind = CompanionKind::cardPlayback, .bank = "b", .ready = true};
+}
+
+} // namespace
+
+TEST_CASE("ear.sink-dropped and ear.source-shortfall: once a count holds still a beat, then at most once per 10 s per "
+          "companion, and an engine companion has none",
+          "[counter_watch][records][companions]") {
+	World w;
+	w.begin("rec");
+	w.companionsOf("rec") = {card("rec.playback"), sink("rec.writer", 0), source("rec.feed", 0)};
+	w.beats(20);
+	CHECK(w.told.take().empty()); // nothing lost
+	w.companionsOf("rec")[1].dropped = 4096;
+	w.beat();
+	CHECK(w.told.take() == Lines{"list rec rec.playback rec.writer=4096 rec.feed=0"}); // the wire's sample at once
+	w.beat(); // held still a beat: its first record
+	CHECK(w.told.take() == Lines{"sink rec rec.writer frames=4096 total=4096"});
+	// The source is paced on its own; the sink, dropping again, waits out its 10 s.
+	w.companionsOf("rec")[1].dropped = 8192;
+	w.companionsOf("rec")[2].shortfall = 256;
+	w.beats(2);
+	CHECK(w.told.take() == Lines{"source rec rec.feed frames=256 total=256"}); // the list waits for its second
+	w.beats(8);
+	CHECK(w.told.take() == Lines{"list rec rec.playback rec.writer=8192 rec.feed=256"});
+	w.beats(89);
+	CHECK(w.told.take().empty());
+	w.beat(); // 10 s since the sink's record
+	CHECK(w.told.take() == Lines{"sink rec rec.writer frames=4096 total=8192"});
+	// A sink that never stops dropping (a full disk): at most one record a 10 s, each what moved since the last.
+	int records = 0;
+	for (int i = 0; i < 300; ++i) {
+		w.companionsOf("rec")[1].dropped = *w.companionsOf("rec")[1].dropped + 256;
+		w.beat();
+		for (const std::string& line : w.told.take()) records += line.starts_with("sink ") ? 1 : 0;
+	}
+	CHECK(records >= 2);
+	CHECK(records <= 3);
+}
+
+TEST_CASE("A node's companion list is re-told when a counter moved, at most once a second, only for the node a "
+          "client holds",
+          "[counter_watch][wire][companions]") {
+	World w;
+	const std::uint64_t older = w.begin("x");
+	w.companionsOf("x") = {sink("x.writer", 0)};
+	w.beats(3);
+	CHECK(w.told.take().empty()); // a list with nothing lost is NodeHost's to tell, never re-told here
+	w.companionsOf("x")[0].dropped = 1;
+	w.beat();
+	CHECK(w.told.take() == Lines{"list x x.writer=1"});
+	w.companionsOf("x")[0].dropped = 2;
+	w.beats(9); // within the second
+	CHECK(w.told.take() == Lines{"sink x x.writer frames=2 total=2"});
+	w.beat();
+	CHECK(w.told.take() == Lines{"list x x.writer=2"});
+	// A newer node of the name: the older one's list is off the wire, its records still written.
+	w.begin("x");
+	w.nodes.companions.at(older)[0].dropped = 3;
+	w.beats(150);
+	CHECK(w.told.take() == Lines{"sink x x.writer frames=1 total=3"});
+}
+
+TEST_CASE("A configuration's end writes its companions' held-back counts at once, and the next one's count from zero",
+          "[counter_watch][records][wire][companions]") {
+	World w;
+	w.begin("rec");
+	w.companionsOf("rec") = {sink("rec.writer", 100)};
+	w.beats(2);
+	CHECK(w.told.take() == Lines{"list rec rec.writer=100", "sink rec rec.writer frames=100 total=100"});
+	w.companionsOf("rec")[0].dropped = 150; // held back: within 10 s of its record
+	w.beats(3);
+	CHECK(w.told.take().empty());                         // within the wire's second and the record's 10 s
+	w.endConfiguration("rec", {sink("rec.writer", 160)}); // a restart: its last drops, after the last beat read it
+	CHECK(w.told.take() == Lines{"sink rec rec.writer frames=60 total=160"});
+	// The next configuration's sink of the same name counts from zero: nothing to tell until it drops, and then its
+	// own count.
+	w.companionsOf("rec") = {sink("rec.writer", 0)};
+	w.beats(20);
+	CHECK(w.told.take().empty());
+	w.companionsOf("rec")[0].dropped = 10;
+	w.beats(2);
+	CHECK(w.told.take() == Lines{"list rec rec.writer=10", "sink rec rec.writer frames=10 total=10"});
+	w.endConfiguration("rec", {sink("rec.writer", 10)}); // nothing held back: nothing written
+	CHECK(w.told.take().empty());
+	w.watch.companionsEnded("nobody", 99, std::vector{sink("x.y", 5)}); // a span never begun tells nothing
+	CHECK(w.told.take().empty());
+}
+
+TEST_CASE("flush writes every companion's record held back too", "[counter_watch][records][companions]") {
+	World w;
+	w.begin("rec");
+	w.companionsOf("rec") = {source("rec.feed", 7)};
+	w.beat(); // moving: the wire's sample, no record yet
+	CHECK(w.told.take() == Lines{"list rec rec.feed=7"});
+	w.companionsOf("rec")[0].shortfall = 9;
+	w.watch.flush();
+	CHECK(w.told.take() == Lines{"source rec rec.feed frames=9 total=9"});
 	w.watch.flush();
 	CHECK(w.told.take().empty());
 }

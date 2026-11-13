@@ -926,6 +926,8 @@ bool NodeHarness::gone() const noexcept { return impl_->wentAway; }
 
 std::uint64_t NodeHarness::droppedFrames() const { return impl_->dropped_; }
 
+std::vector<CompanionView> NodeHarness::companionList() const { return impl_->host->companionsOf(impl_->options.node); }
+
 const std::vector<std::string>& NodeHarness::notes() const noexcept { return impl_->noteList; }
 
 const std::vector<SeenDiagnostic>& NodeHarness::diagnostics() const noexcept { return impl_->diagnosticList; }

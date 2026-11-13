@@ -246,7 +246,9 @@ cx.use(passThrough({bankPair(record, writer)}));
   as PipeWire combines latencies, so an upper bound when the bank's paths differ. A consumer that
   does not date audio ignores it (`file`'s `WavWriter` does).
 - The frame ring and the stamp ring drop together (no frame without its stamp); dropped frames are
-  counted (readable at any time by the framework) and reported as the node's `dropped=` at removal.
+  counted (readable at any time by the framework), shown in the node's companion list, said as
+  `ear.sink-dropped` while they grow ([engine.md](engine.md#reporting-the-counters)) and summed into
+  the node's `dropped=` at removal.
 - These rules are core's `SinkRing` (`ear/core/sink_ring.hpp`, each chunk cut by `cutChunk` in
   `ear/core/sink.hpp`), which the engine's sink and the harness's both run, so a type's tests get the
   calls the engine makes, split chunks included.
@@ -288,7 +290,8 @@ engine and the harness both run, so a type's tests and the engine never disagree
   written before the clear, faded to zero, drops the rest (counted dropped), and only then fades
   the new audio in. A source's bank is never faded by the drive: its fades are its own.
 - **The shortfall.** Frames played as zeros (or as an underrun's decay) while the writer was not
-  idle are counted, readable at any time (`Source::shortfallFrames()`). A skip that leaves the ring
+  idle are counted, readable at any time (`Source::shortfallFrames()`), shown in the node's
+  companion list and said as `ear.source-shortfall` while it grows. A skip that leaves the ring
   dry is a shortfall too, if the writer is not idle.
 - **A stop** unbinds the source with the code; once the silence completed, what its ring holds is
   dropped (counted, never played), so a start never plays audio written before it. Meanwhile a
@@ -455,7 +458,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.feed(bank, interleaved)`, `h.lastPlayed(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken); what the last `process()` did with its ring (the `SourcePlayed` its clock was told, all zero before the first); its shortfall |
 | `h.input(bank, i)`, `h.output(bank, i)` | A port's buffer |
 | `h.stop()`, `h.start()`, `h.restart()`, `h.change(settings)`, `h.disable()`, `h.enable()`, `h.remove()` | The operations |
-| `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()` | What the node shows |
+| `h.phase()`, `h.health()`, `h.gone()`, `h.droppedFrames()`, `h.companionList()` | What the node shows; its companion list as a client will see it ([engine.md](engine.md#companions-in-a-nodes-list)), read now |
 | `h->unwritten()`, `h->notes()`, `h->diagnostics()`, `h->latencyPlan()`, `h->ports()` | Through `->`, the underlying `NodeHarness` |
 | `h.companion(bank)` | What was made on a bank (an engine companion's bank as `NodeHost` named it): its `kind` (`CompanionKind`: a card's by its bank's direction), `name`, `shape`, `made`, `ready`, `destroyed`, and a sink's `chunks` as its consumer got them, one per call (a chunk split at the ring's end is two) |
 | `h.recordingRequests()` | Every recording asked for |
