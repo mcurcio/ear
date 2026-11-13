@@ -1,6 +1,7 @@
 # Cycle facts, one test judge and a sample-rate type
 
-Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, diagnostics counters added (section 8);
+Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, **Q-CF2 reversed on 2026-11-13 by the owner's
+timing model** (`timing-model.md`; what of this page that makes moot is section 9.15), diagnostics counters added (section 8);
 spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked); step C1 built (section
 9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
@@ -34,7 +35,9 @@ that checks it. S6 has checked every [U] that was its own (section 9.1).
 - (2026-11-10, Q-CF1) "Yes. We should include counters like this as part of the core diagnostics. Per node? Per
   graph?" Section 8 designs both and recommends both; the owner can still overturn that.
 - (2026-11-10, Q-CF2) Keep in step: after a stall longer than a node's buffer, what ear reports as played counts the
-  whole stall (section 4.4).
+  whole stall (section 4.4). **Reversed (2026-11-13)** by the owner's timing model (`timing-model.md` section 1, TM1
+  and TM7): the framework keeps no audio time for any node, so `SourceRing`'s `Played` and its keep-in-step leave it,
+  and a source with a clock of its own keeps its time itself.
 
 ## 2. The root class
 
@@ -188,6 +191,10 @@ Off the data loop the facts travel with what already crosses: a sink's stamp rin
 timer.
 
 ### 4.4 The product consumers, moved
+
+*Superseded in part (2026-11-13):* the `SourceRing::keepTime`, `Played` and `SendspinCode` rows below were built (C4a,
+C4b) and are deleted by the timing model (`timing-model.md` 4.1 and 6.3): the source keeps no time and `sendspin` skips
+only what its feed holds, with no debt. The rows stand as the record of what C4 built.
 
 | Consumer | Today | On the facts |
 |---|---|---|
@@ -861,8 +868,8 @@ R5d).
 | **C2** | **Done** (9.3). `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | **Done** (9.4). `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | **Done** (9.5). `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
-| **C4a** | **Done** (9.7, which departs from the progress half). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
-| **C4b** | **Done** (9.8). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
+| **C4a** | **Done** (9.7, which departs from the progress half; its debt and deferral deleted by `timing-model.md` T2). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
+| **C4b** | **Done** (9.8; `keepTime` and `Played` deleted by `timing-model.md` T3, the stamps' facts kept). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | **Done** (9.11, which keeps `kLogReach`, `kLogLag` and `inLoss`'s lag for 3c's patch). `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `kSettleCycles`, `lossSteps`, `dryCycles` from `lastGot()` (and `lastGot()`), the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | **Done** (9.12). Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | **Done** (9.13). Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
@@ -1668,6 +1675,28 @@ SIGSTOP measurement); the library pages hold the result.
   records' running totals, `counters.changed` and `graph.get` agree, and that the records add up at the stop.
 - **A stall seen to end only by a block** is a known limit, now named in `docs/engine.md#counters`.
 
+### 9.15 After the timing model (2026-11-13): what is moot
+
+The owner's timing model (`timing-model.md`) reverses Q-CF2 and replaces `sendspin`'s C4 design with the spike's
+"honest sink plus local skip". What this page built stays where it is a fact of the tick (`CycleFacts`,
+`CycleAccount`, `DriverCuts`, `GraphCycle::overdueNs`, the sink's stamps, the judge, the counters); what it built to
+keep time for a node goes. Moot, each with what replaces it:
+
+| Follow-up or finding | Now |
+|---|---|
+| 4.4's rows for `SourceRing::keepTime` and `Played` (keep in step, the uncapped debt) and 9.8's idle latch and debt width | Deleted with the source's timekeeping (`timing-model.md` T3) |
+| 9.7's question for the owner (the frames count moving with the clock only if the library is patched) | Moot: nothing moves the count but what was skipped and read |
+| 9.7's "For C4b and 3c" (tell the library what the source took, or give the source the feed's rule) | Answered by the source's clock (`timing-model.md` 4.2, 6.1) |
+| 4.4's last sentence ("in 3c ... this row merges into `SourceRing`'s") | The row moves into `sendspin`'s `SourceClock`, not `SourceRing` |
+| 9.9's fixes 1, 2, 4, 5 and 6 (the floor patch, nothing told from a lossy cycle, the payment, `LibraryView`, `untoldBound`) | Deleted (`timing-model.md` 6.3); fix 3 (the late-chunk patch) stays |
+| 9.9's draft upstream report, its floor half; 9.9's "telling the library on each whole cycle while it is starved ... not done" | The floor half withdrawn (`timing-model.md` 6.5); the honest wrapper tells every tick |
+| 9.10's deferral of overdue cycles and `Feed::skipThenRead` | Deleted; `overdueNs` stays, now the input of the dating rule (`GraphCycle::ranRawNs`, `timing-model.md` 6.2) |
+| 9.11's settle causes `starvedCatchUp` and `forgottenDebt`, and the payment's allowance | Deleted with what they excused; `dry` and `logged` stay |
+| The stall tests' payment bounds (back within 2 + ceil(remainder / (feed - block)) blocks, no library correction) | Replaced by `timing-model.md` 6.4 (one library correction, ear's silence at most a block) |
+
+Not moot: D3, C6a, C6b, C7, C8; `kLogReach`, `kLogLag` and `inLoss`'s lag (until slice 3c's log patch, 9.11);
+`StallProbe` and the in-block stalls; the cycle judge.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.
@@ -1687,8 +1716,10 @@ owner: "Yes. We should include counters like this as part of the core diagnostic
 answers his question with both, each for what it means (graph: what the host did to every output; node: what happened
 to that node beyond it), as a recommendation he can still overturn.
 
-**Q-CF2 (answered, 2026-11-10).** After a stall longer than a node's buffer, should what ear reports as played keep in
-step with the clock? The owner: keep in step (section 4.4).
+**Q-CF2 (answered, 2026-11-10; reversed, 2026-11-13).** After a stall longer than a node's buffer, should what ear
+reports as played keep in step with the clock? The owner: keep in step (section 4.4). Reversed by the owner's timing
+model: the framework keeps no audio time for any node, and a source's own clock reconciles a stall
+(`timing-model.md`).
 
 **Q-CF3. If PipeWire turns out to lose a cycle without reporting it, what should the tests do?** *Not asked: S6 found
 no such path (9.1). Kept for the day a PipeWire bump or a failure shows one; option (b) has no mark to read on 1.4.2.*

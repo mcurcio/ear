@@ -5,8 +5,10 @@ slice 5 (`control-plane.md`). It gives every node type what `sendspin` had to bu
 with their states, the I/O executor, stores, claims, recordings opened off the main loop, the carried sendspin-cpp log
 patch), and moves `sendspin` onto the type's class, its companions and loops in one step, retiring the legacy adapter.
 The primitives' part of slice 3d (claims swapped in place, `whenReady`, a sink paused while a library is swapped,
-`sendspin` changing in place) is `reconfigure.md`'s. The built system is described in `docs/architecture.md` and
-`docs/writing-a-node-type.md`; this page cites them for what exists.
+`sendspin` changing in place) is `reconfigure.md`'s. The timing model's part of slice 3c (a source that keeps no time,
+`sendspin`'s source clock, the converter companion) is `timing-model.md`'s: its steps T1 to T3 come before S3c.1, and
+S3c.6 moves `sendspin`'s honest wrapper onto its source as that page's section 6 says. The built system is described
+in `docs/architecture.md` and `docs/writing-a-node-type.md`; this page cites them for what exists.
 
 [V] = verified in the file named, as of 2026-11-09 (files of the pinned sendspin-cpp tree, `.cache/deps/sendspin-src`,
 by their path in it; PipeWire 1.4.2's source as `pipewire-1.4.2/<path>`); [U] = unverified, with the step or test that
@@ -127,9 +129,11 @@ private:
 // src/nodes/sendspin/sendspin.cpp
 Configured Sendspin::configure(CreateOf<spec>& cx, const Checked& now) {
 	if (!now.get<rows::server>()) cx.claim(claim::TcpListen{now.get<rows::port>()});   // judged first (6.8)
-	SourceWriter& played = cx.source(fromServer, {.frames = feedFramesFor(cx.format())});   // companions.md
+	auto clock = std::make_unique<SendspinClock>(cx.format().rate);   // timing-model.md 6: honest, local skip
+	SendspinClock& progress = *clock;                                    // freed with the source, after the worker
+	SourceWriter& played = cx.source(fromServer, {.frames = feedFramesFor(cx.format())}, std::move(clock));
 	cx.loop(worker, std::make_unique<Worker>(WorkerParts{
-		.handle = node_.handle(), .keys = cx.store(keyFile), .played = played,
+		.handle = node_.handle(), .keys = cx.store(keyFile), .played = played, .progress = progress,
 		.self = cx.executor(worker), .notifier = cx.executor(notifier), .settings = settingsFrom(cx.node(), now)}));
 	cx.sink(toServer, {.frames = cx.format().rate / 2}).consumedBy(worker, &Worker::toServer);   // begun before running
 	cx.use(passThrough({bankPair(to, toServer), bankPair(fromServer, from)}));
@@ -148,7 +152,7 @@ void Worker::begin() {   // on the worker loop, after start()
 	KeyRecord record = KeyRecord::parseTrusted(keys_.text());   // the store's rule already trusted the text
 	startClient(std::move(record));                             // make, start, listen or dial
 	tick_ = self_.every(std::chrono::milliseconds{10}, [this] { tick(); });            // client.loop(), watch, mDNS
-	notifier_.post([this] { notified_ = notifier_.onWake(played_.playedWake(), [this] { notify(); }); });
+	notifier_.post([this] { notified_ = notifier_.onWake(played_.clockWake(), [this] { notify(); }); });
 }
 void Worker::end() {     // on the worker loop, after stop(); also queued ahead of the destructor at removal
 	notifier_.post([this] {
@@ -166,7 +170,8 @@ std::size_t Worker::on_audio_write(std::uint8_t* data, std::size_t length, std::
 }
 ```
 
-What the author no longer writes: a thread, a poll loop, an eventfd, a mailbox, a feed, a capture anchor, realtime code,
+What the author no longer writes: a thread, a poll loop, an eventfd, a feed, a capture anchor, realtime code beyond its
+source's clock (`timing-model.md` 6.1: a skip and a report, the report in its own mailbox),
 note pacing, a claims map, a probe, a `HeldPort`, a key file's open, mode or sweep, a `NodeConfig`, a `NodeTypeOf`, a
 latency declaration, a folder parameter, a close hook, or a lambda that carries resources between hooks.
 
@@ -336,7 +341,7 @@ that started destroys its state on its own thread. `waitingFor` (built, `docs/co
 ### 6.2 Wakes: the framework's, for now
 
 A thread (the realtime one included) tells a loop "look now", at most once until the loop answers. After 3b the only
-wakes are the framework's: a source companion's played wake, and later the status bell (slice 5). Types do not ask for
+wakes are the framework's: a source's clock wake (`timing-model.md` 4.2), and later the status bell (slice 5). Types do not ask for
 wakes in 3c (G23).
 
 - **`Wake`** is declared in core by 3b (`companions.md` 3.3): `ring() noexcept` does
@@ -842,7 +847,8 @@ sendspin's namespace becomes `ear::nodes::sendspin`. S3c.6 makes every change be
 | File | Fate |
 |---|---|
 | `include/ear/nodes/sendspin.hpp` | `makeSendspinNodeType()`, no argument |
-| `feed.*`, `mailbox.hpp`, `sendspin_code.*`, the capture anchor | deleted: a source on `from_server` and a sink on `to_server` |
+| `feed.*`, `sendspin_code.*`, the capture anchor | deleted: a source on `from_server` and a sink on `to_server`; `sendspin_code.*`'s playback half (T2's honest wrapper) becomes `sendspin_clock.*`, the source's clock (`timing-model.md` 6) |
+| `mailbox.hpp` | kept: the clock's report (`PlayProgress`) to the notifier |
 | `sendspin_type.cpp` | renamed `sendspin.cpp`: the class `Sendspin`, `makeSendspinNodeType`. `SendspinConfig`, `SendspinType`, `HeldPort` and the boot sweep go |
 | new `sendspin_spec.hpp` | rows (moved from `settings.hpp`), banks, `keyFile`, `worker`, `notifier`, `spec`, `Sendspin`, `feedFramesFor`, `emptyKeyRecord`, `whyNotKeyRecord` |
 | `settings.*` | `ServerUrl`, `parseName`, `SendspinSettings`, `settingsFrom`; namespace only |
@@ -857,7 +863,7 @@ fake.
 
 | sendspin test file | Fate |
 |---|---|
-| `code_test.cpp`, `feed_test.cpp`, `to_server_test.cpp` | the skip and dating cases are the source companion's (3b); `to_server`'s adapt to stamped chunks |
+| `code_test.cpp`, `feed_test.cpp`, `to_server_test.cpp` | the skip and dating cases become the clock's unit rows (`timing-model.md` 6.4) through the harness, the ring's are the source's (3b); `to_server`'s adapt to stamped chunks |
 | `port_claims_test.cpp` | the claim case moves to core (`ClaimRegistry`); the probe cases to `ear_runtime`, plus a UDP port held with SO_REUSEADDR refused |
 | `notes_test.cpp` | `NoteGate`'s cases move to core's node handle tests; `printable` and the texts stay |
 | `keys_test.cpp` | open, narrow, create, symlink, size and replace cases move to `ear_runtime` (`ConfinedStores`); the record's own cases stay, over a harness store |
@@ -878,7 +884,7 @@ Each step keeps every test green and changes no audio path.
 | **S3c.3 Loops** | `loop.hpp`, `Loops`, `TypeSpec::loops`, `StrandPool`, `DedicatedLoops`; `cx.loop`, `cx.executor`, typed posts; staging until configured; `postFromOutside`, `closeToOthers`; teardown step 4; the source count; `Loop::onWake` on `EventWake`; the harness's loops and clock | post order; `after`, `every` (coalescing), `onWake` (a pending wake fires once on arming), `onReadable`; staged work runs only once configured, never after a configuration that failed first; a state destroyed on its own thread; a post typed for another loop's state does not compile; outside work refused from step 1; a source left armed; a dedicated loop that never drains leaked with "1 loops open"; `ear.loop-slow`; a stuck strand gets a replacement thread; the blocking assert on a strand; the wake's drain-then-clear order |
 | **S3c.4 Stores** | `StoreRule`, `Stores`, `TypeSpec::stores`, `NodeType::stores()`; `ConfinedStores` with sweep, open at step 2, serialised writes, the 5 s deadlines | store open (missing, created, symlink, too big, distrusted with the file untouched, mode narrowed before judging); `replace` refused when changed; two writes in flight both commit in order; sweep over declared stores; an open past its deadline dropped; one compile test of every `TypeSpec` subset spelling (U1); compile-fail cases: two stores of one suffix, a bad suffix, `maxBytes` left out, a mode beyond 0777, a store or loop handle the spec lacks |
 | **S3c.5 Claims, recordings** | `claim::TcpListen`, `claim::Udp`, `ClaimRegistry` at step 1, `KernelPortProbe`; implicit store, recording and RTP receiver claims; recordings deferred onto the I/O executor; the leaked-configuration record, late close, auto-start (R15); `ear.claim-wait`, `ear.close-late` in `output-records.json`; `waitingFor`'s new kinds | granted; refused (running holder, across types) before any open or thread; waited (a removed node on 8928 and an added one in one plan; `rec` removed and `rec2` added on one path); the 15 s deadline; two nodes whose restarts swap ports both run, teardowns finishing in either order; an abandoned port re-probed; a store and a recording path refused while a leaked configuration holds them, then freed by its late close and the node running by itself (a system test: a peer that never answers at stop); probe cases moved; system tests for visible changes 2 and 3 |
-| **S3c.6 sendspin moves** | section 12, from today's SPI in one step: the class, its source and sink companions, its worker a loop state; the legacy adapter and the old SPI go (`LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, the `RunCode` alias, `NodeConfig::start` and `make`'s default); `node_folders.hpp`, the folder argument and `notYetInHarness` go; the thread guard | `type_test.cpp`; sendspin in the all-type harness test; the guard on each spelling; every system test (U4); `handoff_test.cpp` goes (its cases are `sink_test.cpp`'s) |
+| **S3c.6 sendspin moves** | section 12, from today's SPI in one step: the class, its source (with `SendspinClock`, `timing-model.md` 7) and sink companions, its worker a loop state; the legacy adapter and the old SPI go (`LegacyInstance`, `StartContext`, `StartResult`, `RunRecipe`, `Ready`, `RunObject`, `HandoffRequest`, `RtWriter`, `HandoffConsumer`, `HandoffAdapter`, `ThreadHandoffs`, the `RunCode` alias, `NodeConfig::start` and `make`'s default); `node_folders.hpp`, the folder argument and `notYetInHarness` go; the thread guard | `type_test.cpp`; sendspin in the all-type harness test; the guard on each spelling; every system test (U4); `handoff_test.cpp` goes (its cases are `sink_test.cpp`'s) |
 | **S3c.7 The log patch** | `cmake/sendspin-log.patch`; `sendspin_patched_dep` with a patch list; the worker's state sets the sink and context | `ear_carried_patch_check` for both patches; a library line from the worker and one from the sync thread arrive as `log` records with the node (U2); two nodes' lines told apart; a line outside any scope is unattributed |
 | **S3c.8 Words** | AGENTS.md, `docs/writing-a-node-type.md`, `docs/node-types.md` (sendspin), the `sendspin` skill; this page deleted, its lasting content moved there | — |
 

@@ -125,6 +125,10 @@ a new driver, a position jump, or a cycle too large to run); a consumer that mus
 compares `position` with the last chunk's end. `begin` runs once on the sink's thread before the node is `configured`
 (built, readiness step 4').
 
+*Reversed in part (2026-11-13):* by the owner's timing model a source keeps no time: "keeping time" and "says what
+played" below (D-C4, D-3b3) are replaced by the source's own clock (`timing-model.md` 4.1 and 4.2); the ring, its fades,
+closing and stop stand.
+
 **A source plays what its writer gives, and keeps time.** Its writer is the framework's (3c's loops and library threads
 call it); `source.hpp` is its home (section 8 lists it): `SourceShape{frames}`, `Played{totalFrames, heardRawNs}`,
 `Wake` (`ring`, `descriptor`, `answer`), and `SourceWriter` (`write(interleaved, frames, patience)`,
@@ -331,7 +335,7 @@ The test plan is section 8.9, per executable.
 | D-R10 | `quantum-limit` at the block size; no force properties on companions | One node's forced quantum would change every block's cycle |
 | D-R11 | A source fades without a lookahead | No standing latency; `Played` stays the frames actually played |
 | D-R12 | Readiness deadlines: card 10 s, RTP receiver 5 s, a sink's consumer 5 s | I3: a node never waits for good on something that will never be ready |
-| D-C4 | A source keeps time by default (skips what a stalled graph missed, counting it played) | Every network source wants it; written once |
+| ~~D-C4~~ | Reversed (2026-11-13, the owner's timing model): the framework keeps no audio time for a source; a source with a clock of its own gives the ring a `SourceClock` (`timing-model.md` 4.2). Was: a source keeps time by default (skips what a stalled graph missed, counting it played) | — |
 | D-L25 | Ring companions' realtime side stays inside the block: adopted as the design (D-3b1), no longer a fallback | 3.4 |
 | ~~D-L30~~ | Withdrawn: the wedge stays judged in one stage | Nothing is deferred to a cycle (3.4) |
 | K1 | `companions` under each node, `node.companionsChanged`, counters sampled once a second; no framework status fields | Counts belong to the crossing that drops |
@@ -908,8 +912,8 @@ makes stale (the rule in `AGENTS.md`).
   cheaper, unproven alternatives avoided, and nobody outside ear's code sees the difference (3.4).
 - **D-3b2** No arming by position and no deferred take-up; D-L30 withdrawn: the drive's invoke binds ring companions
   with the code, so the built one-stage wedge judgement still holds.
-- **D-3b3** `Played` means the graph's clock moved past the frames, not that a device sounded them: no node can know the
-  latter, and D-C4 already counts skips as played.
+- ~~**D-3b3**~~ Reversed with D-C4 (2026-11-13): `Played` goes (`timing-model.md` 4.1). Was: `Played` means the
+  graph's clock moved past the frames, not that a device sounded them.
 - **D-3b4** Every source rule lives in core's pure `SourceRing`; `EventSources` and the harness only wrap it: a type's
   tests and the engine cannot disagree.
 - **D-3b5** `SoundCardShape` has no direction: the bank's is it, checked at compile time; `CardDirection` goes.
