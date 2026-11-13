@@ -245,7 +245,8 @@ struct NodeHarness::Impl final : NodeHealthListener,
 				              ChunkStamp{.position = chunk.position,
 				                         .startNs = chunk.startNs,
 				                         .startRawNs = chunk.startRawNs,
-				                         .discontinuity = chunk.discontinuity,
+				                         .causes = chunk.causes,
+				                         .lostFrames = chunk.lostFrames,
 				                         .upstreamFrames = chunk.upstreamFrames}});
 				consumer->consume(chunk);
 			});
@@ -773,8 +774,6 @@ void NodeHarness::process(std::uint32_t frames) {
 	                       .startRawNs = at,
 	                       .driverId = h.driverId,
 	                       .nextNs = clock.ns(static_cast<std::int64_t>(h.timeFrames + frames)),
-	                       .xruns = h.account.xruns(),
-	                       .discontinuity = step.facts.discontinuity(),
 	                       .facts = step.facts};
 	// Each source, before the code, into its bank's buffers, as the real block plays it, while a code runs.
 	if (h.driven != nullptr)

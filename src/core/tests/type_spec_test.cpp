@@ -274,11 +274,11 @@ TEST_CASE("The harness's cycles are discontinuities where the real block's are: 
 	harness.process(16);
 	const auto& chunks = harness.companion(toDevice).chunks; // a stop closes nothing: the same sink
 	REQUIRE(chunks.size() == 4);
-	CHECK(chunks[0].stamp.discontinuity);
-	CHECK_FALSE(chunks[1].stamp.discontinuity);
-	CHECK(chunks[2].stamp.discontinuity); // the start's drive
+	CHECK(chunks[0].stamp.discontinuity());
+	CHECK_FALSE(chunks[1].stamp.discontinuity());
+	CHECK(chunks[2].stamp.causes == CycleCause::drive); // the start's drive
 	CHECK(chunks[2].stamp.position == 48);
-	CHECK_FALSE(chunks[3].stamp.discontinuity);
+	CHECK_FALSE(chunks[3].stamp.discontinuity());
 }
 
 TEST_CASE("The harness's fade-out ramps down from the next cycle and a cycle that ends it at zero acknowledges it, as "

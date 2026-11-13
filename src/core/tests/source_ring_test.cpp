@@ -1,7 +1,9 @@
 // SourceRing, every rule a source plays by (docs/writing-a-node-type.md#sources), driven cycle by cycle on the test's
-// thread: frames played exactly once faded in, keeping time across a forward jump and a new clock on any other, the
-// fades at a clear, an underrun and a return sample for sample, the shortfall only while the writer is not idle, a stop's
-// drop, Played and its dating, a closed ring, positions past 2^32, and Played read whole from another thread.
+// thread, each cycle's facts stated by the one rule (CycleAccount over a CutRing) as the engine states them: frames
+// played exactly once faded in, keeping time across a catch-up of any length and a new clock on any other cause, the
+// fades at a clear, an underrun and a return sample for sample, the shortfall only while the writer is not idle, a
+// stop's drop, Played and its dating, a closed ring, a catch-up past 2^32 frames, and Played read whole from another
+// thread.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -12,6 +14,8 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/cut_ring.hpp"
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/source_ring.hpp"
 
 using namespace ear;
@@ -56,14 +60,60 @@ struct Bank {
 	std::vector<std::span<float>> spans;
 };
 
-/// A cycle at `position`, its start `position` ms on the raw clock (one frame per ms).
-SourceCycle cycleAt(std::uint64_t position, std::uint32_t frames, Latency downstream = {}) {
-	return SourceCycle{.position = position,
-	                   .frames = frames,
-	                   .startRawNs = static_cast<std::int64_t>(position) * kFrameNs,
-	                   .discontinuity = false,
-	                   .downstream = downstream};
-}
+/// The graph's driver as a block states its cycles (docs/writing-a-node-type.md#lost-cycles): numbered and cut in a
+/// CutRing, each cycle's facts by CycleAccount, so the ring keeps time by the facts the engine would hand it. A cycle
+/// starts `position` ms on the raw clock (one frame per ms).
+class Clock {
+public:
+	explicit Clock(std::uint64_t position = 0) : position_(position) {}
+	/// The next cycle the source plays, of `frames`.
+	SourceCycle next(std::uint32_t frames, Latency downstream = {}) {
+		const CycleFacts facts = tick(frames);
+		return SourceCycle{.position = position_ - frames,
+		                   .frames = frames,
+		                   .startRawNs = static_cast<std::int64_t>(position_ - frames) * kFrameNs,
+		                   .facts = facts,
+		                   .downstream = downstream};
+	}
+	/// `count` cycles of `frames` the block did not run, each cut short by the driver: the next states a catch-up of
+	/// them; with `cut` false, a pause (absent).
+	void lose(std::uint32_t count, std::uint32_t frames, bool cut = true) {
+		for (std::uint32_t i = 0; i < count; ++i) {
+			cuts_.start();
+			if (cut) cuts_.incomplete();
+			position_ += frames;
+		}
+	}
+	/// `count` cycles of `frames` the block ran with no code, so no source played (a stop's silence).
+	void silent(std::uint32_t count, std::uint32_t frames) {
+		for (std::uint32_t i = 0; i < count; ++i) tick(frames);
+	}
+	/// A drive installed a code: the next cycle states `drive`.
+	void drive() { account_.driven(); }
+	/// The next cycle's position moves by `frames` with no cycle missed: reposition.
+	void reposition(std::int64_t frames) { position_ += static_cast<std::uint64_t>(frames); }
+	/// The next cycle runs on another driver: driverChange.
+	void changeDriver() { ++driver_; }
+
+private:
+	CycleFacts tick(std::uint32_t frames) {
+		cuts_.start();
+		const CycleFacts facts = account_
+		                             .next(DriverTick{.driverId = driver_,
+		                                              .graphCycle = cuts_.started(),
+		                                              .position = position_,
+		                                              .frames = frames,
+		                                              .startRawNs = static_cast<std::int64_t>(position_) * kFrameNs},
+		                                   frames)
+		                             .facts;
+		position_ += frames;
+		return facts;
+	}
+	CutRing cuts_;
+	CycleAccount account_{FrameClock(kRate), &cuts_};
+	std::uint32_t driver_ = 1;
+	std::uint64_t position_;
+};
 
 /// What the ring plays for `value` at fade level `level` (of kFade), as play() computes it.
 float faded(float value, std::uint32_t level) {
@@ -83,14 +133,15 @@ TEST_CASE("A source plays its ring's frames in order, fading in over its first 5
 	CHECK(ring.capacityFrames() == 64);
 	CHECK(offer(ring, 0, 40, 2) == 40);
 	Bank bank(2, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
 	for (std::uint32_t i = 0; i < 16; ++i) {
 		INFO("frame " << i);
 		CHECK(bank.data[0][i] == faded(streamAt(i, 0), std::min(i, kFade)));
 		CHECK(bank.data[1][i] == faded(streamAt(i, 1), std::min(i, kFade)));
 	}
 	CHECK(ring.played().totalFrames == 16);
-	ring.play(bank.view(), cycleAt(16, 16));
+	ring.play(bank.view(), clock.next(16));
 	for (std::uint32_t i = 0; i < 16; ++i) {
 		CHECK(bank.data[0][i] == streamAt(16 + i, 0));
 		CHECK(bank.data[1][i] == streamAt(16 + i, 1));
@@ -108,51 +159,93 @@ TEST_CASE("A source plays its ring's frames in order, fading in over its first 5
 	CHECK(offer(rounded, 128, 1) == 0);
 }
 
-TEST_CASE("A forward jump of at most the capacity is skipped and counted played, and any other jump is a new clock",
+TEST_CASE("A catch-up of any length is skipped and counted played, and any other cause is a new clock",
           "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 64) == 64);
 	Bank bank(1, 8);
-	ring.play(bank.view(), cycleAt(1000, 8));
-	ring.play(bank.view(), cycleAt(1008, 8)); // contiguous
+	Clock clock(1000);
+	ring.play(bank.view(), clock.next(8));
+	ring.play(bank.view(), clock.next(8)); // contiguous
 	CHECK(ring.played().totalFrames == 16);
-	// 20 frames lost: skipped, counted played, so the stream keeps to the clock.
-	ring.play(bank.view(), cycleAt(1036, 8));
-	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(36 + i));
-	CHECK(ring.played().totalFrames == 44);
-	CHECK(ring.played().totalFrames == 1036 + 8 - 1000);
-	// Exactly the capacity ahead: still a skip, of the whole ring (the writer idle, so the dry cycle is no shortfall).
-	REQUIRE(offer(ring, 64, 44) == 44);
+	// 24 frames lost, three cycles cut: skipped, counted played, so the stream keeps to the clock.
+	clock.lose(3, 8);
+	SourceCycle cycle = clock.next(8);
+	REQUIRE(cycle.facts.causes == CycleCause::catchUp);
+	ring.play(bank.view(), cycle);
+	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(40 + i));
+	CHECK(ring.played().totalFrames == 48);
+	CHECK(ring.played().totalFrames == cycle.position + 8 - 1000);
+	// The capacity's worth: a skip of the whole ring (the writer idle, so the dry cycle is no shortfall).
+	REQUIRE(offer(ring, 64, 48) == 48);
 	ring.markIdle();
-	ring.play(bank.view(), cycleAt(1044 + 64, 8));
-	CHECK(ring.played().totalFrames == 44 + 64);
-	// More than the capacity ahead: a new clock, nothing skipped, the stream played on from where it was.
-	REQUIRE(offer(ring, 108, 40) == 40);
-	ring.play(bank.view(), cycleAt(1116 + 65, 8));
-	CHECK(ring.played().totalFrames == 116);
-	// Back: a new clock too.
-	ring.play(bank.view(), cycleAt(10, 8));
-	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(116 + i));
-	CHECK(ring.played().totalFrames == 124);
+	clock.lose(8, 8);
+	ring.play(bank.view(), clock.next(8));
+	CHECK(ring.played().totalFrames == 48 + 64);
 	CHECK(ring.shortfallFrames() == 0);
+	// Past the capacity: kept in step too. The ring's 40 are skipped and the rest owed, dropped from what comes next.
+	REQUIRE(offer(ring, 112, 40) == 40);
+	clock.lose(9, 8); // 72 frames
+	ring.play(bank.view(), clock.next(8));
+	CHECK(ring.played().totalFrames == 112 + 72);
+	CHECK(ring.shortfallFrames() == 8); // dry: the writer, not idle, had not written them
+	REQUIRE(offer(ring, 152, 40) == 40);
+	ring.play(bank.view(), clock.next(8)); // the 32 owed dropped, then 184 on, faded in after the dry cycle
+	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == faded(streamAt(184 + i), std::min(i, kFade)));
+	CHECK(ring.played().totalFrames == 192);
+	CHECK(ring.droppedFrames() == 0); // owed frames are played, not dropped
+	// Any other cause is a new clock: nothing skipped, the stream played on from where it was.
+	REQUIRE(offer(ring, 192, 32) == 32);
+	clock.reposition(-100); // back
+	ring.play(bank.view(), cycle = clock.next(8));
+	REQUIRE(cycle.facts.causes == CycleCause::reposition);
+	clock.reposition(3); // by part of a cycle
+	ring.play(bank.view(), cycle = clock.next(8));
+	REQUIRE(cycle.facts.causes == CycleCause::reposition);
+	clock.lose(2, 8, false); // a pause: missed, not cut
+	ring.play(bank.view(), cycle = clock.next(8));
+	REQUIRE(cycle.facts.causes == CycleCause::absent);
+	clock.changeDriver();
+	ring.play(bank.view(), cycle = clock.next(8));
+	REQUIRE(cycle.facts.causes == CycleCause::driverChange);
+	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(216 + i));
+	CHECK(ring.played().totalFrames == 224);
+	CHECK(ring.shortfallFrames() == 8);
 }
 
-TEST_CASE("Positions past 2^32 keep time as any other", "[source_ring]") {
+// A catch-up's whole jump is counted, however long (the owner's decision: what is reported played keeps in step with
+// the clock), and what the ring does not hold is owed from what is written next, past 2^32 frames too.
+TEST_CASE("A catch-up past 2^32 frames is counted whole and owed whole", "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 64) == 64);
 	Bank bank(1, 8);
-	const std::uint64_t first = (std::uint64_t{1} << 32U) - 4;
-	ring.play(bank.view(), cycleAt(first, 8));
-	ring.play(bank.view(), cycleAt(first + 8, 8)); // straddles nothing, contiguous past 2^32
-	ring.play(bank.view(), cycleAt(first + 16 + 24, 8));
-	CHECK(ring.played().totalFrames == 48);
-	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(40 + i));
-	// A jump of 2^32 + 8 is a new clock, not a skip of 8.
-	ring.play(bank.view(), cycleAt(first + 48 + (std::uint64_t{1} << 32U) + 8, 8));
-	CHECK(ring.played().totalFrames == 56);
-	for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == streamAt(48 + i));
+	Clock clock;
+	ring.play(bank.view(), clock.next(8));
+	constexpr std::uint64_t jump = (std::uint64_t{1} << 32U) + 8;
+	ring.play(bank.view(), SourceCycle{.position = 8 + jump,
+	                                   .frames = 8,
+	                                   .startRawNs = 0,
+	                                   .facts = {.missed = static_cast<std::uint32_t>(jump / 8),
+	                                             .missedCut = static_cast<std::uint32_t>(jump / 8),
+	                                             .jumpFrames = static_cast<std::int64_t>(jump),
+	                                             .causes = CycleCause::catchUp},
+	                                   .downstream = {}});
+	CHECK(ring.played().totalFrames == 8 + jump);
+	// The ring's 56 are skipped; every frame written from here on is owed, 2^32 - 48 of them.
+	for (std::uint64_t at = 64; at < 64 + 64 * 4; at += 64) {
+		REQUIRE(offer(ring, at, 64) == 64);
+		ring.play(bank.view(), SourceCycle{.position = 0, .frames = 8, .startRawNs = 0, .facts = {}, .downstream = {}});
+		for (std::uint32_t i = 0; i < 8; ++i) CHECK(bank.data[0][i] == 0.0F);
+	}
+	CHECK(ring.played().totalFrames == 8 + jump);
+	CHECK(ring.droppedFrames() == 0);
+	// A clear forgets it.
+	ring.clear();
+	REQUIRE(offer(ring, 1000, 8) == 8);
+	ring.play(bank.view(), SourceCycle{.position = 0, .frames = 8, .startRawNs = 0, .facts = {}, .downstream = {}});
+	CHECK(bank.data[0][kFade] == faded(streamAt(1000 + kFade), kFade));
 }
 
 TEST_CASE("A clear plays the next 5 ms faded to zero, counts them played, drops the rest, and the next audio fades in",
@@ -161,10 +254,11 @@ TEST_CASE("A clear plays the next 5 ms faded to zero, counts them played, drops 
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16)); // faded in, now full
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // faded in, now full
 	ring.clear();
 	CHECK(offer(ring, 1000, 8) == 8); // written after the clear: the new stream
-	ring.play(bank.view(), cycleAt(16, 16));
+	ring.play(bank.view(), clock.next(16));
 	// The tail: frames 16..20 from full level down, one step a frame; then silence until the fade reached zero.
 	for (std::uint32_t i = 0; i < kFade; ++i) CHECK(bank.data[0][i] == faded(streamAt(16 + i), kFade - i));
 	// The fade is over: the new stream fades in from zero in the same cycle.
@@ -182,10 +276,11 @@ TEST_CASE("A clear with less than 5 ms written decays from its last frame to zer
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 18) == 18);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
 	ring.clear(); // 2 frames left
 	REQUIRE(offer(ring, 500, 20) == 20);
-	ring.play(bank.view(), cycleAt(16, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(bank.data[0][0] == faded(streamAt(16), 5));
 	CHECK(bank.data[0][1] == faded(streamAt(17), 4));
 	CHECK(bank.data[0][2] == faded(streamAt(17), 3)); // held, decaying
@@ -204,8 +299,9 @@ TEST_CASE("At an underrun a source decays from its last frame over 5 ms and coun
 	SourceRing ring(2, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 20, 2) == 20);
 	Bank bank(2, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
-	ring.play(bank.view(), cycleAt(16, 16)); // 4 frames, then dry
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
+	ring.play(bank.view(), clock.next(16)); // 4 frames, then dry
 	for (std::uint32_t i = 0; i < 4; ++i) CHECK(bank.data[1][i] == streamAt(16 + i, 1));
 	for (std::uint32_t i = 0; i < kFade; ++i) {
 		CHECK(bank.data[0][4 + i] == faded(streamAt(19, 0), kFade - i));
@@ -215,21 +311,21 @@ TEST_CASE("At an underrun a source decays from its last frame over 5 ms and coun
 	CHECK(ring.shortfallFrames() == 12);
 	CHECK(ring.played().totalFrames == 20);
 	const int published = signals.played;
-	ring.play(bank.view(), cycleAt(32, 16)); // all dry: nothing played, nothing published
+	ring.play(bank.view(), clock.next(16)); // all dry: nothing played, nothing published
 	CHECK(ring.shortfallFrames() == 28);
 	CHECK(signals.played == published);
 	// Back: from zero, over 5 ms.
 	REQUIRE(offer(ring, 20, 16, 2) == 16);
-	ring.play(bank.view(), cycleAt(48, 16));
+	ring.play(bank.view(), clock.next(16));
 	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(20 + i), std::min(i, kFade)));
 	CHECK(ring.played().totalFrames == 36);
 	// A short gap decays partly and the return fades in from where the decay got to.
 	REQUIRE(offer(ring, 36, 14, 2) == 14);
-	ring.play(bank.view(), cycleAt(64, 16)); // 14 frames, 2 decaying (5, then 4)
+	ring.play(bank.view(), clock.next(16)); // 14 frames, 2 decaying (5, then 4)
 	CHECK(bank.data[0][14] == faded(streamAt(49), 5));
 	CHECK(bank.data[0][15] == faded(streamAt(49), 4));
 	REQUIRE(offer(ring, 50, 16, 2) == 16);
-	ring.play(bank.view(), cycleAt(80, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(bank.data[0][0] == faded(streamAt(50), 3));
 	CHECK(bank.data[0][1] == faded(streamAt(51), 4));
 	CHECK(bank.data[0][2] == streamAt(52));
@@ -239,20 +335,21 @@ TEST_CASE("A source's shortfall counts only while its writer is not idle", "[sou
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16)); // never written: idle
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // never written: idle
 	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
 	CHECK(ring.shortfallFrames() == 0);
 	REQUIRE(offer(ring, 0, 8) == 8);
-	ring.play(bank.view(), cycleAt(16, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(ring.shortfallFrames() == 8);
 	ring.markIdle();
-	ring.play(bank.view(), cycleAt(32, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(ring.shortfallFrames() == 8);
 	CHECK(offer(ring, 8, 0) == 0); // no frames: still idle
-	ring.play(bank.view(), cycleAt(48, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(ring.shortfallFrames() == 8);
 	REQUIRE(offer(ring, 8, 4) == 4); // a write ends the idle
-	ring.play(bank.view(), cycleAt(64, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(ring.shortfallFrames() == 20);
 }
 
@@ -263,68 +360,101 @@ TEST_CASE("A stop drops and counts what the ring holds, plays nothing of it, ref
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
 	ring.dropForStop();
 	CHECK(ring.droppedFrames() == 24);
 	CHECK(offer(ring, 100, 8) == 0); // stopped: waits as at a full ring
 	const int room = signals.room;
 	// The first cycle after the next drive: silent (the decay of the last frame aside: none, the fade was reset), no
-	// shortfall, and the writer let go; a jump in position is no skip.
-	ring.play(bank.view(), cycleAt(5000, 16));
+	// shortfall, and the writer let go; a catch-up stated with the drive is no skip, the time kept afresh.
+	clock.silent(20, 16);
+	clock.lose(3, 16);
+	clock.drive();
+	const SourceCycle first = clock.next(16);
+	REQUIRE(first.facts.causes == (CycleCause::drive | CycleCause::catchUp));
+	ring.play(bank.view(), first);
 	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
 	CHECK(ring.shortfallFrames() == 0);
 	CHECK(signals.room == room + 1);
 	CHECK(ring.played().totalFrames == 16);
 	REQUIRE(offer(ring, 100, 16) == 16);
-	ring.play(bank.view(), cycleAt(5016 + 30, 16)); // the time kept from the cycle above: 30 frames skipped
-	CHECK(ring.played().totalFrames == 16 + 30);    // all 30 counted: 16 the ring held, 14 owed
+	clock.lose(2, 16);
+	ring.play(bank.view(), clock.next(16));      // the time kept from the cycle above: 32 frames skipped
+	CHECK(ring.played().totalFrames == 16 + 32); // all 32 counted: 16 the ring held, 16 owed
 	CHECK(ring.droppedFrames() == 24);
 }
 
-TEST_CASE("A jump past what a writer that fell behind has written is owed: the next frames written are dropped, "
+TEST_CASE("A catch-up past what a writer that fell behind has written is owed: the next frames written are dropped, "
           "counted played, so the stream keeps to the clock",
           "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 21) == 21);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16)); // 5 frames left
-	ring.play(bank.view(), cycleAt(16 + 20, 16));
-	// 20 lost: the 5 held skipped, 15 owed; all 20 counted at once; nothing to play.
-	CHECK(ring.played().totalFrames == 16 + 20);
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // 5 frames left
+	clock.lose(2, 16);
+	ring.play(bank.view(), clock.next(16));
+	// 32 lost: the 5 held skipped, 27 owed; all 32 counted at once; nothing to play.
+	CHECK(ring.played().totalFrames == 16 + 32);
 	for (std::uint32_t i = kFade; i < 16; ++i) CHECK(bank.data[0][i] == 0.0F);
-	// The writer catches up from where it was: stream frames 21..35 are the debt, dropped; 36 on play, at the clock.
-	REQUIRE(offer(ring, 21, 40) == 40);
-	ring.play(bank.view(), cycleAt(52, 16));
-	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(36 + i), std::min(i, kFade)));
-	// The clock's 68 frames since the first position, but for the dry cycle's 16 zeros (a shortfall, not played).
-	CHECK(ring.played().totalFrames == 68 - 16);
+	// The writer catches up from where it was: stream frames 21..47 are the debt, dropped; 48 on play, at the clock.
+	REQUIRE(offer(ring, 21, 60) == 60);
+	ring.play(bank.view(), clock.next(16));
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(48 + i), std::min(i, kFade)));
+	// The clock's 80 frames since the first position, but for the dry cycle's 16 zeros (a shortfall, not played).
+	CHECK(ring.played().totalFrames == 80 - 16);
 	CHECK(ring.shortfallFrames() == 16);
 	CHECK(ring.droppedFrames() == 0); // owed frames are played, not dropped
 	// A clear forgets a debt: the next stream owes nothing.
-	ring.play(bank.view(), cycleAt(68 + 30, 16)); // 30 lost, the ring holds 9: 21 owed
-	CHECK(ring.played().totalFrames == 52 + 30);
+	clock.lose(2, 16);
+	ring.play(bank.view(), clock.next(16)); // 32 lost, the ring holds 17: 15 owed
+	CHECK(ring.played().totalFrames == 64 + 32);
 	ring.clear();
 	REQUIRE(offer(ring, 500, 16) == 16);
-	ring.play(bank.view(), cycleAt(114, 16));
+	ring.play(bank.view(), clock.next(16));
 	CHECK(bank.data[0][kFade] == faded(streamAt(500 + kFade), kFade)); // nothing of 500.. was dropped
 }
 
-TEST_CASE("A jump during a clear's fade skips the tail, and the rest is owed by the new stream", "[source_ring]") {
+// An idle writer has nothing to give: its next frames begin a stream with no place on the clock yet, so a catch-up
+// while it is idle owes nothing (however many come before it writes again), and the count still keeps to the clock.
+TEST_CASE("A catch-up while the writer is idle skips what the ring holds and owes nothing", "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, kRate, signals);
+	REQUIRE(offer(ring, 0, 20) == 20);
+	Bank bank(1, 16);
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // 4 frames left
+	ring.markIdle();
+	for (int stall = 0; stall < 3; ++stall) {
+		clock.lose(4, 16);
+		ring.play(bank.view(), clock.next(16));
+	}
+	CHECK(ring.played().totalFrames == 16 + 3 * 64);
+	REQUIRE(offer(ring, 1000, 16) == 16);
+	ring.play(bank.view(), clock.next(16));
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(1000 + i), std::min(i, kFade)));
+	CHECK(ring.shortfallFrames() == 0);
+}
+
+TEST_CASE("A catch-up during a clear's fade skips the tail, and the rest is owed by the new stream", "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
 	REQUIRE(offer(ring, 0, 40) == 40);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
 	ring.clear();
 	REQUIRE(offer(ring, 1000, 40) == 40);
-	// 10 lost: the tail's 5 frames (16..20) skipped, 5 owed by the new stream.
-	ring.play(bank.view(), cycleAt(16 + 10, 16));
+	// 16 lost: the tail's 5 frames (16..20) skipped, 11 owed by the new stream.
+	clock.lose(1, 16);
+	ring.play(bank.view(), clock.next(16));
 	for (std::uint32_t i = 0; i < kFade; ++i) CHECK(bank.data[0][i] == faded(streamAt(20), kFade - i)); // the decay
 	for (std::uint32_t i = kFade; i < 16; ++i)
-		CHECK(bank.data[0][i] == faded(streamAt(1005 + i - kFade), std::min(i - kFade, kFade)));
-	CHECK(ring.played().totalFrames == 16 + 10 + 11);
-	CHECK(ring.played().totalFrames == 26 + 16 - kFade); // on the clock, but for the decay's frames
+		CHECK(bank.data[0][i] == faded(streamAt(1011 + i - kFade), std::min(i - kFade, kFade)));
+	CHECK(ring.played().totalFrames == 16 + 16 + 11);
+	CHECK(ring.played().totalFrames == 48 - kFade); // on the clock, but for the decay's frames
 }
 
 TEST_CASE("Played is dated by the cycle's start, the frames played and the most latency downstream", "[source_ring]") {
@@ -333,15 +463,17 @@ TEST_CASE("Played is dated by the cycle's start, the frames played and the most 
 	CHECK(ring.played() == Played{});
 	REQUIRE(offer(ring, 0, 24) == 24);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(100, 16, Latency{40, 100}));
+	Clock clock(100);
+	ring.play(bank.view(), clock.next(16, Latency{40, 100}));
 	CHECK(ring.played() == Played{16, (100 + 16 + 100) * kFrameNs});
-	ring.play(bank.view(), cycleAt(116, 16, Latency{0, 7})); // 8 played, then dry
+	ring.play(bank.view(), clock.next(16, Latency{0, 7})); // 8 played, then dry
 	CHECK(ring.played() == Played{24, (116 + 8 + 7) * kFrameNs});
 	// A cycle that only skipped is dated at its start.
 	REQUIRE(offer(ring, 24, 4) == 4);
 	ring.markIdle();
-	ring.play(bank.view(), cycleAt(116 + 16 + 4, 16));
-	CHECK(ring.played() == Played{28, (136 + 0) * kFrameNs});
+	clock.lose(1, 16);
+	ring.play(bank.view(), clock.next(16));
+	CHECK(ring.played() == Played{24 + 16, (132 + 16 + 0) * kFrameNs});
 }
 
 TEST_CASE("A closed source accepts nothing and still plays what it holds", "[source_ring]") {
@@ -354,7 +486,8 @@ TEST_CASE("A closed source accepts nothing and still plays what it holds", "[sou
 	CHECK(ring.closed());
 	CHECK(offer(ring, 16, 8) == 0);
 	Bank bank(1, 16);
-	ring.play(bank.view(), cycleAt(0, 16));
+	Clock clock;
+	ring.play(bank.view(), clock.next(16));
 	CHECK(ring.played().totalFrames == 16);
 }
 
@@ -379,12 +512,13 @@ TEST_CASE("Played is read whole on another thread while cycles publish it", "[so
 	while (reads.load(std::memory_order_relaxed) == 0 && !overdue()) std::this_thread::yield();
 	const std::uint64_t readsBefore = reads.load(std::memory_order_relaxed);
 	Bank bank(1, 16);
+	Clock clock;
 	std::uint64_t position = 0;
 	bool late = readsBefore == 0;
 	for (int round = 0; !late && (round < 20'000 || reads.load(std::memory_order_relaxed) - readsBefore < 1'000);
 	     ++round) {
 		ring.offer(stream(position, 16), 16);
-		ring.play(bank.view(), cycleAt(position, 16));
+		ring.play(bank.view(), clock.next(16));
 		position += 16;
 		if (round % 1024 == 0) late = overdue();
 	}

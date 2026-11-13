@@ -415,7 +415,8 @@ struct TestSink final : Sink, SinkTap {
 		                        .startNs = 0,
 		                        .startRawNs = 0,
 		                        .upstreamFrames = 0,
-		                        .discontinuity = false});
+		                        .causes = {},
+		                        .lostFrames = 0});
 	}
 	void runClose() {
 		if (began) consumer->finish();

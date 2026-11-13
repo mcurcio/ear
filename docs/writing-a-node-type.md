@@ -165,9 +165,10 @@ struct MyCode {
   call that can block. To reach another thread, use a lock-free mailbox or ring the type owns as a
   member of its instance, made in `configure` before the code drives and freed after it.
 - `GraphCycle` gives the cycle's start on `CLOCK_MONOTONIC` (`startNs`) and `CLOCK_MONOTONIC_RAW`
-  (`startRawNs`), the driver's `position`, `rateDiff` and `driverId`, `nextNs`, `xruns`,
-  `discontinuity`, and `downstreamOf(output)`, the latency downstream of an output port. Never read
-  a clock yourself ([engine.md](engine.md#graphcycle)).
+  (`startRawNs`), the driver's `position`, `rateDiff` and `driverId`, `nextNs`, the cycle's `facts`
+  (what was lost before it and why it is a discontinuity: [below](#lost-cycles)), and
+  `downstreamOf(output)`, the latency downstream of an output port. Never read a clock yourself
+  ([engine.md](engine.md#graphcycle)), and never work a loss out from `position`: read the facts.
 - A code written against another type's spec compiles but fails the node at `use`.
 - **The pass-through.** `passThrough({bankPair(fromBank, toBank), ...})` copies each input bank's
   ports to an output bank's, member for member, and silences every output no pair names. Banks of
@@ -216,8 +217,8 @@ cx.use(passThrough({bankPair(record, writer)}));
 ```
 
 - Each cycle the code ran, after the code, the block interleaves the bank's frames into the sink's
-  lock-free ring with a stamp (the cycle's position, both clocks, a discontinuity flag, the upstream
-  latency) beside them, and wakes the sink's own thread.
+  lock-free ring with a stamp (the cycle's position, both clocks, its causes and lost frames, the
+  upstream latency) beside them, and wakes the sink's own thread.
 - The `SinkConsumer` is called on the sink's own thread only, one call at a time: `begin()` once,
   before the node is `configured` (open what it writes to; a failure is `handle().lost(detail)`,
   which fails the node `start-failed`; one that has not returned within 5 s of configure's return
@@ -229,8 +230,12 @@ cx.use(passThrough({bankPair(record, writer)}));
   after a `consume` that threw no further chunk is handed over, and `finish()` still follows a
   `begin()` that returned.
 - A sink takes exactly the cycles its code drove: a stop's silence ends them, a start begins them
-  again; a stop closes nothing. A gap shows only in `Chunk::position`; `discontinuity` is set on the
-  first chunk after any drive.
+  again; a stop closes nothing. `Chunk::causes` are the cycle's ([below](#lost-cycles); `discontinuity()`
+  when any): `drive` on the first chunk after any drive, `catchUp` after cycles the graph lost and
+  caught up, and so on. `Chunk::lostFrames` is what a catch-up lost before the chunk (its
+  `jumpFrames`), 0 otherwise, so a consumer may write the loss as silence or say it; a stop's gap is
+  a `drive` with nothing lost stated, and shows in `Chunk::position`. A chunk split at the ring's end
+  carries its causes and lost frames on its first call only.
 - `Chunk::upstreamFrames` is the most capture latency the block told on the sink's bank in the
   cycle the chunk was taken: what lies upstream of the input banks paired with it, plus what the
   configuration declared on it ([engine.md](engine.md#sinks)). So the chunk's first frame entered the
@@ -269,13 +274,15 @@ engine and the harness both run, so a type's tests and the engine never disagree
   nothing to give (an empty ring is then no shortfall) and waits `patience`; the next write ends the
   idle. `clear()` (any ordinary thread) drops what was written so far at the next cycle. A writer
   starts idle. The ring holds `frames` rounded up to a power of two (`capacityFrames()`).
-- **It keeps time.** A cycle whose position jumped ahead of the last one's end by at most the
-  capacity (the graph lost time: an xrun, a stall caught up, a cycle cut short before the block)
-  skips that many frames of the stream and counts them played, so the audio moves on with the
-  graph. What of them the ring does not hold yet (the writer behind, or the new stream during a
-  clear's fade) is owed: the next frames written are dropped up to it, already counted, so
-  `Played` stays on the clock exactly. A clear forgets what the stream it ends owed. Any other jump
-  (back, or more than the capacity) is a new clock: nothing is skipped.
+- **It keeps time, on the cycle's facts.** A cycle that states a catch-up (`catchUp`: the graph
+  lost cycles the driver cut short, and caught them up: an xrun, a stall, however long) skips its
+  whole jump (`jumpFrames`) of the stream and counts it played at once, so the audio moves on with
+  the graph and `Played` stays on the clock exactly. What of it the ring does not hold yet (the
+  writer behind, or the new stream during a clear's fade) is owed while the writer is not idle: the
+  next frames written are dropped up to it, already counted. An idle writer owes nothing (its next
+  frames begin a stream with no place on the clock yet), and a clear forgets what the stream it ends
+  owed. Any other cause (`start`, a `drive` alone, `driverChange`, `absent`, `reposition`,
+  `oversized`), and the first cycle after a stop, is a new clock: nothing is skipped.
 - **It fades at its edges, with no lookahead**, so the latency it adds stays `[0, capacity]`: audio
   that starts or comes back fades in over 5 ms; at an underrun (the ring dry) it decays from the
   last frame it played to zero over 5 ms; after `clear()` it plays the next 5 ms of what was
@@ -405,7 +412,7 @@ fakes allow. Banks are named by the spec's handles.
 | `h.blockReady()` | The block becomes ready: the code drives, the node runs |
 | `h.ready(bank)`, `h.lose(bank, detail)` | The companion on `bank` becomes ready (an engine companion told ready; a sink held by `holdSinks` begins its consumer; a sink that began or a source is ready already), or an engine companion is lost (a sink or a source is never lost by the framework: `std::logic_error`) |
 | `h->advance(ms)` | The fake clock moves on: the framework's bounds and each companion's readiness deadline fire on it |
-| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), `discontinuity` where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
+| `h.process(frames)` | One cycle, by the real block's own rules (`ear/core/block_rules.hpp`, `ear/core/cycle_facts.hpp`): its facts stated by `CycleAccount` ([below](#lost-cycles)), a discontinuity where they say (the first cycle, each drive's first, and where the calls below made one); each source played into its bank's input buffers first (by the same `SourceRing`, dated by the playback latency its bank tells), outputs NaN-filled, the fade applied (in over 5 ms from each drive; a fade-out ramps down from the gain it has); each sink's chunk stamped with the capture latency its bank tells: what the real block works out by the same model, `workOut`, with no peer on any port ([engine.md](engine.md#latency-per-bank-pair)), and handed to its consumer at once through the same `SinkRing` |
 | `h->loseCycles(n, Lost::cut)`, `h->loseCycles(n, Lost::notScheduled)`, `h->changeDriver(id)`, `h->reposition(frames)` | Before the next `process()`: `n` graph cycles start without the block (its position and time move on by that cycle's frames; past 2^32 - 1 before one `process()`, `std::logic_error`), each cut short or each run whole without it (paused); the block runs on another driver from then on; its position moves with no cycle missed and no time gone ([below](#lost-cycles)) |
 | `h->facts()`, `h->cuts()` | The last cycle's `CycleFacts`, and the cut record the block's account reads |
 | `h.feed(bank, interleaved)`, `h.played(bank)`, `h.shortfall(bank)` | A source's writer, never waiting (it takes what fits and returns the frames taken), its `Played`, its shortfall |
@@ -447,9 +454,9 @@ takes their difference since the last cycle's entry, so a stall of any length is
 every cycle counted. Only its ring of `cutRecordCycles` (2^16) slots, which answers which cycle
 was cut (`cut(cycle)`), has a reach, and it is asked only when some missed cycle was not cut:
 past its reach, with some but not all of the cuts since the last cycle, whether that cycle was one
-of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). `GraphCycle`'s
-older `discontinuity` is `facts.discontinuity()`, and `xruns` counts the cycles that jumped ahead on
-the same driver, one a jump ([engine.md](engine.md#graphcycle)).
+of them stays undecided (`lastCut` none, `missedCut` one fewer than it may be). The facts are the
+one home of what was lost: a source's tap and a sink's stamp carry them from `GraphCycle`
+([engine.md](engine.md#graphcycle)), and no consumer works a loss out from `position`.
 
 The harness's fake block runs `CycleAccount` over its own `HarnessCuts`
 (`ear/testing/harness_cuts.hpp`), the engine's own record (`CutRing`), told as the engine's driver

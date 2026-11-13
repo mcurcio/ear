@@ -851,9 +851,8 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	const auto dummy = static_cast<std::uint32_t>(std::stoul(nodes.props("Dummy-Driver")->at(PW_KEY_OBJECT_ID)));
 
 	const std::int64_t cycleNs = std::int64_t{kBlock} * 1000000000 / kRate;
-	CHECK(log.at(0).cycle.discontinuity); // the first cycle the block runs
+	CHECK(log.at(0).cycle.facts.discontinuity()); // the first cycle the block runs
 	std::size_t jumps = 0;
-	std::size_t forward = 0;
 	for (std::size_t i = 0; i < CycleLog::kCapacity; ++i) {
 		const auto& seen = log.at(i);
 		INFO("cycle " << i);
@@ -863,13 +862,14 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 		CHECK(seen.cycle.rateDiff == Approx(1.0).margin(0.01));
 		CHECK(seen.cycle.nextNs - seen.cycle.startNs == Approx(cycleNs).epsilon(0.1));
 		CHECK(seen.downstreamSize == 2); // one per output: out.a, out.b
-		if (i > 0 && seen.cycle.discontinuity) ++jumps;
-		if (i > 0 && seen.cycle.position > log.at(i - 1).cycle.position + log.at(i - 1).frames) ++forward;
-		if (i > 0) CHECK(seen.cycle.xruns >= log.at(i - 1).cycle.xruns);
+		if (i > 0 && seen.cycle.facts.discontinuity()) ++jumps;
+		// Each cycle states its own jump against the last one's end, so no reader works it out from the position.
+		if (i > 0)
+			CHECK(seen.cycle.position == log.at(i - 1).cycle.position + log.at(i - 1).frames +
+			                                 static_cast<std::uint64_t>(seen.cycle.facts.jumpFrames));
 	}
-	// A loaded host's stall makes the internal clock skip blocks to catch up (each a jump forward, and an xrun); a quiet
-	// one makes none. The position never steps back (engine.conf's resync.ms; the stall test below).
-	CHECK(forward <= log.at(CycleLog::kCapacity - 1).cycle.xruns);
+	// A loaded host's stall makes the internal clock skip blocks to catch up (each a jump forward); a quiet one makes
+	// none. The position never steps back (engine.conf's resync.ms; the stall test below).
 	CHECK(jumps <= 2);
 
 	// A new code's first cycle is a discontinuity to it, though the clock ran on.
@@ -877,7 +877,7 @@ TEST_CASE("Each cycle carries its start on both clocks, the internal clock as it
 	REQUIRE(ear::testing::driveNow(*block, &next));
 	REQUIRE(waiter.until([&] { return next.count() >= 4; }));
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
-	CHECK(next.at(0).cycle.discontinuity);
+	CHECK(next.at(0).cycle.facts.causes.has(CycleCause::drive));
 }
 
 namespace {
@@ -2404,8 +2404,6 @@ struct Seen {
 	std::size_t step = kBetween;
 	CycleFacts facts;
 	std::uint64_t position = 0;
-	std::uint64_t xruns = 0;
-	bool discontinuity = false;
 	std::uint64_t cutsSoFar = 0;
 };
 
@@ -2440,12 +2438,8 @@ public:
 		else if (next_ < row_.steps.size() && armed_.load(std::memory_order_acquire) && !row_.steps[next_].drive &&
 		         (row_.steps[next_].lostUnscheduled == 0 || resumed_.load(std::memory_order_acquire)))
 			step = next_;
-		seen_[at] = Seen{.step = step,
-		                 .facts = cycle.facts,
-		                 .position = cycle.position,
-		                 .xruns = cycle.xruns,
-		                 .discontinuity = cycle.discontinuity,
-		                 .cutsSoFar = cuts_.cutsSoFar()};
+		seen_[at] =
+			Seen{.step = step, .facts = cycle.facts, .position = cycle.position, .cutsSoFar = cuts_.cutsSoFar()};
 		lastGraphCycle_.store(cycle.facts.graphCycle, std::memory_order_release);
 		count_.store(at + 1, std::memory_order_release);
 		if (step != kBetween) {
@@ -2704,21 +2698,14 @@ TEST_CASE("The cycle table through a real block: every row an engine can make st
 			expected.lostRawNs = seen.facts.lostRawNs;
 			CHECK(seen.facts == expected);
 		}
-		// GraphCycle's two older members, as the facts give them, over every cycle the code ran; and its numbers against
-		// the driver's own position: the tracking dummy moves it on by one quantum each cycle it starts
-		// (docs/engine.md#the-internal-clock), so the position less the number's quanta never changes.
+		// Each cycle's number against the driver's own position: the tracking dummy moves it on by one quantum each cycle
+		// it starts (docs/engine.md#the-internal-clock), so the position less the number's quanta never changes.
 		const std::uint64_t base =
 			attempt.seen.front().position - attempt.seen.front().facts.graphCycle * ear::test::cycleTableFrames;
 		std::size_t offBase = 0;
-		for (const cc::Seen& seen : attempt.seen) {
-			CHECK(seen.discontinuity == seen.facts.discontinuity());
+		for (const cc::Seen& seen : attempt.seen)
 			offBase += seen.position - seen.facts.graphCycle * ear::test::cycleTableFrames != base ? 1 : 0;
-		}
 		CHECK(offBase == 0);
-		// The row's xruns over the span its cuts are judged in (from the cycle before the second step: the first step
-		// is whole to the next, and what the host did while the chain settled is no step's).
-		CHECK(attempt.seen.at(attempt.stepAt.back()).xruns - attempt.seen.at(attempt.stepAt.at(1) - 1).xruns ==
-		      row.xruns);
 	}
 	CHECK(made == 4); // start and drive, one cut, a pause, a cut after the block ran
 }

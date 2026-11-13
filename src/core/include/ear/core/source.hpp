@@ -31,8 +31,9 @@ inline constexpr std::uint32_t maxSourceFrames = std::uint32_t{1} << 24U;
 /// What a source has played (docs/writing-a-node-type.md#sources), published after each cycle that played or skipped
 /// frames.
 struct Played {
-	/// Frames played or skipped since the source was made; a skip (the graph lost time) counts as played, so the count
-	/// moves with the graph's clock. Frames cleared or dropped at a stop are not counted.
+	/// Frames played or skipped since the source was made; a skip (the graph lost time and caught it up, however long)
+	/// counts as played, so the count moves with the graph's clock. Frames cleared or dropped at a stop are not
+	/// counted.
 	std::uint64_t totalFrames = 0;
 	/// When the last frame counted is heard, on CLOCK_MONOTONIC_RAW: the cycle's start, plus the frames it played, plus
 	/// the most latency downstream of the outputs its bank is paired with (a following card's buffer).
@@ -90,12 +91,12 @@ protected:
 
 // ---- What the framework runs a source with (no type sees these) ----
 
-/// One cycle as a source's tap sees it: GraphCycle's facts, plus what lies downstream of its bank.
+/// One cycle as a source's tap sees it: GraphCycle's, plus what lies downstream of its bank.
 struct SourceCycle {
 	std::uint64_t position;  // the driver's position of the cycle's first frame
 	std::uint32_t frames;    // the cycle's frames, at most maxBlock
 	std::int64_t startRawNs; // the cycle's start on CLOCK_MONOTONIC_RAW
-	bool discontinuity;      // GraphCycle::discontinuity
+	CycleFacts facts;        // GraphCycle::facts: what was lost before it, which the source keeps time by
 	Latency downstream;      // the most downstream of any output bank the source's bank is paired with
 };
 
@@ -104,8 +105,8 @@ class SourceTap {
 public:
 	/// Realtime thread only: never blocks, locks, allocates or makes a syscall but a wake. Writes exactly
 	/// `cycle.frames` frames into every span of `bank` (the source's inside input bank, `bank.size()` its channel
-	/// count, each span at least `cycle.frames` long): the ring's frames, then zeros. Keeps time (a forward position jump
-	/// of at most the capacity skips that many frames, counted played), fades at its edges, counts the shortfall,
+	/// count, each span at least `cycle.frames` long): the ring's frames, then zeros. Keeps time (a catch-up the
+	/// cycle's facts state skips its whole jump, counted played), fades at its edges, counts the shortfall,
 	/// publishes Played and rings the played wake, and wakes a writer waiting for room.
 	virtual void play(std::span<const std::span<float>> bank, const SourceCycle& cycle) noexcept = 0;
 

@@ -6,8 +6,10 @@ spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
 `GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); steps
 C3a and C3b built (sections 9.4 to 9.6: `CycleJudge`, the ledger on facts, and the inside ports', card, source, engine
-and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`); step C4a built (section 9.7:
-`SendspinCode` on the facts, described in `docs/node-types.md#clock`), the rest not. Its steps
+and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`); steps C4a and C4b built
+(sections 9.7 and 9.8: `SendspinCode` and `SourceRing` keeping in step on the facts, the sink's stamps carrying them,
+`GraphCycle::xruns` and `discontinuity` gone, described in `docs/node-types.md#clock`, `docs/engine.md#graphcycle`
+and `docs/writing-a-node-type.md#sources` and `#sinks`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -822,7 +824,7 @@ R5d).
 | **C3a** | **Done** (9.4). `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | **Done** (9.5). `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | **Done** (9.7, which departs from the progress half). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
-| **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
+| **C4b** | **Done** (9.8). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `lossSteps`, `kLogReach`, `kLogLag`, `inLoss`'s lag, the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
@@ -1175,6 +1177,43 @@ departs from 4.4's row, and what C4b and 3c must know.
   `sendspin` moves onto a source in 3c, the library must not be told `Played` as it stands: it would count frames it
   never wrote (the clamp) and, with the debt, catch the same time up twice, as above. 3c must tell the library what the
   source took of what it wrote, or give the source this feed's rule for a writer that keeps its own timeline.
+
+### 9.8 Found building C4b
+
+What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sources`) and
+`docs/writing-a-node-type.md` (`#sources`, `#sinks`, `#lost-cycles`); this section keeps only where it departs from
+4.3, 4.4 and 6.1, and what the steps after it must know.
+
+- **Every consumer now reads the facts; none works a loss out from the position.** Searched for in `src/` (position
+  arithmetic, an expected or next position, `xruns`, `discontinuity`): `SendspinCode` (C4a), `SourceRing::keepTime`
+  (its `expected` deleted), the sink's stamp (`chunkStamp`) and a source's cycle (`sourceCycle`), both copied from
+  `GraphCycle::facts`, and the two makers of `GraphCycle` (the port block, the harness). Nothing else in `src/` derived a
+  loss: the RTP receivers and cards are PipeWire's, `file` writes what it is handed, and `pass_through` reads no
+  cycle. `CycleAccount::xruns()` went with `GraphCycle::xruns`, and with it the cycle table's `xruns` column and its
+  checks in the harness's and the engine's runners; the port block's clock test now holds each cycle's position
+  against the last end and its stated `jumpFrames`.
+- **`Chunk` and `ChunkStamp` hold `causes` in place of `discontinuity`**, not beside it (one home), with
+  `discontinuity()` as a member; `lostFrames` is a `catchUp`'s `jumpFrames` and 0 for every other cause (`absent` and
+  `reposition` moved the position too, but lost nothing a sink could write as the graph's: `block_rules.hpp`'s
+  `lostFrames`). A split chunk's second call has neither. `SourceCycle` holds `facts` in place of `discontinuity`.
+- **A source owes only while its writer is not idle.** 4.4 lifts the debt's cap (Q-CF2), which would let catch-ups
+  while a source idles between streams pile up a debt that drops the start of the next. An idle writer owes nothing
+  (its next frames begin a stream with no place on the clock); `Played` still counts every catch-up's whole jump, so
+  it keeps to the clock either way.
+- **The first cycle after a stop keeps time afresh** even when it states a `catchUp` with its `drive` (the ring was
+  dropped at the stop); otherwise a `drive` with a `catchUp` keeps in step, as before (the stream outlives the code).
+- **A cycle too large to run is a new clock to a source.** Its next cycle states `oversized` with no jump (the account
+  ran the oversized tick), so the facts carry no frames to skip, where the position arithmetic skipped them. The quantum
+  guard means the engine never makes one (`docs/engine.md#the-quantum-guard`); were it to, the facts would need the
+  lost cycle's frames, an addition to 4.1.
+- **The debt has no width limit**: `std::uint64_t`, paid at most a ring's capacity a cycle; a row drives a catch-up of
+  2^32 + 8 frames through the ring (scripted facts: the harness cannot lose that many cycles in a test's time).
+- **`source_ring_test.cpp` states its cycles through `CycleAccount` over a `CutRing`** (a small `Clock` in the test),
+  so a row's jump is a cause, not a position: catch-ups are whole cycles cut, and every other cause (back, part of a
+  cycle, a pause, another driver) is made and shown to skip nothing. The test of positions past 2^32 is gone with the
+  arithmetic it tested.
+- **The source model** in `source_test.cpp` moves `Played` by the jump on a `catchUp` of any length and counts any
+  other jump as a new clock, which must never come (`clocks == 0`).
 
 ## 10. Decided here (technical)
 

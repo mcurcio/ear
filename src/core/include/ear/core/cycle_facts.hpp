@@ -157,7 +157,6 @@ public:
 		} else sameDriver(tick, cutsNow, facts);
 		if (fresh_) facts.causes = facts.causes | CycleCause::drive;
 		if (skipped_) facts.causes = facts.causes | CycleCause::oversized;
-		if (cycles_ > 0 && tick.driverId == lastDriver_ && facts.jumpFrames > 0) ++xruns_;
 		fresh_ = false;
 		skipped_ = tick.frames > maxBlock;
 		++cycles_;
@@ -171,9 +170,6 @@ public:
 	}
 	/// Where the next cycle starts on the same driver: a drive applied now takes effect from it.
 	std::uint64_t nextPosition() const noexcept { return nextPosition_; }
-	/// Cycles that started ahead of where the last ended on the same driver (GraphCycle::xruns, as it counts them today:
-	/// one a jump, however many cycles it missed).
-	std::uint64_t xruns() const noexcept { return xruns_; }
 
 private:
 	void sameDriver(const DriverTick& tick, std::uint64_t cutsNow, CycleFacts& facts) const noexcept {
@@ -242,7 +238,6 @@ private:
 	std::int64_t lastStartRawNs_ = 0;
 	std::uint32_t lastFrames_ = 0;
 	std::uint64_t nextPosition_ = 0;
-	std::uint64_t xruns_ = 0;
 	bool fresh_ = false;   // a drive installed a code since the last cycle
 	bool skipped_ = false; // the last cycle was too large to run
 };

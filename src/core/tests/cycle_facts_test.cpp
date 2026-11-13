@@ -108,7 +108,6 @@ TEST_CASE("Every row of the cycle table states its facts through CycleAccount", 
 			CHECK(account.nextPosition() == tick.position + tick.frames);
 			script.after(step);
 		}
-		CHECK(account.xruns() == row.xruns);
 	}
 }
 
@@ -144,11 +143,8 @@ TEST_CASE("The type harness states the facts of every cycle table row it can mak
 			CHECK(harness->facts() == step.facts);
 			REQUIRE(seen);
 			CHECK(seen->facts == step.facts);
-			CHECK(seen->discontinuity == step.facts.discontinuity());
 			CHECK(harness->cuts().started() >= step.facts.graphCycle);
 		}
-		REQUIRE(seen);
-		CHECK(seen->xruns == row.xruns);
 		++made;
 	}
 	CHECK(made == 14); // the rows only a script of ticks makes are seven
@@ -266,13 +262,12 @@ TEST_CASE("An account with no cut record confirms nothing and knows no last cut"
 	CHECK(facts.missedCut == 0);
 	CHECK_FALSE(facts.lastCut.has_value());
 	CHECK(facts.causes == CycleCauses(CycleCause::absent));
-	CHECK(account.xruns() == 1);
 }
 
-// The rule off the numbered clock with no record: the discontinuities and xruns the real block counted before it was
-// given cycle numbers and the driver's cuts, which every such cycle still states (docs/engine.md#graphcycle).
+// The rule off the numbered clock with no record: the discontinuities the real block counted before it was given cycle
+// numbers and the driver's cuts, which every such cycle still states (docs/engine.md#graphcycle).
 TEST_CASE("An account with no record and no cycle numbers: a discontinuity on the first cycle, a drive's first, a new "
-          "driver's, a position jump and after a cycle too large to run, and xruns only for a jump ahead",
+          "driver's, a position jump and after a cycle too large to run",
           "[cycle_facts]") {
 	CycleAccount account(FrameClock(48000), nullptr);
 	struct Row {
@@ -283,18 +278,17 @@ TEST_CASE("An account with no record and no cycle numbers: a discontinuity on th
 		std::uint32_t frames;
 		bool discontinuity;
 		bool runs;
-		std::uint64_t xruns;
 	};
 	const std::vector<Row> rows{
-		{"the first cycle", false, 3, 0, 256, true, true, 0},
-		{"the next, contiguous", false, 3, 256, 256, false, true, 0},
-		{"a drive's first", true, 3, 512, 256, true, true, 0},
-		{"then contiguous", false, 3, 768, 256, false, true, 0},
-		{"a jump ahead: an xrun", false, 3, 2048, 256, true, true, 1},
-		{"a new driver: no xrun", false, 4, 9000, 256, true, true, 1},
-		{"too large to run", false, 4, 9256, 1024, false, false, 1},
-		{"the cycle after it", false, 4, 10280, 256, true, true, 1},
-		{"a jump back on the same driver: no xrun", false, 4, 100, 256, true, true, 1},
+		{"the first cycle", false, 3, 0, 256, true, true},
+		{"the next, contiguous", false, 3, 256, 256, false, true},
+		{"a drive's first", true, 3, 512, 256, true, true},
+		{"then contiguous", false, 3, 768, 256, false, true},
+		{"a jump ahead", false, 3, 2048, 256, true, true},
+		{"a new driver", false, 4, 9000, 256, true, true},
+		{"too large to run", false, 4, 9256, 1024, false, false},
+		{"the cycle after it", false, 4, 10280, 256, true, true},
+		{"a jump back on the same driver", false, 4, 100, 256, true, true},
 	};
 	for (const Row& row : rows) {
 		INFO(row.what);
@@ -303,7 +297,6 @@ TEST_CASE("An account with no record and no cycle numbers: a discontinuity on th
 			account.next(DriverTick{.driverId = row.driver, .position = row.position, .frames = row.frames}, 256);
 		CHECK(step.facts.discontinuity() == row.discontinuity);
 		CHECK(step.runs == row.runs);
-		CHECK(account.xruns() == row.xruns);
 		CHECK(account.nextPosition() == row.position + row.frames);
 	}
 }

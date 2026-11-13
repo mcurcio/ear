@@ -314,9 +314,7 @@ The block makes one `GraphCycle` a cycle (`port_blocks.cpp`, `onProcess`), so no
 | `rateDiff` | `clock.rate_diff` |
 | `driverId` | `clock.id`, the driver's global id: another driver is another clock |
 | `nextNs` | `clock.next_nsec` |
-| `facts` | What the cycle states ([writing-a-node-type.md](writing-a-node-type.md#lost-cycles)): `CycleAccount` over the tick (`clock.id`, the cycle's number, `clock.position`, `clock.duration`, `startRawNs`) and the engine's record of the internal clock's cuts (below) |
-| `xruns` | Cycles that started ahead of where the last ended on the same driver, one a jump however many cycles it missed (`CycleAccount::xruns`, over the same cycles as `facts`). PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node), so the block counts these; each cycle run during a stall's catch-up skips one block |
-| `discontinuity` | `facts.discontinuity()`: the block's first cycle, a new code's first cycle, a new driver, cycles missed or any position jump, and the cycle after one too large for the block |
+| `facts` | What the cycle states ([writing-a-node-type.md](writing-a-node-type.md#lost-cycles)): `CycleAccount` over the tick (`clock.id`, the cycle's number, `clock.position`, `clock.duration`, `startRawNs`) and the engine's record of the internal clock's cuts (below). The one home of every fact about lost cycles: `facts.discontinuity()` is the block's first cycle, a new code's first cycle, a new driver, cycles missed or any position jump, and the cycle after one too large for the block; `facts.jumpFrames` the position against the last cycle's end. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node); the facts say each loss, and every consumer (a source's tap, a sink's stamp, a code) reads them rather than working the position out itself |
 | `downstream` | The latency downstream of each output port ([below](#latency-per-bank-pair)) |
 
 **The internal clock's cuts.** `Engine::create` finds the dummy by its `node.name`
@@ -412,8 +410,8 @@ so a drive or fade never waits for a cycle that will not come.
 A drive carries the sink bindings of its configuration; the invoke copies them into storage sized
 when the block was made (nothing allocates on the data loop) and unbinds them in the invoke that
 applies the next request. Each cycle the code runs, after the code and the fade, the block writes
-each bound inside bank's frames into its sink's frame ring with a stamp (position, both clocks,
-`discontinuity` on the first cycle after any drive, `upstreamFrames`) in the stamp ring beside it,
+each bound inside bank's frames into its sink's frame ring with a stamp (position, both clocks, the
+cycle's `causes` and the frames a catch-up lost before it, `upstreamFrames`) in the stamp ring beside it,
 and wakes the sink's thread (`pw_loop_signal_event`, an eventfd write; tested to allocate nothing).
 So a sink takes exactly the cycles its code drove. The two rings drop together; a full one counts
 dropped frames, which `Sink::droppedFrames()` reads at any time (an atomic) and the close reports.
@@ -445,16 +443,17 @@ bank). Each cycle the block runs a code:
 1. Each port's input span: PipeWire's buffer, or zeros for a port with none.
 2. Each bound source plays into scratch of the block's own (one `maxBlock` buffer per inside input
    port, made with the block; the bank's engine ports stay, unlinked), and the code reads that
-   scratch for the bank. Its `SourceCycle` is the cycle's position, frames, raw start,
-   `discontinuity` and the playback latency the block last told on the bank (published per input
-   port as a packed atomic, as each output's is for sinks).
+   scratch for the bank. Its `SourceCycle` is the cycle's position, frames, raw start, facts
+   and the playback latency the block last told on the bank (published per input port as a packed
+   atomic, as each output's is for sinks).
 3. The code (or zeros, when none is driven).
 4. The fade on the faded outputs.
 5. Each bound sink's tap ([above](#sinks)).
 6. Metering of the public ports.
 
-A cycle too large to run plays no source and taps no sink; the next cycle's position jump is a skip
-the source keeps time over. The source, the code and its sinks run in one `process`, at one
+A cycle too large to run plays no source and taps no sink; the next cycle states `oversized`, which
+a source takes as a new clock (the facts carry no frames for it; the quantum guard means the engine
+never makes one: [above](#the-quantum-guard)). The source, the code and its sinks run in one `process`, at one
 position, swapped together between two cycles, so a cycle the block does not run none of them runs.
 `SourceTap::play` makes no system call but its wakes, each at most one eventfd write and only when
 someone waits (a writer for room; the played wake once until answered); tested to allocate nothing

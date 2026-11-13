@@ -100,7 +100,8 @@ private:
 		              .startNs = stamp.startNs,
 		              .startRawNs = stamp.startRawNs,
 		              .upstreamFrames = stamp.upstreamFrames,
-		              .discontinuity = stamp.discontinuity});
+		              .causes = stamp.causes,
+		              .lostFrames = stamp.lostFrames});
 		ring_.skip(frames);
 	}
 

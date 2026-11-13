@@ -64,7 +64,6 @@ SourceCycle cycleAt(std::uint64_t position, std::uint32_t frames, Latency downst
 	return SourceCycle{.position = position,
 	                   .frames = frames,
 	                   .startRawNs = static_cast<std::int64_t>(position) * 1000,
-	                   .discontinuity = false,
 	                   .downstream = downstream};
 }
 
@@ -543,13 +542,13 @@ private:
 };
 
 /// The code's cycles judged by the source rule (docs/writing-a-node-type.md#sources), cycle by cycle: Played's count
-/// moves on by the jump and the frames of each cycle; a jump past the ring's capacity is a new clock, nothing skipped (a
-/// host's stall past it makes one: recorded, never required); a cycle short of frames is excused only when the writer
-/// had not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
-/// thread). Each jump is the one its block stated (CycleFacts::jumpFrames); whether it was the driver's cut is the
-/// judge's (docs/testing.md#the-cycle-judge).
+/// moves on by the jump and the frames of each cycle that states a catch-up, however long (one past the ring's capacity
+/// too: a host's stall past it makes one, recorded, never required); any other jump is a new clock, nothing skipped; a
+/// cycle short of frames is excused only when the writer had not yet written them by the cycle before (its own
+/// progress, logged by the code: a host that starves the writer thread). Each jump is the one its block stated
+/// (CycleFacts::jumpFrames); whether it was the driver's cut is the judge's (docs/testing.md#the-cycle-judge).
 struct SourceJudged {
-	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0;
+	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, skippedNothing = 0, drift = 0, lagged = 0;
 	std::size_t positionOff = 0; // cycles on the same driver whose position is not the last end and the stated jump
 	std::uint64_t largestJump = 0, excusedDry = 0;
 	std::string firstDrift;
@@ -582,11 +581,11 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 			jump = static_cast<std::uint64_t>(c.facts.jumpFrames);
 			j.largestJump = std::max(j.largestJump, jump);
 		}
-		const bool beyond = jump > capacity;
-		if (beyond) ++j.beyond;
-		// What the count moves by when nothing is short: the skipped jump and the frames; a new clock skips none.
+		if (jump > capacity) ++j.beyond;
+		// What the count moves by when nothing is short: a catch-up's whole jump and the frames; a new clock skips none.
+		const bool keeps = c.facts.causes.has(CycleCause::catchUp);
 		const std::uint64_t before = p != nullptr ? p->played.totalFrames : 0;
-		const std::uint64_t expected = (beyond ? 0 : jump) + c.frames;
+		const std::uint64_t expected = (keeps ? jump : 0) + c.frames;
 		const std::uint64_t moved = c.played.totalFrames - before;
 		const std::uint64_t dry = c.shortfall - (p != nullptr ? p->shortfall : 0);
 		// The writer's own progress: frames it had written by the end of the cycle before, so ready for this one.
@@ -601,9 +600,9 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 				               std::to_string(moved) + ", expected " + std::to_string(expected) + ", dry " +
 				               std::to_string(dry) + ", jump " + std::to_string(jump);
 		}
-		if (beyond && moved + dry == c.frames) ++j.clocks;
-		// A count that skipped nothing over a jump within the capacity: a new clock the rule does not make.
-		if (!beyond && jump > 0 && moved + dry == c.frames) ++j.clockNotBeyond;
+		if (!keeps && jump > 0) ++j.clocks; // a jump the source took as a new clock: no catch-up stated it
+		// A count that skipped nothing over a catch-up: a new clock the rule does not make.
+		if (keeps && moved + dry == c.frames) ++j.skippedNothing;
 		j.played[n] = good ? 1 : 0;
 		j.whole[n] = good && !dryBefore ? 1 : 0;
 		dryBefore = dry > 0;
@@ -769,7 +768,7 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		++silent;
 	}
 	INFO(j.jumps << " position jumps in " << cycles.size() << " cycles (largest " << j.largestJump << ", " << j.beyond
-	             << " beyond the ring: " << j.clocks << " new clocks); " << j.lagged
+	             << " beyond the ring, kept in step; " << j.clocks << " new clocks); " << j.lagged
 	             << " cycles the writer had not filled (" << j.excusedDry << " frames short)");
 	INFO(j.firstDrift);
 	INFO(heard.firstWrong);
@@ -777,8 +776,9 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	INFO(judge.report());
 	CHECK(judge.report().ok());
 	CHECK(j.positionOff == 0);
-	CHECK(j.clocks == j.beyond);
-	CHECK(j.clockNotBeyond == 0);
+	// Every jump was a catch-up, kept in step however long, and none was skipped as nothing.
+	CHECK(j.clocks == 0);
+	CHECK(j.skippedNothing == 0);
 	CHECK(j.drift == 0);
 	// Every frame short was one the writer had not written, and the source counted no other.
 	CHECK(source->shortfallFrames() == cycles.back().shortfall);
@@ -836,8 +836,8 @@ TEST_CASE("A bound source, its played wake and its writer's room allocate nothin
 // 50th cycle, so the driver's next timeout comes while the cycle is still running: the graph runs that cycle as far as
 // it got, or catches up by whole blocks, and either way the block skips positions, which its source must keep time
 // over. The gate, cycle by cycle, by the source rule (docs/writing-a-node-type.md#sources): Played's count moves on by
-// the jump and the frames of each cycle; a jump past the ring's capacity is a new clock, nothing skipped (a host's
-// stall past 170 ms makes one; recorded, never required); and a cycle short of frames is excused only when the writer
+// the jump and the frames of each cycle that states a catch-up, however long (a host's stall past the ring's 170 ms
+// too; recorded, never required); and a cycle short of frames is excused only when the writer
 // had not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
 // thread), never otherwise. The listener after the block hears, in every cycle the source played whole and unfaded,
 // the ramp frames the source's count says it played.
@@ -916,11 +916,12 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	for (const CodeCycle& c : cycles) ran.push_back(c.position);
 	for (const std::uint64_t at : upstreamCode.log.entries())
 		if (at >= first && at <= last && !std::ranges::binary_search(ran, at)) ++cutAfterUpstream;
-	std::printf("S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
-	            " frames, %zu beyond the ring's %u: %zu new clocks), %zu cut short after the upstream; %zu cycles the "
-	            "writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong\n",
-	            j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.clocks, cutAfterUpstream,
-	            j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
+	std::printf(
+		"S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
+		" frames, %zu beyond the ring's %u, kept in step; %zu new clocks), %zu cut short after the upstream; %zu "
+		"cycles the writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong\n",
+		j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.clocks, cutAfterUpstream,
+		j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
 	INFO(j.jumps << " jumps (largest " << j.largestJump << "), " << cutAfterUpstream
 	             << " cut short after the upstream, " << upstreamCode.slept() << " sleeps");
 	INFO(j.firstDrift);
@@ -931,12 +932,12 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	// test is about.
 	CHECK(cutAfterUpstream > 0);
 	CHECK(j.jumps > 0);
-	// Every jump was cycles the driver cut, each within the time the raw clock lost, by the one judge; and every jump
-	// past the capacity, and nothing else, was a new clock to the source.
+	// Every jump was cycles the driver cut, each within the time the raw clock lost, by the one judge.
 	CHECK(judge.report().ok());
 	CHECK(j.positionOff == 0);
-	CHECK(j.clocks == j.beyond);
-	CHECK(j.clockNotBeyond == 0);
+	// Every jump was a catch-up, kept in step however long, and none was skipped as nothing.
+	CHECK(j.clocks == 0);
+	CHECK(j.skippedNothing == 0);
 	CHECK(j.drift == 0);
 	// Every frame short was one the writer had not written; the source's own count of them agrees.
 	CHECK(source->shortfallFrames() >= j.excusedDry);

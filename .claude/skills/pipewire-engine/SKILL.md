@@ -132,12 +132,11 @@ Whether it follows a host slewed at chrony's worst case is untested; the fallbac
 **`GraphCycle`** is made by the block once a cycle (`port_blocks.cpp`, `onProcess`), so no type reads
 a clock: `startNs` (`clock.nsec`), `position`, `startRawNs` (both clocks sampled together, the
 difference added to `clock.nsec`, so a late wake cancels out), `rateDiff` (`clock.rate_diff`),
-`driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`), `xruns` and
-`discontinuity`. PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA
-node), so the block counts cycles that start ahead of where the last one ended on the same driver
-(each cycle run during a stall's catch-up skips one block); `discontinuity` marks the block's first cycle, a new code's first
-cycle, a new driver, any position jump (a stall's catching up), and the cycle after one too large for
-the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
+`driverId` (`clock.id`, the driver's global id), `nextNs` (`clock.next_nsec`) and `facts` (below).
+PipeWire gives a filter no xrun count (`clock.xrun` is set only by a driving ALSA node), so the
+block states each loss in its facts; `facts.discontinuity()` marks the block's first cycle, a new
+code's first cycle, a new driver, any position jump (a stall's catching up), and the cycle after
+one too large for the block. Both clocks are read mono, raw, mono, and the offset taken from the midpoint, as
 `node-driver.c` does. `downstream` is the latency downstream of each output (below). The dummy's
 `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into its own
 clock, never into the driver's position.
@@ -152,8 +151,10 @@ core's `CycleAccount` over the engine's record of the internal clock's cuts: `Dr
 filter's mapping from the listener (it goes with the filter); the listener must be added before the
 first block (an async invoke the data loop runs before any block's node reaches the driver);
 removing it is a blocking invoke, so on a wedged loop the hook is left and the boundary keeps it and the
-ring it tells (the `RealtimeListener` holds its target, so no owner has to leak itself). `discontinuity`
-is `facts.discontinuity()`; `xruns` keeps counting one per forward jump.
+ring it tells (the `RealtimeListener` holds its target, so no owner has to leak itself). The facts
+are the one home of what was lost: a source's `SourceCycle` and a sink's `ChunkStamp` carry them
+(the stamp as `causes` and `lostFrames`), and nothing in ear works a loss out from the position
+(`GraphCycle::xruns` and `discontinuity` are gone).
 
 ## Latency, per bank pair
 
@@ -338,8 +339,8 @@ on uses `ear::testing::driveNow` (`ear/testing/drive_now.hpp`).
   invoke copies them into storage sized when the block was made (at most one tap per inside output
   bank; nothing allocates on the data loop) and unbinds them in the invoke that applies the next
   request. Each cycle the code runs, after the code and the fade, the block writes each bound bank's
-  frames into its sink's frame ring with a stamp (position, both clocks, `discontinuity` on the first
-  cycle after any drive) in the stamp ring beside it, and wakes the sink's thread
+  frames into its sink's frame ring with a stamp (position, both clocks, the cycle's `causes`, `drive`
+  on the first cycle after any drive, and a catch-up's `lostFrames`) in the stamp ring beside it, and wakes the sink's thread
   (`pw_loop_signal_event`). So a sink takes exactly the cycles its code drove: a stop's silence ends
   them, a start begins them again at its first cycle. The two rings drop together; a full one counts
   dropped frames, which reach the node's `removed dropped=<n>`. A sink's first chunk after a block's
@@ -380,9 +381,10 @@ Recorded in `docs/engine.md#the-one-data-loop-and-invokes` with PipeWire's sourc
   after B, by planned overruns of 1.5 cycles inside the probe's `process` (`StallPlan` and
   `Stalls`, `docs/testing.md#making-the-rare-event`; never wait for a host to cut cycles short: a
   GitHub runner cut 9 in 60 s under the same load). Its played count keeps
-  to the clock across cut-short cycles (a jump of at most the ring's capacity is skipped and counted;
-  one beyond it, which only a host's stall past 42 ms makes, is a new clock, where the test's model
-  re-anchors; each jump must be time the graph really lost, never an engine miscount), and after
+  to the clock across cut-short cycles (a cycle that states a catch-up skips its whole jump and
+  counts it, however long: one beyond the ring's capacity, which only a host's stall past 42 ms
+  makes, owes the rest from what is written next; each jump must be time the graph really lost,
+  never an engine miscount), and after
   a cycle its upstream ran and it did not, a node reads the upstream's frames of the cycle it runs,
   never the cut one's (`docs/engine.md#the-one-data-loop-and-invokes`).
 - **S6 (cycle facts, tag `[s6]`, its first case also `[s2]`)**: the driver reports every cycle a node

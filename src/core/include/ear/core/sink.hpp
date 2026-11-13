@@ -12,6 +12,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/graph_spec.hpp"
 #include "ear/core/latency.hpp"
 namespace ear {
@@ -21,7 +22,7 @@ namespace ear {
 /// One cycle's frames of a sink's inside output bank, or what the ring held of it (docs/engine.md#sinks),
 /// stamped with that cycle's facts. `interleaved.size() == frames * channels`, channels the bank's size. A chunk that
 /// wraps the ring's end is consumed in two calls, the second with `position`, `startNs` and `startRawNs` advanced by the
-/// first's frames (so each call's start is its own first frame's) and `discontinuity` false. Valid only during the
+/// first's frames (so each call's start is its own first frame's), no causes and no frames lost. Valid only during the
 /// consume() it is handed to.
 struct Chunk {
 	std::span<const float> interleaved;
@@ -34,10 +35,16 @@ struct Chunk {
 	/// most of each part, so an upper bound when the bank mixes paths. The chunk's first frame entered the graph at
 	/// FrameClock(rate).enteredRawNs(startRawNs, 0, {0, upstreamFrames}) (docs/engine.md#dating).
 	std::uint32_t upstreamFrames;
-	/// The cycle's GraphCycle::discontinuity: true on the first cycle after any drive (a start, a restart, and a re-drive
-	/// of the same code too), on a new driver, after a position jump and after a cycle too large to run. A gap shows
-	/// only in `position`: compare it with the last chunk's end to tell a gap (a stop) from a re-drive.
-	bool discontinuity;
+	/// Why the cycle is a discontinuity (its GraphCycle::facts.causes, docs/writing-a-node-type.md#lost-cycles): `drive`
+	/// on the first cycle after any drive (a start, a restart, and a re-drive of the same code too), `start` on the
+	/// block's first, `driverChange`, `catchUp` (the graph lost cycles and caught them up), `absent`, `reposition` and
+	/// `oversized`; none on a cycle that followed its last with nothing lost. A stop's gap is a drive with no loss
+	/// stated: compare `position` with the last chunk's end to tell it from a re-drive.
+	CycleCauses causes;
+	/// The frames the graph lost before this chunk on a `catchUp` (its jumpFrames), 0 otherwise: a consumer may write
+	/// them as silence or say them.
+	std::uint64_t lostFrames;
+	constexpr bool discontinuity() const noexcept { return !causes.empty(); }
 };
 
 /// A sink's consumer (slice 3c's design: docs/design/node-primitives.md#65-a-sinks-consumer). It has a public virtual
@@ -67,20 +74,23 @@ struct SinkShape {
 
 // ---- What the framework runs a sink with (no type sees these) ----
 
-/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle, and the most upstream
-/// latency the block last told on the sink's bank (Chunk::upstreamFrames).
+/// The stamp the block's tap writes beside a cycle's frames: GraphCycle's facts for that cycle (Chunk::causes and
+/// lostFrames), and the most upstream latency the block last told on the sink's bank (Chunk::upstreamFrames).
 struct ChunkStamp {
 	std::uint64_t position;
 	std::int64_t startNs;
 	std::int64_t startRawNs;
-	bool discontinuity;
+	CycleCauses causes;
+	std::uint64_t lostFrames;
 	std::uint32_t upstreamFrames;
+	constexpr bool discontinuity() const noexcept { return !causes.empty(); }
 	friend bool operator==(const ChunkStamp&, const ChunkStamp&) = default;
 };
 
 /// The calls one stamped cycle becomes when `contiguous` of its `frames` lie before the ring's end
 /// (docs/engine.md#sinks): one, or two, the second's position and start times advanced by the first's frames at the
-/// graph's rate and its discontinuity false, so each call's start is its own first frame's.
+/// graph's rate, with no causes and no frames lost (the loss came before the first), so each call's start is its own
+/// first frame's.
 struct ChunkCut {
 	ChunkStamp first;
 	std::uint32_t firstFrames;
@@ -98,7 +108,8 @@ constexpr ChunkCut cutChunk(const ChunkStamp& stamp, std::uint32_t frames, std::
 	                ChunkStamp{.position = stamp.position + contiguous,
 	                           .startNs = stamp.startNs + advanced,
 	                           .startRawNs = stamp.startRawNs + advanced,
-	                           .discontinuity = false,
+	                           .causes = {},
+	                           .lostFrames = 0,
 	                           .upstreamFrames = stamp.upstreamFrames},
 	                frames - contiguous};
 }

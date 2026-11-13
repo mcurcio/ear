@@ -95,8 +95,10 @@ struct Got {
 	std::int64_t startNs;
 	std::int64_t startRawNs;
 	std::uint32_t upstreamFrames;
-	bool discontinuity;
+	CycleCauses causes;
+	std::uint64_t lostFrames;
 	std::thread::id thread;
+	bool discontinuity() const noexcept { return !causes.empty(); }
 };
 
 /// A one-way gate a consumer waits at; opening it twice is harmless.
@@ -166,7 +168,8 @@ public:
 			                             chunk.startNs,
 			                             chunk.startRawNs,
 			                             chunk.upstreamFrames,
-			                             chunk.discontinuity,
+			                             chunk.causes,
+			                             chunk.lostFrames,
 			                             std::this_thread::get_id()});
 			shared_.frames += chunk.frames;
 		}
@@ -205,12 +208,14 @@ private:
 };
 
 /// A stamp at `position`: both clocks at position * 1000 ns, and an upstream latency the block would have told, a
-/// value per position so a chunk shows it came with its own stamp.
-ChunkStamp stampAt(std::uint64_t position, bool discontinuity = false) {
+/// value per position so a chunk shows it came with its own stamp; with `caughtUp`, a catch-up of a block's frames
+/// before it (causes and frames lost), which a split chunk's first call alone carries.
+ChunkStamp stampAt(std::uint64_t position, bool caughtUp = false) {
 	return ChunkStamp{.position = position,
 	                  .startNs = static_cast<std::int64_t>(position) * 1000,
 	                  .startRawNs = static_cast<std::int64_t>(position) * 1000,
-	                  .discontinuity = discontinuity,
+	                  .causes = caughtUp ? CycleCauses(CycleCause::catchUp) : CycleCauses{},
+	                  .lostFrames = caughtUp ? 100U : 0U,
 	                  .upstreamFrames = static_cast<std::uint32_t>(position % 997)};
 }
 
@@ -284,7 +289,7 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 		CHECK(shared.chunks[b].position == std::uint64_t{b} * kBlock);
 		CHECK(shared.chunks[b].startNs == static_cast<std::int64_t>(b * kBlock) * 1000);
 		CHECK(shared.chunks[b].upstreamFrames == stampAt(std::uint64_t{b} * kBlock).upstreamFrames);
-		CHECK(shared.chunks[b].discontinuity == (b == 0));
+		CHECK(shared.chunks[b].discontinuity() == (b == 0));
 	}
 	const std::thread::id sinkThread = shared.chunks.front().thread;
 	for (const Got& chunk : shared.chunks) CHECK(chunk.thread == sinkThread);
@@ -293,7 +298,7 @@ TEST_CASE("A sink's consumer begins on its own thread before the first consume, 
 }
 
 TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the second advanced in position and start "
-          "times and not a discontinuity, so each call dates its own first frame",
+          "times and with no causes or frames lost, so each call dates its own first frame",
           "[sink]") {
 	PipeWire pipewire;
 	TestLoop loop;
@@ -319,7 +324,9 @@ TEST_CASE("A chunk that wraps the ring's end is consumed in two calls, the secon
 	std::size_t split = 0;
 	for (const Got& chunk : shared.chunks) {
 		const bool cycleStart = chunk.position % kBlock == 0;
-		CHECK(chunk.discontinuity == cycleStart); // only a cycle's first call carries its discontinuity
+		// Only a cycle's first call carries its causes and the frames lost before it.
+		CHECK(chunk.causes == (cycleStart ? CycleCauses(CycleCause::catchUp) : CycleCauses{}));
+		CHECK(chunk.lostFrames == (cycleStart ? 100U : 0U));
 		const ChunkStamp cycle = stampAt(chunk.position - chunk.position % kBlock);
 		CHECK(chunk.upstreamFrames == cycle.upstreamFrames); // both calls
 		// Each call's start is its first frame's: the cycle's start plus the frames before it in the chunk. So the
@@ -535,7 +542,7 @@ TEST_CASE("A chunk split at the ring's end reaches its consumer the same through
 	conform::recorded = nullptr;
 
 	// The engine's sink, written as the real block writes it: each cycle stamped with its position, both clocks at the
-	// graph's rate from zero (the harness's clock), a discontinuity on the first cycle after the drive, and the most of
+	// graph's rate from zero (the harness's clock), the block's first cycle (start and drive) the first, and the most of
 	// the latency declared on the sink's bank, which a block with no peers tells there.
 	PipeWire pipewire;
 	TestLoop loop;
@@ -551,7 +558,8 @@ TEST_CASE("A chunk split at the ring's end reaches its consumer the same through
 		                  ChunkStamp{.position = at,
 		                             .startNs = startNs,
 		                             .startRawNs = startNs,
-		                             .discontinuity = b == 0,
+		                             .causes = b == 0 ? CycleCause::start | CycleCause::drive : CycleCauses{},
+		                             .lostFrames = 0,
 		                             .upstreamFrames = conform::kDeclared.maxFrames});
 		// Each chunk waits for the last to arrive, so the ring never fills and nothing drops.
 		REQUIRE(throughEngine.waitFor([&] { return throughEngine.frames == at + kBlock; }));
@@ -571,7 +579,8 @@ TEST_CASE("A chunk split at the ring's end reaches its consumer the same through
 		CHECK(harness.startNs == engine.startNs);
 		CHECK(harness.startRawNs == engine.startRawNs);
 		CHECK(harness.upstreamFrames == engine.upstreamFrames);
-		CHECK(harness.discontinuity == engine.discontinuity);
+		CHECK(harness.causes == engine.causes);
+		CHECK(harness.lostFrames == engine.lostFrames);
 		CHECK(harness.interleaved == engine.interleaved);
 	}
 	CHECK(throughHarness.calls == throughEngine.calls); // begin, each consume, finish
@@ -651,7 +660,8 @@ public:
 			                     chunk.startNs,
 			                     chunk.startRawNs,
 			                     chunk.upstreamFrames,
-			                     chunk.discontinuity,
+			                     chunk.causes,
+			                     chunk.lostFrames,
 			                     std::this_thread::get_id()});
 		}
 		waiter_.wake();

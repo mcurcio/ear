@@ -127,13 +127,21 @@ private:
 	std::uint64_t waiting_ = 0;
 };
 
+/// The frames the graph lost before a cycle, as a sink's chunk says them (Chunk::lostFrames): a catch-up's jump, else
+/// none (docs/writing-a-node-type.md#sinks).
+constexpr std::uint64_t lostFrames(const CycleFacts& facts) noexcept {
+	return facts.causes.has(CycleCause::catchUp) && facts.jumpFrames > 0 ? static_cast<std::uint64_t>(facts.jumpFrames)
+	                                                                     : 0;
+}
+
 /// The stamp a sink's tap is written with for `cycle` (docs/engine.md#sinks): the cycle's facts and the most of the
 /// capture latency the block last told on the sink's bank.
 constexpr ChunkStamp chunkStamp(const GraphCycle& cycle, Latency toldOnBank) noexcept {
 	return ChunkStamp{.position = cycle.position,
 	                  .startNs = cycle.startNs,
 	                  .startRawNs = cycle.startRawNs,
-	                  .discontinuity = cycle.discontinuity,
+	                  .causes = cycle.facts.causes,
+	                  .lostFrames = lostFrames(cycle.facts),
 	                  .upstreamFrames = toldOnBank.maxFrames};
 }
 
@@ -143,7 +151,7 @@ constexpr SourceCycle sourceCycle(const GraphCycle& cycle, std::uint32_t frames,
 	return SourceCycle{.position = cycle.position,
 	                   .frames = frames,
 	                   .startRawNs = cycle.startRawNs,
-	                   .discontinuity = cycle.discontinuity,
+	                   .facts = cycle.facts,
 	                   .downstream = toldOnBank};
 }
 

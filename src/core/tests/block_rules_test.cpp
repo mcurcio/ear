@@ -32,7 +32,8 @@ std::vector<Call> drained(SinkRing& ring) {
 		                     ChunkStamp{.position = chunk.position,
 		                                .startNs = chunk.startNs,
 		                                .startRawNs = chunk.startRawNs,
-		                                .discontinuity = chunk.discontinuity,
+		                                .causes = chunk.causes,
+		                                .lostFrames = chunk.lostFrames,
 		                                .upstreamFrames = chunk.upstreamFrames}});
 	});
 	return calls;
@@ -49,11 +50,13 @@ struct Counting {
 	std::array<std::span<const float>, 1> view;
 };
 
-ChunkStamp stampAt(std::uint64_t position, bool discontinuity) {
+/// A stamp at `position`; a drive's first, its causes `drive`, when `driven`.
+ChunkStamp stampAt(std::uint64_t position, bool driven) {
 	return ChunkStamp{.position = position,
 	                  .startNs = static_cast<std::int64_t>(position) * 1'000'000,
 	                  .startRawNs = static_cast<std::int64_t>(position) * 1'000'000 + 7,
-	                  .discontinuity = discontinuity,
+	                  .causes = driven ? CycleCauses(CycleCause::drive) : CycleCauses{},
+	                  .lostFrames = 0,
 	                  .upstreamFrames = 40};
 }
 
@@ -89,7 +92,8 @@ TEST_CASE("cutChunk: one call when the chunk lies before the ring's end, else tw
 		CHECK(cut.second->position == stamp.position + row.firstFrames);
 		CHECK(cut.second->startNs == stamp.startNs + clock.ns(row.firstFrames));
 		CHECK(cut.second->startRawNs == stamp.startRawNs + clock.ns(row.firstFrames));
-		CHECK_FALSE(cut.second->discontinuity);
+		CHECK(cut.second->causes.empty());
+		CHECK(cut.second->lostFrames == 0);
 		CHECK(cut.second->upstreamFrames == stamp.upstreamFrames);
 	}
 }
@@ -112,7 +116,7 @@ TEST_CASE(
 		CHECK(calls[i].frames == frames[i]);
 		CHECK(calls[i].stamp.position == next);
 		CHECK(calls[i].stamp.startNs == static_cast<std::int64_t>(next) * 1'000'000);
-		CHECK(calls[i].stamp.discontinuity == (i == 0));
+		CHECK(calls[i].stamp.discontinuity() == (i == 0));
 		for (std::uint32_t f = 0; f < calls[i].frames; ++f)
 			REQUIRE(calls[i].interleaved[f] == static_cast<float>(next + f));
 		next += calls[i].frames;
@@ -243,13 +247,32 @@ TEST_CASE("BlockFade: fade-outs wait until a cycle ends at zero, a cycle too lar
 }
 
 TEST_CASE("The stamps carry the cycle's facts and the most of the latency told on the bank", "[block_rules]") {
-	const GraphCycle cycle{.startNs = 11, .position = 22, .startRawNs = 33, .discontinuity = true};
-	CHECK(chunkStamp(cycle, Latency{30, 40}) ==
-	      ChunkStamp{.position = 22, .startNs = 11, .startRawNs = 33, .discontinuity = true, .upstreamFrames = 40});
+	const CycleFacts caughtUp{.graphCycle = 9,
+	                          .missed = 2,
+	                          .missedCut = 2,
+	                          .lastCut = false,
+	                          .jumpFrames = 128,
+	                          .lostRawNs = 5,
+	                          .causes = CycleCause::drive | CycleCause::catchUp};
+	const GraphCycle cycle{.startNs = 11, .position = 22, .startRawNs = 33, .facts = caughtUp};
+	CHECK(chunkStamp(cycle, Latency{30, 40}) == ChunkStamp{.position = 22,
+	                                                       .startNs = 11,
+	                                                       .startRawNs = 33,
+	                                                       .causes = CycleCause::drive | CycleCause::catchUp,
+	                                                       .lostFrames = 128,
+	                                                       .upstreamFrames = 40});
 	const SourceCycle played = sourceCycle(cycle, 64, Latency{7, 9});
 	CHECK(played.position == 22);
 	CHECK(played.frames == 64);
 	CHECK(played.startRawNs == 33);
-	CHECK(played.discontinuity);
+	CHECK(played.facts == caughtUp);
 	CHECK(played.downstream == Latency{7, 9});
+	// Lost frames are a catch-up's alone: any other jump the graph made is no loss a sink can write.
+	for (const CycleCauses other : {CycleCauses(CycleCause::absent), CycleCauses(CycleCause::reposition),
+	                                CycleCauses(CycleCause::driverChange), CycleCauses{}}) {
+		INFO("causes " << static_cast<int>(other.bits()));
+		const GraphCycle jumped{.position = 22, .facts = {.jumpFrames = 128, .causes = other}};
+		CHECK(chunkStamp(jumped, Latency{}).lostFrames == 0);
+		CHECK(chunkStamp(jumped, Latency{}).causes == other);
+	}
 }
