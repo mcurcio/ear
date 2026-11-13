@@ -169,8 +169,9 @@ the feed, and the test requires a remainder above 0 before it judges the payment
 tests stall inside the node's own block and judge the burst the host gives: the block missing some
 of its cycles, or running every one while the next is due (`GraphCycle::overdueNs`). What the
 library does after a planned event (a stall, the network gap) is judged as its answer until the
-first cycle after the stream's return that the host disturbed (one the ledger did not call clean; a
-dry cycle is the product's), and never short of a floor of a chunk and two cycles past the return:
+first cycle after the stream's return that the host disturbed in a way the library could see (one
+the ledger did not call clean, other than a catch-up the feed held whole, which ear skips from audio
+the library already wrote and tells exactly; a dry cycle is the product's), and never short of a floor of a chunk and two cycles past the return:
 a host disturbance inside it fails the run naming the cycle, to be rerun alone, and a window it
 shortened says the host event that ended it (`responseReach` in `clock_test.cpp`). The network gap
 test makes its late chunk certain the same way: the test server's `gap` holds the audio it sends

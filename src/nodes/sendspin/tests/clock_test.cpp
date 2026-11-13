@@ -757,10 +757,12 @@ public:
 			std::ranges::count_if(disturbed_, [&](std::size_t at) { return at >= from && at < to; }));
 	}
 	/// The first cycle from `from` on that the host disturbed (the ledger did not call it clean: cycles missed, cut or
-	/// not, or any other jump), read so far. A dry cycle is not one: what the feed holds is the product's doing.
+	/// not, or any other jump) in a way the library could see, read so far: a catch-up the feed held whole is skipped
+	/// from audio the library already wrote and told exactly, so it is not one. Nor is a dry cycle: what the feed holds
+	/// is the product's doing.
 	std::optional<std::size_t> firstHostDisturbanceFrom(std::size_t from) const {
-		const auto found = std::ranges::find_if(disturbed_, [&](std::size_t at) { return at >= from; });
-		return found != disturbed_.end() ? std::optional<std::size_t>(*found) : std::nullopt;
+		const auto found = std::ranges::find_if(unabsorbed_, [&](std::size_t at) { return at >= from; });
+		return found != unabsorbed_.end() ? std::optional<std::size_t>(*found) : std::nullopt;
 	}
 	/// Dry cycles from cycle `from` up to and not including `to`, read so far.
 	std::size_t dryBetween(std::size_t from, std::size_t to) const {
@@ -839,6 +841,9 @@ private:
 					lost_ += static_cast<std::uint64_t>(FrameClock(kRate).frames(std::chrono::nanoseconds(lostNs)));
 			}
 			disturbed_.push_back(index);
+			// A catch-up the feed held whole is skipped from audio the library already wrote and told exactly: nothing
+			// the library could see, so nothing it may answer.
+			if (!caughtUp || cycle.skipped < gap) unabsorbed_.push_back(index);
 		}
 		if (previous_ && cycle.driverId != previous_->driverId) ++errors.driverChanges;
 		if (previous_ && cycle.clean) {
@@ -1189,8 +1194,9 @@ private:
 	bool suspended_ = false;          // untold for untoldBound: nothing owed until told
 	std::optional<std::int64_t> untoldSince_; // the start of the first cycle not yet told
 	std::vector<std::size_t> dry_;
-	std::vector<std::size_t> disturbed_; // cycles the ledger did not call clean
-	std::vector<std::size_t> heard_;     // the cycle each line of the library's log was read at
+	std::vector<std::size_t> disturbed_;  // cycles the ledger did not call clean
+	std::vector<std::size_t> unabsorbed_; // of them, all but a catch-up the feed held whole
+	std::vector<std::size_t> heard_;      // the cycle each line of the library's log was read at
 	std::vector<RampSeen> ramp_;
 };
 
@@ -1310,7 +1316,8 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 
 /// Where what the library does after a planned event (a stall, a network gap) stops being judged as its answer to it,
 /// from `back`, the cycle the stream came back on the server's stamps, up to `cap`: the first cycle after `back` that
-/// the host disturbed (the ledger did not call it clean), after which the library may answer the host in its own steps
+/// the host disturbed in a way the library could see (the ledger did not call it clean, and it was no catch-up the feed
+/// held whole: that one is skipped from audio the library already wrote and told exactly), after which the library may answer the host in its own steps
 /// and silence, which the run's rules judge (checkSync) and the event did not cause. A host that skipped 117 ms 1600
 /// cycles after a stall made the library add 2269 frames of silence 107 cycles later. A dry cycle ends nothing: what
 /// the feed holds is the product's doing. The window never ends before its floor: the library answers what it was told
