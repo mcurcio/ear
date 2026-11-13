@@ -1460,9 +1460,17 @@ static void judgeStall(bool longStall, StallMade made) {
 			++blends;
 			continue;
 		}
-		++corrections;
+		// What dry cycles lost in the chunk and two cycles before it (the library catches a dry cycle up at its next
+		// chunk's sync), said with each correction: the library's thread starved by the host shows there.
+		std::uint64_t dryLost = 0;
+		const std::size_t reachBack = (kChunkFrames + kBlock - 1) / kBlock + 2;
+		for (std::size_t i = std::max(back->index + 1, seen.index > reachBack ? seen.index - reachBack : 0);
+		     i < seen.index; ++i)
+			dryLost += rig.tap.at(i).frames - rig.tap.at(i).fed;
 		steps += " " + std::to_string(seen.libraryStep) + "/" + std::to_string(seen.innerStep) + "@" +
-		         std::to_string(seen.index) + " (" + std::to_string(seen.errorUs) + " us)";
+		         std::to_string(seen.index) + " (" + std::to_string(seen.errorUs) + " us, " + std::to_string(dryLost) +
+		         " frames dry before)";
+		++corrections;
 	}
 	std::string library;
 	std::size_t silenceAfter = 0;
