@@ -252,6 +252,39 @@ TEST_CASE("skipThenRead reads nothing when what the feed held did not cover the 
 	CHECK(left[0] == 20.0F);
 }
 
+// docs/node-types.md#clock: the debt is paid from everything readable. Frames the writer adds while it is still owed
+// after a skip are skipped too, in the same step, not read nor left for a later cycle.
+TEST_CASE("skipThenRead pays a debt from what the writer adds after its skip, then reads", "[feed]") {
+	struct Writer {
+		Feed* feed;
+		std::uint32_t from;
+		bool once = false;
+		static void step(void* self) {
+			auto& writer = *static_cast<Writer*>(self);
+			if (writer.once) return;
+			writer.once = true;
+			std::vector<float> samples;
+			fill(samples, writer.from, 30);
+			REQUIRE(writer.feed->write(samples, 30, 0ms) == 30);
+		}
+	};
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 0, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	Writer writer{&feed, 10};
+	feed.onPaymentStep(&Writer::step, &writer);
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	// A debt of 25 with 10 held: the 30 written after the first skip pay the other 15, and the read follows.
+	const Feed::Taken taken = feed.skipThenRead(25, 25, out, 8);
+	CHECK(taken.skipped == 25);
+	CHECK(taken.read == 8);
+	CHECK(left[0] == 25.0F);
+	CHECK(feed.heldAtSkip() == 10);
+}
+
 // The skip and the read are one step: a writer refilling the feed as fast as it can, woken by the skip, never has a
 // frame read ahead of a debt the feed did not cover. Split into a skip and a read, its frames written between the two
 // were read with the debt unpaid.

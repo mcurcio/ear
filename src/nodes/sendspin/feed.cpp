@@ -49,14 +49,23 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 Feed::Taken Feed::skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
                                std::uint32_t frames) noexcept {
 	const bool cleared = applyClear();
-	// What it holds now, on the reading thread, is exact: the writer only adds. The read follows only once the skip
-	// covered the debt; a skip it held too little for leaves the writer's newer frames for the debt's next payment.
-	heldAtSkip_ = ring_.writePosition() - ring_.readPosition();
-	const std::uint32_t skipped = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(skip, heldAtSkip_)));
-	const std::uint32_t got = skipped >= std::min(owed, skip) ? ring_.readPlanar(channels, frames) : 0;
+	// What it holds now, on the reading thread, is exact: the writer only adds. The debt is paid from everything
+	// readable: while some is still owed after a skip and the writer has added frames since, it skips again, so a frame
+	// is never read, nor left for a later cycle, while the debt it could pay is owed. The read follows only once the
+	// debt is paid; stale audio owed nothing (a starved library's) is skipped as far as the feed holds it.
+	heldAtSkip_ = held();
+	const std::uint64_t mustPay = std::min(owed, skip);
+	std::uint64_t skipped = 0;
+	for (std::uint32_t holds = heldAtSkip_; skipped < mustPay && holds > 0; holds = held()) {
+		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(mustPay - skipped, holds)));
+		if (skipHook_ != nullptr) skipHook_(skipHookContext_);
+	}
+	if (skipped >= mustPay && skip > skipped)
+		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(skip - skipped, held())));
+	const std::uint32_t got = skipped >= mustPay ? ring_.readPlanar(channels, frames) : 0;
 	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
 	if (cleared || skipped > 0 || got > 0) wakeWriter();
-	return {skipped, got};
+	return {static_cast<std::uint32_t>(std::min<std::uint64_t>(skipped, UINT32_MAX)), got};
 }
 
 bool Feed::takeCleared() noexcept {

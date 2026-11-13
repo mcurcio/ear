@@ -26,9 +26,10 @@ public:
 		std::uint32_t read;
 	};
 	/// Realtime; no lock, allocation or waiting. Skips up to `skip` of the oldest frames (any count), then reads up to
-	/// `frames`, planar, zeros after what it read, as one step on what the feed holds as it begins: when what it held
-	/// did not cover `owed` of the skip (a debt that must be paid before any frame is read), it reads nothing, so a
-	/// frame the writer adds after the skip is never read ahead of the debt (docs/node-types.md#clock).
+	/// `frames`, planar, zeros after what it read. `owed` of the skip is a debt paid before any frame is read, from
+	/// everything readable: while some is owed after a skip and the writer has added frames since, it skips again; and
+	/// while any is owed it reads nothing, so a frame the writer adds is never read ahead of the debt
+	/// (docs/node-types.md#clock).
 	Taken skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
 	                   std::uint32_t frames) noexcept;
 	/// Realtime: applies a clear asked for and not yet applied, and says whether any clear was applied since the last
@@ -49,6 +50,12 @@ public:
 	/// waits for a release, a read or its patience; a release wakes it. Any thread.
 	void holdWriter() noexcept;
 	void releaseWriter() noexcept;
+	/// Test seam: called on the reading thread after each step of skipThenRead's payment, so a test can add frames as
+	/// a writer racing the skip would. Set before any read.
+	void onPaymentStep(void (*hook)(void*), void* context) noexcept {
+		skipHook_ = hook;
+		skipHookContext_ = context;
+	}
 	/// Realtime: what the feed holds now (exact on the reading thread).
 	std::uint32_t held() const noexcept { return ring_.writePosition() - ring_.readPosition(); }
 	/// Test seam: what the feed held at the last skip(), after any clear; the reading thread's own, read on it.
@@ -65,7 +72,9 @@ private:
 	std::atomic<std::uint64_t> clearTo_{0};    // pending bit, and the ring's write position when it was asked
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
-	std::uint32_t heldAtSkip_ = 0; // reader only
-	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
+	std::uint32_t heldAtSkip_ = 0;      // reader only
+	void (*skipHook_)(void*) = nullptr; // test seam: onPaymentStep
+	void* skipHookContext_ = nullptr;
+	bool clearedSince_ = false; // reader only: a clear was applied since the last takeCleared()
 };
 } // namespace ear::sendspin

@@ -1324,13 +1324,15 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   and every other consumer (a source's tap, a sink's stamp, the judges) keeps reading it as whole.
 - **The debt's payment raced the writer.** The code skipped the debt and then read, two feed calls; the skip woke the
   writer, and frames it wrote between the two were read with the debt unpaid, played behind the clock. Fixed in the
-  feed: `Feed::skipThenRead` skips and reads as one step on what the feed holds as it begins, and reads nothing when
-  that did not cover the debt.
+  feed: `Feed::skipThenRead` pays the debt from everything readable (while some is owed after a skip and the writer
+  has added frames since, it skips again) and reads nothing while any is owed. Reading frames during the payment paid
+  nothing with them, so the payment ran slow: a 1 s stall under load came back in 31 blocks against a bound of 28.
 - **The stall tests made the burst they judged.** `StallProbe` stalls a block upstream of the node's and holds each
   burst cycle 1 ms while its next timeout is due, so the node's block misses the whole burst on any host; two more
   tests stall inside the block and judge whichever shape the host gives (with cycles lost, 9.9's rules; with none,
   nothing owed, no silence, at most one correction). A planned event's answer is judged until the host disturbs the
-  graph again (a cycle the ledger did not call clean, never a dry one), never short of a floor of a chunk and two
+  graph again in a way the library could see (a cycle the ledger did not call clean, other than a catch-up the feed
+  held whole; never a dry one), never short of a floor of a chunk and two
   cycles past the return, inside which a host disturbance fails the run naming it.
 
 ## 10. Decided here (technical)
