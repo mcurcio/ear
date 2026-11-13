@@ -9,7 +9,6 @@
 #include "ear/core/node_type.hpp"
 #include "event_fd.hpp"
 #include "feed.hpp"
-#include "library_view.hpp"
 #include "mailbox.hpp"
 namespace ear::sendspin {
 /// Frames played so far, and when the library's next frame plays at the driver's device (the end of the cycle that
@@ -25,8 +24,8 @@ struct CaptureAnchor {
 	std::int64_t atRawNs;
 };
 /// How long, in the graph's nominal time (`GraphCycle::startRawNs`, the cycles' starts as the driver dates them), the
-/// library may go untold while a catch-up's remainder is paid before ear stops owing, tells it from the next cycle and
-/// leaves it to realign itself (docs/node-types.md#clock): past a 1 s stall's burst and its payment.
+/// library may go untold while no cycle begins on time, before it is told from the next cycle even if that one is
+/// overdue (docs/node-types.md#clock). The deferral's bound and nothing else.
 inline constexpr std::chrono::nanoseconds untoldBound = std::chrono::seconds{2};
 class SendspinCode final : public AudioCode {
 public:
@@ -37,13 +36,14 @@ public:
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override;
 	void release() noexcept override;
-	/// Test seam (docs/testing.md#a-writers-own-event): what the feed held as the last process() kept time. What it
-	/// skipped for the graph's lost time follows from the cycle's facts and this; what it read short, the feed counts
-	/// itself (Feed::dryFrames). The data thread's own; read on it, after process().
-	std::uint32_t lastHeld() const noexcept { return lastHeld_; }
-	/// Test seam: what the feed held as the last process() began (after any clear), as the code judged the library's
-	/// view by it (LibraryView).
+	/// Test seams (docs/testing.md#a-writers-own-event), the data thread's own, read on it after process(): what the
+	/// feed held as the last process() began (after any clear), and what it skipped of that for the graph's lost time.
+	/// What it read short, the feed counts itself (Feed::dryFrames).
 	std::uint32_t lastHeldAtStart() const noexcept { return lastHeldAtStart_; }
+	std::uint32_t lastSkipped() const noexcept { return lastSkipped_; }
+	/// Test seam, read on the data thread: the reports whose finish the clamp moved. It acts only on the report after one
+	/// the bound forced from an overdue cycle (docs/node-types.md#clock); a test holds it idle otherwise.
+	std::uint64_t clamped() const noexcept { return clamped_; }
 
 private:
 	Feed& feed_;
@@ -53,12 +53,13 @@ private:
 	RtWriter& toServer_;
 	Mailbox<CaptureAnchor>& capture_;
 	std::uint64_t framesWritten_ = 0;
-	LibraryView view_;                        // what the library believes of what ear took
-	std::uint64_t owed_ = 0;                  // the graph's lost time not yet skipped from the stream
-	bool catchingUp_ = false;                 // a catch-up or pause is owed and not yet told
-	bool owingSuspended_ = false;             // untold for untoldBound: nothing owed, and told even from a lossy cycle
+	std::uint64_t played_ = 0;                // every frame of the library's skipped or read, in order
+	std::uint64_t told_ = 0;                  // of them, those the library was told played
+	std::int64_t lastFinish_ = 0;             // the last finish told
+	bool afterForced_ = false;                // the last report was one the bound forced from an overdue cycle
 	std::optional<std::int64_t> untoldSince_; // the start, on the raw clock, of the first cycle not yet told
 	std::uint32_t lastHeldAtStart_ = 0;       // test seam: lastHeldAtStart()
-	std::uint32_t lastHeld_ = 0;              // test seam: lastHeld()
+	std::uint32_t lastSkipped_ = 0;           // test seam: lastSkipped()
+	std::uint64_t clamped_ = 0;               // test seam: clamped()
 };
 } // namespace ear::sendspin

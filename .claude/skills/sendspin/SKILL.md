@@ -104,30 +104,26 @@ that means to an operator:
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
-- **The stream keeps in step with the clock** (`docs/node-types.md#clock`). On a cycle whose facts say `catchUp` or
-  `absent` (a pause), the code skips the jump, however long, as far as the feed holds it, counted played; any other cause
-  (a driver change, a jump back) is a new clock, not a skip. Not counting a skip costs 25 ms (the library sees -5.3 ms, drops a chunk and
-  inserts silence). **Never tell the library a frame ear did not take from what it wrote**: it subtracts what it is told
-  from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
-  `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
-  from its next writes (a source's rule) would catch the same time up twice: the library re-syncs on its own at its next
-  chunk. **A stall's catch-up is paid before it is told:** the driver catches a stall up in a burst of timeouts, of which
-  the block runs as many as the host lets it (`docs/engine.md#the-internal-clock`: every other one on the dev host, so a
-  200 ms stall is 18 one-block catch-ups; every one, losing nothing, on a GitHub runner), whose cycles start on the
-  driver's time, behind raw time, and the burst drains the feed faster than the library refills it. So the
-  code owes each catch-up's (and pause's) whole jump, and, while it is untold, each short cycle's zeros; it skips what is
-  owed from the feed as the library refills it, before reading, and tells the library only from a cycle that lost
-  nothing once nothing is owed. **ear and the library never both correct the same lost time:** the library realigns
-  itself only when it sees itself starved (everything it wrote told played: its floor), so the code keeps that view as
-  `LibraryView` (`library_view.hpp`: the feed's frames plus those consumed and untold) and owes nothing while it is
-  starved; after `untoldBound` (2 s of the graph's nominal time, the cycles' `startRawNs`) untold it forgets the debt,
-  owes nothing more until it is told, and tells it from that cycle even if it lost frames (else a host with no whole
-  cycle would leave the library in its priming for good).
-  Nothing is owed before a stream plays, and a clear forgets it. The library is never told a frame ear did not take
-  from what it wrote, and has nothing left to correct: the stall tests (200 ms and 1 s, the feed's writer held through
-  the burst by `Feed::holdWriter()` so a remainder is certain, the stall made by a probe upstream of the block that cuts
-  the burst's cycles too, so the block misses them on any host) require no correction of its own, back on the server's
-  stamps within a few blocks of the burst's end.
+- **The node's clock is an honest sink with a local skip** (`docs/node-types.md#clock`, the timing model's rule 3). It plays
+  every frame in order. On a cycle whose facts say `catchUp` or `absent` (a pause) it skips the jump as far as the feed
+  holds it, on that cycle, overdue or not, counted played; any other cause (a driver change, a jump back, a drive, the
+  cycle after an oversized one) is a new clock, and a clearing cycle skips nothing of the next stream. Not counting a skip
+  costs 25 ms (the library sees -5.3 ms, drops a chunk and inserts silence). **Never tell the library a frame ear did not
+  take from what it wrote**: it subtracts what it is told from what it wrote and clamps at zero with a `Buffered frames
+  underflow` warning (`sync_task.cpp`, `process_playback_progress`). What the feed did not hold of a jump is the
+  library's: it sees it in the next finish it is told and corrects once at its next chunk's sync. No debt, no model of
+  the library: the C4 wrapper owed that remainder from the library's next writes and kept `LibraryView` to know when it
+  could, and both correcting the same lost time was the bug class it existed to fence off.
+- **Told only from a cycle that began on time** (`GraphCycle::overdueNs` 0), its finish dated by that cycle's start: the
+  driver catches a stall up in a burst of timeouts, of which the block runs as many as the host lets it
+  (`docs/engine.md#the-internal-clock`: one catch-up of the whole stall on the dev host today, every other timeout once;
+  every one, losing nothing, on a GitHub runner), and a burst's cycle is dated neither by its nominal start (behind now)
+  nor by its run time (not where the next frame plays while the burst runs) truly. Told either, the library corrects
+  where nothing was lost: the spike's first design, every overdue cycle told by its run time, makes two corrections and
+  silence in the runner's uncut burst. `untoldBound` (2 s of the graph's nominal time, the cycles' `startRawNs`) is the
+  deferral's only bound: past it the next cycle tells even if overdue, dated by `GraphCycle::ranRawNs()`, and the report
+  after it is clamped so it never steps back (the clamp's only case; `clamped()` is the test seam). While ear defers, the
+  library's playtime runs open loop and trails now, so the floor patch stays with the deferral (below).
   Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed for a change
   of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
@@ -197,23 +193,23 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook. It also makes an unproved connection give way
   in the nursery, its own address's first, and lengthens the listen queue, whose 5 dropped a server's SYN under a burst.
 - **Worker's `server_max_connections` is 32,** the room those two need to turn over in; it was the library's 4.
-- `cmake/sendspin-starved-floor.patch` is carried (the owner's decision, cycle facts C4): `starved_playtime_floor` moved
-  the playtime up to now whenever it trailed now by more than 5 ms, taking that for an underrun, but it also trails now
-  with frames still buffered, after reports dated behind now. Floored mid-catch-up, the library took the next chunk for
-  37 to 67 ms late or early and corrected twice. The patch floors only when nothing is buffered, the spec's underrun
-  recovery ("Large errors and startup").
+- `cmake/sendspin-starved-floor.patch` is carried (the owner's decision, cycle facts C4, kept by the timing model with
+  the deferral): `starved_playtime_floor` moved the playtime up to now whenever it trailed now by more than 5 ms, taking
+  that for an underrun, but it also trails now with frames still buffered: while ear tells nothing through a catch-up's
+  burst the library keeps its playtime open loop (the last finish plus what it wrote since), behind now by the graph's
+  lag. Floored mid-catch-up, the library took the next chunk for 37 to 67 ms late or early and corrected twice. The
+  patch floors only when nothing is buffered, the spec's underrun recovery ("Large errors and startup"). Dropping it is
+  a separate step, gated on evidence from both burst shapes without it (`docs/design/timing-model.md` 6.5).
 - `cmake/sendspin-late-chunk.patch` is carried (same decision): `decode_chunk` skipped a chunk whenever its start was over
   5 ms late, so a catch-up of 154 ms skipped two 96 ms chunks, overshot by 37 ms and filled that with silence: two steps.
   The patch decodes first and skips only a chunk whose last frame is late (`SyncTask::chunk_too_late`); the hard sync
-  drops the late front of the next, one step, no silence. With ear paying a stall's remainder itself neither path should
-  fire after a stall; they are the library's own behaviour made right for any sink.
+  drops the late front of the next, one step, no silence. It is the path the library's one correction after a stall past
+  the feed takes, as after a network gap: both are the library's own behaviour made right for any sink.
 - **Each patch has a deterministic test in the library's suite**, ear's build compiles none of them: `PlayerHardSync.
   AnEstimateWithFramesBufferedIsNotFloored` (the floor), `AChunkIsTooLateOnlyOnceItsLastFrameIs` and
   `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests;
-  ear's stall tests also fail with the floor's reverted (the floor fires while the library still holds frames ear is
-  paying for: ear and the library would both correct), and pass with the late chunk's reverted (ear pays the remainder,
-  so no chunk reaches the library late). The late chunk's is proven through ear by the clock test "A starving network
-  gap" instead: the test server's `gap <ms>` holds the audio it sends past the server's own late check until the
+  through ear, see "Measured without the floor patch" below for the floor's. The late chunk's is proven through ear by
+  the clock test "A starving network gap": the test server's `gap <ms>` holds the audio it sends past the server's own late check until the
   library has starved, then sends it at once with the release placed inside a chunk, and with the patch's change
   reverted the library skips that chunk whole and adds silence (5 runs of 5). Run
   the library's suite on the patched tree, in the dev image, after a configure has fetched and patched it:
@@ -249,25 +245,38 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
 
   The real scenario, a port scan's two connects held open and then a real server, is ear's system test `A server gets
   in beside two bare sockets held open from its own address` (`aiosendspin` sends no `Origin`).
-- The clock tests `A 200 ms stall past the feed ...` and `A 1 s stall ...` prove ear's payment every run; with the
-  payment reverted (the catch-up's `owed_ += lost` removed) both fail every run (5 of 5: the library's own corrections,
-  and for 200 ms back past the bound too).
-- **A burst that loses nothing is still told nothing.** On a host that runs the block every burst timeout, every cycle
-  is whole and nothing is owed, but each is dated behind raw time; the code tells nothing from a cycle whose
-  `GraphCycle::overdueNs` is above 0, as from a lossy one (`docs/node-types.md#clock`). The debt is paid in one step with
-  the read (`Feed::skipThenRead`, two skip passes at most, nothing read while owed): split into a skip and a read, the
-  writer's frames written between them were read with the debt unpaid.
+- **Each rule of the clock has a revert proof** (2026-11-13, at T2): the skip taken out (nothing skipped) fails six code
+  rows, the hiccup clock test (the library corrects the block it was told late, twice) and the steady dummy-driver test;
+  the deferral taken out (overdue cycles told, dated by their run time) fails the burst, overdue, bound and clamp-idle
+  rows; the bound taken out (never told from an overdue cycle) fails the bound's row; the clamp made unconditional fails
+  the clamp-idle row (a shrinking downstream latency is told as it is); the clamp taken out fails the bound's row.
+- **What the stall tests measured on the dev host** (20 runs each beside four busy threads on four cores): every burst
+  was cut, one catch-up of the whole stall, never an overdue cycle, so the uncut shape has not run here. The library's
+  correction was the stall's lost frames less the feed's 2048, plus the zeros ear played (0 to 512), within 4 frames;
+  a 200 ms stall is about 8700 frames, a 1 s one about 52000 upstream and 46000 in the block; a 1.5-cycle hiccup was
+  skipped whole and corrected nothing. Under heavier load (another suite beside them, load 8 to 10) the library once
+  followed its correction with a settle step of one block and once of two (its next write landing late after the hard
+  sync), and host-starved runs failed the run's 1% blend bound; a timing test that fails on a loaded host is rerun
+  alone before the code is suspected.
+- **Measured without the floor patch** (upstream's floor put back in the kept tree, 5 runs of each stall test, same
+  load): 20 of 20 passed, the same single corrections, because every burst here was cut into one catch-up told on time,
+  so the library's playtime never ran open loop behind now. That says nothing of the uncut shape, the one the patch is
+  kept for; dropping it waits for CI's runs of that shape without it.
 - **The stall tests once took the host's burst for granted** and stalled inside the node's own block: on a GitHub runner
   the block then ran every cycle of the burst, nothing was lost, and the test failed finding no catch-up after the stall
   (`end > stalled + 1`, 1183 > 1183). A stall a test needs lost must be made upstream of the block that must lose it, and
-  the burst's cycles cut on purpose (`StallProbe`, `docs/testing.md#a-writers-own-event`).
+  the burst's cycles cut on purpose (`StallProbe`, `docs/testing.md#a-writers-own-event`). The in-block stall tests now
+  judge whichever shape they get, each by its own rule, and record it (`sendspin stall judged: ...` in
+  `out/Testing/sendspin-stall-shapes.txt`); CI's `test` job prints that file, pass or fail. **The uncut shape runs only
+  on a GitHub runner**: read the lines there after a change to the clock.
 - **Draft upstream report** (not filed; the owner sends it):
 
   > **Title:** After a sink's catch-up, the sync task floors a playtime that is only behind, and skips whole chunks past
   > the timeline
   >
-  > A sink that stalls and then catches up (a graph that runs its missed cycles back to back) reports
-  > `notify_audio_played` with finish timestamps behind the wall clock until it has caught up. Two things in
+  > A sink that stalls and then catches up (a graph that runs its missed cycles back to back) cannot date a report
+  > truly until it has caught up, so it reports nothing through the catch-up and leaves the sync task's playtime open
+  > loop, which then trails the wall clock by the sink's lag with frames still buffered. Two things in
   > `sync_task.cpp` then move the audio off the timeline. (1) `starved_playtime_floor` moves
   > `new_audio_client_playtime` up to now whenever it trails now by more than `HARD_SYNC_THRESHOLD_US`, even with frames
   > still buffered; the spec's recovery is for an underrun, and with `buffered_frames > 0` the sink has not starved. The
@@ -282,7 +291,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   > ESP32 a FLAC chunk's decode is milliseconds of the sync task's time. A chunk's frame count from its header, or
   > skipping undecoded when its start is late by more than the longest chunk, would keep the old cost for those.
   > Measured with the real `aiosendspin` server behind a sink that stalled 200 ms: before, two corrections or silence
-  > in 11 runs of 14.
+  > in 11 runs of 14 (a sink that reported through the catch-up, dated behind now: the same floor fired).
 - **Draft upstream report for the listener patch** (not filed; the owner sends it):
 
   > **Title:** The host server accepts an upgrade carrying `Origin`, and a full nursery of unproved peers keeps every
@@ -348,12 +357,13 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
 - **The clock tests judge every cycle through the one cycle judge** (`docs/testing.md#the-cycle-judge`). A cycle's timing
   is judged when the judge judged it whole, 3 s into the ramp, outside a library settle and a loss of sync the library
   logged, and a test plays a 90 s stream until it has judged 750; the steady tests make the judge's four 1.5-cycle
-  stalls upstream of the node meanwhile, and judge the next whole cycle after each (ear pays them). A library settle is
-  declared only where the library realigns itself (a dry cycle the code did not owe, by the feed's own count
-  `dryReads()`; a catch-up while it was starved; a debt forgotten; a hard sync or loss it logged), two of its chunks
-  long. Before playing they wait for the internal clock to reach the raw clock's rate over the whole cycles of two
+  stalls upstream of the node meanwhile, and judge the next whole cycle after each (the feed holds each, and ear skips
+  it exactly). A library settle is declared only where the library realigns itself (a dry cycle, by the feed's own
+  count `dryReads()`; a catch-up's jump the feed did not hold whole, `unskipped`; a hard sync or loss it logged), two
+  of its chunks long. Before playing they wait for the internal clock to reach the raw clock's rate over the whole cycles of two
   seconds, and fail naming it if it never does. Every step and stretch of silence is accounted for by the code's skips,
-  worked out from each cycle's facts, what the feed held (`lastHeld()`) and what it lacked (`dryFrames()`), by a
+  worked out from each cycle's facts, what the feed held (`lastHeldAtStart()`, checked against `lastSkipped()`) and
+  what it lacked (`dryFrames()`), by a
   settle's evidence, or by the library's own lines, read from standard error at verbose
   (`docs/testing.md#the-librarys-own-word`): `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips
   unlogged. A skip that takes the library's soft-sync frame with it moves the ramp one less (an insert) or one more (a

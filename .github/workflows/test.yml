@@ -93,6 +93,12 @@ jobs:
         env:
           EAR_DEV_IMAGE: ear-dev
 
+      # The sendspin stall tests judge whichever burst shape the host gives (docs/testing.md#a-writers-own-event)
+      # and append the one each judged to a file beside ctest's records; printed here, pass or fail, to show which
+      # shapes this runner made (a passing test's output reaches no log).
+      - if: always()
+        run: cat out/Testing/sendspin-stall-shapes.txt || echo "no sendspin stall test ran"
+
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

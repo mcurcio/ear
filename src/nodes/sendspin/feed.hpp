@@ -21,19 +21,8 @@ public:
 	/// Realtime; discards up to `frames` of the oldest frames, all it holds when it holds fewer (any count: a catch-up's
 	/// jump has no bound). Returns how many.
 	std::uint32_t skip(std::uint64_t frames) noexcept;
-	struct Taken {
-		std::uint32_t skipped;
-		std::uint32_t read;
-	};
-	/// Realtime; no lock, allocation or waiting. Skips up to `skip` of the oldest frames (any count), then reads up to
-	/// `frames`, planar, zeros after what it read. `owed` of the skip is a debt paid before any frame is read: from what
-	/// the feed holds, and if some is still owed, once more from what the writer added meanwhile (two passes, so at most
-	/// twice the capacity a call); while any is owed it reads nothing, so a frame the writer adds is never read ahead of
-	/// the debt, and the next call pays on (docs/node-types.md#clock).
-	Taken skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
-	                   std::uint32_t frames) noexcept;
 	/// Realtime: applies a clear asked for and not yet applied, and says whether any clear was applied since the last
-	/// call (here, or by a read or a skip): what was owed of the stream it ended is owed no more.
+	/// call (here, or by a read or a skip): the stream it ended is over, and nothing of the next is skipped for it.
 	bool takeCleared() noexcept;
 	/// One writing thread. With no room waits up to `patience`. Returns frames accepted.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
@@ -46,23 +35,12 @@ public:
 	/// or a clear ended rather than the patience. Counted on the writer's side, never the realtime one.
 	std::uint64_t waitsBegun() const noexcept { return waitsBegun_.load(std::memory_order_acquire); }
 	std::uint64_t waitsWoken() const noexcept { return waitsWoken_.load(std::memory_order_acquire); }
-	/// Test seams (docs/testing.md#a-writers-own-event): while held, the writer finds no room, as at a full feed, and
-	/// waits for a release, a read or its patience; a release wakes it. Any thread.
-	void holdWriter() noexcept;
-	void releaseWriter() noexcept;
-	/// Test seam: called on the reading thread after each step of skipThenRead's payment, so a test can add frames as
-	/// a writer racing the skip would. Set before any read.
-	void onPaymentStep(void (*hook)(void*), void* context) noexcept {
-		skipHook_ = hook;
-		skipHookContext_ = context;
-	}
 	/// Realtime: what the feed holds now (exact on the reading thread).
 	std::uint32_t held() const noexcept { return ring_.writePosition() - ring_.readPosition(); }
 	/// Test seam: what the feed held at the last skip(), after any clear; the reading thread's own, read on it.
 	std::uint32_t heldAtSkip() const noexcept { return heldAtSkip_; }
 	/// Test seams, the reader's own events (docs/testing.md#a-writers-own-event): the reads that found the feed short of
-	/// what they asked, a read or a skipThenRead, which reads nothing while a debt is owed (a dry cycle: zeros played where
-	/// the stream should be), and the frames they lacked. Counted on
+	/// what they asked (a dry cycle: zeros played where the stream should be), and the frames they lacked. Counted on
 	/// the reading thread as it reads; any thread may read them, after whatever published that read.
 	std::uint64_t dryReads() const noexcept { return dryReads_.load(std::memory_order_relaxed); }
 	std::uint64_t dryFrames() const noexcept { return dryFrames_.load(std::memory_order_relaxed); }
@@ -70,20 +48,16 @@ public:
 private:
 	bool applyClear() noexcept;
 	void countDry(std::uint32_t asked, std::uint32_t got) noexcept;
-	std::uint32_t tryWrite(std::span<const float> interleaved, std::uint32_t frames) noexcept;
 	void wakeWriter() noexcept;
 	FrameRing ring_;
 	EventFd room_; // what the writer waits on
 	std::atomic<bool> writerWaits_{false};
-	std::atomic<bool> writerHeld_{false};      // test seam: holdWriter()
 	std::atomic<std::uint64_t> clearTo_{0};    // pending bit, and the ring's write position when it was asked
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
 	std::atomic<std::uint64_t> dryReads_{0}; // test seams: dryReads and dryFrames, the reader's alone to write
 	std::atomic<std::uint64_t> dryFrames_{0};
-	std::uint32_t heldAtSkip_ = 0;      // reader only
-	void (*skipHook_)(void*) = nullptr; // test seam: onPaymentStep
-	void* skipHookContext_ = nullptr;
-	bool clearedSince_ = false; // reader only: a clear was applied since the last takeCleared()
+	std::uint32_t heldAtSkip_ = 0; // reader only
+	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
 };
 } // namespace ear::sendspin

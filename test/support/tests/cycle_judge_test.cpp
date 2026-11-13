@@ -227,10 +227,9 @@ TEST_CASE("A cycle judge counts each library settle a test declares, by its caus
 	CHECK_FALSE(judge.done()); // nothing judged: a settle is no judged boundary
 	CHECK(judge.at(caughtUp(1, 0, kFrames, kClock.ns(kFrames)), kFrames) == Verdict::fail); // and no excuse
 	const auto report = judge.report();
-	CHECK(report.librarySettles == std::array<std::size_t, 4>{1, 0, 0, 2});
+	CHECK(report.librarySettles == std::array<std::size_t, 3>{1, 0, 2});
 	CHECK(report.librarySettleChunks == 7);
 	std::ostringstream text;
 	text << report;
-	CHECK(text.str().find("library settles: dry 1, starved catch-up 0, forgotten debt 0, logged 2, 7 chunks") !=
-	      std::string::npos);
+	CHECK(text.str().find("library settles: dry 1, unskipped 0, logged 2, 7 chunks") != std::string::npos);
 }

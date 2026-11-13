@@ -369,10 +369,10 @@ same lost time.
 - A source's ring (`SourceRing`) still keeps time for its node: its `Played` count and dating,
   and its skip of a catch-up's jump with the rest owed
   ([writing-a-node-type.md](writing-a-node-type.md#sources)).
-- `sendspin` still owes lost time and models the library (`LibraryView`, `Feed::skipThenRead`);
-  its deferral of reports from overdue ticks and `sendspin-starved-floor.patch` stay under the
-  model
-  ([node-types.md](node-types.md#clock)).
+- `sendspin`'s clock follows the model (an honest sink with a local skip of lost time, its
+  reports deferred from overdue ticks under a 2 s bound, with `sendspin-starved-floor.patch`:
+  [node-types.md](node-types.md#clock)), but in the node's own code over its own feed, not as the
+  clock of a source, which a source cannot have yet.
 - The converter companion has only its module-run mode
   ([engine.md](engine.md#module-run-converters)), whose one user is the RTP receiver: there is no
   set or tracked converter yet for a ring whose clock is a type's own, so only cards and RTP

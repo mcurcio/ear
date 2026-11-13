@@ -54,58 +54,21 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	return got;
 }
 
-Feed::Taken Feed::skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
-                               std::uint32_t frames) noexcept {
-	const bool cleared = applyClear();
-	// What it holds now, on the reading thread, is exact: the writer only adds. The debt is paid from what the feed
-	// holds, and if some is still owed, once more from what the writer added during that skip: two passes at most, so
-	// the work is bounded by twice the feed's capacity whatever the debt and however fast the writer (a 1 s stall leaves
-	// about 46000 frames owed). Nothing is read while any is owed, so what the writer adds after the second pass waits
-	// for the next cycle's payment, and no frame is ever read ahead of the debt. Stale audio owed nothing (a starved
-	// library's) is skipped as far as the feed holds it.
-	heldAtSkip_ = held();
-	const std::uint64_t mustPay = std::min(owed, skip);
-	std::uint64_t skipped = 0;
-	std::uint32_t holds = heldAtSkip_;
-	for (int pass = 0; pass < 2 && skipped < mustPay && holds > 0; ++pass, holds = held()) {
-		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(mustPay - skipped, holds)));
-		if (skipHook_ != nullptr) skipHook_(skipHookContext_);
-	}
-	if (skipped >= mustPay && skip > skipped)
-		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(skip - skipped, held())));
-	const std::uint32_t got = skipped >= mustPay ? ring_.readPlanar(channels, frames) : 0;
-	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
-	countDry(frames, got);
-	if (cleared || skipped > 0 || got > 0) wakeWriter();
-	return {static_cast<std::uint32_t>(std::min<std::uint64_t>(skipped, UINT32_MAX)), got};
-}
-
 bool Feed::takeCleared() noexcept {
 	if (applyClear()) wakeWriter();
 	return std::exchange(clearedSince_, false);
-}
-
-std::uint32_t Feed::tryWrite(std::span<const float> interleaved, std::uint32_t frames) noexcept {
-	return writerHeld_.load(std::memory_order_acquire) ? 0 : ring_.writeInterleaved(interleaved, frames);
-}
-
-void Feed::holdWriter() noexcept { writerHeld_.store(true, std::memory_order_release); }
-
-void Feed::releaseWriter() noexcept {
-	writerHeld_.store(false, std::memory_order_release);
-	wakeWriter();
 }
 
 std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,
                           std::chrono::milliseconds patience) {
 	const auto until = std::chrono::steady_clock::now() + patience;
 	for (;;) {
-		if (const std::uint32_t accepted = tryWrite(interleaved, frames); accepted > 0 || frames == 0) {
+		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0 || frames == 0) {
 			return accepted;
 		}
 		writerWaits_.store(true, std::memory_order_relaxed);
 		std::atomic_thread_fence(std::memory_order_seq_cst);
-		if (const std::uint32_t accepted = tryWrite(interleaved, frames); accepted > 0) {
+		if (const std::uint32_t accepted = ring_.writeInterleaved(interleaved, frames); accepted > 0) {
 			writerWaits_.store(false, std::memory_order_relaxed);
 			return accepted;
 		}

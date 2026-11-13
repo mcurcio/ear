@@ -142,8 +142,9 @@ Every test that excuses a lost cycle does it through the judge:
 - A `sendspin` node's clock (`clock_test.cpp`): every cycle of the node's block through the judge,
   its drive declared. A block linked into the node's `to` (an `ArmedStall`, `inducers.hpp`, the
   counting block the sink test uses too) makes the judge's four stalls once the timing is judged,
-  one every 150 cycles, and the timing is judged on the next whole cycle after each: ear pays the
-  catch-up ([node-types.md](node-types.md#clock)), so nothing after it is excused. The stall and
+  one every 150 cycles, and the timing is judged on the next whole cycle after each: the feed holds
+  the cycle lost and ear skips it exactly ([node-types.md](node-types.md#clock)), so nothing after
+  it is excused. The stall and
   network-gap tests make their own disturbance and plan none; the card's loss is the event its test
   judges.
 - An RTP receiver's tone (`rtp_receiver_test.cpp`): every cycle of the recorder through the judge,
@@ -153,15 +154,15 @@ Every test that excuses a lost cycle does it through the judge:
 
 **Past the graph.** Where a test's output goes through something with dynamics of its own, the
 judge covers the graph side exactly and the rest is declared apart. A `sendspin` node's library
-realigns itself only where it lost time ear did not pay ([node-types.md](node-types.md#clock)), and
+realigns itself only where it lost time ear did not skip ([node-types.md](node-types.md#clock)), and
 the clock tests declare a **library settle** there, with the evidence that makes it
-(`CycleJudge::librarySettle(LibrarySettle, chunks)`, counted per cause in the report): a dry cycle the
-code did not owe (the feed's own count, `Feed::dryReads()`, moved), a catch-up while the library was
-starved, a debt forgotten at `untoldBound`, or a hard sync or loss of sync the library logged. A
-settle lasts two of the library's chunks, by the server's own chunks, not by time: its floor puts
-the next chunk it syncs at now, which the block plays late by up to two blocks, and the chunk after
-drops that once more, so from the second chunk boundary past the first frame played after the loss
-the stream is on the stamps. Inside it the timing is not judged, and two forward steps of the
+(`CycleJudge::librarySettle(LibrarySettle, chunks)`, counted per cause in the report): a dry cycle
+(the feed's own count, `Feed::dryReads()`, moved), a catch-up's jump the feed did not hold whole
+(`unskipped`: the frames the code could not skip), or a hard sync or loss of sync the library
+logged. A settle lasts two of the library's chunks, by the server's own chunks, not by time: the
+library corrects at the next chunk it syncs (a floor puts that chunk at now, which the block plays
+late by up to two blocks, and the chunk after drops that once more), so from the second chunk
+boundary past the first frame played after the loss the stream is on the stamps. Inside it the timing is not judged, and two forward steps of the
 library's own are excused, in order, each with a line of the library's near and one soft-sync frame
 either way: one realignment of what the evidence says was lost and up to the floor's two blocks
 more, then one settle step of up to two blocks. A step short of what was lost, or a second
@@ -169,10 +170,8 @@ realignment, fails; anywhere else a step must be the code's skip, a blend or a l
 settle the library's soft sync interpolates one frame a chunk while it is off by more than 100 us,
 and its hard sync left it within 500 us (`sync_task.cpp`'s thresholds), so up to 20 blended cycles
 in the 20 chunks after a settle are its own and counted apart; any other blended cycle counts
-against the 1% the clock tests allow. A catch-up ear paid declares nothing: the next whole cycle
-is judged. While ear still owes, the code reads nothing ([node-types.md](node-types.md#clock)): a
-cycle of the payment plays zeros the feed counts dry and the code owes, so it opens no settle and
-has no ramp frame to time, and the cycle that pays the last of it is judged.
+against the 1% the clock tests allow. A catch-up the feed held whole declares nothing: ear skips
+it exactly, and the next whole cycle is judged.
 
 ### A writer's own event
 
@@ -186,23 +185,26 @@ two, `Feed::waitsBegun()` and `Feed::waitsWoken()`, counted on the writer's side
 waits for the first before it reads or clears, and judges by the second that the wake ended the
 wait, not its patience. The feed counts its own short reads on the reading side,
 `Feed::dryReads()` and the frames they lacked, `Feed::dryFrames()`: a dry cycle is the feed's word,
-not a guess from the output. Its audio code says what the feed held as its last cycle kept time and
-as it began (`SendspinCode::lastHeld()` and `lastHeldAtStart()`, read on the data thread after
-`process()`); the clock tests work out from each cycle's facts, those and the feed's counts, by the
-code's rule on the library's view, what it skipped for the graph's lost time and when it told
-([node-types.md](node-types.md#clock)), and hold each ramp step and each report of what played
-against that. A stall test makes its catch-up certain rather than likely: the stall is made by a
+not a guess from the output. Its audio code says what the feed held as its last cycle began and
+what it skipped of that (`SendspinCode::lastHeldAtStart()` and `lastSkipped()`, read on the data
+thread after `process()`); the clock tests work out from each cycle's facts, what the feed held and
+its counts, by the code's rule, what it skips for the graph's lost time and when it tells and with
+what finish ([node-types.md](node-types.md#clock)), and hold each skip, each ramp step and each
+report of what played against that, and each report's finish against the last one's. A stall test makes its catch-up certain rather than likely: the stall is made by a
 probe block linked upstream of the node's (`StallProbe`), whose stalled cycle is cut short before
 the node's block runs, and which holds each cycle of the driver's catch-up burst 1 ms while its next
 timeout is already due, so each of those is cut short before the block too; the block then states
 one catch-up of the stall and the burst, where the burst's own cycles would be run or lost as the
-host's timing fell ([engine.md](engine.md#the-internal-clock)). It makes its remainder certain the
-same way: `Feed::holdWriter()`
-makes the writer's writes take nothing until `releaseWriter()` (which wakes it), so with the writer
-held from the arming until the first whole cycle after the stall the catch-up's burst always drains
-the feed, and the test requires a remainder above 0 before it judges the payment. Two more stall
-tests stall inside the node's own block and judge the burst the host gives: the block missing some
-of its cycles, or running every one while the next is due (`GraphCycle::overdueNs`). What the
+host's timing fell ([engine.md](engine.md#the-internal-clock)); a 200 ms or 1 s stall is then past
+the feed, so the library's one correction is certain, and the same probe's 1.5-cycle hiccup is held
+by the feed, so the code's exact skip is. Two more stall tests stall inside the node's own block and
+judge the burst the host gives: the block missing some of its cycles (each a catch-up, frames lost),
+or running every one while the next is due (`GraphCycle::overdueNs`, nothing lost). Each passes
+only its own shape's rule, and each appends the shape it judged, pass or fail, to
+`out/Testing/sendspin-stall-shapes.txt` (`sendspin stall judged: ...`), which CI's `test` job prints
+after the suite: a passing test's output reaches no log, a node's tests may not write standard
+output (`ear_nodes_never_write_standard_output`), and no `WARN` is added
+([the sleep guard](#the-sleep-guard)). What the
 library does after a planned event (a stall, the network gap) is judged as its answer until the
 first cycle after the stream's return that the host disturbed in a way the library could see (one
 the ledger did not call clean, other than a catch-up the feed held whole, which ear skips from audio
@@ -428,7 +430,7 @@ headers.
 | The frame guard (`test/frame_guard.cmake`, CTest) | No file under `src/` but `FrameClock`'s (`latency.hpp`, `latency.cpp`), its two named exceptions (`latency_spa.hpp`, `levels.cpp`) and tests does arithmetic with a rate: an identifier spelled as one (`rate`, `…_rate`, `…Rate`, `frequency`, `…_frequency`, `…Frequency`) as an operand of `*`, `/` or `%`, through members, casts and braces and across a line break (`ear_frames_through_frame_clock`, [engine.md](engine.md#dating)); and the guard itself: refusing each spelling it knows (`frame_guard/<spelling>.snippet`, a `//` inside a string, a digit separator before a character literal, code between two block comments and an expression split before or after its operator among them), letting a dereference, calls, other names, comments, strings and ns-to-`timespec` and ms conversions through, skipping exactly the exempt path and tests but not a namesake elsewhere, and failing when it would check nothing |
 | `ear_folder_tests` | The confined folder on real temporary folders: made if missing (never its parents), `create()` beneath only, `read()` and `replaceIf()` refusing symlinks, directories, FIFOs, large files and paths out, replace-if-unchanged keeping the file's mode, a new file's mode under any umask, `restrictMode()`, a folder it cannot write, an inotify watch, `requireApart()` |
 | `ear_node_white_tests`, `ear_node_file_tests`, `ear_node_card_tests`, `ear_node_rtp_tests` | Each type through `TypeHarness`, by its spec's bank handles: settings and each refusal's text, ports, the resources its `configure` asks for, readiness and loss, stop, start and restart, and what its code or the pass-through carries. `file` runs over a real recordings folder: exact samples, every frame in order through chunks split at the ring's end, every cycle the code drove and none while stopped, a restart finishing one WAV and opening the next, paths that lead out refused |
-| `ear_node_sendspin_tests` | The feed on real threads (a writer's wait ended by a read or a clear, by its own counts), PCM, the audio code's clock and its skips on scripted cycle facts (`CycleAccount` over a `CutRing`: a catch-up skipped however long, past the feed and past 2^32 frames, as far as the feed holds it, and nothing written after it taken; every other cause a new clock), the connection watch on fake time, settings, key files on a real folder (a read-only one under root too), port claims and the probe, the transport's share per address and its bound of twice the room in threads, exactly, the mDNS name and on-link check, peer text on a status line, the notes' rate; through a real engine and the real Sendspin server, the clock within 1 ms on the dummy driver and through a following test card, judged over a planned 750 cycles the cycle judge judged whole and outside any library settle, the judge's four stalls made upstream meanwhile and the next whole cycle after each judged, after the internal clock has reached the raw clock's rate over its whole cycles; a stall past the feed paid before the library is told, and a starving network gap corrected once; a lost card's recovery within 3 s of graph cycles from the cut or the host's last disturbance after it |
+| `ear_node_sendspin_tests` | The feed on real threads (a writer's wait ended by a read or a clear, by its own counts), PCM, the audio code's clock on scripted cycle facts (`CycleAccount` over a `CutRing`: a catch-up or a pause skipped as far as the feed holds it, past the feed and past 2^32 frames, and nothing written after it taken; every other cause, and a clearing cycle, skipping nothing; nothing told from an overdue cycle and all of a burst told from the first on time, dated nominally; a lossy cycle on time told; the bound forcing one report dated by when its cycle ran, the next clamped to it, and the clamp idle otherwise), the connection watch on fake time, settings, key files on a real folder (a read-only one under root too), port claims and the probe, the transport's share per address and its bound of twice the room in threads, exactly, the mDNS name and on-link check, peer text on a status line, the notes' rate; through a real engine and the real Sendspin server, the clock within 1 ms on the dummy driver and through a following test card, judged over a planned 750 cycles the cycle judge judged whole and outside any library settle, the judge's four stalls made upstream meanwhile and the next whole cycle after each judged, after the internal clock has reached the raw clock's rate over its whole cycles; a stall past the feed (200 ms and 1 s, upstream and in the block, in the burst shape the host gives, which each run names) corrected once by the library by what the feed did not hold (and at most one settle step of two blocks after it), or not at all when the burst lost nothing, a 1.5-cycle hiccup skipped exactly, and a starving network gap corrected once; a lost card's recovery within 3 s of graph cycles from the cut or the host's last disturbance after it |
 | `ear_node_types_tests` | What holds for every type, taken from the generated list as `main.cpp` takes it: a folder makes one type of its name, each type's settings table and every refusal's text and order (`test/nodes/settings_refusals_test.cpp`), and every type but those in `notYetInHarness` run through the harness (configured, running once its companions are ready, every output sample written, stopped, started, restarted, disabled, enabled, removed). Also, as CTest tests: configure refuses one node type linking another in each spelling, and an empty list of types; and no file under `src/nodes/` writes standard output or error (`test/nodes/standard_output_guard.cmake`, itself tested) |
 | `ear_output_tests` | The output thread on real pipes (order, a reader that does not read refused at once, everything written at stop); the capture of descriptors 1 and 2 in its own test program; a crash's last words in forked children (a dying process's own last line, after the queue and the pipes and before terminate's message, once); the main-loop watchdog on a clock stepped by hand and on a real stall |
 | `ear_control_tests` | The JSON-RPC envelope (the specification's examples), commands, events, the graph file's types, every standard-output record field for field against `output-records.json` (drops, pacing, bad UTF-8, one order from many threads), the lifecycle's wire, gateway and sessions, all against `test/protocol` |

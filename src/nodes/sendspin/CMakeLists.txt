@@ -44,5 +44,8 @@ if(BUILD_TESTS)
 		ear_temp_folder ear_inducers ear_cycle_judge ear_standard_error_lines sendspin ixwebsocket)
 	target_compile_definitions(ear_node_sendspin_tests PRIVATE
 		EAR_ENGINE_CONF="${PROJECT_SOURCE_DIR}/src/pipewire/engine.conf"
-		EAR_ALSA_TEST_DIR="${PROJECT_SOURCE_DIR}/src/pipewire/tests/alsa")
+		EAR_ALSA_TEST_DIR="${PROJECT_SOURCE_DIR}/src/pipewire/tests/alsa"
+		# Where the stall tests append the burst shape each run judged (docs/testing.md#a-writers-own-event): beside
+		# ctest's own records, which CI prints from and uploads.
+		EAR_STALL_SHAPES_FILE="${PROJECT_BINARY_DIR}/Testing/sendspin-stall-shapes.txt")
 endif()

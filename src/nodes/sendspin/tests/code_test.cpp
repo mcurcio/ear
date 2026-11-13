@@ -118,14 +118,24 @@ struct Rig {
 		                                             ear::Latency{downstreamFrames, downstreamFrames}};
 		const std::uint64_t position = driver.position();
 		const ear::CycleFacts facts = driver.next(block, startRawNs);
+		const std::int64_t startNs = startRawNs - 7; // another clock: the code must not read it
 		code.process(inputs, outputs, block,
-		             ear::GraphCycle{.startNs = startRawNs - 7, // another clock: the code must not read it
+		             ear::GraphCycle{.startNs = startNs,
 		                             .position = position,
 		                             .startRawNs = startRawNs,
+		                             .nextNs = startNs + ear::FrameClock(rate).ns(block),
 		                             .overdueNs = overdueNs,
 		                             .facts = facts,
 		                             .downstream = downstream});
 		return facts;
+	}
+	/// One on-time cycle stating `facts` as given: a cause the driver here does not make (a drive, the cycle after an
+	/// oversized one) or a jump too long to lose cycle by cycle.
+	void scripted(ear::CycleFacts facts) {
+		const std::array<std::span<float>, 2> outputs{left, right};
+		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
+		code.process(inputs, outputs, block,
+		             ear::GraphCycle{.startNs = 0, .position = 0, .startRawNs = 1000, .facts = facts});
 	}
 	/// Whether the bell rang since the last look.
 	bool rang() { return bell.drain(); }
@@ -210,265 +220,61 @@ TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate
 	}
 }
 
-TEST_CASE("A cycle the graph lost and caught up is skipped and counted played", "[sendspin][code]") {
+// docs/node-types.md#clock: on the cycle that states a catch-up, what the feed holds of the lost time is skipped and
+// counted played; a catch-up on time is told at once.
+TEST_CASE("A cycle the graph lost and caught up is skipped and counted played, and told at once when on time",
+          "[sendspin][code]") {
 	Rig rig;
 	rig.write(4 * block);
 	rig.cycle();
-	rig.driver.lose(1, block);
-	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
-	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
-	rig.cycle();
-	const auto progress = rig.progress.read();
-	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 4 * block);
-}
-
-// docs/node-types.md#clock: a cycle that caught lost time up is dated by the driver's own clock, behind raw time until
-// the catch-up's burst ends, so what it skipped and read is told with the next cycle that lost nothing, at that cycle's
-// finish.
-TEST_CASE("What a catch-up cycle skipped and read is told with the next whole cycle, at its finish",
-          "[sendspin][code]") {
-	Rig rig;
-	rig.write(6 * block);
-	rig.cycle(1000);
 	REQUIRE(rig.rang());
-	for (int burst = 0; burst < 2; ++burst) {
-		rig.driver.lose(1, block);
-		REQUIRE(rig.cycle(2000).causes == ear::CycleCause::catchUp);
-		CHECK(rig.told() == block); // nothing told from the burst
-		CHECK_FALSE(rig.rang());
-	}
+	rig.driver.lose(1, block);
 	const std::int64_t start = 1'000'000;
-	REQUIRE(rig.cycle(start).whole());
+	REQUIRE(rig.cycle(start).causes == ear::CycleCause::catchUp);
+	CHECK(rig.code.lastHeldAtStart() == 3 * block);
+	CHECK(rig.code.lastSkipped() == block);
+	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
+	CHECK(rig.rang());
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 6 * block); // the two skips, the two reads and this cycle's block
+	CHECK(progress->totalFrames == 3 * block); // the first block, the skip and this cycle's read
 	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
-	CHECK(rig.rang());
 }
 
-// docs/node-types.md#clock: however long the stall, a catch-up owes its whole jump. What the feed holds of it is skipped
-// at once and the rest from what the library writes next, before any of it is read; a cycle the feed leaves short
-// while the catch-up is untold owes its zeros too. The library is told once nothing is owed, so it is never told a
-// frame ear did not take from what it wrote, and needs no correction of its own.
-TEST_CASE("A catch-up of any length is paid from the feed and from what is written next, and told once paid",
+// docs/node-types.md#clock: the node keeps no debt. What the feed did not hold of a jump is the library's to correct,
+// which it sees in the next finish it is told; nothing more is skipped from what it writes next.
+TEST_CASE("A catch-up past what the feed holds skips what it holds and no more, and owes nothing after",
           "[sendspin][code]") {
-	SECTION("past what it held, within its capacity") {
+	SECTION("past what it held") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
-		rig.driver.lose(4, block); // 1024 frames; the feed holds 512, and this cycle plays zeros: 768 owed
+		rig.driver.lose(4, block); // 1024 frames lost; the feed holds 512
 		REQUIRE(rig.cycle().jumpFrames == 4 * block);
-		CHECK(rig.left[0] == 0.0F);
-		CHECK(rig.told() == block);
-
-		rig.write(4 * block);
-		rig.cycle(); // 768 skipped, then a block read
-		CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
-		CHECK(rig.told() == 7 * block);
-	}
-	SECTION("past its capacity") {
-		Rig rig;
-		rig.write(3 * block);
-		rig.cycle();
-		rig.driver.lose(10, block); // 2560 frames, past the feed's 2048: 512 skipped, 2304 owed with this cycle's zeros
-		const ear::CycleFacts facts = rig.cycle();
-		REQUIRE(facts.causes == ear::CycleCause::catchUp);
-		REQUIRE(facts.jumpFrames == 10 * block);
-		CHECK(rig.left[0] == 0.0F);
-
-		rig.write(capacity); // all of it skipped, and this cycle's zeros owed: 512
-		rig.cycle();
-		CHECK(rig.left[0] == 0.0F);
-		CHECK(rig.told() == block);
-
-		rig.write(3 * block);
-		rig.cycle(); // 512 skipped, then a block read
-		CHECK(rig.left[0] == static_cast<float>(3 * block + capacity + 2 * block + 1));
-		CHECK(rig.told() == 3 * block + capacity + 3 * block);
-	}
-	SECTION("past 2^32 frames: owed whole, never a wrapped few") {
-		Rig rig;
-		rig.write(3 * block);
-		rig.cycle();
-		const std::array<std::span<float>, 2> outputs{rig.left, rig.right};
-		const std::array<std::span<const float>, 2> inputs{rig.inLeft, rig.inRight};
-		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
-		rig.code.process(inputs, outputs, block,
-		                 ear::GraphCycle{.startNs = 0,
-		                                 .position = block + jump,
-		                                 .startRawNs = 1000,
-		                                 .facts = {.missed = static_cast<std::uint32_t>(jump / block),
-		                                           .missedCut = static_cast<std::uint32_t>(jump / block),
-		                                           .jumpFrames = jump,
-		                                           .causes = ear::CycleCause::catchUp}});
-		CHECK(rig.left[0] == 0.0F); // the two blocks held skipped
-		for (int i = 0; i < 4; ++i) {
-			rig.write(block);
-			rig.code.process(inputs, outputs, block,
-			                 ear::GraphCycle{.startNs = 0,
-			                                 .position = (2 + static_cast<std::uint64_t>(i)) * block + jump,
-			                                 .startRawNs = 2000});
-			CHECK(rig.left[0] == 0.0F); // every block written is owed
-		}
-		CHECK(rig.told() == block);
-	}
-}
-
-// docs/node-types.md#clock: ear and the library never both correct the same lost time. A library that sees itself
-// starved (everything it wrote told played) realigns its next chunk to now on its own, so a catch-up then owes nothing,
-// and what it writes next plays from its first frame.
-TEST_CASE("A catch-up while the library sees itself starved owes nothing: the refill plays whole", "[sendspin][code]") {
-	Rig rig;
-	rig.write(block);
-	rig.cycle(); // read and told: the library holds nothing it was not told played
-	rig.cycle(); // the feed dry: nothing consumed, nothing to tell
-	REQUIRE(rig.told() == block);
-	rig.driver.lose(4, block);
-	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
-	rig.cycle(); // dry again: no zeros owed either
-	rig.write(block);
-	rig.cycle();
-	CHECK(rig.left[0] == static_cast<float>(block + 1)); // nothing dropped
-	CHECK(rig.told() == 2 * block);
-}
-
-// docs/node-types.md#clock: the library goes untold at most untoldBound of the graph's nominal time. Then the debt is
-// forgotten and nothing more is owed until it is told, and it is told from that cycle even though it lost frames: with
-// nothing owed, nothing told is dropped after.
-TEST_CASE("Untold for untoldBound, the debt is forgotten and the library told even from a cycle that lost frames",
-          "[sendspin][code]") {
-	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
-	std::int64_t at = 0;
-	rig.write(3 * block);
-	rig.cycle(at);
-	REQUIRE(rig.told() == block);
-	// A stall the library cannot refill for: every cycle a catch-up. The first leaves frames untold (a block skipped,
-	// a block read); none is told until the bound.
-	at += 2 * blockNs;
-	const std::int64_t untoldSince = at;
-	std::size_t lossy = 0;
-	for (; at - untoldSince < untoldBound.count(); at += 2 * blockNs, ++lossy) {
-		rig.driver.lose(1, block);
-		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
-		CHECK(rig.told() == block);
-	}
-	REQUIRE(lossy > 1);
-	rig.driver.lose(1, block);
-	REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
-	CHECK(rig.told() == 3 * block); // told at the bound, from a cycle that lost frames
-	// Nothing is owed, so what comes next plays from its first frame.
-	rig.write(block);
-	REQUIRE(rig.cycle(at + 2 * blockNs).whole());
-	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
-	CHECK(rig.told() == 4 * block);
-}
-
-// docs/node-types.md#clock: a burst the block runs every timeout of loses nothing, so nothing is owed, but its cycles
-// start on the driver's own time, behind raw time; told from them, the library would put its next frame behind now and,
-// once the burst had drained what it holds, floor it at now mid-burst. So a cycle that runs while the next is already
-// due tells nothing, as a catch-up does, and the first on time tells all that was read, at its own finish.
-TEST_CASE("A burst the block runs every timeout of owes nothing, and is told only from the first cycle on time",
-          "[sendspin][code]") {
-	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
-	rig.write(3 * block);
-	rig.cycle(0);
-	REQUIRE(rig.told() == block);
-	REQUIRE(rig.rang());
-	// Four cycles of the burst, each whole and each overdue (the last by less): two read, two dry.
-	for (int i = 0; i < 4; ++i) {
-		REQUIRE(rig.cycle((i + 1) * blockNs, 0, (40 - 10 * i) * blockNs).whole());
-		CHECK(rig.told() == block);
-		CHECK_FALSE(rig.rang());
-	}
-	CHECK(rig.left[0] == 0.0F); // the feed ran dry: zeros, owed by nothing
-	rig.write(2 * block);
-	const std::int64_t start = 5 * blockNs;
-	REQUIRE(rig.cycle(start).whole());
-	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // nothing skipped
-	const auto progress = rig.progress.read();
-	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 4 * block); // the burst's two reads and this cycle's block
-	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
-	CHECK(rig.rang());
-}
-
-// docs/node-types.md#clock: a burst of whole cycles that lasts past untoldBound of the graph's nominal time is told
-// from the cycle that reaches it, as a lossy one is.
-TEST_CASE("Overdue for untoldBound, the library is told even from a cycle of the burst", "[sendspin][code]") {
-	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
-	rig.write(capacity);
-	rig.cycle(0);
-	REQUIRE(rig.told() == block);
-	std::int64_t at = blockNs;
-	const std::int64_t untoldSince = at;
-	for (; at - untoldSince < untoldBound.count(); at += blockNs) {
+		CHECK(rig.code.lastSkipped() == 2 * block);
+		CHECK(rig.left[0] == 0.0F); // nothing left to read
+		CHECK(rig.told() == 3 * block);
 		rig.write(block);
-		REQUIRE(rig.cycle(at, 0, 3 * untoldBound.count()).whole());
-		CHECK(rig.told() == block);
+		rig.cycle();
+		CHECK(rig.code.lastSkipped() == 0);
+		CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // what came next plays from its first frame
+		CHECK(rig.told() == 4 * block);
 	}
-	rig.write(block);
-	const std::uint64_t before = rig.told();
-	REQUIRE(rig.cycle(at, 0, 3 * untoldBound.count()).whole());
-	CHECK(rig.told() > before); // told at the bound, though still overdue
-}
-
-// docs/node-types.md#clock: a host whose every cycle loses frames still tells the library, once untoldBound has
-// passed, so a stream starting then leaves the library's priming.
-TEST_CASE("A stream that starts under constant loss is told within untoldBound", "[sendspin][code]") {
-	Rig rig;
-	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
-	std::int64_t at = 0;
-	rig.cycle(at); // the first cycle, before the stream
-	// From the stream's first frames every cycle is a catch-up of a block; the feed holds what it owes and a block to
-	// play.
-	std::int64_t firstRead = -1;
-	std::uint64_t written = 0;
-	while (rig.told() == 0 && at < 2 * untoldBound.count()) {
-		at += 2 * blockNs;
-		rig.write(2 * block);
-		written += 2 * block;
-		rig.driver.lose(1, block);
-		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
-		if (firstRead < 0) firstRead = at;
-	}
-	CHECK(rig.told() == written);
-	CHECK(at - firstRead >= untoldBound.count());
-	CHECK(at - firstRead < untoldBound.count() + 2 * blockNs);
-}
-
-TEST_CASE("Any other cause is a new clock: a driver change, a reposition and the first cycle skip nothing",
-          "[sendspin][code]") {
-	SECTION("a driver change") {
+	SECTION("past 2^32 frames: what it holds, never a wrapped few") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
-		rig.driver.changeDriver();
-		REQUIRE(rig.cycle().causes == ear::CycleCause::driverChange);
-		CHECK(rig.told() == 2 * block);
-		CHECK(rig.left[0] == static_cast<float>(block + 1));
-	}
-	SECTION("a reposition, ahead or back") {
-		for (const std::int64_t by : {std::int64_t{block} + 1, -std::int64_t{block}}) {
-			Rig rig;
-			rig.write(3 * block);
-			rig.cycle();
-			rig.cycle();
-			rig.driver.reposition(by);
-			REQUIRE(rig.cycle().causes == ear::CycleCause::reposition);
-			CHECK(rig.told() == 3 * block);
-			CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
-		}
-	}
-	SECTION("the first cycle knows no gap") {
-		Rig rig;
-		rig.write(3 * block);
-		rig.driver.reposition(block);
-		REQUIRE(rig.cycle().causes == ear::CycleCause::start);
-		CHECK(rig.told() == block);
+		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
+		rig.scripted({.missed = static_cast<std::uint32_t>(jump / block),
+		              .missedCut = static_cast<std::uint32_t>(jump / block),
+		              .jumpFrames = jump,
+		              .causes = ear::CycleCause::catchUp});
+		CHECK(rig.code.lastSkipped() == 2 * block);
+		CHECK(rig.left[0] == 0.0F);
+		rig.write(block);
+		rig.scripted({});
+		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+		CHECK(rig.told() == 4 * block);
 	}
 }
 
@@ -480,28 +286,227 @@ TEST_CASE("A pause skips what the feed holds of it, as a catch-up does", "[sends
 	rig.cycle();
 	rig.driver.lose(2, block, false);
 	REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
+	CHECK(rig.code.lastSkipped() == 2 * block);
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // two blocks skipped, the third read
+	CHECK(rig.told() == 4 * block);
 	rig.write(block);
 	rig.cycle();
 	CHECK(rig.told() == 5 * block);
 }
 
-TEST_CASE("A catch-up whose feed runs dry owes its zeros too, and is told once paid", "[sendspin][code]") {
+TEST_CASE("Any other cause is a new clock: a driver change, a reposition, the first cycle, a drive and the cycle after "
+          "an oversized one skip nothing",
+          "[sendspin][code]") {
+	SECTION("a driver change") {
+		Rig rig;
+		rig.write(3 * block);
+		rig.cycle();
+		rig.driver.changeDriver();
+		REQUIRE(rig.cycle().causes == ear::CycleCause::driverChange);
+		CHECK(rig.code.lastSkipped() == 0);
+		CHECK(rig.told() == 2 * block);
+		CHECK(rig.left[0] == static_cast<float>(block + 1));
+	}
+	SECTION("a reposition, ahead or back") {
+		for (const std::int64_t by : {std::int64_t{block} + 1, -std::int64_t{block}}) {
+			Rig rig;
+			rig.write(3 * block);
+			rig.cycle();
+			rig.cycle();
+			rig.driver.reposition(by);
+			const ear::CycleFacts facts = rig.cycle();
+			REQUIRE(facts.causes == ear::CycleCause::reposition);
+			REQUIRE(facts.jumpFrames != 0);
+			CHECK(rig.code.lastSkipped() == 0);
+			CHECK(rig.told() == 3 * block);
+			CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
+		}
+	}
+	SECTION("the first cycle knows no gap") {
+		Rig rig;
+		rig.write(3 * block);
+		rig.driver.reposition(block);
+		REQUIRE(rig.cycle().causes == ear::CycleCause::start);
+		CHECK(rig.code.lastSkipped() == 0);
+		CHECK(rig.told() == block);
+	}
+	SECTION("a drive, and the cycle after an oversized one, each stating a jump") {
+		for (const ear::CycleCause cause : {ear::CycleCause::drive, ear::CycleCause::oversized}) {
+			Rig rig;
+			rig.write(3 * block);
+			rig.scripted({});
+			rig.scripted({.jumpFrames = block, .causes = cause});
+			CHECK(rig.code.lastSkipped() == 0);
+			CHECK(rig.left[0] == static_cast<float>(block + 1));
+			CHECK(rig.told() == 2 * block);
+		}
+	}
+}
+
+// docs/node-types.md#clock: a clear ends the stream, so a catch-up on the cycle that applies it skips nothing of the
+// stream after it.
+TEST_CASE("A catch-up on the cycle that applies a clear skips nothing of the next stream", "[sendspin][code]") {
 	Rig rig;
 	rig.write(2 * block);
 	rig.cycle();
-	REQUIRE(rig.rang());
+	rig.feed.clear();
+	rig.write(2 * block); // the next stream, written after the clear
 	rig.driver.lose(1, block);
-	rig.cycle(); // the block it held skipped; this cycle's zeros owed
-	CHECK(rig.left[0] == 0.0F);
-	rig.cycle(); // nothing written: these zeros owed too
+	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
+	CHECK(rig.code.lastHeldAtStart() == 2 * block);
+	CHECK(rig.code.lastSkipped() == 0);
+	CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
+	CHECK(rig.told() == 2 * block); // the first stream's block and the next's first
+}
+
+// docs/node-types.md#clock: a cycle that began while the next was already due is one of a catch-up's burst, behind now
+// until the burst ends, so it tells nothing, whether the block runs every timeout (whole, overdue) or misses some (a
+// catch-up, overdue), and it still skips what its jump states. The first cycle on time tells every frame of the burst,
+// dated by its own nominal start.
+TEST_CASE("A burst of overdue cycles tells nothing, and the first on time tells every frame of it, dated nominally",
+          "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	rig.write(6 * block);
+	rig.cycle(0);
+	REQUIRE(rig.told() == block);
+	REQUIRE(rig.rang());
+	// Four cycles of the burst, each overdue (the last by less): two whole, then a catch-up of a block, then whole.
+	for (int i = 0; i < 4; ++i) {
+		if (i == 2) rig.driver.lose(1, block);
+		const ear::CycleFacts facts = rig.cycle((i + 1) * blockNs, 0, (40 - 10 * i) * blockNs);
+		REQUIRE(facts.causes == (i == 2 ? ear::CycleCauses(ear::CycleCause::catchUp) : ear::CycleCauses{}));
+		CHECK(rig.code.lastSkipped() == (i == 2 ? block : 0));
+		CHECK(rig.told() == block);
+		CHECK_FALSE(rig.rang());
+	}
+	const std::int64_t start = 6 * blockNs;
+	REQUIRE(rig.cycle(start).whole());
+	const auto progress = rig.progress.read();
+	REQUIRE(progress.has_value());
+	CHECK(progress->totalFrames == 6 * block); // the burst's four reads and its skip, and this cycle's block
+	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
+	CHECK(rig.rang());
+	CHECK(rig.code.clamped() == 0);
+}
+
+TEST_CASE("One overdue cycle under load tells nothing, and the next on time tells it", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	rig.write(3 * block);
+	rig.cycle(0);
+	REQUIRE(rig.rang());
+	REQUIRE(rig.cycle(blockNs, 0, 1000).whole()); // the next due a microsecond before it began
 	CHECK(rig.told() == block);
 	CHECK_FALSE(rig.rang());
-	rig.write(3 * block);
-	rig.cycle(); // two blocks skipped, the third read
-	CHECK(rig.left[0] == static_cast<float>(4 * block + 1));
-	CHECK(rig.told() == 5 * block);
-	CHECK(rig.rang());
+	REQUIRE(rig.cycle(2 * blockNs).whole());
+	CHECK(rig.told() == 3 * block);
+	CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(2 * blockNs, block, {}));
+}
+
+// docs/node-types.md#clock: with no debt there is nothing for a lossy cycle to wait for. A host whose every cycle loses
+// frames, each on time, tells the library every cycle.
+TEST_CASE("A cycle that lost frames, on time, tells", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	std::int64_t at = 0;
+	rig.cycle(at);
+	std::uint64_t written = 0;
+	for (int i = 0; i < 8; ++i) {
+		at += 2 * blockNs;
+		rig.write(2 * block);
+		written += 2 * block;
+		rig.driver.lose(1, block);
+		REQUIRE(rig.cycle(at).causes == ear::CycleCause::catchUp);
+		CHECK(rig.code.lastSkipped() == block);
+		CHECK(rig.told() == written);
+		CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(at, block, {}));
+	}
+}
+
+// docs/node-types.md#clock: untold for untoldBound of the graph's nominal time, the library is told from the next cycle
+// even if it is overdue, dated by when that cycle really ran (GraphCycle::ranRawNs); the on-time report after it is
+// clamped to it, never stepping back, and the one after that is dated nominally again.
+TEST_CASE("Overdue for untoldBound, the library is told from a cycle of the burst, dated by when it ran, and the next "
+          "report is clamped to it",
+          "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	const std::int64_t overdue = 3 * untoldBound.count();
+	rig.write(capacity);
+	rig.cycle(0);
+	REQUIRE(rig.told() == block);
+	std::int64_t at = blockNs;
+	const std::int64_t untoldSince = at;
+	std::uint64_t deferred = 0;
+	for (; at - untoldSince < untoldBound.count(); at += blockNs, ++deferred) {
+		rig.write(block);
+		REQUIRE(rig.cycle(at, 0, overdue).whole());
+		CHECK(rig.told() == block);
+	}
+	REQUIRE(deferred > 1);
+	rig.write(block);
+	REQUIRE(rig.cycle(at, 0, overdue).whole());
+	const std::uint64_t forcedTotal = block + (deferred + 1) * block;
+	CHECK(rig.told() == forcedTotal);                // told at the bound, though still overdue
+	const std::int64_t ran = at + blockNs + overdue; // the next cycle's due time plus how long it was overdue
+	const std::int64_t forced = ear::FrameClock(rate).heardRawNs(ran, block, {});
+	CHECK(rig.progress.read()->finishRawNs == forced);
+	CHECK(rig.code.clamped() == 0);
+	// The first cycle on time after it began within a cycle before the forced one ran: dated nominally it would step
+	// back, so it is clamped to the forced finish.
+	rig.write(block);
+	const std::int64_t onTime = ran - blockNs / 2;
+	REQUIRE(rig.cycle(onTime).whole());
+	CHECK(rig.told() == forcedTotal + block);
+	CHECK(rig.progress.read()->finishRawNs == forced);
+	CHECK(rig.code.clamped() == 1);
+	// Then nominal again.
+	rig.write(block);
+	REQUIRE(rig.cycle(onTime + blockNs).whole());
+	CHECK(rig.progress.read()->finishRawNs == ear::FrameClock(rate).heardRawNs(onTime + blockNs, block, {}));
+	CHECK(rig.code.clamped() == 1);
+}
+
+// docs/node-types.md#clock: the clamp acts only on the report after one the bound forced. Through bursts below the
+// bound, catch-ups, dry cycles, a pause and a following card's latency changing, every report is the cycle's own
+// nominal finish, exactly: even one behind the last, when what lies downstream shrank, is told as it is.
+TEST_CASE("Below the bound the clamp never acts: every report is its cycle's nominal finish", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	std::int64_t at = 0;
+	std::uint32_t downstream = 4 * block + 32;
+	std::size_t reports = 0;
+	std::size_t backwards = 0;
+	std::int64_t lastFinish = 0;
+	std::uint64_t lastTold = 0;
+	const auto check = [&](const ear::CycleFacts& facts, std::int64_t overdueNs) {
+		INFO("the cycle at " << at << " ns, causes " << int{facts.causes.bits()} << ", overdue " << overdueNs);
+		if (rig.told() == lastTold) return;
+		++reports;
+		CHECK(overdueNs == 0);
+		const std::int64_t finish = rig.progress.read()->finishRawNs;
+		CHECK(finish == ear::FrameClock(rate).heardRawNs(at, block, {downstream, downstream}));
+		if (finish < lastFinish) ++backwards;
+		lastFinish = finish;
+		lastTold = rig.told();
+	};
+	for (int round = 0; round < 40; ++round) {
+		rig.write(8 * block);
+		// On time, a short burst (overdue, then cut once), a catch-up on time, a cycle the feed leaves short, a pause.
+		const std::array<std::int64_t, 6> overdue{0, 9 * blockNs, 4 * blockNs, 0, 0, 0};
+		for (std::size_t i = 0; i < overdue.size(); ++i) {
+			if (i == 2 || i == 3) rig.driver.lose(1, block);
+			if (i == 5) rig.driver.lose(1, block, false);
+			at += blockNs;
+			if (i == 4) rig.feed.skip(rig.feed.held() - block / 2); // half a block left: this cycle reads short
+			check(rig.cycle(at, downstream, overdue[i]), overdue[i]);
+		}
+		if (round == 20) downstream = 32; // the card that followed is gone: what lies downstream shrinks
+	}
+	CHECK(reports == 3 * 40);
+	CHECK(backwards == 1); // at the shrink, told as it is
+	CHECK(rig.code.clamped() == 0);
 }
 
 TEST_CASE("Nothing read rings nothing, and plays zeros", "[sendspin][code]") {
@@ -529,7 +534,7 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	CHECK_FALSE(rig.rang());
 	CHECK(rig.left[0] == 0.0F);
 
-	// A catch-up before the next stream plays owes nothing: it has no place on the clock yet.
+	// A catch-up before the next stream plays has nothing to skip.
 	rig.driver.lose(1, block);
 	rig.cycle();
 	rig.write(block);
@@ -537,20 +542,19 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 	CHECK(rig.progress.read()->totalFrames == 2 * block);
 
-	// One while the library holds frames is owed by what comes next; a clear forgets it, and the stream after it plays
-	// from its first frame.
+	// One while the feed holds frames skips them; nothing is owed, so the stream after a clear plays from its first
+	// frame.
 	rig.write(block);
 	rig.driver.lose(2, block);
-	rig.cycle(); // the block held skipped, the rest owed
+	rig.cycle(); // the block held skipped
+	CHECK(rig.code.lastSkipped() == block);
+	CHECK(rig.progress.read()->totalFrames == 3 * block);
 	rig.write(block);
-	rig.cycle();
-	CHECK(rig.left[0] == 0.0F); // owed
-	CHECK(rig.progress.read()->totalFrames == 2 * block);
 	rig.feed.clear();
 	rig.write(block);
 	rig.cycle();
 	CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
-	CHECK(rig.progress.read()->totalFrames == 5 * block);
+	CHECK(rig.progress.read()->totalFrames == 4 * block);
 }
 
 TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {
