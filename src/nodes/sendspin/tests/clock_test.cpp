@@ -121,14 +121,16 @@ public:
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
-		// The one planned stall, once armed: this cycle holds the data thread, so the next states the catch-up. The feed's
-		// writer, held from the arming, is let go at the first cycle after the stall that lost nothing (the burst's end),
-		// so the burst always drains the feed and leaves a remainder to pay.
-		if (const int armed = armed_.load(std::memory_order_acquire); armed > 0) {
-			ear::test::Stalls& stalls = armed == 1 ? shortStall_ : longStall_;
-			if (stalls(armedCycles_++, frames, kRate)) stalledAt_.store(at, std::memory_order_release);
-			else if (stalledAt_.load(std::memory_order_relaxed) != kNone && cycle.facts.whole() &&
-			         heldFeed_ != nullptr) {
+		// The one planned stall, once watched: the probe upstream stalls a graph cycle the block never runs, so the cycle
+		// before this one is the last before the stall and this one states the catch-up. The feed's writer, held from the
+		// arming, is let go at the first cycle after the stall that lost nothing (the catch-up's end), so the catch-up
+		// always drains the feed and leaves a remainder to pay.
+		if (const std::atomic<std::uint64_t>* watched = watched_.load(std::memory_order_acquire); watched != nullptr) {
+			const std::uint64_t stalledIn = watched->load(std::memory_order_acquire);
+			if (stalledAt_.load(std::memory_order_relaxed) == kNone) {
+				if (stalledIn != 0 && cycle.facts.graphCycle > stalledIn)
+					stalledAt_.store(at - 1, std::memory_order_release);
+			} else if (cycle.facts.whole() && heldFeed_ != nullptr) {
 				heldFeed_->releaseWriter();
 				heldFeed_ = nullptr;
 			}
@@ -183,22 +185,18 @@ public:
 		waiter_.wake();
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
-	/// Main thread, once: from the next cycle the data thread stalls once, for kShortStall or kLongStall (the judge's
-	/// induced-stall tooling, docs/testing.md#making-the-rare-event), with `feed`'s writer held until the catch-up's
-	/// burst has ended.
-	void armStall(bool longStall, Feed& feed) {
+	/// Main thread, once, before the stall is armed: watches for the graph cycle a StallProbe stalls in (`stalledIn`, 0
+	/// until it has), with `feed`'s writer held until the catch-up has ended.
+	void watchStall(const std::atomic<std::uint64_t>& stalledIn, Feed& feed) {
 		feed.holdWriter();
 		heldFeed_ = &feed;
-		armed_.store(longStall ? 2 : 1, std::memory_order_release);
+		watched_.store(&stalledIn, std::memory_order_release);
 	}
-	/// The cycle that stalled, once it has.
+	/// The last cycle the block ran before the stall, once the next has run.
 	std::optional<std::size_t> stalledAt() const {
 		const std::size_t at = stalledAt_.load(std::memory_order_acquire);
 		return at == kNone ? std::nullopt : std::optional<std::size_t>(at);
 	}
-	/// The planned stalls: 200 ms, past the feed's 2048 frames (43 ms) and past a decoded chunk (96 ms), and 1 s.
-	static constexpr std::chrono::milliseconds kShortStall{200};
-	static constexpr std::chrono::milliseconds kLongStall{1000};
 	/// The count itself, for what stamps an event with the cycles recorded when it came.
 	const std::atomic<std::size_t>& counter() const { return count_; }
 	const Cycle& at(std::size_t index) const { return cycles_[index]; }
@@ -212,11 +210,8 @@ private:
 	std::vector<Cycle> cycles_;
 	std::atomic<std::size_t> count_{0};
 	static constexpr std::size_t kNone = ~std::size_t{0};
-	std::atomic<int> armed_{0}; // 0, or 1 for the short stall and 2 for the long
-	ear::test::Stalls shortStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kShortStall)}})};
-	ear::test::Stalls longStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kLongStall)}})};
-	Feed* heldFeed_ = nullptr;    // published by armed_; the data thread's after
-	std::size_t armedCycles_ = 0; // the data thread's: cycles run since armed, the plan's index
+	std::atomic<const std::atomic<std::uint64_t>*> watched_{nullptr}; // a StallProbe's stalled graph cycle
+	Feed* heldFeed_ = nullptr;                                        // published by watched_; the data thread's after
 	std::atomic<std::size_t> stalledAt_{kNone};
 };
 
@@ -506,6 +501,99 @@ struct TestCard {
 	Registry registry;
 	std::unique_ptr<PortBlock> block;
 	std::unique_ptr<EngineCompanion> card;
+	std::vector<pw_proxy*> links;
+};
+
+/// A stall of the data thread whose lost cycles the node's block certainly misses, on any host. A block of its own,
+/// linked into the node's `to` inputs so it runs first in every cycle, stalls once inside its process when armed: the
+/// driver's timer becomes ready during the sleep, before the eventfd the probe writes as it finishes, so that cycle is
+/// cut short straight after the probe and the node's block never runs it (docs/engine.md#the-one-data-loop-and-invokes).
+/// The driver then catches the stalled time up in a burst of timeouts (docs/engine.md#the-internal-clock), and whether
+/// the node's block runs a burst's cycle is the host's: it runs it when its own eventfd is dispatched before the
+/// timeout the driver has already re-armed in the past, so one host runs it every other timeout and another every
+/// timeout, losing nothing. So the probe makes the loss certain the same way: while a cycle's next timeout is already
+/// due (`GraphCycle::nextNs` at or before now), it holds the cycle 1 ms, so that cycle too is cut short after it and
+/// the block misses it. 1 ms is far past any wait for a due timer's interrupt and well under a block (5.3 ms), so the
+/// burst still closes on raw time, by 4.3 ms a cycle; its first cycle whose next timeout is not yet due runs whole, and
+/// the node's block states one catch-up of the whole stall and burst. The probe writes silence, as an unlinked input
+/// reads.
+struct StallProbe {
+	/// The planned stalls: 200 ms, past the feed's 2048 frames (43 ms) and past a decoded chunk (96 ms), and 1 s.
+	static constexpr std::chrono::milliseconds kShortStall{200};
+	static constexpr std::chrono::milliseconds kLongStall{1000};
+	static constexpr std::chrono::milliseconds kBurstHold{1};
+
+	class Code final : public AudioCode {
+	public:
+		void prepare(const AudioFormat&) override {}
+		void release() noexcept override {}
+		void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+		             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
+			for (const std::span<float>& out : outputs) std::ranges::fill(out.first(frames), 0.0F);
+			const int armed = armed_.load(std::memory_order_acquire);
+			if (armed == 0 || caughtUp_) return;
+			if (!stalled_) {
+				(armed == 1 ? shortStall_ : longStall_)(0, frames, kRate);
+				stalled_ = true;
+				stalledIn.store(cycle.facts.graphCycle, std::memory_order_release);
+				return;
+			}
+			const std::int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+										 std::chrono::steady_clock::now().time_since_epoch())
+			                             .count(); // CLOCK_MONOTONIC on Linux, as nextNs
+			if (cycle.nextNs <= now) {
+				burstHolds_(held_++, frames, kRate);
+				return;
+			}
+			caughtUp_ = true;
+		}
+		/// Main thread, once: the next cycle stalls, for kShortStall or kLongStall.
+		void arm(bool longStall) { armed_.store(longStall ? 2 : 1, std::memory_order_release); }
+		/// The graph cycle it stalled in, once it has; 0 before.
+		std::atomic<std::uint64_t> stalledIn{0};
+		/// Cycles it held in the burst, once caught up; any thread after stalledIn, read once the node ran whole.
+		std::size_t burstHolds() const { return burstHolds_.made(); }
+
+	private:
+		std::atomic<int> armed_{0}; // 0, or 1 for the short stall and 2 for the long
+		ear::test::Stalls shortStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kShortStall)}})};
+		ear::test::Stalls longStall_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kLongStall)}})};
+		ear::test::Stalls burstHolds_{
+			ear::test::StallPlan::every(1, 0, ear::test::Stalls::kKept, ear::test::StallLength::of(kBurstHold))};
+		bool stalled_ = false;  // the data thread's
+		bool caughtUp_ = false; // the data thread's
+		std::size_t held_ = 0;  // the data thread's: the burst's holds so far, the plan's index
+	};
+
+	explicit StallProbe(Rig& rig) : engine(*rig.engine), blockEvents(rig.waiter), registry(*rig.engine, rig.waiter) {
+		block = rig.blocks.make("probe", Ports{{{Direction::output, "out", {"left", "right"}}}}, kFormat, blockEvents);
+		code.prepare(kFormat);
+		REQUIRE(ear::testing::driveNow(*block, &code));
+		REQUIRE(rig.waiter.until([&] { return blockEvents.isReady; }));
+		for (const char* side : {"left", "right"}) link(std::string("out.") + side, std::string("to.") + side);
+		REQUIRE(rig.waiter.until([&] {
+			const auto node = registry.id("probe");
+			return node && registry.activeLinksOf(*node) == 2;
+		}));
+	}
+	~StallProbe() {
+		for (pw_proxy* made : links) pw_proxy_destroy(made);
+		ear::testing::silenceOrAbort(*block);
+	}
+	void link(const std::string& from, const std::string& to) {
+		pw_properties* props =
+			pw_properties_new(PW_KEY_LINK_OUTPUT_NODE, "probe", PW_KEY_LINK_OUTPUT_PORT, from.c_str(),
+		                      PW_KEY_LINK_INPUT_NODE, "clock", PW_KEY_LINK_INPUT_PORT, to.c_str(), nullptr);
+		links.push_back(static_cast<pw_proxy*>(pw_core_create_object(
+			engine.core(), "link-factory", PW_TYPE_INTERFACE_Link, PW_VERSION_LINK, &props->dict, 0)));
+		pw_properties_free(props);
+		REQUIRE(links.back() != nullptr);
+	}
+	Engine& engine;
+	Code code;
+	BlockEvents blockEvents;
+	Registry registry;
+	std::unique_ptr<PortBlock> block;
 	std::vector<pw_proxy*> links;
 };
 
@@ -1188,12 +1276,14 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 
 // docs/node-types.md#clock: a stall past the feed owes the whole lost time, pays what the feed did not hold from what
 // the library writes next, and tells the library only from a cycle that lost nothing once paid, so ear and the library
-// never both correct it. A stall of the data thread (the judge's induced-stall tooling), with the feed's writer held
-// through the catch-up's burst so a remainder is always left to pay, is judged from the tap's ramp against the server's
+// never both correct it. A stall of the data thread whose lost cycles the node's block certainly misses (StallProbe,
+// upstream of it), with the feed's writer held through the catch-up's burst so a remainder is always left to pay, is
+// judged from the tap's ramp against the server's
 // stamps through the time filter: back within a few blocks of the burst's end with no correction of the library's
 // own, no silence after, the library never told more than it wrote, every report exact, then 750 cycles within 1 ms.
 static void judgeStall(bool longStall) {
 	Rig rig;
+	StallProbe probe(rig);
 	rig.play(kStreamSeconds);
 	Judge judge(rig, rig.log);
 	INFO("the node said:\n" << rig.notes.all());
@@ -1204,7 +1294,8 @@ static void judgeStall(bool longStall) {
 			return judge.errors.judged >= 100;
 		},
 		60s));
-	rig.tap.armStall(longStall, rig.feed);
+	rig.tap.watchStall(probe.code.stalledIn, rig.feed);
+	probe.code.arm(longStall);
 	REQUIRE(rig.waiter.until([&] { return rig.tap.stalledAt().has_value(); }, 10s));
 	const std::size_t stalled = *rig.tap.stalledAt();
 	const std::size_t judgedBefore = judge.errors.judged;
@@ -1218,9 +1309,9 @@ static void judgeStall(bool longStall) {
 	INFO(describe(judge.errors));
 	REQUIRE(judge.errors.judged >= judgedBefore + kPlannedCycles);
 
-	// The stall's end: the driver catches the stalled time up in a burst of cycles, each cut short before the block and
-	// stated as a catch-up by the next it runs (docs/engine.md#the-internal-clock); the burst ends at the first whole
-	// cycle, and together its jumps lie past the feed.
+	// The stall's end: the driver catches the stalled time up in a burst of timeouts (docs/engine.md#the-internal-clock),
+	// each of whose cycles the probe cut short before the block, so the block's next cycle states one catch-up of them
+	// all; the burst ends at the first whole cycle, and together its jumps lie past the feed.
 	std::size_t end = stalled + 1;
 	std::int64_t lostFrames = 0;
 	std::string burst;
@@ -1230,7 +1321,7 @@ static void judgeStall(bool longStall) {
 		if (facts.causes.has(CycleCause::catchUp)) lostFrames += facts.jumpFrames;
 	}
 	INFO("stalled in cycle " << stalled << "; the burst after it (causes:jump):" << burst << "; " << lostFrames
-	                         << " frames lost");
+	                         << " frames lost; the probe held " << probe.code.burstHolds() << " of the burst's cycles");
 	REQUIRE(end > stalled + 1);
 	REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
 	const Cycle& caughtUp = rig.tap.at(end);

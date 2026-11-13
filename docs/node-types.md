@@ -359,10 +359,11 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   clock: nothing is owed. A skipped frame not counted would cost 25 ms (the library sees -5.3 ms,
   drops a chunk and inserts silence).
 - The library is told what was skipped and read only from a cycle that lost nothing, once nothing
-  is owed. *Why:* the driver catches a stall up in a burst that runs the block every other timeout
-  ([engine.md](engine.md#the-internal-clock)), whose cycles start on the driver's own time, behind
-  raw time until the burst ends; and the burst drains the feed faster than the library refills
-  it, so most of a long stall is owed when the burst ends. The library takes what it is told played
+  is owed. *Why:* the driver catches a stall up in a burst of timeouts, of which the block runs
+  as many as the host lets it, from none to every one ([engine.md](engine.md#the-internal-clock)),
+  whose cycles start on the driver's own time, behind raw time until the burst ends; and the
+  burst drains the feed faster than the library refills it, so most of a long stall is owed when
+  the burst ends. The library takes what it is told played
   from what it wrote (clamping at zero with a warning), so a frame dropped after it was told would
   be taken from audio still to play, and a remainder never dropped it would catch up itself with a
   hard sync. Told once paid, it is told exactly what ear took, with nothing left to correct.
@@ -380,8 +381,9 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   burst drained, one per feed less a block of the remainder paid (a cycle that skips all the feed
   holds plays a block of zeros, owed too), and one for the first frame on time to reach the
   outputs. The clock tests prove it on the real server with stalls of the data thread of 200 ms and
-  1 s, the feed's writer held through the catch-up's burst so a remainder is always left to pay,
-  and the library's two timing patches (below) keep it from correcting what needs none.
+  1 s, made upstream of the block so it misses the stall and the whole burst on any host, the
+  feed's writer held through the catch-up's burst so a remainder is always left to pay, and the
+  library's two timing patches (below) keep it from correcting what needs none.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it

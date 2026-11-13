@@ -280,9 +280,14 @@ it was. The timeouts it then fires back to back (the timer catching up) each add
 time barely moves, so the next reset steps the position **back** by up to about 440 frames, and the
 burst leaves it up to 10 ms ahead of raw time; the loop, at its least bandwidth, then slews the whole
 graph by hundreds of ppm for tens of seconds (measured: +190 frames and -230 ppm 9 s after one 20 ms
-stall). Without the reset the driver catches up on its own timer: the blocks run about every other
-timeout of the burst, each cycle they run skips one block, the position never steps back, and the
-phase to the raw clock is kept within a frame after stalls of up to a few seconds.
+stall). Without the reset the driver catches up on its own timer, a block a timeout, the position
+never steps back, and the phase to the raw clock is kept within a frame after stalls of up to a few
+seconds. Which of the burst's cycles a block runs is the host's: each timeout re-arms the timer
+already due, after it has triggered the graph, so a block runs a cycle only when its wake is
+dispatched before that timer's. On the dev host the blocks run about every other timeout, each
+cycle they run skipping one block; on a GitHub runner they ran every timeout of a 200 ms and a 1 s
+stall, losing nothing. Only the stalled cycle's own cut is certain
+([the one data loop](#the-one-data-loop-and-invokes)).
 
 **When it stops.** The dummy stops (state `IDLE`) only when it drives no node at all; a node made
 inactive (`pw_filter_set_active(false)`) is skipped and the driver runs on, so that node, active

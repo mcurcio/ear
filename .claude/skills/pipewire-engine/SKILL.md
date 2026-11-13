@@ -111,8 +111,10 @@ the next reset steps the position *back* by up to about 440 frames, and the burs
 bandwidth, slews the whole graph by hundreds of ppm for tens of seconds to work it off (measured:
 +190 frames and -230 ppm 9 s after one 20 ms stall; a sendspin stream then interpolates frames,
 and a reset's forward jump is any number of frames, not whole blocks). Without the reset the
-driver catches up on its own timer: the blocks run about every other timeout of the burst, and
-each cycle they run skips one block; after stalls of up to a few seconds the position never
+driver catches up on its own timer, a block a timeout; which of the burst's cycles a block runs is
+the host's (about every other one on the dev host, each skipping one block; every one, losing
+nothing, on a GitHub runner), so a test that needs them lost cuts them itself (`StallProbe` in the
+sendspin clock tests); after stalls of up to a few seconds the position never
 steps back and the phase to the raw clock is kept to within a frame (the test "After data-thread
 stalls past 10 ms ...", and S2's `stepsBack == 0`). PipeWire's non-tracking driver never resets
 either. **The limit:** the catch-up burst after any pause is inherent to `node-driver.c` whatever

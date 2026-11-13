@@ -111,9 +111,10 @@ that means to an operator:
   from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
   `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
   from its next writes (a source's rule) would catch the same time up twice: the library re-syncs on its own at its next
-  chunk. **A stall's catch-up is paid before it is told:** the driver catches a stall up in a burst that runs the block
-  every other timeout (`docs/engine.md#the-internal-clock`), so a 200 ms stall is 18 one-block catch-ups whose cycles
-  start on the driver's time, behind raw time, and the burst drains the feed faster than the library refills it. So the
+  chunk. **A stall's catch-up is paid before it is told:** the driver catches a stall up in a burst of timeouts, of which
+  the block runs as many as the host lets it (`docs/engine.md#the-internal-clock`: every other one on the dev host, so a
+  200 ms stall is 18 one-block catch-ups; every one, losing nothing, on a GitHub runner), whose cycles start on the
+  driver's time, behind raw time, and the burst drains the feed faster than the library refills it. So the
   code owes each catch-up's (and pause's) whole jump, and, while it is untold, each short cycle's zeros; it skips what is
   owed from the feed as the library refills it, before reading, and tells the library only from a cycle that lost
   nothing once nothing is owed. **ear and the library never both correct the same lost time:** the library realigns
@@ -124,7 +125,8 @@ that means to an operator:
   cycle would leave the library in its priming for good).
   Nothing is owed before a stream plays, and a clear forgets it. The library is never told a frame ear did not take
   from what it wrote, and has nothing left to correct: the stall tests (200 ms and 1 s, the feed's writer held through
-  the burst by `Feed::holdWriter()` so a remainder is certain) require no correction of its own, back on the server's
+  the burst by `Feed::holdWriter()` so a remainder is certain, the stall made by a probe upstream of the block that cuts
+  the burst's cycles too, so the block misses them on any host) require no correction of its own, back on the server's
   stamps within a few blocks of the burst's end.
   Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed for a change
   of driver.
@@ -229,7 +231,12 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   with or without the two timing patches (checked on `ConnectionLifecycle.SilentEstablishedPeerIsDropped`), so
   they are this environment's or the listener patch's, not the timing patches'. Every player test passes.
 - The clock test `A 200 ms stall past the feed ...` proves ear's payment every run; with the payment reverted it fails
-  (2 runs of 3: back 8 and 18 blocks after the burst's end, two to five library corrections).
+  (2 runs of 3: back 8 and 18 blocks after the burst's end, two to five library corrections; measured before the stall
+  moved into a probe upstream, when the block ran every other cycle of the burst).
+- **The stall tests once took the host's burst for granted** and stalled inside the node's own block: on a GitHub runner
+  the block then ran every cycle of the burst, nothing was lost, and the test failed finding no catch-up after the stall
+  (`end > stalled + 1`, 1183 > 1183). A stall a test needs lost must be made upstream of the block that must lose it, and
+  the burst's cycles cut on purpose (`StallProbe`, `docs/testing.md#a-writers-own-event`).
 - **Draft upstream report** (not filed; the owner sends it):
 
   > **Title:** After a sink's catch-up, the sync task floors a playtime that is only behind, and skips whole chunks past

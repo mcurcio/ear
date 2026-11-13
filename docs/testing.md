@@ -156,7 +156,13 @@ it began, and what it read from the feed (`SendspinCode::lastHeld()`, `lastHeldA
 the clock tests work out from each cycle's facts and those, by the code's rule on the library's
 view, what it skipped for the graph's lost time and when it told
 ([node-types.md](node-types.md#clock)), and hold each ramp step and each report of what played
-against that. A stall test makes its remainder certain rather than likely: `Feed::holdWriter()`
+against that. A stall test makes its catch-up certain rather than likely: the stall is made by a
+probe block linked upstream of the node's (`StallProbe`), whose stalled cycle is cut short before
+the node's block runs, and which holds each cycle of the driver's catch-up burst 1 ms while its next
+timeout is already due, so each of those is cut short before the block too; the block then states
+one catch-up of the stall and the burst, where the burst's own cycles would be run or lost as the
+host's timing fell ([engine.md](engine.md#the-internal-clock)). It makes its remainder certain the
+same way: `Feed::holdWriter()`
 makes the writer's writes take nothing until `releaseWriter()` (which wakes it), so with the writer
 held from the arming until the first whole cycle after the stall the catch-up's burst always drains
 the feed, and the test requires a remainder above 0 before it judges the payment. The network gap
