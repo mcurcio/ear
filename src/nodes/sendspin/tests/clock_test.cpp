@@ -729,6 +729,15 @@ public:
 		return static_cast<std::size_t>(
 			std::ranges::count_if(disturbed_, [&](std::size_t at) { return at >= from && at < to; }));
 	}
+	/// The first cycle from `from` on that the host disturbed (the ledger did not call it clean) or left dry, read so
+	/// far.
+	std::optional<std::size_t> firstDisturbedFrom(std::size_t from) const {
+		std::optional<std::size_t> first;
+		for (const std::vector<std::size_t>* cycles : {&disturbed_, &dry_})
+			for (const std::size_t at : *cycles)
+				if (at >= from && (!first || at < *first)) first = at;
+		return first;
+	}
 	/// Dry cycles from cycle `from` up to and not including `to`, read so far.
 	std::size_t dryBetween(std::size_t from, std::size_t to) const {
 		return static_cast<std::size_t>(
@@ -1345,6 +1354,16 @@ static void judgeStall(bool longStall) {
 	const auto& ramp = judge.ramp();
 	const auto back = std::ranges::find_if(
 		ramp, [&](const Judge::RampSeen& seen) { return seen.index >= end && std::abs(seen.errorUs) <= kBandUs; });
+	// What the library does about the stall is judged up to the first cycle from the stream's return to the stamps on
+	// that the host disturbed or left dry, and at most kPlannedCycles past the burst's end: after such a cycle the
+	// library may answer the host in its own steps and silence (a host that skips 117 ms 1600 cycles on made it add
+	// 2269 frames of silence 107 cycles later), which the run's rules judge (checkSync) and the stall did not cause.
+	// Before it, everything the library did followed the stall alone. The dry cycles before the return are the stall's
+	// own: the catch-up drained the feed.
+	std::size_t stallReach = end + kPlannedCycles;
+	if (back != ramp.end()) {
+		if (const auto host = judge.firstDisturbedFrom(back->index + 1)) stallReach = std::min(stallReach, *host);
+	}
 	// The library corrects nothing: ear skipped exactly the lost time and told it exactly. A correction is a step of
 	// the library's own at a cycle's edge or inside one; its soft sync's blends are not (a step of at most 3, at most
 	// once a chunk, as checkStep counts them).
@@ -1352,7 +1371,7 @@ static void judgeStall(bool longStall) {
 	std::size_t blends = 0;
 	std::string steps;
 	for (const Judge::RampSeen& seen : ramp) {
-		if (seen.index <= stalled || seen.index > end + kPlannedCycles) continue;
+		if (seen.index <= stalled || seen.index >= stallReach) continue;
 		const bool edgeBlend = seen.libraryStep == 2;
 		const bool innerBlend = seen.broken && seen.innerStep <= 3;
 		if (seen.libraryStep == 0 && (!seen.broken || innerBlend)) {
@@ -1373,10 +1392,13 @@ static void judgeStall(bool longStall) {
 		if (line.cycle <= stalled) continue;
 		library += " " + std::to_string(static_cast<int>(line.kind)) + ":" + std::to_string(line.value) + "@" +
 		           std::to_string(line.cycle);
-		if (line.kind == LibraryLog::Kind::silence) ++silenceAfter;
+		if (line.kind == LibraryLog::Kind::silence && line.cycle < stallReach) ++silenceAfter;
 	}
 	const std::uint64_t blocksToBack =
 		back != ramp.end() ? (rig.tap.at(back->index).position - caughtUp.position) / kBlock : 0;
+	INFO("the library judged up to cycle " << stallReach << " (" << stallReach - end
+	                                       << " after the burst's end; the first the host disturbed after the return, "
+	                                          "or kPlannedCycles on)");
 	INFO("the remainder at the burst's end " << owed << " frames; back at cycle "
 	                                         << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
 	                                         << " blocks after the burst's end at " << end << " (bound " << boundBlocks

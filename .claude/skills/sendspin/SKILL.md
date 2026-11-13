@@ -230,9 +230,9 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   ClientLifecycle, Start, SourceWire, VisualizerDelivery, Allocations) hang to the suite's 55 s watchdog in the dev image
   with or without the two timing patches (checked on `ConnectionLifecycle.SilentEstablishedPeerIsDropped`), so
   they are this environment's or the listener patch's, not the timing patches'. Every player test passes.
-- The clock test `A 200 ms stall past the feed ...` proves ear's payment every run; with the payment reverted it fails
-  (2 runs of 3: back 8 and 18 blocks after the burst's end, two to five library corrections; measured before the stall
-  moved into a probe upstream, when the block ran every other cycle of the burst).
+- The clock tests `A 200 ms stall past the feed ...` and `A 1 s stall ...` prove ear's payment every run; with the
+  payment reverted (the catch-up's `owed_ += lost` removed) both fail every run (5 of 5: the library's own corrections,
+  and for 200 ms back past the bound too).
 - **The stall tests once took the host's burst for granted** and stalled inside the node's own block: on a GitHub runner
   the block then ran every cycle of the burst, nothing was lost, and the test failed finding no catch-up after the stall
   (`end > stalled + 1`, 1183 > 1183). A stall a test needs lost must be made upstream of the block that must lose it, and
