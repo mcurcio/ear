@@ -299,9 +299,12 @@ TEST_CASE("A writer refilling the feed as fast as it can never has a frame read 
 	std::array<float, 256> left{};
 	std::array<float, 256> right{};
 	const std::array<std::span<float>, 2> out{left, right};
+	// Until the writer has refilled the feed fifty times over (its own event: what the skips took), a deadline only
+	// failing it.
 	std::uint64_t readAhead = 0;
 	std::uint64_t skipped = 0;
-	for (int i = 0; i < 20000; ++i) {
+	const auto until = std::chrono::steady_clock::now() + 30s;
+	while (skipped < std::uint64_t{capacity} * 50 && std::chrono::steady_clock::now() < until) {
 		const std::uint64_t debt = std::uint64_t{capacity} * 4; // never covered by what it holds
 		const Feed::Taken taken = feed.skipThenRead(debt, debt, out, 256);
 		skipped += taken.skipped;
@@ -310,7 +313,7 @@ TEST_CASE("A writer refilling the feed as fast as it can never has a frame read 
 	stop.store(true);
 	writer.join();
 	INFO("skipped " << skipped << " frames");
-	CHECK(skipped > 0);
+	CHECK(skipped >= std::uint64_t{capacity} * 50);
 	CHECK(readAhead == 0);
 }
 
