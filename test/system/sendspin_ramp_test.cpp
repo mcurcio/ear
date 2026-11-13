@@ -1,6 +1,9 @@
 // The judge of the sendspin system tests' ramp, `checkRamp`, on hand-made frames: no ear, no server. What it may pass
 // is the library's correction of a clock error and nothing else (docs/node-types.md#library-facts-and-carried-patches).
 #include <array>
+#include <string>
+#include <format>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -325,4 +328,46 @@ TEST_CASE("Blends past one per chunk are bad frames, up to the limit they are no
 		CHECK(past.blends == 3);
 		CHECK(past.badFrames == 1);
 	}
+}
+
+namespace {
+
+/// A counter record at `ms` after a fixed instant: a graph record of `cycles` cut, or `node`'s of `cycles` missed.
+json lossRecord(std::int64_t ms, std::uint64_t cycles, const std::string& node = "") {
+	const RecordTime at = RecordTime{std::chrono::seconds(1'800'000'000)} + std::chrono::milliseconds(ms);
+	const auto day = std::chrono::floor<std::chrono::days>(at);
+	const std::string t = std::format("{:%F}T{:%T}Z", std::chrono::sys_days(day), at - day);
+	if (node.empty()) return {{"code", "ear.graph-lost-cycles"}, {"t", t}, {"cycles", cycles}};
+	return {{"code", "ear.node-missed-cycles"}, {"t", t}, {"node", node}, {"missed", cycles}};
+}
+
+/// A skip of `blocks` whose cycles were lost between `from` and `to` ms after the same instant.
+SeenSkip skipAt(std::int64_t from, std::int64_t to, std::uint64_t blocks = 1) {
+	const RecordTime at{std::chrono::seconds(1'800'000'000)};
+	return {blocks, at + std::chrono::milliseconds(from), at + std::chrono::milliseconds(to), "the skip"};
+}
+
+} // namespace
+
+TEST_CASE("A skip is paid by the first record written after its cycles were lost, and by no other",
+          "[system][sendspin][ramp][skips]") {
+	// The record that covers the loss: the first graph record after it.
+	CHECK(unpaidSkipsOf({lossRecord(-3000, 9), lossRecord(300, 1)}, {skipAt(0, 100)}).empty());
+	// A record before the loss covers cuts before it, however many it has to spare.
+	CHECK(unpaidSkipsOf({lossRecord(-300, 9)}, {skipAt(0, 100)}).size() == 1);
+	// A record after the first one after the loss covers later cuts, however many it has to spare.
+	const auto later = unpaidSkipsOf({lossRecord(300, 1), lossRecord(2000, 9)}, {skipAt(0, 100, 2)});
+	REQUIRE(later.size() == 1);
+	CHECK(later[0] == "the skip: 1 of its 2 blocks paid by no record that covers it");
+	// Each record pays at most its own cycles, across skips.
+	CHECK(unpaidSkipsOf({lossRecord(300, 1)}, {skipAt(0, 100), skipAt(150, 200)}).size() == 1);
+	// A node's records pay too, each kind its own first record after the loss.
+	CHECK(unpaidSkipsOf({lossRecord(300, 1), lossRecord(400, 1, "rec")}, {skipAt(0, 100, 2)}).empty());
+	// Within the window the loss may be anywhere, so each record written in it, and the first after it, may pay.
+	CHECK(unpaidSkipsOf({lossRecord(50, 1), lossRecord(600, 1)}, {skipAt(0, 100, 2)}).empty());
+	// A first record after the window past the lag cannot be the record of that loss, and says so.
+	const auto past = unpaidSkipsOf({lossRecord(12'000, 9)}, {skipAt(0, 100)});
+	REQUIRE(past.size() == 1);
+	CHECK(past[0] == "the skip: 1 of its 1 blocks paid by no record that covers it; the first graph record after it "
+	                 "came past the graph record's lag");
 }

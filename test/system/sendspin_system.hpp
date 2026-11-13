@@ -478,10 +478,17 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 	return result;
 }
 
-/// The ramp's skips that no record of ear's losses pays (unpaidSkips), named: each skip's cycles were lost when the WAV's
-/// frame it lands on was due, from the file node `node`'s start, its frames and the blocks the skips before it took out
-/// of the WAV, give or take half a second (the start's main-loop turn; a loss the WAV does not show as a skip, such as
-/// a block of silence, moves the frames after it later, which the records' lag covers).
+/// How far before the time a ramp skip's frame was due its cycles may have been lost: the file node's `running` record
+/// is stamped a main-loop turn after the cycle its WAV's first frame came from.
+inline constexpr std::chrono::milliseconds rampDueBefore{100};
+/// How far after its own blocks: the records' and the WAV's clocks, and a beat of slack. Every cycle the file node
+/// missed is a skip of the ramp it records (the node upstream keeps in step), so no loss the WAV does not show moves
+/// its frames later.
+inline constexpr std::chrono::milliseconds rampDueAfter{100};
+
+/// The ramp's skips that no record of ear's losses pays (unpaidSkips), named: each skip's cycles were lost from when
+/// the WAV's frame it lands on was due (from the file node `node`'s start, its frames and the blocks the skips before it
+/// took out of the WAV) for as long as its own blocks last, give or take rampDueBefore and rampDueAfter.
 inline std::vector<std::string> unpaidRampSkips(const ChildProcess& ear, const RampCheck& ramp,
                                                 const std::string& node = "rec") {
 	const auto began = wavBegan(ear, node);
@@ -492,7 +499,9 @@ inline std::vector<std::string> unpaidRampSkips(const ChildProcess& ear, const R
 		const auto due = *began + std::chrono::microseconds((static_cast<std::int64_t>(frame) +
 		                                                     static_cast<std::int64_t>(before * blockSize)) *
 		                                                    1'000'000 / graphFrequency);
-		skips.push_back({blocks, due - 500ms, due + 500ms,
+		const auto lasts =
+			std::chrono::microseconds(static_cast<std::int64_t>(blocks * blockSize) * 1'000'000 / graphFrequency);
+		skips.push_back({blocks, due - rampDueBefore, due + lasts + rampDueAfter,
 		                 "a skip of " + std::to_string(blocks) + " blocks at frame " + std::to_string(frame)});
 		before += blocks;
 	}

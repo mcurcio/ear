@@ -1651,13 +1651,16 @@ SIGSTOP measurement); the library pages hold the result.
   with its final counts, a superseded node's included. CounterWatch keeps the older span, recorded on its own and off
   the wire, until it ends: the records' sums are the totals in every case.
 - **Each skip paid by the record that covers it, deny by default.** `LostCycles::budget` paid any skip from any cut of
-  the run, so a product skip could be paid by a host cut minutes away. `unpaidSkips` pays each skip from a record
-  written within its window or after it by no more than the record's lag (10.3 s for the graph's, 20.3 s for a node's:
-  the hold bound or the pace, and a beat), each record paying at most its own cycles. Per stall matching was possible: a
-  ramp skip's time comes from the file node's `running` record and the WAV's frames, a stamp skip's from the chunks'
-  arrival. Proven: a product skip of one block injected into the file node, with a 200 ms stop of ear before the
-  stream, fails as "a skip of 1 blocks at frame 177920: 1 of its 1 blocks paid by no record of a loss" with 39 cycles
-  cut in the run, which the run-wide budget would have taken.
+  the run, so a product skip could be paid by a host cut minutes away. A record covers every loss since the record of
+  its kind before it, so `unpaidSkips` pays each skip only from the first record of each kind written after its loss
+  (with the loss's time uncertain within the skip's window, the records written in the window and the first after
+  it), each record paying at most its own cycles; the lags (10.3 s graph, 20.3 s node) are only a bound that names a
+  first record too late to be the loss's. A ramp skip's window is its own blocks from when its frame was due, 100 ms
+  either side; a stamp skip's, the chunks' arrival. Proven: a product skip of one block injected into the file node
+  1.5 s into the ramp, a 50 ms stop of ear just after it (its record has cycles for its own skip only) and another in
+  the silence after the stream (its record, a second later, has 9 to spare) fails as "a skip of 8 blocks at frame
+  230400: 1 of its 8 blocks paid by no record that covers it"; the windows as first built passed it, paying from the
+  later record.
 - **The system test proves the wiring, not the stall count.** Asking a whole process signalled on a loaded host for
   exactly one stall in one record turned CI-like load red about 1 run in 5 for host stalls ear counted rightly. The
   stall count is proven where the stall is made inside a cycle (`counter_watch_test.cpp`, D1's engine tests: 1 stall

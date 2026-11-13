@@ -214,47 +214,71 @@ struct SeenSkip {
 
 /// The latest a counter record comes after the cycles it counts were lost (docs/engine.md#reporting-the-counters): the
 /// beat that sees the loss and the one that sees it hold still, the record's pace, or the hold bound while losses never
-/// hold still, whichever is longer, and a beat of slack.
+/// hold still, whichever is longer, and a beat of slack. Only a sanity bound: what pays a skip is which record covers it.
 inline constexpr std::chrono::microseconds graphRecordLag = 10'300ms;
 inline constexpr std::chrono::microseconds nodeRecordLag = 20'300ms;
 
-/// Each skip paid by one of ear's counter records that covers it in time, deny by default
-/// (docs/testing.md#the-counters-own-word): a record written within the skip's window, or after it by no more than its
-/// kind's lag, with cycles left (a graph record's cut cycles, a node record's missed ones; each pays at most its own),
-/// the earliest first, skips taken as their windows end. Returns each skip no record pays, naming it.
-inline std::vector<std::string> unpaidSkips(const ChildProcess& ear, std::vector<SeenSkip> skips) {
+/// Each skip paid by the counter record that covers it, deny by default (docs/testing.md#the-counters-own-word). A graph
+/// record covers every cut since the graph record before it, and a node's record every cycle the node missed since its
+/// record before, so a skip is payable only by the first record of each kind written after its cycles were lost: with
+/// the loss somewhere in the skip's window, the records from the first written at or after its start to the first at or
+/// after its end. A record pays from its own cycles (a graph record's cut cycles, a node record's missed ones), each at
+/// most its own, the skips taken as their windows end. A first record after a skip that came later than its kind's lag
+/// cannot be the record of that loss: it pays nothing, and is named. Returns each skip no record pays, named by where it
+/// was seen.
+inline std::vector<std::string> unpaidSkipsOf(const std::vector<json>& records, std::vector<SeenSkip> skips) {
 	struct Paying {
 		RecordTime t;
 		std::uint64_t left;
-		std::chrono::microseconds lag;
 	};
-	std::vector<Paying> records;
-	for (const json& record : ear.records()) {
+	struct Kind {
+		std::string name;
+		std::chrono::microseconds lag;
+		std::vector<Paying> records; // in time order
+	};
+	std::map<std::string, Kind> kinds; // "graph", or "node <name>"
+	for (const json& record : records) {
 		const std::string code = record.value("code", "");
 		const auto t = recordTime(record);
 		if (!t) continue;
-		if (code == "ear.graph-lost-cycles")
-			records.push_back({*t, record.value("cycles", std::uint64_t{0}), graphRecordLag});
-		else if (code == "ear.node-missed-cycles")
-			records.push_back({*t, record.value("missed", std::uint64_t{0}), nodeRecordLag});
+		if (code == "ear.graph-lost-cycles") {
+			Kind& kind = kinds.try_emplace("graph", Kind{"graph", graphRecordLag, {}}).first->second;
+			kind.records.push_back({*t, record.value("cycles", std::uint64_t{0})});
+		} else if (code == "ear.node-missed-cycles") {
+			const std::string name = "node " + record.value("node", "");
+			Kind& kind = kinds.try_emplace(name, Kind{name, nodeRecordLag, {}}).first->second;
+			kind.records.push_back({*t, record.value("missed", std::uint64_t{0})});
+		}
 	}
-	std::ranges::sort(records, {}, &Paying::t);
+	for (auto& [name, kind] : kinds) std::ranges::sort(kind.records, {}, &Paying::t);
 	std::ranges::sort(skips, {}, &SeenSkip::to);
 	std::vector<std::string> unpaid;
 	for (const SeenSkip& skip : skips) {
 		std::uint64_t owed = skip.blocks;
-		for (Paying& record : records) {
-			if (owed == 0) break;
-			if (record.left == 0 || record.t < skip.from || record.t > skip.to + record.lag) continue;
-			const std::uint64_t paid = std::min(owed, record.left);
-			record.left -= paid;
-			owed -= paid;
+		std::string late;
+		for (auto& [name, kind] : kinds) {
+			for (Paying& record : kind.records) {
+				if (record.t < skip.from) continue;
+				if (record.t > skip.to + kind.lag) {
+					late +=
+						"; the first " + kind.name + " record after it came past the " + kind.name + " record's lag";
+					break;
+				}
+				const std::uint64_t paid = std::min(owed, record.left);
+				record.left -= paid;
+				owed -= paid;
+				if (record.t >= skip.to) break; // the first record after the window: none later covers this loss
+			}
 		}
 		if (owed > 0)
 			unpaid.push_back(skip.what + ": " + std::to_string(owed) + " of its " + std::to_string(skip.blocks) +
-			                 " blocks paid by no record of a loss");
+			                 " blocks paid by no record that covers it" + late);
 	}
 	return unpaid;
+}
+
+inline std::vector<std::string> unpaidSkips(const ChildProcess& ear, std::vector<SeenSkip> skips) {
+	return unpaidSkipsOf(ear.records(), std::move(skips));
 }
 
 /// When the file node `node` began writing its WAV: its first `running` record, whose drive took the cycle its first

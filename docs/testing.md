@@ -267,16 +267,20 @@ stamps show, and deny by default: each skip must be paid by a record that covers
 cycle the graph cut and each one a node missed uncut skips at most one block of what reaches a
 file. `unpaidSkips(ear, skips)` (`test/system/ear_system.hpp`) takes each skip with the window of
 wall time its cycles were lost in, and pays it from the records, read after ear's stop when every
-record held back has been written ([engine.md](engine.md#reporting-the-counters)): a record whose
-`t` lies in the window or after it by no more than its kind's lag (the longest a record can wait
-for its losses to hold still, its pace or the hold bound: 10.3 s for the graph's, 20.3 s for a
-node's), with cycles left (a graph record's cut cycles, a node record's missed ones, each paying at
-most its own). A skip no record pays fails, named by where it was seen. A ramp's skip
-(`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) was lost when the WAV frame it
-lands on was due, from the file node's `running` record, its frames and the blocks the skips before
-it took out, give or take half a second (`unpaidRampSkips`); a source stamp's
-(`SourceStamps::seen`) while its chunk or the one before was captured, from the arrival before it,
-less 2 s, to its own. The shape still says which step is a skip (whole blocks, exactly; within
+record held back has been written ([engine.md](engine.md#reporting-the-counters)). A graph record
+covers every cut since the graph record before it, and a node's record every cycle it missed since
+its record before, so a skip is payable only by the first record of each kind written after its
+loss: with the loss somewhere in the window, the records written in it and the first after it.
+Each pays from its own cycles (a graph record's cut cycles, a node record's missed ones), at most
+its own. A first record after the window later than its kind's lag (the longest a record can wait
+for its losses to hold still: 10.3 s for the graph's, 20.3 s for a node's) cannot be the record of
+that loss and pays nothing, named. A skip no record pays fails, named by where it was seen. A
+ramp's skip (`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) was lost from when
+the WAV frame it lands on was due (from the file node's `running` record, its frames and the
+blocks the skips before it took out) for as long as its blocks last, from 100 ms before to 100 ms
+after (`unpaidRampSkips`): every cycle the file node misses is a skip of the ramp it records, so
+no unseen loss moves its frames later. A source stamp's (`SourceStamps::seen`) was lost while its
+chunk or the one before was captured, from the arrival before it, less 2 s, to its own. The shape still says which step is a skip (whole blocks, exactly; within
 `stampSlackUs` for a stamp, which is rounded to the microsecond), but no longer excuses it, and a
 host cut elsewhere in the run pays for nothing. `lostCycles(ear)` sums the records, the totals.
 

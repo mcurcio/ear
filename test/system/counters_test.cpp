@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <sys/types.h>
@@ -31,15 +32,27 @@ bool isGraphRecord(const json& record) { return record.value("code", "") == "ear
 
 std::uint64_t number(const json& object, const char* key) { return object.at(key).get<std::uint64_t>(); }
 
-/// ear's data thread, by the name PipeWire gives it.
-std::optional<pid_t> dataThread(pid_t process) {
+/// ear's threads: each id with the name it goes by in /proc/<pid>/task/<id>/comm.
+std::vector<std::pair<pid_t, std::string>> threads(pid_t process) {
+	std::vector<std::pair<pid_t, std::string>> found;
 	for (const auto& task : std::filesystem::directory_iterator("/proc/" + std::to_string(process) + "/task")) {
 		std::ifstream comm(task.path() / "comm");
 		std::string name;
 		std::getline(comm, name);
-		if (name == "data-loop.0") return static_cast<pid_t>(std::stol(task.path().filename().string()));
+		found.emplace_back(static_cast<pid_t>(std::stol(task.path().filename().string())), name);
 	}
-	return std::nullopt;
+	return found;
+}
+
+/// ear's data thread, by the name PipeWire gives it; a test that cannot find it fails naming what it found instead.
+pid_t dataThread(pid_t process) {
+	const auto found = threads(process);
+	for (const auto& [id, name] : found)
+		if (name == "data-loop.0") return id;
+	std::string names;
+	for (const auto& [id, name] : found) names += (names.empty() ? "" : ", ") + name;
+	FAIL("no thread named data-loop.0 in /proc/" << process << "/task; it holds: " << names);
+	return 0;
 }
 
 /// Whether the thread is running now: state R in its stat, after the name in parentheses.
@@ -118,8 +131,7 @@ TEST_CASE("A stall ear took reaches a graph record, the control port agrees with
 	Ear ear(directory, {linkedLine("noise:noise.mono", "rec:record.left")});
 	ChildProcess& process = ear.process();
 	Rpc rpc(ear.port());
-	const auto thread = dataThread(process.pid());
-	REQUIRE(thread);
+	const pid_t thread = dataThread(process.pid());
 
 	// The snapshot: the feature, the graph's counters and each node's.
 	const json snapshot = rpc.call("graph.subscribe")["result"];
@@ -133,7 +145,7 @@ TEST_CASE("A stall ear took reaches a graph record, the control port agrees with
 			CHECK(node["counters"].contains(counter));
 
 	// The stall: its cuts, counted by the graph, reach a record, which comes once they held still, within the pace.
-	const Stalled stalled = stallUntilCut(process, rpc, *thread);
+	const Stalled stalled = stallUntilCut(process, rpc, thread);
 	INFO("the stall cut the count from " << stalled.before << " to " << stalled.after);
 	const auto covering = process.waitForRecord(
 		[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") >= stalled.after; },
@@ -164,7 +176,7 @@ TEST_CASE("A stall ear took reaches a graph record, the control port agrees with
 	// A second stall, the stop asked for as soon as its cut is counted: its record may still be held back for the cuts
 	// to hold still, and the stop writes it all the same. The records then add up to the last one's total, which is at
 	// least every cut the control port counted.
-	const Stalled second = stallUntilCut(process, rpc, *thread);
+	const Stalled second = stallUntilCut(process, rpc, thread);
 	process.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	REQUIRE(waitForStop(process) == 0);
