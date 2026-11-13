@@ -367,11 +367,14 @@ same lost time.
 - A source's ring (`SourceRing`) still keeps time for its node: its `Played` count and dating,
   and its skip of a catch-up's jump with the rest owed
   ([writing-a-node-type.md](writing-a-node-type.md#sources)).
-- `sendspin` still owes lost time, defers its reports and models the library (`LibraryView`,
-  `Feed::skipThenRead`), and carries `sendspin-starved-floor.patch`
+- `sendspin` still owes lost time and models the library (`LibraryView`, `Feed::skipThenRead`),
+  and carries `sendspin-starved-floor.patch`
   ([node-types.md](node-types.md#clock)).
 - There is no converter companion for a ring whose clock is a type's own: only cards and RTP
   receivers convert.
+- `sendspin` is not yet a source and a sink: its audio crosses through its own feed and a legacy
+  handoff ([writing-a-node-type.md](writing-a-node-type.md#the-old-interface)) until it moves
+  onto the type's class.
 
 ## The node lifecycle
 

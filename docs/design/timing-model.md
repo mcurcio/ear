@@ -30,13 +30,18 @@ Decided by the owner on 2026-11-13 and given to the designer as decided; the wor
 | TM9 | (Q-TM2, 2026-11-13, narrowed by the owner) A host stall stalls the whole graph, one tick and one data thread, so every node inside ear resumes together and stays in time with the others. The jump-or-speed-up default concerns only a source whose own clock falls behind while the graph ticks on, and staying in time with what is outside ear after a graph-wide stall | Section 11; the default "jump" decided unless the owner objects |
 | TM7 | **Accepted consequences.** `SourceRing`'s timekeeping leaves the framework (its Played count and dating, its keep-in-step across stalls), reversing Q-CF2; the source node keeps its own time. `sendspin`'s sync stays in its node with the spike's winning design, "honest sink plus local skip": play every frame in order; on a tick stating a catch-up or absent jump skip min(jump, what the feed holds now); report every tick played = skipped + read with an honest finish that never steps back; no debt, no deferral, no `LibraryView`. Only `cmake/sendspin-late-chunk.patch` remains of the timing patches (`sendspin-starved-floor.patch` is dropped). C4's machinery is deleted (`LibraryView`, owed/catchingUp/untoldBound, `Feed::skipThenRead`, the overdue deferral, their tests); `GraphCycle::overdueNs` stays, as a tick fact | Sections 4, 6 and 7 |
 
+*Amended by the design review (2026-11-13, M1):* TM7's "defers nothing" is narrowed. `sendspin` keeps C4's rule
+that an overdue tick tells the library nothing, under a bound, because in a burst that loses nothing every other
+dating makes the library correct twice (6.1); what goes is the debt, `LibraryView`, `skipThenRead` and the bound's
+owing role. The owner can overturn it.
+
 ## 2. What is built, against the model
 
 | Rule | Built | Departs |
 |---|---|---|
 | TM1 | `GraphCycle` states the tick: `startNs`, `startRawNs`, `position`, `rateDiff`, `driverId`, `nextNs`, `overdueNs`, `facts` (`docs/engine.md#graphcycle`) [V] | `SourceRing` keeps a source's time: `Played{totalFrames, heardRawNs}`, the played wake, and on a `catchUp` the whole jump skipped and counted played with the rest owed from the writer's next frames (`docs/writing-a-node-type.md#sources`) [V] |
 | TM2 | The pass-through (`card`, `rtp`, `sendspin`'s public banks) reads and writes on the tick; no other transform exists yet | — |
-| TM3 | A card's ALSA node and an RTP receiver reconcile their clocks in PipeWire (a delay-locked loop steering a resampler) [V]; `sendspin` reconciles the server's clock in its code | `sendspin`'s code owes lost time, defers its reports and models the library (`LibraryView`, `untoldBound`, `Feed::skipThenRead`), and carries `sendspin-starved-floor.patch` (`docs/node-types.md#clock`) [V] |
+| TM3 | A card's ALSA node and an RTP receiver reconcile their clocks in PipeWire (a delay-locked loop steering a resampler) [V]; `sendspin` reconciles the server's clock in its code | `sendspin`'s code owes lost time and models the library (`LibraryView`, the debt, `untoldBound`'s owing role, `Feed::skipThenRead`), and carries `sendspin-starved-floor.patch` (`docs/node-types.md#clock`) [V] |
 | TM4 | One rate and one quantum (`docs/engine.md#the-clock`, `#the-quantum-guard`); a 44.1 kHz RTP sender into a 48 kHz graph is resampled by its receiver [V] | — |
 | TM5 | Cards and RTP receivers are PipeWire's converter inside their engine companions (5.5) | No converter companion for a ring whose clock is a type's own |
 | TM6 | Built [V] | — |
@@ -57,8 +62,9 @@ with a clock reconciles from them. The **converter companion** is PipeWire's con
 the RTP receiver's wiring: in **module-run** mode a PipeWire module owns the stream, its resampler and its loop (RTP,
 moved onto the shared code first with no change of behaviour); in **set** and **tracked** modes, built with their
 first users, an ear-made stream plays a ring at the node's own rate, the ratio set by the node's clock or tracked from
-a rate it reports. Its delay enters the latency plan beyond its bank; the card shares its lifecycle but not its base. `sendspin`'s source clock is the honest sink plus local skip, dated by when its tick
-really ran and clamped so a finish never steps back; C4's machinery and the floor patch go.
+a rate it reports. Its delay enters the latency plan beyond its bank; the card shares its lifecycle but not its base. `sendspin`'s source clock is the honest sink plus local skip, telling the library
+only from a tick that began on time (under a 2 s bound), so every report is true when given; C4's debt, `LibraryView`
+and the floor patch go.
 
 ## 4. Sources
 
@@ -207,7 +213,7 @@ graph (TM4). Who keeps the ratio is its **mode**:
 
 | Mode | Who owns the stream, the resampler and the loop | First user | Built in |
 |---|---|---|---|
-| **module-run** | A PipeWire module: it makes the stream, keeps its own buffer and runs the loop that steers its resampler. ear loads it, finds its node, links it, carries its latency and judges its life | `rtp`: its receiver is `module-rtp-source`, with its jitter buffer and its clock tracking (the owner, Q-TM1) | T4 |
+| **module-run** (no enum: a shape's own) | A PipeWire module: it makes the stream, keeps its own buffer and runs the loop that steers its resampler. ear loads it, finds its node, links it, carries its latency and judges its life | `rtp`: its receiver is `module-rtp-source`, with its jitter buffer and its clock tracking (the owner, Q-TM1) | T4 |
 | **set** | ear: an ear-made stream plays (or fills) a ring at the node's rate; the node's clock gives the ratio | none yet | T5, with its first user |
 | **tracked** | ear: as set, but the converter runs a loop on the ring's fill, the rate the node reports as its feed-forward | AirPlay's paced source (slice 9, `programs.md` 2.2) | T5, with AirPlay |
 
@@ -230,13 +236,10 @@ resampler, and every quirk `docs/engine.md#rtp-receivers` lists stays PipeWire's
 ### 5.2 The interfaces
 
 **`ear_core` (`companions.hpp`).** The type's API does not change for RTP: `cx.rtpReceiver(bank, RtpReceiverShape)`,
-`CompanionKind::rtpReceiver` and the wire's `"rtp-receiver"` stay. Core gains the converter's vocabulary and the one
-latency rule, so NodeHost's plan names no RTP field:
+`CompanionKind::rtpReceiver` and the wire's `"rtp-receiver"` stay. T4 gives core only the one latency rule, so
+NodeHost's plan names no RTP field; module-run is a shape's own (`ModuleRun<Shape>`), so no enum names it:
 
 ```cpp
-/// Who keeps a converter's ratio (docs/design/timing-model.md, 5.1).
-enum class RatioMode { moduleRun, set, tracked };
-
 /// A module-run converter's shape is its module's own (RtpReceiverShape today). Each says what the module buffers beyond
 /// the bank, at the graph rate: the one rule NodeHost's latency plan reads, in place of its RTP branch.
 Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph); // latencyMs, through FrameClock
@@ -267,13 +270,16 @@ public:
 using RtpReceivers = ModuleConverters<RtpReceiverShape>; // the name main.cpp and the tests use, kept
 ```
 
-**The set and tracked modes (T5).** Designed now so T4's base leaves room for them, built with their first user: an
+**The set and tracked modes (T5).** Designed now so T4's base leaves room for them, built with their first user,
+`RatioMode` with them (it chooses only between them; nothing in T4 reads it): an
 ear-made `pw_stream` body (`StreamConverterBody`, its events through the callback boundary as a `StreamCallbacks`
 table; the guard already refuses `pw_stream_new_simple`) on the same `joinEngineCompanion`, playing a source's ring
 through `SourceRing::play` for the frames the resampler asks (`pw_buffer::requested`, since 0.3.49 [V]), or filling a
 sink's ring:
 
 ```cpp
+/// Who keeps an ear-made converter's ratio (T5).
+enum class RatioMode { set, tracked };
 /// A converter between a ring at `nodeRate` and an inside bank at the graph rate (set and tracked modes).
 struct ConverterShape {
 	std::uint32_t nodeRate;     // 8000-768000 Hz; the graph frequency is allowed (drift only, no rate change)
@@ -305,7 +311,12 @@ ConvertedSink<M> convertedSink(Bank, SinkShape ring, ConverterShape conv);
 
 - **Set** applies the ratio with `pw_stream_set_rate` (RT safe, adjusts an adaptive resampler, since 1.4.0 [V]).
 - **Tracked** runs a delay-locked loop on the ring's fill (as `module-rtp`'s receiver does on its buffer [U: T4 reads
-  `module-rtp/audio.c` for its constants]), the reported rate its feed-forward, applied the same way.
+  `module-rtp/audio.c` for its constants]), the reported rate its feed-forward, applied the same way. **A skip
+  re-targets the loop:** the converter plays the ring, so it sees each tick's `SourcePlayed::skipped`; on a tick that
+  skipped it resets the loop's integrator and takes the fill after the skip as its new reference, so the loop never
+  steers fast for frames the clock already dropped. One controller acts on the fill at a time: the clock by a skip,
+  the loop by the ratio between skips. T5's tests include a skip of half the ring while tracking: the ratio after it
+  stays within the loop's steady range, with no run toward the old fill.
 - A ring behind a converter is in node frames: `SourceTick::rate` is `nodeRate`, `SourceTick::frames` what the
   resampler asked, and a clock converts a graph-frame fact (a `jumpFrames`) through `FrameClock`. A converted sink's
   chunk keeps its tick's facts and carries node frames [U: `cutChunk` and `SinkRing` gain the ring's rate, in T5].
@@ -353,7 +364,7 @@ registry search it does not need and gain nothing. T4 confirms this against the 
 
 **What it builds.** `ModuleConverterBody` and `ModuleConverters<Shape>` from `RtpReceiverBody` and `RtpReceivers`;
 `ModuleRun<RtpReceiverShape>` holding what is RTP's (the module, its arguments, its port names, its word, its failure
-text); `RatioMode` and `moduleRunDelay` in core, NodeHost's latency plan and readiness text reading them in place of
+text); `moduleRunDelay` in core, NodeHost's latency plan and readiness text reading them in place of
 its RTP branches. `RtpReceivers` stays the name `main.cpp` and the tests use. Docs: `docs/engine.md#engine-companions`
 and `#rtp-receivers` (where the code lives; nothing an operator sees), and `docs/architecture.md#the-timing-model`'s
 converter departure narrowed to the set and tracked modes.
@@ -386,7 +397,7 @@ fake converter (frames 1:1, each `set` and `report` recorded).
 
 ## 6. `sendspin` under the model
 
-### 6.1 The wrapper's contract: the honest sink plus local skip
+### 6.1 The wrapper's contract: the honest sink plus local skip, told only on time
 
 `sendspin`'s audio from the server is a source on `from_server` (S3c.6, `node-primitives.md` 4.1) with a clock,
 `SendspinClock : SourceClock` (`sendspin_clock.hpp`, replacing `sendspin_code.*`'s playback half):
@@ -395,34 +406,61 @@ fake converter (frames 1:1, each `set` and `report` recorded).
   zeros, which are not counted.
 - **`skipBefore`**: on a tick whose facts state `catchUp` or `absent` with `jumpFrames > 0`, it answers `jumpFrames`;
   the ring skips min(jump, what it holds now). On any other tick, 0. A clearing tick skips nothing (the ring's rule).
-- **`played`**: `played_ += skipped + read` (never `ended` nor `zeros`: the library wrote neither for its current
-  stream), then publishes `PlayProgress{played_, finish}` (6.2) to its mailbox and returns true, every tick, with no
-  condition. The worker's notifier, watching the clock wake, hands the library the difference with
-  `notify_audio_played`.
-- **It keeps no debt, defers nothing and has no `LibraryView`.** What the ring did not hold of a jump is the library's
-  to correct: it sees it in the honest finish (its next chunk late by that much) and corrects once.
+  The skip happens on the tick that states the jump, overdue or not.
+- **`played`**: `played_ += skipped + read` every tick (never `ended` nor `zeros`: the library wrote neither for its
+  current stream). Then it **tells the library only from a tick that began on time** (`overdueNs == 0`): it publishes
+  `PlayProgress{played_, finish}` (6.2) to its mailbox and returns true. An overdue tick, one of a catch-up's burst,
+  tells nothing; its frames are told with the next on-time tick's report, which counts them. The worker's notifier,
+  watching the clock wake, hands the library the difference with `notify_audio_played`.
+- **One bound.** If the library has gone untold for `untoldBound` (2 s of the graph's nominal time: the ticks'
+  `startRawNs`, so a burst of short ticks does not stretch it), the clock tells from the next tick even if it is
+  overdue, so a host that never runs a tick on time does not leave the library untold for good (6.2 says how that
+  report is dated). The bound has no other role: there is no debt for it to forget.
+- **It keeps no debt and has no `LibraryView`.** What the ring did not hold of a jump is the library's to correct: it
+  sees it in the next honest finish (its next chunk late by that much) and corrects once.
 
-What the spike measured for exactly this wrapper (`honest-local`, 5 runs each, 4,250 of 4,250 judged cycles within
-1 ms after recovery in every variant) [V]:
+*Why the deferral stays* (the design review, M1, amending TM7's "defers nothing"; the owner can overturn it): every
+report is true when it is given. An overdue tick's start is the driver's nominal time, behind now by the graph's lag
+`L` until the burst ends, and its run time is now; neither is where the library's next frame plays while the burst
+runs. Told the nominal time, the library sees its playtime behind now and, without the floor patch, floors it at now
+mid-burst (`cycle-facts.md` 9.9, finding 1). Told the run time, it puts its playtime at now plus what it holds; in the
+runner's burst, where every tick runs whole and nothing is lost, its next chunk then looks late by `L` and it drops
+`L` mid-burst, the output runs about `L` ahead once the burst ends, and it adds `L` of silence back: two corrections and
+silence where nothing was lost. Waiting for the first on-time tick tells it a finish that is true then. This is the
+node's own clock logic (TM3), not the framework's.
 
-| Case | C4 as built (`real-all`) | Honest plus local skip (`honest-local`) |
-|---|---|---|
-| A 200 ms or 1 s stall, made upstream or in the block | no correction by the library; 27 to 160 ms of ear's own silence after the burst; back on the stamps 27 to 160 ms after it | exactly one correction by the library per run; ear's silence one block (5.3 ms); back on the stamps 11 to 101 ms after the burst (median 101: about one 96 ms chunk); until then audio plays late by the stall's remainder (160 to 1093 ms) |
-| A 1.5-cycle hiccup made upstream (one block lost, the feed holding it) | no correction | no correction (without the local skip: one per run) |
-| A starving network gap | two corrections | one correction (the late-chunk patch's) |
-| Steady on the dummy beside `yes` x 4 | no drop | no library drop and no lost sync (without the local skip: 13 to 50 drops and 22 to 46 lost syncs a run) |
+**The evidence, and what T2 must prove.**
 
-The trade the owner accepted (TM7): after a stall past the feed, about one library chunk of audio plays late by what
-the feed did not hold, then the library corrects once; C4 played ear's silence instead and needed no correction.
+- **The cut shape, measured** (the spike, `honest-local`, 5 runs each, the dev host, whose bursts cut ticks: every
+  stall run lost frames) [V]. The spike's wrapper told every tick, overdue ones dated by run time; T2 measures it again
+  with the deferral.
 
-### 6.2 The dating rule, and why it is clamped
+  | Case | C4 as built (`real-all`) | Honest plus local skip (`honest-local`) |
+  |---|---|---|
+  | A 200 ms or 1 s stall, made upstream or in the block | no correction by the library; 27 to 160 ms of ear's own silence after the burst; back on the stamps 27 to 160 ms after it | exactly one correction by the library per run; ear's silence one block (5.3 ms); back on the stamps 11 to 101 ms after the burst (median 101: about one 96 ms chunk); until then audio plays late by the stall's remainder (160 to 1093 ms) |
+  | A 1.5-cycle hiccup made upstream (one block lost, the feed holding it) | no correction | no correction (without the local skip: one per run) |
+  | A starving network gap | two corrections | one correction (the late-chunk patch's) |
+  | Steady on the dummy beside `yes` x 4 | no drop | no library drop and no lost sync (without the local skip: 13 to 50 drops and 22 to 46 lost syncs a run) |
 
-The finish told is where the library's next frame plays: the end of this tick, from when it really ran, once what lies
-downstream has played. For a tick that began on time that is its start as the driver dated it; for an overdue tick (a
-catch-up's burst, run back to back) it is when the block began it, the next tick's due time plus how long that was
-overdue, moved onto the raw clock (CLOCK_MONOTONIC and the raw clock differ by parts per million over the few
-milliseconds between, nanoseconds [V: the spike's `realStartRawNs`]). That is a fact of the tick, so its home is
-`GraphCycle`, stated once for every node:
+  4,250 of 4,250 judged cycles were within 1 ms after recovery in every variant. The trade the owner accepted (TM7):
+  after a stall past the feed, about one library chunk of audio plays late by what the feed did not hold, then the
+  library corrects once; C4 played ear's silence instead and needed no correction.
+- **The uncut shape, not measured.** No spike run made it: the dev host's bursts always cut. It is the shape the
+  deferral exists for, and the one a GitHub runner makes (`cycle-facts.md` 9.10, 9.14). **T2 must prove it on CI**:
+  the in-block stall tests (200 ms and 1 s) run there with zero lost frames, and for a run with zero lost frames they
+  require zero library corrections, no silence and every report's finish at or after now, as for a run with cuts they
+  require 6.4's one correction. A run of either shape passes only its own shape's rule, and the test names which shape
+  it judged, so CI's log shows the uncut shape was met.
+
+### 6.2 The dating rule, and the one case the clamp covers
+
+The finish told is where the library's next frame plays: the end of the telling tick, once what lies downstream has
+played, `FrameClock(rate).heardRawNs(start, tick.frames, tick.playback)`. With the deferral the telling tick is on time
+in every case but one, so `start` is its `startRawNs`, the driver's date and the true one.
+
+The one case is a report the bound forces from an overdue tick. Its nominal start trails now by the lag, which without
+the floor patch the library would floor at; so it is dated from when the tick really ran, a fact of the tick whose home
+is `GraphCycle`, stated once for every node:
 
 ```cpp
 // GraphCycle (ear/core/node_type.hpp), a member function: no new field, no state.
@@ -431,43 +469,35 @@ milliseconds between, nanoseconds [V: the spike's `realStartRawNs`]). That is a 
 constexpr std::int64_t ranRawNs() const noexcept;
 ```
 
-`SendspinClock::played` tells `finish = max(heard, lastFinish_)`, `heard = FrameClock(rate).heardRawNs(tick.cycle.ranRawNs(),
-tick.frames, tick.playback)`.
+(CLOCK_MONOTONIC and the raw clock differ by parts per million over the few milliseconds between, nanoseconds [V: the
+spike's `realStartRawNs`].) For an on-time tick `ranRawNs()` is `startRawNs`, so the clock always dates by it.
 
-**The clamp, decided.** An overdue tick's finish is dated from when it ran; the next tick, on time again, is dated from
-its nominal start, which is earlier than the overdue tick's run by that tick's `overdueNs`; so the finish steps back by
-it. The spike saw it under load (`honest-local`, one in-block 200 ms run of five: three steps of the reports) [V]. Two
-fixes were open, clamping the finish, or dating an overdue tick that lost nothing by its nominal start. **The clamp is
-taken**, because:
-
-1. Dating a whole overdue tick nominally is C4's 9.10 finding again: a runner runs every tick of a burst and loses
-   nothing, so every burst tick is whole and overdue, and nominal finishes trail now by up to the stall. Without the
-   floor patch the library floors a playtime trailing now by 5 ms even with frames buffered (`cycle-facts.md` 9.9,
-   finding 1), so it would realign mid-burst. Only the tick's run time is never behind now in a burst.
-2. "Nominal for some overdue ticks" needs to tell a burst from one late wake, which no fact states (`overdueNs` is the
-   same field in both); a rule built on a guess is the class `cycle-facts.md` removed.
-3. The clamp's cost is bounded and one-sided: it holds the finish still for the tick after the last overdue one, late
-   by at most the last overdue tick's `overdueNs` (less than a block plus that tick's work, since a tick overdue by a
-   block or more has an overdue successor), and the tick after is nominal again and past it. The library sees one
-   report less than a block late and never a step back; whether it reacts to that one report at all is what 6.4's
-   step-back test measures under load [U: T2].
+**The clamp is kept for that case alone.** A report forced from an overdue tick is dated by its run time; the next
+on-time tick is dated by its nominal start, earlier by that tick's `overdueNs`, so without a clamp the finish would
+step back (the spike saw such steps when it told every overdue tick: `honest-local`, one in-block 200 ms run of five,
+three steps [V]). So `finish = max(heard, lastFinish_)`. Ticks told on time only follow one another by their nominal
+starts and never step back, so with the bound not reached the clamp never acts; a test proves it holds still (6.4).
+A forced report means the host ran no tick on time for 2 s, and the library may correct after it; that is the bound's
+price, the same as C4's.
 
 `lastFinish_` lives for the configuration: a stop and a start come later in time anyway, and a clear does not reset it
 (the library re-anchors from the next finish, which is later still).
 
-### 6.3 What is deleted
+### 6.3 What is deleted, and what stays
 
 | Deleted | Where |
 |---|---|
 | `LibraryView` | `library_view.hpp` |
-| The debt and the deferral: `owed_`, `catchingUp_`, `owingSuspended_`, `untoldSince_`, `untoldBound`, the overdue condition on telling | `sendspin_code.*` |
+| The debt: `owed_`, `catchingUp_`, `owingSuspended_`, the payment of a catch-up's remainder, and the owing role of `untoldBound` (forgetting a debt when due) | `sendspin_code.*` |
+| The rule that a lossy tick (a `catchUp` or `absent`) tells nothing: with no debt, a lossy tick on time tells | `sendspin_code.*` |
 | `Feed::skipThenRead`, `Feed::Taken`, `onPaymentStep`, the payment's two passes | `feed.*` (S3c.6 then deletes the feed itself) |
 | `cmake/sendspin-starved-floor.patch`, its entry in `cmake/SendspinDeps.cmake`, its library test's mention | the patch list, `AGENTS.md`, `docs/node-types.md#library-facts-and-carried-patches`, the `sendspin` skill |
-| Their tests: `code_test.cpp`'s debt, starved-library, bound and payment rows; `feed_test.cpp`'s `skipThenRead` and payment-race rows; `clock_test.cpp`'s payment requirements (a remainder above 0 to pay, back within 2 + ceil(remainder / (feed - block)) blocks, `corrections == 0` after a stall, no debt forgotten while owed) and `Feed::holdWriter`'s use for them; `CycleJudge::librarySettle`'s causes `starvedCatchUp` and `forgottenDebt` | `src/nodes/sendspin/tests/`, `test/support/cycle_judge.hpp` |
+| Their tests: `code_test.cpp`'s debt, starved-library and payment rows; `feed_test.cpp`'s `skipThenRead` and payment-race rows; `clock_test.cpp`'s payment requirements (a remainder above 0 to pay, back within 2 + ceil(remainder / (feed - block)) blocks, `corrections == 0` after a stall with cuts, no debt forgotten while owed) and `Feed::holdWriter`'s use for them; `CycleJudge::librarySettle`'s causes `starvedCatchUp` and `forgottenDebt` | `src/nodes/sendspin/tests/`, `test/support/cycle_judge.hpp` |
 
-Kept: `GraphCycle::overdueNs` (a tick fact, and the dating's input); `cmake/sendspin-late-chunk.patch` and its gap test;
-`StallProbe` and the in-block stalls (the tests below use them); `Feed::dryReads`, `dryFrames` until S3c.6 (then the
-source's shortfall); the settle causes `dry` and `logged`.
+**Stays**: `GraphCycle::overdueNs` and its use for telling (an overdue tick tells nothing); `untoldBound` and
+`untoldSince_`, as the deferral's bound only; `code_test.cpp`'s rows for the deferral and its bound;
+`cmake/sendspin-late-chunk.patch` and its gap test; `StallProbe` and the in-block stalls (6.4 uses them);
+`Feed::dryReads`, `dryFrames` until S3c.6 (then the source's shortfall); the settle causes `dry` and `logged`.
 
 ### 6.4 The tests that replace C4's
 
@@ -478,24 +508,31 @@ Each through the real server and the real engine (`clock_test.cpp`), judged by t
   clock could not skip (the stall's lost frames less what the feed held), within a tolerance T2 fixes from the spike's
   runs and states with its reason; ear's own silence after the
   burst at most one block; back on the server's stamps within one chunk and two blocks of the burst's end; no
-  `Buffered frames underflow`; every report's frames exactly `skipped + read` (6.1) and every finish by 6.2.
+  `Buffered frames underflow`; every report's frames exactly `skipped + read` since the last report (6.1), every
+  report from an on-time tick, and every finish by 6.2.
+- **No correction after a stall that loses nothing** (the uncut shape, 6.1). The same in-block stall tests, on a run
+  whose burst lost no frames (a GitHub runner's): zero library corrections, no silence, nothing told from an overdue
+  tick, and the first report after the burst dated by its on-time tick. T2 is not done until CI has run this shape.
 - **An exact skip on a host-missed cycle.** The 1.5-cycle hiccup upstream of the node (one block cut, the feed holding
   it): the clock skips exactly `jumpFrames`, the ramp steps by exactly that, the report moves by `jumpFrames` plus the
   tick's read, and the library makes no correction, every run. A unit row on the harness with scripted facts: a
   `catchUp` larger than what is held skips what is held and no more; `absent` skips; `reposition`, `driverChange`,
   `start` and `oversized` skip nothing; a clearing tick skips nothing.
-- **No step back in reported finishes.** A unit row: scripted ticks of a burst (overdue, then on time) and one overdue
-  whole tick under load; every finish at least the last, the clamp holding exactly the tick after the last overdue one,
-  and from the next tick on the nominal finish. In the clock tests every report's finish is checked against the last
-  under the in-block stalls and the loaded steady runs (a step back fails the test, naming both ticks' facts).
+- **The deferral, its bound and the clamp.** Unit rows on scripted ticks: a burst of overdue ticks tells nothing and
+  the first on-time tick tells every frame of it, dated nominally; one overdue whole tick under load tells nothing; a
+  lossy tick on time tells; overdue ticks for 2 s of nominal time force one report, dated by `ranRawNs()`, and the
+  on-time tick after it is clamped to it, then nominal again; with the bound never reached the clamp never acts. In
+  the clock tests every report's finish is checked against the last under the in-block stalls and the loaded steady
+  runs (a step back fails the test, naming both ticks' facts).
 - **Steady and gap**, kept: the steady tests on the dummy and a following card (750 cycles within 1 ms; the judge's four
   induced stalls each a local skip with no library correction), and the gap test (one correction, the late chunk's).
 
 ### 6.5 The upstream reports
 
 - **The floor patch's report is withdrawn.** Its first half asked the library to floor only when nothing is buffered,
-  because ear told finishes behind now during a burst. The honest finish never trails the tick's run, so the library's
-  floor as upstream wrote it is right for ear, and the patch goes (TM7).
+  because ear told finishes behind now during a burst. The honest finish is told only from an on-time tick, dated
+  where its frames really play, so it never trails now (the bound's one forced report is dated by its run time), and
+  the library's floor as upstream wrote it is right for ear: the patch goes (TM7).
 - **The late chunk's report stays**, rewritten as its own: a sink that reports honestly still starves the library in a
   network gap, and `decode_chunk` then skips a chunk whose front is late but whose end is not (the gap test fails 5 of
   5 with the patch's change reverted [V: `cycle-facts.md` 9.9]). The `sendspin` skill's draft keeps only that half and
@@ -509,8 +546,8 @@ stale in the same commit.
 
 | Step | What | Deletes | Behaviour | Tests it adds |
 |---|---|---|---|---|
-| **T1** | `GraphCycle::ranRawNs()` | nothing | none | the rule's rows: on time, overdue, a test's tick with no `nextNs` |
-| **T2** | `sendspin` honest, on today's feed and the legacy adapter: `SendspinCode` keeps the capture half and becomes the honest wrapper with the local skip and the clamped finish (6.1, 6.2); the floor patch dropped; `docs/node-types.md#clock`, the skill (and its report, 6.5), `AGENTS.md`'s patch list | 6.3's table | yes: one library correction after a stall past the feed, where ear's silence was | 6.4 |
+| **T1** | `GraphCycle::ranRawNs()` (for the report the bound forces, 6.2) | nothing | none | the rule's rows: on time, overdue, a test's tick with no `nextNs` |
+| **T2** | `sendspin` honest, on today's feed and the legacy adapter: `SendspinCode` keeps the capture half and becomes the honest wrapper with the local skip, told only on time under the bound, and the clamp for the forced report (6.1, 6.2); the floor patch dropped; `docs/node-types.md#clock`, the skill (and its report, 6.5), `AGENTS.md`'s patch list | 6.3's table | yes: one library correction after a stall with cuts, where ear's silence was; none after a stall that loses nothing, proven on CI | 6.4 |
 | **T3** | The clockless source: `SourceClock`, `SourceTick`, `SourceHeld`, `SourcePlayed`, `clockWake`; `SourceRing` without time (4.1 to 4.3); `EventSources`, the block, the harness; `docs/writing-a-node-type.md#sources`, `docs/engine.md#sources`, `#latency-per-bank-pair`, `#dating` | `Played`, the played wake, `SourceCycle`, the keep-time and debt code | none for any shipped type (none uses a source) | 4.4's rows, and the system tests' ramp-skip windows reworked (`rampDueBefore`, `rampDueAfter`, `unpaidRampSkips`, 4.4) |
 | **T4** | The converter base from RTP's wiring, module-run mode, RTP on it (5.1 to 5.5), with S7's checks folded in (test only) | `RtpReceiverBody` and NodeHost's RTP branches, moved | none: every RTP test passes unedited | 5.5's new tests and S7's checks |
 | *S3c.1 to S3c.5* | As `node-primitives.md` 13 has them | | | |
@@ -543,8 +580,8 @@ Each the designer's; the owner can overturn any.
 | D-TM1 | A source's clock is a hook the ring calls around its play (`SourceClock`), not the type's code reading the ring | The ring's rules stay written once (D-3b4); the node decides only what its clock must |
 | D-TM2 | The clock's report rides the source's own wake (`clockWake`), the report itself in a mailbox the type owns | One wake per source as built; G23 stands |
 | D-TM3 | `SourcePlayed` splits a cleared stream's faded 5 ms (`ended`) and the zeros from what was read | A clock counting the old stream's tail as played would put the library's new stream 5 ms off |
-| D-TM4 | `ranRawNs()` is a member of `GraphCycle`, the clamp is `sendspin`'s | When a tick ran is a tick fact for every node (TM1); never stepping back is a promise to one library |
-| D-TM5 | Clamp, not nominal dating, for an overdue tick (6.2) | Nominal dating of a burst re-creates 9.10 without the floor patch; the clamp's error is bounded and one-sided |
+| D-TM4 | `ranRawNs()` is a member of `GraphCycle`; the deferral, its bound and the clamp are `sendspin`'s | When a tick ran is a tick fact for every node (TM1); when to tell a library is that node's clock logic (TM3) |
+| D-TM5 | Tell only from an on-time tick, under a 2 s bound; the clamp kept only for a report the bound forces from an overdue tick (6.1, 6.2) | Every report is true when given, in a burst of either shape; the clamp has one case left, and is proven idle otherwise |
 | D-TM6 | Sinks unchanged; their consumers reconcile | A chunk is already the tick's facts and the model's latency |
 | D-TM7 | The converter's base is the RTP receiver's body generalised (`ModuleConverterBody`, `ModuleConverters<Shape>`), on the shared `joinEngineCompanion`; set and tracked add an ear-made `pw_stream` body on the same lifecycle | TM8; the module-run mode is what RTP already is, and the stream body is the only way to PipeWire's resampler for a ring (TM5); binding by the drive keeps Q-3b1's exactness |
 | D-TM10 | The card stays on its own body, sharing only `joinEngineCompanion` | It is made by ear's proxy, not a module: the base's registry search, `moduleRunDelay` and auto-port-config are all things a card does not use (5.4) |
@@ -562,7 +599,9 @@ Each the designer's; the owner can overturn any.
 | Reimplement RTP reception on the set or tracked converter (ear's own jitter buffer and clock tracking) | TM8: PipeWire keeps the jitter buffer and the clock tracking; RTP moves onto the shared wiring as module-run |
 | Move the card onto the module-run base | 5.4: it would add a registry search and a latency rule the card does not use |
 | The converter skipping a stall's backlog on `catchUp` | The framework would be keeping time again (TM1); a node that wants the skip gives a clock |
-| Date an overdue tick that lost nothing by its nominal start | 6.2, reasons 1 and 2 |
+| Tell every tick, an overdue one dated by its run time and clamped (this page's first design) | In the runner's uncut burst every tick is whole and overdue: told its run time, the library puts its playtime at now plus what it holds, finds its next chunk late by the graph's lag `L`, drops `L` mid-burst, runs about `L` ahead once the burst ends and adds `L` of silence: two corrections and silence where nothing was lost (the design review, M1) |
+| Tell every tick, an overdue one dated by its nominal start | The nominal start trails now by `L` until the burst ends; without the floor patch the library floors that at now with frames still buffered, mid-burst (`cycle-facts.md` 9.9, finding 1, and 9.10) |
+| Keep the floor patch so nominal dating works | TM7 drops it; and the deferral needs it in neither shape |
 
 ## 11. Questions for the owner, answered
 
