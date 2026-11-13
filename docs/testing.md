@@ -281,8 +281,9 @@ that loss and pays nothing, named. A skip no record pays fails, named by where i
 ramp's skip (`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) is paid as the
 time the WAV lost there (`rampLosses`): its own blocks, or more where the stream's drift from the
 WAV (`RampCheck::drifts`: how far the ramp's index moved past the WAV's frames) moved further
-before the next skip and within a second, which is the library correcting what the `sendspin` node
-could not skip of a stall past its feed ([node-types.md](node-types.md#clock)). That loss was
+before the next skip and within the feed, a chunk, two blocks and a beat of it (`rampSettleFrames`,
+about 250 ms), which is the library correcting what the `sendspin` node could not skip of a stall
+past its feed ([node-types.md](node-types.md#clock)). That loss was
 lost from when the WAV frame it lands on was due (from the file node's `running` record, its frames
 and the frames the losses before it took out) for as long as it lasts, from 100 ms before to 100 ms
 after (`rampSkipsSeen`, `unpaidRampSkips`). So a stall's record pays the stall whole and keeps no

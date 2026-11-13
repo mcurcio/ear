@@ -501,10 +501,16 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 inline constexpr std::chrono::milliseconds rampDueBefore{100};
 /// How far after the time its lost frames last: the records' and the WAV's clocks, and a beat of slack.
 inline constexpr std::chrono::milliseconds rampDueAfter{100};
+/// The sendspin node's feed at the tests' rate: 40 ms rounded up to a power of two, about 43 ms
+/// (docs/node-types.md#clock).
+inline constexpr std::size_t rampFeedFrames = 2048;
 /// How long after a skip the library's correction of what it left is taken to belong to the same loss: the sendspin
-/// node skips at most what its feed holds of a stall (docs/node-types.md#clock), and the library corrects the rest at
-/// the next chunk it syncs, after the feed and the rest of its chunk (26 blocks seen); a second covers it with room.
-inline constexpr std::size_t rampSettleFrames = graphFrequency;
+/// node skips at most what its feed holds of a stall, and the library corrects the rest once, at the next chunk it
+/// syncs, after the feed and the rest of its chunk, so within the feed, a chunk and two blocks of the skip (the bound
+/// the honest wrapper's stall tests found; the longest seen was 26 blocks: docs/node-types.md#clock), about 150 ms;
+/// and a beat of slack, 100 ms.
+inline constexpr std::size_t rampSettleFrames =
+	rampFeedFrames + chunkFrames + 2 * blockSize + static_cast<std::size_t>(graphFrequency) / 10;
 
 /// What a ramp lost at one skip, as the time the WAV lost there (docs/testing.md#the-counters-own-word).
 struct RampLoss {
