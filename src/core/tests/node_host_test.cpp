@@ -227,7 +227,8 @@ struct TestBlock final : PortBlock {
 	Executor& mainLoop;
 	BlockModes& modes;
 	Held& held;
-	Held applied; // completed, their event not yet dispatched
+	Held applied;       // completed, their event not yet dispatched
+	NodeCounts counted; // what counts() answers: the test sets it, as a real block's cycles would
 	TestBlock(Log& l, AudioCode** d, std::vector<LatencyPlan>* p, Executor& m, BlockModes& b, Held& hd)
 		: log(l), driven(d), plans(p), mainLoop(m), modes(b), held(hd) {}
 	~TestBlock() override { log.push_back("block destroyed"); }
@@ -254,6 +255,7 @@ struct TestBlock final : PortBlock {
 	}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
+	NodeCounts counts() const noexcept override { return counted; }
 
 private:
 	void complete(std::move_only_function<void()> done) {
@@ -2858,6 +2860,7 @@ struct IdBlocks final : PortBlockFactory {
 		void settle() override {}
 		std::uint64_t takenAt() const noexcept override { return 0; }
 		std::uint32_t blockId() const noexcept override { return id; }
+		NodeCounts counts() const noexcept override { return {}; }
 	};
 	Executor& mainLoop;
 	std::uint32_t next = 40;
@@ -3680,6 +3683,69 @@ TEST_CASE("A change of ports keeps the node's stop and one health stream for the
 	REQUIRE(f.host.health().size() == 1);
 	CHECK(f.host.health()[0].wanted == Wanted::stopped);
 	CHECK(f.host.health()[0].phase == NodePhase::stopped);
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+// docs/engine.md#counters: a node's counters run from its add, its block's kept when the block goes; a port-caused
+// replace is the same node to the operator (one health stream, its dropped frames), so it carries them too, and they
+// never step back on the way; a replace by another type is a new node, from zero.
+TEST_CASE("A node's counters are its block's, kept when the block goes and carried across a change of ports",
+          "[node_host][replace][counters]") {
+	Fixture f;
+	CHECK_FALSE(f.host.counts("desk"));
+	addRunning(f, "desk", std::make_shared<TestConfig>(f.log, "two"));
+	CHECK(f.host.counts("desk") == NodeCounts{});
+	TestBlock* older = f.blocks.made.at(0);
+	older->counted = NodeCounts{.missedCycles = 1, .overruns = 2, .repositions = 3, .driverChanges = 4};
+	CHECK(f.host.counts("desk") == older->counted);
+
+	const NodeChange ports{NodeOutcome::restart, {"playback"}, true};
+	f.host.nodeReplacing("desk", ports);
+	f.host.nodeReplaced(NodeSpec{"desk", "test", {{"playback", 4}}}, std::make_shared<TestConfig>(f.log, "four"),
+	                    ports);
+	CHECK(f.host.counts("desk") == NodeCounts{1, 2, 3, 4}); // the older node's, read from it while it closes
+	older->counted.overruns = 5;                            // its block still runs until the barrier
+	CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
+	// Turn by turn until the older block is destroyed and the newer made, the counts never step back.
+	std::size_t turns = 0;
+	while (f.blocks.made.size() < 2 && turns++ < 50) {
+		f.endTurn();
+		CHECK(f.host.counts("desk") == NodeCounts{1, 5, 3, 4});
+	}
+	REQUIRE(f.blocks.made.size() == 2);
+	f.blocks.made.at(1)->counted = NodeCounts{.missedCycles = 10, .overruns = 20};
+	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 3, 4});
+	f.blocks.events.back()->ready();
+	f.settle();
+	REQUIRE(f.host.health().size() == 1); // the older node is gone: its counts are carried
+	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 3, 4});
+	f.blocks.made.at(1)->counted.repositions = 1;
+	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
+
+	// Removed: still its counts while it stops, its block's kept past the block; none once it is gone.
+	f.host.nodeRemoved("desk");
+	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
+	f.settle();
+	CHECK_FALSE(f.host.counts("desk"));
+	f.stopAll();
+	f.settle();
+	CHECK(f.allGone == 1);
+}
+
+TEST_CASE("A replace by another type starts the name's counters from zero", "[node_host][replace][counters]") {
+	Fixture f;
+	addRunning(f, "x", std::make_shared<TestConfig>(f.log, "old"));
+	f.blocks.made.at(0)->counted = NodeCounts{.missedCycles = 7};
+	const NodeChange type{NodeOutcome::restart, {}, false};
+	f.host.nodeReplacing("x", type);
+	f.host.nodeReplaced(NodeSpec{"x", "other", {}}, std::make_shared<TestConfig>(f.log, "new"), type);
+	CHECK(f.host.counts("x") == NodeCounts{}); // the newer node's, though the older still closes
+	f.settle();
+	f.blocks.events.back()->ready();
+	f.settle();
+	CHECK(f.host.counts("x") == NodeCounts{});
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);

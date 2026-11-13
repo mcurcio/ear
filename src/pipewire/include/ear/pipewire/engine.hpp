@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include "ear/core/cycle_counters.hpp"
 struct pw_loop;
 struct pw_context;
 struct pw_core;
@@ -48,6 +49,9 @@ public:
 	/// Which graph cycles the internal clock cut short, counted from the engine's start (docs/engine.md#graphcycle):
 	/// written on the data thread, read on any by CutRecord's contract. For this package's adapters and its tests.
 	const CutRecord& cuts() const noexcept;
+	/// The graph's counters from the engine's start (docs/engine.md#counters): the cycles the internal clock started, the
+	/// cuts of them and the stalls those made, as cuts() counts them. Any thread.
+	GraphCounts graphCounts() const noexcept;
 	/// The internal clock's global id: a cycle whose clock.id is this one is numbered by cuts().
 	std::uint32_t internalClockId() const noexcept;
 	pw_loop* mainLoop() const noexcept; // for this package's adapters only

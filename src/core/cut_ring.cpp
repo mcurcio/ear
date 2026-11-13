@@ -31,8 +31,17 @@ void CutRing::incomplete() noexcept {
 	const std::uint64_t running = started_.load(std::memory_order_relaxed);
 	if (running == 0) return;
 	const std::uint64_t was = bits_[word(running)].fetch_or(bit(running), std::memory_order_relaxed);
-	if ((was & bit(running)) == 0)
-		cutsSoFar_.store(cutsSoFar_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+	if ((was & bit(running)) != 0) return;
+	cutsSoFar_.store(cutsSoFar_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+	// The cycle before's cut, if any, was told before this cycle started, on this thread: its bit is final here.
+	if (running == 1 || !bitOf(running - 1))
+		stalls_.store(stalls_.load(std::memory_order_relaxed) + 1, std::memory_order_release);
+}
+
+GraphCounts CutRing::counts() const noexcept {
+	const std::uint64_t stalls = stalls_.load(std::memory_order_acquire);
+	const std::uint64_t cuts = cutsSoFar_.load(std::memory_order_acquire);
+	return GraphCounts{.cycles = started_.load(std::memory_order_acquire), .cutCycles = cuts, .stalls = stalls};
 }
 
 std::optional<bool> CutRing::cut(std::uint64_t cycle) const noexcept {

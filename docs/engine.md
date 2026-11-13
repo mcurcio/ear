@@ -348,6 +348,52 @@ leaked.
 The dummy's `clock.delay` is always 0, followers or not: a following ALSA node writes its delay into
 its own clock, never into the driver's position.
 
+### Counters
+
+ear keeps running totals of what its cycles state, as core diagnostics
+(`ear/core/cycle_counters.hpp`), at two scopes because they mean different things. **The graph's**
+say what the host did to the whole graph: a cycle the driver cut is a dropout on every output at
+once, which no node caused. **A node's** say what happened to that node beyond the graph's own
+losses. Each fact is counted once, where it is stated: repeating the graph's cuts on every node
+would make each look faulty for what the host did, and summing nodes' misses into the graph would
+count one dropout once per node.
+
+| Counter | Scope | Counts | Where it is counted |
+|---|---|---|---|
+| `cycles` | graph | Cycles the internal clock started | The record of its cuts (`CutRing`'s `started`) |
+| `cutCycles` | graph | Of them, those the driver cut short | The record (`cutsSoFar`) |
+| `stalls` | graph | Runs of consecutive cut cycles: one stall of the host, however many cycles it took | The record: a cut whose cycle before was not cut, told in `incomplete` (the cycle before's cut was told before this cycle started, on the same thread) |
+| `lostMs` | graph | The time the graph lost | Never kept: `GraphCounts::lostMs` encodes it from `cutCycles`, a block each ([the quantum guard](#the-quantum-guard)) |
+| `missedCycles` | node | Cycles its block missed that the driver did not cut (the block was not scheduled: paused) | The block, from each cycle's facts: `missed - missedCut` |
+| `overruns` | node | Cycles in which the block's own work took longer than the cycle | The block: `cycleOverran`, its work timed from the monotonic reading `onProcess` takes for `startRawNs` to one at its very end (sources, code, fade, taps, metering), so a late wake (`overdueNs`, the host's) is never the node's |
+| `repositions` | node | Cycles stating `reposition` | The block, from the facts |
+| `driverChanges` | node | Cycles stating `driverChange` | The block, from the facts |
+
+`repositions` and `driverChanges` stay 0 on the tracking dummy (`resync.ms` is set beyond any stall
+and the driver never restarts under a running block, [above](#the-internal-clock)), so a non-zero
+value is a finding. A node's `missedCycles` may count one cycle more than the block missed uncut in
+the one case its facts leave undecided (a pause past the record's reach with some cuts in it:
+`missedCut` a lower bound, [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)).
+
+**The graph's** run from the engine's start: `Engine::graphCounts()` reads them from the record of
+the internal clock's cuts, which counts the stalls beside the cuts. A reading takes stalls, then
+cuts, then cycles, each an acquire load against the writer's release stores in the other order, so
+no reading shows more stalls than cuts or more cuts than cycles.
+
+**A node's** are counted by its port block, every cycle its `onProcess` sees (one too large to run
+included), after all its work: a `CycleCounters`, four atomics its one writer, the data thread,
+loads and stores relaxed, with no lock or allocation; any thread reads them (`PortBlock::counts`).
+They run from the node's add: `NodeHost::counts(name)` gives the newest node of the name not yet
+gone, its block's counts now, or what its block counted before it went, and survives its restarts,
+stops and changes of settings (the block is made once in a node's life). A port-caused replace is
+the same node to the operator (one health stream, its dropped frames), so the newer node adds the
+older's counts, read from it until it is gone and carried after, and the total never steps back; a
+replace by another type is a removal and an add, from zero. Nothing resets a counter but its
+owner's end.
+
+Nothing reports them yet: the wire and standard output are slice D2 of
+[the cycle facts design](design/cycle-facts.md#83-how-they-are-reported).
+
 ### Denormals
 
 The engine flushes denormals to zero on the data thread (FTZ and DAZ; FZ on arm64) with a blocking

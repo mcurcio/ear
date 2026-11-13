@@ -275,6 +275,8 @@ const CutRecord& Engine::cuts() const noexcept { return *impl_->cuts; }
 
 std::uint32_t Engine::internalClockId() const noexcept { return impl_->cuts->clockId(); }
 
+GraphCounts Engine::graphCounts() const noexcept { return impl_->cuts->counts(); }
+
 pw_loop* Engine::mainLoop() const noexcept { return pw_main_loop_get_loop(impl_->loop); }
 
 pw_context* Engine::context() const noexcept { return impl_->context; }

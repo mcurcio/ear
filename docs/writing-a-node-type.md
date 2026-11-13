@@ -473,6 +473,14 @@ after `changeDriver`, as above), and
 can lose a cycle and check what its code does with the facts the engine would hand it. The rows every runner of the rule
 must agree on are `test/support/cycle_table.hpp`'s ([testing.md](testing.md#what-each-test-program-proves)).
 
+The facts also feed ear's diagnostics counters ([engine.md](engine.md#counters)), which a type
+never writes: the framework counts them. In the harness `counts()` is the node's, as `NodeHost`
+gives them, counted by the fake block as the real block counts: `loseCycles(n, Lost::notScheduled)`
+moves `missedCycles` by n, `reposition` and `changeDriver` move `repositions` and `driverChanges`,
+and a code whose `process()` takes longer than its cycle (timed on the real clock) moves
+`overruns`. `Lost::cut` moves no node's counter, only the graph's: `graphCounts()` counts the
+harness's own record, its cycles, cut cycles and stalls.
+
 ### What every type must also pass
 
 - **Valid settings.** Add an entry to `validSettings` in `test/nodes/all_types.hpp`: one or more

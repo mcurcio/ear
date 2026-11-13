@@ -20,6 +20,7 @@
 
 #include "../legacy_instance.hpp"
 #include "ear/core/block_rules.hpp"
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/core/sink_ring.hpp"
@@ -156,7 +157,9 @@ struct NodeHarness::Impl final : NodeHealthListener,
 		void settle() override {}
 		std::uint64_t takenAt() const noexcept override { return harness.position; }
 		std::uint32_t blockId() const noexcept override { return 7; }
+		NodeCounts counts() const noexcept override { return counters.read(); }
 		Impl& harness;
+		CycleCounters counters; // its node counters, as the real block counts them (process())
 	};
 	struct FakeBlocks final : PortBlockFactory {
 		explicit FakeBlocks(Impl& h) : harness(h) {}
@@ -759,6 +762,8 @@ void NodeHarness::process(std::uint32_t frames) {
 	}
 	h.lostCut = 0;
 	h.lostUnscheduled = 0;
+	// The block's own work, timed as the real block times it, for its counters' overruns (docs/engine.md#counters).
+	const auto entered = std::chrono::steady_clock::now();
 	h.cuts.start();
 	const std::int64_t at = clock.ns(static_cast<std::int64_t>(h.timeFrames));
 	const CycleAccount::Step step =
@@ -797,6 +802,8 @@ void NodeHarness::process(std::uint32_t frames) {
 				bank.emplace_back(out[binding.firstOutput + c]);
 			binding.tap->write(bank, frames, chunkStamp(cycle, h.toldOnOutput(binding.firstOutput)));
 		}
+	const std::chrono::nanoseconds work = std::chrono::steady_clock::now() - entered;
+	if (h.block != nullptr) h.block->counters.add(step.facts, cycleOverran(work.count(), clock, frames));
 	h.position += frames;
 	h.timeFrames += frames;
 	h.lastFrames = frames;
@@ -826,6 +833,14 @@ void NodeHarness::reposition(std::int64_t frames) {
 const CutRecord& NodeHarness::cuts() const noexcept { return impl_->cuts; }
 
 const CycleFacts& NodeHarness::facts() const noexcept { return impl_->lastFacts; }
+
+NodeCounts NodeHarness::counts() const {
+	const std::optional<NodeCounts> counts = impl_->host->counts(impl_->options.node);
+	if (!counts) throw std::logic_error("no node " + impl_->options.node + " is in the harness");
+	return *counts;
+}
+
+GraphCounts NodeHarness::graphCounts() const noexcept { return impl_->cuts.counts(); }
 
 NodeOutcome NodeHarness::change(const NodeSettings& settings) {
 	impl_->requireAdded();

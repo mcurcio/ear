@@ -308,6 +308,20 @@ struct NodeHost::Impl {
 		bool stopHeld() const noexcept { return aggregate_.stopHeld(); }
 		bool disabled() const noexcept { return aggregate_.wanted() == lc::Wanted::disabled; }
 		std::uint64_t dropped() const noexcept { return dropped_; }
+		/// The node's counters from its add (docs/engine.md#counters): its block's now, or what it counted before it
+		/// went, plus what the older node of a port-caused replace counted: read from that node while it is not gone,
+		/// carried once it is. Main thread.
+		NodeCounts counts() const noexcept {
+			NodeCounts total = carried_ + (block_ ? block_->counts() : blockCounted_);
+			if (predecessor_ != 0 && !predecessorCarried_)
+				if (const Node* older = host_.find(predecessor_)) total = total + older->counts();
+			return total;
+		}
+		/// The older node of this port-caused replace is gone: its counters are this node's from now on.
+		void carryCounts(NodeCounts older) noexcept {
+			carried_ = carried_ + older;
+			predecessorCarried_ = true;
+		}
 
 		/// What a port-caused replace carries from its older node, or nothing.
 		struct Carried {
@@ -442,6 +456,7 @@ struct NodeHost::Impl {
 		void destroyBlock() {
 			if (!destroyPending_) return;
 			destroyPending_ = false;
+			if (block_) blockCounted_ = blockCounted_ + block_->counts(); // the counters outlive the block
 			if (makePending_) {
 				makePending_ = false;
 			} else if (host_.wedged && block_) {
@@ -2072,6 +2087,9 @@ struct NodeHost::Impl {
 		std::uint64_t completionsRun_ = 0; // `done`s its block ran, by event or settle(): a bound sees one it settled
 		std::int64_t judgedMs_ = 0;        // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
+		NodeCounts blockCounted_; // what its block counted, once the block went
+		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
+		bool predecessorCarried_ = false; // carried_ holds the older node's counters: they are not read from it again
 	};
 
 	Impl(AudioFormat format_, PortBlockFactory& blocks_, ResourceRegistry& resources_, Executor& mainLoop_,
@@ -2335,8 +2353,12 @@ struct NodeHost::Impl {
 			}
 		const auto successor = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->predecessor() == node.serial() && !known->removed(); });
-		if (successor != nodes.end())
+		if (successor != nodes.end()) {
+			// Carried at once, not in the input below, so no reading between the two counts the older node twice or not
+			// at all.
+			(*successor)->carryCounts(node.counts());
 			inputFor((*successor)->serial(), [droppedFrames](Node& next) { next.predecessorGone(droppedFrames); });
+		}
 		const auto next = std::ranges::find_if(
 			nodes, [&](const auto& known) { return known->name() == node.name() && !known->removed(); });
 		if (next != nodes.end()) inputFor((*next)->serial(), [](Node& waiting) { waiting.olderGone(); });
@@ -2444,6 +2466,12 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 }
 
 std::size_t NodeHost::leaked() const noexcept { return impl_->leaked; }
+
+std::optional<NodeCounts> NodeHost::counts(const NodeName& node) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->name() == node && !(*it)->removed()) return (*it)->counts();
+	return std::nullopt;
+}
 
 std::vector<NodeHealth> NodeHost::health() const {
 	std::vector<NodeHealth> result;

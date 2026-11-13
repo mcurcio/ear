@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include "ear/core/companions.hpp"
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/executor.hpp"
 #include "ear/core/internal_error.hpp"
@@ -179,6 +180,9 @@ public:
 	/// (pw_filter_get_node_id), so an engine companion links it by id, not by name; before that, or on a
 	/// block with no engine node, 0xFFFFFFFF (no id).
 	virtual std::uint32_t blockId() const noexcept = 0;
+	/// Any thread: the node counters this block's cycles stated, every cycle its process saw (docs/engine.md#counters);
+	/// zero before its first cycle.
+	virtual NodeCounts counts() const noexcept = 0;
 };
 class PortBlockEvents { // main thread
 public:
@@ -365,6 +369,10 @@ public:
 	/// Nodes not gone, in arrival order (a removed node still stopping comes before a newer node
 	/// of the same name).
 	std::vector<NodeHealth> health() const;
+	/// The node counters of the newest node of this name not yet gone, from its add (docs/engine.md#counters): what its
+	/// block counts now, or counted before it went, plus, for a port-caused replace, what the older node counted (read
+	/// from it until it is gone, then carried), so they never step back; none when no such node is left.
+	std::optional<NodeCounts> counts(const NodeName& node) const;
 	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
 	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
 	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp

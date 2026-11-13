@@ -10,7 +10,8 @@ and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judg
 (sections 9.7 and 9.8: `SendspinCode` and `SourceRing` keeping in step on the facts, the sink's stamps carrying them,
 `GraphCycle::xruns` and `discontinuity` gone, described in `docs/node-types.md#clock`, `docs/engine.md#graphcycle`
 and `docs/writing-a-node-type.md#sources` and `#sinks`); step C3c built (section 9.11: the `sendspin` clock and RTP
-tests on the judge, library settles, the feed's dry count, described in `docs/testing.md#the-cycle-judge`), the rest
+tests on the judge, library settles, the feed's dry count, described in `docs/testing.md#the-cycle-judge`); step D1 built
+(section 9.12: the diagnostics counters kept, per graph and per node, described in `docs/engine.md#counters`), the rest
 not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
@@ -628,12 +629,12 @@ Every counter is a monotonic total read from a fact that already exists; none is
 
 | Counter | Scope | Counts | Its source (never recomputed) |
 |---|---|---|---|
-| `cycles` | graph | graph cycles the internal clock started | `DriverCuts::started()` |
-| `cutCycles` | graph | cycles the driver reported cut short | `DriverCuts`' cut count |
-| `stalls` | graph | runs of consecutive cut cycles (one stall of the host, however many cycles it took) | `DriverCuts`: a cut whose previous cycle was not cut |
+| `cycles` | graph | graph cycles the internal clock started | `DriverCuts::started()` (its `CutRing`'s) |
+| `cutCycles` | graph | cycles the driver reported cut short | `DriverCuts`' cut count (`cutsSoFar`) |
+| `stalls` | graph | runs of consecutive cut cycles (one stall of the host, however many cycles it took) | `DriverCuts`' `CutRing`: a cut whose previous cycle was not cut |
 | `lostMs` | graph | time the graph lost | encoded from `cutCycles` (each cut is one block: `FrameClock::ns`), never kept |
 | `missedCycles` | node | cycles its block missed that the driver did not cut | the block's `CycleFacts`: `missed - missedCut` |
-| `overruns` | node | cycles in which its block's own work (sources, code, fade, taps) took longer than the cycle | the block: one raw clock read at the end of `processCycle`, against the entry read `onProcess` already takes |
+| `overruns` | node | cycles in which its block's own work (sources, code, fade, taps) took longer than the cycle | the block: one monotonic clock read at the end of `onProcess`, against the entry read it already takes (`cycleOverran`) |
 | `repositions` | node | cycles with `reposition` (the position moved by what no missed cycle explains) | `CycleFacts::causes` |
 | `driverChanges` | node | cycles with `driverChange` | `CycleFacts::causes` |
 | a sink's `dropped`, a source's `shortfall` | the node's companion | as `companions.md` 3.7 designs them | `Sink::droppedFrames()`, `Source::shortfallFrames()`; they stay on the companion's entry |
@@ -701,6 +702,11 @@ to put on the wire as a diagnostic.
 
 ### 8.4 Interfaces
 
+Corrected before D1 against the code as C2 to C4 left it (9.12 says what moved and why): the stall count lives in
+`CutRing`, the one record class `DriverCuts` forwards to (9.3); `GraphCounterSource` waits for D2 with its consumer;
+the block counts every cycle its `onProcess` sees, not only those `processCycle` runs; the harness keeps the graph's
+counts too, since its record is the same class.
+
 ```cpp
 // ear/core/cycle_counters.hpp (ear_core, public): the counters' one home, filled from facts.
 namespace ear {
@@ -708,25 +714,57 @@ namespace ear {
 struct NodeCounts {
 	std::uint64_t missedCycles = 0, overruns = 0, repositions = 0, driverChanges = 0;
 	friend constexpr NodeCounts operator+(NodeCounts, NodeCounts) noexcept; // NodeHost carries a destroyed block's
-	friend bool operator==(const NodeCounts&, const NodeCounts&) = default;
+	friend constexpr bool operator==(const NodeCounts&, const NodeCounts&) noexcept = default;
 };
 /// The graph's counters (8.1), a value; lostMs is encoded from cutCycles, not kept.
 struct GraphCounts {
 	std::uint64_t cycles = 0, cutCycles = 0, stalls = 0;
-	friend bool operator==(const GraphCounts&, const GraphCounts&) = default;
+	/// Each cut cycle lost one block of `quantum` frames (ear forces one quantum).
+	constexpr std::uint64_t lostMs(FrameClock clock, std::uint32_t quantum) const noexcept;
+	friend constexpr bool operator==(const GraphCounts&, const GraphCounts&) noexcept = default;
 };
+/// The one rule for an overrun, which the port block and the harness's fake block both call: the block's own work,
+/// from its entry to its end, took longer than the cycle's frames last.
+constexpr bool cycleOverran(std::int64_t workNs, FrameClock clock, std::uint32_t frames) noexcept;
 /// One block's counters as its cycles state them. One writer (the thread that runs the block's cycles), any reader:
-/// each counter is an atomic stored relaxed by its one writer and loaded relaxed (counters are independent; no reader
-/// needs two to agree). Allocates nothing; the port block and the harness's fake block each hold one.
+/// each counter an atomic its writer loads and stores relaxed (no read-modify-write: it is the only writer), read
+/// relaxed (a node's counters are independent; no reader needs two to agree). Allocates nothing; the port block and
+/// the harness's fake block each hold one.
 class CycleCounters {
 public:
-	/// The writer, once per cycle the block runs, after its work: the cycle's facts, and whether its work overran.
+	/// The writer, once per cycle the block's process sees (one too large to run included), after its work.
 	void add(const CycleFacts& facts, bool overran) noexcept;
 	/// Any thread.
 	NodeCounts read() const noexcept;
 };
+} // namespace ear
 
-/// Where the graph's counters come from (ear_pipewire's Engine, over DriverCuts; the harness has none).
+// ear/core/cut_ring.hpp: CutRing counts stalls in incomplete(), and gains
+/// Any thread: the graph's counters from this record, read newest-written first (stalls, cuts, cycles, each acquire),
+/// so any reading has stalls <= cutCycles <= cycles.
+GraphCounts counts() const noexcept;
+// src/pipewire/driver_cuts.hpp: DriverCuts forwards it. ear/pipewire/engine.hpp: Engine gains (any thread)
+GraphCounts graphCounts() const noexcept; // the internal clock's, from the engine's start
+
+// ear/core/node_host.hpp: PortBlock gains
+/// Any thread: the counts this block's cycles stated (zero before its first cycle).
+virtual NodeCounts counts() const noexcept = 0;
+// NodeHost gains (main thread)
+/// The node's totals since its add (8.2): what its destroyed blocks counted plus its block's now; none for no node.
+std::optional<NodeCounts> counts(const NodeName& node) const;
+
+// ear/testing/node_harness.hpp: NodeHarness gains
+NodeCounts counts() const;       // NodeHost::counts of the harness's node: its fake block's CycleCounters
+GraphCounts graphCounts() const; // its HarnessCuts' counts: what loseCycles(n, Lost::cut) moves
+```
+
+D2 adds, with their consumer:
+
+```cpp
+// ear/core/counter_watch.hpp (ear_core, public): the one pacer of 8.3, on the main loop.
+namespace ear {
+/// Where the graph's counters come from (ear_pipewire's Engine, through the graphCounts() D1 gives it; a test's
+/// fake): declared with CounterWatch, its consumer.
 class GraphCounterSource {
 public:
 	/// Any thread.
@@ -735,17 +773,6 @@ public:
 protected:
 	~GraphCounterSource() = default;
 };
-} // namespace ear
-
-// ear/core/node_host.hpp: PortBlock gains
-/// Any thread: the counts this block's cycles stated (zero before its first cycle).
-virtual NodeCounts counts() const noexcept = 0;
-// NodeHost gains (main thread)
-/// The node's totals since its add (8.2): what its destroyed blocks counted plus its block's now; none for no node.
-std::optional<NodeCounts> counts(std::string_view node) const;
-
-// ear/core/counter_watch.hpp (ear_core, public): the one pacer of 8.3, on the main loop.
-namespace ear {
 /// Told the counters that changed, at most once a second. Implemented by ear_control (StatusLog's records and the
 /// gateway's counters.changed); declared here, with its consumer.
 class CounterListener {
@@ -770,24 +797,35 @@ public:
 };
 } // namespace ear
 
-// ear/pipewire/engine.hpp: Engine implements GraphCounterSource
-GraphCounts graphCounts() const noexcept override; // from DriverCuts (started, cuts, stalls)
+// ear/pipewire/engine.hpp: Engine implements GraphCounterSource with D1's graphCounts()
 ```
 
-- **Threads.** The data thread writes a block's `CycleCounters` and `DriverCuts`' counts; the main loop reads them
+- **Threads.** The data thread writes a block's `CycleCounters` and the record's counts; the main loop reads them
   (`NodeHost::counts`, the snapshot, `CounterWatch`); the control thread never reads them, it gets the main loop's
   copies through the gateway as every other graph fact. Nothing on the data loop allocates, locks or formats; the
-  per-node map lives on the main loop.
-- **`DriverCuts`** gains a `stalls_` count (in `onIncomplete`, when the previous cycle's bit is clear): one more relaxed
-  store. **The port block** reads the raw clock once more at the end of `processCycle` (vDSO, no system call) for
-  `overran`, and calls `counters_.add(facts, overran)` there.
-- **The harness** holds a `CycleCounters` too and gives `NodeHarness::counts()`, so a type's tests see a node's
-  counters move under `loseCycles(n, Lost::notScheduled)` exactly as the engine's do; `Lost::cut` moves none of them
-  (only the graph's would move, which the harness does not keep).
-- **Packages.** `cycle_counters.hpp` and `counter_watch.hpp` are core (pure, no thread: `CounterWatch` uses core's
-  `Timers`); `ear_pipewire` implements `GraphCounterSource` and `PortBlock::counts`; `ear_control` implements
-  `CounterListener` and encodes both the records and the wire; `main.cpp` wires them. Dependencies keep pointing one
-  way, and no PipeWire type reaches a public header.
+  per-node totals live on the main loop.
+- **The stall count is `CutRing`'s** (so the harness's record keeps it too): in `incomplete()`, when the running cycle
+  is marked cut for the first time and the cycle before it was not cut (or there is none), one relaxed load and a
+  release store more. A cycle's cut is told before the next cycle starts, on the same thread, so the bit of the
+  cycle before is final when a stall's first cut is told.
+- **The port block** reads the monotonic clock once more at the end of `onProcess` (vDSO, no system call), after
+  everything the block does in the cycle, the oversized branch's zeros included, and calls
+  `counters_.add(step.facts, cycleOverran(end - entry, FrameClock(rate), frames))`, the entry being the monotonic
+  reading `onProcess` already takes for `startRawNs`. So a late wake (the host's, `GraphCycle::overdueNs`) is never
+  the node's overrun, and a cycle too large to run still counts what it missed.
+- **NodeHost** keeps per node what its destroyed block counted (read just before the block goes, freed or leaked) and
+  what a port-caused replace's older node counted (read live until that node is gone, then carried), so `counts()`
+  never steps back. A node's block is made once in its life, so the port-caused replace is the one case a name's
+  counts span two blocks. `counts(name)` answers for the newest node of the name not gone.
+- **The harness** holds a `CycleCounters` in its fake block and times its `process()` work (sources, code, fade, taps)
+  on `std::chrono::steady_clock`, so a type's tests see a node's counters move under `loseCycles(n,
+  Lost::notScheduled)`, `changeDriver`, `reposition` and a code that stalls past its cycle, as the engine's do;
+  `Lost::cut` moves none of them, only `graphCounts()`. `NodeHarness::counts()` is `NodeHost::counts`, so the
+  harness answers by NodeHost's rule.
+- **Packages.** `cycle_counters.hpp` is core (pure, no thread), and so in D2 is `counter_watch.hpp` (`CounterWatch`
+  uses core's `Timers`); `ear_pipewire` gives `Engine::graphCounts` and `PortBlock::counts`; in D2 `ear_control`
+  implements `CounterListener` and encodes both the records and the wire, and `main.cpp` wires them. Dependencies
+  keep pointing one way, and no PipeWire type reaches a public header.
 
 ### 8.5 The editor
 
@@ -824,7 +862,7 @@ R5d).
 | **C4a** | **Done** (9.7, which departs from the progress half). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | **Done** (9.8). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | **Done** (9.11, which keeps `kLogReach`, `kLogLag` and `inLoss`'s lag for 3c's patch). `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `kSettleCycles`, `lossSteps`, `dryCycles` from `lastGot()` (and `lastGot()`), the 600 ms and 0.5 s windows (5.5) | none |
-| **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
+| **D1** | **Done** (9.12). Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
 | **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |
 | **C6a** | `SampleRate`, `FrameClock(SampleRate)` beside the old constructor, `framesCeil`, `framesNearest`; compile-fail cases | nothing | none |
@@ -1469,6 +1507,41 @@ facts and `rateDiff`.
   118 host catch-ups, 9.7's signature under load). The steady tests failed nothing else in 56 runs. The RTP receiver's
   five tone tests: 20 of 20 at load 2.5 to 9.7, 10 of 10 beside `yes` x 4 at load 3.6 to 7.9; the system RTP test 20
   of 20 at load 3.5 to 3.8.
+
+### 9.12 Found building D1
+
+What D1 built is described in `docs/engine.md#counters` and `docs/writing-a-node-type.md#lost-cycles`; this section
+keeps only where it departs from 8.1, 8.2 and 8.4 as first written (8.4 is corrected in place).
+
+- **The stall count is `CutRing`'s, not `DriverCuts`'.** Since C2 `DriverCuts` holds no bits or counts of its own,
+  only a `CutRing` it forwards to (9.3), so the stall count went where the cuts are counted, and the harness's
+  record keeps it by the same code. `CutRing::counts()` reads stalls, cuts and cycles in that order, each acquire,
+  against the writer's order (cycles, then cuts, then stalls, each release), so no reading shows more stalls than
+  cuts or more cuts than cycles; 8.4 as first written read them relaxed, with no reader needing two to agree, which
+  a reader that subtracts would.
+- **`GraphCounterSource` waits for D2.** Its one consumer is `CounterWatch` (D2), and an interface lives with its
+  consumer, so D1 gives `Engine::graphCounts()` as a plain member, which D2's interface then names.
+- **Every cycle the block's `onProcess` sees is counted**, not only those `processCycle` runs: a cycle too large to
+  run is written as zeros outside `processCycle`, and its facts (what it missed) would otherwise go uncounted. The
+  overrun is timed from the monotonic reading `onProcess` already takes to one at its very end, metering and the
+  window's publish included, so a late wake (`GraphCycle::overdueNs`, the host's) is never the node's.
+- **`cycleOverran` is one rule** (`cycle_counters.hpp`) the block and the harness both call, as `CycleAccount` is for
+  the facts; the harness times its work on `steady_clock` (CLOCK_MONOTONIC, as the block), so a code that stalls
+  past its cycle in a type's test moves `overruns` as it would in the engine.
+- **The harness keeps the graph's counts** (`NodeHarness::graphCounts()`): 8.4 said it keeps none, but its record is
+  the engine's class, so `loseCycles(n, Lost::cut)` moving the graph's counters and no node's is checked in the
+  harness as in the engine. `NodeHarness::counts()` goes through `NodeHost::counts`, so the harness answers by
+  NodeHost's rule, not a copy.
+- **A node's counts span two blocks only across a port-caused replace.** 8.2's "if the node's block is made again
+  within its life" does not happen: NodeHost makes a node's block once and destroys it only at its removal. A
+  port-caused replace carries one health stream and the older node's dropped frames, so it carries its counts too:
+  the newer node reads the older's live until it is gone, then adds its total. A replace by another type is a
+  removal and an add, and starts from zero (8.2).
+- **`missedCycles` is `missed - missedCut`, so the one undecided case counts one more.** Past the ring's reach with
+  some but not all of the cycles since the last cut, `missedCut` is a lower bound by one (9.2); the counter then may
+  count one cycle more than the block missed uncut. Only a pause of over 2^16 cycles with cuts in it makes it.
+- **The pause is made with `pw_impl_node_set_active(false)`**, as C2's runner makes it (9.3): the step table's
+  "a `PAUSED` block" is a block made inactive. A suspended node is never brought back.
 
 ## 10. Decided here (technical)
 

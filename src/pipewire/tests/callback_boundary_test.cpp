@@ -453,6 +453,7 @@ public:
 	void settle() override {}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
+	NodeCounts counts() const noexcept override { return {}; }
 	std::string_view faultNode() const noexcept override { return "amp"; }
 	void faulted(std::string_view, std::string_view) override { std::fputs("the block was told\n", stderr); }
 	void onStreaming(std::uint64_t /*count*/) { events_.ready(); }

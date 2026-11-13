@@ -37,6 +37,8 @@ public:
 	std::optional<bool> cut(std::uint64_t cycle) const noexcept override { return ring().cut(cycle); }
 	std::uint64_t cutsSoFar() const noexcept override { return ring().cutsSoFar(); }
 	std::uint64_t newestWhole() const noexcept override { return ring().newestWhole(); }
+	/// The graph's counters from this record (CutRing::counts; docs/engine.md#counters). Any thread.
+	GraphCounts counts() const noexcept { return ring().counts(); }
 	/// The internal clock's global id, which a cycle's clock.id names when it drives.
 	std::uint32_t clockId() const noexcept { return clockId_; }
 

@@ -28,6 +28,7 @@
 #include <variant>
 #include <vector>
 #include "ear/core/companions.hpp"
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/desired_graph.hpp"
 #include "ear/core/node_host.hpp"
@@ -167,6 +168,13 @@ public:
 	const CutRecord& cuts() const noexcept;
 	/// The facts of the last process()'s cycle, as its code's GraphCycle carried them (none before the first).
 	const CycleFacts& facts() const noexcept;
+	/// The node's counters (docs/engine.md#counters), as NodeHost::counts gives them: its fake block's, counted by the
+	/// real block's rule each process() (missed cycles not cut, overruns of the work process() times, repositions,
+	/// driver changes); std::logic_error when the node is gone or was never added.
+	NodeCounts counts() const;
+	/// The graph's counters of the harness's own cut record: cycles started (each process() and each lost cycle), the
+	/// cut ones (loseCycles with Lost::cut) and the stalls they made (one per loseCycles run of cuts).
+	GraphCounts graphCounts() const noexcept;
 	/// A committed change of settings (parse, then NodeHost::nodeChanged with outcome restart and the changed keys, or
 	/// stored on a disabled node). std::logic_error for settings the type refuses.
 	NodeOutcome change(const NodeSettings& settings);

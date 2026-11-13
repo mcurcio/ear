@@ -33,6 +33,7 @@ target_sources(ear_core PUBLIC FILE_SET HEADERS BASE_DIRS include FILES
 	include/ear/core/command_error.hpp
 	include/ear/core/companions.hpp
 	include/ear/core/cut_ring.hpp
+	include/ear/core/cycle_counters.hpp
 	include/ear/core/cycle_facts.hpp
 	include/ear/core/desired_graph.hpp
 	include/ear/core/executor.hpp
@@ -79,6 +80,7 @@ if(BUILD_TESTS)
 
 	add_executable(ear_core_tests
 		tests/block_rules_test.cpp
+		tests/cycle_counters_test.cpp
 		tests/cycle_facts_test.cpp
 		tests/desired_graph_test.cpp
 		tests/frame_ring_test.cpp
@@ -96,7 +98,8 @@ if(BUILD_TESTS)
 		tests/sound_card_test.cpp
 		tests/source_ring_test.cpp
 		tests/type_spec_test.cpp)
-	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_catch_main)
+	target_link_libraries(ear_core_tests PRIVATE ear_core ear_type_harness ear_latency_table ear_cycle_table ear_inducers
+		ear_catch_main)
 	add_dependencies(ear_core_tests ear_core_verify_interface_header_sets ear_type_harness_verify_interface_header_sets)
 	ear_catch_tests(ear_core_tests)
 

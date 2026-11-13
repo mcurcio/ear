@@ -2855,3 +2855,115 @@ TEST_CASE("The engine's record of the internal clock's cuts agrees with the driv
 	CHECK(mismatches == 0);
 	CHECK(cuts >= 4);
 }
+
+// The diagnostics counters on a real engine (docs/engine.md#counters), each moved by the cause it counts. The head of a
+// chain stalls four times for one and a half cycles, each stall cutting the cycle it is made in on any host
+// (docs/engine.md#the-one-data-loop-and-invokes): the graph's cut cycles and stalls move by at least those, and the
+// tail, which misses each cut cycle, counts none of it as its own.
+TEST_CASE("An induced cut moves the graph's counters and no node's missed cycles", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	Wiring wiring(*engine, waiter);
+	StallingCode head(1024, StallPlan::every(40, 20, 4, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	StallingCode tail(1024, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents headEvents(waiter), tailEvents(waiter);
+	auto headBlock = blocks.make("head", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, headEvents);
+	auto tailBlock = blocks.make("tail", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, tailEvents);
+	REQUIRE(wiring.link(waiter, {"head", "out.a"}, {"tail", "in.a"}));
+	REQUIRE(ear::testing::driveNow(*tailBlock, &tail));
+	const GraphCounts before = engine->graphCounts();
+	head.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	REQUIRE(ear::testing::driveNow(*headBlock, &head));
+	REQUIRE(waiter.until([&] { return head.stalls() == 4 && head.ledger().count() >= 200; }));
+	REQUIRE(ear::testing::driveNow(*headBlock, nullptr));
+	REQUIRE(ear::testing::driveNow(*tailBlock, nullptr));
+	const GraphCounts after = engine->graphCounts();
+
+	INFO("the graph's counters moved from " << before.cycles << " cycles, " << before.cutCycles << " cut, "
+	                                        << before.stalls << " stalls to " << after.cycles << ", " << after.cutCycles
+	                                        << ", " << after.stalls);
+	CHECK(after.cycles >= before.cycles + 200);
+	CHECK(after.cutCycles >= before.cutCycles + 4);
+	CHECK(after.stalls >= before.stalls + 4); // forty cycles apart: four stalls, and any of the host's
+	CHECK(after.stalls <= after.cutCycles);
+	// The tail missed the cut cycles (the excuse path ran), and counted none of them: the driver cut each.
+	std::uint64_t tailMissed = 0;
+	for (const ear::test::LedgerCycle& cycle : tail.ledger().cycles()) tailMissed += cycle.facts.missed;
+	CHECK(tailMissed >= 4);
+	const NodeCounts tailCounts = tailBlock->counts();
+	CHECK(tailCounts.missedCycles == 0);
+	CHECK(tailCounts.repositions == 0);
+	CHECK(tailCounts.driverChanges == 0);
+	CHECK(headBlock->counts().missedCycles == 0);
+}
+
+// A block made inactive, as a session manager pauses a node (docs/engine.md#the-internal-clock), misses cycles the
+// driver runs whole without it: its missed cycles move by exactly what its cycles state.
+TEST_CASE("A paused block moves its missed cycles by the cycles it was not scheduled for", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(4096, StallPlan{}, [&] { waiter.wake(); });
+	// Another block runs on while the judged one is paused, so the driver has a node to drive and the waiter is woken.
+	StallingCode running(4096, StallPlan{}, [&] { waiter.wake(); });
+	BlockEvents events(waiter), runningEvents(waiter);
+	auto other = blocks.make("running", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, runningEvents);
+	REQUIRE(ear::testing::driveNow(*other, &running));
+	// Linked to nothing: made inactive, a linked block would hold its peers back too.
+	auto block = blocks.make("paused", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return code.ledger().count() >= 10; }));
+	pw_impl_node* node = engineNode(engine->context(), "paused");
+	REQUIRE(node != nullptr);
+	const std::size_t ranBefore = code.ledger().count();
+	const std::uint64_t lastRun = code.ledger()[ranBefore - 1].facts.graphCycle;
+	REQUIRE(pw_impl_node_set_active(node, false) == 0);
+	REQUIRE(waiter.until([&] { return engine->cuts().started() > lastRun + 32; }));
+	REQUIRE(pw_impl_node_set_active(node, true) == 0);
+	REQUIRE(waiter.until([&] {
+		const std::size_t count = code.ledger().count();
+		return code.ledger()[count - 1].facts.graphCycle > lastRun + 32;
+	}));
+	// The code's last cycle is counted once its process returned: a drive of nothing is applied between cycles.
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(ear::testing::driveNow(*other, nullptr));
+	CHECK(other->counts().missedCycles == 0); // the pause was the paused block's alone
+
+	std::uint64_t notCut = 0;
+	std::size_t absences = 0;
+	for (const ear::test::LedgerCycle& cycle : code.ledger().cycles()) {
+		notCut += cycle.facts.missed - cycle.facts.missedCut;
+		if (cycle.facts.causes.has(CycleCause::absent)) ++absences;
+	}
+	INFO("the block's cycles stated " << notCut << " missed cycles not cut, in " << absences << " absences");
+	CHECK(absences >= 1);
+	CHECK(notCut >= 32);
+	const NodeCounts counts = block->counts();
+	CHECK(counts.missedCycles == notCut);
+	CHECK(counts.repositions == 0);
+	CHECK(counts.driverChanges == 0);
+}
+
+// An overrun is the block's own work past its cycle (docs/engine.md#counters): a code that stalls one and a half
+// cycles moves its node's overruns once a stall.
+TEST_CASE("A code that stalls past its cycle moves its node's overruns", "[port_blocks][counters]") {
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(1024, StallPlan::every(30, 10, 3, StallLength::cycles(1.5)), [&] { waiter.wake(); });
+	code.prepare(kFormat); // its stalls are sized in cycles of the format's rate
+	BlockEvents events(waiter);
+	auto block = blocks.make("staller", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return code.stalls() == 3 && block->counts().overruns >= 3; }));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	const NodeCounts counts = block->counts();
+	INFO("overruns " << counts.overruns << " in " << code.ledger().count() << " cycles of the code");
+	CHECK(counts.overruns >= 3);
+	CHECK(counts.overruns < code.ledger().count()); // the stalls' and any the host held, never every cycle
+	CHECK(counts.missedCycles == 0);
+}

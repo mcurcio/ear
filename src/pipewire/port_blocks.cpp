@@ -35,6 +35,7 @@
 
 #include "callback_boundary.hpp"
 #include "ear/core/block_rules.hpp"
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
 #include "ear/core/internal_error.hpp"
 #include "ear/pipewire/data_loop_wedge.hpp"
@@ -139,10 +140,10 @@ public:
 		  publicOutputs_(ports.outputs().size()), meters_(ports.inputs().size() + ports.outputs().size()),
 		  levels_(std::move(levels)), registered_(node, publicPorts(ports)), ports_(ports), rate_(format.rate),
 		  cuts_(engine.cuts()), internalClock_(engine.internalClockId()), account_(FrameClock(format.rate), &cuts_),
-		  downstream_(outputs_.size()), downstreamNow_(outputs_.size()), inputToldNow_(inputs_.size()),
-		  outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()), outputPeers_(outputs_.size()),
-		  inputTold_(inputs_.size()), outputTold_(outputs_.size()), fade_(format.rate), fadeMask_(outputs_.size(), 0),
-		  sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
+		  cycleClock_(format.rate), downstream_(outputs_.size()), downstreamNow_(outputs_.size()),
+		  inputToldNow_(inputs_.size()), outputToldNow_(outputs_.size()), inputPeers_(inputs_.size()),
+		  outputPeers_(outputs_.size()), inputTold_(inputs_.size()), outputTold_(outputs_.size()), fade_(format.rate),
+		  fadeMask_(outputs_.size(), 0), sinks_(insideBanks(ports, Direction::output)), tapSpans_(outputs_.size()),
 		  sources_(insideBanks(ports, Direction::input)), sourceSpans_(inputs_.size()) {
 		for (std::size_t i = 0; i < outputs_.size(); ++i) {
 			scratch_.emplace_back(format.maxBlock, 0.0f);
@@ -251,6 +252,8 @@ public:
 	std::uint64_t takenAt() const noexcept override { return takenAt_.load(std::memory_order_acquire); }
 
 	std::uint32_t blockId() const noexcept override { return blockId_; }
+
+	NodeCounts counts() const noexcept override { return counters_.read(); }
 
 	void carryLatency(const LatencyPlan& plan) override {
 		// Worked out here first, so a plan that does not fit the ports throws to its caller and is never kept: after
@@ -567,6 +570,9 @@ private:
 		const std::uint64_t start = position->clock.position;
 		const std::uint64_t boundary = (start + frames) / windowFrames_;
 		if (boundary != start / windowFrames_) publish(boundary * windowFrames_);
+		// The node's counters, after everything the block did in the cycle: its work timed from the monotonic reading
+		// taken at entry, so a late wake is the host's, never the node's overrun (docs/engine.md#counters).
+		counters_.add(step.facts, cycleOverran(nowNs(CLOCK_MONOTONIC) - monoBefore, cycleClock_, frames));
 	}
 
 	void processCycle(std::uint32_t frames, const GraphCycle& cycle) noexcept {
@@ -653,6 +659,8 @@ private:
 	const CutRecord& cuts_;       // the engine's record of the internal clock's cuts
 	std::uint32_t internalClock_; // the internal clock's id: its cycles are numbered by cuts_
 	CycleAccount account_;        // each cycle's facts, from the clock as the realtime side last saw it; data loop only
+	FrameClock cycleClock_;       // the graph's, for how long a cycle lasts (cycleOverran)
+	CycleCounters counters_;      // the node's counters, written on the data loop, read on any thread
 	// Latency: each output's downstream, published by the main thread for the realtime side (packed), and the copy
 	// a cycle hands its code; then, on the main thread only, what each port's peers report, what each port told them
 	// last, and the run's plan, from which workOut works the rest out.

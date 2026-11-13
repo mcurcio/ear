@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <vector>
+#include "ear/core/cycle_counters.hpp"
 #include "ear/core/cycle_facts.hpp"
 namespace ear {
 
@@ -23,14 +24,18 @@ public:
 	/// A cycle starts: newestWhole moves to the one before it if that was not cut, started() moves on, and the new
 	/// cycle's slot is cleared.
 	void start() noexcept;
-	/// The running cycle (started()) was cut short: cutsSoFar moves on, once however often it is told. Nothing before
-	/// the first start.
+	/// The running cycle (started()) was cut short: cutsSoFar moves on, once however often it is told, and so does the
+	/// count of stalls when the cycle before it was not cut (or there was none). Nothing before the first start.
 	void incomplete() noexcept;
 
 	std::uint64_t started() const noexcept override { return started_.load(std::memory_order_acquire); }
 	std::optional<bool> cut(std::uint64_t cycle) const noexcept override;
 	std::uint64_t cutsSoFar() const noexcept override { return cutsSoFar_.load(std::memory_order_acquire); }
 	std::uint64_t newestWhole() const noexcept override { return newestWhole_.load(std::memory_order_acquire); }
+	/// Any thread: the graph's counters (docs/engine.md#counters), each the record's own count. Read in the reverse of
+	/// the order the writer stores them (stalls, then cuts, then cycles, each acquire against its release store), so any
+	/// reading has stalls <= cutCycles <= cycles.
+	GraphCounts counts() const noexcept;
 
 private:
 	bool bitOf(std::uint64_t cycle) const noexcept;
@@ -38,6 +43,7 @@ private:
 	std::atomic<std::uint64_t> started_{0};
 	std::atomic<std::uint64_t> cutsSoFar_{0};
 	std::atomic<std::uint64_t> newestWhole_{0};
+	std::atomic<std::uint64_t> stalls_{0}; // cuts whose cycle before was not cut: runs of consecutive cut cycles
 };
 
 } // namespace ear

@@ -95,6 +95,7 @@ struct Block final : PortBlock {
 	void settle() override {}
 	std::uint64_t takenAt() const noexcept override { return 0; }
 	std::uint32_t blockId() const noexcept override { return 0xFFFFFFFFU; }
+	NodeCounts counts() const noexcept override { return {}; }
 };
 
 struct Blocks final : PortBlockFactory {
