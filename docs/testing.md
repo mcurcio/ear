@@ -288,8 +288,10 @@ the file node lost, and no loss moves a skip's due time later than its frames we
 past the node's feed only moves it earlier). The framework skips nothing for a node
 ([architecture.md](architecture.md#the-timing-model)), so the reckoning holds behind a node whose
 own clock skips the graph's lost time, not behind one with none. A source stamp's
-(`SourceStamps::seen`) was lost while its chunk or the one before was captured, from the arrival
-before it, less 2 s, to its own. The shape still says which step is a skip (whole blocks, exactly; within
+(`SourceStamps::seen()`) was lost while its chunk or the one before was captured: from the stamp of
+the chunk before (earlier by the skip's own excess, in case the loss fell inside that chunk),
+read onto the wall clock by the quickest arrival measured (each chunk's lag and when the test read
+it), less 100 ms, to its own arrival. The shape still says which step is a skip (whole blocks, exactly; within
 `stampSlackUs` for a stamp, which is rounded to the microsecond), but no longer excuses it, and a
 host cut elsewhere in the run pays for nothing. `lostCycles(ear)` sums the records, the totals.
 

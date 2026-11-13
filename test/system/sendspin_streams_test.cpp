@@ -31,9 +31,10 @@ constexpr std::int64_t stampSlackUs = 200;
 /// clock or carrying an offset can keep above it; a loaded host only slows the others.
 constexpr std::int64_t quickestArrivalBoundUs = 250000;
 
-/// The longest a chunk takes from its capture to the test reading its arrival, on a loaded host: a skip in it was lost
-/// no earlier than this before the chunk before it arrived.
-constexpr auto captureLag = std::chrono::seconds(2);
+/// How much earlier than its measured capture a skip's window opens: the server's clock read onto the test's wall clock
+/// by the quickest chunk's arrival (SourceStamps::wallOffsetUs), which a slower read of every chunk could only have put
+/// later by the time the test took to read it, and a beat of slack.
+constexpr auto captureSlack = std::chrono::milliseconds(100);
 
 /// A block's time in nanoseconds, kept exact: k blocks are k times this, rounded once.
 constexpr std::int64_t blockNs = std::int64_t{blockSize} * 1000000000 / graphFrequency;
@@ -49,7 +50,19 @@ struct SourceStamps {
 	std::size_t skips = 0;           // steps longer by whole blocks: the host skipped cycles while capturing
 	std::int64_t skippedUs = 0;      // what those steps added: the graph's lost time
 	std::uint64_t skippedBlocks = 0; // and in blocks, each skip paid by a record of ear's (unpaidSkips)
-	std::vector<SeenSkip> seen;      // each skip, with when its cycles were lost
+	/// Each skip as seen: its blocks, the stamp of the chunk before it and its excess (server clock, us), when this
+	/// chunk arrived (wall clock), and where it was seen.
+	struct Skip {
+		std::uint64_t blocks;
+		std::int64_t beforeStampUs;
+		std::int64_t excessUs;
+		RecordTime arrived;
+		std::string what;
+	};
+	std::vector<Skip> skipped;
+	/// The least of (when the test read a chunk, on the wall clock) - (when it arrived, on the server's clock), us: the
+	/// server's clock onto the wall clock, late by at most the quickest read.
+	std::optional<std::int64_t> wallOffsetUs;
 	std::optional<RecordTime> lastArrived;
 	std::size_t offSteps = 0; // any other step: not the frames' time
 	std::int64_t worstCleanUs = 0;
@@ -60,14 +73,15 @@ struct SourceStamps {
 	std::optional<std::int64_t> lastStampUs;
 	std::size_t lastFrames = 0;
 
-	/// `arrived`: when the test read the chunk's event. A skip's cycles were lost while its chunk or the one before was
-	/// captured: after the one before arrived, less how long a chunk may take to arrive, and before this one did.
+	/// `arrived`: when the test read the chunk's event; `lagUs` its arrival on the server's clock less its stamp.
 	void take(std::size_t frames, std::int64_t stampUs, std::int64_t lagUs, RecordTime arrived) {
 		++chunks;
 		leastLagUs = std::min(leastLagUs, lagUs);
 		quickestLagUs = std::min(quickestLagUs, lagUs);
 		if (!firstArrivalUs) firstArrivalUs = stampUs + lagUs;
 		lastArrivalUs = stampUs + lagUs;
+		const std::int64_t offsetUs = arrived.time_since_epoch().count() - (stampUs + lagUs);
+		wallOffsetUs = std::min(wallOffsetUs.value_or(offsetUs), offsetUs);
 		if (lastStampUs) {
 			const std::int64_t lengthUs = static_cast<std::int64_t>(lastFrames) * 1000000 / graphFrequency;
 			const std::int64_t excessUs = stampUs - *lastStampUs - lengthUs;
@@ -78,9 +92,9 @@ struct SourceStamps {
 				++skips;
 				skippedUs += excessUs;
 				skippedBlocks += static_cast<std::uint64_t>(blocks);
-				seen.push_back(
-					{static_cast<std::uint64_t>(blocks), lastArrived.value_or(arrived) - captureLag, arrived,
-				     "a stamp step of " + std::to_string(blocks) + " blocks at chunk " + std::to_string(chunks)});
+				skipped.push_back(
+					Skip{static_cast<std::uint64_t>(blocks), *lastStampUs, excessUs, arrived,
+				         "a stamp step of " + std::to_string(blocks) + " blocks at chunk " + std::to_string(chunks)});
 			} else if (excessUs > stampSlackUs || excessUs < -stampSlackUs) {
 				++offSteps;
 			} else {
@@ -91,6 +105,20 @@ struct SourceStamps {
 		lastStampUs = stampUs;
 		lastFrames = frames;
 		lastArrived = arrived;
+	}
+
+	/// Each skip with when its cycles were lost (docs/testing.md#the-counters-own-word): while its chunk or the one
+	/// before was captured, so from the capture of the chunk before (its stamp, earlier still by the skip's own excess
+	/// when the loss fell inside it and moved its stamp on), read onto the wall clock by the measured arrivals, less
+	/// captureSlack, to when this chunk arrived.
+	std::vector<SeenSkip> seen() const {
+		std::vector<SeenSkip> out;
+		for (const Skip& skip : skipped) {
+			const RecordTime captured{
+				std::chrono::microseconds(skip.beforeStampUs - skip.excessUs + wallOffsetUs.value_or(0))};
+			out.push_back({skip.blocks, captured - captureSlack, skip.arrived, skip.what});
+		}
+		return out;
 	}
 };
 
@@ -174,7 +202,7 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	CHECK(ear.hasLine("node ma removed dropped=0"));
 	// Every skip is paid by a record of ear's of the cycles lost while its chunk was captured, its records complete once
 	// it stopped (docs/testing.md#the-counters-own-word).
-	const auto unpaid = unpaidSkips(ear, stamps.seen);
+	const auto unpaid = unpaidSkips(ear, stamps.seen());
 	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
 	CHECK(unpaid.empty());
 }
