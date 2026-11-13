@@ -31,6 +31,10 @@ constexpr std::int64_t stampSlackUs = 200;
 /// clock or carrying an offset can keep above it; a loaded host only slows the others.
 constexpr std::int64_t quickestArrivalBoundUs = 250000;
 
+/// The longest a chunk takes from its capture to the test reading its arrival, on a loaded host: a skip in it was lost
+/// no earlier than this before the chunk before it arrived.
+constexpr auto captureLag = std::chrono::seconds(2);
+
 /// A block's time in nanoseconds, kept exact: k blocks are k times this, rounded once.
 constexpr std::int64_t blockNs = std::int64_t{blockSize} * 1000000000 / graphFrequency;
 
@@ -44,8 +48,10 @@ struct SourceStamps {
 	std::size_t cleanFrames = 0;     // frames whose chunk followed the last with a clean step
 	std::size_t skips = 0;           // steps longer by whole blocks: the host skipped cycles while capturing
 	std::int64_t skippedUs = 0;      // what those steps added: the graph's lost time
-	std::uint64_t skippedBlocks = 0; // and in blocks: no more than the cycles ear's records lost
-	std::size_t offSteps = 0;        // any other step: not the frames' time
+	std::uint64_t skippedBlocks = 0; // and in blocks, each skip paid by a record of ear's (unpaidSkips)
+	std::vector<SeenSkip> seen;      // each skip, with when its cycles were lost
+	std::optional<RecordTime> lastArrived;
+	std::size_t offSteps = 0; // any other step: not the frames' time
 	std::int64_t worstCleanUs = 0;
 	std::int64_t quickestLagUs = INT64_MAX;
 	std::int64_t leastLagUs = INT64_MAX; // arrival - stamp: below 0 the stamp is in the server's future
@@ -54,7 +60,9 @@ struct SourceStamps {
 	std::optional<std::int64_t> lastStampUs;
 	std::size_t lastFrames = 0;
 
-	void take(std::size_t frames, std::int64_t stampUs, std::int64_t lagUs) {
+	/// `arrived`: when the test read the chunk's event. A skip's cycles were lost while its chunk or the one before was
+	/// captured: after the one before arrived, less how long a chunk may take to arrive, and before this one did.
+	void take(std::size_t frames, std::int64_t stampUs, std::int64_t lagUs, RecordTime arrived) {
 		++chunks;
 		leastLagUs = std::min(leastLagUs, lagUs);
 		quickestLagUs = std::min(quickestLagUs, lagUs);
@@ -70,6 +78,9 @@ struct SourceStamps {
 				++skips;
 				skippedUs += excessUs;
 				skippedBlocks += static_cast<std::uint64_t>(blocks);
+				seen.push_back(
+					{static_cast<std::uint64_t>(blocks), lastArrived.value_or(arrived) - captureLag, arrived,
+				     "a stamp step of " + std::to_string(blocks) + " blocks at chunk " + std::to_string(chunks)});
 			} else if (excessUs > stampSlackUs || excessUs < -stampSlackUs) {
 				++offSteps;
 			} else {
@@ -79,6 +90,7 @@ struct SourceStamps {
 		}
 		lastStampUs = stampUs;
 		lastFrames = frames;
+		lastArrived = arrived;
 	}
 };
 
@@ -130,7 +142,7 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 		std::int64_t stampUs = 0;
 		std::int64_t lagUs = 0;
 		fields >> frames >> stampUs >> lagUs;
-		stamps.take(frames, stampUs, lagUs);
+		stamps.take(frames, stampUs, lagUs, wallNow());
 	}
 	server.send("source-stop");
 	REQUIRE(ear.waitForLine("node ma says sending-stopped", deadline));
@@ -160,10 +172,11 @@ TEST_CASE("Paired, routed noise reaches the server on the routed channel, with e
 	ear.signal(SIGTERM);
 	CHECK(waitForStop(ear) == 0);
 	CHECK(ear.hasLine("node ma removed dropped=0"));
-	// Every skipped block is a cycle ear says it lost (docs/engine.md#counters), its records complete once it stopped.
-	const LostCycles lost = lostCycles(ear);
-	INFO(lost);
-	CHECK(stamps.skippedBlocks <= lost.budget());
+	// Every skip is paid by a record of ear's of the cycles lost while its chunk was captured, its records complete once
+	// it stopped (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidSkips(ear, stamps.seen);
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
 TEST_CASE("A server lost mid-stream leaves the node running, and restarted with its state it "

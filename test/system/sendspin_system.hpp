@@ -229,7 +229,8 @@ struct RampCheck {
 	std::size_t badSteps = 0;      // steps between exact frames that are neither +1, a block's multiple, a drop's 3 nor
 								   // a logged hard sync's drop
 	std::size_t hardSyncSteps = 0; // steps a hard sync the library logged as late accounts for
-	std::uint64_t skippedBlocks = 0;   // what the steps of whole blocks skipped: no more than ear's records lost
+	std::uint64_t skippedBlocks = 0; // what the steps of whole blocks skipped, each paid by a record of ear's
+	std::vector<std::pair<std::size_t, std::uint64_t>> skips; // each skip: the WAV frame it lands on, its blocks
 	std::size_t stepsInSilentLoss = 0; // of them, those inside a loss that began with silence (lossDropFrames)
 	std::size_t stepsInLoss = 0; // forward steps past what a line says, one per logged loss: unbounded by its line
 	std::vector<std::string> stepsInLossSeen;
@@ -292,8 +293,8 @@ inline std::int64_t rampStep(std::uint32_t from, std::uint32_t to) {
 
 /// The blocks a step between exact ramp frames skipped, if it is a skip's (else 0): the node skips the frames the graph
 /// jumped, and with engine.conf's resync.ms a running block's jumps are whole blocks, exactly (spike S6 in
-/// spikes_test.cpp, every missed cycle of 30 loaded runs). The shape only says which steps are skips; what excuses them
-/// is ear's own count of the cycles lost (LostCycles::budget), which the skips' blocks together may not pass.
+/// spikes_test.cpp, every missed cycle of 30 loaded runs). The shape only says which steps are skips; what excuses each
+/// is a record of ear's own of the cycles it lost there (unpaidRampSkips).
 inline std::int64_t skippedBlocks(std::int64_t step) {
 	return step > 1 && (step - 1) % blockSize == 0 ? (step - 1) / blockSize : 0;
 }
@@ -456,6 +457,7 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 				lostSyncsUs.erase(lostSyncsUs.begin());
 			} else if (const std::int64_t skipped = skippedBlocks(step); skipped > 0) {
 				result.skippedBlocks += static_cast<std::uint64_t>(skipped);
+				result.skips.emplace_back(frame, static_cast<std::uint64_t>(skipped));
 			} else if (step != 1 && !(afterBlend && step == 3)) {
 				++result.badSteps;
 				if (result.badStepsSeen.size() < 8)
@@ -474,6 +476,27 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 	const std::size_t limit = blendLimit(result.rampFrames + result.blends);
 	if (result.blends > limit) result.badFrames += result.blends - limit;
 	return result;
+}
+
+/// The ramp's skips that no record of ear's losses pays (unpaidSkips), named: each skip's cycles were lost when the WAV's
+/// frame it lands on was due, from the file node `node`'s start, its frames and the blocks the skips before it took out
+/// of the WAV, give or take half a second (the start's main-loop turn; a loss the WAV does not show as a skip, such as
+/// a block of silence, moves the frames after it later, which the records' lag covers).
+inline std::vector<std::string> unpaidRampSkips(const ChildProcess& ear, const RampCheck& ramp,
+                                                const std::string& node = "rec") {
+	const auto began = wavBegan(ear, node);
+	if (!began) return {"no running record of node " + node + ": its WAV's frames have no time"};
+	std::vector<SeenSkip> skips;
+	std::uint64_t before = 0;
+	for (const auto& [frame, blocks] : ramp.skips) {
+		const auto due = *began + std::chrono::microseconds((static_cast<std::int64_t>(frame) +
+		                                                     static_cast<std::int64_t>(before * blockSize)) *
+		                                                    1'000'000 / graphFrequency);
+		skips.push_back({blocks, due - 500ms, due + 500ms,
+		                 "a skip of " + std::to_string(blocks) + " blocks at frame " + std::to_string(frame)});
+		before += blocks;
+	}
+	return unpaidSkips(ear, std::move(skips));
 }
 
 } // namespace ear::test

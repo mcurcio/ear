@@ -1633,6 +1633,36 @@ from 8.3 and 8.4 as first written (both are corrected in place).
   pacer, or no flush at the stop (`counters_test.cpp`: no record of the stall; the second stall's cuts unwritten); a
   ramp's skipped blocks not counted (`sendspin_ramp_test.cpp`).
 
+### 9.14 Found after D2: its review and its first CI run
+
+These replace three bullets of 9.13 (the superseded node's lost movement, the system tests' run-wide excuse, the
+SIGSTOP measurement); the library pages hold the result.
+
+- **CI's red: a stopped process need not cut.** On the GitHub runner `counters_test.cpp` waited 10 s for a record of
+  the 500 ms SIGSTOP and saw none but ear's first cut: the burst after the stop ran every cycle whole, as
+  `docs/engine.md#the-internal-clock` already says a runner does, and a stop while the data thread waits holds no cycle,
+  so nothing at all was cut. The test had taken the dev host's burst (93 of 94 cycles cut, under every load tried here,
+  `--cpus` 1 and 0.5 included) for ear's. The certain cut is of a cycle held in progress, so the stop is now aimed at a
+  moment `/proc` shows the data thread running, and the test stalls again until a stall cut a cycle, judging every
+  stall by the graph's counters once its cycles caught up (one that cut nothing lost nothing). The runner's shape could
+  not be made on this host, so its path is proven only by CI.
+- **A superseded node's span stays open until it is gone.** Spans are keyed by the serial of the node that began them
+  (a port-caused replace carries its older node's), NodeHost answers a span's counts (`spanCounts`) and ends every span
+  with its final counts, a superseded node's included. CounterWatch keeps the older span, recorded on its own and off
+  the wire, until it ends: the records' sums are the totals in every case.
+- **Each skip paid by the record that covers it, deny by default.** `LostCycles::budget` paid any skip from any cut of
+  the run, so a product skip could be paid by a host cut minutes away. `unpaidSkips` pays each skip from a record
+  written within its window or after it by no more than the record's lag (10.3 s for the graph's, 20.3 s for a node's:
+  the hold bound or the pace, and a beat), each record paying at most its own cycles. Per stall matching was possible: a
+  ramp skip's time comes from the file node's `running` record and the WAV's frames, a stamp skip's from the chunks'
+  arrival. Proven: a product skip of one block injected into the file node, with a 200 ms stop of ear before the
+  stream, fails as "a skip of 1 blocks at frame 177920: 1 of its 1 blocks paid by no record of a loss" with 39 cycles
+  cut in the run, which the run-wide budget would have taken.
+- **The stall's record alone.** The first graph record after the count the test starts from must be the stall's,
+  start at that count and carry one stall; a host stall between fails, named. The count is read once the graph has run
+  100 cycles, since a snapshot taken at once can read 1 cycle before ear's first cut.
+- **A stall seen to end only by a block** is a known limit, now named in `docs/engine.md#counters`.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.

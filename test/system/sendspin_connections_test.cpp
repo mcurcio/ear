@@ -197,10 +197,10 @@ TEST_CASE("A listening node says how it is known, and a server that dials it pai
 	CHECK(ramp.rampFrames >= rampFramesAtLeast);
 	CHECK(ramp.badFrames == 0);
 	CHECK(ramp.badSteps == 0);
-	// Every skip is a cycle ear says it lost: the graph cut it, or a node missed it (docs/engine.md#counters).
-	const LostCycles lost = lostCycles(ear);
-	INFO(lost);
-	CHECK(ramp.skippedBlocks <= lost.budget());
+	// Every skip is paid by a record of ear's of the cycles lost when it was due (docs/testing.md#the-counters-own-word).
+	const auto unpaid = unpaidRampSkips(ear, ramp);
+	INFO(lostCycles(ear) << "; unpaid: " << json(unpaid).dump());
+	CHECK(unpaid.empty());
 }
 
 TEST_CASE("A port another program holds fails the node with the kernel's reason, and a free port "

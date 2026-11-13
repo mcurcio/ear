@@ -161,13 +161,6 @@ struct LostCycles {
 	std::uint64_t stalls = 0;
 	std::size_t graphRecords = 0;
 	std::map<std::string, Node, std::less<>> nodes;
-	/// The most blocks any file's audio can have skipped: each cycle the graph cut, and each one a node missed uncut,
-	/// skips at most one block of what reaches a file (docs/engine.md#counters).
-	std::uint64_t budget() const {
-		std::uint64_t cycles = cutCycles;
-		for (const auto& [name, node] : nodes) cycles += node.missed;
-		return cycles;
-	}
 };
 
 inline LostCycles lostCycles(const ChildProcess& ear) {
@@ -193,6 +186,85 @@ inline std::ostream& operator<<(std::ostream& out, const LostCycles& lost) {
 	for (const auto& [name, node] : lost.nodes)
 		out << "; node " << name << " missed " << node.missed << ", overran " << node.overruns;
 	return out;
+}
+
+/// A record's `t`, UTC to the microsecond (docs/output-records.md#the-envelope).
+using RecordTime = std::chrono::sys_time<std::chrono::microseconds>;
+
+inline std::optional<RecordTime> recordTime(const json& record) {
+	std::istringstream text(record.value("t", ""));
+	RecordTime t;
+	text >> std::chrono::parse("%FT%TZ", t);
+	if (!text) return std::nullopt;
+	return t;
+}
+
+/// The wall clock as records read it.
+inline RecordTime wallNow() {
+	return std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now());
+}
+
+/// A skip a test saw: the blocks it skipped, and the window of wall time in which the cycles it skipped were lost.
+struct SeenSkip {
+	std::uint64_t blocks;
+	RecordTime from;
+	RecordTime to;
+	std::string what; // where it was seen, for a red
+};
+
+/// The latest a counter record comes after the cycles it counts were lost (docs/engine.md#reporting-the-counters): the
+/// beat that sees the loss and the one that sees it hold still, the record's pace, or the hold bound while losses never
+/// hold still, whichever is longer, and a beat of slack.
+inline constexpr std::chrono::microseconds graphRecordLag = 10'300ms;
+inline constexpr std::chrono::microseconds nodeRecordLag = 20'300ms;
+
+/// Each skip paid by one of ear's counter records that covers it in time, deny by default
+/// (docs/testing.md#the-counters-own-word): a record written within the skip's window, or after it by no more than its
+/// kind's lag, with cycles left (a graph record's cut cycles, a node record's missed ones; each pays at most its own),
+/// the earliest first, skips taken as their windows end. Returns each skip no record pays, naming it.
+inline std::vector<std::string> unpaidSkips(const ChildProcess& ear, std::vector<SeenSkip> skips) {
+	struct Paying {
+		RecordTime t;
+		std::uint64_t left;
+		std::chrono::microseconds lag;
+	};
+	std::vector<Paying> records;
+	for (const json& record : ear.records()) {
+		const std::string code = record.value("code", "");
+		const auto t = recordTime(record);
+		if (!t) continue;
+		if (code == "ear.graph-lost-cycles")
+			records.push_back({*t, record.value("cycles", std::uint64_t{0}), graphRecordLag});
+		else if (code == "ear.node-missed-cycles")
+			records.push_back({*t, record.value("missed", std::uint64_t{0}), nodeRecordLag});
+	}
+	std::ranges::sort(records, {}, &Paying::t);
+	std::ranges::sort(skips, {}, &SeenSkip::to);
+	std::vector<std::string> unpaid;
+	for (const SeenSkip& skip : skips) {
+		std::uint64_t owed = skip.blocks;
+		for (Paying& record : records) {
+			if (owed == 0) break;
+			if (record.left == 0 || record.t < skip.from || record.t > skip.to + record.lag) continue;
+			const std::uint64_t paid = std::min(owed, record.left);
+			record.left -= paid;
+			owed -= paid;
+		}
+		if (owed > 0)
+			unpaid.push_back(skip.what + ": " + std::to_string(owed) + " of its " + std::to_string(skip.blocks) +
+			                 " blocks paid by no record of a loss");
+	}
+	return unpaid;
+}
+
+/// When the file node `node` began writing its WAV: its first `running` record, whose drive took the cycle its first
+/// frame came from (a main-loop turn or so before the record).
+inline std::optional<RecordTime> wavBegan(const ChildProcess& ear, const std::string& node) {
+	for (const json& record : ear.records())
+		if (record.value("kind", "") == "node" && record.value("node", "") == node &&
+		    record.value("state", "") == "running")
+			return recordTime(record);
+	return std::nullopt;
 }
 
 inline std::string linkedLine(const std::string& from, const std::string& to) {

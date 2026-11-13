@@ -263,17 +263,31 @@ stretches to seconds ([architecture.md](architecture.md#stop-sigint-or-sigterm))
 
 A system test judges the cycles ear lost by ear's own count of them, its counter records
 ([output-records.md](output-records.md#diagnostic)), never by the shape of what the WAV or the
-stamps show. `lostCycles(ear)` (`test/system/ear_system.hpp`) sums `ear.graph-lost-cycles` and each
-node's `ear.node-missed-cycles` after ear's stop, when every record held back has been written
-([engine.md](engine.md#reporting-the-counters)), so the sums are ear's totals. Each cycle the graph
-cut and each one a node missed uncut skips at most one block of what reaches a file, so the blocks
-a `sendspin` ramp's steps of whole blocks skipped (`RampCheck::skippedBlocks`, each step's from
-`skippedBlocks(step)`), and the blocks the source's stamps stepped past their chunks
-(`SourceStamps::skippedBlocks`), may not pass `LostCycles::budget()`: the graph's cut cycles and
-every node's missed ones. The shape still says which step is a skip (whole blocks, exactly; within
-`stampSlackUs` for a stamp, which is rounded to the microsecond), but no longer excuses it: a skip
-ear did not count fails. `counters_test.cpp` makes the stall itself, holding the whole process
-stopped (SIGSTOP) for 500 ms, and asks for the one record that carries it.
+stamps show, and deny by default: each skip must be paid by a record that covers it in time. Each
+cycle the graph cut and each one a node missed uncut skips at most one block of what reaches a
+file. `unpaidSkips(ear, skips)` (`test/system/ear_system.hpp`) takes each skip with the window of
+wall time its cycles were lost in, and pays it from the records, read after ear's stop when every
+record held back has been written ([engine.md](engine.md#reporting-the-counters)): a record whose
+`t` lies in the window or after it by no more than its kind's lag (the longest a record can wait
+for its losses to hold still, its pace or the hold bound: 10.3 s for the graph's, 20.3 s for a
+node's), with cycles left (a graph record's cut cycles, a node record's missed ones, each paying at
+most its own). A skip no record pays fails, named by where it was seen. A ramp's skip
+(`RampCheck::skips`, each step's blocks from `skippedBlocks(step)`) was lost when the WAV frame it
+lands on was due, from the file node's `running` record, its frames and the blocks the skips before
+it took out, give or take half a second (`unpaidRampSkips`); a source stamp's
+(`SourceStamps::seen`) while its chunk or the one before was captured, from the arrival before it,
+less 2 s, to its own. The shape still says which step is a skip (whole blocks, exactly; within
+`stampSlackUs` for a stamp, which is rounded to the microsecond), but no longer excuses it, and a
+host cut elsewhere in the run pays for nothing. `lostCycles(ear)` sums the records, the totals.
+
+`counters_test.cpp` makes the stall itself: the whole process stopped (SIGSTOP) for 200 ms. Which
+cycles a stall cuts is the host's: the burst after it is all cut on the dev host and runs whole on a
+GitHub runner ([engine.md](engine.md#the-internal-clock)), where a stop while the data thread waits
+cuts nothing. The cut that is certain is of a cycle held in progress, so the stop is aimed at a
+moment `/proc` shows the data thread running, and the test stalls again until one stall cut a
+cycle, judging each by the graph's counters once its cycles caught up (one that cut nothing lost
+nothing). The stall's record must then be the first of any cut since the count it started from,
+carrying one stall; a host stall between them fails the test, named.
 
 ### The sender's own counter
 
