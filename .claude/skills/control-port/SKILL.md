@@ -80,7 +80,8 @@ use`).
   (`src/core/counter_watch.cpp`) reads them at the main loop's 100 ms heartbeat; standard output
   says the same as `ear.graph-lost-cycles` and `ear.node-missed-cycles`
   (`docs/engine.md#reporting-the-counters`). To see a stall end to end: `kill -STOP` ear for half a
-  second, then `kill -CONT`: one `ear.graph-lost-cycles` record carries every cycle it cut.
+  second, then `kill -CONT`: one `ear.graph-lost-cycles` record carries every cycle it cut, if the host cut any (a GitHub
+  runner runs the catch-up whole, and a stop while the data thread waits holds no cycle).
 
 ## The graph file over the port
 
