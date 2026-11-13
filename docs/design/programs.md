@@ -29,7 +29,7 @@ to the node's loop, so a type can turn "session started" into status (slice 5).
 
 A pipe has no clock: the program paces itself on its own host clock, and nothing tells it what played. So the pipe goes
 into a **paced source**, a ring companion (`companions.md` 3.2's list, kind `paced-source`). *Since the owner's timing
-model (2026-11-13) this is a source with a converter companion in tracked mode (`timing-model.md` 5.3), not a kind of
+model (2026-11-13) this is a source with a converter companion in tracked mode (`timing-model.md` 5.1 and 5.2), not a kind of
 its own; what it does after a stall is Q-TM2's.*
 
 | Kind | Joins | Engine name | Realtime side | Non-realtime side | Ring | Drops | Latency on its link |

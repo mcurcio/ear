@@ -1,7 +1,8 @@
 # The timing model: one tick, one rate, clocks at the edges
 
-Status: designed to module level (2026-11-13), part of slice 3c (`node-primitives.md`); nothing of it built beyond what
-section 2 says is already true. It states how audio time works in ear (the owner's model, section 1), takes the
+Status: designed to module level (2026-11-13), part of slice 3c (`node-primitives.md`); Q-TM1 answered (RTP is the
+converter's first user), Q-TM2 narrowed and its default decided unless the owner objects; nothing of it built beyond
+what section 2 says is already true. It states how audio time works in ear (the owner's model, section 1), takes the
 framework's timekeeping out of the source (`SourceRing`'s `Played` and its keep-in-step), moves `sendspin`'s sync onto
 the spike's "honest sink plus local skip" (section 6), and adds the converter companion (section 5). The model itself
 is `docs/architecture.md#the-timing-model`, which says where the code still departs from it; this page designs the
@@ -25,6 +26,8 @@ Decided by the owner on 2026-11-13 and given to the designer as decided; the wor
 | TM4 | **One rate inside the graph.** Every port inside the graph runs at the graph rate; conversion happens only in edge nodes. The graph rate is configurable (`graph_frequency`, flag fallback) but fixed for the engine's life, and it is the only allowed rate. Mixed-rate graphs (two graphs joined by a converting edge) are out of scope | Built; the converter's node-rate side is never a graph port (5.1) |
 | TM5 | **Conversion is a converter companion.** For rate and drift conversion the framework provides a companion: PipeWire's converter (audioconvert in an adapter, with its resampler) wired between the node's own side and the graph, hidden from the graph file, owned by the node. The node either sets the ratio or lets the converter track a rate it reports. Library functions remain fine for simple in-code work such as sample-format conversion. This generalises what cards and RTP receivers already do | Section 5 |
 | TM6 | **The internal clock drives.** Cards follow it and adapt to the graph: the existing choice, kept and stated | Built (`docs/engine.md#the-internal-clock`) |
+| TM8 | (Q-TM1, 2026-11-13) **RTP is the converter companion's first user.** Build the converter out of the RTP companion's wiring (module load, finding its node, linking, binding, latency, lifecycle and failure) with a third mode, module-run, where a PipeWire module owns the stream, its resampler and its loop. RTP moves onto the shared code with no behaviour change, its tests unchanged; RTP reception is not reimplemented (PipeWire keeps the jitter buffer and the clock tracking). Set and tracked are built on that base with their first user (AirPlay for tracked). The step moves earlier, with spike S7 folded in; check whether the card fits the base | Section 5; step T4 |
+| TM9 | (Q-TM2, 2026-11-13, narrowed by the owner) A host stall stalls the whole graph, one tick and one data thread, so every node inside ear resumes together and stays in time with the others. The jump-or-speed-up default concerns only a source whose own clock falls behind while the graph ticks on, and staying in time with what is outside ear after a graph-wide stall | Section 11; the default "jump" decided unless the owner objects |
 | TM7 | **Accepted consequences.** `SourceRing`'s timekeeping leaves the framework (its Played count and dating, its keep-in-step across stalls), reversing Q-CF2; the source node keeps its own time. `sendspin`'s sync stays in its node with the spike's winning design, "honest sink plus local skip": play every frame in order; on a tick stating a catch-up or absent jump skip min(jump, what the feed holds now); report every tick played = skipped + read with an honest finish that never steps back; no debt, no deferral, no `LibraryView`. Only `cmake/sendspin-late-chunk.patch` remains of the timing patches (`sendspin-starved-floor.patch` is dropped). C4's machinery is deleted (`LibraryView`, owed/catchingUp/untoldBound, `Feed::skipThenRead`, the overdue deferral, their tests); `GraphCycle::overdueNs` stays, as a tick fact | Sections 4, 6 and 7 |
 
 ## 2. What is built, against the model
@@ -50,10 +53,11 @@ the source a **`SourceClock`**, called on the realtime thread around each tick's
 the ring holds, it says how much to skip; after it, it is told what was skipped, read, faded and zeroed, and reports to
 its own threads through a mailbox it owns and the source's clock wake. A source with no clock plays its ring on the tick
 and nothing else. Sinks are unchanged: a chunk carries the tick's facts and the latency the block told, and a consumer
-with a clock reconciles from them. A **converter companion** (a fourth engine kind) is an in-process PipeWire stream, an
-adapter with audioconvert, that plays a source's ring at the node's own rate (or fills a sink's) and resamples to the
-graph rate, the ratio set by the node's clock each tick or tracked from a rate the node reports; its delay enters the
-latency plan beyond its bank. `sendspin`'s source clock is the honest sink plus local skip, dated by when its tick
+with a clock reconciles from them. The **converter companion** is PipeWire's converter on an inside bank, built from
+the RTP receiver's wiring: in **module-run** mode a PipeWire module owns the stream, its resampler and its loop (RTP,
+moved onto the shared code first with no change of behaviour); in **set** and **tracked** modes, built with their
+first users, an ear-made stream plays a ring at the node's own rate, the ratio set by the node's clock or tracked from
+a rate it reports. Its delay enters the latency plan beyond its bank; the card shares its lifecycle but not its base. `sendspin`'s source clock is the honest sink plus local skip, dated by when its tick
 really ran and clamped so a finish never steps back; C4's machinery and the floor patch go.
 
 ## 4. Sources
@@ -174,6 +178,7 @@ tick's `oversized` and decides.
 | `ear_pipewire`: `sources.*`, `port_blocks.cpp` | `EventSources`: the played wake becomes the clock wake, `Played` goes; the block passes `SourceTick` |
 | `ear_type_harness` | `h.played(bank)` goes; `h.lastPlayed(bank)` returns the last `SourcePlayed` (so a type's test can see what its clock was told); `h.feed` and `h.shortfall` stay. The harness calls a type's clock as the block does, by the same `SourceRing::play` |
 | Tests | `source_ring_test.cpp`: the keep-time, debt, idle-latch and `Played` rows go; new rows: no skip without a clock (a `catchUp` of 2^32 + 8 frames plays the ring on), a clock's skip honoured exactly and capped at what is held, nothing skipped on a clearing tick, `SourcePlayed`'s four counts on every shape (a clear, an underrun, a return, a stop), the wake rung only on `true`. `source_test.cpp` (`EventSources` on real threads): the `Played` model and `judgeSource`'s dating go; a test clock records each tick, and the judge holds the ring's audio in order with each recorded skip, and the clock's `playback` against the latency model's. `port_block_test.cpp`: the harness and the real block compared on the recorded `SourcePlayed` and `SourceTick::playback` instead of `Played`. The latency table's source rows read `playback` through a test clock |
+| System tests' windows that assume a source keeps in step | **Reworked in T3**: a cut cycle need no longer show as a step of what reaches a file. `rampDueBefore` and `rampDueAfter`, and `unpaidRampSkips`' reckoning of each ramp skip's due time, in `test/system/ear_system.hpp` (at this page's base, f3c105a607, `unpaidRampSkips` is in `sendspin_system.hpp`; both now cite `docs/node-types.md#clock`), take every cycle the graph lost upstream as a ramp skip (`docs/testing.md#the-counters-own-word`: "each cycle the graph cut ... skips at most one block of what reaches a file"). Under the model a cycle cut while a clockless source's ring held audio drops nothing and skips nothing, and one cut after the block can drop a block from the WAV with no step at all, so the due times and the pairing of skips with records are worked out again from what each source's clock skipped (`SourcePlayed::skipped`, `sendspin`'s reports), not from the graph's losses; T3 lists every other window it finds relying on keep-in-step and reworks it in the same change |
 | `white`, `file`, `card`, `rtp` | **None.** `white` generates on the tick (a source whose clock is the tick); `file` is a sink; `card` and `rtp` reconcile in their engine companions (5.5) |
 | `sendspin` | Section 6: first on today's feed (step T2), then onto a source with its clock (S3c.6) |
 | Library docs | `docs/writing-a-node-type.md#sources` (keeping time, `Played` and the played wake replaced by the clock), `#configure-and-createof`'s row, `#testing-a-type`'s harness rows, `#latency`; `docs/engine.md#sources`, `#latency-per-bank-pair` and `#dating` (a source's `Played` goes from both); `docs/testing.md` where it names `Played` |
@@ -193,146 +198,191 @@ driver's nominal start may date it better than when the tick ran, the reverse of
 
 ## 5. The converter companion
 
-### 5.1 What it is, and where it sits
+### 5.1 What it is: one base, three modes
 
-A converter companion joins one inside bank, like a card or an RTP receiver, and is the one place a ring at the node's
-own rate meets the graph rate:
+A converter companion is an engine companion that joins one inside bank and is the one place a clock and a rate other
+than the graph's meet the graph: PipeWire's converter (audioconvert in an adapter, with its resampler) between the
+node's own side and the bank, its graph side linked channel for channel to the bank, its own side never a port of the
+graph (TM4). Who keeps the ratio is its **mode**:
 
-```
-source:  type's thread --write--> ring (node rate) --> converter stream --links--> inside input bank --> code
-sink:    code --> inside output bank --links--> converter stream --> ring (node rate) --consume--> type's thread
-```
+| Mode | Who owns the stream, the resampler and the loop | First user | Built in |
+|---|---|---|---|
+| **module-run** | A PipeWire module: it makes the stream, keeps its own buffer and runs the loop that steers its resampler. ear loads it, finds its node, links it, carries its latency and judges its life | `rtp`: its receiver is `module-rtp-source`, with its jitter buffer and its clock tracking (the owner, Q-TM1) | T4 |
+| **set** | ear: an ear-made stream plays (or fills) a ring at the node's rate; the node's clock gives the ratio | none yet | T5, with its first user |
+| **tracked** | ear: as set, but the converter runs a loop on the ring's fill, the rate the node reports as its feed-forward | AirPlay's paced source (slice 9, `programs.md` 2.2) | T5, with AirPlay |
 
-It is an engine node of ear's own making: a `pw_stream` made in-process by `ear_pipewire` (PipeWire's adapter around
-the stream, with audioconvert and its resampler) whose format is the node's rate, linked channel for channel to the
-bank by global id as every engine companion is (`docs/engine.md#engine-companions`). Its process callback, on the one
-data loop, plays the source's ring through `SourceRing::play` for the frames the resampler asks (`pw_buffer::requested`,
-since 0.3.49 [V]), or taps the sink's ring with what the resampler gives. The node's rate side is the stream's own
-buffer, never a port of the graph, so TM4 holds: every port linked in the graph is at the graph rate.
+**The base is built out of the RTP receiver's wiring** (Q-TM1). Everything `RtpReceivers` does today that is not about
+RTP becomes the converter's, and RTP becomes its first module-run user with no change of behaviour:
 
-*Why an engine node, when ring companions are served by their block (`companions.md` D-3b1, the owner's Q-3b1):* a
-ring at another rate needs a resampler between it and the block, and TM5 makes that resampler PipeWire's, which runs
-only in an adapter. What Q-3b1 was for holds: the converter plays only ticks the code is driven for, bound and unbound
-by the same drive invoke on the same data loop (for a source the stream runs before the block in the cycle, its link
-upstream of it; for a sink after it), so a start never plays audio written before it and a stop's silence ends both together. An unconverted source or
-sink stays served by its block, as built.
+| What the base does | Today [V] | After T4 |
+|---|---|---|
+| Load the module, its arguments built only from parsed values | `RtpReceiverBody::load`, `moduleArguments` (`rtp_receivers.cpp`) | `ModuleConverterBody::load`; the arguments stay the module's own function |
+| Find the node the module made: a registry and a `pw_core_sync`; nodes of the name seen before its done are stale; the first other one is bound; a stale id is forgotten when its global goes | `RtpReceiverBody` (`stale_`, `loading_`, `syncSeq_`) | `ModuleConverterBody`, unchanged |
+| Hear its state (`tellNodeState`: RUNNING, ERROR) | the body's `onInfo` | the same |
+| Link, ready, lost, faulted, torn down; links by global id | `joinEngineCompanion` (`engine_companions.hpp`) | unchanged: already every engine kind's |
+| Latency: what the module buffers lies `beyond` the bank (rtp-source's ports report 0) | NodeHost's plan: an RTP receiver's `latencyMs` as a `Delay` | the shape's `moduleRunDelay`, one rule for every module-run converter |
+| Readiness deadline and its failure text | `rtpReceiverReadinessBound` (5 s), `the RTP receiver never ran (UDP port <p> held?)` (`node_host.cpp`) | per module; RTP's unchanged |
+| No clock property on what ear makes | the property table's `Home::rtpStream` rows | unchanged |
 
-### 5.2 How a node asks for one
+RTP reception is not reimplemented: PipeWire keeps the jitter buffer, the tracking of the sender's clock and the
+resampler, and every quirk `docs/engine.md#rtp-receivers` lists stays PipeWire's. What moves is ear's code around it.
 
-On the request, beside the ring's shape (`ear/core/companions.hpp`, the closed list gains `CompanionKind::converter`,
-wire name `"converter"`, engine name `<node>.<bank>.convert`):
+### 5.2 The interfaces
+
+**`ear_core` (`companions.hpp`).** The type's API does not change for RTP: `cx.rtpReceiver(bank, RtpReceiverShape)`,
+`CompanionKind::rtpReceiver` and the wire's `"rtp-receiver"` stay. Core gains the converter's vocabulary and the one
+latency rule, so NodeHost's plan names no RTP field:
 
 ```cpp
-/// How a converter's ratio is kept.
-enum class RatioMode { set, tracked };
-/// A converter between a ring at `nodeRate` and an inside bank at the graph rate. Every member checked by the type's
-/// parse first, as every engine companion's shape is.
+/// Who keeps a converter's ratio (docs/design/timing-model.md, 5.1).
+enum class RatioMode { moduleRun, set, tracked };
+
+/// A module-run converter's shape is its module's own (RtpReceiverShape today). Each says what the module buffers beyond
+/// the bank, at the graph rate: the one rule NodeHost's latency plan reads, in place of its RTP branch.
+Delay moduleRunDelay(const RtpReceiverShape& shape, FrameClock graph); // latencyMs, through FrameClock
+```
+
+**`ear_pipewire` (private).** The receiver's body becomes the module-run converter's, and a module says only what is
+its own:
+
+```cpp
+// converter_modules.hpp: what one module-run converter's module is.
+struct ConverterModule {
+	std::string_view kind;                     // "RTP receiver": its loss details' word, as today
+	std::string_view module;                   // "libpipewire-module-rtp-source"
+	ChannelFlow flow;                          // nodeToBlock: a receiver feeds an inside input bank
+	PortName (*nodePort)(std::size_t channel); // "receive_AUX<n>" (a node.network stream's ports)
+};
+template <class Shape> struct ModuleRun; // per shape: `static constexpr ConverterModule module;` and
+                                         // `static std::string arguments(const NodeName&, const Shape&, std::size_t)`
+
+// module_converters.hpp: the shared body and the adapter every module-run shape uses.
+class ModuleConverterBody final : public CompanionBody, public FaultOwner { /* today's RtpReceiverBody, generalised */ };
+template <class Shape> class ModuleConverters final : public EngineCompanionAdapter<Shape> {
+public:
+	explicit ModuleConverters(Engine& engine);
+	std::unique_ptr<EngineCompanion> make(const CompanionTarget& target, const Shape& shape,
+	                                      EngineCompanionEvents& events) override; // joinEngineCompanion + the body
+};
+using RtpReceivers = ModuleConverters<RtpReceiverShape>; // the name main.cpp and the tests use, kept
+```
+
+**The set and tracked modes (T5).** Designed now so T4's base leaves room for them, built with their first user: an
+ear-made `pw_stream` body (`StreamConverterBody`, its events through the callback boundary as a `StreamCallbacks`
+table; the guard already refuses `pw_stream_new_simple`) on the same `joinEngineCompanion`, playing a source's ring
+through `SourceRing::play` for the frames the resampler asks (`pw_buffer::requested`, since 0.3.49 [V]), or filling a
+sink's ring:
+
+```cpp
+/// A converter between a ring at `nodeRate` and an inside bank at the graph rate (set and tracked modes).
 struct ConverterShape {
 	std::uint32_t nodeRate;     // 8000-768000 Hz; the graph frequency is allowed (drift only, no rate change)
-	std::uint32_t targetFrames; // tracked: the ring's fill the converter steers to, in node frames; set: unused (0)
+	std::uint32_t targetFrames; // tracked: the ring's fill the converter steers to, in node frames; set: 0
 };
-
-/// The node's hold on a converter's ratio. The mode is the request's template argument, so asking a set converter for
-/// a rate report, or the reverse, does not compile.
 class SetRatio {   // RatioMode::set: any thread, the realtime one included (a source's clock); lock-free
 public:
-	/// Node frames per graph frame from the converter's next tick on; 1.0 is no correction. Clamped to the converter's
-	/// range [U: S7].
+	/// Node frames per graph frame from the converter's next tick on; 1.0 is no correction. Clamped [U: T4's checks].
 	virtual void set(double nodePerGraph) noexcept = 0;
 protected:
 	~SetRatio() = default;
 };
 class RateReport { // RatioMode::tracked: any thread
 public:
-	/// The node's clock as it measured it: its frames per second of CLOCK_MONOTONIC_RAW (a sender's nominal rate times
-	/// its drift). The converter tracks it, and steers the ring's fill to targetFrames on top.
+	/// The node's clock as it measured it, in its frames per second of CLOCK_MONOTONIC_RAW; the converter tracks it and
+	/// steers the ring's fill to targetFrames on top.
 	virtual void report(double framesPerRawSecond) noexcept = 0;
 protected:
 	~RateReport() = default;
 };
-```
-
-```cpp
-// CreateOf<spec>:
-template <RatioMode M, class Bank>   // an inside input bank (compile time)
+// CreateOf<spec>; the mode is a template argument, so asking a set converter for a rate report does not compile:
+template <RatioMode M, class Bank> // an inside input bank (compile time); M is set or tracked
 ConvertedSource<M> convertedSource(Bank, SourceShape ring, ConverterShape conv,
                                    std::unique_ptr<SourceClock> clock = nullptr);
-template <RatioMode M, class Bank>   // an inside output bank (compile time)
+template <RatioMode M, class Bank> // an inside output bank (compile time)
 ConvertedSink<M> convertedSink(Bank, SinkShape ring, ConverterShape conv);
 // ConvertedSource<set>{SourceWriter& writer; SetRatio& ratio;}, <tracked>{SourceWriter& writer; RateReport& rate;}
-// ConvertedSink<M>{SinkRequest& sink; SetRatio& or RateReport& ...}: the sink's consumer is named as for any sink
 ```
 
-The ring's `SourceShape::frames` and `SinkShape::frames` are in node frames. A source's clock behind a converter sees
-`SourceTick::rate` = `nodeRate` and `SourceTick::frames` = what the resampler requested, and converts any graph-frame
-fact it uses (a `jumpFrames`) through `FrameClock` (`docs/engine.md#dating`: through time, never a rate operand).
-A converted sink's chunk carries its tick's facts unchanged and `frames` in node frames; its dating offsets go through
-`FrameClock(nodeRate)` [U: `cutChunk` and `SinkRing` gain the ring's rate; designed in step T5 against S7].
+- **Set** applies the ratio with `pw_stream_set_rate` (RT safe, adjusts an adaptive resampler, since 1.4.0 [V]).
+- **Tracked** runs a delay-locked loop on the ring's fill (as `module-rtp`'s receiver does on its buffer [U: T4 reads
+  `module-rtp/audio.c` for its constants]), the reported rate its feed-forward, applied the same way.
+- A ring behind a converter is in node frames: `SourceTick::rate` is `nodeRate`, `SourceTick::frames` what the
+  resampler asked, and a clock converts a graph-frame fact (a `jumpFrames`) through `FrameClock`. A converted sink's
+  chunk keeps its tick's facts and carries node frames [U: `cutChunk` and `SinkRing` gain the ring's rate, in T5].
+- *Why an engine node, when ring companions are served by their block* (`companions.md` D-3b1, the owner's Q-3b1): the
+  resampler is PipeWire's only inside an adapter (TM5). What Q-3b1 was for holds: the stream plays only ticks the code
+  is driven for, bound and unbound by the same drive invoke on the same data loop (for a source it runs before the
+  block, for a sink after it). An unconverted source or sink stays served by its block.
+- **No mode skips.** Lost ticks are the node's clock's (`SourceClock::skipBefore`); in tracked mode a backlog above
+  `targetFrames` drains through the loop unless the clock skips it, which by Q-TM2's default it does.
 
-### 5.3 Set versus tracked
+### 5.3 Latency (R1's one model)
 
-- **Set.** The node runs the loop itself and gives the ratio (`SetRatio::set`: a source's clock each tick on the
-  realtime thread, or a sink's consumer from its own thread, taken at the next tick). The converter applies it with `pw_stream_set_rate` (RT safe, "when the stream is using an
-  adaptive resampler, adjust the resampler rate", since 1.4.0 [V]). For a node whose clock is visible only inside its
-  protocol (a server's time filter).
-- **Tracked.** The node reports its clock's rate when it learns it (`RateReport::report`, any thread); the converter's
-  realtime side runs a delay-locked loop on the ring's fill against `targetFrames` (as `module-rtp`'s receiver runs one
-  on its ring [U: S7 reads `module-rtp/audio.c` for its constants]) with the reported rate as its feed-forward, and
-  applies the result the same way. For a source with no protocol clock (a pipe paced by a program,
-  `programs.md` 2.2's paced source, which this mode is).
+A converter's delay is latency beyond its bank, entered once as `LatencyPlan::beyond` (`companions.md` D-3b6), and
+only what no engine node reports, so nothing counts twice:
 
-A converter never skips: lost ticks are its node's clock's to reconcile (`SourceClock::skipBefore` runs before the
-ring plays, in node frames). In tracked mode a stall's backlog above `targetFrames` drains through the loop unless the
-clock skips it (section 11, Q-TM2).
+- **module-run**: the module's buffer, by the shape's `moduleRunDelay` (RTP: `latencyMs`, exactly as today; T4 moves
+  the rule, not its value).
+- **set and tracked**: the ring (`Latency{0, capacity}`, or `targetFrames` to capacity when tracked) and the
+  resampler's delay (`spa_io_rate_match::delay` and `delay_frac`, at the node's rate [V: `spa/node/io.h`];
+  `pw_stream_control::buffered` [V]), converted to graph frames by `FrameClock`, unless the stream's ports report the
+  delay to the block as a peer [U: T4's checks].
 
-### 5.4 Latency (R1's one model)
+A source's clock gets the bank's playback latency plus that delay in `SourceTick::playback`.
 
-The converter adds, beyond its bank: its ring (`Latency{0, capacity}` in node frames, as a source's ring is today, or
-`targetFrames` to capacity in tracked mode) and the resampler's delay (`spa_io_rate_match::delay` and `delay_frac`, in
-samples at the node's rate [V: `spa/node/io.h`]; `pw_stream_control::buffered` [V]). Both are converted to graph frames
-once, by `FrameClock`, at the request (the delay for the quality chosen, [U: S7 measures that it is constant for a
-quality and ratio range]), and entered as the bank's `LatencyPlan::beyond` `Delay`, as an RTP receiver's `latencyMs`
-is (`companions.md` D-3b6). Only what no engine node reports goes in `beyond`: if the stream's ports report the
-resampler's delay to the block as a peer [U: S7], the plan leaves it out, so nothing is counted twice. The source's
-clock gets the bank's playback latency plus that delay in `SourceTick::playback`.
+### 5.4 The card: the same lifecycle, not the converter's base
 
-### 5.5 Cards and RTP receivers: already converters, kept as built
+A sound card is PipeWire's converter too (audioconvert inside the ALSA adapter, the follower's loop on the device
+buffer steering it: `docs/engine.md#sound-cards`): in the model's words a PipeWire-run converter. It **stays as it
+is**, because what the converter base adds over the shared lifecycle is exactly what a card does not need:
 
-| Built | Its converter | Mode in this model's words | Change |
-|---|---|---|---|
-| Sound card (`AlsaSoundCards`) | audioconvert inside the ALSA adapter; the follower's loop on the device buffer steers it (`docs/engine.md#sound-cards`) [V] | tracked, the rate measured by PipeWire's ALSA node | none |
-| RTP receiver (`RtpReceivers`) | the `module-rtp-source` stream's audioconvert; its loop on packet arrival and fill steers it (`docs/engine.md#rtp-receivers`) [V] | set, by PipeWire's module | none |
-| Converter companion | an ear-made `pw_stream`'s audioconvert | set by the node's clock, or tracked from its report | new |
+| | Module-run converter (RTP) | Card |
+|---|---|---|
+| Made by | loading a module, which makes the node on its own connection | `pw_core_create_object("adapter", ...)` on ear's connection: ear holds the proxy |
+| Found by | a registry, a sync and stale names | its own proxy: nothing to find |
+| Ports | the module's (`adapter.auto-port-config`) | ear sends `PortConfig` itself (auto-port-config fails for the ALSA adapter on 1.4.2) |
+| Latency | the module's buffer, `beyond` the bank (its ports report 0) | reported through its links (ALSA's headroom); nothing `beyond` |
+| Clock | follows the graph | follows the graph, with the quantum guard's period sizing and `refuseClockProperties` |
+| Lifecycle, links, readiness, loss, faults | `joinEngineCompanion` | `joinEngineCompanion` |
 
-The converter generalises them for a ring whose clock is ear's code. Nothing moves: a card's and a receiver's loops are
-PipeWire's own, tested on hardware or by the RTP tests, and rewriting them on the new kind would gain nothing. All three
-are engine companions with one lifecycle (`joinEngineCompanion`), one readiness deadline each (the converter's: 5 s,
-like a receiver's, [U: S7]) and no clock property (`docs/engine.md#the-quantum-guard`: the converter's test seam
-refuses `node.force-rate` and friends as the card's does).
+The two already share what they have in common, the lifecycle; moving the card onto the module base would add a
+registry search it does not need and gain nothing. T4 confirms this against the code and says it in
+`docs/engine.md#engine-companions`.
 
-### 5.6 Spike S7, then tests
+### 5.5 Step T4: the base, RTP on it, and S7's checks folded in
 
-**S7** (test only, before any product code; S4 to S6 are taken): on PipeWire 1.4.2 in ear's in-process engine, an
-in-process `pw_stream` at 44100 Hz linked to a block's inside input bank in a 48000 Hz graph:
+**What it builds.** `ModuleConverterBody` and `ModuleConverters<Shape>` from `RtpReceiverBody` and `RtpReceivers`;
+`ModuleRun<RtpReceiverShape>` holding what is RTP's (the module, its arguments, its port names, its word, its failure
+text); `RatioMode` and `moduleRunDelay` in core, NodeHost's latency plan and readiness text reading them in place of
+its RTP branches. `RtpReceivers` stays the name `main.cpp` and the tests use. Docs: `docs/engine.md#engine-companions`
+and `#rtp-receivers` (where the code lives; nothing an operator sees), and `docs/architecture.md#the-timing-model`'s
+converter departure narrowed to the set and tracked modes.
 
-- it runs in the graph group without moving the graph's rate (a single allowed rate: the receiver at 44.1 kHz is the
-  precedent [V]), and without a force property;
-- `requested` each cycle, and `pw_stream_set_rate` honoured from the process callback, its range and clamp;
-- the stream's `io_changed` gives an `SPA_IO_Position` the converter can state a tick from (`CycleAccount` over the
-  engine's cut record, so the clock behind it gets `SourceTick::cycle` with real facts), and the stream runs before the
-  block in every cycle;
-- the resampler's delay per quality, and whether the stream's ports report it as latency;
-- `module-rtp/audio.c`'s loop constants, for tracked mode;
-- the stream's events through the callback boundary (`pw_stream_new` plus a `StreamCallbacks` table; the guard
-  already refuses `pw_stream_new_simple`).
+**No behaviour change, proven by tests that do not change.** Every RTP test passes unedited:
+`rtp_receiver_test.cpp` (among them "L16 sent at 44100 into the 48000 graph is resampled", the property table's
+`receiverResamples` row), the RTP rows of `node_host_test.cpp` and of the readiness deadlines, `test/system/rtp_test.cpp`
+and the `rtp` type's own. The property table's checks pass unchanged (the arguments are the same keys from the same
+rows). A test that needs editing means behaviour moved, and the step is wrong.
 
-**Tests, per executable** (step T5):
+**New tests.** `ModuleConverterBody` through a second, test-only module-run shape [U: which PipeWire 1.4.2 module
+serves as a stand-in; T4 picks]: the stale-name rule, a module that will not load, a node that never runs past its
+deadline, a node removed after ready, each through the shared code with the module's own word in the detail.
 
-| Executable | Proves |
-|---|---|
-| `ear_core_tests` | The converter shape's checks; `convertedSource<RatioMode::set>` gives no `RateReport` (a compile-fail case); a converter on a bank with another companion is refused; the plan's `beyond` holds ring plus delay in graph frames, by `FrameClock` |
-| `ear_pipewire_tests` | A 44.1 kHz sine through a converted source into a 48 kHz graph, recorded through a sink: its frequency per tenth of a second; set mode: a ratio of 1.001 for 2 s moves the ring's fill by the expected frames, within one block; tracked mode: a writer paced at 44100 x (1 + 200 ppm) on the raw clock holds the fill within a block of `targetFrames` after settling, with no underrun; the told latency against the model; ready and lost as an engine companion; the deadline; no force property (the seam refuses); bound and unbound by the drive (a stop plays nothing of the ring) |
-| `ear_type_harness` | A fake converter that passes frames 1:1 and records each `set` and `report`, so a type's test checks what its clock asks for; real resampling is the engine's |
+**S7's checks, folded in** (test only, in `spikes_test.cpp`, kept as regressions; S4 to S6 are taken): what set and
+tracked will rely on, measured now while the base is fresh, so T5 starts from facts. An in-process `pw_stream` at
+44100 Hz linked to a block's inside input bank in a 48000 Hz graph: it runs in the graph group without moving the
+graph's rate and without a force property (the receiver at 44.1 kHz is the precedent [V]); `requested` each cycle,
+and `pw_stream_set_rate` honoured from its process callback, with its range and clamp; its `io_changed` giving an
+`SPA_IO_Position` a tick can be stated from (`CycleAccount` over the engine's cut record), and its process running
+before the block's in every cycle; the resampler's delay per quality, and whether its ports report it as latency;
+`module-rtp/audio.c`'s loop constants. The findings go into 5.2 and 5.3.
+
+**T5's tests** (set and tracked, with the first user): a 44.1 kHz sine through a converted source into a 48 kHz graph,
+its frequency per tenth of a second; set: a ratio of 1.001 for 2 s moves the ring's fill by the expected frames,
+within a block; tracked: a writer paced at 44100 x (1 + 200 ppm) on the raw clock holds the fill within a block of
+`targetFrames`, with no underrun; the told latency against the model; the lifecycle and deadline as every engine
+kind's; bound and unbound by the drive; a compile-fail case (a set converter asked for a `RateReport`); the harness's
+fake converter (frames 1:1, each `set` and `report` recorded).
 
 ## 6. `sendspin` under the model
 
@@ -461,17 +511,19 @@ stale in the same commit.
 |---|---|---|---|---|
 | **T1** | `GraphCycle::ranRawNs()` | nothing | none | the rule's rows: on time, overdue, a test's tick with no `nextNs` |
 | **T2** | `sendspin` honest, on today's feed and the legacy adapter: `SendspinCode` keeps the capture half and becomes the honest wrapper with the local skip and the clamped finish (6.1, 6.2); the floor patch dropped; `docs/node-types.md#clock`, the skill (and its report, 6.5), `AGENTS.md`'s patch list | 6.3's table | yes: one library correction after a stall past the feed, where ear's silence was | 6.4 |
-| **T3** | The clockless source: `SourceClock`, `SourceTick`, `SourceHeld`, `SourcePlayed`, `clockWake`; `SourceRing` without time (4.1 to 4.3); `EventSources`, the block, the harness; `docs/writing-a-node-type.md#sources`, `docs/engine.md#sources`, `#latency-per-bank-pair`, `#dating` | `Played`, the played wake, `SourceCycle`, the keep-time and debt code | none for any shipped type (none uses a source) | 4.4's rows |
+| **T3** | The clockless source: `SourceClock`, `SourceTick`, `SourceHeld`, `SourcePlayed`, `clockWake`; `SourceRing` without time (4.1 to 4.3); `EventSources`, the block, the harness; `docs/writing-a-node-type.md#sources`, `docs/engine.md#sources`, `#latency-per-bank-pair`, `#dating` | `Played`, the played wake, `SourceCycle`, the keep-time and debt code | none for any shipped type (none uses a source) | 4.4's rows, and the system tests' ramp-skip windows reworked (`rampDueBefore`, `rampDueAfter`, `unpaidRampSkips`, 4.4) |
+| **T4** | The converter base from RTP's wiring, module-run mode, RTP on it (5.1 to 5.5), with S7's checks folded in (test only) | `RtpReceiverBody` and NodeHost's RTP branches, moved | none: every RTP test passes unedited | 5.5's new tests and S7's checks |
 | *S3c.1 to S3c.5* | As `node-primitives.md` 13 has them | | | |
 | **S3c.6** | As planned, with the honest wrapper moved onto `from_server`'s source as `SendspinClock` (the feed, its skip and its dry counts go; the clock's report replaces the bell and the played wake in `node-primitives.md` 4.1's worker) | `feed.*`, `sendspin_code.*`'s playback half | as `node-primitives.md` 8 says, and no timing change: T2's tests pass unchanged on the source | T2's tests on the source; the clock's unit rows through `TypeHarness<spec, Sendspin>` |
-| **T4** | Spike S7 (5.6), test only | nothing | none | S7's findings into this page |
-| **T5** | The converter companion: `CompanionKind::converter`, `ConverterShape`, `SetRatio`, `RateReport`, `convertedSource`, `convertedSink`, `Converters` in `ear_pipewire`, the harness's fake; `docs/engine.md#engine-companions`, `docs/writing-a-node-type.md#engine-companions` | nothing | none until a type asks for one | 5.6's table |
+| **T5** | Set and tracked modes (5.2), with their first user (AirPlay, slice 9, for tracked): `StreamConverterBody`, `ConverterShape`, `SetRatio`, `RateReport`, `convertedSource`, `convertedSink`, the harness's fake; `docs/engine.md#engine-companions`, `docs/writing-a-node-type.md#engine-companions` | nothing | none until its user | 5.5's T5 tests |
 
 **How it fits slice 3c and the rest.** T1 to T3 come before S3c.1: they touch only the source, `GraphCycle` and
 `sendspin`'s code, none of which S3c.1 to S3c.5 change, and they shrink S3c.6 (the source it moves onto keeps no time,
-and its clock is already written and proven). T2 needs T1; T3 needs neither and may land first. `cycle-facts.md`'s open
-steps (D3, C6, C7, C8) are independent of all of them. T4 may run at any time; T5 comes after S3c.6 (it uses 3c's
-`ResourceAdapters`), and is built when Q-TM1 says.
+and its clock is already written and proven). T2 needs T1; T3 needs neither and may land first. T4 comes before S3c.1 too (the
+owner moved it earlier): it touches only the RTP companion's code in `ear_pipewire` and NodeHost's latency plan and
+readiness text, which 3c's steps do not, and it needs none of T1 to T3. `cycle-facts.md`'s open steps (D3, C6, C7, C8)
+are independent of all of them. T5 comes after S3c.6 (it uses 3c's `ResourceAdapters` and the clockless source), with
+its first user.
 
 ## 8. What this changes on other design pages
 
@@ -480,7 +532,7 @@ steps (D3, C6, C7, C8) are independent of all of them. T4 may run at any time; T
 | `cycle-facts.md` | Q-CF2 reversed (TM7); 4.4's `SourceRing`, `Played` and `SendspinCode` rows superseded; C4a and C4b's machinery deleted by T2 and T3; the follow-ups section 9.15 lists are moot |
 | `companions.md` | D-C4 (a source keeps time by default) and D-3b3 (`Played`'s meaning) reversed; 3.3's "keeping time" and "says what played" are this page's 4.1 and 4.2 |
 | `node-primitives.md` | 4.1's worker watches the source's clock wake, not a played wake; 6.2's list of the framework's wakes; 12's `sendspin_code.*` and `mailbox.hpp`; 13's S3c.6 |
-| `programs.md` | 2.2's paced source is a source with a converter companion in tracked mode (5.3) |
+| `programs.md` | 2.2's paced source is a source with a converter companion in tracked mode (5.1, 5.2) |
 
 ## 9. Decided here (technical)
 
@@ -494,7 +546,9 @@ Each the designer's; the owner can overturn any.
 | D-TM4 | `ranRawNs()` is a member of `GraphCycle`, the clamp is `sendspin`'s | When a tick ran is a tick fact for every node (TM1); never stepping back is a promise to one library |
 | D-TM5 | Clamp, not nominal dating, for an overdue tick (6.2) | Nominal dating of a burst re-creates 9.10 without the floor patch; the clamp's error is bounded and one-sided |
 | D-TM6 | Sinks unchanged; their consumers reconcile | A chunk is already the tick's facts and the model's latency |
-| D-TM7 | The converter is an ear-made `pw_stream` engine companion that plays (or fills) the ring at the node's rate; cards and receivers stay as built | The resampler is PipeWire's only inside an adapter (TM5); binding by the drive keeps Q-3b1's exactness |
+| D-TM7 | The converter's base is the RTP receiver's body generalised (`ModuleConverterBody`, `ModuleConverters<Shape>`), on the shared `joinEngineCompanion`; set and tracked add an ear-made `pw_stream` body on the same lifecycle | TM8; the module-run mode is what RTP already is, and the stream body is the only way to PipeWire's resampler for a ring (TM5); binding by the drive keeps Q-3b1's exactness |
+| D-TM10 | The card stays on its own body, sharing only `joinEngineCompanion` | It is made by ear's proxy, not a module: the base's registry search, `moduleRunDelay` and auto-port-config are all things a card does not use (5.4) |
+| D-TM11 | RTP's type API, companion kind and wire name stay `rtpReceiver` | A change of where the code lives is no change an operator or a type author sees |
 | D-TM8 | The converter never skips; skipping is the node's clock's | TM1: the framework keeps no audio time, the converter included |
 | D-TM9 | T2 lands on today's feed before the source changes | The behaviour change is measured alone, against C4's tests, before any move |
 
@@ -505,36 +559,39 @@ Each the designer's; the owner can overturn any.
 | Keep `Played` beside the clock, as a framework count | A count the framework keeps is audio time it keeps (TM1); `sendspin` could not use it (it would count frames the library never wrote, `cycle-facts.md` 9.7) |
 | The type's own code reads the ring through `Io` | Every type would write the fades, a clear's tail and the shortfall again; harness and block could drift |
 | An in-code resampler for converted rings | TM5: conversion is PipeWire's converter |
-| Re-implement cards and RTP receivers on the converter kind | Their loops are PipeWire's and already right; nothing would be gained |
+| Reimplement RTP reception on the set or tracked converter (ear's own jitter buffer and clock tracking) | TM8: PipeWire keeps the jitter buffer and the clock tracking; RTP moves onto the shared wiring as module-run |
+| Move the card onto the module-run base | 5.4: it would add a registry search and a latency rule the card does not use |
 | The converter skipping a stall's backlog on `catchUp` | The framework would be keeping time again (TM1); a node that wants the skip gives a clock |
 | Date an overdue tick that lost nothing by its nominal start | 6.2, reasons 1 and 2 |
 
-## 11. Questions for the owner
+## 11. Questions for the owner, answered
 
-**Q-TM1. Should the converter companion be built now, or with the first node that needs it?**
+**Q-TM1 (answered, 2026-11-13).** Should the converter companion be built now, or with the first node that needs it?
+The owner: RTP is its first user. The converter is built out of the RTP companion's wiring with a module-run mode, RTP
+moves onto it with no behaviour change, set and tracked come with their first users, and the step moves earlier with
+spike S7 folded in (TM8; section 5, step T4).
 
-*Background.* Nothing in ear needs it today: `sendspin` asks the server for the graph's own rate (the server
-resamples), and cards and RTP receivers already have PipeWire's converter inside them. Its first real user would be
-AirPlay (slice 9: shairport-sync's audio is 44.1 kHz into a 48 kHz graph), or a Sendspin stream taken at its own rate.
+**Q-TM2 (narrowed by the owner, 2026-11-13; the default decided unless the owner objects).** When a source falls
+behind on its own clock, should it jump to be in time again, or play slightly fast until it catches up?
 
-*Scenario.* Built now (T5 after slice 3c), it is a few hundred lines and engine tests that only test code exercises
-for months, and slice 9 starts with it ready. Built with AirPlay, slice 9 carries T5, and the design (section 5) and
-the spike (S7) wait with it or run now.
+*Background.* A stall of the host is not this question: it stalls the whole graph, one tick and one data thread, so
+every node inside ear resumes together and stays in time with every other (TM9). The question is about two other
+cases. (a) A source's own clock falls behind while the graph keeps ticking: its network stalls, or its own thread is
+held, and the audio it then holds is late against the graph. (b) After a graph-wide stall, ear itself is late against
+what is outside it: speakers driven by other machines, or a picture on a screen. In both, jumping drops the late audio
+at once; speeding up plays it slightly fast (a converter in tracked mode) until it is back in time, with no jump but
+out of time meanwhile. `sendspin` already jumps (TM7: it skips what it holds of the lost time, and the library corrects
+the rest). This is the default for the sources still to come (AirPlay's paced source, a later RTP sender), each of
+which can still choose otherwise in its own clock.
 
-*Recommendation:* run spike S7 now (cheap, test only, and it settles section 5's unknowns while PipeWire 1.4.2 is
-fresh), and build T5 with its first user.
+*Scenario.* (a) An AirPlay node in ear feeds the kitchen and the living room, both through ear's cards, beside a
+`sendspin` node feeding the porch; AirPlay's network stalls for 300 ms while the graph ticks on. Jump: the AirPlay rooms
+skip 300 ms and are in time with the rest of the graph at once. Speed up: no skip, but the AirPlay rooms trail the
+porch by 300 ms at first, for about a minute at a 0.5% speed-up. (The kitchen and the living room stay together either
+way: one ear feeds both.) (b) ear's host stalls 300 ms while a TV elsewhere shows the picture: every room in ear goes
+quiet and resumes together, but 300 ms behind the picture; jumping puts the sound back on the picture, speeding up
+drifts back over a minute.
 
-**Q-TM2. After the host stalls, should a source ear adds later jump to stay in time, or slow down to avoid the jump?**
-
-*Background.* After a stall a network source holds audio that is now late. `sendspin` (decided, TM7) skips what it
-holds of the lost time at once, and the library corrects the rest: a short jump, then in time. A source behind a
-converter in tracked mode could instead play the late audio slightly fast until it is back on time: no jump, but out
-of time meanwhile. This is a default for the sources still to come (AirPlay's paced source, a later RTP sender), each
-of which can still choose otherwise in its own clock.
-
-*Scenario.* The kitchen plays AirPlay in a group with other AirPlay speakers, and the host stalls 300 ms. Jump: you
-hear a 300 ms skip and the kitchen is in time with the others at once. Slow catch-up: no skip, but the kitchen trails
-the others, by 300 ms at first, for about a minute at 0.5% speed-up.
-
-*Recommendation:* jump, as `sendspin` does: rooms out of time with each other are the more noticeable fault, and one
-rule across ear's sources is easier to reason about.
+*Decided default: jump*, as `sendspin` does: it keeps the source in time with the other nodes of the graph, and keeps
+ear in time with what is outside it. It stands as the default for sources that fall behind on their own clock unless
+the owner objects.
