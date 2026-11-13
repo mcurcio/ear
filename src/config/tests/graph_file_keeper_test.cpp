@@ -116,7 +116,7 @@ TEST_CASE("The graph file keeper on its thread: start announces, an edit replies
 	CHECK(contents(file) == replaced(recordExample, "take1.wav", "take2.wav"));
 }
 
-TEST_CASE("A stopped keeper removes its folder watch while it still answers, before it is joined",
+TEST_CASE("A stopped keeper closes its folder watch while it still answers, before it is joined",
           "[graph_file_keeper]") {
 	TempFolder dir("facade_unwatch");
 	std::ofstream(dir.path() / "ear.conf", std::ios::binary) << recordExample;
@@ -135,9 +135,10 @@ TEST_CASE("A stopped keeper removes its folder watch while it still answers, bef
 	REQUIRE(keeper.start().has_value());
 	REQUIRE(mainLoop.runUntil([&] { return !fileLog.changes.empty(); }));
 	REQUIRE(inotifyWatches() == 1);
+	REQUIRE(inotifyDescriptors() == 1);
 
-	// The watch goes as the stop begins, so the kernel reaps it while the nodes stop; a close that still finds it
-	// waits for that reaping, after ear's last record (docs/architecture.md#stop-sigint-or-sigterm).
+	// The descriptor is closed as the stop begins, on the keeper's thread, so the close's wait on the kernel's reaper
+	// overlaps the nodes' stop (docs/architecture.md#stop-sigint-or-sigterm).
 	graph.close();
 	keeper.stop();
 	std::optional<std::vector<control::CommandResult>> reply;
@@ -145,5 +146,6 @@ TEST_CASE("A stopped keeper removes its folder watch while it still answers, bef
 	              [&](std::vector<control::CommandResult> results) { reply = std::move(results); });
 	REQUIRE(mainLoop.runUntil([&] { return reply.has_value(); })); // a read after the stop, on the keeper's thread
 	CHECK(inotifyWatches() == 0);
+	CHECK(inotifyDescriptors() == 0);
 	CHECK_FALSE(keeper.join().has_value());
 }

@@ -51,7 +51,7 @@ public:
 	std::expected<void, std::string> start();
 	void submit(std::vector<control::Command> commands,
 	            control::BatchReply reply) override; // posts Keeper::request
-	void stop(); // main loop, after DesiredGraph::close(): posts Keeper::stop, then ends the folder watch
+	void stop(); // main loop, after DesiredGraph::close(): posts Keeper::stop, then ends the folder watch and closes it
 	/// Main thread, after the main loop returned: stops and joins the thread (the last write runs
 	/// first). Returns the last write's failure, for standard output.
 	std::optional<std::string> join();

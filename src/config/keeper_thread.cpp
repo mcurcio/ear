@@ -52,9 +52,9 @@ KeeperThread::KeeperThread(int wake, int watch, int watched, std::string fileNam
 	: wake_(wake), watch_(watch), watched_(watched), fileName_(std::move(fileName)), handlers_(std::move(handlers)) {}
 
 KeeperThread::~KeeperThread() {
-	stop();
+	stop(); // the watch's descriptor is closed on the thread first
 	::close(wake_);
-	::close(watch_);
+	if (watch_ >= 0) ::close(watch_); // the thread never ran its last work
 }
 
 void KeeperThread::post(std::move_only_function<void()> work) {
@@ -69,15 +69,18 @@ void KeeperThread::post(std::move_only_function<void()> work) {
 
 void KeeperThread::unwatch() {
 	post([this] {
-		if (watched_ < 0) return;
-		// Removing the watch only hands it to the kernel's reaper, which a close of the descriptor would wait for (an
-		// RCU grace period: some 16 ms, seconds on a starved host). It fails harmlessly when the folder went first.
+		if (watch_ < 0) return;
+		// The close waits for the kernel's mark reaper, which is host-wide (a delayed work item and an RCU grace
+		// period, waiting on any process's pending marks: some 16 ms, seconds on a starved host); here, on this
+		// thread, that wait overlaps the nodes' stop. The removal fails harmlessly when the folder went first.
 		[[maybe_unused]] const int removed = inotify_rm_watch(watch_, watched_);
-		watched_ = -1;
+		::close(watch_);
+		watch_ = -1;
 	});
 }
 
 void KeeperThread::stop() {
+	unwatch(); // refused, as all work is, once stopping: then it was posted by the first stop()
 	{
 		const std::scoped_lock lock(mutex_);
 		stopping_ = true;
@@ -91,13 +94,13 @@ void KeeperThread::run() {
 	std::array<pollfd, 2> fds{{{wake_, POLLIN, 0}, {watch_, POLLIN, 0}}};
 	alignas(inotify_event) std::array<char, 4096> buffer{};
 	for (;;) {
-		fds[1].fd = watched_ < 0 ? -1 : watch_; // poll() skips a negative descriptor
+		fds[1].fd = watch_; // poll() skips a negative descriptor
 		if (::poll(fds.data(), fds.size(), -1) < 0) {
 			if (errno == EINTR) continue;
 			return;
 		}
 		bool disk = false;
-		while (watched_ >= 0) { // drain the watch: every event read is judged together
+		while (watch_ >= 0) { // drain the watch: every event read is judged together
 			const auto got = ::read(watch_, buffer.data(), buffer.size());
 			if (got <= 0) break;
 			disk = disk || namesFile(buffer.data(), got);
@@ -113,7 +116,7 @@ void KeeperThread::run() {
 		}
 		for (auto& work : batch) work();
 		batch.clear();
-		if (disk && !last && watched_ >= 0)
+		if (disk && !last && watch_ >= 0)
 			handlers_.diskEvent(); // after the work posted before it (the keeper's start first)
 		bool idle = false;
 		{

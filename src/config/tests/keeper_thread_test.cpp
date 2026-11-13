@@ -135,7 +135,8 @@ TEST_CASE("stop() runs the work already posted, then joins, and work posted afte
 	CHECK(seen.countOf("late") == 0);
 }
 
-TEST_CASE("unwatch() removes the folder watch while the thread still runs, and no disk event follows",
+TEST_CASE("unwatch() removes the folder watch and closes its descriptor while the thread still runs, and no disk "
+          "event follows",
           "[keeper_thread]") {
 	TempFolder dir("thread_unwatch");
 	Seen seen;
@@ -143,12 +144,14 @@ TEST_CASE("unwatch() removes the folder watch while the thread still runs, and n
 	int markers = 0;
 	settle(*thread, seen, markers);
 	REQUIRE(inotifyWatches() == 1);
+	REQUIRE(inotifyDescriptors() == 1);
 
-	// The watch goes as the keeper stops, not when its descriptor is closed: a close that still finds the watch waits
-	// for the kernel to reap it (docs/architecture.md#stop-sigint-or-sigterm).
+	// The descriptor is closed as the keeper stops, on its thread, not at the end: the close waits for the kernel's
+	// host-wide reaper (docs/architecture.md#stop-sigint-or-sigterm).
 	thread->unwatch();
 	settle(*thread, seen, markers);
 	CHECK(inotifyWatches() == 0);
+	CHECK(inotifyDescriptors() == 0);
 
 	handEdit(dir.path() / "ear.conf", "graph");
 	settle(*thread, seen, markers);

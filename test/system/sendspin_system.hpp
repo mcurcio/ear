@@ -50,6 +50,21 @@ inline constexpr auto playDeadline = 30s;
 /// S1's bound on a stop and on a restart.
 inline constexpr auto stopBound = 5s;
 
+/// ear's whole stop (stopTook) and, when `node` is given, that node's teardown (removalTook), each within stopBound
+/// by ear's own records, once ear has said `ear: stopped`.
+inline void checkStopWithinBound(const ChildProcess& ear, const std::string& node = "") {
+	INFO("ear printed:\n" << ear.output());
+	const auto stop = stopTook(ear);
+	REQUIRE(stop);
+	REQUIRE(stop->count() >= 0);
+	CHECK(*stop < stopBound);
+	if (node.empty()) return;
+	const auto removal = removalTook(ear, node);
+	REQUIRE(removal);
+	REQUIRE(removal->count() >= 0);
+	CHECK(*removal < stopBound);
+}
+
 /// A sendspin node called "ma" with these settings, routed side for side into file node "rec".
 inline std::string maToRec(const std::string& settings) {
 	return graphFileText("node sendspin ma { " + settings +

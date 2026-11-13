@@ -522,7 +522,8 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
 
 1. `DesiredGraph::close()`: every later edit is refused `stopping`.
 2. The keeper is told to stop: edits still queued get `stopping`; reads are still answered. Its
-   thread removes its folder watch (a stopped keeper takes no disk event).
+   thread removes its folder watch and closes the inotify descriptor (a stopped keeper takes no
+   disk event).
 3. `NodeHost::stopAll` takes every node through `stopping` (cause `removing`) and tears it down
    (a `file` node finishes its WAV file).
 4. The control port closes every client with WebSocket code 1001; the control thread stops; the
@@ -538,13 +539,14 @@ engine that does not start, a folder watch it cannot arm, or a control port it c
 last `ear.conf` write happens before Kubernetes' grace period ends whatever the data loop or a
 card does.
 
-*Why the watch goes at step 2:* closing an inotify descriptor that still holds a watch waits for
-the kernel to reap it: a delayed work item and an RCU grace period that every process on the host
-shares, some 16 ms on an idle host and whole seconds on a starved one, all of it after ear's last
-record. Removing the watch only hands it to that reaper, so it is reaped while the nodes stop and
-the close as ear ends finds nothing to wait for. A starved host can still hold the end of the
-process past `ear: stopped` (its destructors and the kernel's teardown): the record, not the
-process's end, says when ear's stop is done.
+*Why the descriptor closes at step 2:* closing an inotify descriptor waits for the kernel's mark
+reaper, a delayed work item and an RCU grace period that is host-wide: the close waits on any
+process's pending marks, some 16 ms on an idle host and whole seconds on a starved one. Closed on
+the keeper's thread as the stop begins, that wait overlaps the nodes' stop, and step 5's join takes
+what is left of it, before `ear: stopped`; nothing after the record waits on it. An exit 1 after
+the keeper started (a control port it cannot bind) stops and joins the keeper before its `exit`
+record for the same reason. What follows the record is ear's destructors and the kernel's teardown
+of the process: the record, not the process's end, says when ear's stop is done.
 
 ## Not built yet
 

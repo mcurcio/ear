@@ -27,12 +27,13 @@ public:
 	KeeperThread(const KeeperThread&) = delete;
 	KeeperThread& operator=(const KeeperThread&) = delete;
 	void post(std::move_only_function<void()> work) override; // any thread; post order
-	/// Any thread; idempotent. Ends the folder watch once the work already posted has run: no disk event follows, and
-	/// posted work still runs. The keeper calls it as it stops (docs/architecture.md#stop-sigint-or-sigterm): closing
-	/// an inotify descriptor that still holds a watch waits for the kernel to reap it, so the watch is removed here,
-	/// while the nodes stop, and the close at the end finds nothing left to wait for.
+	/// Any thread; idempotent. Once the work already posted has run, removes the folder watch and closes its inotify
+	/// descriptor on this thread: no disk event follows, and posted work still runs. The keeper calls it as it stops
+	/// (docs/architecture.md#stop-sigint-or-sigterm): the close waits for the kernel's host-wide mark reaper, and here
+	/// that wait overlaps the nodes' stop rather than following ear's last record.
 	void unwatch();
-	/// Any thread but its own; idempotent. Runs the work already posted, ends and joins. Later posts are destroyed unrun.
+	/// Any thread but its own; idempotent. Unwatches, runs the work already posted, ends and joins. Later posts are
+	/// destroyed unrun.
 	void stop();
 
 private:
@@ -41,8 +42,8 @@ private:
 	bool namesFile(const char* buffer,
 	               long size) const; // the inotify events read name the file, or the folder itself
 	int wake_;                       // eventfd
-	int watch_;                      // inotify
-	int watched_;                    // the folder's watch, or -1 once unwatch() ran (its own thread only)
+	int watch_;                      // inotify, or -1 once unwatch() closed it (its own thread, then the destructor)
+	int watched_;                    // the folder's watch descriptor
 	std::string fileName_;
 	Handlers handlers_;
 	std::mutex mutex_;

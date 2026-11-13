@@ -32,6 +32,16 @@ inline std::size_t inotifyWatches() {
 	return watches;
 }
 
+/// The inotify descriptors this process holds open.
+inline std::size_t inotifyDescriptors() {
+	std::size_t open = 0;
+	for (const auto& entry : std::filesystem::directory_iterator("/proc/self/fd")) {
+		std::error_code ignored;
+		open += std::filesystem::read_symlink(entry.path(), ignored) == "anon_inode:inotify" ? 1U : 0U;
+	}
+	return open;
+}
+
 /// The record's file format example (docs/graph-file.md#edits-at-the-source).
 inline const std::string recordExample = R"(graph_frequency 48000;
 block_size 256;

@@ -342,6 +342,9 @@ int main(int argc, char** argv) {
 
 	auto started = ear::server::ControlPort::start(portSettings, control, gateway, blocks, bell);
 	if (!started) {
+		// The keeper's thread closes its inotify descriptor, which waits on the kernel, before ear's last record.
+		keeper.stop();
+		[[maybe_unused]] const auto unwritten = keeper.join(); // nothing was edited: nothing to write
 		log.exiting(1, started.error().detail);
 		return 1;
 	}

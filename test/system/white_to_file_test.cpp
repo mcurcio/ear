@@ -74,7 +74,7 @@ TEST_CASE("A stop ends with the record ear: stopped, after every node is removed
 	checkAllRecords(ear);
 	const auto& records = ear.records();
 	const auto at = [&](const std::string& msg) {
-		return std::ranges::find_if(records, [&](const json& record) { return record["msg"] == msg; }) -
+		return std::ranges::find_if(records, [&](const json& record) { return record.value("msg", "") == msg; }) -
 		       records.begin();
 	};
 	const auto stopped = at(std::string(stoppedLine));

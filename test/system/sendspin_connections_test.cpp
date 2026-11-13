@@ -104,9 +104,7 @@ void checkHeldDial(const TempDirectory& directory, const std::string& url) {
 		const auto exitStatus = waitForStop(ear);
 		INFO("ear printed:\n" << ear.output());
 		CHECK(exitStatus == 0);
-		const auto took = removalTook(ear, "ma");
-		REQUIRE(took);
-		CHECK(*took < stopBound);
+		checkStopWithinBound(ear, "ma");
 	}
 }
 
@@ -140,6 +138,7 @@ TEST_CASE("With no server at all the sendspin node runs, its meters silent, and 
 	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());
 	CHECK(exitStatus == 0);
+	checkStopWithinBound(ear);
 	CHECK_FALSE(ear.lineStartingWith("node ma failed"));
 }
 

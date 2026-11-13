@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -105,34 +106,45 @@ inline std::optional<int> waitForStop(ChildProcess& ear) {
 	return ear.waitForExit(exitDeadline);
 }
 
-/// The `t` of the first record whose msg is `msg`, on ear's clock; nothing if there is none.
-inline std::optional<std::chrono::sys_time<std::chrono::microseconds>> recordTime(const ChildProcess& ear,
-                                                                                  std::string_view msg) {
-	for (const json& record : ear.records()) {
-		if (record.value("msg", "") != msg) continue;
+/// How long ear took between two of its records, by their own order and `t`: from the first whose msg `from` accepts to
+/// the first after it whose msg `to` accepts. `t` is UTC wall time (docs/output-records.md#the-envelope), the only
+/// time a record carries; a clock step inside a test's few seconds is no realistic risk, and a negative span is
+/// returned as it is, for the caller to refuse. Nothing if either record is missing or a `t` does not read.
+inline std::optional<std::chrono::microseconds> recordsSpan(const ChildProcess& ear,
+                                                            const std::function<bool(const std::string&)>& from,
+                                                            const std::function<bool(const std::string&)>& to) {
+	const auto timeOf = [](const json& record) -> std::optional<std::chrono::sys_time<std::chrono::microseconds>> {
 		std::istringstream text(record.value("t", ""));
 		std::chrono::sys_time<std::chrono::microseconds> t;
 		text >> std::chrono::parse("%FT%TZ", t);
 		if (!text) return std::nullopt;
 		return t;
-	}
-	return std::nullopt;
+	};
+	const auto& records = ear.records();
+	const auto first = std::ranges::find_if(records, [&](const json& r) { return from(r.value("msg", "")); });
+	if (first == records.end()) return std::nullopt;
+	const auto last = std::find_if(first + 1, records.end(), [&](const json& r) { return to(r.value("msg", "")); });
+	if (last == records.end()) return std::nullopt;
+	const auto begun = timeOf(*first);
+	const auto ended = timeOf(*last);
+	if (!begun || !ended) return std::nullopt;
+	return *ended - *begun;
 }
 
-/// How long ear's stop took to tear `node` down, from its records: `stopping: removing` to `removed`, on ear's clock.
-/// Nothing if either record is missing.
+/// How long ear's stop took to tear `node` down, by its records: `stopping: removing` to its `removed` after it.
 inline std::optional<std::chrono::microseconds> removalTook(const ChildProcess& ear, const std::string& node) {
-	const auto stopping = recordTime(ear, "node " + node + " stopping: removing");
-	std::optional<std::chrono::sys_time<std::chrono::microseconds>> removed;
-	for (const json& record : ear.records()) {
-		const std::string msg = record.value("msg", "");
-		if (msg.starts_with("node " + node + " removed ")) {
-			removed = recordTime(ear, msg);
-			break;
-		}
-	}
-	if (!stopping || !removed) return std::nullopt;
-	return *removed - *stopping;
+	return recordsSpan(
+		ear, [&](const std::string& msg) { return msg == "node " + node + " stopping: removing"; },
+		[&](const std::string& msg) { return msg.starts_with("node " + node + " removed "); });
+}
+
+/// How long ear's whole stop took, by its records: from the first `stopping: removing` (its first record of the stop)
+/// to `ear: stopped` after it, so every node's teardown, the control port's close, the control thread's stop and the
+/// keeper's join (its descriptor's close among it) are inside.
+inline std::optional<std::chrono::microseconds> stopTook(const ChildProcess& ear) {
+	return recordsSpan(
+		ear, [](const std::string& msg) { return msg.starts_with("node ") && msg.ends_with(" stopping: removing"); },
+		[](const std::string& msg) { return msg == stoppedLine; });
 }
 
 inline std::string linkedLine(const std::string& from, const std::string& to) {
