@@ -280,14 +280,18 @@ less 2 s, to its own. The shape still says which step is a skip (whole blocks, e
 `stampSlackUs` for a stamp, which is rounded to the microsecond), but no longer excuses it, and a
 host cut elsewhere in the run pays for nothing. `lostCycles(ear)` sums the records, the totals.
 
-`counters_test.cpp` makes the stall itself: the whole process stopped (SIGSTOP) for 200 ms. Which
+`counters_test.cpp` makes the stall itself: the whole process stopped (SIGSTOP) for 50 ms. Which
 cycles a stall cuts is the host's: the burst after it is all cut on the dev host and runs whole on a
 GitHub runner ([engine.md](engine.md#the-internal-clock)), where a stop while the data thread waits
 cuts nothing. The cut that is certain is of a cycle held in progress, so the stop is aimed at a
 moment `/proc` shows the data thread running, and the test stalls again until one stall cut a
 cycle, judging each by the graph's counters once its cycles caught up (one that cut nothing lost
-nothing). The stall's record must then be the first of any cut since the count it started from,
-carrying one stall; a host stall between them fails the test, named.
+nothing). The stall's record must then be the first of any cut since the count it started from
+(read once every cut before it is recorded), carrying one stall. A host stall that lands before the
+test's stall begins (the count moved before the stop, or its cuts have a record of their own) says
+nothing of that record, so the attempt is made again, up to 5 times, and the test fails naming every
+intrusion if all are intruded on. A host stall inside the stall's record cannot be told from it and
+fails the test, named: rerun alone.
 
 ### The sender's own counter
 

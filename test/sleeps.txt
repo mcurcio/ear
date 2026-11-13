@@ -28,7 +28,7 @@ pace | src/pipewire/tests/spikes_test.cpp | nanosleep(&pause, nullptr); | S2's p
 # ear_node_sendspin_tests (audited, R5c): none left
 
 # ear_system_tests (audited, R5d)
-induce | test/system/counters_test.cpp | std::this_thread::sleep_for(stallFor); // the stall itself, made on purpose | the whole of ear held stopped (SIGSTOP) for 200 ms, aimed at its data thread running, until a stall cuts a cycle
+induce | test/system/counters_test.cpp | std::this_thread::sleep_for(stallFor); // the stall itself, made on purpose | the whole of ear held stopped (SIGSTOP) for 50 ms, aimed at its data thread running, until a stall cuts a cycle
 negative | test/system/sendspin_floods_test.cpp | std::this_thread::sleep_for(1ms); | the thread peak sampled while the flood runs: can miss a breach, never invent one; the bound is proven exactly in transport_test.cpp ("A flood past twice the room starts no thread beyond it")
 poll | test/system/ear_system.hpp | std::this_thread::sleep_for(50ms); // between looks at the WAV, which decide | waitForWav: until what a file node appends holds what a check needs; the WAV decides, each look reading only new bytes
 

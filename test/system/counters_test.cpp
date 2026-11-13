@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <sys/types.h>
 
@@ -20,7 +21,7 @@ namespace {
 using namespace ear::test;
 
 /// How long the test holds ear stopped: every thread of it, the data thread among them, as a host that starves it does.
-constexpr auto stallFor = 200ms;
+constexpr auto stallFor = 50ms;
 /// A cycle at the graph's 48 kHz and block of 256.
 constexpr auto cycleTime = std::chrono::microseconds(5333);
 
@@ -49,10 +50,10 @@ bool running(pid_t process, pid_t thread) {
 
 /// One stall, made on purpose: the whole of ear stopped, then let go. Which cycles it cuts is the host's: the cut that
 /// is certain on any host is of a cycle held in progress past the driver's next timeout, so the stop is aimed at a
-/// moment the data thread is running (within a second of looking); the catch-up's burst after it is cut on some hosts
+/// moment the data thread is running (within 100 ms of looking); the catch-up's burst after it is cut on some hosts
 /// and runs whole on others, a GitHub runner's among them (docs/engine.md#the-internal-clock).
 void stall(ChildProcess& process, pid_t thread) {
-	const auto until = std::chrono::steady_clock::now() + 1s;
+	const auto until = std::chrono::steady_clock::now() + 100ms;
 	while (!running(process.pid(), thread) && std::chrono::steady_clock::now() < until) {
 	}
 	process.signal(SIGSTOP);
@@ -73,24 +74,47 @@ json caughtUp(Rpc& rpc, std::uint64_t cyclesThen, std::chrono::steady_clock::tim
 	return {};
 }
 
+/// What stalling until a cut made: the cut cycles once one stall cut some, or what intruded before the stall began.
+struct Stalled {
+	std::optional<std::uint64_t> cut;
+	std::string intrusion;
+};
+
 /// Stalls ear until one stall cut a cycle, each judged by the graph's counters once it caught up: one that cut nothing
-/// lost nothing, the host having run every cycle of it, and is made again. With `cutBefore`, no cut but the test's
-/// may come between (a host stall fails it, named). Returns the cut cycles then.
-std::uint64_t stallUntilCut(ChildProcess& process, Rpc& rpc, pid_t thread, std::optional<std::uint64_t> cutBefore) {
+/// lost nothing, the host having run every cycle of it, and is made again. With `cutBefore`, a cut already past it when
+/// a stall is about to begin is a host stall before the test's, returned as an intrusion.
+Stalled stallUntilCut(ChildProcess& process, Rpc& rpc, pid_t thread, std::optional<std::uint64_t> cutBefore) {
 	const auto until = std::chrono::steady_clock::now() + 60s;
 	for (int attempts = 0; std::chrono::steady_clock::now() < until; ++attempts) {
 		const json before = rpc.call("graph.get")["result"]["counters"];
 		const auto then = std::chrono::steady_clock::now();
-		INFO("attempt " << attempts << ", before: " << before.dump());
-		// A host stall between the count and the test's: the host's cuts, not the test's, so rerun alone.
 		if (cutBefore && number(before, "cutCycles") != *cutBefore)
-			FAIL("a host stall intruded before the test's: " << number(before, "cutCycles") - *cutBefore
-			                                                 << " cycles cut since the count, " << before.dump());
+			return {std::nullopt, "a host stall cut " + std::to_string(number(before, "cutCycles") - *cutBefore) +
+			                          " cycles after the count, before the test's stall began"};
 		stall(process, thread);
 		const std::uint64_t cut = number(caughtUp(rpc, number(before, "cycles"), then), "cutCycles");
-		if (cut > number(before, "cutCycles")) return cut;
+		if (cut > number(before, "cutCycles")) return {cut, {}};
 	}
 	FAIL("no stall cut a cycle within 60 s");
+	return {};
+}
+
+/// The count of cut cycles a stall's record must start from: read once the graph has run 100 cycles (ear's first
+/// cycles, while its blocks join, may cut one) and once every cut up to it is recorded, read again until it holds.
+std::uint64_t recordedCount(ChildProcess& process, Rpc& rpc) {
+	const auto until = std::chrono::steady_clock::now() + deadline;
+	while (std::chrono::steady_clock::now() < until) {
+		const json counters = rpc.call("graph.get")["result"]["counters"];
+		if (number(counters, "cycles") < 100) continue;
+		const std::uint64_t cut = number(counters, "cutCycles");
+		if (cut > 0 &&
+		    !process.waitForRecord(
+				[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") >= cut; },
+				deadline))
+			break;
+		if (number(rpc.call("graph.get")["result"]["counters"], "cutCycles") == cut) return cut;
+	}
+	FAIL("the cut cycles were never all recorded and holding still");
 	return 0;
 }
 
@@ -117,38 +141,52 @@ TEST_CASE("A stall is one ear.graph-lost-cycles record however many cycles it cu
 	for (const json& node : snapshot["nodes"])
 		for (const char* counter : {"missedCycles", "overruns", "repositions", "driverChanges"})
 			CHECK(node["counters"].contains(counter));
-	// The count the stall's record must start from, read once the graph has run 100 cycles: ear's first cycles, while
-	// its blocks join, may cut one (a snapshot taken at once can read 1 cycle and no cut), and the cuts before the count
-	// are recorded before the stall, so its record carries the test's stall alone.
-	json baseline = snapshot["counters"];
-	while (number(baseline, "cycles") < 100) baseline = rpc.call("graph.get")["result"]["counters"];
-	const std::uint64_t cutBefore = number(baseline, "cutCycles");
-	if (cutBefore > 0) {
+	// The stall and its record. An attempt reads the count of cut cycles once every cut up to it is recorded, and stalls
+	// ear until a stall cut a cycle. A host stall that lands before the test's stall begins (the count moved before the
+	// stop, or its cuts have a record of their own before the stall's) says nothing of the stall's record, so the attempt
+	// is made again, up to 5 times. One that lands inside the stall's record cannot be told from the stall and fails,
+	// named: rerun alone (docs/testing.md#the-rules).
+	constexpr std::size_t attemptsAllowed = 5;
+	std::vector<std::string> intrusions;
+	std::optional<json> stall;
+	std::uint64_t cutBefore = 0;
+	std::uint64_t cut = 0;
+	while (!stall) {
+		if (intrusions.size() == attemptsAllowed) {
+			std::string all;
+			for (const std::string& intrusion : intrusions) all += "\n  " + intrusion;
+			FAIL("every one of " << attemptsAllowed << " attempts was intruded on by a host stall:" << all);
+		}
+		cutBefore = recordedCount(process, rpc);
+		const Stalled made = stallUntilCut(process, rpc, *thread, cutBefore);
+		if (!made.cut) {
+			intrusions.push_back(made.intrusion);
+			continue;
+		}
+		cut = *made.cut;
+		// The first graph record of any cut since the count.
+		auto first = process.waitForRecord(
+			[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") > cutBefore; },
+			deadline);
 		INFO("ear printed:\n" << process.output());
-		REQUIRE(process.waitForRecord(
-			[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") >= cutBefore; },
-			deadline));
+		REQUIRE(first);
+		if (number(*first, "totalCycles") < cut) {
+			// It ends before the stall's cuts: a host stall's own record, written between the count and the stop.
+			intrusions.push_back("a host stall's record before the test's stall: " + first->dump());
+			continue;
+		}
+		stall = std::move(first);
 	}
-
-	const std::uint64_t cut = stallUntilCut(process, rpc, *thread, cutBefore);
-
-	// One record carries the stall, and it is the first graph record of any cut since the count: every cycle the stall
-	// cut from the count on, in one stall, not a record a cycle. A host stall between the count and the test's shows
-	// here as an earlier record, or as a second stall in this one: rerun alone (docs/testing.md#the-rules).
-	const auto stall = process.waitForRecord(
-		[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") > cutBefore; },
-		deadline);
-	INFO("ear printed:\n" << process.output());
-	REQUIRE(stall);
+	INFO("attempts: " << intrusions.size() + 1 << ", each intruded on before its stall:" << json(intrusions).dump());
 	INFO("the first graph record after the count, which must be the stall's: " << stall->dump());
-	// Its record starts at the count and carries one stall; any other is a host stall that came between the count and
-	// the record (the record waits for the cuts to hold still), named here: rerun alone.
+	// It starts at the count and carries one stall: every cycle the stall cut, not a record a cycle. Anything else is a
+	// host stall inside the stall's record (it waits for the cuts to hold still), named here.
 	if (number(*stall, "totalCycles") - number(*stall, "cycles") != cutBefore)
-		FAIL("a host stall intruded: the stall's record starts at "
+		FAIL("a host stall intruded on the stall's record: it starts at "
 		     << number(*stall, "totalCycles") - number(*stall, "cycles") << " cut cycles, not the count's "
 		     << cutBefore);
 	if (number(*stall, "stalls") != 1)
-		FAIL("a host stall intruded: the stall's record carries " << number(*stall, "stalls") << " stalls");
+		FAIL("a host stall intruded on the stall's record: it carries " << number(*stall, "stalls") << " stalls");
 	CHECK(number(*stall, "totalCycles") >= cut);
 	CHECK(number(*stall, "ms") >= number(*stall, "cycles") * 256 * 1000 / 48000 - 1);
 	const std::uint64_t total = number(*stall, "totalCycles");
@@ -167,7 +205,9 @@ TEST_CASE("A stall is one ear.graph-lost-cycles record however many cycles it cu
 	// A second stall, the stop asked for as soon as its cut is counted: the record of it may still be held back for the
 	// cuts to hold still, and the stop writes it all the same. Every record's cycles then add up to the last one's total,
 	// the second stall's among them.
-	const std::uint64_t secondCut = stallUntilCut(process, rpc, *thread, std::nullopt);
+	const auto second = stallUntilCut(process, rpc, *thread, std::nullopt);
+	REQUIRE(second.cut);
+	const std::uint64_t secondCut = *second.cut;
 	process.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	REQUIRE(waitForStop(process) == 0);

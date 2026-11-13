@@ -1659,8 +1659,12 @@ SIGSTOP measurement); the library pages hold the result.
   stream, fails as "a skip of 1 blocks at frame 177920: 1 of its 1 blocks paid by no record of a loss" with 39 cycles
   cut in the run, which the run-wide budget would have taken.
 - **The stall's record alone.** The first graph record after the count the test starts from must be the stall's,
-  start at that count and carry one stall; a host stall between fails, named. The count is read once the graph has run
-  100 cycles, since a snapshot taken at once can read 1 cycle before ear's first cut.
+  start at that count and carry one stall. The count is read once the graph has run 100 cycles (a snapshot taken at
+  once can read 1 cycle before ear's first cut) and every cut up to it is recorded. A host stall before the test's stall
+  begins is no evidence about its record, so the attempt is made again, up to 5 times, all intrusions named if every
+  one is intruded on; one inside the stall's record fails, named. Under CI-like load (three loops of the other system
+  tests beside it) it passed 16 of 20, each failure a host stall inside the record (2, 3, 3 and 9 stalls in a record
+  of a 50 ms stall); idle, 10 of 10.
 - **A stall seen to end only by a block** is a known limit, now named in `docs/engine.md#counters`.
 
 ## 10. Decided here (technical)
