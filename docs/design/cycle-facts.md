@@ -1684,10 +1684,10 @@ keep time for a node goes. Moot, each with what replaces it:
 
 | Follow-up or finding | Now |
 |---|---|
-| 4.4's rows for `SourceRing::keepTime` and `Played` (keep in step, the uncapped debt) and 9.8's idle latch and debt width | Deleted with the source's timekeeping (`timing-model.md` T3) |
+| 4.4's rows for `SourceRing::keepTime` and `Played` (keep in step, the uncapped debt) and 9.8's idle latch and debt width | **Deleted** with the source's timekeeping (`timing-model.md` T3, built 2026-11-13): `keepTime`, the debt, the idle latch, `Played` and the played wake are gone; a source's clock alone decides its skip (`docs/writing-a-node-type.md#a-sources-clock`) |
 | 9.7's question for the owner (the frames count moving with the clock only if the library is patched) | Moot: nothing moves the count but what was skipped and read |
 | 9.7's "For C4b and 3c" (tell the library what the source took, or give the source the feed's rule) | Answered by the source's clock (`timing-model.md` 4.2, 6.1) |
-| 4.4's last sentence ("in 3c ... this row merges into `SourceRing`'s") | The row moves into `sendspin`'s `SourceClock`, not `SourceRing` |
+| 4.4's last sentence ("in 3c ... this row merges into `SourceRing`'s") | The row moves into `sendspin`'s `SourceClock` (the interface T3 built), not `SourceRing` |
 | 9.9's fixes 2, 4 and 5 (nothing told from a lossy cycle, the payment, `LibraryView`) and fix 6's owing role (`untoldBound` forgetting a debt) | Deleted (`timing-model.md` 6.3). Fix 1 (the floor patch) and fix 3 (the late-chunk patch) stay, and `untoldBound` stays as the deferral's bound: the floor patch is kept with the deferral as C4's proven pair, and dropping it is a later step gated on evidence (`timing-model.md` 6.5) |
 | 9.9's "telling the library on each whole cycle while it is starved ... not done" | Moot: the honest wrapper tells every on-time tick. The draft upstream report keeps both halves (`timing-model.md` 6.5) |
 | 9.10's `Feed::skipThenRead` | Deleted. 9.10's deferral of overdue cycles is **not** moot: it stays, under its bound, as `sendspin`'s rule for when to tell (`timing-model.md` 6.1, the design review's M1) |
