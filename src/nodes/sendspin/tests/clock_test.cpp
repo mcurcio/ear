@@ -1410,6 +1410,8 @@ static void judgeStall(bool longStall, StallMade made) {
 	                         << (probe ? "; the probe held " + std::to_string(probe->code.burstHolds()) +
 	                                         " of the burst's cycles"
 	                                   : std::string()));
+	INFO("the burst's shape: " << (lost ? "cut (the block missed some of its cycles: catch-ups, owed)"
+	                                    : "uncut (the block ran every cycle, overdue, nothing lost or owed)"));
 	REQUIRE(end > stalled + 1);
 	if (probe) REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
 	const Cycle& caughtUp = rig.tap.at(end);
@@ -1448,6 +1450,7 @@ static void judgeStall(bool longStall, StallMade made) {
 	std::size_t corrections = 0;
 	std::size_t blends = 0;
 	std::string steps;
+	std::string correctionCycles;
 	for (const Judge::RampSeen& seen : ramp) {
 		if (seen.index <= stalled || seen.index >= reach.until) continue;
 		const bool edgeBlend = seen.libraryStep == 2;
@@ -1470,8 +1473,21 @@ static void judgeStall(bool longStall, StallMade made) {
 		steps += " " + std::to_string(seen.libraryStep) + "/" + std::to_string(seen.innerStep) + "@" +
 		         std::to_string(seen.index) + " (" + std::to_string(seen.errorUs) + " us, " + std::to_string(dryLost) +
 		         " frames dry before)";
+		// And each cycle of that reach, so one correction says what led to it: the cycle's causes, its jump, how long
+		// the next was overdue, what the feed held as it began, what the code read, and whether it told the library.
+		correctionCycles += "\n  before the correction at " + std::to_string(seen.index) + ":";
+		for (std::size_t i = seen.index > reachBack ? seen.index - reachBack : 1; i <= seen.index; ++i) {
+			const Cycle& c = rig.tap.at(i);
+			const bool told = c.progress.totalFrames != rig.tap.at(i - 1).progress.totalFrames;
+			correctionCycles += "\n    " + std::to_string(i) + " causes " + std::to_string(c.facts.causes.bits()) +
+			                    " jump " + std::to_string(c.facts.jumpFrames) + " overdue " +
+			                    std::to_string(c.overdueNs / 1000) + " us held " + std::to_string(c.heldAtStart) +
+			                    " read " + std::to_string(c.fed) + (told ? " told" : "");
+		}
 		++corrections;
 	}
+	INFO("the cycles before each correction (index, causes, jump, overdue, held at start, read, told):"
+	     << correctionCycles);
 	std::string library;
 	std::size_t silenceAfter = 0;
 	for (const LibraryLog::Line& line : rig.log.lines()) {
