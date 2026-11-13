@@ -245,23 +245,52 @@ void checkPairsAndPlays(ChildProcess& ear, const TempDirectory& directory, Sends
 	CHECK(ramp.badSteps == 0);
 }
 
-/// A socket from `source` that finishes its upgrade once `rounds` of these peers have opened, or 2 s have passed (inside
-/// the 3 s the transport gives an upgrade, which a loaded host's slower rounds must not use up: the rounds are what the
-/// test makes, and at least one is required), and whether it was answered.
+/// How a slow upgrade ended.
+enum class SlowUpgrade {
+	answered,   // 101
+	closed,     // closed with no answer: it gave way, or was refused
+	windowPast, // the transport's own 400: its 3 s for an upgrade ran out before the rest of the request came
+};
+
+/// Reads to the end of a slow upgrade's answer. The transport answers its own handshake's timeout with a 400 before it
+/// closes, where a socket that gave way is shut down first and so says nothing.
+SlowUpgrade slowUpgradeAnswer(int fd) {
+	std::string answer;
+	char byte = 0;
+	while (!answer.ends_with("\r\n\r\n") && ::recv(fd, &byte, 1, 0) == 1) answer += byte;
+	if (answer.starts_with("HTTP/1.1 101")) return SlowUpgrade::answered;
+	return answer.starts_with("HTTP/1.1 400") ? SlowUpgrade::windowPast : SlowUpgrade::closed;
+}
+
+/// The attempts answersSlowUpgrade makes at an upgrade that waits across a round inside the transport's window.
+constexpr int slowUpgradeAttempts = 5;
+
+/// Whether a socket from `source`, half its upgrade sent, is answered once the rest comes after a round of these peers
+/// has opened. The round is the event and is required, under the shared deadline, so the test judges that rounds keep
+/// opening, never how fast. Up to `rounds` in all are waited for while the upgrade has had under 2 s, inside the 3 s
+/// the transport gives one; those past the first are only more evidence. An attempt whose first round came after the
+/// transport's window had passed (its 400) judged nothing, and the next attempt waits for a round of its own.
 bool answersSlowUpgrade(SilentPeers& peers, const std::string& source, std::uint16_t port, std::size_t rounds) {
-	const int fd = connectFrom(source, port);
-	REQUIRE(fd >= 0);
 	const std::string request = upgradeRequest(port);
 	const std::size_t half = request.size() / 2;
-	REQUIRE(::send(fd, request.data(), half, MSG_NOSIGNAL) == static_cast<ssize_t>(half));
-	const std::size_t opened = peers.roundsWithin(rounds, 2s);
-	const bool sent = ::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL) ==
-	                  static_cast<ssize_t>(request.size() - half);
-	const bool answered = sent && answeredUpgrade(fd);
-	::close(fd);
-	INFO(opened << " of the " << rounds << " rounds asked for opened while the upgrade waited");
-	REQUIRE(opened >= 1);
-	return answered;
+	for (int attempt = 0; attempt < slowUpgradeAttempts; ++attempt) {
+		const int fd = connectFrom(source, port);
+		REQUIRE(fd >= 0);
+		REQUIRE(::send(fd, request.data(), half, MSG_NOSIGNAL) == static_cast<ssize_t>(half));
+		const auto halfSent = std::chrono::steady_clock::now();
+		INFO("attempt " << attempt << ": a round of the peers opening while the upgrade waits");
+		REQUIRE(peers.waitForRounds(1));
+		const auto waited =
+			std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - halfSent);
+		if (rounds > 1 && waited < 2s) peers.roundsWithin(rounds - 1, 2s - waited);
+		// A send the transport already closed on fails; its answer, if it gave one, is still there to read.
+		::send(fd, request.data() + half, request.size() - half, MSG_NOSIGNAL);
+		const SlowUpgrade answer = slowUpgradeAnswer(fd);
+		::close(fd);
+		if (answer != SlowUpgrade::windowPast) return answer == SlowUpgrade::answered;
+	}
+	FAIL("each of " << slowUpgradeAttempts << " slow upgrades outlasted the transport's 3 s waiting for one round");
+	return false;
 }
 
 } // namespace

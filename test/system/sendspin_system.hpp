@@ -431,7 +431,7 @@ inline RampCheck checkRamp(const Wav& wav, std::vector<std::int64_t> lostSyncsUs
 			// The library first skips, unlogged, every whole chunk too late to play, then drops the late front of the next
 			// and says how late that was: whole chunks and at most that drop.
 			const auto covers = [&](std::int64_t us) {
-				return step > 1 && (step - 1) % chunkFrames <= lossDropFrames(us);
+				return step > 1 && (step - 1) % static_cast<std::int64_t>(chunkFrames) <= lossDropFrames(us);
 			};
 			const auto logged = std::ranges::min_element(lostSyncsUs, [&](std::int64_t a, std::int64_t b) {
 				return covers(a) != covers(b) ? covers(a) : lossDropFrames(a) < lossDropFrames(b);
