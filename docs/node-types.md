@@ -371,9 +371,10 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   time does not leave it untold for good. That report is dated by when the cycle really ran
   (`GraphCycle::ranRawNs()`, [engine.md](engine.md#graphcycle)), and the report after it is clamped
   to it: dated by its own nominal start, earlier than the forced report's run time by up to its
-  overdue time, it would step back. The clamp has no other case (reports from on-time cycles follow
-  one another by their nominal starts; one whose downstream latency shrank is told as it is), and a
-  unit row holds it idle otherwise. The library may correct after a forced report: the bound's
+  overdue time, it would step back. The clamp has no other case: reports from on-time cycles follow
+  one another by their nominal starts, and a unit row holds it idle otherwise. **A finish may step
+  back when what lies downstream shrinks** (a following card's latency told smaller): that is
+  intended, since the finish is true and the library re-anchors on every report. The library may correct after a forced report: the bound's
   price.
 - **While ear defers, the library's playtime runs open loop** (the last finish plus what it wrote
   since), trailing now through a burst of either shape with frames still buffered; upstream's floor
@@ -394,8 +395,8 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   inside the block, judged in whichever shape the host gives and recorded
   (`out/Testing/sendspin-stall-shapes.txt`, which CI prints): with frames lost, one correction of what was not
   skipped and the zeros, within the library's 500 us settle threshold, and at most one settle step
-  of up to two blocks after it (its next write landing late after the hard sync, as after a network
-  gap); with none, no correction, no silence and nothing told from an overdue cycle. Every report's frames and finish are checked
+  of up to two blocks after it, only where a cycle between was dry or began with the feed empty
+  (its next write landing late, as after a network gap); with none, no correction, no silence and nothing told from an overdue cycle. Every report's frames and finish are checked
   against the rule, and a finish behind the last fails.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.

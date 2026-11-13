@@ -255,8 +255,9 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   correction was the stall's lost frames less the feed's 2048, plus the zeros ear played (0 to 512), within 4 frames;
   a 200 ms stall is about 8700 frames, a 1 s one about 52000 upstream and 46000 in the block; a 1.5-cycle hiccup was
   skipped whole and corrected nothing. Under heavier load (another suite beside them, load 8 to 10) the library once
-  followed its correction with a settle step of one block and once of two (its next write landing late after the hard
-  sync), and host-starved runs failed the run's 1% blend bound; a timing test that fails on a loaded host is rerun
+  followed its correction with a settle step of one block and once of two, neither with a dry or empty-feed cycle
+  between them (the test now fails such a step, listing the cycles between), and host-starved runs failed the run's 1%
+  blend bound; a timing test that fails on a loaded host is rerun
   alone before the code is suspected.
 - **Measured without the floor patch** (upstream's floor put back in the kept tree, 5 runs of each stall test, same
   load): 20 of 20 passed, the same single corrections, because every burst here was cut into one catch-up told on time,

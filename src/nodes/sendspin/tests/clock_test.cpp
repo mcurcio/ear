@@ -818,6 +818,7 @@ public:
 		std::int64_t libraryStep;
 		bool broken;            // not every frame of it stepped by +1 (a soft-sync blend, or a step inside it)
 		std::int64_t innerStep; // the largest step between exact ramp frames inside it
+		std::int64_t skipped;   // what the code skipped since the last ramp frame out
 	};
 	/// Every ramp cycle read so far, in order.
 	const std::vector<RampSeen>& ramp() const { return ramp_; }
@@ -952,6 +953,7 @@ private:
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
 		lastRampCycle_ = index;
+		const std::int64_t skippedSince = pendingSkipped_;
 		pendingSkipped_ = 0;
 
 		// When the first of them is heard: at the block's port, plus what lies downstream of it.
@@ -960,7 +962,7 @@ private:
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
-		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp, cycle.innerStep});
+		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp, cycle.innerStep, skippedSince});
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
 		if (verdict != ear::test::Verdict::judge || settling) return;
@@ -1591,6 +1593,9 @@ static void judgeStall(StallKind kind, StallMade made) {
 	if (probe && kind != StallKind::hiccup) REQUIRE(lostFrames > static_cast<std::uint64_t>(kFeedFrames));
 	// The hiccup's one lost cycle is in the feed, which holds 2048 frames: the clock skips all of it.
 	if (kind == StallKind::hiccup) REQUIRE(cut);
+	// A stall past the feed always leaves the library something to correct, so the one-correction rule is judged on
+	// every run, whatever shape the host gives the burst after it.
+	if (probe && kind != StallKind::hiccup) REQUIRE(unskipped > 0);
 
 	// The first report after the stall comes from a cycle that began on time, dated by its own start.
 	const Cycle& caughtUp = rig.tap.at(end);
@@ -1624,15 +1629,17 @@ static void judgeStall(StallKind kind, StallMade made) {
 	// step of at most 3, at most once a chunk, as checkStep counts them).
 	std::size_t corrections = 0;
 	std::uint64_t corrected = 0;
-	std::vector<std::uint64_t> sizes; // each correction's frames, in order
+	std::vector<std::uint64_t> sizes;     // each correction's frames, in order
+	std::vector<std::size_t> correctedAt; // and the cycle each came at
 	std::size_t blends = 0;
 	std::string steps;
 	std::string correctionCycles;
 	for (const Judge::RampSeen& seen : ramp) {
 		if (seen.index <= stalled || seen.index >= reach.until) continue;
-		// A soft-sync frame on the edge: a drop moves it by 2, and under a skip a drop by 1 and an insert by -1
-		// (checkStep's "skip over a soft-sync frame").
-		const bool edgeBlend = seen.libraryStep == 2 || seen.libraryStep == 1 || seen.libraryStep == -1;
+		// A soft-sync frame on the edge: a drop moves it by 2, and only under a skip a drop by 1 and an insert by -1
+		// (checkStep's "skip over a soft-sync frame"); a step of 1 or -1 anywhere else is no blend.
+		const bool edgeBlend =
+			seen.libraryStep == 2 || (seen.skipped > 0 && (seen.libraryStep == 1 || seen.libraryStep == -1));
 		const bool innerBlend = seen.broken && seen.innerStep <= 3;
 		if (seen.libraryStep == 0 && (!seen.broken || innerBlend)) {
 			blends += seen.broken ? 1 : 0;
@@ -1646,6 +1653,7 @@ static void judgeStall(StallKind kind, StallMade made) {
 		const std::int64_t inner = seen.innerStep > 3 ? seen.innerStep - 1 : 0;
 		sizes.push_back(static_cast<std::uint64_t>(std::abs(edge) + inner));
 		corrected += sizes.back();
+		correctedAt.push_back(seen.index);
 		steps += " " + std::to_string(seen.libraryStep) + "/" + std::to_string(seen.innerStep) + "@" +
 		         std::to_string(seen.index) + " (" + std::to_string(seen.errorUs) + " us)";
 		// And each cycle of the chunk and two cycles before it, so a correction says what led to it: the cycle's causes,
@@ -1703,15 +1711,37 @@ static void judgeStall(StallKind kind, StallMade made) {
 	if (unskipped > 0) {
 		// What the clock could not skip, the library corrects once, with the zeros ear played meanwhile: the stream fell
 		// behind by both. After that hard sync its next write can land up to two blocks late, which the next chunk's
-		// sync drops: one settle step, as after a network gap (docs/testing.md#the-cycle-judge), never more. Seen under
-		// load: a block, when the burst's end played a block of zeros the correction did not yet count, and two blocks
-		// with none.
+		// sync drops: one settle step, as after a network gap (docs/testing.md#the-cycle-judge), never more, and only
+		// where a cycle between shows why the write was late.
 		REQUIRE(corrections >= 1);
 		CHECK(corrections <= 2);
 		const std::uint64_t first = sizes.front();
 		CHECK(first + kCorrectionTolerance >= unskipped + dryInBurst);
 		CHECK(first <= unskipped + zeros + kCorrectionTolerance);
-		if (corrections == 2) CHECK(sizes[1] <= 2 * kBlock + kCorrectionTolerance);
+		if (corrections == 2) {
+			// A settle step needs its evidence: a cycle between the correction and it that the feed left short, or
+			// began with nothing in it, so the library's write landed late. Each such cycle is listed to explain a
+			// recurrence.
+			CHECK(sizes[1] <= 2 * kBlock + kCorrectionTolerance);
+			bool evidence = false;
+			std::string between;
+			for (std::size_t i = correctedAt[0]; i <= correctedAt[1]; ++i) {
+				const Cycle& c = rig.tap.at(i);
+				const bool starved = c.fed < c.frames || c.heldAtStart == 0;
+				evidence = evidence || (i > correctedAt[0] && starved);
+				between += "\n    " + std::to_string(i) + " causes " + std::to_string(c.facts.causes.bits()) +
+				           " jump " + std::to_string(c.facts.jumpFrames) + " overdue " +
+				           std::to_string(c.overdueNs / 1000) + " us held " + std::to_string(c.heldAtStart) +
+				           " skipped " + std::to_string(c.codeSkipped) + " read " + std::to_string(c.fed) +
+				           (starved ? " starved" : "");
+			}
+			INFO("a second step of " << sizes[1] << " frames at cycle " << correctedAt[1]
+			                         << ", after the correction at " << correctedAt[0]
+			                         << "; the cycles between (index, causes, jump, overdue, held at start, skipped, "
+			                            "read):"
+			                         << between);
+			CHECK(evidence);
+		}
 	} else CHECK(corrections == 0);
 	// Ear's own silence after the burst: at most the block the library takes to refill the feed a skip emptied.
 	if (cut) CHECK(silenceFrames <= kBlock);
