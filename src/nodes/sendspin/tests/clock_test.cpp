@@ -85,6 +85,7 @@ struct Cycle {
 	bool ramp;              // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
 	bool clean;             // the ledger's word: it followed the cycle before it with nothing lost
 	CycleFacts facts;       // what the cycle stated, as the code was handed it
+	std::int64_t overdueNs; // how long the next cycle had been due as it began (GraphCycle::overdueNs)
 	std::uint32_t zeros;    // frames of exact silence in it
 	std::uint32_t held;     // frames the feed held as the code kept time (SendspinCode::lastHeld)
 	std::uint32_t heldAtStart; // and as the process began (lastHeldAtStart)
@@ -121,16 +122,24 @@ public:
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
-		// The one planned stall, once watched: the probe upstream stalls a graph cycle the block never runs, so the cycle
-		// before this one is the last before the stall and this one states the catch-up. The feed's writer, held from the
-		// arming, is let go at the first cycle after the stall that lost nothing (the catch-up's end), so the catch-up
-		// always drains the feed and leaves a remainder to pay.
-		if (const std::atomic<std::uint64_t>* watched = watched_.load(std::memory_order_acquire); watched != nullptr) {
-			const std::uint64_t stalledIn = watched->load(std::memory_order_acquire);
+		// The one planned stall, once armed. Made by a StallProbe upstream, it stalls a graph cycle the block never runs,
+		// so the cycle before this one is the last before the stall and this one states the catch-up. Made here, in the
+		// block's own process, this cycle is the stalled one, and what follows is the burst in whatever shape the host
+		// gives it. The feed's writer, held from the arming, is let go at the first cycle after the stall that lost
+		// nothing and ran on time (the burst's end), so a burst that loses cycles always drains the feed and leaves a
+		// remainder to pay.
+		if (const int mode = mode_.load(std::memory_order_acquire); mode != kUnarmed) {
 			if (stalledAt_.load(std::memory_order_relaxed) == kNone) {
-				if (stalledIn != 0 && cycle.facts.graphCycle > stalledIn)
-					stalledAt_.store(at - 1, std::memory_order_release);
-			} else if (cycle.facts.whole() && heldFeed_ != nullptr) {
+				if (mode == kProbe) {
+					const std::uint64_t stalledIn = watched_->load(std::memory_order_acquire);
+					if (stalledIn != 0 && cycle.facts.graphCycle > stalledIn)
+						stalledAt_.store(at - 1, std::memory_order_release);
+				} else {
+					(mode == kOwnShort ? ownShort_ : ownLong_)(0, frames, kRate);
+					stalledAt_.store(at, std::memory_order_release);
+				}
+			} else if (at > stalledAt_.load(std::memory_order_relaxed) && cycle.facts.whole() && cycle.overdueNs == 0 &&
+			           heldFeed_ != nullptr) {
 				heldFeed_->releaseWriter();
 				heldFeed_ = nullptr;
 			}
@@ -145,6 +154,7 @@ public:
 		out.got = 0;
 		out.zeros = 0;
 		out.facts = cycle.facts;
+		out.overdueNs = cycle.overdueNs;
 		out.held = code_.lastHeld();
 		out.heldAtStart = code_.lastHeldAtStart();
 		out.fed = code_.lastGot();
@@ -186,11 +196,19 @@ public:
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
 	/// Main thread, once, before the stall is armed: watches for the graph cycle a StallProbe stalls in (`stalledIn`, 0
-	/// until it has), with `feed`'s writer held until the catch-up has ended.
+	/// until it has), with `feed`'s writer held until the burst has ended.
 	void watchStall(const std::atomic<std::uint64_t>& stalledIn, Feed& feed) {
 		feed.holdWriter();
 		heldFeed_ = &feed;
-		watched_.store(&stalledIn, std::memory_order_release);
+		watched_ = &stalledIn;
+		mode_.store(kProbe, std::memory_order_release);
+	}
+	/// Main thread, once: the block's next cycle stalls the data thread itself, for StallProbe::kShortStall or
+	/// kLongStall, with `feed`'s writer held until the burst has ended.
+	void stallOwn(bool longStall, Feed& feed) {
+		feed.holdWriter();
+		heldFeed_ = &feed;
+		mode_.store(longStall ? kOwnLong : kOwnShort, std::memory_order_release);
 	}
 	/// The last cycle the block ran before the stall, once the next has run.
 	std::optional<std::size_t> stalledAt() const {
@@ -210,8 +228,17 @@ private:
 	std::vector<Cycle> cycles_;
 	std::atomic<std::size_t> count_{0};
 	static constexpr std::size_t kNone = ~std::size_t{0};
-	std::atomic<const std::atomic<std::uint64_t>*> watched_{nullptr}; // a StallProbe's stalled graph cycle
-	Feed* heldFeed_ = nullptr;                                        // published by watched_; the data thread's after
+	static constexpr int kUnarmed = 0;
+	static constexpr int kProbe = 1;
+	static constexpr int kOwnShort = 2;
+	static constexpr int kOwnLong = 3;
+	std::atomic<int> mode_{kUnarmed};
+	const std::atomic<std::uint64_t>* watched_ = nullptr; // a StallProbe's stalled graph cycle; published by mode_
+	Feed* heldFeed_ = nullptr;                            // published by mode_; the data thread's after
+	ear::test::Stalls ownShort_{
+		ear::test::StallPlan::at({{0, ear::test::StallLength::of(std::chrono::milliseconds(200))}})};
+	ear::test::Stalls ownLong_{
+		ear::test::StallPlan::at({{0, ear::test::StallLength::of(std::chrono::milliseconds(1000))}})};
 	std::atomic<std::size_t> stalledAt_{kNone};
 };
 
@@ -729,14 +756,11 @@ public:
 		return static_cast<std::size_t>(
 			std::ranges::count_if(disturbed_, [&](std::size_t at) { return at >= from && at < to; }));
 	}
-	/// The first cycle from `from` on that the host disturbed (the ledger did not call it clean) or left dry, read so
-	/// far.
-	std::optional<std::size_t> firstDisturbedFrom(std::size_t from) const {
-		std::optional<std::size_t> first;
-		for (const std::vector<std::size_t>* cycles : {&disturbed_, &dry_})
-			for (const std::size_t at : *cycles)
-				if (at >= from && (!first || at < *first)) first = at;
-		return first;
+	/// The first cycle from `from` on that the host disturbed (the ledger did not call it clean: cycles missed, cut or
+	/// not, or any other jump), read so far. A dry cycle is not one: what the feed holds is the product's doing.
+	std::optional<std::size_t> firstHostDisturbanceFrom(std::size_t from) const {
+		const auto found = std::ranges::find_if(disturbed_, [&](std::size_t at) { return at >= from; });
+		return found != disturbed_.end() ? std::optional<std::size_t>(*found) : std::nullopt;
 	}
 	/// Dry cycles from cycle `from` up to and not including `to`, read so far.
 	std::size_t dryBetween(std::size_t from, std::size_t to) const {
@@ -758,8 +782,9 @@ private:
 		// library's view (LibraryView), from the facts and what the feed held as the code judged it: a catch-up's or a
 		// pause's jump is owed while the library holds frames it was not told played, and skipped as the feed holds it;
 		// while untold, a short cycle's zeros are owed too; after untoldBound untold a debt is forgotten and no more is owed
-		// until it is told; it is told from a cycle that lost nothing once nothing is owed, or from any once the bound
-		// has passed. No clear comes while cycles are judged. Its progress and the ramp are judged against it.
+		// until it is told; it is told from a cycle that lost nothing and was not overdue once nothing is owed, or from
+		// any once the bound has passed. No clear comes while cycles are judged. Its progress and the ramp are judged
+		// against it.
 		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp) || cycle.facts.causes.has(CycleCause::absent);
 		const std::uint64_t lostNow =
 			caughtUp && cycle.facts.jumpFrames > 0 ? static_cast<std::uint64_t>(cycle.facts.jumpFrames) : 0;
@@ -782,7 +807,7 @@ private:
 			catchingUp_ = false;
 			suspended_ = true;
 		}
-		cycle.published = (!caughtUp || suspended_) && owed_ == 0 && pendingTold_ > 0;
+		cycle.published = (!(caughtUp || cycle.overdueNs > 0) || suspended_) && owed_ == 0 && pendingTold_ > 0;
 		if (cycle.published) {
 			untoldSince_.reset();
 			suspended_ = false;
@@ -1283,16 +1308,54 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 	CHECK(judge.errors.driverChanges == 0);
 }
 
+/// Where what the library does after a planned event (a stall, a network gap) stops being judged as its answer to it,
+/// from `back`, the cycle the stream came back on the server's stamps, up to `cap`: the first cycle after `back` that
+/// the host disturbed (the ledger did not call it clean), after which the library may answer the host in its own steps
+/// and silence, which the run's rules judge (checkSync) and the event did not cause. A host that skipped 117 ms 1600
+/// cycles after a stall made the library add 2269 frames of silence 107 cycles later. A dry cycle ends nothing: what
+/// the feed holds is the product's doing. The window never ends before its floor: the library answers what it was told
+/// at its next chunk's sync, at most a chunk's frames after the return, and what it changed reaches the outputs within
+/// two cycles more (one for its write to reach the feed, one for the cycle that reads it). A host that disturbs a cycle
+/// inside the floor leaves the two answers inseparable, so the run fails naming it, to be rerun alone
+/// (docs/testing.md); a window shortened past the floor says the host event that ended it.
+struct Reach {
+	std::size_t until;
+	std::string note;
+};
+static Reach responseReach(const Judge& judge, const Rig& rig, std::size_t back, std::size_t cap) {
+	const std::size_t floor = back + (kChunkFrames + kBlock - 1) / kBlock + 2;
+	const std::optional<std::size_t> host = judge.firstHostDisturbanceFrom(back + 1);
+	if (!host || *host >= cap) return {cap, "the library's answer judged to cycle " + std::to_string(cap)};
+	const CycleFacts& facts = rig.tap.at(*host).facts;
+	const std::string event = "cycle " + std::to_string(*host) + " (causes " + std::to_string(facts.causes.bits()) +
+	                          ", jump " + std::to_string(facts.jumpFrames) + " frames, missed " +
+	                          std::to_string(facts.missed) + ", " + std::to_string(facts.missedCut) + " cut)";
+	if (*host < floor)
+		FAIL("the host disturbed " << event << " inside the response window's floor (to cycle " << floor
+		                           << "): the library's answer to it cannot be told from its answer to the planned "
+		                              "event; rerun alone (docs/testing.md)");
+	return {*host, "the library's answer judged to cycle " + std::to_string(*host) + ", not " + std::to_string(cap) +
+	                   ": the host disturbed " + event};
+}
+
+/// How a stall test stalls the data thread: by a StallProbe upstream of the block, which cuts the burst's cycles too, so
+/// the block misses them all on any host; or inside the block's own process, so the burst takes whatever shape the
+/// host gives it (docs/engine.md#the-internal-clock): the block missing some of its cycles (each a catch-up), or running
+/// every one, losing nothing, while the next is already due (overdueNs).
+enum class StallMade { byProbe, inBlock };
+
 // docs/node-types.md#clock: a stall past the feed owes the whole lost time, pays what the feed did not hold from what
-// the library writes next, and tells the library only from a cycle that lost nothing once paid, so ear and the library
-// never both correct it. A stall of the data thread whose lost cycles the node's block certainly misses (StallProbe,
-// upstream of it), with the feed's writer held through the catch-up's burst so a remainder is always left to pay, is
-// judged from the tap's ramp against the server's
-// stamps through the time filter: back within a few blocks of the burst's end with no correction of the library's
-// own, no silence after, the library never told more than it wrote, every report exact, then 750 cycles within 1 ms.
-static void judgeStall(bool longStall) {
+// the library writes next, and tells the library only from a cycle that lost nothing and ran on time once paid, so ear
+// and the library never both correct it; a burst that loses nothing owes nothing, and is told only from its first
+// cycle on time, so the library never puts its next frame behind now. The feed's writer is held through the burst, so
+// a burst that loses cycles always leaves a remainder to pay. Judged from the tap's ramp against the server's stamps
+// through the time filter: back within a few blocks of the burst's end, with no correction of the library's own when
+// cycles were lost (at most one when none was: what the burst's dry cycles cost it, which nothing owed), no silence,
+// the library never told more than it wrote, every report exact, then 750 cycles within 1 ms.
+static void judgeStall(bool longStall, StallMade made) {
 	Rig rig;
-	StallProbe probe(rig);
+	std::optional<StallProbe> probe;
+	if (made == StallMade::byProbe) probe.emplace(rig);
 	rig.play(kStreamSeconds);
 	Judge judge(rig, rig.log);
 	INFO("the node said:\n" << rig.notes.all());
@@ -1303,8 +1366,10 @@ static void judgeStall(bool longStall) {
 			return judge.errors.judged >= 100;
 		},
 		60s));
-	rig.tap.watchStall(probe.code.stalledIn, rig.feed);
-	probe.code.arm(longStall);
+	if (probe) {
+		rig.tap.watchStall(probe->code.stalledIn, rig.feed);
+		probe->code.arm(longStall);
+	} else rig.tap.stallOwn(longStall, rig.feed);
 	REQUIRE(rig.waiter.until([&] { return rig.tap.stalledAt().has_value(); }, 10s));
 	const std::size_t stalled = *rig.tap.stalledAt();
 	const std::size_t judgedBefore = judge.errors.judged;
@@ -1318,60 +1383,66 @@ static void judgeStall(bool longStall) {
 	INFO(describe(judge.errors));
 	REQUIRE(judge.errors.judged >= judgedBefore + kPlannedCycles);
 
-	// The stall's end: the driver catches the stalled time up in a burst of timeouts (docs/engine.md#the-internal-clock),
-	// each of whose cycles the probe cut short before the block, so the block's next cycle states one catch-up of them
-	// all; the burst ends at the first whole cycle, and together its jumps lie past the feed.
+	// The burst: the driver catches the stalled time up in a burst of timeouts (docs/engine.md#the-internal-clock), each
+	// cycle the block runs in it a catch-up or overdue; it ends at the first cycle that lost nothing and ran on time.
 	std::size_t end = stalled + 1;
 	std::int64_t lostFrames = 0;
+	std::size_t overdue = 0;
 	std::string burst;
-	for (; end < rig.tap.count() && !rig.tap.at(end).facts.whole(); ++end) {
-		const CycleFacts& facts = rig.tap.at(end).facts;
-		burst += " " + std::to_string(facts.causes.bits()) + ":" + std::to_string(facts.jumpFrames);
-		if (facts.causes.has(CycleCause::catchUp)) lostFrames += facts.jumpFrames;
+	for (; end < rig.tap.count() && (!rig.tap.at(end).facts.whole() || rig.tap.at(end).overdueNs > 0); ++end) {
+		const Cycle& c = rig.tap.at(end);
+		burst += " " + std::to_string(c.facts.causes.bits()) + ":" + std::to_string(c.facts.jumpFrames) + ":" +
+		         std::to_string(c.overdueNs / 1000);
+		if (c.facts.causes.has(CycleCause::catchUp)) lostFrames += c.facts.jumpFrames;
+		if (c.overdueNs > 0) ++overdue;
 	}
-	INFO("stalled in cycle " << stalled << "; the burst after it (causes:jump):" << burst << "; " << lostFrames
-	                         << " frames lost; the probe held " << probe.code.burstHolds() << " of the burst's cycles");
+	const bool lost = lostFrames > 0;
+	INFO("stalled in cycle " << stalled << " (" << (probe ? "by the probe" : "in the block") << "); the burst after it "
+	                         << "(causes:jump:overdue us):" << burst << "; " << lostFrames << " frames lost, "
+	                         << overdue << " cycles overdue"
+	                         << (probe ? "; the probe held " + std::to_string(probe->code.burstHolds()) +
+	                                         " of the burst's cycles"
+	                                   : std::string()));
 	REQUIRE(end > stalled + 1);
-	REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
+	if (probe) REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
 	const Cycle& caughtUp = rig.tap.at(end);
 	// What the feed did not hold of the lost time, as the burst ends (the code's rule over the burst's cycles): the
-	// remainder the code pays from what the library writes next.
+	// remainder the code pays from what the library writes next. A burst that lost nothing owes nothing.
 	std::uint64_t owed = 0;
+	bool owing = false;
 	for (std::size_t i = stalled + 1; i < end; ++i) {
 		const Cycle& c = rig.tap.at(i);
-		if (c.facts.causes.has(CycleCause::catchUp)) owed += static_cast<std::uint64_t>(c.facts.jumpFrames);
+		if (c.facts.causes.has(CycleCause::catchUp)) {
+			owed += static_cast<std::uint64_t>(c.facts.jumpFrames);
+			owing = true;
+		}
 		owed -= std::min<std::uint64_t>(owed, c.held);
-		owed += c.frames - c.fed;
+		if (owing) owed += c.frames - c.fed;
 	}
 	// Back on the server's stamps: the first ramp cycle from the burst's end on whose first frame left within the band
 	// the library leaves hard sync at (sync_task.cpp's settle threshold, 500 us), inside which only its soft sync acts.
-	// The bound, in blocks from the burst's end: one cycle for the library's thread to refill the feed the burst
-	// drained, one cycle per feed less a block of the remainder it pays (the library refills at most the feed a cycle,
-	// and a cycle that skips all it holds plays a block of zeros, owed too), and one for the first frame on time to
-	// reach the outputs (docs/node-types.md#clock).
+	// The bound, in blocks from the burst's end. With cycles lost: one cycle for the library's thread to refill the feed
+	// the burst drained, one cycle per feed less a block of the remainder it pays (the library refills at most the feed
+	// a cycle, and a cycle that skips all it holds plays a block of zeros, owed too), and one for the first frame on time
+	// to reach the outputs (docs/node-types.md#clock). With none, nothing is paid: told at the burst's end, the library
+	// answers what its dry cycles lost at its next chunk's sync, at most a chunk on, and two cycles more bring the frame
+	// it changed to the outputs.
 	constexpr double kBandUs = 500.0;
-	const std::uint64_t boundBlocks = 2 + (owed + kFeedFrames - kBlock - 1) / (kFeedFrames - kBlock);
+	const std::uint64_t boundBlocks = lost ? 2 + (owed + kFeedFrames - kBlock - 1) / (kFeedFrames - kBlock)
+	                                       : (kChunkFrames + kBlock - 1) / kBlock + 2;
 	const auto& ramp = judge.ramp();
 	const auto back = std::ranges::find_if(
 		ramp, [&](const Judge::RampSeen& seen) { return seen.index >= end && std::abs(seen.errorUs) <= kBandUs; });
-	// What the library does about the stall is judged up to the first cycle from the stream's return to the stamps on
-	// that the host disturbed or left dry, and at most kPlannedCycles past the burst's end: after such a cycle the
-	// library may answer the host in its own steps and silence (a host that skips 117 ms 1600 cycles on made it add
-	// 2269 frames of silence 107 cycles later), which the run's rules judge (checkSync) and the stall did not cause.
-	// Before it, everything the library did followed the stall alone. The dry cycles before the return are the stall's
-	// own: the catch-up drained the feed.
-	std::size_t stallReach = end + kPlannedCycles;
-	if (back != ramp.end()) {
-		if (const auto host = judge.firstDisturbedFrom(back->index + 1)) stallReach = std::min(stallReach, *host);
-	}
-	// The library corrects nothing: ear skipped exactly the lost time and told it exactly. A correction is a step of
-	// the library's own at a cycle's edge or inside one; its soft sync's blends are not (a step of at most 3, at most
-	// once a chunk, as checkStep counts them).
+	REQUIRE(back != ramp.end());
+	const Reach reach = responseReach(judge, rig, back->index, end + kPlannedCycles);
+	INFO(reach.note);
+	// A correction is a step of the library's own at a cycle's edge or inside one; its soft sync's blends are not (a
+	// step of at most 3, at most once a chunk, as checkStep counts them).
 	std::size_t corrections = 0;
 	std::size_t blends = 0;
 	std::string steps;
 	for (const Judge::RampSeen& seen : ramp) {
-		if (seen.index <= stalled || seen.index >= stallReach) continue;
+		if (seen.index <= stalled || seen.index >= reach.until) continue;
 		const bool edgeBlend = seen.libraryStep == 2;
 		const bool innerBlend = seen.broken && seen.innerStep <= 3;
 		if (seen.libraryStep == 0 && (!seen.broken || innerBlend)) {
@@ -1392,33 +1463,32 @@ static void judgeStall(bool longStall) {
 		if (line.cycle <= stalled) continue;
 		library += " " + std::to_string(static_cast<int>(line.kind)) + ":" + std::to_string(line.value) + "@" +
 		           std::to_string(line.cycle);
-		if (line.kind == LibraryLog::Kind::silence && line.cycle < stallReach) ++silenceAfter;
+		if (line.kind == LibraryLog::Kind::silence && line.cycle < reach.until) ++silenceAfter;
 	}
-	const std::uint64_t blocksToBack =
-		back != ramp.end() ? (rig.tap.at(back->index).position - caughtUp.position) / kBlock : 0;
-	INFO("the library judged up to cycle " << stallReach << " (" << stallReach - end
-	                                       << " after the burst's end; the first the host disturbed after the return, "
-	                                          "or kPlannedCycles on)");
+	const std::uint64_t blocksToBack = (rig.tap.at(back->index).position - caughtUp.position) / kBlock;
 	// The payment, cycle by cycle from the burst's end: what the feed held as each began and what the code read.
 	std::string payment;
 	std::size_t shortStarts = 0;
-	for (std::size_t i = end; i < (back != ramp.end() ? back->index : end) && i < rig.tap.count(); ++i) {
+	for (std::size_t i = end; i < back->index && i < rig.tap.count(); ++i) {
 		const Cycle& c = rig.tap.at(i);
 		payment += " " + std::to_string(c.heldAtStart) + "/" + std::to_string(c.fed);
 		if (i > end && c.heldAtStart < kFeedFrames) ++shortStarts;
 	}
 	INFO("the payment (held at start/read):" << payment << "; " << shortStarts
 	                                         << " cycles after the first began with the feed short");
-	INFO("the remainder at the burst's end " << owed << " frames; back at cycle "
-	                                         << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
+	INFO("the remainder at the burst's end " << owed << " frames; back at cycle " << back->index << ", " << blocksToBack
 	                                         << " blocks after the burst's end at " << end << " (bound " << boundBlocks
 	                                         << "); the library's corrections after the stall:" << steps
 	                                         << "; its lines after it (kind:value@cycle):" << library);
-	// The writer held through the burst: the feed ran short, so there was a remainder to pay.
-	REQUIRE(owed > 0);
-	REQUIRE(back != ramp.end());
+	if (lost) {
+		// The writer held through the burst: the feed ran short, so there was a remainder to pay.
+		REQUIRE(owed > 0);
+		CHECK(corrections == 0);
+	} else {
+		CHECK(owed == 0);
+		CHECK(corrections <= 1);
+	}
 	CHECK(blocksToBack <= boundBlocks);
-	CHECK(corrections == 0);
 	CHECK(blends <= kPlannedCycles * kBlock / kChunkFrames + 1);
 	CHECK(silenceAfter == 0);
 	// The remainder was paid before the library was told: no tell forgot lost time still owed.
@@ -1431,13 +1501,27 @@ static void judgeStall(bool longStall) {
 TEST_CASE("A 200 ms stall past the feed is paid before the library is told, back on the stamps within a few blocks "
           "with no correction of the library's",
           "[sendspin][clock]") {
-	judgeStall(false);
+	judgeStall(false, StallMade::byProbe);
 }
 
 TEST_CASE("A 1 s stall past the feed is paid before the library is told, back on the stamps within a few blocks with "
           "no correction of the library's",
           "[sendspin][clock]") {
-	judgeStall(true);
+	judgeStall(true, StallMade::byProbe);
+}
+
+// The same stalls made inside the block, so the burst takes the host's shape: on the dev host the block misses every
+// other of its cycles, on a GitHub runner it ran every one, losing nothing (docs/engine.md#the-internal-clock).
+TEST_CASE("A 200 ms stall in the block, whatever the burst's shape, is told only once the graph runs on time, back on "
+          "the stamps with nothing owed left uncorrected",
+          "[sendspin][clock]") {
+	judgeStall(false, StallMade::inBlock);
+}
+
+TEST_CASE("A 1 s stall in the block, whatever the burst's shape, is told only once the graph runs on time, back on the "
+          "stamps with nothing owed left uncorrected",
+          "[sendspin][clock]") {
+	judgeStall(true, StallMade::inBlock);
 }
 
 // docs/node-types.md#library-facts-and-carried-patches: a network that stalls past what the library holds starves it;
@@ -1499,14 +1583,13 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 		return seen.index >= recovered && std::abs(seen.errorUs) <= kBandUs;
 	});
 	const std::uint64_t boundBlocks = (kChunkFrames + kBlock - 1) / kBlock + 2;
-	// What the library does about the gap is judged up to the first cycle from the stream's return to the stamps on that
-	// the host disturbed or left dry, and at most kPlannedCycles past the recovery, as a stall test judges it (judgeStall
-	// says why): after such a cycle the library may answer the host in its own steps and silence. The dry cycles before
-	// the return are the gap's own. A drop is counted wherever it is logged: the check is that one came.
-	std::size_t gapReach = recovered + kPlannedCycles + 1;
-	if (back != ramp.end()) {
-		if (const auto host = judge.firstDisturbedFrom(back->index + 1)) gapReach = std::min(gapReach, *host);
-	}
+	// What the library does about the gap is judged up to the first cycle after the stream's return that the host
+	// disturbed, and at most kPlannedCycles past the recovery (responseReach says why). A drop is counted wherever it is
+	// logged: the check is that one came.
+	REQUIRE(back != ramp.end());
+	const Reach reach = responseReach(judge, rig, back->index, recovered + kPlannedCycles + 1);
+	INFO(reach.note);
+	const std::size_t gapReach = reach.until;
 	std::size_t lostTimeSteps = 0;
 	std::size_t settles = 0;
 	std::size_t others = 0;
@@ -1539,9 +1622,6 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 	}
 	const std::uint64_t blocksToBack =
 		back != ramp.end() ? (rig.tap.at(back->index).position - rig.tap.at(recovered).position) / kBlock : 0;
-	INFO("the library judged up to cycle " << gapReach << " (" << gapReach - recovered
-	                                       << " after the recovery; the first the host disturbed after the return, or "
-	                                          "kPlannedCycles on)");
 	INFO("back at cycle " << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
 	                      << " blocks after the recovery (bound " << boundBlocks << "), off by at most "
 	                      << worstBeforeBackUs << " us before; the library's corrections after the hold:" << steps
