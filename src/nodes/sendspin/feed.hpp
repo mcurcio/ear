@@ -21,6 +21,9 @@ public:
 	/// Realtime; discards up to `frames` of the oldest frames, all it holds when it holds fewer (any count: a catch-up's
 	/// jump has no bound). Returns how many.
 	std::uint32_t skip(std::uint64_t frames) noexcept;
+	/// Realtime: applies a clear asked for and not yet applied, and says whether any clear was applied since the last
+	/// call (here, or by a read or a skip): what was owed of the stream it ended is owed no more.
+	bool takeCleared() noexcept;
 	/// One writing thread. With no room waits up to `patience`. Returns frames accepted.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
 	/// Any ordinary thread. What was written so far is gone at the next read, not counted played.
@@ -45,5 +48,6 @@ private:
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
 	std::uint32_t heldAtSkip_ = 0; // reader only
+	bool clearedSince_ = false;    // reader only: a clear was applied since the last takeCleared()
 };
 } // namespace ear::sendspin

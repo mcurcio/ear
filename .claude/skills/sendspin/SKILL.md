@@ -111,13 +111,16 @@ that means to an operator:
   from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
   `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
   from its next writes (a source's rule) would catch the same time up twice: the library re-syncs on its own at its next
-  chunk. **A stall's catch-up is told only once it ends:** the driver catches a stall up in a burst that runs the block
-  every other timeout (`docs/engine.md#the-internal-clock`), so a 200 ms stall is 18 one-block catch-ups and no cycle
-  states a jump past the feed; a burst cycle's start is the driver's, behind raw time, so the code tells what the burst
-  skipped and read with the next cycle that lost nothing. **Back within one decoded chunk, the feed and two blocks of the
-  burst's end, in one hard sync, no silence after,** with the two timing patches below, carried by the owner's decision (the
-  chunk in hand still plays late: the library writes it without re-checking the time). Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
-  for a change of driver.
+  chunk. **A stall's catch-up is paid before it is told:** the driver catches a stall up in a burst that runs the block
+  every other timeout (`docs/engine.md#the-internal-clock`), so a 200 ms stall is 18 one-block catch-ups whose cycles
+  start on the driver's time, behind raw time, and the burst drains the feed faster than the library refills it. So the
+  code owes each catch-up's (and pause's) whole jump, and, while it is untold, each short cycle's zeros; it skips what is
+  owed from the feed as the library refills it, before reading, and tells the library only from a cycle that lost
+  nothing once nothing is owed (at most a feed and the longest chunk, 150 ms, of cycles untold; what is owed then is
+  forgotten; nothing is owed before a stream plays, and a clear forgets it). The library is never told a frame ear did not take from what it wrote, and has nothing left to correct:
+  the stall test requires no correction of its own, back on the server's stamps within a few blocks of the burst's end.
+  Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed for a change
+  of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
 - **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)
   always drives and tracks the raw clock, and a linked card follows it. Before, a card joining sent the position from 2.3e10 to
@@ -192,10 +195,28 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   recovery ("Large errors and startup").
 - `cmake/sendspin-late-chunk.patch` is carried (same decision): `decode_chunk` skipped a chunk whenever its start was over
   5 ms late, so a catch-up of 154 ms skipped two 96 ms chunks, overshot by 37 ms and filled that with silence: two steps.
-  The patch decodes first and skips only a chunk whose last frame is late; the hard sync drops the late front of the
-  next, one step, no silence. The library's own test of the floor is updated in the first patch; neither is built here.
-- The clock test `A 200 ms stall past the feed ...` proves the three together every run and fails with the two reverted
-  (4 runs of 5, each with silence after; passed 20 of 20 with them).
+  The patch decodes first and skips only a chunk whose last frame is late (`SyncTask::chunk_too_late`); the hard sync
+  drops the late front of the next, one step, no silence. With ear paying a stall's remainder itself neither path should
+  fire after a stall; they are the library's own behaviour made right for any sink.
+- **Each patch has a deterministic test in the library's suite**, ear's build compiles none of them: `PlayerHardSync.
+  AnEstimateWithFramesBufferedIsNotFloored` (the floor), `AChunkIsTooLateOnlyOnceItsLastFrameIs` and
+  `AChunkLateAtItsStartGetsItsFrontDropped` (the late chunk). Reverting either patch's change alone fails its tests. Run
+  the library's suite on the patched tree, in the dev image, after a configure has fetched and patched it:
+
+  ```bash
+  scripts/dev.sh cmake -S .cache/deps/sendspin-src -B out/sendspin-lib-tests -DSENDSPIN_BUILD_TESTS=ON \
+      -DSENDSPIN_ENABLE_OPUS=OFF -DCMAKE_BUILD_TYPE=Debug   # Opus off: the image has no `patch` for micro-opus
+  scripts/dev.sh cmake --build out/sendspin-lib-tests --parallel 4
+  scripts/dev.sh out/sendspin-lib-tests/tests/sendspin_tests --gtest_filter='PlayerHardSync.*'
+  scripts/dev.sh ctest --test-dir out/sendspin-lib-tests   # serially: its lifecycle tests bind fixed ports
+  ```
+
+  At 7be2278 with the three patches, 654 of 738 pass; 84 (ConnectionLifecycle, EncryptedLifecycle, RoleDeactivation,
+  ClientLifecycle, Start, SourceWire, VisualizerDelivery, Allocations) hang to the suite's 55 s watchdog in the dev image
+  with or without the two timing patches (checked on `ConnectionLifecycle.SilentEstablishedPeerIsDropped`), so
+  they are this environment's or the listener patch's, not the timing patches'. Every player test passes.
+- The clock test `A 200 ms stall past the feed ...` proves ear's payment every run; with the payment reverted it fails
+  (2 runs of 3: back 8 and 18 blocks after the burst's end, two to five library corrections).
 - **Draft upstream report** (not filed; the owner sends it):
 
   > **Title:** After a sink's catch-up, the sync task floors a playtime that is only behind, and skips whole chunks past
@@ -210,9 +231,13 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   > `decode_chunk` skips a chunk whenever its start is more than the threshold late, so a sink late by 1.6 chunks skips
   > two and is then early by 0.4 of one, which the next hard sync fills with silence. Proposed: floor only when
   > `buffered_frames == 0`; decode first and skip only a chunk whose last frame is late, letting the hard sync drop the
-  > late front of the next. Patches against 7be2278 attached (we carry them, with a test of the floor). Measured with the
-  > real `aiosendspin` server: a 200 ms sink stall is back on the timeline in one hard sync with no silence, within what
-  > the sink and the chunk in hand held (4352 to 5888 frames, 20 runs), where before it took two corrections or silence
+  > late front of the next. Patches against 7be2278 attached, each with a deterministic test in `test_player_role.cpp`
+  > (`PlayerHardSync.AnEstimateWithFramesBufferedIsNotFloored`, `AChunkIsTooLateOnlyOnceItsLastFrameIs`,
+  > `AChunkLateAtItsStartGetsItsFrontDropped`). One cost to weigh on small targets: (2) decodes a chunk before it can know
+  > the chunk's length, so a chunk wholly too late is now decoded and thrown away where it was skipped undecoded; on an
+  > ESP32 a FLAC chunk's decode is milliseconds of the sync task's time. A chunk's frame count from its header, or
+  > skipping undecoded when its start is late by more than the longest chunk, would keep the old cost for those.
+  > Measured with the real `aiosendspin` server behind a sink that stalled 200 ms: before, two corrections or silence
   > in 11 runs of 14.
 - **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the three patches in order (each `git diff` in `.cache/deps/sendspin-src` against the tree with the ones before it applied), read
   the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without all of it (asked with

@@ -341,31 +341,29 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
 - The stream keeps in step with the graph's clock. A cycle that states a catch-up or a pause
   (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, all of them cut
-  or not; [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) skips that much of the
-  stream, however long: what the feed holds of it, counted played, rather than play its stale audio
-  late. A skipped cycle not counted
-  would cost 25 ms (the library sees -5.3 ms, drops a chunk and inserts silence). What the feed did
-  not hold the library catches up itself: it is told the cycle's real finish, so it sees the rest as
-  its own lateness. *Why not drop the rest from what it writes next:* it takes what it is told
-  played from what it wrote (clamping at zero with a warning), and it would catch the same time up
-  again on its own, so it is never told more than ear took of what it wrote. Any other cause (a
-  driver change, a jump back or by part of a cycle) is a new clock: nothing is skipped.
-- What a cycle that caught lost time up skipped and read is told with the next cycle that lost
-  nothing, at that cycle's finish. *Why:* the driver catches a stall up in a burst that runs the
-  block every other timeout ([engine.md](engine.md#the-internal-clock)), and a burst cycle's start
-  is the driver's own, behind raw time until the burst ends; a finish told from it would put the
-  library's playtime that far behind now, and a chunk it synced meanwhile would be written late.
-- After a stall past the feed the library is back on the timeline within one decoded chunk, the
-  feed and two blocks of the burst's end, in one hard sync of its own and no silence after it. The chunk it
-  holds plays late (it writes it without looking at the time again), and it re-syncs at its next
-  chunk: chunks wholly too late are skipped and the late front of the next is dropped. A chunk is
-  4608 frames, 96 ms, with FLAC at 48 kHz (150 ms at most by the spec). It takes two of the carried
-  patches ([below](#library-facts-and-carried-patches)), carried by the owner's decision: without
-  them the library floored its playtime at now mid-burst with frames still buffered and corrected
-  twice, or skipped whole chunks past the timeline and filled the overshoot with silence (a 200 ms
-  stall: back 24 blocks after the burst's end, or a 2.3 ms error left for soft sync, in 11 of 14
-  runs). The clock tests prove it on the real server with a 200 ms stall of the data thread
-  (20 runs of 20), and fail with the patches reverted (4 of 5).
+  or not; [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) owes that much of the
+  stream, however long: the feed's stale audio of that time is skipped at once, and what the feed
+  did not hold is skipped from what the library writes next, before any of it is read. While the
+  catch-up is untold, a cycle the feed leaves short owes its zeros too (the library cannot see them
+  either). A clear ends the stream that owed, and before a stream plays nothing is owed (it has
+  no place on the clock yet: a stall skips only what the feed holds). Any other cause (a driver change, a jump back or by
+  part of a cycle) is a new clock: nothing is owed. A skipped frame not counted would cost 25 ms
+  (the library sees -5.3 ms, drops a chunk and inserts silence).
+- The library is told what was skipped and read only from a cycle that lost nothing, once nothing
+  is owed. *Why:* the driver catches a stall up in a burst that runs the block every other timeout
+  ([engine.md](engine.md#the-internal-clock)), whose cycles start on the driver's own time, behind
+  raw time until the burst ends; and the burst drains the feed faster than the library refills
+  it, so most of a long stall is owed when the burst ends. The library takes what it is told played
+  from what it wrote (clamping at zero with a warning), so a frame dropped after it was told would
+  be taken from audio still to play, and a remainder never dropped it would catch up itself with a
+  hard sync. Told once paid, it is told exactly what ear took, with nothing left to correct. At most
+  a feed and the longest chunk (150 ms) of cycles go untold; whatever is still owed then is
+  forgotten and left to the library.
+- After a stall past the feed the stream is back on the server's stamps within a few blocks of the
+  burst's end, with no correction by the library: one block for the library to refill the feed the
+  burst drained, one per feed's worth of the remainder paid, and one for the first frame on time to
+  reach the outputs. The clock tests prove it on the real server with a 200 ms stall of the data
+  thread, and the library's two timing patches (below) keep it from correcting what needs none.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it
@@ -406,7 +404,8 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
 - `cmake/sendspin-late-chunk.patch`: skips a chunk as too late only once its last frame is, so a
   chunk whose front is late is decoded and its front dropped by the hard sync. Without it every
   chunk whose start was late was skipped whole, overshooting the timeline by up to a chunk, which
-  the next hard sync filled with silence.
+  the next hard sync filled with silence. Both carry tests in the library's own suite
+  (`PlayerHardSync.*`), which ear's build does not compile; the `sendspin` skill says how to run it.
 - `cmake/ixwebsocket-limits.patch`: refuses frames over 1 MiB and messages over 1024 fragments;
   lets one transport log line through every 10 s; makes a socket still to upgrade give way (8 per
   address and 32 in all, both counting only sockets whose peer has not closed); keeps a close

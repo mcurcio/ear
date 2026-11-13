@@ -1,6 +1,7 @@
 #include "feed.hpp"
 
 #include <algorithm>
+#include <utility>
 
 #include <poll.h>
 
@@ -17,6 +18,7 @@ bool Feed::applyClear() noexcept {
 	const std::uint64_t asked = clearTo_.exchange(0, std::memory_order_acq_rel);
 	if ((asked & clearPending) == 0) return false;
 	ring_.skipTo(static_cast<std::uint32_t>(asked));
+	clearedSince_ = true;
 	return true;
 }
 
@@ -42,6 +44,11 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	const std::uint32_t got = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(frames, heldAtSkip_)));
 	if (cleared || got > 0) wakeWriter();
 	return got;
+}
+
+bool Feed::takeCleared() noexcept {
+	if (applyClear()) wakeWriter();
+	return std::exchange(clearedSince_, false);
 }
 
 std::uint32_t Feed::write(std::span<const float> interleaved, std::uint32_t frames,

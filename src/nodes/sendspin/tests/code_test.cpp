@@ -244,46 +244,54 @@ TEST_CASE("What a catch-up cycle skipped and read is told with the next whole cy
 	CHECK(rig.rang());
 }
 
-// docs/node-types.md#clock: however long the stall, a catch-up skips what the feed holds of it and tells the library
-// exactly that, with the cycle's real finish; the rest is the library's to catch up, and nothing it writes later is
-// taken for it (the library takes what it is told played from what it wrote).
-TEST_CASE("A catch-up of any length skips what the feed holds of it and tells exactly that, and nothing written later",
+// docs/node-types.md#clock: however long the stall, a catch-up owes its whole jump. What the feed holds of it is skipped
+// at once and the rest from what the library writes next, before any of it is read; a cycle the feed leaves short
+// while the catch-up is untold owes its zeros too. The library is told once nothing is owed, so it is never told a
+// frame ear did not take from what it wrote, and needs no correction of its own.
+TEST_CASE("A catch-up of any length is paid from the feed and from what is written next, and told once paid",
           "[sendspin][code]") {
 	SECTION("past what it held, within its capacity") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
-		rig.driver.lose(4, block); // 1024 frames; the feed holds 512
+		rig.driver.lose(4, block); // 1024 frames; the feed holds 512, and this cycle plays zeros: 768 owed
 		REQUIRE(rig.cycle().jumpFrames == 4 * block);
 		CHECK(rig.left[0] == 0.0F);
+		CHECK(rig.told() == block);
 
-		rig.write(block);
-		rig.cycle();
-		CHECK(rig.told() == 4 * block); // what it held, all of it skipped, and the next block read
-		CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // what came next plays, none of it taken
+		rig.write(4 * block);
+		rig.cycle(); // 768 skipped, then a block read
+		CHECK(rig.left[0] == static_cast<float>(6 * block + 1));
+		CHECK(rig.told() == 7 * block);
 	}
-	SECTION("past its capacity, once a change of driver to the code, now a catch-up like any other") {
+	SECTION("past its capacity") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
-		rig.driver.lose(10, block); // 2560 frames, past the feed's 2048
+		rig.driver.lose(10, block); // 2560 frames, past the feed's 2048: 512 skipped, 2304 owed with this cycle's zeros
 		const ear::CycleFacts facts = rig.cycle();
 		REQUIRE(facts.causes == ear::CycleCause::catchUp);
 		REQUIRE(facts.jumpFrames == 10 * block);
 		CHECK(rig.left[0] == 0.0F);
 
-		rig.write(block);
+		rig.write(capacity); // all of it skipped, and this cycle's zeros owed: 512
 		rig.cycle();
-		CHECK(rig.told() == 4 * block);
-		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+		CHECK(rig.left[0] == 0.0F);
+		CHECK(rig.told() == block);
+
+		rig.write(3 * block);
+		rig.cycle(); // 512 skipped, then a block read
+		CHECK(rig.left[0] == static_cast<float>(3 * block + capacity + 2 * block + 1));
+		CHECK(rig.told() == 3 * block + capacity + 3 * block);
 	}
-	SECTION("past 2^32 frames: what it holds, never a wrapped few") {
+	SECTION("past what the library will write before a feed and the longest chunk of cycles: told then, the rest "
+	        "forgotten") {
 		Rig rig;
 		rig.write(3 * block);
 		rig.cycle();
 		const std::array<std::span<float>, 2> outputs{rig.left, rig.right};
 		const std::array<std::span<const float>, 2> inputs{rig.inLeft, rig.inRight};
-		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
+		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block; // past 2^32: never a wrapped few
 		rig.code.process(inputs, outputs, block,
 		                 ear::GraphCycle{.startNs = 0,
 		                                 .position = block + jump,
@@ -293,11 +301,22 @@ TEST_CASE("A catch-up of any length skips what the feed holds of it and tells ex
 		                                           .jumpFrames = jump,
 		                                           .causes = ear::CycleCause::catchUp}});
 		CHECK(rig.left[0] == 0.0F);
+		const std::uint64_t within = capacity + static_cast<std::uint64_t>(ear::FrameClock(rate).frames(longestChunk));
+		std::uint64_t cycles = 1;
+		std::uint64_t position = 2 * block + jump;
+		for (; rig.told() == block && cycles * block < within + block; ++cycles, position += block) {
+			rig.write(block);
+			rig.code.process(inputs, outputs, block,
+			                 ear::GraphCycle{.startNs = 0, .position = position, .startRawNs = 2000});
+			CHECK(rig.left[0] == 0.0F); // every block written is owed
+		}
+		CHECK(cycles * block >= within);
+		CHECK(rig.told() == 3 * block + (cycles - 1) * block);
+		// Told, the rest is forgotten: what comes next plays.
 		rig.write(block);
 		rig.code.process(inputs, outputs, block,
-		                 ear::GraphCycle{.startNs = 0, .position = 2 * block + jump, .startRawNs = 2000});
-		CHECK(rig.told() == 4 * block);
-		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+		                 ear::GraphCycle{.startNs = 0, .position = position, .startRawNs = 3000});
+		CHECK(rig.left[0] == static_cast<float>(rig.written - block + 1));
 	}
 }
 
@@ -342,20 +361,26 @@ TEST_CASE("A pause skips what the feed holds of it, as a catch-up does", "[sends
 	rig.driver.lose(2, block, false);
 	REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // two blocks skipped, the third read
+	rig.write(block);
 	rig.cycle();
-	CHECK(rig.told() == 4 * block);
+	CHECK(rig.told() == 5 * block);
 }
 
-TEST_CASE("A skip tells the jump even when the block that follows finds nothing", "[sendspin][code]") {
+TEST_CASE("A catch-up whose feed runs dry owes its zeros too, and is told once paid", "[sendspin][code]") {
 	Rig rig;
 	rig.write(2 * block);
 	rig.cycle();
 	REQUIRE(rig.rang());
 	rig.driver.lose(1, block);
-	rig.cycle();
+	rig.cycle(); // the block it held skipped; this cycle's zeros owed
 	CHECK(rig.left[0] == 0.0F);
-	rig.cycle();
-	CHECK(rig.progress.read()->totalFrames == 2 * block);
+	rig.cycle(); // nothing written: these zeros owed too
+	CHECK(rig.told() == block);
+	CHECK_FALSE(rig.rang());
+	rig.write(3 * block);
+	rig.cycle(); // two blocks skipped, the third read
+	CHECK(rig.left[0] == static_cast<float>(4 * block + 1));
+	CHECK(rig.told() == 5 * block);
 	CHECK(rig.rang());
 }
 
@@ -384,15 +409,27 @@ TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	CHECK_FALSE(rig.rang());
 	CHECK(rig.left[0] == 0.0F);
 
-	// A catch-up right after a clear skips nothing it did not hold, and takes nothing written after.
+	// A catch-up before the next stream plays owes nothing: it has no place on the clock yet.
 	rig.driver.lose(1, block);
 	rig.cycle();
-	CHECK(rig.progress.read()->totalFrames == block);
-	CHECK_FALSE(rig.rang());
 	rig.write(block);
 	rig.cycle();
-	CHECK(rig.progress.read()->totalFrames == 2 * block);
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+	CHECK(rig.progress.read()->totalFrames == 2 * block);
+
+	// One while it plays is owed by what comes next; a clear forgets it, and the stream after it plays from its first
+	// frame.
+	rig.driver.lose(1, block);
+	rig.cycle();
+	rig.write(block);
+	rig.cycle();
+	CHECK(rig.left[0] == 0.0F); // owed
+	CHECK(rig.progress.read()->totalFrames == 2 * block);
+	rig.feed.clear();
+	rig.write(block);
+	rig.cycle();
+	CHECK(rig.left[0] == static_cast<float>(5 * block + 1));
+	CHECK(rig.progress.read()->totalFrames == 4 * block);
 }
 
 TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {

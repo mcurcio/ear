@@ -1177,10 +1177,11 @@ departs from 4.4's row, and what C4b and 3c must know.
   `sendspin` moves onto a source in 3c, the library must not be told `Played` as it stands: it would count frames it
   never wrote (the clamp) and, with the debt, catch the same time up twice, as above. 3c must tell the library what the
   source took of what it wrote, or give the source this feed's rule for a writer that keeps its own timeline.
-- **Decided (owner, C4 review): the library is patched** so that a stall past the feed is back on the timeline within
-  one decoded chunk, the feed and two blocks of the catch-up's end, in one hard sync and no silence after (9.9); the chunk in hand
-  still plays late, as the library writes it without re-checking the time. The 4.4 deviation above is accepted too: the
-  library's model stays exact.
+- **Decided (owner, C4 review): the library is patched** (its floor, and its skip of late chunks: 9.9), and in the
+  second review the remainder of a stall the feed did not hold is ear's to pay, not the library's to catch up: the code
+  owes it and skips it from what the library writes next before telling the library anything (9.9), so a stall past
+  the feed is back on the server's stamps within a few blocks of the catch-up's end with no correction of the
+  library's. The 4.4 deviation above stands in what it was for: the library is never told a frame ear did not take.
 
 ### 9.8 Found building C4b
 
@@ -1233,32 +1234,40 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   catch-ups (18 of 256 frames); the feed absorbs them unless the library could not refill it between them. So C4a's
   change for a jump past the feed's capacity never happens on the engine; what keeps the stream in step is the per-cycle
   skip, which was the old rule's too.
-- **After a stall the library went off the timeline by itself, three ways, now each fixed at its root.** Measured with
-  the stall test (a 200 ms stall of the data thread, the real server) before the fixes: 11 of 14 runs took two
-  corrections or left silence.
+- **After a stall the library went off the timeline, four ways, now each fixed at its root.** Measured with the stall
+  test (a 200 ms stall of the data thread, the real server) before the fixes: 11 of 14 runs took two corrections or
+  left silence, and every run played late what the feed had not held.
   1. *Its floor fired during the catch-up burst, not inside the stall.* `starved_playtime_floor` (`sync_task.cpp`, top
      of `handle_synchronize_audio`) moved the playtime up to now whenever it trailed now by over 5 ms. During the burst
      the burst cycles' finish (from their start, the driver's nominal time) trails now until the burst ends, so a chunk
-     synced mid-burst floored a playtime that was only behind, with frames still buffered, and the library took that
-     chunk for about 67 ms late, dropped it, and added the silence back at the next. Fixed by
+     synced mid-burst floored a playtime that was only behind, with frames still buffered; the library took that chunk
+     for about 67 ms late, dropped it, and added the silence back at the next. Fixed by
      `cmake/sendspin-starved-floor.patch`: floor only when `buffered_frames == 0`, the spec's underrun recovery.
-  2. *The burst's reports themselves were dated behind now.* With the floor fixed, a chunk the library synced from a
-     burst-dated report was still written late. Fixed in ear: the code tells what a catch-up (or pause) cycle skipped
-     and read with the next cycle that lost nothing, dated on raw time again (`docs/node-types.md#clock`).
-  3. *It skipped whole chunks past the timeline.* `decode_chunk` skipped every chunk whose start was over 5 ms late; late
-     by 154 ms (the chunk in hand, after the feed ran dry through the burst), it skipped two 96 ms chunks, landed 37 ms
-     early and filled that with silence. Fixed by `cmake/sendspin-late-chunk.patch`: decode first and skip only a chunk
-     whose last frame is late; the hard sync drops the late front of the next.
-  With all three, and the finish told as the telling cycle's end (where the library's next frame plays; a cycle the
-  feed left short told its start plus what it read, a block early, and cost a second, one-block hard sync), the stall
-  test requires, every run with no gate: back within one decoded chunk, the feed and two blocks of the burst's end
-  (the review asked for a chunk and two blocks: what plays late is what the library had already handed over or held,
-  the feed and the chunk in hand; 20 runs on a quiet host before this bound measured 4352 to 5888 frames, one of them
-  past the chunk and two blocks), exactly one library correction (none when ear's output came out of the burst on time), no silence after,
-  no `Buffered frames underflow`, every report exact, and 750 cycles within 1 ms. It fails with the two patches reverted
-  (4 runs of 5: silence after, each), and passed 20 of 20 runs on a quiet host (load 2.2 to 4.3, two other agents'
-  idle containers up). A library step inside a block (the hard sync's drop landing mid-cycle) is counted from the tap's own
-  measure, a cycle whose frames did not all step by one. The upstream report is drafted in the `sendspin` skill.
+  2. *The burst's reports were dated behind now.* Fixed in ear: nothing is told from a cycle that caught lost time up.
+  3. *It skipped whole chunks past the timeline.* `decode_chunk` skipped every chunk whose start was over 5 ms late;
+     late by 154 ms it skipped two 96 ms chunks, landed 37 ms early and filled that with silence. Fixed by
+     `cmake/sendspin-late-chunk.patch` (`SyncTask::chunk_too_late`): decode first and skip only a chunk whose last
+     frame is late.
+  4. *Ear skipped too little* (the second review). The burst drains the feed faster than the library refills it (it
+     ran dry for 14 of the burst's 18 cycles), so `min(jump, held)` left 2560 to 7168 frames of each stall unskipped,
+     which played late until the library re-synced (4352 to 5888 frames after the burst's end). With the reports
+     deferred the debt 4.4 gives a source is race-free here: the library is told nothing until it is paid. The code owes
+     each catch-up's and pause's jump, and while the catch-up is untold each short cycle's zeros (the library cannot see
+     them either); pays it from the feed as the library refills it, before reading; and tells the library from the
+     first cycle that lost nothing once nothing is owed, the finish the end of that cycle, where the library's next
+     frame plays. At most a feed and the longest chunk (150 ms) of cycles go untold; what is owed then is forgotten, so
+     ear never drops a frame after telling it played. A clear forgets the debt, and nothing is owed before a stream
+     plays (since the last clear, a read found frames): a first 20-run batch counted tells that forgot lost time owed
+     from before the ramp began, and a stream starting then would have lost its first frames.
+  With all four the stall test requires every run, with no gate: back on the server's stamps within 2 + ceil(remainder
+  / feed) blocks of the burst's end (one block for the library to refill the feed the burst drained, one per feed of
+  the remainder paid, one for the first frame on time to reach the outputs), no correction of the library's own (its
+  soft-sync blends excused as checkStep counts them: a step of at most 3, at most once a chunk), no silence after, no
+  `Buffered frames underflow`, every report exact, no tell made with lost time still owed, and 750 cycles within 1 ms.
+  It passed 20 runs of 20 on a quiet host (load 2.1 to 2.7, two other agents' idle containers up). With ear's payment
+  reverted it fails (2 runs of 3); each library patch's change reverted alone fails its own
+  deterministic test in the library's suite (`PlayerHardSync.*`). The library's two patches remain right for any sink,
+  and the upstream report is drafted in the `sendspin` skill.
 - **"Report the whole jump" is caught deterministically by the code's unit tests** (eight checks fail in two of them)
   and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
   one-block catch-up, the two rules tell the same.

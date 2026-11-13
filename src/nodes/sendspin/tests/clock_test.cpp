@@ -81,13 +81,14 @@ struct Cycle {
 	std::uint32_t firstAt;     // where in the cycle the first of them is, when got > 0
 	std::uint32_t firstIndex;  // the ramp index that one names
 	std::uint32_t lastIndex;   // the ramp index the last of them names
-	bool ramp;                 // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
-	bool clean;                // the ledger's word: it followed the cycle before it with nothing lost
-	CycleFacts facts;          // what the cycle stated, as the code was handed it
-	std::uint32_t zeros;       // frames of exact silence in it
-	std::uint32_t held;        // frames the feed held as the code kept time (SendspinCode::lastHeld)
-	std::uint32_t fed;         // frames the code read from the feed (SendspinCode::lastGot): fewer than frames is dry
-	PlayProgress progress;     // the newest the code told the library, after it ran
+	std::int64_t innerStep; // the largest step between two exact ramp frames inside it (1 when it has fewer than two)
+	bool ramp;              // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
+	bool clean;             // the ledger's word: it followed the cycle before it with nothing lost
+	CycleFacts facts;       // what the cycle stated, as the code was handed it
+	std::uint32_t zeros;    // frames of exact silence in it
+	std::uint32_t held;     // frames the feed held as the code kept time (SendspinCode::lastHeld)
+	std::uint32_t fed;      // frames the code read from the feed (SendspinCode::lastGot): fewer than frames is dry
+	PlayProgress progress;  // the newest the code told the library, after it ran
 	// Worked out by the Judge from the facts and what the feed held: the frames the code skipped in it for the graph's
 	// lost time (docs/node-types.md#clock), and whether it told the library of this cycle (it skipped or read
 	// something).
@@ -142,6 +143,7 @@ public:
 		out.firstIndex = 0;
 		out.lastIndex = 0;
 		out.ramp = true;
+		out.innerStep = 1;
 		out.clean = ledger_[at].whole();
 		for (std::uint32_t i = 0; i < frames; ++i) {
 			const float left = outputs[0][i];
@@ -158,8 +160,10 @@ public:
 			if (out.got == 0) {
 				out.firstAt = i;
 				out.firstIndex = *index;
-			} else if (*index != out.firstIndex + (i - out.firstAt)) {
-				out.ramp = false;
+			} else {
+				if (*index != out.firstIndex + (i - out.firstAt)) out.ramp = false;
+				out.innerStep = std::max<std::int64_t>(out.innerStep, static_cast<std::int64_t>(*index) -
+				                                                          static_cast<std::int64_t>(out.lastIndex));
 			}
 			out.lastIndex = *index;
 			++out.got;
@@ -520,8 +524,9 @@ struct Errors {
 	std::vector<std::string> filterSteps; // the time filter moving a fixed server time by 1 ms or more, with the cycle
 	std::vector<std::string> lostSync;    // the library's losses of sync, with the cycle each was read at
 	std::vector<std::size_t> underflows;  // the cycles each `Buffered frames underflow` was read at: ear told too much
-	std::vector<std::string> logged;      // each hard sync the library logged, with the cycle its line was read at
-	std::size_t loggedDrops = 0;          // hard syncs the library logged dropping frames, and adding silence
+	std::size_t unpaid = 0; // tells made with lost time still unskipped (forgotten): the cap, not the payment, ended it
+	std::vector<std::string> logged; // each hard sync the library logged, with the cycle its line was read at
+	std::size_t loggedDrops = 0;     // hard syncs the library logged dropping frames, and adding silence
 	std::size_t loggedSilences = 0;
 	std::vector<double> sorted;
 	double percentile(double fraction) const {
@@ -604,7 +609,8 @@ public:
 		std::size_t index;
 		double errorUs;
 		std::int64_t libraryStep;
-		bool broken; // a step inside the cycle: not every frame stepped by +1
+		bool broken;            // not every frame of it stepped by +1 (a soft-sync blend, or a step inside it)
+		std::int64_t innerStep; // the largest step between exact ramp frames inside it
 	};
 	/// Every ramp cycle read so far, in order.
 	const std::vector<RampSeen>& ramp() const { return ramp_; }
@@ -632,15 +638,30 @@ private:
 	static constexpr std::size_t kLogLag = 32;
 
 	void one(std::size_t index, Cycle cycle) {
-		// What the code skipped for the graph's lost time, from the facts and what the feed held: a catch-up's or a
-		// pause's jump, however long, or all the feed held when that was less. Its progress and the ramp are judged against it.
+		// What the code skipped for the graph's lost time, from the facts and what the feed held, by its rule
+		// (docs/node-types.md#clock): a catch-up's or a pause's jump is owed, and each cycle skips what the feed holds of
+		// what is owed. Told from a cycle that lost nothing once nothing is owed, or once a feed and the longest chunk of
+		// cycles went untold; what is still owed then is forgotten. No clear comes while cycles are judged. Its progress
+		// and the ramp are judged against it.
 		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp) || cycle.facts.causes.has(CycleCause::absent);
-		cycle.skipped = caughtUp ? static_cast<std::uint32_t>(std::min<std::uint64_t>(
-									   static_cast<std::uint64_t>(cycle.facts.jumpFrames), cycle.held))
-		                         : 0;
-		// Told on the next cycle that did not catch lost time up (docs/node-types.md#clock).
+		if (caughtUp && cycle.facts.jumpFrames > 0) {
+			owed_ += static_cast<std::uint64_t>(cycle.facts.jumpFrames);
+			catchingUp_ = playing_;
+		}
+		cycle.skipped = static_cast<std::uint32_t>(std::min<std::uint64_t>(owed_, cycle.held));
+		owed_ = playing_ ? owed_ - cycle.skipped : 0; // nothing is owed before the stream plays
+		playing_ = playing_ || cycle.fed > 0;
 		pendingTold_ += cycle.skipped + cycle.fed;
-		cycle.published = !caughtUp && pendingTold_ > 0;
+		sinceTold_ += cycle.frames;
+		if (catchingUp_) owed_ += cycle.frames - cycle.fed; // a short cycle while the catch-up is untold
+		const bool due = sinceTold_ >= kTellWithin;
+		cycle.published = pendingTold_ > 0 && (due || (!caughtUp && owed_ == 0));
+		if (cycle.published || due) {
+			if (owed_ > 0) ++errors.unpaid;
+			owed_ = 0;
+			sinceTold_ = 0;
+			catchingUp_ = false;
+		}
 		std::int64_t gap = 0;
 		if (previous_ && !cycle.clean) {
 			// Whatever the host did to the graph, the time around it is not judged: a skip, a stall, a jump.
@@ -720,7 +741,7 @@ private:
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
-		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp});
+		ramp_.push_back({index, errorUs, libraryStep, !cycle.ramp, cycle.innerStep});
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
 		// While the library has lost sync, by its own word, what it plays is its re-alignment, not its timing.
@@ -1012,6 +1033,13 @@ private:
 	std::uint64_t lost_ = 0;          // frames lost since the last ramp frame out: the feed's lack, a jump past it
 	std::uint64_t told_ = 0;          // the frames the code last told the library were played
 	std::uint64_t pendingTold_ = 0;   // skipped and read since, not told yet (catch-up cycles tell nothing)
+	std::uint64_t owed_ = 0;          // the graph's lost time the code has not yet skipped
+	std::uint64_t sinceTold_ = 0;     // frames of cycles since the code last told
+	bool catchingUp_ = false;         // a catch-up is owed and not yet told
+	bool playing_ = false;            // the feed has fed the code
+	/// The most frames of cycles the code leaves untold: the feed and the longest chunk (SendspinCode).
+	static constexpr std::uint64_t kTellWithin =
+		kFeedFrames + static_cast<std::uint64_t>(FrameClock(kRate).frames(longestChunk));
 	std::vector<std::size_t> dry_;
 	std::vector<std::size_t> disturbed_; // cycles the ledger did not call clean
 	std::vector<std::size_t> heard_;     // the cycle each line of the library's log was read at
@@ -1184,27 +1212,46 @@ TEST_CASE(
 	REQUIRE(end > stalled + 1);
 	REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
 	const Cycle& caughtUp = rig.tap.at(end);
-	// Back in sync: the first ramp cycle from the burst's end on whose first frame left within the band the library
-	// leaves hard sync at (sync_task.cpp's settle threshold, 500 us), inside which only its soft sync acts. Ear skipped
-	// what the feed held of the lost time and told the library exactly that; the rest plays late in the chunk the
-	// library holds, which it writes without looking at the time again, and it re-syncs at its next chunk in one step of
-	// its own: within one decoded chunk, the feed and two blocks of the burst's end, with no silence after
-	// (docs/node-types.md#clock).
-	// It takes the code telling nothing from the burst's cycles (dated behind raw time) and two carried patches: without
-	// sendspin-starved-floor.patch the library floored its playtime at now with frames still buffered and corrected
-	// twice; without sendspin-late-chunk.patch it skipped whole chunks past the timeline and filled the overshoot with
-	// silence.
+	// What the feed did not hold of the lost time, as the burst ends (the code's rule over the burst's cycles): the
+	// remainder the code pays from what the library writes next.
+	std::uint64_t owed = 0;
+	for (std::size_t i = stalled + 1; i < end; ++i) {
+		const Cycle& c = rig.tap.at(i);
+		if (c.facts.causes.has(CycleCause::catchUp)) owed += static_cast<std::uint64_t>(c.facts.jumpFrames);
+		owed -= std::min<std::uint64_t>(owed, c.held);
+		owed += c.frames - c.fed;
+	}
+	// Back on the server's stamps: the first ramp cycle from the burst's end on whose first frame left within the band
+	// the library leaves hard sync at (sync_task.cpp's settle threshold, 500 us), inside which only its soft sync acts.
+	// The bound, in blocks from the burst's end: one cycle for the library's thread to refill the feed the burst
+	// drained, one cycle per feed's worth of the remainder it pays (the library refills at most the feed a cycle), and
+	// one for the first frame on time to reach the outputs (docs/node-types.md#clock).
 	constexpr double kBandUs = 500.0;
+	const std::uint64_t boundBlocks = 2 + (owed + kFeedFrames - 1) / kFeedFrames;
 	const auto& ramp = judge.ramp();
 	const auto back = std::ranges::find_if(
 		ramp, [&](const Judge::RampSeen& seen) { return seen.index >= end && std::abs(seen.errorUs) <= kBandUs; });
-	std::size_t librarySteps = 0;
+	// The library corrects nothing: ear skipped exactly the lost time and told it exactly. A correction is a step of
+	// the library's own at a cycle's edge or inside one; its soft sync's blends are not (a step of at most 3, at most
+	// once a chunk, as checkStep counts them).
+	std::size_t corrections = 0;
+	std::size_t blends = 0;
 	std::string steps;
 	for (const Judge::RampSeen& seen : ramp) {
-		if (seen.index <= stalled || (seen.libraryStep == 0 && !seen.broken)) continue;
-		steps += " " + std::to_string(seen.libraryStep) + "@" + std::to_string(seen.index) + " (" +
-		         std::to_string(seen.errorUs) + " us)";
-		if (back != ramp.end() && seen.index <= back->index) ++librarySteps;
+		if (seen.index <= stalled || seen.index > end + kPlannedCycles) continue;
+		const bool edgeBlend = seen.libraryStep == 2;
+		const bool innerBlend = seen.broken && seen.innerStep <= 3;
+		if (seen.libraryStep == 0 && (!seen.broken || innerBlend)) {
+			blends += seen.broken ? 1 : 0;
+			continue;
+		}
+		if (edgeBlend && (!seen.broken || innerBlend)) {
+			++blends;
+			continue;
+		}
+		++corrections;
+		steps += " " + std::to_string(seen.libraryStep) + "/" + std::to_string(seen.innerStep) + "@" +
+		         std::to_string(seen.index) + " (" + std::to_string(seen.errorUs) + " us)";
 	}
 	std::string library;
 	std::size_t silenceAfter = 0;
@@ -1214,19 +1261,20 @@ TEST_CASE(
 		           std::to_string(line.cycle);
 		if (line.kind == LibraryLog::Kind::silence) ++silenceAfter;
 	}
-	const std::uint64_t framesToBack = back != ramp.end() ? rig.tap.at(back->index).position - caughtUp.position : 0;
-	INFO("back at cycle " << (back != ramp.end() ? back->index : 0) << ", " << framesToBack
-	                      << " frames after the burst's end at " << end << "; the library's own steps after the stall:"
-	                      << steps << "; its lines after it (kind:value@cycle):" << library);
+	const std::uint64_t blocksToBack =
+		back != ramp.end() ? (rig.tap.at(back->index).position - caughtUp.position) / kBlock : 0;
+	INFO("the remainder at the burst's end " << owed << " frames; back at cycle "
+	                                         << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
+	                                         << " blocks after the burst's end at " << end << " (bound " << boundBlocks
+	                                         << "); the library's corrections after the stall:" << steps
+	                                         << "; its lines after it (kind:value@cycle):" << library);
 	REQUIRE(back != ramp.end());
-	// What plays late is what the library had already handed over or held when it re-synced: the feed and the chunk in
-	// hand. Measured 4352 to 5888 frames over 20 runs.
-	CHECK(framesToBack <= kChunkFrames + kFeedFrames + 2 * kBlock);
-	// Exactly one correction of the library's own when ear's output came out of the burst late (the feed did not hold
-	// all the lost time), none when it came out on time.
-	const auto firstAfter = std::ranges::find_if(ramp, [&](const Judge::RampSeen& seen) { return seen.index >= end; });
-	CHECK(librarySteps == (firstAfter == back ? 0U : 1U));
+	CHECK(blocksToBack <= boundBlocks);
+	CHECK(corrections == 0);
+	CHECK(blends <= kPlannedCycles * kBlock / kChunkFrames + 1);
 	CHECK(silenceAfter == 0);
+	// The remainder was paid before the library was told: no tell forgot lost time still owed.
+	CHECK(judge.errors.unpaid == 0);
 	// The library was never told more than it wrote, every report was exact, and 750 cycles after the stall are within
 	// 1 ms.
 	checkSync(judge.errors);

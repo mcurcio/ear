@@ -2,6 +2,7 @@
 // played goes, with the time it finishes on the library's clock, to the notifier; the inputs go to the handoff, and
 // when they were captured to its consumer.
 #pragma once
+#include <chrono>
 #include <cstdint>
 #include <span>
 #include "ear/core/node_type.hpp"
@@ -21,6 +22,9 @@ struct CaptureAnchor {
 	std::uint64_t framesWritten;
 	std::int64_t atRawNs;
 };
+/// The longest decoded chunk the protocol allows (150 ms): with the feed, how long the library may go untold while a
+/// catch-up's remainder is paid (docs/node-types.md#clock).
+inline constexpr std::chrono::milliseconds longestChunk{150};
 class SendspinCode final : public AudioCode {
 public:
 	/// `bell`: rung when progress changed. All outlive the code.
@@ -47,6 +51,11 @@ private:
 	std::uint64_t framesWritten_ = 0;
 	std::uint64_t totalFrames_ = 0;
 	std::uint64_t toldFrames_ = 0; // what the library was last told played
+	std::uint64_t owed_ = 0;       // the graph's lost time not yet skipped from the stream
+	std::uint64_t sinceTold_ = 0;  // frames of cycles since the library was last told
+	bool catchingUp_ = false;      // a catch-up or pause is owed and not yet told
+	bool playing_ = false;         // the feed has fed the outputs since the last clear
+	std::uint64_t tellWithin_;     // the most frames of cycles left untold: the feed and the longest chunk
 	std::uint32_t lastGot_ = 0;    // test seams: lastGot() and lastHeld()
 	std::uint32_t lastHeld_ = 0;
 };

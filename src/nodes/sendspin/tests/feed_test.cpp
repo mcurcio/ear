@@ -217,6 +217,26 @@ TEST_CASE("skip discards the oldest frames and says how many, and what it held",
 	CHECK(feed.read(out, 2) == 0);
 }
 
+TEST_CASE("takeCleared applies a clear asked for and says whether one was applied since, here or by a read", "[feed]") {
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 0, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	CHECK_FALSE(feed.takeCleared());
+	feed.clear();
+	CHECK(feed.takeCleared()); // applied here
+	CHECK_FALSE(feed.takeCleared());
+	CHECK(feed.skip(10) == 0); // what was written before it is gone
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	feed.clear();
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 8) == 0); // applied by the read
+	CHECK(feed.takeCleared());
+	CHECK_FALSE(feed.takeCleared());
+}
+
 TEST_CASE("read and skip allocate nothing", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;

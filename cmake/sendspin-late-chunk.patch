@@ -1,7 +1,7 @@
 diff --git a/src/sync_task.cpp b/src/sync_task.cpp
 --- a/src/sync_task.cpp
 +++ b/src/sync_task.cpp
-@@ -638,19 +638,28 @@
+@@ -638,19 +638,27 @@
              static_cast<int64_t>(this->player_impl_->get_effective_output_delay_ms()) * US_PER_MS -
              this->player_impl_->config.fixed_delay_us;
  
@@ -15,19 +15,18 @@ diff --git a/src/sync_task.cpp b/src/sync_task.cpp
 +        // ear: sendspin-late-chunk.patch. A chunk is too late to play only once its last frame is:
 +        // one whose start is late but whose end is not is decoded, and the hard sync drops its late
 +        // front, so a catch-up lands on the timeline in one step instead of skipping whole chunks
-+        // past it and filling the overshoot with silence.
-+        const size_t held_before = sync_context.decode_buffer.available();
++        // past it and filling the overshoot with silence. A chunk is loaded only once the last one
++        // was sent whole (handle_transfer_audio), so what the decode buffer holds is this chunk.
          const DecodeResult decoded = decode_whole_chunk(sync_context);
          if (decoded != DecodeResult::SUCCESS) {
              this->inbound_.return_item(sync_context.encoded_item);
              sync_context.encoded_item = nullptr;
              return decoded;
          }
-+        const size_t chunk_bytes = sync_context.decode_buffer.available() - held_before;
++        const size_t chunk_bytes = sync_context.decode_buffer.available();
 +        const int64_t chunk_us = sync_context.current_stream_info.frames_to_microseconds(
 +            sync_context.current_stream_info.bytes_to_frames(chunk_bytes));
-+        if (held_before == 0 && client_timestamp + chunk_us <
-+            sync_context.new_audio_client_playtime - HARD_SYNC_THRESHOLD_US) {
++        if (chunk_too_late(client_timestamp, chunk_us, sync_context.new_audio_client_playtime)) {
 +            // This chunk will arrive too late to be played, skip it!
 +            sync_context.decode_buffer.decrease_buffer_length(chunk_bytes);
 +            this->inbound_.return_item(sync_context.encoded_item);
@@ -37,3 +36,106 @@ diff --git a/src/sync_task.cpp b/src/sync_task.cpp
          sync_context.decoded_timestamp = client_timestamp;
      }
  
+@@ -661,6 +669,10 @@
+     return DecodeResult::SUCCESS;
+ }
+ 
++bool SyncTask::chunk_too_late(int64_t start_us, int64_t duration_us, int64_t playtime_us) {
++    return start_us + duration_us < playtime_us - HARD_SYNC_THRESHOLD_US;
++}
++
+ DecodeResult SyncTask::decode_whole_chunk(SyncContext& sync_context) {
+     // Straight from the ring storage the chunk was received and decrypted into.
+     const uint8_t* input = encoded_data(sync_context.encoded_item);
+diff --git a/src/sync_task.h b/src/sync_task.h
+--- a/src/sync_task.h
++++ b/src/sync_task.h
+@@ -281,6 +281,12 @@
+     ///         the stream); FAILED for a chunk that does not decode.
+     static DecodeResult decode_whole_chunk(SyncContext& sync_context);
+ 
++    /// @brief Whether a decoded chunk starting at `start_us` and lasting `duration_us` is too late to
++    /// play against the playtime estimate: its last frame, not its first, is more than
++    /// HARD_SYNC_THRESHOLD_US behind. A chunk late at its start only is played, its late front
++    /// dropped by the hard sync. ear: sendspin-late-chunk.patch.
++    static bool chunk_too_late(int64_t start_us, int64_t duration_us, int64_t playtime_us);
++
+     /// @brief Waits in IDLE for a pending codec header (is_pending_header()), starting from
+     /// `sync_context.next_header` and discarding everything else
+     /// @return true with the header in `sync_context.encoded_item`; false on COMMAND_STOP,
+diff --git a/tests/test_player_role.cpp b/tests/test_player_role.cpp
+--- a/tests/test_player_role.cpp
++++ b/tests/test_player_role.cpp
+@@ -1148,3 +1148,72 @@
+     // Control: the chunk follows the silence whole.
+     EXPECT_EQ(sink.written.end() - first_chunk_byte, static_cast<std::ptrdiff_t>(chunk_bytes));
+ }
++
++// ear: sendspin-late-chunk.patch. A chunk is skipped as too late only once its last frame is: one
++// whose start is late but whose end is not is played, so a catch-up lands in one hard sync.
++TEST(PlayerHardSync, AChunkIsTooLateOnlyOnceItsLastFrameIs) {
++    constexpr int64_t PLAYTIME = 1'000'000'000;
++    constexpr int64_t CHUNK_US = 96'000;
++    struct Row {
++        const char* name;
++        int64_t start;
++        bool too_late;
++    };
++    const Row rows[] = {
++        {"Control: on time", PLAYTIME, false},
++        {"late at its start by more than the threshold, on time at its end", PLAYTIME - 60'000, false},
++        {"Control: its end just within the threshold", PLAYTIME - CHUNK_US - 5'000, false},
++        {"its end just past the threshold", PLAYTIME - CHUNK_US - 5'001, true},
++        {"late by more than a chunk", PLAYTIME - 200'000, true},
++    };
++    for (const Row& row : rows) {
++        SCOPED_TRACE(row.name);
++        EXPECT_EQ(SyncTask::chunk_too_late(row.start, CHUNK_US, PLAYTIME), row.too_late);
++    }
++}
++
++// The chunk late at its start but not its end is played from where the timeline is: its late front
++// dropped by one hard sync, the rest sent whole, no silence ahead of it.
++TEST(PlayerHardSync, AChunkLateAtItsStartGetsItsFrontDropped) {
++    constexpr uint32_t CHUNK_FRAMES = 4410; // 100 ms at 44.1 kHz
++    constexpr uint32_t LATE_FRAMES = 2205;  // 50 ms late at its start
++    auto impl = make_impl();
++    RecordingSink sink;
++    impl->listener = &sink;
++    SyncContext context;
++    context.current_stream_info = AudioStreamInfo(16, 2, 44100);
++    context.bytes_per_frame = context.current_stream_info.frames_to_bytes(1);
++    const size_t chunk_bytes = context.current_stream_info.frames_to_bytes(CHUNK_FRAMES);
++    ASSERT_TRUE(context.decode_buffer.allocate(chunk_bytes + context.bytes_per_frame,
++                                               MemoryLocation::PREFER_INTERNAL));
++    context.decode_buffer.set_listener(&sink);
++    // Frame n's every byte is n's low byte plus one, so the first byte out names the first frame.
++    uint8_t* end = context.decode_buffer.get_buffer_end();
++    for (uint32_t frame = 0; frame < CHUNK_FRAMES; ++frame)
++        std::memset(end + frame * context.bytes_per_frame, static_cast<uint8_t>(frame + 1),
++                    context.bytes_per_frame);
++    context.decode_buffer.increase_buffer_length(chunk_bytes);
++    // An estimate a second ahead of now, so no floor and no underrun touch it while this runs.
++    const int64_t playtime = platform_time_us() + 1'000'000;
++    context.new_audio_client_playtime = playtime;
++    context.decoded_timestamp =
++        playtime - context.current_stream_info.frames_to_microseconds(LATE_FRAMES);
++    context.hard_syncing = false;
++    context.aligning = false;
++    const int64_t chunk_us = context.current_stream_info.frames_to_microseconds(CHUNK_FRAMES);
++    ASSERT_FALSE(SyncTask::chunk_too_late(context.decoded_timestamp, chunk_us, playtime));
++
++    SyncTask& task = *impl->sync_task;
++    SyncTaskState state = task.handle_synchronize_audio(context);
++    while (state != SyncTaskState::LOAD_CHUNK) {
++        state = state == SyncTaskState::SYNCHRONIZE_AUDIO ? task.handle_synchronize_audio(context)
++                                                          : task.handle_transfer_audio(context);
++    }
++
++    // Its front dropped, within a frame of the lateness, and the rest sent whole: no silence.
++    const uint32_t sent = context.current_stream_info.bytes_to_frames(sink.written.size());
++    EXPECT_NEAR(static_cast<double>(sent), static_cast<double>(CHUNK_FRAMES - LATE_FRAMES), 1.0);
++    ASSERT_FALSE(sink.written.empty());
++    EXPECT_NE(sink.written.front(), 0);
++    EXPECT_NEAR(static_cast<double>(sink.written.front()), static_cast<double>((LATE_FRAMES + 1) & 0xFF), 1.0);
++}
