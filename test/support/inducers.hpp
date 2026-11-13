@@ -1,7 +1,8 @@
 // Inducers (header-only; the target ear_inducers puts it on the include path): the rare events a test needs, made by
 // the test itself rather than waited for from the host (docs/testing.md#making-the-rare-event). A StallPlan says which
 // cycles stall the data thread and for how long, Stalls carries it out from inside a process() and counts what it did,
-// StallingCode is an AudioCode that does both and keeps a CycleLedger, and a CycleLedger records each cycle as the code
+// StallingCode is an AudioCode that does both and keeps a CycleLedger, ArmedStall one that makes a judge's stalls one
+// at a time when armed, and a CycleLedger records each cycle as the code
 // saw it, with the facts its block stated, for the one judge (cycle_judge.hpp) to judge.
 #pragma once
 
@@ -194,6 +195,38 @@ private:
 	Stalls stalls_;
 	std::function<void()> wake_;
 	std::uint32_t rate_ = 0;
+};
+
+/// An AudioCode that writes silence, counts its cycles and, when armed, makes the next stall of a judge's Stalls in its
+/// next cycle (by the count of stalls armed). A test runs it in a block upstream of the node it judges, linked into it,
+/// so the block runs first in each cycle and a stall there cuts a cycle the judged node then misses
+/// (docs/testing.md#the-cycle-judge); arming one at a time puts each where the test wants it.
+class ArmedStall final : public AudioCode {
+public:
+	/// `rate`: the graph's, which sizes a stall given in cycles.
+	explicit ArmedStall(std::uint32_t rate, std::function<void()> wake = {}) : wake_(std::move(wake)), rate_(rate) {}
+	void prepare(const AudioFormat&) override {}
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
+		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
+		calls_.fetch_add(1, std::memory_order_release);
+		if (Stalls* stalls = armed_.exchange(nullptr, std::memory_order_acq_rel)) (*stalls)(stalled_++, frames, rate_);
+		if (wake_) wake_();
+	}
+	void release() noexcept override {}
+	/// Cycles run so far; any thread.
+	std::uint64_t calls() const noexcept { return calls_.load(std::memory_order_acquire); }
+	/// Its next cycle makes the next stall `stalls`' plan names; `stalls` outlives that cycle. Any thread.
+	void arm(Stalls& stalls) noexcept { armed_.store(&stalls, std::memory_order_release); }
+	/// Whether an arming is still to be taken up.
+	bool armed() const noexcept { return armed_.load(std::memory_order_acquire) != nullptr; }
+
+private:
+	std::function<void()> wake_;
+	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<Stalls*> armed_{nullptr};
+	std::size_t stalled_ = 0; // the data thread's
+	std::uint32_t rate_;
 };
 
 } // namespace ear::test

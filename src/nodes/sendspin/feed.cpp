@@ -29,10 +29,18 @@ void Feed::wakeWriter() noexcept {
 	if (writerWaits_.exchange(false, std::memory_order_relaxed)) room_.ring();
 }
 
+/// One writer (the reading thread), so a plain store of the next value: no read-modify-write on the realtime path.
+void Feed::countDry(std::uint32_t asked, std::uint32_t got) noexcept {
+	if (got >= asked) return;
+	dryReads_.store(dryReads_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+	dryFrames_.store(dryFrames_.load(std::memory_order_relaxed) + (asked - got), std::memory_order_relaxed);
+}
+
 std::uint32_t Feed::read(std::span<const std::span<float>> channels, std::uint32_t frames) noexcept {
 	const bool cleared = applyClear();
 	const std::uint32_t got = ring_.readPlanar(channels, frames);
 	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
+	countDry(frames, got);
 	if (cleared || got > 0) wakeWriter();
 	return got;
 }
@@ -67,6 +75,7 @@ Feed::Taken Feed::skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span
 		skipped += ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(skip - skipped, held())));
 	const std::uint32_t got = skipped >= mustPay ? ring_.readPlanar(channels, frames) : 0;
 	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
+	countDry(frames, got);
 	if (cleared || skipped > 0 || got > 0) wakeWriter();
 	return {static_cast<std::uint32_t>(std::min<std::uint64_t>(skipped, UINT32_MAX)), got};
 }

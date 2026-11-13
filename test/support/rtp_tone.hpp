@@ -23,6 +23,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "ear/core/latency.hpp"
+
 namespace ear::test {
 
 /// The payload the sender writes: big-endian signed PCM, 2 or 3 bytes a sample.
@@ -69,11 +71,35 @@ public:
 	/// Every late send so far, in order: the sender's own counter, which a test judges a receiver's output by
 	/// (docs/testing.md#making-the-rare-event), as the receiver itself counts nothing a test can read.
 	std::vector<LateSend> lateSends() const;
+	/// When the newest packet the sender's thread has sent was due (its last frame), on the steady clock; the far
+	/// future once it has sent every frame. Every send due by then is in lateSends(), so a test judges what a receiver
+	/// played up to a moment only once this has passed it: a send still held could reach back to it.
+	std::chrono::steady_clock::time_point sentDue() const;
+	/// When frame `frame` of the stream was due to be sent, on the steady clock, once send() has begun the stream.
+	std::chrono::steady_clock::time_point dueAt(std::uint64_t frame) const;
 
 private:
 	struct Impl;
 	std::unique_ptr<Impl> impl_;
 };
+
+/// How long a receiver's buffer lasts: its configured latency (an rtp node's latencyMs) as the frames it holds at the
+/// graph's rate, through `clock`, and their time. The reach of anything that starved or flooded the buffer.
+inline std::chrono::nanoseconds receiverReach(FrameClock clock, std::chrono::milliseconds latency) {
+	return std::chrono::nanoseconds(clock.ns(clock.frames(latency)));
+}
+
+/// Whether a late send reaches what a receiver played over [from, to] (its play time, on the steady clock), for a
+/// receiver whose buffer lasts `reach` (receiverReach): the one rule of both RTP tone tests
+/// (docs/testing.md#the-senders-own-counter). A send late by no more than the buffer is in time and reaches nothing.
+/// One later than that left the buffer dry from when its packet was due to play until it came, and the buffer refills
+/// over one buffer after; the packet was due to play one buffer after it was due to be sent, which the receiver's rate
+/// control holds only nearly, so the reach starts when it was due to be sent: [at - late, at + reach]. A send can
+/// reach back, so a span is judged only once the sender has sent what was due by its end (RtpSender::sentDue).
+inline bool lateSendReaches(const RtpSender::LateSend& send, std::chrono::nanoseconds reach,
+                            std::chrono::steady_clock::time_point from, std::chrono::steady_clock::time_point to) {
+	return send.late > reach && send.at - send.late <= to && send.at + reach >= from;
+}
 
 /// A UDP port on 127.0.0.1 that no socket held a moment ago (bound to port 0, read back,
 /// closed). Another process could take it in between; the tests accept that.
@@ -161,6 +187,10 @@ struct RtpSender::Impl {
 	/// receiver steers its resampler by the packets' arrival.
 	void run(std::uint64_t total) {
 		const auto start = std::chrono::steady_clock::now();
+		{
+			const std::lock_guard lock(mutex);
+			startedAt = start;
+		}
 		for (std::uint64_t sent = 0; sent < total && !stopping.load(); sent += framesPerPacket) {
 			const std::chrono::duration<double> due(static_cast<double>(sent + framesPerPacket) / rate);
 			const auto dueAt = start + std::chrono::duration_cast<std::chrono::steady_clock::duration>(due);
@@ -171,12 +201,13 @@ struct RtpSender::Impl {
 			}
 			const auto bytes = packet(sent);
 			::sendto(socket.fd(), bytes.data(), bytes.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof to);
-			if (const auto now = std::chrono::steady_clock::now(); now - dueAt > lateSendBound) {
-				const std::lock_guard lock(mutex);
+			const std::lock_guard lock(mutex);
+			if (const auto now = std::chrono::steady_clock::now(); now - dueAt > lateSendBound)
 				late.push_back({now, now - dueAt});
-			}
+			sentDue = dueAt;
 		}
 		const std::lock_guard lock(mutex);
+		sentDue = std::chrono::steady_clock::time_point::max();
 		done = true;
 		doneChanged.notify_all();
 	}
@@ -193,8 +224,10 @@ struct RtpSender::Impl {
 	std::mutex mutex;
 	std::condition_variable doneChanged;
 	bool done = false;
-	std::vector<LateSend> late; // under mutex
-	std::uint64_t holdAt = 0;   // holdOnce: set before the thread starts
+	std::vector<LateSend> late;                        // under mutex
+	std::chrono::steady_clock::time_point sentDue{};   // under mutex
+	std::chrono::steady_clock::time_point startedAt{}; // under mutex: when frame 0 was due
+	std::uint64_t holdAt = 0;                          // holdOnce: set before the thread starts
 	std::chrono::milliseconds holdFor{0};
 };
 
@@ -226,6 +259,17 @@ inline void RtpSender::holdOnce(std::uint64_t frame, std::chrono::milliseconds h
 inline std::vector<RtpSender::LateSend> RtpSender::lateSends() const {
 	const std::lock_guard lock(impl_->mutex);
 	return impl_->late;
+}
+
+inline std::chrono::steady_clock::time_point RtpSender::sentDue() const {
+	const std::lock_guard lock(impl_->mutex);
+	return impl_->sentDue;
+}
+
+inline std::chrono::steady_clock::time_point RtpSender::dueAt(std::uint64_t frame) const {
+	const std::lock_guard lock(impl_->mutex);
+	return impl_->startedAt + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+								  std::chrono::duration<double>(static_cast<double>(frame) / impl_->rate));
 }
 
 inline std::uint16_t freeUdpPort() {

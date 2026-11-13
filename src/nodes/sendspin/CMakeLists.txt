@@ -35,12 +35,13 @@ if(BUILD_TESTS)
 	# Its private headers by path; the engine and the test card for the clock's tests, which share the engine tests'
 	# harness; the real server through ear_sendspin_server; the library for the key store's provider base;
 	# IXWebSocket for the transport's share per address (ixwebsocket-limits.patch); ear_inducers for the clock tests' cycle
-	# ledger (docs/testing.md#making-the-rare-event) and ear_standard_error_lines for the library's own word
+	# ledger (docs/testing.md#making-the-rare-event), ear_cycle_judge for the one judge of their cycles
+	# (docs/testing.md#the-cycle-judge) and ear_standard_error_lines for the library's own word
 	# (docs/testing.md#the-librarys-own-word).
 	target_include_directories(ear_node_sendspin_tests PRIVATE
 		"${CMAKE_CURRENT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/pipewire/tests")
 	target_link_libraries(ear_node_sendspin_tests PRIVATE ear_folder ear_pipewire PkgConfig::PIPEWIRE ear_sendspin_server
-		ear_temp_folder ear_inducers ear_standard_error_lines sendspin ixwebsocket)
+		ear_temp_folder ear_inducers ear_cycle_judge ear_standard_error_lines sendspin ixwebsocket)
 	target_compile_definitions(ear_node_sendspin_tests PRIVATE
 		EAR_ENGINE_CONF="${PROJECT_SOURCE_DIR}/src/pipewire/engine.conf"
 		EAR_ALSA_TEST_DIR="${PROJECT_SOURCE_DIR}/src/pipewire/tests/alsa")

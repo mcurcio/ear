@@ -9,7 +9,9 @@ C3a and C3b built (sections 9.4 to 9.6: `CycleJudge`, the ledger on facts, and t
 and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`); steps C4a and C4b built
 (sections 9.7 and 9.8: `SendspinCode` and `SourceRing` keeping in step on the facts, the sink's stamps carrying them,
 `GraphCycle::xruns` and `discontinuity` gone, described in `docs/node-types.md#clock`, `docs/engine.md#graphcycle`
-and `docs/writing-a-node-type.md#sources` and `#sinks`), the rest not. Its steps
+and `docs/writing-a-node-type.md#sources` and `#sinks`); step C3c built (section 9.11: the `sendspin` clock and RTP
+tests on the judge, library settles, the feed's dry count, described in `docs/testing.md#the-cycle-judge`), the rest
+not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -286,12 +288,8 @@ The windows the R5 review left in those tests, each with what it becomes and the
 
 | Window | Where | Why it is there | Becomes | Step |
 |---|---|---|---|---|
-| `kSettleNs` (1.5 s after any disturbance, dry cycle, logged hard sync or step) | `clock_test.cpp` | the library re-aligning after it, in its own time | `librarySettle`, declared in the library's units (chunks) and counted (5.4); the graph's own disturbance excuses only its cycles | C3c |
-| `lossSteps` (a step of exactly what was lost, a soft-sync frame either way, with a library line near it) | `clock_test.cpp` | the library catching up after a dry cycle or a forward jump | `librarySettle`'s step, bounded by the cut's `jumpFrames` or the feed's dry count | C3c |
-| `dryCycles` from `lastGot() < frames` | `clock_test.cpp` | the worker starved, read from the code's seam | the feed's own dry count (5.4), a dry cycle excused only where it moved | C3c |
-| `kLogReach` (a line matched within the feed and a chunk of cycles from where it was read) and `kLogLag` (32 cycles of reading lag) | `clock_test.cpp` | a library line is stamped with the cycle count when the reading thread got it, not where its audio plays | deleted: the library's log through a callback (the carried patch slice 3c owes) stamped with the feed's write position, so a line names the frame it acts on | C3c, after 3c's patch |
-| `inLoss` (a loss from its line less `kLogLag` to its end plus `kLogLag`) | `clock_test.cpp` | the same stamping | the loss's frames, from the stamped lines; timing inside it stays unjudged, declared as `librarySettle` | C3c, after 3c's patch |
-| `kLateHeardWithin` (600 ms) and `kSettleFrames` (0.5 s) | `rtp_receiver_test.cpp`; 600 ms and 0.2 s in `test/system/rtp_test.cpp` | a late send heard up to the buffer later, and the resampler settling | the receiver's configured latency through `FrameClock` (5.4), the same reach both ways; the settling as `expected` once per start | C3c |
+| `kLogReach` (a line matched within the feed and a chunk of cycles from where it was read) and `kLogLag` (32 cycles of reading lag) | `clock_test.cpp` | a library line is stamped with the cycle count when the reading thread got it, not where its audio plays | deleted: the library's log through a callback (the carried patch slice 3c owes) stamped with the feed's write position, so a line names the frame it acts on | 3c's patch (C3c kept it: 9.11) |
+| `inLoss` (a loss from its line less `kLogLag` to its end plus `kLogLag`) | `clock_test.cpp` | the same stamping | the loss's frames, from the stamped lines; timing inside it stays unjudged, declared as `librarySettle` (C3c declares it so already) | 3c's patch (C3c kept the lag: 9.11) |
 | `heldBy` (a tenth's time as when the WAV was first seen to hold it, looked at every 50 ms) | `test/system/rtp_test.cpp` | ear is another process, with no ledger the test can read | the counters and records (section 8), each late tenth matched to a record | D2 |
 | A `Lost sync` line matched by size to any step it covers | `test/system/sendspin_system.hpp` | ear prints the library's warning with no position | the line stamped with the frames written when ear printed it, its drop exact | D2, C3c |
 
@@ -825,7 +823,7 @@ R5d).
 | **C3b** | **Done** (9.5). `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | **Done** (9.7, which departs from the progress half). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | **Done** (9.8). `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
-| **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `lossSteps`, `kLogReach`, `kLogLag`, `inLoss`'s lag, the 600 ms and 0.5 s windows (5.5) | none |
+| **C3c** | **Done** (9.11, which keeps `kLogReach`, `kLogLag` and `inLoss`'s lag for 3c's patch). `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `kSettleCycles`, `lossSteps`, `dryCycles` from `lastGot()` (and `lastGot()`), the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
 | **D2** | Counters reported (8.3): `CounterWatch`, `CounterListener` in `ear_control`; the `counters` feature, `counters.changed`, the fixtures, `web/src/protocol.ts` and `docs/control-port.md` in one commit; `ear.graph-lost-cycles` and `ear.node-missed-cycles` in `docs/output-records.md` and its JSON; the system tests judging from them | `isSkipStep`, the 200 µs step rule | the `counters` feature and two records |
 | **D3** | The editor (8.5): panel totals, recent marks (Q-CF4); `docs/editor.md` | nothing | the marks and badge |
@@ -1337,9 +1335,11 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   held whole; never a dry one), never short of a floor of a chunk and two
   cycles past the return, inside which a host disturbance fails the run naming it.
 
-### 9.11 C3c as built: the plan
+### 9.11 Found building C3c
 
-Written before the code, from the tests as they stood after C4 (a96f841750), before 9.10's follow-up.
+What C3c built is described in `docs/testing.md` (`#the-cycle-judge`, `#a-writers-own-event`, `#the-librarys-own-word`,
+`#the-senders-own-counter`); this section keeps the plan it was built from (written before the code, from the tests
+as they stood after C4, a96f841750, before 9.10's follow-up), and then what building it found.
 
 **Inventory: the windows still there, and what each still excuses after C4.** C4 made ear pay a catch-up's lost
 time itself while the library is not starved (`LibraryView`, 9.9), so most of what the windows were for no longer
@@ -1406,6 +1406,69 @@ reposition, an unconfirmed catch-up) fails the test, which it did not before; th
 1.5-cycle stalls during the judged span and must judge timing straight after each; the stall and gap tests make their
 own disturbance and plan none. A step of the code's reports between two whole cycles prints both cycles' `startRawNs`,
 facts and `rateDiff`.
+
+**Found building it**, where it departs from the plan above:
+
+- **A settle's steps are two, in order, not a budget.** The plan's budget (everything the evidence lost plus two blocks,
+  however split) excused an ear fault: a real dry read that also lost 128 frames of the stream went through as a step
+  of 128 inside a settle that lost 256. Built: one realignment of what the evidence says was lost and up to the floor's
+  two blocks more (one soft-sync frame either way), then at most one settle step of up to two blocks; a step short of
+  what was lost, or a second realignment, fails. Both need a line of the library's near.
+- **A settle's soft sync is counted, not timed away.** Under load (`yes` x 4 beside the suite, load 8 to 10) the gap
+  and 1 s stall tests went past the 1% of blended cycles: after a settle the library is within its 500 us settle
+  threshold and interpolates one frame a chunk while it is off by over 100 us (`sync_task.cpp`), up to 20 chunks of
+  one blended cycle each, which the 1.5 s window had hidden for 15. Built: those, at most 20 per settle in the 20
+  chunks after it, are counted apart (`settleBlends`); their timing is judged.
+- **The review (M2 and its should-fix):** each RTP test keeps its own start settle, 0.5 s in the engine test and 0.2 s
+  in the system test (one shared 0.5 s had widened the system test's for no evidence); a dropout 0.1 s past each
+  (240 frames of silence from the sender at 0.6 s and 0.3 s) fails 3 of 3, and one inside it passes 2 of 2.
+  `heldByLag` is measured every look and checked: from a frame's due time to the look that first saw it, 147 to
+  158 ms over 20 runs at load 2 to 3, at most 188 ms over 10 beside six busy threads; it is 300 ms, from 500.
+- **The payment's cycles needed an allowance, until 9.10's fix.** Judging timing from the first whole cycle after a
+  1 s stall's burst failed the 1 s stall test (828 of 850 within 1 ms, p99 544 ms): the code read, while it still
+  owed, what the library wrote between its skip and its read, which played behind the clock. Built first as an
+  interim allowance (those cycles untimed, capped per payment at ceil(remainder / (feed - block)) + 2), and deleted on
+  the rebase onto 9.10's `Feed::skipThenRead`, which reads nothing while a debt is owed: a cycle of the payment now
+  plays zeros the feed counts dry and the code owes, which opens no settle and has no ramp frame to time.
+- **Rebased onto 9.10.** `Feed::skipThenRead` counts its short reads with `read` (one `countDry`), so a payment's zeros
+  are the feed's word too. `StallProbe` and the in-block stall tests plan no judge stalls (their stall is what they
+  judge) and run through the same judge; a burst the block ran every cycle of, overdue, states nothing a judge excuses,
+  and the response window (`responseReach`) is kept as 9.10 built it, its host disturbances now the cycles the judge
+  did not judge whole, less a catch-up the feed held whole. A library thread the host holds late is a `dry` settle:
+  an unowed dry read of 256 frames injected every 400th cycle made the library lose sync by 5.3 ms and log a drop of
+  254 to 256 frames at its next chunk, inside the settle, 3 runs of 3 passing. Measured on the rebase: the full suite
+  1151 of 1151; the clock tests, all eleven a run, beside `yes` x 4 at load 2.6 to 8.7, 10 of 10.
+- **A late send reaches back, so a tenth is judged only once the sender has sent what was due by its end**
+  (`RtpSender::sentDue()`). A 150 ms hold made on purpose failed the engine tone test 2 runs of 3: the receiver's
+  buffer ran dry from the late packet's due time, about 50 ms before the send, and the tenth there was judged before
+  the late send existed. With the gate a 150 ms hold passes 8 of 8; the old rule (a send within 600 ms before a tenth,
+  none after) would have failed it too, as no test held the sender that long before.
+- **The receiver's buffer is the reach both ways, and that is enough.** With the judge's four 1.5-cycle stalls made
+  upstream of the recorder during the tone, tenths whose cycles and one buffer before them were judged whole fit the
+  tone in every run (the RTP repeat counts below); no settle was needed after a lost cycle beyond the buffer.
+- **The induced stalls in the clock tests cost nothing after them.** On an idle host the dummy test judged 750 of 755
+  cycles after the ramp's third second, four stalls made and excused, worst 19 us: the timing of the whole cycle after
+  each paid catch-up is within 1 ms, which the 1.5 s window never let a test see.
+- **Proven to fail a real fault**, each injected, run and reverted: a blend ear makes every 50th cycle (as a soft
+  sync would, but with no settle before it) fails the dummy test 3 of 3 (15 blended cycles against 7.5); zeros the
+  code made in a cycle the feed never
+  counted short fail the dummy test 3 of 3 (unexplained silence and a step of 257: no settle without the feed's word);
+  a dry read that also lost 128 frames fails 3 of 3 (a step short of what the settle lost), while the same dry read
+  alone passes 3 of 3; a dropout in the receiver's output 60 cycles (320 ms) after a catch-up fails the L24 tone test 6
+  of 6 (the deleted 0.5 s settle would have excused it), and one 10 cycles after passes 3 of 3 (inside the buffer); a
+  dropout 450 ms after a 150 ms late send fails 5 of 5 on an idle host (the deleted 600 ms reach would have excused it;
+  under load 12, 5 of 8, the passes inside the reach of the host's own catch-ups).
+- **`stepsInLoss` was never the clock test's**: it is the system tests' (`sendspin_system.hpp`), D2's row, and stays.
+- **Measured** (4 cores, other agents' builds beside it). The clock tests, all seven a run: before the soft-sync tail,
+  20 runs at load 1.4 to 12.3, 19 passed (the 1 s stall test's own `corrections == 0`: the library lost sync 640
+  cycles after the burst, `Lost sync -15898us`, under load 8.3; 5 of 5 alone), and 10 beside `yes` x 4 at load 8 to
+  10, 6 passed (all four failures in the stall and gap tests: their own bounds, `blocksToBack`, `corrections`,
+  `silenceAfter`, `back`, and the 1% of blended cycles the tail now counts apart); as built, 20 runs at load 1.2 to
+  6.2, 19 passed (the 1 s stall test's own `blocksToBack`, 31 against 28), and 6 beside `yes` x 4 at load 2 to 7.2
+  (the run was cut at its time limit), 5 passed (the card test's 1% of blended cycles at a steady -95 us offset with
+  118 host catch-ups, 9.7's signature under load). The steady tests failed nothing else in 56 runs. The RTP receiver's
+  five tone tests: 20 of 20 at load 2.5 to 9.7, 10 of 10 beside `yes` x 4 at load 3.6 to 7.9; the system RTP test 20
+  of 20 at load 3.5 to 3.8.
 
 ## 10. Decided here (technical)
 

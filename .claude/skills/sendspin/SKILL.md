@@ -345,14 +345,19 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
   it, so a system test plays a 60 s stream until the WAV holds the second of exact ramp it needs (`waitForRamp`), then ends it
   (`end`, then `says stream-ended`), never a fixed length (`docs/testing.md#waiting-for-what-ear-wrote`). A stream that plays
   out ends short too: the encoder holds back its tail, so 68607 of 72000 frames arrive.
-- **The clock tests judge only cycles the host left alone.** Each cycle goes in a `CycleLedger`; a cycle is judged when it is
-  clean, 3 s into the ramp, outside a loss of sync the library logged and 1.5 s past the last cycle that was not (disturbed,
-  dry, or holding the library's silence), and a test plays a 90 s stream until it has judged 750. Before playing they wait
-  for the internal clock to reach the raw clock's rate over the clean cycles of two seconds, and fail naming it if it never
-  does. Every step and stretch of silence is accounted for by the code's skips, worked out from each cycle's facts and
-  what the feed held (`lastHeld()`), and its feed reads (`lastGot()`), or by the library's own lines, read from standard error at verbose (`docs/testing.md#the-librarys-own-word`):
-  `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips unlogged. A skip that takes the library's
-  soft-sync frame with it moves the ramp one less (an insert) or one more (a drop) than its frames.
+- **The clock tests judge every cycle through the one cycle judge** (`docs/testing.md#the-cycle-judge`). A cycle's timing
+  is judged when the judge judged it whole, 3 s into the ramp, outside a library settle and a loss of sync the library
+  logged, and a test plays a 90 s stream until it has judged 750; the steady tests make the judge's four 1.5-cycle
+  stalls upstream of the node meanwhile, and judge the next whole cycle after each (ear pays them). A library settle is
+  declared only where the library realigns itself (a dry cycle the code did not owe, by the feed's own count
+  `dryReads()`; a catch-up while it was starved; a debt forgotten; a hard sync or loss it logged), two of its chunks
+  long. Before playing they wait for the internal clock to reach the raw clock's rate over the whole cycles of two
+  seconds, and fail naming it if it never does. Every step and stretch of silence is accounted for by the code's skips,
+  worked out from each cycle's facts, what the feed held (`lastHeld()`) and what it lacked (`dryFrames()`), by a
+  settle's evidence, or by the library's own lines, read from standard error at verbose
+  (`docs/testing.md#the-librarys-own-word`): `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips
+  unlogged. A skip that takes the library's soft-sync frame with it moves the ramp one less (an insert) or one more (a
+  drop) than its frames.
 - **The source's stamps are judged step by step:** the server says each chunk (`source-chunk <frames> <stamp> <lag>`); each
   stamp must step by the last chunk's length within 200 us, or by a block or more where the graph skipped cycles (counted),
   until a second of frames came on clean steps and one chunk arrived within 250 ms of its stamp.

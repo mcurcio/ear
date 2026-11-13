@@ -1,11 +1,13 @@
 // The one judge of lost cycles (test/support/cycle_judge.hpp, docs/testing.md#the-cycle-judge), on facts made by hand:
 // each verdict and the rule behind it, a plan that judges nothing refused, and done() needing the planned boundaries
 // and every planned stall made and excused. The engine tests that judge through it prove it live.
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 
 #include "catch2/catch.hpp"
 #include "cycle_judge.hpp"
@@ -214,4 +216,21 @@ TEST_CASE("A cycle judge counts a card's missing block as covering the stall mad
 	CHECK(judge.blockMissing(1) == Verdict::excused);
 	CHECK(judge.done());
 	CHECK(judge.report().ok());
+}
+
+TEST_CASE("A cycle judge counts each library settle a test declares, by its cause, and excuses no cycle by it",
+          "[cycle_judge]") {
+	CycleJudge judge(plain(1), kClock, nullptr);
+	judge.librarySettle(ear::test::LibrarySettle::dry, 2);
+	judge.librarySettle(ear::test::LibrarySettle::logged, 2);
+	judge.librarySettle(ear::test::LibrarySettle::logged, 3);
+	CHECK_FALSE(judge.done()); // nothing judged: a settle is no judged boundary
+	CHECK(judge.at(caughtUp(1, 0, kFrames, kClock.ns(kFrames)), kFrames) == Verdict::fail); // and no excuse
+	const auto report = judge.report();
+	CHECK(report.librarySettles == std::array<std::size_t, 4>{1, 0, 0, 2});
+	CHECK(report.librarySettleChunks == 7);
+	std::ostringstream text;
+	text << report;
+	CHECK(text.str().find("library settles: dry 1, starved catch-up 0, forgotten debt 0, logged 2, 7 chunks") !=
+	      std::string::npos);
 }

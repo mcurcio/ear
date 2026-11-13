@@ -620,33 +620,6 @@ private:
 	std::atomic<std::uint64_t> calls_{0};
 };
 
-/// Silence on every output, counting the cycles it runs: the graph's cycles, seen by a block of its own while the
-/// block under test runs none of its code. Armed with stalls (a judge's), it makes the next one their plan names in
-/// its next cycle, and disarms.
-class CycleCount final : public AudioCode {
-public:
-	explicit CycleCount(ear::pipewire::testing::Waiter& waiter) : waiter_(waiter) {}
-	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
-	             std::uint32_t frames, const GraphCycle&) noexcept override {
-		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-		calls_.fetch_add(1, std::memory_order_release);
-		if (ear::test::Stalls* stalls = armed_.exchange(nullptr, std::memory_order_acq_rel))
-			(*stalls)(stalled_++, frames, ear::pipewire::testing::kRate);
-		waiter_.wake();
-	}
-	void release() noexcept override {}
-	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
-	/// Its next cycle makes the next stall `stalls`' plan names.
-	void arm(ear::test::Stalls& stalls) { armed_.store(&stalls, std::memory_order_release); }
-
-private:
-	ear::pipewire::testing::Waiter& waiter_;
-	std::atomic<std::uint64_t> calls_{0};
-	std::atomic<ear::test::Stalls*> armed_{nullptr};
-	std::size_t stalled_ = 0;
-};
-
 /// Records every chunk (on the sink's thread), and wakes the waiter.
 class RampConsumer final : public SinkConsumer {
 public:
@@ -713,7 +686,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		waiter.wake();
 	});
 	REQUIRE(waiter.until([&] { return begun && events.isReady && clockEvents.isReady; }));
-	CycleCount counting(waiter);
+	ear::test::ArmedStall counting(kFormat.rate, [&] { waiter.wake(); });
 	REQUIRE(ear::testing::driveNow(*clock, &counting));
 	LiveGraph live(*engine);
 	Links links(*engine);

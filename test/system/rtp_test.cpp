@@ -36,6 +36,16 @@ constexpr double amplitude = 0.5;
 /// The rtp node's receive buffer: the graph file names no latencyMs, so the node's default (docs/node-types.md#rtp). A
 /// packet late by less is still in time for it.
 constexpr std::chrono::milliseconds receiverHeadroom{100};
+/// Interim, until ear reports its own lost cycles (docs/design/cycle-facts.md, step D2): how much later than its frames
+/// were due to be sent a tenth is first seen in the WAV (heldBy below), so heldBy less this is no later than the tenth
+/// played. It is the receiver's buffer (100 ms), the file node's write behind the graph and the 50 ms between looks.
+/// Measured every look (mostLag, checked against this): 147 to 158 ms over 20 runs at load 2 to 3, at most 188 ms
+/// over 10 beside six busy threads; 300 ms leaves a loaded host room, and a look past it fails the test naming it.
+constexpr std::chrono::milliseconds heldByLag{300};
+/// How long after its first sound the rtp node's output is left unjudged, once per start: its resampler's rate control
+/// steering to the packets' arrival, which this test has always given 0.2 s. What follows is judged unless a late send
+/// reaches it (docs/testing.md#the-senders-own-counter).
+constexpr std::chrono::milliseconds receiverStartSettle{200};
 
 /// rtp node "fpp" (any address, `port`, L24, two channels, no rate: the graph frequency) routed
 /// channel for channel into file node "rec" (rec.wav in the recordings folder).
@@ -113,19 +123,22 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	INFO("ear printed:\n" << ear.output());
 	REQUIRE(ready);
 
-	// The sender sends on until the WAV holds the planned tenths, each judged only when no packet went out later than
-	// the receiver's latency (100 ms, its headroom) within its buffer's reach before it (the sender's own counter of
-	// what the host did to it; docs/testing.md#the-senders-own-counter). A tenth's time is when the WAV was first seen
-	// to hold it, looked at every 50 ms: coarse, and later than its frames were made by the sink's lag, so the window
-	// reaches 600 ms before it. Long enough that a loaded host still leaves a second alone.
+	// The sender sends on until the WAV holds the planned tenths, each judged only when no late send reaches it (the
+	// sender's own counter of what the host did to it, its reach the receiver's buffer: lateSendReaches,
+	// docs/testing.md#the-senders-own-counter). A tenth's time is when the WAV was first seen to hold it, looked at every
+	// 50 ms: coarse, and later than its frames were due by up to heldByLag. Long enough that a loaded host still leaves a
+	// second alone.
+	const auto reach = receiverReach(ear::FrameClock(graphFrequency), receiverHeadroom);
 	RtpSender sender(port, RtpPcm::l24, graphFrequency, RtpTone{{750.0, 1500.0}, amplitude});
 	sender.send(graphFrequency * 25);
 	const auto path = directory.recordings() / "rec.wav";
 	std::vector<std::pair<std::size_t, std::chrono::steady_clock::time_point>> looks; // frames held, and when
 	std::vector<std::size_t> tenths;                                                  // judged, by first frame
 	std::size_t excused = 0;
-	std::optional<std::size_t> next; // the next tenth to judge, once the first sound is known
-	std::size_t framesHeld = 0;      // so far
+	std::optional<std::size_t> next;       // the next tenth to judge, once the first sound is known
+	std::optional<std::size_t> firstSound; // the first sound's frame
+	std::size_t framesHeld = 0;            // so far
+	std::chrono::nanoseconds mostLag{0};   // the most a look came after the first new frame it saw was due to be sent
 	const auto heldBy = [&](std::size_t frame) {
 		for (const auto& [frames, at] : looks)
 			if (frames > frame) return at;
@@ -134,19 +147,32 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 	const bool held = waitForWav(
 		path,
 		[&](std::span<const float> fresh, std::size_t channels) {
+			// The first tenth judged starts once the receiver's start has settled, after its first sound.
 			for (std::size_t at = 0; at + 1 < fresh.size() && !next; at += channels)
-				if (fresh[at] != 0.0F || fresh[at + 1] != 0.0F)
-					next = framesHeld + at / channels + graphFrequency / 5; // after the receiver's first 0.2 s
+				if (fresh[at] != 0.0F || fresh[at + 1] != 0.0F) {
+					firstSound = framesHeld + at / channels;
+					next = *firstSound +
+				           static_cast<std::size_t>(ear::FrameClock(graphFrequency).frames(receiverStartSettle));
+				}
+			const auto now = std::chrono::steady_clock::now();
+			// heldByLag's evidence, every look: the WAV's frame n after the first sound is the sender's frame n (the
+			// receiver plays them in order at the graph's rate), so the first frame new to this look was due to be sent
+			// at dueAt(n), no later than it played. How long after that the look saw it bounds how late heldBy is.
+			if (firstSound && framesHeld >= *firstSound && fresh.size() >= channels)
+				mostLag = std::max(mostLag, std::chrono::duration_cast<std::chrono::nanoseconds>(
+												now - sender.dueAt(framesHeld - *firstSound)));
 			framesHeld += fresh.size() / channels;
-			looks.emplace_back(framesHeld, std::chrono::steady_clock::now());
+			looks.emplace_back(framesHeld, now);
 			if (!next) return false;
 			while (tenths.size() < plannedTenths && *next + tenth <= framesHeld) {
-				const auto from = heldBy(*next) - std::chrono::milliseconds(600); // its buffer, and the write's lag
+				const auto from = heldBy(*next) - heldByLag;
 				const auto to = heldBy(*next + tenth);
+				// A send still held could reach back to this tenth: judged at a later look, once the sender has sent
+				// what was due by then.
+				if (sender.sentDue() < to) break;
 				const auto late = sender.lateSends();
-				const bool senderLate = std::ranges::any_of(late, [&](const RtpSender::LateSend& send) {
-					return send.late > receiverHeadroom && send.at >= from && send.at <= to;
-				});
+				const bool senderLate = std::ranges::any_of(
+					late, [&](const RtpSender::LateSend& send) { return lateSendReaches(send, reach, from, to); });
 				if (senderLate) ++excused;
 				else tenths.push_back(*next);
 				*next += tenth;
@@ -154,8 +180,12 @@ TEST_CASE("A tone sent over RTP to an rtp node lands in the file node's WAV, cha
 			return tenths.size() >= plannedTenths;
 		},
 		std::chrono::seconds(60));
-	INFO("judged " << tenths.size() << " tenths, excused " << excused);
+	INFO("judged " << tenths.size() << " tenths, excused " << excused << "; a look came at most "
+	               << std::chrono::duration_cast<std::chrono::milliseconds>(mostLag).count()
+	               << " ms after the first new frame it saw was due");
 	REQUIRE(held);
+	// heldBy's lag was within what the late sends' reach allowed for it, or a tenth was judged by a wrong time.
+	CHECK(mostLag <= heldByLag);
 	ear.signal(SIGTERM);
 	const auto exitStatus = waitForStop(ear);
 	INFO("ear printed:\n" << ear.output());

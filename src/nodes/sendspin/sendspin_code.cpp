@@ -53,7 +53,6 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	lastHeld_ = feed_.heldAtSkip();
 
 	const std::uint32_t got = taken.read;
-	lastGot_ = got;
 	view_.consumed(static_cast<std::uint64_t>(skipped) + got);
 	// While a catch-up is untold, the library cannot see a cycle the feed left short either (its zeros are time the
 	// stream lost too), so that is owed as well. A debt is only ever made while the library holds frames it was not told

@@ -37,12 +37,10 @@ public:
 	void process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override;
 	void release() noexcept override;
-	/// Test seams (docs/testing.md#a-writers-own-event): what the feed held as the last process() kept time, and the
-	/// frames it read from the feed to its outputs, the rest of the cycle zeros because the feed held no more. What it
-	/// skipped for the graph's lost time follows from the cycle's facts and the first. The data thread's own; read on
-	/// it, after process().
+	/// Test seam (docs/testing.md#a-writers-own-event): what the feed held as the last process() kept time. What it
+	/// skipped for the graph's lost time follows from the cycle's facts and this; what it read short, the feed counts
+	/// itself (Feed::dryFrames). The data thread's own; read on it, after process().
 	std::uint32_t lastHeld() const noexcept { return lastHeld_; }
-	std::uint32_t lastGot() const noexcept { return lastGot_; }
 	/// Test seam: what the feed held as the last process() began (after any clear), as the code judged the library's
 	/// view by it (LibraryView).
 	std::uint32_t lastHeldAtStart() const noexcept { return lastHeldAtStart_; }
@@ -61,7 +59,6 @@ private:
 	bool owingSuspended_ = false;             // untold for untoldBound: nothing owed, and told even from a lossy cycle
 	std::optional<std::int64_t> untoldSince_; // the start, on the raw clock, of the first cycle not yet told
 	std::uint32_t lastHeldAtStart_ = 0;       // test seam: lastHeldAtStart()
-	std::uint32_t lastGot_ = 0;               // test seams: lastGot() and lastHeld()
-	std::uint32_t lastHeld_ = 0;
+	std::uint32_t lastHeld_ = 0;              // test seam: lastHeld()
 };
 } // namespace ear::sendspin

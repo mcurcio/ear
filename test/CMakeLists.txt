@@ -116,8 +116,10 @@ target_include_directories(ear_temp_folder INTERFACE "${CMAKE_CURRENT_SOURCE_DIR
 
 # ear_rtp_tone: the tests' RTP sender and tone fit (test/support/rtp_tone.hpp, header-only), for
 # the RTP receiver's engine tests (src/pipewire/tests) and the system tests (docs/node-types.md#rtp).
+# ear_core for FrameClock, through which a late send's reach is the receiver's configured buffer.
 add_library(ear_rtp_tone INTERFACE)
 target_include_directories(ear_rtp_tone INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_link_libraries(ear_rtp_tone INTERFACE ear_core)
 
 # ear_sendspin_server: the real Sendspin server for the sendspin node's clock and system tests (test/support/
 # sendspin_server.py, run by sendspin_server.hpp, header-only, in the venv CMakeLists.txt checks for).

@@ -116,6 +116,44 @@ TEST_CASE("Reading past the end fills the rest with zeros", "[feed]") {
 	CHECK(right == std::array<float, 8>{-1.0F, -2.0F, -3.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F});
 }
 
+TEST_CASE(
+	"The feed counts each read it could not fill and the frames it lacked, and a whole read or a skip counts nothing",
+	"[feed]") {
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 1, 8);
+	REQUIRE(feed.write(samples, 8, 0ms) == 8);
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	CHECK(feed.read(out, 3) == 3); // whole
+	CHECK(feed.dryReads() == 0);
+	CHECK(feed.dryFrames() == 0);
+	CHECK(feed.skip(2) == 2); // a skip is no read
+	CHECK(feed.dryReads() == 0);
+	CHECK(feed.read(out, 8) == 3); // short by 5
+	CHECK(feed.dryReads() == 1);
+	CHECK(feed.dryFrames() == 5);
+	CHECK(feed.read(out, 4) == 0); // empty: short by all 4
+	CHECK(feed.dryReads() == 2);
+	CHECK(feed.dryFrames() == 9);
+	CHECK(feed.read(out, 0) == 0); // asked nothing, lacked nothing
+	CHECK(feed.dryReads() == 2);
+	// A payment's read counts the same: owed more than the feed holds, it reads nothing, all of it lacking.
+	REQUIRE(feed.write(samples, 8, 0ms) == 8);
+	const Feed::Taken owing = feed.skipThenRead(16, 16, out, 4);
+	CHECK(owing.skipped == 8);
+	CHECK(owing.read == 0);
+	CHECK(feed.dryReads() == 3);
+	CHECK(feed.dryFrames() == 13);
+	// Paid in full, it reads whole and counts nothing.
+	REQUIRE(feed.write(samples, 8, 0ms) == 8);
+	const Feed::Taken paid = feed.skipThenRead(2, 2, out, 4);
+	CHECK(paid.skipped == 2);
+	CHECK(paid.read == 4);
+	CHECK(feed.dryReads() == 3);
+}
+
 TEST_CASE("A full feed's write returns 0 at its patience", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;

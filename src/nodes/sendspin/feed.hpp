@@ -60,9 +60,16 @@ public:
 	std::uint32_t held() const noexcept { return ring_.writePosition() - ring_.readPosition(); }
 	/// Test seam: what the feed held at the last skip(), after any clear; the reading thread's own, read on it.
 	std::uint32_t heldAtSkip() const noexcept { return heldAtSkip_; }
+	/// Test seams, the reader's own events (docs/testing.md#a-writers-own-event): the reads that found the feed short of
+	/// what they asked, a read or a skipThenRead, which reads nothing while a debt is owed (a dry cycle: zeros played where
+	/// the stream should be), and the frames they lacked. Counted on
+	/// the reading thread as it reads; any thread may read them, after whatever published that read.
+	std::uint64_t dryReads() const noexcept { return dryReads_.load(std::memory_order_relaxed); }
+	std::uint64_t dryFrames() const noexcept { return dryFrames_.load(std::memory_order_relaxed); }
 
 private:
 	bool applyClear() noexcept;
+	void countDry(std::uint32_t asked, std::uint32_t got) noexcept;
 	std::uint32_t tryWrite(std::span<const float> interleaved, std::uint32_t frames) noexcept;
 	void wakeWriter() noexcept;
 	FrameRing ring_;
@@ -72,6 +79,8 @@ private:
 	std::atomic<std::uint64_t> clearTo_{0};    // pending bit, and the ring's write position when it was asked
 	std::atomic<std::uint64_t> waitsBegun_{0}; // test seams: waitsBegun and waitsWoken
 	std::atomic<std::uint64_t> waitsWoken_{0};
+	std::atomic<std::uint64_t> dryReads_{0}; // test seams: dryReads and dryFrames, the reader's alone to write
+	std::atomic<std::uint64_t> dryFrames_{0};
 	std::uint32_t heldAtSkip_ = 0;      // reader only
 	void (*skipHook_)(void*) = nullptr; // test seam: onPaymentStep
 	void* skipHookContext_ = nullptr;
