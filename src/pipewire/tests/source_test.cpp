@@ -34,6 +34,7 @@
 #include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "engine_harness.hpp"
+#include "cycle_judge.hpp"
 #include "inducers.hpp"
 #include "probes.hpp"
 
@@ -380,16 +381,9 @@ private:
 	std::atomic<std::size_t> count_{0};
 };
 
-/// CLOCK_MONOTONIC_RAW now, in nanoseconds: the clock the dummy driver tracks, read independently of its stamps.
-std::int64_t rawNsNow() noexcept {
-	timespec now{};
-	clock_gettime(CLOCK_MONOTONIC_RAW, &now);
-	return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
-}
-
 /// What the block's code saw of a cycle: its position and frames, its start, and the source's Played after it played;
 /// with a source and a writer to watch, the source's shortfall after it played, and the frames the writer had written
-/// by the cycle's end (so by the next cycle's play, at least that many).
+/// by the cycle's end (so by the next cycle's play, at least that many); and the facts its block stated of it.
 struct CodeCycle {
 	std::uint64_t position;
 	std::uint32_t frames;
@@ -397,8 +391,7 @@ struct CodeCycle {
 	Played played;
 	std::uint64_t shortfall = 0;
 	std::uint64_t written = 0;
-	/// CLOCK_MONOTONIC_RAW read by the code itself at its entry: a clock the driver's own stamp cannot move.
-	std::int64_t entryRawNs = 0;
+	CycleFacts facts{};
 };
 
 /// The block's code: out = from_writer (the source's bank, as the code reads it), each cycle logged with the source's
@@ -420,7 +413,7 @@ public:
 		const std::atomic<std::uint64_t>* written = writtenBy.load(std::memory_order_acquire);
 		log.add(CodeCycle{cycle.position, frames, cycle.startRawNs, writer_.played(),
 		                  source != nullptr ? source->shortfallFrames() : 0,
-		                  written != nullptr ? written->load(std::memory_order_acquire) : 0, rawNsNow()});
+		                  written != nullptr ? written->load(std::memory_order_acquire) : 0, cycle.facts});
 		calls.fetch_add(1, std::memory_order_release);
 		waiter_.wake();
 	}
@@ -502,7 +495,7 @@ public:
 /// the graph ran the cycle (spike S2's cut-short cycles, made at will instead of by load).
 class SleepingUpstream final : public ProbeCode {
 public:
-	SleepingUpstream(std::size_t capacity, StallPlan plan) : stalls_(std::move(plan)), log(capacity) {}
+	SleepingUpstream(std::size_t capacity, Stalls& stalls) : stalls_(stalls), log(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		std::fill_n(outputs[0], frames, 0.0F);
@@ -514,7 +507,7 @@ public:
 	std::uint64_t slept() const { return stalls_.made(); }
 
 private:
-	Stalls stalls_;
+	Stalls& stalls_;
 	std::uint64_t cycles_ = 0;
 
 public:
@@ -553,12 +546,12 @@ private:
 /// moves on by the jump and the frames of each cycle; a jump past the ring's capacity is a new clock, nothing skipped (a
 /// host's stall past it makes one: recorded, never required); a cycle short of frames is excused only when the writer
 /// had not yet written them by the cycle before (its own progress, logged by the code: a host that starves the writer
-/// thread); and every jump is time the raw clock shows was lost.
+/// thread). Each jump is the one its block stated (CycleFacts::jumpFrames); whether it was the driver's cut is the
+/// judge's (docs/testing.md#the-cycle-judge).
 struct SourceJudged {
-	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0, unlost = 0;
-	std::int64_t mostOverLost = std::numeric_limits<std::int64_t>::min();
+	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0;
 	std::uint64_t largestJump = 0, excusedDry = 0;
-	std::string firstDrift, firstUnlost;
+	std::string firstDrift;
 	/// Per cycle: the source played every frame of it, as its count says; and played it so with no dry cycle just before
 	/// (whose decay and fade-in would shape its first frames).
 	std::vector<std::uint8_t> played, whole;
@@ -577,22 +570,10 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 		const CodeCycle& c = cycles[n];
 		const CodeCycle* p = n > 0 ? &cycles[n - 1] : nullptr;
 		std::uint64_t jump = 0;
-		if (p != nullptr && c.position != p->position + p->frames) {
+		if (p != nullptr && c.facts.jumpFrames > 0) {
 			++j.jumps;
-			jump = c.position - p->position - p->frames;
+			jump = static_cast<std::uint64_t>(c.facts.jumpFrames);
 			j.largestJump = std::max(j.largestJump, jump);
-			// The jump is time the graph really lost: the raw clock, read by the code itself at this cycle's entry, had
-			// passed the last one's end by as much. Since the last end cancels out, this says the position never leads
-			// the raw clock by more than the driver's 1 ms error clamp and its wake latency (two cycles' room). A host's
-			// stall only makes the position lag, so it is excused; an engine that jumped further than time went is not.
-			const auto rawFrames =
-				static_cast<std::int64_t>(static_cast<__int128>(c.entryRawNs) * kRate / 1'000'000'000);
-			const std::int64_t lost = rawFrames - static_cast<std::int64_t>(p->position + p->frames);
-			const std::int64_t over = static_cast<std::int64_t>(jump) - lost;
-			j.mostOverLost = std::max(j.mostOverLost, over);
-			if (over > static_cast<std::int64_t>(2 * kBlock + kRate / 1000) && j.unlost++ == 0)
-				j.firstUnlost = "at " + std::to_string(c.position) + ": jumped " + std::to_string(jump) +
-				                ", the raw clock " + std::to_string(lost) + " past the last end";
 		}
 		const bool beyond = jump > capacity;
 		if (beyond) ++j.beyond;
@@ -621,6 +602,11 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 		dryBefore = dry > 0;
 	}
 	return j;
+}
+
+/// The code's cycles from `fed` on, through `judge`, in order; `fed` moves past them.
+void feedJudge(ear::test::CycleJudge& judge, std::span<const CodeCycle> cycles, std::size_t& fed) {
+	for (; fed < cycles.size(); ++fed) judge.at(cycles[fed].facts, cycles[fed].frames);
 }
 
 /// The listener's cycles judged against `j`: in every cycle the source played whole and unfaded, it heard the ramp
@@ -661,6 +647,13 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	SourceCode code(waiter, source->writer(), 4000);
 	code.source = source.get();
 	ListeningCode listening(waiter, code, 4000);
+	// The code's every cycle through the one judge (docs/testing.md#the-cycle-judge), its first its drive. An upstream
+	// probe makes the judge's stalls once the code runs, each cutting its cycle before rx ran it, so the source keeps
+	// time over cycles the driver cut, and the excuse is taken, and proven, on every run.
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 200, .expected = {.drives = 1}}, FrameClock(kRate),
+	                            &engine->cuts());
+	SleepingUpstream upstreamCode(4000, judge.stalls());
+	Probe upstream(*engine, waiter, "upstream", 0, 1, upstreamCode);
 	BlockEvents events(waiter), dstEvents(waiter);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
 	// The node after rx tells 960 frames of playback latency on its input, as a card's buffer would be told.
@@ -669,6 +662,7 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	REQUIRE(waiter.until([&] { return events.isReady && dstEvents.isReady; }));
 	REQUIRE(ear::testing::driveNow(*dst, &listening));
 	REQUIRE(wiring.link(waiter, {"rx", "out.1"}, {"dst", "in.1"}));
+	REQUIRE(wiring.link(waiter, {"upstream", "out.1"}, {"rx", "in.1"}));
 	RampWriter writer(*source, waiter);
 	REQUIRE(waiter.until([&] { return writer.written.load() >= 8192; }));
 	code.writtenBy.store(&writer.written, std::memory_order_release);
@@ -682,6 +676,7 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		waiter.wake();
 	});
 	REQUIRE(waiter.until([&] { return driven; }));
+	upstreamCode.armed.store(true);
 	// Dated by the cycle's start, the frames it played, dst's 960 beyond `out` and the code's 4800 on it.
 	const auto heardAt = [](const CodeCycle& cycle, std::uint64_t played, std::uint32_t downstream) {
 		return cycle.startRawNs + static_cast<std::int64_t>(played + downstream) * 1'000'000'000 / kRate;
@@ -696,9 +691,10 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	// The source keeps to the clock by its rule, judged cycle by cycle as part A's is (judgeSource): a host that starves
 	// the writer thread or stalls the data thread past the ring only makes a cycle that is not judged against dst, never
 	// a pass or a failure. dst is judged on the cycles the source played whole, and the date with both latencies on
-	// those it played every frame of once dst's latency arrived, each to a planned count.
+	// those it played every frame of once dst's latency arrived, each to a planned count; and the judge to its own.
+	std::size_t fed = 0;
 	constexpr std::size_t kJudged = 200;
-	const auto judge = [&] {
+	const auto judgeAll = [&] {
 		const auto cycles = code.log.entries();
 		SourceJudged j = judgeSource(cycles, source->writer().capacityFrames());
 		judgeHeard(j, cycles, listening.log.entries());
@@ -712,8 +708,10 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		[&] {
 			if (code.log.full()) return true;
 			if (code.log.count() <= datedFrom) return false;
-			const SourceJudged j = judge();
-			return j.judged >= kJudged && playedSinceDated(j) >= kJudged;
+			feedJudge(judge, code.log.entries(), fed);
+			if (judge.report().failed > 0) return true;
+			const SourceJudged j = judgeAll();
+			return j.judged >= kJudged && playedSinceDated(j) >= kJudged && judge.done();
 		},
 		30s));
 	{
@@ -721,6 +719,7 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 		                                  << " cycles were judged");
 		REQUIRE_FALSE(code.log.full());
 	}
+	upstreamCode.armed.store(false);
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
 	const Played stopped = source->writer().played();
 	const std::size_t heardBefore = listening.log.count();
@@ -766,9 +765,10 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	             << " beyond the ring: " << j.clocks << " new clocks); " << j.lagged
 	             << " cycles the writer had not filled (" << j.excusedDry << " frames short)");
 	INFO(j.firstDrift);
-	INFO(j.firstUnlost << " (the most a jump outran lost time: " << j.mostOverLost << " frames)");
 	INFO(heard.firstWrong);
-	CHECK(j.unlost == 0);
+	feedJudge(judge, cycles, fed);
+	INFO(judge.report());
+	CHECK(judge.report().ok());
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);
@@ -851,9 +851,13 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	SourceCode code(waiter, source->writer(), kCapacity);
 	code.source = source.get();
 	StreamListener listenerCode(waiter, code, kCapacity);
-	// Every 50th armed cycle, the 50th first, held 12 ms (a quantum is 5.3 ms).
-	SleepingUpstream upstreamCode(
-		kCapacity * 2, StallPlan::every(50, 49, std::numeric_limits<std::size_t>::max(), StallLength::of(12ms)));
+	// The code's every cycle through the one judge (docs/testing.md#the-cycle-judge), its first its drive; its stalls
+	// are the upstream's, every 50th armed cycle, the 50th first, held 12 ms (a quantum is 5.3 ms), 30 of them.
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = kJudged,
+	                                                 .induce = StallPlan::every(50, 49, 30, StallLength::of(12ms)),
+	                                                 .expected = {.drives = 1}},
+	                            FrameClock(kRate), &engine->cuts());
+	SleepingUpstream upstreamCode(kCapacity * 2, judge.stalls());
 	BlockEvents events(waiter);
 	Probe upstream(*engine, waiter, "upstream", 0, 1, upstreamCode);
 	auto block = blocks.make("rx", rxPorts, kFormat, events);
@@ -866,31 +870,35 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	code.writtenBy.store(&writer.written, std::memory_order_release);
 	const std::vector<SourceBinding> bound{SourceBinding{&source->tap(), kInside, 1}};
 	bool driven = false;
-	upstreamCode.armed.store(true);
 	block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {
 		driven = true;
 		waiter.wake();
 	});
 	REQUIRE(waiter.until([&] { return driven; }));
+	upstreamCode.armed.store(true);
 
 	// Judges every cycle logged so far (both logs only grow; a snapshot is whole up to its count).
-	const auto judge = [&] {
+	const auto judgeAll = [&] {
 		const auto cycles = code.log.entries();
 		SourceJudged j = judgeSource(cycles, capacity);
 		judgeHeard(j, cycles, listenerCode.log.entries());
 		return j;
 	};
+	std::size_t fed = 0;
 	REQUIRE(waiter.until([&] { return code.log.count() >= kCycles; }, 60s));
-	SourceJudged j = judge();
-	while (j.judged < kJudged && !code.log.full()) {
+	SourceJudged j = judgeAll();
+	feedJudge(judge, code.log.entries(), fed);
+	while ((j.judged < kJudged || !judge.done()) && !code.log.full() && judge.report().failed == 0) {
 		const std::size_t more = code.log.count() + 500;
 		REQUIRE(waiter.until([&] { return code.log.count() >= std::min(more, kCapacity); }, 60s));
-		j = judge();
+		j = judgeAll();
+		feedJudge(judge, code.log.entries(), fed);
 	}
 	upstreamCode.armed.store(false);
 	REQUIRE(ear::testing::driveNow(*block, nullptr));
 	source->close();
-	j = judge();
+	j = judgeAll();
+	feedJudge(judge, code.log.entries(), fed);
 
 	const auto cycles = code.log.entries();
 	const std::uint64_t first = code.firstPosition.load();
@@ -902,23 +910,22 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 		if (at >= first && at <= last && !std::ranges::binary_search(ran, at)) ++cutAfterUpstream;
 	std::printf("S5 part A on the real block: %zu cycles, %" PRIu64 " sleeps, %zu position jumps (largest %" PRIu64
 	            " frames, %zu beyond the ring's %u: %zu new clocks), %zu cut short after the upstream; %zu cycles the "
-	            "writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong; jumps outran lost "
-	            "time by %" PRId64 " frames at most\n",
+	            "writer had not filled (%" PRIu64 " frames short); %zu heard, %zu judged, %zu wrong\n",
 	            j.cycles, upstreamCode.slept(), j.jumps, j.largestJump, j.beyond, capacity, j.clocks, cutAfterUpstream,
-	            j.lagged, j.excusedDry, j.heard, j.judged, j.wrong, j.mostOverLost);
+	            j.lagged, j.excusedDry, j.heard, j.judged, j.wrong);
 	INFO(j.jumps << " jumps (largest " << j.largestJump << "), " << cutAfterUpstream
 	             << " cut short after the upstream, " << upstreamCode.slept() << " sleeps");
 	INFO(j.firstDrift);
-	INFO(j.firstUnlost << " (the most a jump outran lost time: " << j.mostOverLost << " frames)");
 	INFO(j.firstWrong);
-	REQUIRE(upstreamCode.slept() >= kCycles / 50 - 2);
+	INFO(judge.report());
+	REQUIRE(upstreamCode.slept() == 30);
 	// The block missed cycles its upstream ran (cut short after it, 2026-11-09: one per sleep), which is what this
 	// test is about.
 	CHECK(cutAfterUpstream > 0);
 	CHECK(j.jumps > 0);
-	// Every jump was time the graph lost, and every jump past the capacity, and nothing else, was a new clock to the
-	// source.
-	CHECK(j.unlost == 0);
+	// Every jump was cycles the driver cut, each within the time the raw clock lost, by the one judge; and every jump
+	// past the capacity, and nothing else, was a new clock to the source.
+	CHECK(judge.report().ok());
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);

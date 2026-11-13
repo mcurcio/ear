@@ -4,9 +4,9 @@ Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, diagnos
 spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked); step C1 built (section
 9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
-`GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); step
-C3a built (section 9.4: `CycleJudge`, the ledger on facts and the inside ports' ramp on the judge, described in
-`docs/testing.md#the-cycle-judge`), the rest not. Its steps
+`GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); steps
+C3a and C3b built (sections 9.4 and 9.5: `CycleJudge`, the ledger on facts, and the inside ports', card, source, engine
+and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -819,7 +819,7 @@ R5d).
 | **C1** | **Done** (9.2). `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
 | **C2** | **Done** (9.3). `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | **Done** (9.4). `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
-| **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
+| **C3b** | **Done** (9.5). `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `lossSteps`, `kLogReach`, `kLogLag`, `inLoss`'s lag, the 600 ms and 0.5 s windows (5.5) | none |
@@ -1061,6 +1061,42 @@ sections 5 and 6, and what the steps after it must know.
   their listener is a bare probe, not a block, so it states no facts, and a take-up is never excused, only made again;
   on the tracking dummy consecutive positions are what `whole()` says (S6). Moving them needs a probe that runs
   `CycleAccount` itself, as C3b's S5 does.
+
+### 9.5 Found building C3b
+
+What C3b moved is described in `docs/testing.md#the-cycle-judge`; this section keeps only where it departs from 5.3 and
+5.5, and what C3c must know.
+
+- **The card's clock tests make no stall** (`.induce = StallPlan{}`, `.judged = 16`, the code's drive declared): they
+  judge that a card's join and loss leave the blocks' clock alone, and the judged codes are siblings whose order in a
+  cycle nothing fixes, so a planned stall in one cuts nothing the other surely misses. The excuse path is proven every
+  run by the ramp onto channel 2 in the same file, through the same `Code`.
+- **The card's ramp reads the file incrementally** (`RampReader`): the judge counts, so each block is judged once
+  however often the growing file is read. `Graph` owns the ramp's judge, made from the engine's record, since the
+  codes call its stalls and the record exists only once the engine does. The test still requires each stalled ramp
+  cycle among the excused blocks (stronger than `done()`'s count) and waits for the file to pass the last of them.
+- **The sink's block under test gains an input bank**, fed by the block that counts the graph's cycles, which makes
+  the judge's four 1.5-cycle stalls one at a time while the code runs: a stall in the ramp's own block would cut only
+  what follows it, and the ramp's ledger is the judged node. The storm's re-drives each make a `drive`, so the plan
+  declares at most `kMostRounds * 202` of them, the most the test asks.
+- **The bound source gains an upstream probe** making the default stalls, and S5's part A's unbounded plan becomes 30
+  stalls of 12 ms (a plan `done()` can reach). The source-rule model reads the stated `jumpFrames` and stays the
+  model; `entryRawNs`, `rawNsNow`, `unlost` and `mostOverLost` are deleted.
+- **S5's B states its own facts.** B is a probe, so it runs `CycleAccount` over the engine's record from the tick a
+  block builds (the driver's start mapped to the raw clock as `port_blocks.cpp` maps it). U's overruns are the
+  judge's stalls (200), and the judge fails what the deleted `notWhole`, `back` and raw-clock (`kJumpSlack`) rules
+  failed: a jump not whole cycles or backwards is a `reposition`, one past the raw clock fails the catch-up's check.
+  U's own raw read stays: it is S2's (`tooFarAhead`), not a judge of lost cycles.
+- **The card's ramp also judges its own block's facts** (`judgeClock` on the ramp's code): a block that did not run a
+  cycle leaves the card a whole block of silence, which the file alone excuses as a late block, so without its own
+  facts the test passed such a bug (found by the injection below).
+- **Proven to fail a real bug**, each injected, the moved tests run and the injection reverted: every block skipping
+  the same uncut cycle every 29 (`onProcess` returning early) fails all eight block tests (the judge's `absent`, or
+  breaks first); a block's outputs zeroed on such a cycle after its code ran fails the ramps (inside ports, engine,
+  card, both sources); a catch-up's `lostRawNs` four cycles short (a wrong date) fails every test that excuses a cut,
+  S5 and the sink included. Untouched, as they should be: by the zeroed outputs, the card's clock tests (no audio
+  judged) and the sink (its tap is fed before the outputs); by the wrong date, the card's clock tests (no catch-up
+  needed on an idle run).
 
 ## 10. Decided here (technical)
 

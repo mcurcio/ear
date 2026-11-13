@@ -48,30 +48,24 @@ that build and run them are in [`AGENTS.md`](../AGENTS.md#build-run-and-test).
   returns, so that cycle is cut short straight after it, on any host
   ([engine.md](engine.md#the-one-data-loop-and-invokes)).
 - **`Stalls`** carries a plan out from inside a `process()` or a probe's cycle and counts what it
-  made; it holds the one sleep that stalls a data thread on purpose. S5's overruns, the source's
-  cut-short cycles and the clock's stall tests all stall through it.
+  made; it holds the one sleep that stalls a data thread on purpose. A judge's planned stalls, S5's
+  overruns and the clock's stall tests all stall through it.
 - **`CycleLedger`** records each cycle a code ran (position, frames, raw start, rate and the facts
   its block stated, `GraphCycle::facts`) into storage made beforehand. It works nothing out: whether
   anything was lost before a cycle is its block's own word (`whole()`), and what is excused is the
   judge's.
 - **`StallingCode`** is an `AudioCode` that writes silence, records into its ledger and stalls at
   its plan's cycles (by ledger index).
-- **Judged to a planned count.** A check that holds only where the clock did not jump (a take-up's
-  first cycle at the published position) is judged where the cycles themselves say so: a ledger's
-  whole cycles, a take-up whose only cause is its drive, or a probe downstream that heard
-  consecutive positions there. The test repeats until it has judged the number it planned; a jump
-  the host made is recorded and only makes another round, and what holds across a jump too (a
-  start never later than its first cycle, a sink's stretches exactly the code's) is checked every
-  time. A model of a rule the design defines over jumps applies the rule: S5's source takes a jump
-  beyond its capacity as a new clock and re-anchors, as the source rule says, instead of counting a
-  drift. What excuses a jump is checked against the engine, never taken from it: each jump must be
-  time the raw clock shows was lost, that is, the position may never lead the raw clock by more than
-  the driver's 1 ms clamp and its wake latency (two cycles' room). S5 reads `CLOCK_MONOTONIC_RAW`
-  itself; part A reads it in its code too, never the driver's own stamp. The card tests' codes count
-  a discontinuity unless it is a forward jump on the same driver by exactly the cycles started since
-  the code last ran, every one cut short by the engine's own record (`Engine::cuts()`), and a block
-  missing from the card's file must have run in a cycle that record holds cut, with any silence
-  before the next whole blocks.
+- **Judged to a planned count.** A check that holds only where nothing was lost (a take-up's
+  first cycle at the published position) is judged where the cycles themselves say so: a take-up
+  whose only cause is its drive, or a probe downstream that heard consecutive positions there. The
+  test repeats until it has judged the number it planned; a take-up the host disturbed only makes
+  another round, and what holds across a lost cycle too (a start never later than its first cycle,
+  a sink's stretches exactly the code's) is checked every time. A model of a rule the design
+  defines over jumps applies the rule to the jump the block stated (`CycleFacts::jumpFrames`): the
+  source's model takes a jump beyond its capacity as a new clock and re-anchors, as the source rule
+  says, instead of counting a drift. Whether a cycle may be lost at all is never the model's: it is
+  the judge's, below.
 
 ### The cycle judge
 
@@ -105,9 +99,32 @@ record) fails every run, not on the first loaded host. A test waits with its `Wa
 `judge.done()` (or a failure, or its ledger full), then `INFO(judge.report())` and requires
 `judge.report().ok()`. A test that must not stall says why and plans `StallPlan{}`.
 
-The ramp through a block's inside ports (`port_block_test.cpp`) is judged so: within every cycle
-the recorder heard, the ramp is whole; a boundary is judged where the judge says so, to 32 of them;
-the ramp makes the judge's four stalls once it is heard.
+**A card** runs no code of ear's, so its facts are not seen; the judge answers for it from the
+engine's record (`Engine::cuts()`). The test reads the card's file as it grows: a block boundary
+heard whole on both sides is judged (`blockHeard()`), and each block of the ramp missing from the
+file is excused only if the driver cut the cycle the ramp wrote it in (`blockMissing(graphCycle)`,
+the cycle from the ramp's own ledger), with any silence the card plays for a block it missed whole
+blocks.
+
+Every test that excuses a lost cycle does it through the judge:
+
+- The ramp through a block's inside ports (`port_block_test.cpp`) and from one block to another
+  (`engine_test.cpp`): within every cycle the recorder heard, the ramp is whole; a boundary is
+  judged where the judge says so, to 32 of them; the ramp makes the judge's four stalls once it is
+  heard.
+- The ramp onto a card's channel 2 (`sound_card_test.cpp`): as above, read from the card's file,
+  each stalled block among those excused. The card's join and its loss judge every cycle each block's
+  code ran (its drive expected, nothing else) and make no stall: they judge the clock the card leaves
+  the blocks on, and the ramp proves the excuse path in the same file through the same code.
+- A sink's take-ups across stops, starts and a storm of drives (`sink_test.cpp`): every cycle of the
+  code through the judge, each drive declared; the block counting the graph's cycles feeds the block
+  under test and makes the judge's four stalls while the code runs.
+- A bound source and S5's part A on the real block (`source_test.cpp`): every cycle of the source's
+  block through the judge, its drive declared; an upstream probe makes the stalls (the default four,
+  and S5's 30 of 12 ms), and the source rule's model reads each stated jump.
+- S5 (`spikes_test.cpp`): B is a probe, not a block, so it states its own facts by the rule a block
+  runs (`CycleAccount` over the engine's record, from the tick a block builds); U's 200 overruns are
+  the judge's stalls, and every cycle B ran is judged.
 
 ### A writer's own event
 

@@ -45,6 +45,7 @@
 #include "ear/pipewire/sound_cards.hpp"
 #include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
+#include "cycle_judge.hpp"
 #include "inducers.hpp"
 #include "temp_folder.hpp"
 
@@ -164,7 +165,8 @@ private:
 	std::atomic<std::uint32_t> wrongFrames_{0};
 };
 
-/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks.
+/// Writes 1, 2, 3, ... to its one output, one value per sample, across blocks. Given stalls (a judge's), once armed it
+/// stalls the data thread as their plan says, counted from the first armed cycle.
 class Ramp final : public AudioCode {
 public:
 	explicit Ramp(Waiter& waiter) : waiter_(waiter) {}
@@ -173,15 +175,21 @@ public:
 	             std::uint32_t frames, const ear::GraphCycle&) noexcept override {
 		for (std::uint32_t i = 0; i < frames; ++i) outputs[0][i] = static_cast<float>(++next_);
 		calls_.fetch_add(1, std::memory_order_release);
+		if (ear::test::Stalls* stalls = stalls_.load(std::memory_order_acquire))
+			(*stalls)(armedCycles_++, frames, kRate);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	/// From its next cycle on, it stalls as `stalls`' plan says.
+	void arm(ear::test::Stalls& stalls) { stalls_.store(&stalls, std::memory_order_release); }
 
 private:
 	Waiter& waiter_;
 	std::uint32_t next_ = 0;
 	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<ear::test::Stalls*> stalls_{nullptr};
+	std::size_t armedCycles_ = 0;
 };
 
 class BlockEvents final : public PortBlockEvents {
@@ -353,38 +361,49 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 	CHECK(pair.linkLog.active == std::vector<LinkId>{kLink});
 
 	// The ramp counts its own cycles, so a cycle it ran and the recorder did not (cut short between them, which a host
-	// that stalls the data thread makes) moves the ramp on unheard: the recorder judges across a cycle boundary only
-	// where it ran the cycle straight after its last with nothing lost (its ledger's clean cycles), to a planned count
-	// of them. Within every cycle it heard, the ramp is whole.
-	constexpr std::size_t kWanted = 32; // clean cycles judged, after the first sound
+	// that stalls the data thread makes) moves the ramp on unheard. Within every cycle the recorder heard, the ramp is
+	// whole; a boundary is judged where the recorder's facts say nothing was lost before it, to a planned count, and a
+	// cycle that follows lost ones is excused only as cycles the driver cut, by the one judge
+	// (docs/testing.md#the-cycle-judge). The ramp makes the judge's stalls itself once it is heard, so the excuse is
+	// taken, and proven, on every run.
+	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 32}, FrameClock(kRate), &engine->cuts());
 	const ear::test::CycleLedger& ledger = pair.recorder.ledger();
-	const auto judged = [&] {
-		const std::size_t first = firstSound(pair.recorder.samples());
-		std::size_t clean = 0;
-		for (std::size_t n = 0; n < ledger.count(); ++n)
-			if (ledger[n].whole() && pair.recorder.cycleStart(n) > first) ++clean;
-		return clean;
+	std::size_t fed = 0, breaks = 0;
+	const auto feed = [&] {
+		const auto samples = pair.recorder.samples();
+		const std::size_t first = firstSound(samples);
+		for (; fed < ledger.count(); ++fed) {
+			const std::size_t start = pair.recorder.cycleStart(fed);
+			const std::size_t end = start + ledger[fed].frames;
+			if (end > samples.size()) break; // recorded after samples() was read
+			if (end <= first + 1) continue;
+			for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
+				if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
+			if (start <= first) continue;
+			if (judge.at(ledger[fed].facts, ledger[fed].frames) == ear::test::Verdict::judge &&
+			    samples[start] != samples[start - 1] + 1.0f)
+				++breaks;
+		}
 	};
-	REQUIRE(waiter.until([&] { return judged() >= kWanted || ledger.full(); }, 30s));
-	INFO("the recorder filled its " << ledger.capacity() << " cycles before " << kWanted << " clean ones came");
-	REQUIRE_FALSE(ledger.full());
+	REQUIRE(waiter.until([&] { return firstSound(pair.recorder.samples()) < pair.recorder.samples().size(); }));
+	pair.ramp.arm(judge.stalls());
+	REQUIRE(waiter.until(
+		[&] {
+			feed();
+			return judge.done() || judge.report().failed > 0 || ledger.full();
+		},
+		30s));
+	INFO(judge.report());
+	{
+		INFO("the recorder filled its " << ledger.capacity() << " cycles first");
+		REQUIRE_FALSE(ledger.full());
+	}
 	const auto samples = pair.recorder.samples();
 	const std::size_t first = firstSound(samples);
 	REQUIRE(first < samples.size());
-	std::size_t breaks = 0, unjudged = 0;
-	for (std::size_t n = 0; n < ledger.count(); ++n) {
-		const std::size_t start = pair.recorder.cycleStart(n);
-		const std::size_t end = start + ledger[n].frames;
-		if (end <= first + 1) continue;
-		for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
-			if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
-		if (start <= first) continue;
-		if (!ledger[n].whole()) ++unjudged; // a cycle lost before it: the boundary is not the ramp's to keep
-		else if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
-	}
-	INFO(unjudged << " cycle boundaries after a lost cycle, not judged");
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
+	CHECK(judge.report().ok());
 }
 
 TEST_CASE("Blocks process at the graph frequency and block size", "[engine]") {

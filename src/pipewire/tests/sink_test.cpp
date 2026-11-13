@@ -27,12 +27,15 @@
 #include "allocation_count.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/handoffs.hpp"
+#include "ear/pipewire/links.hpp"
+#include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/main_loop_executor.hpp"
 #include "ear/core/lifecycle.hpp"
 #include "ear/pipewire/port_blocks.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "ear/testing/type_harness.hpp"
 #include "engine_harness.hpp"
+#include "cycle_judge.hpp"
 #include "inducers.hpp"
 
 namespace {
@@ -608,23 +611,30 @@ private:
 };
 
 /// Silence on every output, counting the cycles it runs: the graph's cycles, seen by a block of its own while the
-/// block under test runs none of its code.
+/// block under test runs none of its code. Armed with stalls (a judge's), it makes the next one their plan names in
+/// its next cycle, and disarms.
 class CycleCount final : public AudioCode {
 public:
 	explicit CycleCount(ear::pipewire::testing::Waiter& waiter) : waiter_(waiter) {}
 	void prepare(const AudioFormat&) override {}
-	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs, std::uint32_t,
-	             const GraphCycle&) noexcept override {
+	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
+	             std::uint32_t frames, const GraphCycle&) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
 		calls_.fetch_add(1, std::memory_order_release);
+		if (ear::test::Stalls* stalls = armed_.exchange(nullptr, std::memory_order_acq_rel))
+			(*stalls)(stalled_++, frames, ear::pipewire::testing::kRate);
 		waiter_.wake();
 	}
 	void release() noexcept override {}
 	std::uint64_t calls() const { return calls_.load(std::memory_order_acquire); }
+	/// Its next cycle makes the next stall `stalls`' plan names.
+	void arm(ear::test::Stalls& stalls) { armed_.store(&stalls, std::memory_order_release); }
 
 private:
 	ear::pipewire::testing::Waiter& waiter_;
 	std::atomic<std::uint64_t> calls_{0};
+	std::atomic<ear::test::Stalls*> armed_{nullptr};
+	std::size_t stalled_ = 0;
 };
 
 /// Records every chunk (on the sink's thread), and wakes the waiter.
@@ -659,8 +669,12 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
           "start, under an invoke storm",
           "[sink][blocks]") {
 	using ear::pipewire::testing::kFormat;
-	// The take-ups judged exactly, each a start after a stop whose first cycle the clock reached without a jump. A host
-	// that stalls the data thread across a take-up makes another round, never a pass or a failure.
+	// The take-ups judged exactly, each a start after a stop whose first cycle has no cause but its drive: nothing was
+	// lost before it. A host that stalls the data thread across a take-up makes another round, never a pass or a
+	// failure. Every cycle the code runs goes through the one judge (docs/testing.md#the-cycle-judge): judged where
+	// nothing was lost, excused where the driver cut what the block missed, a drive's first cycle expected; anything
+	// else fails. The block counting the graph's cycles feeds the block under test, and makes the judge's stalls in
+	// the first round while the code runs, so the excuse is taken, and proven, on every run.
 	constexpr std::size_t kJudgedStarts = 2;
 	constexpr std::size_t kMostRounds = 40; // only fails the test
 	/// Graph cycles a stop lasts, counted by a block of its own.
@@ -672,7 +686,8 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
 	ear::pipewire::testing::BlockEvents events(waiter), clockEvents(waiter);
-	const Ports ports{{{Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
+	const Ports ports{
+		{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
 	auto clock = blocks.make("clock", Ports{{{Direction::output, "out", {"1"}}}}, kFormat, clockEvents);
 	auto sink = sinks.make("rec", "writer", 2, 2 * kFormat.rate, kFormat.rate);
@@ -686,8 +701,57 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	REQUIRE(waiter.until([&] { return begun && events.isReady && clockEvents.isReady; }));
 	CycleCount counting(waiter);
 	REQUIRE(ear::testing::driveNow(*clock, &counting));
+	LiveGraph live(*engine);
+	Links links(*engine);
+	std::vector<LivePort> seen;
+	struct PortSeen final : LivePortListener {
+		explicit PortSeen(ear::pipewire::testing::Waiter& waiter, std::vector<LivePort>& seen)
+			: waiter(waiter), seen(seen) {}
+		void portAppeared(const LivePort& port) override {
+			seen.push_back(port);
+			waiter.wake();
+		}
+		void portGone(EnginePortId) override {}
+		ear::pipewire::testing::Waiter& waiter;
+		std::vector<LivePort>& seen;
+	} portLog(waiter, seen);
+	struct Linked final : LinkListener {
+		explicit Linked(ear::pipewire::testing::Waiter& waiter) : waiter(waiter) {}
+		void linkActive(LinkId) override {
+			active = true;
+			waiter.wake();
+		}
+		void linkFailed(LinkId, std::string) override {
+			failed = true;
+			waiter.wake();
+		}
+		void linkGone(LinkId) override {}
+		ear::pipewire::testing::Waiter& waiter;
+		bool active = false, failed = false;
+	} linkLog(waiter);
+	live.subscribe(portLog);
+	links.subscribe(linkLog);
+	const auto port = [&](const char* node, const char* name) -> std::optional<EnginePortId> {
+		for (const LivePort& live : seen)
+			if (live.port.node == node && live.port.port == name) return live.id;
+		return std::nullopt;
+	};
+	REQUIRE(waiter.until([&] { return port("clock", "out.1") && port("rec", "in.1"); }));
+	links.createLink(1, *port("clock", "out.1"), *port("rec", "in.1"));
+	REQUIRE(waiter.until([&] { return linkLog.active || linkLog.failed; }));
+	REQUIRE_FALSE(linkLog.failed);
 	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 2}};
 	PositionRamp ramp(waiter, std::size_t{1} << 16);
+	ear::test::CycleJudge judge(
+		ear::test::JudgePlan{.judged = 32,
+	                         .induce = ear::test::StallPlan::every(1, 0, 4, ear::test::StallLength::cycles(1.5)),
+	                         .expected = {.drives = static_cast<std::uint32_t>(kMostRounds * 202)}},
+		FrameClock(kFormat.rate), &engine->cuts());
+	std::size_t fed = 0;
+	const auto feed = [&] {
+		const ear::test::CycleLedger& ledger = ramp.ledger();
+		for (; fed < ledger.count(); ++fed) judge.at(ledger[fed].facts, ledger[fed].frames);
+	};
 
 	std::vector<std::uint64_t> takens; // per round: its start's position, then its stop's
 	std::size_t completed = 0;
@@ -713,7 +777,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	// judged); each later one follows a stop.
 	std::vector<std::size_t> firstCycle;
 	std::size_t judged = 0;
-	for (std::size_t round = 0; round < 2 || judged < kJudgedStarts; ++round) {
+	for (std::size_t round = 0; round < 2 || judged < kJudgedStarts || !judge.done(); ++round) {
 		INFO("round " << round << ", " << judged << " take-ups judged so far");
 		REQUIRE(round < kMostRounds);
 		firstCycle.push_back(ramp.ledger().count());
@@ -721,6 +785,14 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		++asked;
 		REQUIRE(waiter.until([&] { return completed == asked; }));
 		REQUIRE(waiter.until([&] { return ramp.calls() >= firstCycle.back() + 4; }));
+		// The judge's stalls, one at a time while the code runs: each cuts its cycle before the block ran it.
+		while (judge.stalls().made() < judge.stalls().plan().size()) {
+			const std::size_t made = judge.stalls().made();
+			counting.arm(judge.stalls());
+			REQUIRE(waiter.until([&] { return judge.stalls().made() > made; }));
+			const std::uint64_t calls = ramp.calls();
+			REQUIRE(waiter.until([&] { return ramp.calls() >= calls + 2; }));
+		}
 		storm();
 		REQUIRE(waiter.until([&] { return completed == asked; }, 20s));
 		const std::uint64_t later = ramp.calls();
@@ -731,12 +803,14 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		// Stopped for kStoppedCycles of the graph's: the block runs silent, the sink unbound.
 		const std::uint64_t counted = counting.calls();
 		REQUIRE(waiter.until([&] { return counting.calls() >= counted + kStoppedCycles; }));
-		// The block counts a cycle that starts ahead of where its last one ended as an xrun, code or none: the same
-		// count at a round's first cycle as at the last before its stop means the clock reached the take-up without a
-		// jump.
+		// The take-up's first cycle states what was lost before it (docs/engine.md#graphcycle): its drive alone means
+		// nothing.
 		const ear::test::CycleLedger& ledger = ramp.ledger();
 		REQUIRE_FALSE(ledger.overflowed());
 		if (round > 0 && ledger[firstCycle[round]].facts.causes == CycleCauses(CycleCause::drive)) ++judged;
+		feed();
+		INFO(judge.report());
+		REQUIRE(judge.report().failed == 0);
 	}
 	REQUIRE(ear::testing::driveNow(*clock, nullptr));
 	bool closed = false;
@@ -779,6 +853,9 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	INFO(rounds << " rounds, " << judged << " take-ups judged; the sink heard " << heard.size()
 	            << " stretches, the code ran " << ran.size());
 	CHECK(heard == ran);
+	feed();
+	INFO(judge.report());
+	CHECK(judge.report().ok());
 	for (std::size_t round = 0; round < rounds; ++round) {
 		INFO("round " << round);
 		const std::size_t first = firstCycle[round];
@@ -792,8 +869,8 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		// The stop's position is where the code's last cycle ended, always: the tap is unbound in the same invoke.
 		CHECK(cycles[last].position + cycles[last].frames == stop);
 		if (round == 0) continue;
-		// The start's position is its first cycle's when the clock reached it without a jump; a jump there (a stall
-		// the host made) only puts the first cycle later.
+		// The start's position is its first cycle's when nothing was lost before it; a cut there (a stall the host
+		// made) only puts the first cycle later.
 		CHECK(start <= cycles[first].position);
 		if (cycles[first].facts.causes == CycleCauses(CycleCause::drive)) CHECK(start == cycles[first].position);
 	}

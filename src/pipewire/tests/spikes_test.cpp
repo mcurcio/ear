@@ -54,6 +54,7 @@
 #include <spa/utils/result.h>
 
 #include "allocation_count.hpp"
+#include "cycle_judge.hpp"
 #include "catch2/catch.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/links.hpp"
@@ -433,8 +434,8 @@ StallPlan overruns(std::size_t every, std::size_t phase, std::size_t limit) {
 /// With `overruns` (S5), it overruns those of its recorded cycles once it has written its output.
 class Upstream final : public ProbeCode {
 public:
-	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity, StallPlan overruns = {})
-		: shared_(shared), overruns_(std::move(overruns)), log(capacity), rawAtEntry(capacity), overran(capacity) {}
+	explicit Upstream(Shared& shared, std::size_t capacity = kS2Capacity, Stalls* overruns = nullptr)
+		: shared_(shared), overruns_(overruns), log(capacity), rawAtEntry(capacity), overran(capacity) {}
 	void cycle(const spa_io_clock& clock, std::span<const float* const>, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -443,16 +444,16 @@ public:
 		if (!shared_.recording.load(std::memory_order_acquire)) return;
 		if (const auto n = log.add(clock.position, sequence)) {
 			rawAtEntry[*n] = raw;
-			overran[*n] = overruns_.plan().planned(*n) ? 1 : 0;
+			overran[*n] = overruns_ != nullptr && overruns_->plan().planned(*n) ? 1 : 0;
 			log.commit(*n);
-			overruns_(*n, clock.duration, kRate);
+			if (overruns_ != nullptr) (*overruns_)(*n, clock.duration, kRate);
 		}
 	}
-	std::size_t overrunCount() const { return overruns_.made(); }
+	std::size_t overrunCount() const { return overruns_ != nullptr ? overruns_->made() : 0; }
 
 private:
 	Shared& shared_;
-	Stalls overruns_;
+	Stalls* overruns_;
 
 public:
 	CycleLog log;
@@ -772,10 +773,6 @@ constexpr std::uint32_t kS5Capacity = 2048;
 /// short on its own only by chance (S2: 1 to 17 in 25 s idle; one GitHub runner 9 in 60 s beside a busy thread per core,
 /// where a loaded workstation cut 5,000), so S5 never waits for those: they are counted with the rest when they come.
 constexpr std::size_t kS5Overruns = 200;
-/// How far a position jump may outrun the time the raw clock shows was lost. Since the last end cancels out, this bounds
-/// how far the position may lead the raw clock: the driver's 1 ms error clamp plus its wake latency, with two cycles'
-/// room for the latter; a stall only makes the position lag.
-constexpr std::uint64_t kJumpSlack = 2 * kS2Block + kRate / 1000;
 constexpr std::size_t kS5OverrunEvery = 16;
 /// About 4.5 s at 750 cycles a second; the deadline only fails the test.
 constexpr std::chrono::seconds kS5Deadline{30};
@@ -789,14 +786,17 @@ constexpr std::size_t kS5Log = 750 * 40;
 /// jump is a new clock, played on from where the ring is (so `total - (position - first position)` takes a new value
 /// there, the anchor S5's model re-takes). `total` counts frames played and skipped, as a source's totalFrames. The
 /// ring's frame k is rampAt(k), and the writer side is not under test: the ring is kept full, each frame consumed
-/// replaced by the one kS5Capacity later. It records, per cycle, the stamp of what it read from U and whether it took a
-/// new clock; it publishes the position and first ring frame of the cycle it plays, for D in the same cycle; and it
+/// replaced by the one kS5Capacity later. B is no block, so it states each cycle's facts itself, by the rule a block
+/// runs (CycleAccount over the engine's record of the internal clock's cuts, docs/engine.md#graphcycle), from the same
+/// tick a block builds. It records, per cycle, the stamp of what it read from U, whether it took a new clock and the
+/// facts; it publishes the position and first ring frame of the cycle it plays, for D in the same cycle; and it
 /// overruns `overruns` of its recorded cycles once it has played.
 class RingSource final : public ProbeCode {
 public:
-	RingSource(Shared& shared, Waiter& waiter, StallPlan overruns)
-		: shared_(shared), waiter_(waiter), overruns_(std::move(overruns)), ring_(kS5Capacity), log(kS5Log),
-		  totalBefore(kS5Log), stamp(kS5Log), uniform(kS5Log), overran(kS5Log), newClock(kS5Log), rawAtEntry(kS5Log) {
+	RingSource(Shared& shared, Waiter& waiter, StallPlan overruns, const Engine& engine)
+		: shared_(shared), waiter_(waiter), overruns_(std::move(overruns)), internalClock_(engine.internalClockId()),
+		  cuts_(engine.cuts()), account_(FrameClock(kRate), &engine.cuts()), ring_(kS5Capacity), log(kS5Log),
+		  totalBefore(kS5Log), stamp(kS5Log), uniform(kS5Log), overran(kS5Log), newClock(kS5Log), facts(kS5Log) {
 		for (std::uint32_t k = 0; k < kS5Capacity; ++k) ring_[k] = rampAt(k);
 	}
 	std::uint64_t firstPosition() const { return firstPosition_.load(std::memory_order_acquire); }
@@ -810,7 +810,20 @@ public:
 	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
-		const std::uint64_t raw = rawFramesNow();
+		// The driver's start on the raw clock, as a block maps it (port_blocks.cpp's onProcess).
+		const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
+		const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
+		const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
+		const auto startNs = static_cast<std::int64_t>(clock.nsec);
+		const CycleFacts stated =
+			account_
+				.next(DriverTick{.driverId = clock.id,
+		                         .graphCycle = clock.id == internalClock_ ? cuts_.started() : 0,
+		                         .position = clock.position,
+		                         .frames = frames,
+		                         .startRawNs = startNs + (raw - (monoBefore + (monoAfter - monoBefore) / 2))},
+		              kS5Capacity)
+				.facts;
 		const std::uint64_t at = clock.position;
 		const bool recording = shared_.recording.load(std::memory_order_acquire);
 		if (!started_ && !recording) {
@@ -848,7 +861,7 @@ public:
 				uniform[*n] = same ? 1 : 0;
 				overran[*n] = overruns_.plan().planned(*n) ? 1 : 0;
 				newClock[*n] = newClockHere ? 1 : 0;
-				rawAtEntry[*n] = raw;
+				facts[*n] = stated;
 				log.commit(*n);
 				overruns_(*n, clock.duration, kRate);
 			}
@@ -858,6 +871,11 @@ public:
 	}
 
 private:
+	static std::int64_t nowNs(clockid_t id) noexcept {
+		timespec now{};
+		clock_gettime(id, &now);
+		return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
+	}
 	/// Frames played or skipped: each slot freed takes the frame kS5Capacity later, so the ring stays full.
 	void consume(std::uint64_t frames) noexcept {
 		for (std::uint64_t k = total_; k < total_ + frames; ++k) ring_[k & (kS5Capacity - 1)] = rampAt(k + kS5Capacity);
@@ -867,7 +885,10 @@ private:
 	Shared& shared_;
 	Waiter& waiter_;
 	Stalls overruns_;
+	const std::uint32_t internalClock_;
+	const CutRecord& cuts_;
 	// Data thread only.
+	CycleAccount account_;
 	std::vector<float> ring_;
 	std::uint64_t total_ = 0;
 	std::uint64_t next_ = 0;
@@ -887,7 +908,7 @@ public:
 	std::vector<std::uint8_t> uniform;      // per cycle: every frame read from U was that one
 	std::vector<std::uint8_t> overran;      // per cycle: B overran it
 	std::vector<std::uint8_t> newClock;     // per cycle: B took a new clock (its position jumped beyond the capacity)
-	std::vector<std::uint64_t> rawAtEntry;  // per cycle: the raw clock, in frames, as B entered it
+	std::vector<CycleFacts> facts;          // per cycle: what B states of it
 	std::size_t overrunCount() const { return overruns_.made(); }
 };
 
@@ -1573,7 +1594,9 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	// beyond B's capacity is a new clock by the source's rule (docs/writing-a-node-type.md#sources): the planned
 	// overruns make none (each cuts one or two cycles), but a host that stalls the data thread past the capacity (42 ms)
 	// does, and there the model takes B's new anchor instead of counting a drift; such jumps are recorded, and every one
-	// of them, and nothing else, must be a new clock to B. Part B, recorded only: in B's
+	// of them, and nothing else, must be a new clock to B. Every cycle B ran goes through the one judge
+	// (docs/testing.md#the-cycle-judge), whose stalls are U's overruns: each jump must be cycles the driver cut, by
+	// their frames and within the raw clock, and every overrun of U's excused. Part B, recorded only: in B's
 	// first cycle after one U ran and B did not, whether B read U's frames of its own cycle ("current") or of the cut one
 	// ("stale"); counted apart for cycles cut by an overrun and the rest.
 	StormCounts stormCounts; // before the engine, as S2's
@@ -1581,8 +1604,13 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	Waiter waiter(*engine);
 	Wiring wiring(*engine, waiter);
 	Shared shared;
-	Upstream upCode(shared, kS5Log, overruns(kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns));
-	RingSource sourceCode(shared, waiter, overruns(kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns));
+	ear::test::CycleJudge judge(
+		ear::test::JudgePlan{.judged = 1000,
+	                         .induce = overruns(kS5OverrunEvery, kS5OverrunEvery / 4, kS5Overruns),
+	                         .expected = {.starts = 0}},
+		FrameClock(kRate), &engine->cuts());
+	Upstream upCode(shared, kS5Log, &judge.stalls());
+	RingSource sourceCode(shared, waiter, overruns(kS5OverrunEvery, kS5OverrunEvery * 3 / 4, kS5Overruns), *engine);
 	RampListener downCode(shared, sourceCode);
 	Probe up(*engine, waiter, "u", 0, 1, upCode);
 	Probe block(*engine, waiter, "b", 1, 1, sourceCode);
@@ -1630,9 +1658,7 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	const std::uint64_t first = sourceCode.firstPosition();
 	std::size_t uOverran = 0, uOverranCut = 0, bOverran = 0, bOverranCut = 0, otherAfterU = 0, otherAfterB = 0;
 	std::size_t drifts = 0, bCycles = 0, both = 0, dWrong = 0;
-	std::size_t jumps = 0, notWhole = 0, beyond = 0, back = 0, clocks = 0, clockNotBeyond = 0, unlost = 0;
-	std::int64_t mostBeyondLost = std::numeric_limits<std::int64_t>::min();
-	std::string firstUnlost;
+	std::size_t jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0;
 	std::array<std::size_t, 2> afterCut{}, driftsAfterCut{}, largestJumpAfterCut{};
 	std::uint64_t largestJump = 0;
 	std::string firstDrift, firstWrong;
@@ -1680,27 +1706,13 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 			if (cutSinceB) ++driftsAfterCut[cutKind];
 		}
 		lastOffset = offset;
-		if (lastEnd && at != *lastEnd) {
+		// What lost the cycles between is the judge's (below); the model needs only how far the position moved.
+		if (lastEnd && at > *lastEnd) {
 			++jumps;
-			if (at < *lastEnd) {
-				++back;
-			} else {
-				largestJump = std::max(largestJump, at - *lastEnd);
-				if (cutSinceB)
-					largestJumpAfterCut[cutKind] = std::max<std::size_t>(largestJumpAfterCut[cutKind], at - *lastEnd);
-				if ((at - *lastEnd) % kS2Block != 0) ++notWhole;
-				if (at - *lastEnd > kS5Capacity) ++beyond;
-				// The jump is time the graph really lost: the raw clock had passed the last cycle's end by as much,
-				// within a cycle and the driver's error clamp. Overrun or stall, a driver catches up only on lost time;
-				// a jump beyond it (an engine miscount) is a fault, whether or not it passes the capacity.
-				const std::uint64_t raw = sourceCode.rawAtEntry[run.b];
-				const std::int64_t lost = static_cast<std::int64_t>(raw) - static_cast<std::int64_t>(*lastEnd);
-				const std::int64_t over = static_cast<std::int64_t>(at - *lastEnd) - lost;
-				mostBeyondLost = std::max(mostBeyondLost, over);
-				if (over > static_cast<std::int64_t>(kJumpSlack) && unlost++ == 0)
-					firstUnlost = "B at " + std::to_string(at) + ": jumped " + std::to_string(at - *lastEnd) +
-					              " frames, the raw clock " + std::to_string(lost) + " past the last end";
-			}
+			largestJump = std::max(largestJump, at - *lastEnd);
+			if (cutSinceB)
+				largestJumpAfterCut[cutKind] = std::max<std::size_t>(largestJumpAfterCut[cutKind], at - *lastEnd);
+			if (at - *lastEnd > kS5Capacity) ++beyond;
 		}
 		lastEnd = at + kS2Block;
 		const float read = sourceCode.stamp[run.b];
@@ -1736,8 +1748,8 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 		"S5 (%zu busy threads): %.1f s, %zu cycles started, %zu run by every node, %zu cut short after U (%zu of %zu U "
 		"overran, %zu others) and %zu after B (%zu of %zu B overran, %zu others); %" PRIu64
 		" storm invokes. A: B ran %zu cycles, %zu position jumps (largest %" PRIu64
-		" frames: %zu after an overrun, %zu after another cut; %zu not whole cycles, %zu beyond its capacity of %u, "
-		"%zu backwards; %" PRIu64 " new clocks, the model's anchor re-taken at each), %zu drifts of total - (position "
+		" frames: %zu after an overrun, %zu after another cut; %zu beyond its capacity of %u; %" PRIu64
+		" new clocks, the model's anchor re-taken at each), %zu drifts of total - (position "
 		"- first) (%zu after an overrun, %zu after another cut); D heard %zu cycles B ran too, %zu not the frame B "
 		"played at that position. B: after %zu "
 		"cycles U overran B read current %zu, stale %zu, none %zu, other %zu; after %zu other cut cycles current %zu, "
@@ -1745,13 +1757,10 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 		"cycles it ran, current %zu, the previous cycle's %zu, other %zu; %zu reads not one stamp\n",
 		busyThreads, seconds, timeline.cycles, timeline.whole, timeline.onlyU, uOverranCut, uOverran, otherAfterU,
 		timeline.onlyUB, bOverranCut, bOverran, otherAfterB, stormCounts.posts.load(), bCycles, jumps, largestJump,
-		largestJumpAfterCut[1], largestJumpAfterCut[0], notWhole, beyond, kS5Capacity, back, sourceCode.newClocks(),
-		drifts, driftsAfterCut[1], driftsAfterCut[0], both, dWrong, afterCut[1], current[1], stale[1], none[1],
-		other[1], afterCut[0], current[0], stale[0], none[0], other[0], same, nextCurrent, nextOther, steadyCurrent,
+		largestJumpAfterCut[1], largestJumpAfterCut[0], beyond, kS5Capacity, sourceCode.newClocks(), drifts,
+		driftsAfterCut[1], driftsAfterCut[0], both, dWrong, afterCut[1], current[1], stale[1], none[1], other[1],
+		afterCut[0], current[0], stale[0], none[0], other[0], same, nextCurrent, nextOther, steadyCurrent,
 		steadyPrevious, steadyOther, mixed);
-	std::printf("S5 jumps against lost time: %zu outran it by more than %" PRIu64
-	            " frames; the most any outran it: %" PRId64 " frames\n",
-	            unlost, kJumpSlack, mostBeyondLost);
 	// Every overrun cut its cycle short straight after the probe that overran it, so each shape was met as planned.
 	CHECK(uOverran == kS5Overruns);
 	CHECK(bOverran == kS5Overruns);
@@ -1765,14 +1774,14 @@ TEST_CASE("S5: a source served by its block keeps its played count on the clock 
 	CHECK(stormCounts.refused.load() == 0);
 	CHECK(both > 0);
 	CHECK(drifts == 0);
-	CHECK(notWhole == 0);
-	// Every jump was time the graph lost (so one past the capacity only after a stall that long), each jump beyond the
-	// capacity was a new clock to B, and B took no other.
-	INFO(firstUnlost);
-	CHECK(unlost == 0);
+	for (std::size_t n = 0; n < sourceCode.log.count.load(); ++n) judge.at(sourceCode.facts[n], kS2Block);
+	// Every jump was cycles the driver cut, by their frames and within the time the graph lost (so one past the
+	// capacity only after a stall that long), by the one judge; each jump beyond the capacity was a new clock to B, and
+	// B took no other.
+	INFO(judge.report());
+	CHECK(judge.report().ok());
 	CHECK(clocks == beyond);
 	CHECK(clockNotBeyond == 0);
-	CHECK(back == 0);
 	CHECK(dWrong == 0);
 	INFO(firstOther);
 	CHECK(mixed == 0);
