@@ -35,11 +35,11 @@ std::uint32_t Feed::read(std::span<const std::span<float>> channels, std::uint32
 	return got;
 }
 
-std::uint32_t Feed::skip(std::uint32_t frames) noexcept {
+std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	const bool cleared = applyClear();
 	// What it holds now, on the reading thread, is exact: the writer only adds, so all of the smaller is skipped.
 	heldAtSkip_ = ring_.writePosition() - ring_.readPosition();
-	const std::uint32_t got = ring_.skip(std::min(frames, heldAtSkip_));
+	const std::uint32_t got = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(frames, heldAtSkip_)));
 	if (cleared || got > 0) wakeWriter();
 	return got;
 }

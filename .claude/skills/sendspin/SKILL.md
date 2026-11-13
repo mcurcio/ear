@@ -104,13 +104,21 @@ that means to an operator:
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
-- **A skipped cycle counts as played**, or it costs 25 ms: the library sees -5.3 ms, drops a chunk and inserts silence. A
-  jump larger than the feed, or backward, is a change of driver (a card joining or lost), not a skip.
+- **The stream keeps in step with the clock** (`docs/node-types.md#clock`). On a cycle whose facts say `catchUp`, the code
+  skips the jump, however long, as far as the feed holds it, counted played; any other cause (a driver change, a jump
+  back, a pause) is a new clock, not a skip. Not counting a skip costs 25 ms (the library sees -5.3 ms, drops a chunk and
+  inserts silence). **Never tell the library a frame ear did not take from what it wrote**: it subtracts what it is told
+  from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
+  `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
+  from its next writes (C4a's first build, a source's rule) raced that catch-up under load: the library skipped a late
+  chunk, ear dropped the same time again, and the library filled it with silence (`Lost sync (90568us off)`, a step of a
+  chunk and 257). Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
+  for a change of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
 - **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)
   always drives and tracks the raw clock, and a linked card follows it. Before, a card joining sent the position from 2.3e10 to
-  0 and losing it forward by 2.3e10; the code still treats a jump past the feed's capacity, or backward, as no skip, and
-  `GraphCycle` now says `discontinuity` and `driverId` for it. 1 ms holds on the dummy alone and through a following test card
+  0 and losing it forward by 2.3e10; a driver change is a new clock to the code (`GraphCycle::facts` says
+  `driverChange`), never a skip. 1 ms holds on the dummy alone and through a following test card
   (clockless, so no drift); the real card is a check in `ear-on-talos`.
 - **The output's sync reaches the following card's buffer**, as far as the card reports it: the latency downstream of the
   `from` outputs (`GraphCycle::downstream`), which the card block's pass-through carries back from the card's playback node
@@ -218,8 +226,8 @@ The server reads commands from its standard input. On `connected <id>`, type `pa
   clean, 3 s into the ramp, outside a loss of sync the library logged and 1.5 s past the last cycle that was not (disturbed,
   dry, or holding the library's silence), and a test plays a 90 s stream until it has judged 750. Before playing they wait
   for the internal clock to reach the raw clock's rate over the clean cycles of two seconds, and fail naming it if it never
-  does. Every step and stretch of silence is accounted for by the code's skips and feed reads (`lastSkipped()`,
-  `lastHeld()`, `lastGot()`) or by the library's own lines, read from standard error at verbose (`docs/testing.md#the-librarys-own-word`):
+  does. Every step and stretch of silence is accounted for by the code's skips, worked out from each cycle's facts and
+  what the feed held (`lastHeld()`), and its feed reads (`lastGot()`), or by the library's own lines, read from standard error at verbose (`docs/testing.md#the-librarys-own-word`):
   `Hard sync: dropping/adding <n> frames`, and whole late chunks it skips unlogged. A skip that takes the library's
   soft-sync frame with it moves the ramp one less (an insert) or one more (a drop) than its frames.
 - **The source's stamps are judged step by step:** the server says each chunk (`source-chunk <frames> <stamp> <lag>`); each

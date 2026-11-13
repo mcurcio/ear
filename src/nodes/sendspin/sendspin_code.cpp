@@ -6,15 +6,9 @@ SendspinCode::SendspinCode(Feed& feed, Mailbox<PlayProgress>& progress, const Ev
                            RtWriter& toServer, Mailbox<CaptureAnchor>& capture) noexcept
 	: feed_(feed), progress_(progress), bell_(bell), clock_(rate), toServer_(toServer), capture_(capture) {}
 
-void SendspinCode::prepare(const AudioFormat&) { started_ = false; }
+void SendspinCode::prepare(const AudioFormat&) {}
 
 void SendspinCode::release() noexcept {}
-
-std::uint32_t SendspinCode::missedFrames(const GraphCycle& cycle) const noexcept {
-	if (!started_) return 0;
-	const auto gap = static_cast<std::int64_t>(cycle.position - nextPosition_);
-	return gap > 0 && gap <= static_cast<std::int64_t>(feed_.capacityFrames()) ? static_cast<std::uint32_t>(gap) : 0;
-}
 
 void SendspinCode::process(std::span<const std::span<const float>> inputs, std::span<const std::span<float>> outputs,
                            std::uint32_t frames, const GraphCycle& cycle) noexcept {
@@ -25,13 +19,15 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	capture_.publish({framesWritten_, startRawNs});
 	framesWritten_ += toServer_.write(inputs, frames);
 
-	// A skipped cycle's frames are counted played: the audio moves on with the graph, and the library sees only the
-	// jump.
-	const std::uint32_t skipped = feed_.skip(missedFrames(cycle));
-	lastSkipped_ = skipped;
+	// The stream keeps in step with the graph's clock (docs/node-types.md#clock): on a catch-up, however long, the
+	// graph lost `jumpFrames` of time, and the feed skips what it holds of them, each frame counted played. What it did
+	// not hold is the library's to catch up: it is told only what it wrote and ear consumed, with the cycle's real
+	// finish, and so sees the rest as its own lateness. Any other cause is a new clock: nothing lost.
+	const CycleFacts& facts = cycle.facts;
+	const std::uint64_t lost =
+		facts.causes.has(CycleCause::catchUp) ? static_cast<std::uint64_t>(facts.jumpFrames) : std::uint64_t{0};
+	const std::uint32_t skipped = feed_.skip(lost);
 	lastHeld_ = feed_.heldAtSkip();
-	started_ = true;
-	nextPosition_ = cycle.position + frames;
 
 	const std::uint32_t got = feed_.read(outputs, frames);
 	lastGot_ = got;

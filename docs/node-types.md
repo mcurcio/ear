@@ -336,9 +336,16 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
   of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
   buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
-- A skipped cycle counts as played; otherwise it costs 25 ms (the library sees -5.3 ms, drops a
-  chunk and inserts silence). A jump larger than the feed, or backward, is a change of driver, not
-  a skip.
+- The stream keeps in step with the graph's clock. A cycle that states a catch-up
+  (`GraphCycle::facts`: cycles the driver cut, the position moved by exactly their frames;
+  [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) skips that much of the stream,
+  however long the stall: what the feed holds of it, counted played. A skipped cycle not counted
+  would cost 25 ms (the library sees -5.3 ms, drops a chunk and inserts silence). What the feed did
+  not hold the library catches up itself: it is told the cycle's real finish, so it sees the rest as
+  its own lateness. *Why not drop the rest from what it writes next:* it takes what it is told
+  played from what it wrote (clamping at zero with a warning), and it would catch the same time up
+  again on its own, so it is never told more than ear took of what it wrote. Any other cause (a
+  driver change, a jump back or by part of a cycle, a pause) is a new clock: nothing is skipped.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it

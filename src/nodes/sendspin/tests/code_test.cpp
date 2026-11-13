@@ -11,6 +11,9 @@
 #include <vector>
 
 #include "catch2/catch.hpp"
+#include "ear/core/cut_ring.hpp"
+#include "ear/core/cycle_facts.hpp"
+#include "ear/core/latency.hpp"
 #include "feed.hpp"
 #include "sendspin_code.hpp"
 #include "worker.hpp"
@@ -47,6 +50,45 @@ public:
 	std::vector<float> fromRight;
 };
 
+/// The graph's driver as the engine tells a block (docs/writing-a-node-type.md#lost-cycles): cycles numbered and cuts
+/// recorded in a CutRing, each cycle's facts worked out by the one rule, CycleAccount, so the code is handed the facts
+/// the engine would hand it, whatever a test makes the graph lose.
+class Driver {
+public:
+	/// The next cycle the block runs, of `frames`, starting at `startRawNs`.
+	ear::CycleFacts next(std::uint32_t frames, std::int64_t startRawNs) {
+		cuts_.start();
+		const ear::CycleAccount::Step step = account_.next(ear::DriverTick{.driverId = driverId_,
+		                                                                   .graphCycle = cuts_.started(),
+		                                                                   .position = position_,
+		                                                                   .frames = frames,
+		                                                                   .startRawNs = startRawNs},
+		                                                   frames);
+		position_ += frames;
+		return step.facts;
+	}
+	/// `count` cycles of `frames` start without the block running them, each cut short by the driver: a stall the
+	/// graph caught up (catchUp); with `cut` false, a pause (absent).
+	void lose(std::uint32_t count, std::uint32_t frames, bool cut = true) {
+		for (std::uint32_t i = 0; i < count; ++i) {
+			cuts_.start();
+			if (cut) cuts_.incomplete();
+			position_ += frames;
+		}
+	}
+	/// The next cycle runs on another driver (a card made driver): driverChange.
+	void changeDriver() { ++driverId_; }
+	/// The next cycle's position moves by `frames` with no cycle missed: reposition.
+	void reposition(std::int64_t frames) { position_ += static_cast<std::uint64_t>(frames); }
+	std::uint64_t position() const noexcept { return position_; }
+
+private:
+	ear::CutRing cuts_;
+	ear::CycleAccount account_{ear::FrameClock(rate), &cuts_};
+	std::uint32_t driverId_ = 1;
+	std::uint64_t position_ = 0;
+};
+
 struct Rig {
 	Rig()
 		: feed(2, capacity), code(feed, progress, bell, rate, toServer, capture), inLeft(block, 0.25F),
@@ -65,22 +107,29 @@ struct Rig {
 		}
 		REQUIRE(feed.write(samples, frames, 0ms) == frames);
 	}
-	/// One cycle as the framework tells it: its start on the raw clock, and `downstreamFrames` downstream of both
-	/// outputs (a following card's buffer).
-	void cycle(std::uint64_t position, std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0) {
+	/// One cycle as the framework tells it: its facts from the driver, its start on the raw clock, and
+	/// `downstreamFrames` downstream of both outputs (a following card's buffer). Returns its facts.
+	ear::CycleFacts cycle(std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0) {
 		const std::array<std::span<float>, 2> outputs{left, right};
 		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
 		const std::array<ear::Latency, 2> downstream{ear::Latency{downstreamFrames, downstreamFrames},
 		                                             ear::Latency{downstreamFrames, downstreamFrames}};
+		const std::uint64_t position = driver.position();
+		const ear::CycleFacts facts = driver.next(block, startRawNs);
 		code.process(inputs, outputs, block,
 		             ear::GraphCycle{.startNs = startRawNs - 7, // another clock: the code must not read it
 		                             .position = position,
 		                             .startRawNs = startRawNs,
+		                             .facts = facts,
 		                             .downstream = downstream});
+		return facts;
 	}
 	/// Whether the bell rang since the last look.
 	bool rang() { return bell.drain(); }
+	/// The frames the code last told the library were played (0 before it told any).
+	std::uint64_t told() const { return progress.read().value_or(PlayProgress{}).totalFrames; }
 
+	Driver driver;
 	Feed feed;
 	Mailbox<PlayProgress> progress;
 	Mailbox<CaptureAnchor> capture;
@@ -102,7 +151,7 @@ TEST_CASE("A block read counts its frames, and finishes at the cycle's start on 
 	Rig rig;
 	rig.write(block);
 	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000; // the code reads no clock of its own
-	rig.cycle(0, start);
+	rig.cycle(start);
 
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
@@ -122,8 +171,8 @@ TEST_CASE("What lies downstream of the outputs is added: a frame finishes when t
 	Rig delayed;
 	delayed.write(block);
 	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW);
-	plain.cycle(0, start);
-	delayed.cycle(0, start, held);
+	plain.cycle(start);
+	delayed.cycle(start, held);
 	const std::int64_t difference = delayed.progress.read()->finishRawNs - plain.progress.read()->finishRawNs;
 	CHECK(difference == std::int64_t{block + held} * 1000000000 / rate - std::int64_t{block} * 1000000000 / rate);
 }
@@ -158,56 +207,122 @@ TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate
 	}
 }
 
-TEST_CASE("A position ahead by a block skips that block and counts it played", "[sendspin][code]") {
+TEST_CASE("A cycle the graph lost and caught up is skipped and counted played", "[sendspin][code]") {
 	Rig rig;
 	rig.write(3 * block);
-	rig.cycle(0);
-	rig.cycle(2 * block); // the driver missed the cycle at `block`
+	rig.cycle();
+	rig.driver.lose(1, block);
+	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
 	CHECK(progress->totalFrames == 3 * block);
 	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
 }
 
-TEST_CASE("A position ahead by the feed's capacity still skips, and by more, or behind, skips none",
+// docs/node-types.md#clock: however long the stall, a catch-up skips what the feed holds of it and tells the library
+// exactly that, with the cycle's real finish; the rest is the library's to catch up, and nothing it writes later is
+// taken for it (the library takes what it is told played from what it wrote).
+TEST_CASE("A catch-up of any length skips what the feed holds of it and tells exactly that, and nothing written later",
           "[sendspin][code]") {
-	SECTION("just within") {
-		Rig rig;
-		rig.write(capacity);
-		rig.cycle(0);
-		rig.cycle(block + capacity);
-		CHECK(rig.progress.read()->totalFrames == capacity); // what it held, all of it skipped
-	}
-	SECTION("further: a change of driver") {
+	SECTION("past what it held, within its capacity") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle(0);
-		rig.cycle(block + capacity + 1);
-		CHECK(rig.progress.read()->totalFrames == 2 * block);
+		rig.cycle();
+		rig.driver.lose(4, block); // 1024 frames; the feed holds 512
+		REQUIRE(rig.cycle().jumpFrames == 4 * block);
+		CHECK(rig.told() == 3 * block); // what it held, all of it skipped
+		CHECK(rig.rang());
+		CHECK(rig.left[0] == 0.0F);
+
+		rig.write(block);
+		rig.cycle();
+		CHECK(rig.told() == 4 * block);
+		CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // what came next plays, none of it taken
+	}
+	SECTION("past its capacity, once a change of driver to the code, now a catch-up like any other") {
+		Rig rig;
+		rig.write(3 * block);
+		rig.cycle();
+		rig.driver.lose(10, block); // 2560 frames, past the feed's 2048
+		const ear::CycleFacts facts = rig.cycle();
+		REQUIRE(facts.causes == ear::CycleCause::catchUp);
+		REQUIRE(facts.jumpFrames == 10 * block);
+		CHECK(rig.told() == 3 * block);
+		CHECK(rig.left[0] == 0.0F);
+
+		rig.write(block);
+		rig.cycle();
+		CHECK(rig.told() == 4 * block);
+		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+	}
+	SECTION("past 2^32 frames: what it holds, never a wrapped few") {
+		Rig rig;
+		rig.write(3 * block);
+		rig.cycle();
+		const std::array<std::span<float>, 2> outputs{rig.left, rig.right};
+		const std::array<std::span<const float>, 2> inputs{rig.inLeft, rig.inRight};
+		constexpr std::int64_t jump = (std::int64_t{1} << 32) + block;
+		rig.code.process(inputs, outputs, block,
+		                 ear::GraphCycle{.startNs = 0,
+		                                 .position = block + jump,
+		                                 .startRawNs = 1000,
+		                                 .facts = {.missed = static_cast<std::uint32_t>(jump / block),
+		                                           .missedCut = static_cast<std::uint32_t>(jump / block),
+		                                           .jumpFrames = jump,
+		                                           .causes = ear::CycleCause::catchUp}});
+		CHECK(rig.told() == 3 * block);
+		CHECK(rig.left[0] == 0.0F);
+	}
+}
+
+TEST_CASE("Any other cause is a new clock: a driver change, a reposition, a pause and the first cycle skip nothing",
+          "[sendspin][code]") {
+	SECTION("a driver change") {
+		Rig rig;
+		rig.write(3 * block);
+		rig.cycle();
+		rig.driver.changeDriver();
+		REQUIRE(rig.cycle().causes == ear::CycleCause::driverChange);
+		CHECK(rig.told() == 2 * block);
 		CHECK(rig.left[0] == static_cast<float>(block + 1));
 	}
-	SECTION("behind: a change of driver") {
+	SECTION("a reposition, ahead or back") {
+		for (const std::int64_t by : {std::int64_t{block} + 1, -std::int64_t{block}}) {
+			Rig rig;
+			rig.write(3 * block);
+			rig.cycle();
+			rig.cycle();
+			rig.driver.reposition(by);
+			REQUIRE(rig.cycle().causes == ear::CycleCause::reposition);
+			CHECK(rig.told() == 3 * block);
+			CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
+		}
+	}
+	SECTION("a pause: cycles missed that the driver did not cut") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle(100000);
-		rig.cycle(512);
-		CHECK(rig.progress.read()->totalFrames == 2 * block);
+		rig.cycle();
+		rig.driver.lose(2, block, false);
+		REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
+		CHECK(rig.told() == 2 * block);
 		CHECK(rig.left[0] == static_cast<float>(block + 1));
 	}
 	SECTION("the first cycle knows no gap") {
 		Rig rig;
 		rig.write(3 * block);
-		rig.cycle(block);
-		CHECK(rig.progress.read()->totalFrames == block);
+		rig.driver.reposition(block);
+		REQUIRE(rig.cycle().causes == ear::CycleCause::start);
+		CHECK(rig.told() == block);
 	}
 }
 
 TEST_CASE("A skip tells the jump even when the block that follows finds nothing", "[sendspin][code]") {
 	Rig rig;
 	rig.write(2 * block);
-	rig.cycle(0);
+	rig.cycle();
 	REQUIRE(rig.rang());
-	rig.cycle(2 * block);
+	rig.driver.lose(1, block);
+	rig.cycle();
 	CHECK(rig.progress.read()->totalFrames == 2 * block);
 	CHECK(rig.rang());
 	CHECK(rig.left[0] == 0.0F);
@@ -217,7 +332,7 @@ TEST_CASE("Nothing read rings nothing, and plays zeros", "[sendspin][code]") {
 	Rig rig;
 	rig.left[0] = 9.0F;
 	rig.right[0] = 9.0F;
-	rig.cycle(0);
+	rig.cycle();
 	CHECK_FALSE(rig.rang());
 	CHECK_FALSE(rig.progress.read().has_value());
 	CHECK(rig.left[0] == 0.0F);
@@ -227,26 +342,31 @@ TEST_CASE("Nothing read rings nothing, and plays zeros", "[sendspin][code]") {
 TEST_CASE("Cleared frames are never reported", "[sendspin][code]") {
 	Rig rig;
 	rig.write(block);
-	rig.cycle(0);
+	rig.cycle();
 	REQUIRE(rig.progress.read()->totalFrames == block);
 	REQUIRE(rig.rang());
 
 	rig.write(2 * block);
 	rig.feed.clear();
-	rig.cycle(block);
+	rig.cycle();
 	CHECK(rig.progress.read()->totalFrames == block);
 	CHECK_FALSE(rig.rang());
 	CHECK(rig.left[0] == 0.0F);
 
-	// A gap right after a clear skips nothing it did not hold.
-	rig.cycle(3 * block);
+	// A catch-up right after a clear skips nothing it did not hold, and takes nothing written after.
+	rig.driver.lose(1, block);
+	rig.cycle();
 	CHECK(rig.progress.read()->totalFrames == block);
 	CHECK_FALSE(rig.rang());
+	rig.write(block);
+	rig.cycle();
+	CHECK(rig.progress.read()->totalFrames == 2 * block);
+	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 }
 
 TEST_CASE("Inputs go to the handoff whatever the feed holds, side for side", "[sendspin][code]") {
 	Rig rig;
-	rig.cycle(0);
+	rig.cycle();
 	REQUIRE(rig.toServer.fromLeft.size() == block);
 	CHECK(rig.toServer.fromLeft[0] == 0.25F);
 	CHECK(rig.toServer.fromRight[block - 1] == -0.5F);
@@ -256,24 +376,21 @@ TEST_CASE("The capture anchor dates each cycle's first frame from the cycle's st
           "[sendspin][code]") {
 	Rig rig;
 	const std::int64_t start = nowNs(CLOCK_MONOTONIC_RAW) - 5000000;
-	rig.cycle(0, start);
+	rig.cycle(start);
 
 	const auto first = rig.capture.read();
 	REQUIRE(first.has_value());
 	CHECK(first->framesWritten == 0);
 	CHECK(first->atRawNs == start);
 
-	rig.cycle(block, start);
+	rig.cycle(start);
 	CHECK(rig.capture.read()->framesWritten == block);
 }
 
 TEST_CASE("Frames the handoff refuses are not counted in the anchor, so what it took stays dated", "[sendspin][code]") {
 	Rig rig;
 	rig.toServer.room = block + 10;
-	rig.cycle(0);
-	rig.cycle(block);
-	rig.cycle(2 * block);
-	rig.cycle(3 * block);
+	for (int i = 0; i < 4; ++i) rig.cycle();
 	CHECK(rig.capture.read()->framesWritten == block + 10);
 }
 

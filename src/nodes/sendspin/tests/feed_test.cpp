@@ -211,6 +211,10 @@ TEST_CASE("skip discards the oldest frames and says how many, and what it held",
 	CHECK(feed.heldAtSkip() == 4);
 	CHECK(feed.skip(100) == 0);
 	CHECK(feed.heldAtSkip() == 0);
+	// A count past 2^32 (a catch-up's jump has no bound) skips what it holds, never a wrapped few.
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	CHECK(feed.skip((std::uint64_t{1} << 32U) + 2) == 10);
+	CHECK(feed.read(out, 2) == 0);
 }
 
 TEST_CASE("read and skip allocate nothing", "[feed]") {

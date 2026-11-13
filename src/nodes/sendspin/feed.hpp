@@ -18,7 +18,9 @@ public:
 	std::uint32_t capacityFrames() const noexcept { return ring_.capacityFrames(); }
 	/// Realtime; no lock, allocation or waiting. Planar, zeros after what it holds. Returns frames read.
 	std::uint32_t read(std::span<const std::span<float>> channels, std::uint32_t frames) noexcept;
-	std::uint32_t skip(std::uint32_t frames) noexcept; // realtime; discards; returns how many
+	/// Realtime; discards up to `frames` of the oldest frames, all it holds when it holds fewer (any count: a catch-up's
+	/// jump has no bound). Returns how many.
+	std::uint32_t skip(std::uint64_t frames) noexcept;
 	/// One writing thread. With no room waits up to `patience`. Returns frames accepted.
 	std::uint32_t write(std::span<const float> interleaved, std::uint32_t frames, std::chrono::milliseconds patience);
 	/// Any ordinary thread. What was written so far is gone at the next read, not counted played.

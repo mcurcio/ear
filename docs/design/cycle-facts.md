@@ -6,7 +6,8 @@ spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
 `GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); steps
 C3a and C3b built (sections 9.4 to 9.6: `CycleJudge`, the ledger on facts, and the inside ports', card, source, engine
-and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`), the rest not. Its steps
+and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`); step C4a built (section 9.7:
+`SendspinCode` on the facts, described in `docs/node-types.md#clock`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -820,7 +821,7 @@ R5d).
 | **C2** | **Done** (9.3). `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
 | **C3a** | **Done** (9.4). `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | **Done** (9.5). `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
-| **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
+| **C4a** | **Done** (9.7, which departs from the progress half). `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
 | **C3c** | `clock_test.cpp`, the RTP tests onto the judge (5.4); the feed's dry count | `kSettleNs`, `lossSteps`, `kLogReach`, `kLogLag`, `inLoss`'s lag, the 600 ms and 0.5 s windows (5.5) | none |
 | **D1** | Counters kept (8.4): `cycle_counters.hpp`, `CycleCounters` in the block and the harness (`NodeHarness::counts`), `PortBlock::counts`, `NodeHost::counts` carrying a destroyed block's, `DriverCuts`' stalls, `Engine::graphCounts`; tests: each counter moved by its induced cause (an induced cut moves the graph's and no node's; a `PAUSED` block moves its `missedCycles`; a code that stalls past a cycle moves its `overruns`), in the harness and the engine | nothing | none visible |
@@ -1123,6 +1124,57 @@ The review found the judge still held windows; each is closed where its rule liv
 - **The source model checks the position** against the last end moved by the stated jump.
 - **One tick helper**: `src/pipewire/driver_tick.hpp` builds a cycle's `DriverTick` from its clock for the port block
   and S5's B alike.
+
+### 9.7 Found building C4a
+
+What C4a built is described in `docs/node-types.md#clock` and the `sendspin` skill; this section keeps only where it
+departs from 4.4's row, and what C4b and 3c must know.
+
+- **Progress does not move by the whole jump; the library keeps its own timeline in step.** 4.4's row has the feed
+  skip `min(jumpFrames, held)` and progress move by the whole jump. The library takes what it is told played from what
+  it wrote (`sync_task.cpp`, `process_playback_progress`: `buffered_frames -= frames_played`, clamped at zero with a
+  `Buffered frames underflow` warning) and puts its next audio at the told finish plus what it thinks is still
+  buffered. Told the whole jump with only what the feed held skipped, its count of what is buffered falls short of the
+  feed by the rest, so it puts its next audio that much early for good, while the audio is really that much late. A
+  debt (the rest dropped from what the library writes next, `SourceRing`'s rule) mends that only when the library had
+  written the whole jump by the time it reads the report: told more than it wrote, it clamps, and then counts the frames
+  the debt drops from its next writes as still buffered, off for the rest of the stream. Told the debt as it is paid
+  instead (the first build), the library reads the first report, sees itself late by the rest at its next chunk and
+  catches up itself (a late chunk skipped, or a hard sync), and the debt drops the same time again. So the code skips
+  what the feed holds of a catch-up's jump, however long, and tells exactly that with the cycle's real finish: the
+  library is never told a frame it did not write, and catches the rest up itself, as it always did for a stall within
+  the feed. What changed in behaviour: a stall past the feed, which the position rule took for a change of driver
+  (nothing skipped, the feed's stale audio played late), is a catch-up like any other, and only a `catchUp` skips (a
+  reposition or a pause forward no longer does). Q-CF2's "keep in step" holds for the stream's timing, which the
+  library keeps from the finish times; the frames ear reports stay what it took of what the library wrote. **A
+  question for the owner** if that reading of Q-CF2 is not what was meant: the frames count can move with the clock
+  only if the library is patched to take a skip apart from its buffer.
+- **Under heavy load the clock tests fail with or without this step.** 20 runs beside `yes` x 5 on 4 cores, with two
+  other agents' full builds and suites on the same host (load 10 to 12), failed 10 times, every failure in the clock
+  tests: the worker not connecting within 20 s (4), the library's interpolated frames past 1% at a steady +95 us offset
+  (5; not whole frames, so a timing offset, not ear's count), and the library's own losses of sync (+90 ms of its
+  silence after skipping a late chunk, a ramp step of a chunk and 257; a 2 s stall with 18% dry cycles). The same
+  signature came with the debt's first build and without it. The source and sink tests passed all 20. The step before
+  C4a, its clock tests run alternately with this step's under the same load (which other agents raised to 18 to 46 as
+  it went), failed 6 of 7 runs where this step failed 3 of 6, in the same ways (too few cycles judged, interpolated
+  frames past 1%, steps no rule explained, the clock never tracking): the host, not the step. They are timing tests,
+  rerun alone before the code is suspected (`docs/testing.md`).
+- **Only `catchUp` skips.** `absent` (the block not scheduled), `reposition`, `driverChange`, `start` and `oversized`
+  alone are a new clock, as `SourceRing`'s row says; a `catchUp` with a `drive` (a re-drive across a stall) skips too,
+  since the feed and the library's stream outlive the code.
+- **The clock test works the skips out from the facts.** `lastSkipped()` is gone; the test's judge skips each
+  catch-up's `jumpFrames` as far as `lastHeld()` says the feed held (the code's own rule, modelled), holds the ramp's
+  steps and each `PlayProgress` against it, and now also requires that a cycle that skipped and read nothing told
+  nothing. What the feed did not hold of a catch-up is lost to the library, which may step the ramp by exactly it
+  with a line of its own near (the rule a jump past the feed already had, now for every short skip).
+- **`code_test.cpp` states its cycles through `CycleAccount` over a `CutRing`** (a small `Driver` in the test: lose
+  cycles cut or not, change driver, reposition), not `NodeHarness`: the code is the old interface's, made by the
+  worker, not a type the harness hosts. A catch-up past 2^32 frames is a scripted fact (`Feed::skip` takes the jump
+  whole and skips what it holds).
+- **For C4b and 3c**: `SourceRing` keeps 4.4's rule (the whole jump in `Played` at once, the rest a debt). When
+  `sendspin` moves onto a source in 3c, the library must not be told `Played` as it stands: it would count frames it
+  never wrote (the clamp) and, with the debt, catch the same time up twice, as above. 3c must tell the library what the
+  source took of what it wrote, or give the source this feed's rule for a writer that keeps its own timeline.
 
 ## 10. Decided here (technical)
 

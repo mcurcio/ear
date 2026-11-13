@@ -83,12 +83,16 @@ struct Cycle {
 	std::uint32_t lastIndex;   // the ramp index the last of them names
 	bool ramp;                 // every frame in it is a zero or a ramp frame stepping by +1 from firstIndex
 	bool clean;                // the ledger's word: it followed the cycle before it with nothing lost
+	CycleFacts facts;          // what the cycle stated, as the code was handed it
 	std::uint32_t zeros;       // frames of exact silence in it
-	std::uint32_t skipped;     // frames the code skipped in it for the graph's jump (SendspinCode::lastSkipped)
-	std::uint32_t held;        // frames the feed held as it skipped (SendspinCode::lastHeld)
+	std::uint32_t held;        // frames the feed held as the code kept time (SendspinCode::lastHeld)
 	std::uint32_t fed;         // frames the code read from the feed (SendspinCode::lastGot): fewer than frames is dry
-	bool published;            // the code told the library of this cycle (it skipped or read something)
-	PlayProgress progress;     // what it told, when it did
+	PlayProgress progress;     // the newest the code told the library, after it ran
+	// Worked out by the Judge from the facts and what the feed held: the frames the code skipped in it for the graph's
+	// lost time (docs/node-types.md#clock), and whether it told the library of this cycle (it skipped or read
+	// something).
+	std::uint32_t skipped;
+	bool published;
 };
 
 /// The ramp index a frame names, or nothing when it is no exact ramp frame (or silence).
@@ -124,12 +128,13 @@ public:
 		out.driverId = cycle.driverId;
 		out.got = 0;
 		out.zeros = 0;
-		out.skipped = code_.lastSkipped();
+		out.facts = cycle.facts;
 		out.held = code_.lastHeld();
 		out.fed = code_.lastGot();
-		out.published = out.skipped + out.fed > 0;
-		// The code published just now, on this thread, so the newest value is this cycle's.
-		out.progress = out.published ? progress_.read().value_or(PlayProgress{}) : PlayProgress{};
+		out.skipped = 0;
+		out.published = false;
+		// The code publishes only on this thread, so the newest value is this cycle's when it told one.
+		out.progress = progress_.read().value_or(PlayProgress{});
 		out.firstAt = 0;
 		out.firstIndex = 0;
 		out.lastIndex = 0;
@@ -467,8 +472,8 @@ struct Errors {
 	std::size_t driverChanges = 0;
 	std::size_t within = 0;
 	double worstUs = 0.0;
-	std::size_t skips = 0;        // forward jumps within the feed, which the code skips
-	std::size_t shortSkips = 0;   // of them, those the feed held less than: the code skipped all it held
+	std::size_t skips = 0;        // catch-ups, which the code skips however long
+	std::size_t shortSkips = 0;   // of them, those the feed held less than: the rest the library's to catch up
 	std::size_t disturbances = 0; // cycles the ledger did not call clean: what the host did to the graph
 	std::size_t dryCycles = 0;    // cycles the feed did not fill (lastGot() < frames): what the host did to the worker
 	std::size_t librarySilence = 0; // cycles fed whole that held silence: the library's own (a hard sync's)
@@ -588,7 +593,14 @@ private:
 	static constexpr std::size_t kLogReach = (kFeedFrames + kChunkFrames) / kBlock + 16;
 	static constexpr std::size_t kLogLag = 32;
 
-	void one(std::size_t index, const Cycle& cycle) {
+	void one(std::size_t index, Cycle cycle) {
+		// What the code skipped for the graph's lost time, from the facts and what the feed held: a catch-up's jump,
+		// however long, or all the feed held when that was less. Its progress and the ramp are judged against it.
+		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp);
+		cycle.skipped = caughtUp ? static_cast<std::uint32_t>(std::min<std::uint64_t>(
+									   static_cast<std::uint64_t>(cycle.facts.jumpFrames), cycle.held))
+		                         : 0;
+		cycle.published = cycle.skipped + cycle.fed > 0;
 		std::int64_t gap = 0;
 		if (previous_ && !cycle.clean) {
 			// Whatever the host did to the graph, the time around it is not judged: a skip, a stall, a jump.
@@ -596,19 +608,18 @@ private:
 			lastDisturbanceNs_ = cycle.startRawNs;
 			gap = static_cast<std::int64_t>(cycle.position) -
 			      static_cast<std::int64_t>(previous_->position + previous_->frames);
-			if (gap > 0 && gap <= kFeedFrames) {
+			if (caughtUp) {
+				// The code skips a catch-up however long the jump; the library catches up what the feed did not hold, by
+				// the raw clock's lost time, as after a dry cycle.
 				++errors.skips;
-				// The code skips the jump, or all the feed held as it skipped when that was less: exactly the smaller.
-				const auto wanted = std::min<std::int64_t>(gap, cycle.held);
-				if (cycle.skipped != wanted)
-					errors.bad.push_back("skip of " + std::to_string(cycle.skipped) + " for a jump of " +
-					                     std::to_string(gap) + " with " + std::to_string(cycle.held) + " held at " +
-					                     std::to_string(index));
-				if (cycle.skipped < gap) ++errors.shortSkips;
+				if (cycle.skipped < gap) {
+					++errors.shortSkips;
+					lost_ += static_cast<std::uint64_t>(gap) - cycle.skipped;
+				}
 			} else if (gap != 0 || cycle.driverId != previous_->driverId) {
-				// Past the feed, or backward: a new clock to the code, which skips nothing; the library catches up with
-				// its clock in its own steps, within the time the raw clock says the graph lost (a position can move
-				// back, the raw clock cannot).
+				// Not a catch-up (a jump back, a pause, another driver): a new clock to the code, which skips nothing;
+				// the library catches up with its clock in its own steps, within the time the raw clock says the graph
+				// lost (a position can move back, the raw clock cannot).
 				// A backward jump, or a new driver, lost nothing forward the library could catch up: it excuses no step.
 				const std::int64_t lostNs =
 					cycle.startRawNs - previous_->startRawNs - FrameClock(kRate).ns(previous_->frames);
@@ -693,7 +704,7 @@ private:
 		// The library's dropped frame: frame n goes and n+1 is blended, so no ramp frame names n or n+1. Inside a cycle
 		// that is only a bad cycle; when the blend falls on the cycle's edge, the indices either side of it are 3 apart.
 		const bool blendOnEdge = step == 3 && !(cycle.ramp && lastCycleRamp_);
-		// A skip moves the ramp on by exactly the frames the code skipped for it (lastSkipped).
+		// A skip moves the ramp on by exactly the frames the code skipped for the graph's lost time.
 		const bool skip = pendingSkipped_ > 0 && step == 1 + pendingSkipped_;
 		if (skip) note("skip");
 		if (blendOnEdge) note("blend on the edge");
@@ -746,11 +757,17 @@ private:
 		errors.bad.push_back("step " + std::to_string(step) + " at " + std::to_string(index) + where + ")");
 	}
 
-	/// What the code told the library on a cycle is that cycle: the frames counted played grow by what it skipped and
-	/// read, and the last of them finishes when the cycle's start, those read and what lies downstream say
-	/// (docs/node-types.md#clock). Any other value is ear's bug, whatever the host did.
+	/// What the code told the library on a cycle is that cycle: the frames counted played grow by what it skipped for
+	/// the graph's lost time and read, and the last of them finishes when the cycle's start, those read and what lies
+	/// downstream say (docs/node-types.md#clock); a cycle that dropped and read nothing told nothing. Any other value is
+	/// ear's bug, whatever the host did.
 	void checkProgress(std::size_t index, const Cycle& cycle) {
-		if (!cycle.published) return;
+		if (!cycle.published) {
+			if (cycle.progress.totalFrames != told_)
+				errors.bad.push_back("progress " + std::to_string(cycle.progress.totalFrames) +
+				                     " told for nothing at " + std::to_string(index));
+			return;
+		}
 		const std::uint64_t total = told_ + cycle.skipped + cycle.fed;
 		const std::int64_t finish =
 			FrameClock(kRate).heardRawNs(cycle.startRawNs, cycle.fed, Latency{cycle.delayFrames, cycle.delayFrames});
