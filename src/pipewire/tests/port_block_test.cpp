@@ -6,6 +6,7 @@
 // event-gated: the main loop runs until the events a test waits for have arrived; the deadline only fails the test. The
 // Waiter and makeEngine follow engine_test.cpp's (the pipewire-engine skill's pattern).
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -41,6 +42,7 @@
 #include "ear/pipewire/links.hpp"
 #include "ear/pipewire/live_graph.hpp"
 #include "ear/pipewire/port_blocks.hpp"
+#include "ear/pipewire/sources.hpp"
 #include "ear/testing/drive_now.hpp"
 #include "ear/testing/type_harness.hpp"
 #include "inducers.hpp"
@@ -1370,6 +1372,61 @@ struct Conform {
 	}
 };
 
+/// What a scripted clock was asked and told on one tick.
+struct Heard {
+	SourceHeld held;
+	SourcePlayed played;
+	Latency playback;
+	friend bool operator==(const Heard&, const Heard&) = default;
+};
+inline constexpr std::size_t kScriptedTicks = 6;
+inline constexpr std::uint32_t kScriptedFresh = 20; // frames written after the clear: the new stream
+
+/// A source's clock that plays a fixed script by its own tick count, so the harness and a real block, whose ticks
+/// come at their own pace, ask and tell it the same things: tick 1 asks a skip of 10; tick 2's played() clears the
+/// stream and writes kScriptedFresh frames of a new one (clear and a write with no patience are lock-free and wait
+/// for nothing on a ring with room); tick 3, the clearing tick, asks a skip of 50, which the ring must ignore. It
+/// records the first kScriptedTicks ticks in fixed storage; `ticks` counts them for any thread.
+struct ScriptedClock final : SourceClock {
+	SourceWriter* writer = nullptr; // set once the source is made, before any tick
+	std::array<Heard, kScriptedTicks> heard{};
+	std::array<float, std::size_t{kScriptedFresh} * 2> fresh{};
+	std::atomic<std::size_t> ticks{0};
+	ScriptedClock() { fresh.fill(0.25F); }
+	std::uint64_t skipBefore(const SourceTick& tick, SourceHeld held) noexcept override {
+		const std::size_t n = ticks.load(std::memory_order_relaxed);
+		if (n < kScriptedTicks) heard[n] = Heard{held, {}, tick.playback};
+		return n == 1 ? 10 : n == 3 ? 50 : 0;
+	}
+	bool played(const SourceTick&, const SourcePlayed& played) noexcept override {
+		const std::size_t n = ticks.load(std::memory_order_relaxed);
+		if (n < kScriptedTicks) heard[n].played = played;
+		if (n == 2) {
+			writer->clear();
+			static_cast<void>(writer->write(fresh, kScriptedFresh, std::chrono::milliseconds(0)));
+		}
+		ticks.store(n + 1, std::memory_order_release);
+		return false;
+	}
+};
+/// The clock the Scripted type's last configure made.
+inline ScriptedClock* scripted = nullptr;
+
+/// A source on from_device with the scripted clock, paired with `out`.
+struct Scripted {
+	static Members<spec> ports(const Checked&) {
+		return {in(members(2)), out(members(2)), toDevice(members(2)), fromDevice(members(2))};
+	}
+	Configured configure(CreateOf<spec>& cx, const Checked&) {
+		auto clock = std::make_unique<ScriptedClock>();
+		scripted = clock.get();
+		SourceWriter& writer = cx.source(fromDevice, SourceShape{.frames = 1000}, std::move(clock));
+		scripted->writer = &writer;
+		cx.use(passThrough({bankPair(in, toDevice), bankPair(fromDevice, out)}));
+		return Configured::applied();
+	}
+};
+
 } // namespace latency_conformance
 
 // The harness's side of the latency model's conformance, through its own NodeHost: the plan a type's configuration
@@ -1416,6 +1473,68 @@ TEST_CASE("The plan a type builds in the harness, carried on a real block with n
 	// publishes for the bank.
 	CHECK(harnessPlayed == SourcePlayed{.read = kBlock});
 	CHECK(harnessPlayback == downstream);
+}
+
+// The one play rule (docs/writing-a-node-type.md#a-sources-clock) is the same code in the harness and on a real block:
+// a clock's skip, a clear and the skip it asks on the clearing tick, an underrun after them, each tick's held and
+// SourcePlayed and the playback latency the clock is told, compared tick for tick.
+TEST_CASE("A source's clock is asked and told the same on a real block as in the harness, across a skip and a clear",
+          "[port_blocks][source][conformance]") {
+	namespace conform = latency_conformance;
+	constexpr std::uint32_t kPrefill = 4 * kBlock;
+	std::vector<float> prefill(static_cast<std::size_t>(kPrefill) * 2);
+	for (std::size_t i = 0; i < prefill.size(); ++i) prefill[i] = static_cast<float>(i % 997 + 1) / 1000.0F;
+
+	ear::testing::TypeHarness<conform::spec, conform::Scripted> harness({.format = kFormat});
+	REQUIRE_FALSE(harness.parse({}));
+	harness.add();
+	harness.blockReady();
+	REQUIRE(harness.phase() == "running");
+	REQUIRE(harness.feed(conform::fromDevice, prefill) == kPrefill);
+	for (std::size_t tick = 0; tick < conform::kScriptedTicks; ++tick) harness.process(kBlock);
+	REQUIRE(conform::scripted->ticks.load() == conform::kScriptedTicks);
+	const std::array<conform::Heard, conform::kScriptedTicks> inHarness = conform::scripted->heard;
+	const Ports ports = harness->ports();
+	const LatencyPlan plan = harness->latencyPlan();
+	harness.remove();
+
+	// The script's own shape, so a script that went wrong cannot pass by both sides agreeing on nothing.
+	CHECK(inHarness[1].played.skipped == 10);
+	CHECK(inHarness[3].held.clearing);
+	CHECK(inHarness[3].played.skipped == 0);
+	CHECK(inHarness[3].played.ended > 0);
+	CHECK(inHarness[3].played.read + inHarness[4].played.read == conform::kScriptedFresh);
+	CHECK(inHarness[5].played == SourcePlayed{.zeros = kBlock});
+
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	EventSources sources;
+	auto made = std::make_unique<conform::ScriptedClock>();
+	conform::ScriptedClock& clock = *made;
+	const Ports::Bank& bank = ports.bank("from_device");
+	auto source = sources.make("scripted", bank.name, 2, 1000, kRate, std::move(made));
+	clock.writer = &source->writer();
+	REQUIRE(source->writer().write(prefill, kPrefill, std::chrono::milliseconds(0)) == kPrefill);
+	BlockEvents events(waiter);
+	auto block = blocks.make("scripted", ports, kFormat, events);
+	block->carryLatency(plan);
+	REQUIRE(waiter.until([&] { return events.readyCount > 0; }));
+	Constant code(waiter, 0.0F);
+	const std::vector<SourceBinding> bound{SourceBinding{&source->tap(), bank.first, bank.ports.size()}};
+	bool driven = false;
+	block->drive(DriveRequest{&code, {}, {}, bound}, [&](std::uint64_t) {
+		driven = true;
+		waiter.wake();
+	});
+	REQUIRE(waiter.until([&] { return driven && clock.ticks.load() >= conform::kScriptedTicks; }));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	source->close();
+	for (std::size_t tick = 0; tick < conform::kScriptedTicks; ++tick) {
+		INFO("tick " << tick);
+		CHECK(clock.heard[tick] == inHarness[tick]);
+	}
 }
 
 // A peer's negative latency is clamped to zero at the port, before what lies in series beyond the bank adds to it: an
