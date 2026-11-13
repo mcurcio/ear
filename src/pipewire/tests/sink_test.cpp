@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <thread>
@@ -686,6 +687,9 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	MainLoopExecutor mainLoop(*engine);
 	ThreadSinks sinks(mainLoop);
 	ear::pipewire::testing::BlockEvents events(waiter), clockEvents(waiter);
+	// The block under test has an input, fed by the block that counts the graph's cycles: that one runs first in each
+	// cycle, so a stall there cuts the cycle before the block under test ran it, and the code's own facts state the cut
+	// (docs/testing.md#the-cycle-judge). A stall in the block under test would cut only what follows it.
 	const Ports ports{
 		{{Direction::input, "in", {"1"}}, {Direction::output, "writer", {"left", "right"}, PortBank::Reach::inside}}};
 	auto block = blocks.make("rec", ports, kFormat, events);
@@ -742,6 +746,9 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	REQUIRE_FALSE(linkLog.failed);
 	const std::vector<SinkBinding> bindings{SinkBinding{&sink->tap(), 0, 2}};
 	PositionRamp ramp(waiter, std::size_t{1} << 16);
+	// Each drive of the code states `drive` on the cycle it is taken at; drives the data loop takes before the same
+	// cycle share it. The plan bounds them by the most the test asks; the report must hold exactly as many as were
+	// taken at distinct positions (below).
 	ear::test::CycleJudge judge(
 		ear::test::JudgePlan{.judged = 32,
 	                         .induce = ear::test::StallPlan::every(1, 0, 4, ear::test::StallLength::cycles(1.5)),
@@ -754,10 +761,12 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	};
 
 	std::vector<std::uint64_t> takens; // per round: its start's position, then its stop's
+	std::set<std::uint64_t> codeTaken; // where each drive of the code was taken: one `drive` each
 	std::size_t completed = 0;
-	const auto record = [&](bool keep) {
-		return [&, keep](std::uint64_t taken) {
+	const auto record = [&](bool keep, bool code = true) {
+		return [&, keep, code](std::uint64_t taken) {
 			if (keep) takens.push_back(taken);
+			if (code) codeTaken.insert(taken);
 			++completed;
 			waiter.wake();
 		};
@@ -797,7 +806,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		REQUIRE(waiter.until([&] { return completed == asked; }, 20s));
 		const std::uint64_t later = ramp.calls();
 		REQUIRE(waiter.until([&] { return ramp.calls() >= later + 4; }));
-		block->drive(DriveRequest{nullptr, {}}, record(true));
+		block->drive(DriveRequest{nullptr, {}}, record(true, false));
 		++asked;
 		REQUIRE(waiter.until([&] { return completed == asked; }));
 		// Stopped for kStoppedCycles of the graph's: the block runs silent, the sink unbound.
@@ -856,6 +865,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 	feed();
 	INFO(judge.report());
 	CHECK(judge.report().ok());
+	CHECK(judge.report().expected == codeTaken.size()); // exactly the drives made, each once
 	for (std::size_t round = 0; round < rounds; ++round) {
 		INFO("round " << round);
 		const std::size_t first = firstCycle[round];

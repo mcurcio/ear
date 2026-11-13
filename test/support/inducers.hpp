@@ -84,25 +84,35 @@ private:
 };
 
 /// A plan carried out: called from inside a process() (or a probe's cycle) with that cycle's index, it sleeps on the
-/// data thread when the plan says so and counts what it made. The one sleep that stalls a data thread on purpose
-/// (test/sleeps.txt).
+/// data thread when the plan says so and counts what it made. Given a cut record, it keeps the graph cycle each stall
+/// was made in (the record's started(), read on the data thread inside that cycle), for a judge to find it excused. The
+/// one sleep that stalls a data thread on purpose (test/sleeps.txt).
 class Stalls {
 public:
-	explicit Stalls(StallPlan plan = {}) : plan_(std::move(plan)) {}
+	explicit Stalls(StallPlan plan = {}, const CutRecord* cuts = nullptr)
+		: plan_(std::move(plan)), cuts_(cuts), cycles_(std::min<std::size_t>(plan_.size(), kKept)) {}
 	/// Data thread: stalls if cycle `n` is planned (`frames` at `rate` size a stall given in cycles); true if it did.
 	bool operator()(std::size_t n, std::uint64_t frames, std::uint32_t rate) noexcept {
 		const std::optional<StallLength> length = plan_.planned(n);
 		if (!length) return false;
+		const std::size_t at = made_.load(std::memory_order_relaxed);
+		if (at < cycles_.size()) cycles_[at] = cuts_ != nullptr ? cuts_->started() : 0; // published by made_ below
 		std::this_thread::sleep_for(length->at(frames, rate)); // the data thread stalls, on purpose
 		made_.fetch_add(1, std::memory_order_release);
 		return true;
 	}
 	/// Stalls made so far; any thread.
 	std::size_t made() const noexcept { return made_.load(std::memory_order_acquire); }
+	/// The graph cycle the `i`-th stall was made in (below made() and the first kKept); 0 without a record. Any thread.
+	std::uint64_t madeIn(std::size_t i) const noexcept { return i < cycles_.size() ? cycles_[i] : 0; }
 	const StallPlan& plan() const noexcept { return plan_; }
+	/// How many stalls' cycles are kept.
+	static constexpr std::size_t kKept = 4096;
 
 private:
 	StallPlan plan_;
+	const CutRecord* cuts_;
+	std::vector<std::uint64_t> cycles_;
 	std::atomic<std::size_t> made_{0};
 };
 

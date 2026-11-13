@@ -53,6 +53,7 @@
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
 
+#include "../driver_tick.hpp"
 #include "allocation_count.hpp"
 #include "cycle_judge.hpp"
 #include "catch2/catch.hpp"
@@ -788,7 +789,7 @@ constexpr std::size_t kS5Log = 750 * 40;
 /// ring's frame k is rampAt(k), and the writer side is not under test: the ring is kept full, each frame consumed
 /// replaced by the one kS5Capacity later. B is no block, so it states each cycle's facts itself, by the rule a block
 /// runs (CycleAccount over the engine's record of the internal clock's cuts, docs/engine.md#graphcycle), from the same
-/// tick a block builds. It records, per cycle, the stamp of what it read from U, whether it took a new clock and the
+/// tick a block builds (driver_tick.hpp). It records, per cycle, the stamp of what it read from U, whether it took a new clock and the
 /// facts; it publishes the position and first ring frame of the cycle it plays, for D in the same cycle; and it
 /// overruns `overruns` of its recorded cycles once it has played.
 class RingSource final : public ProbeCode {
@@ -810,20 +811,8 @@ public:
 	void cycle(const spa_io_clock& clock, std::span<const float* const> inputs, std::span<float* const> outputs,
 	           std::uint32_t frames) noexcept override {
 		const std::uint64_t sequence = shared_.sequence.fetch_add(1, std::memory_order_acq_rel);
-		// The driver's start on the raw clock, as a block maps it (port_blocks.cpp's onProcess).
-		const std::int64_t monoBefore = nowNs(CLOCK_MONOTONIC);
-		const std::int64_t raw = nowNs(CLOCK_MONOTONIC_RAW);
-		const std::int64_t monoAfter = nowNs(CLOCK_MONOTONIC);
-		const auto startNs = static_cast<std::int64_t>(clock.nsec);
-		const CycleFacts stated =
-			account_
-				.next(DriverTick{.driverId = clock.id,
-		                         .graphCycle = clock.id == internalClock_ ? cuts_.started() : 0,
-		                         .position = clock.position,
-		                         .frames = frames,
-		                         .startRawNs = startNs + (raw - (monoBefore + (monoAfter - monoBefore) / 2))},
-		              kS5Capacity)
-				.facts;
+		// The cycle as its driver states it, by the helper the port block builds its tick with.
+		const CycleFacts stated = account_.next(driverTick(clock, internalClock_, cuts_).tick, kS5Capacity).facts;
 		const std::uint64_t at = clock.position;
 		const bool recording = shared_.recording.load(std::memory_order_acquire);
 		if (!started_ && !recording) {
@@ -871,11 +860,6 @@ public:
 	}
 
 private:
-	static std::int64_t nowNs(clockid_t id) noexcept {
-		timespec now{};
-		clock_gettime(id, &now);
-		return static_cast<std::int64_t>(now.tv_sec) * 1'000'000'000 + now.tv_nsec;
-	}
 	/// Frames played or skipped: each slot freed takes the frame kS5Capacity later, so the ring stays full.
 	void consume(std::uint64_t frames) noexcept {
 		for (std::uint64_t k = total_; k < total_ + frames; ++k) ring_[k & (kS5Capacity - 1)] = rampAt(k + kS5Capacity);

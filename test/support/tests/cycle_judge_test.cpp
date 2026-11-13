@@ -3,6 +3,7 @@
 // and every planned stall made and excused. The engine tests that judge through it prove it live.
 #include <chrono>
 #include <cstdint>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -47,6 +48,8 @@ TEST_CASE("A cycle judge refuses a plan that judges nothing, and is not done bef
           "[cycle_judge]") {
 	CHECK_THROWS_AS(CycleJudge(plain(0), kClock, nullptr), std::invalid_argument);
 	CHECK_THROWS_AS(CycleJudge(JudgePlan{}, kClock, nullptr), std::invalid_argument);
+	// A plan that stalls needs the record that numbers each stall's cycle.
+	CHECK_THROWS_AS(CycleJudge(JudgePlan{.judged = 1}, kClock, nullptr), std::invalid_argument);
 	CycleJudge judge(plain(1), kClock, nullptr);
 	CHECK_FALSE(judge.done());
 	CHECK(judge.at(CycleFacts{}, kFrames) == Verdict::judge);
@@ -58,14 +61,15 @@ TEST_CASE("A cycle judge refuses a plan that judges nothing, and is not done bef
 }
 
 TEST_CASE("A cycle judge judges a whole cycle, and excuses exactly the cycles the driver cut, by their frames, within "
-          "the raw clock",
+          "1 ms of the raw clock",
           "[cycle_judge]") {
 	CycleJudge judge(plain(1), kClock, nullptr);
 	CHECK(judge.at(CycleFacts{}, kFrames) == Verdict::judge);
 	// Three missed, three cut, three cycles' frames, the raw clock three cycles on: excused, all three counted.
 	CHECK(judge.at(caughtUp(3, 3, 3 * kFrames, kClock.ns(3 * kFrames)), kFrames) == Verdict::excused);
-	// The position may lead the raw clock by the driver's 1 ms clamp and two cycles' wake room, and no more.
-	const std::int64_t room = 1'000'000 + kClock.ns(2 * kFrames);
+	// The position may lead the raw clock by the driver's 1 ms clamp, and no more: a cycle's start is the driver's
+	// deadline, so a late wake leaves no room.
+	const std::int64_t room = 1'000'000;
 	CHECK(judge.at(caughtUp(1, 1, kFrames, kClock.ns(kFrames) - room), kFrames) == Verdict::excused);
 	CHECK(judge.report().excusedCycles == 4);
 	CHECK(judge.report().excusedEvents == 2);
@@ -74,6 +78,7 @@ TEST_CASE("A cycle judge judges a whole cycle, and excuses exactly the cycles th
 	CHECK(judge.report().firstFailure.find("cycle 3 (") == 0);
 	CHECK(judge.report().firstFailure.find("further than the raw clock went") != std::string::npos);
 	CHECK(judge.report().excusedCycles == 4);
+	CHECK(judge.report().mostOverLostNs == std::optional<std::int64_t>(room + 1)); // the evidence, excused or not
 	CHECK_FALSE(judge.report().ok());
 }
 
@@ -96,6 +101,9 @@ TEST_CASE("A cycle judge fails a catch-up over a cycle the driver did not cut, o
 	CHECK_THAT(first(back), Catch::Contains("a reposition"));
 	CycleFacts missedNoMove{.graphCycle = 7, .missed = 2, .missedCut = 2, .causes = CycleCause::reposition};
 	CHECK_THAT(first(missedNoMove), Catch::Contains("a reposition"));
+	// A cause the judge has no rule for (one added to CycleCause later) fails: deny by default.
+	CycleFacts unknown{.graphCycle = 7, .causes = static_cast<CycleCause>(1U << 7U)};
+	CHECK_THAT(first(unknown), Catch::Contains("a cause the judge does not know"));
 }
 
 TEST_CASE("A cycle judge expects only the causes the test declared, each up to its count", "[cycle_judge]") {
@@ -150,29 +158,60 @@ TEST_CASE("A cycle judge excuses a block missing from a card's file only where t
 	CHECK(judge.report().failed == 3);
 }
 
-TEST_CASE("A cycle judge is done only when its planned boundaries were judged and every planned stall was made and "
-          "excused",
+TEST_CASE("A cycle judge is done only when its planned boundaries were judged and every planned stall was made in a "
+          "cycle an excused verdict covers",
           "[cycle_judge]") {
-	CycleJudge judge(JudgePlan{.judged = 2, .induce = StallPlan::every(10, 3, 2, StallLength::of(0ms))}, kClock,
-	                 nullptr);
+	ear::CutRing ring;
+	CycleJudge judge(JudgePlan{.judged = 2, .induce = StallPlan::every(10, 3, 2, StallLength::of(0ms))}, kClock, &ring);
 	CHECK(judge.at(CycleFacts{}, kFrames) == Verdict::judge);
 	CHECK(judge.at(CycleFacts{}, kFrames) == Verdict::judge);
 	CHECK_FALSE(judge.done()); // judged, but no stall made
-	// The test's upstream code stalls through the judge, by its own count of cycles.
-	for (std::size_t n = 0; n < 30; ++n) judge.stalls()(n, kFrames, 48000);
+	// The test's upstream code stalls through the judge, by its own count of cycles; each stall keeps the graph cycle
+	// it was made in, the record's running one.
+	for (std::size_t n = 0; n < 30; ++n) {
+		ring.start();
+		judge.stalls()(n, kFrames, 48000);
+	}
 	CHECK(judge.stalls().made() == 2);
+	CHECK(judge.stalls().madeIn(0) == 4);
+	CHECK(judge.stalls().madeIn(1) == 14);
 	CHECK(judge.report().stallsMade == 2);
 	CHECK_FALSE(judge.done()); // made, but not excused: the judged node never missed them
-	CHECK(judge.at(caughtUp(1, 1, kFrames, kClock.ns(kFrames)), kFrames) == Verdict::excused);
-	CHECK_FALSE(judge.done()); // one cut cycle excused of two stalls
-	CHECK(judge.at(caughtUp(1, 1, kFrames, kClock.ns(kFrames)), kFrames) == Verdict::excused);
+	// A catch-up over other cycles excuses those, not the stalls'.
+	CycleFacts elsewhere = caughtUp(2, 2, 2 * kFrames, kClock.ns(2 * kFrames));
+	elsewhere.graphCycle = 8; // missed 6 and 7
+	CHECK(judge.at(elsewhere, kFrames) == Verdict::excused);
+	CHECK(judge.report().stallsExcused == 0);
+	CHECK_FALSE(judge.done());
+	CycleFacts first = caughtUp(1, 1, kFrames, kClock.ns(kFrames));
+	first.graphCycle = 5; // missed 4, the first stall's
+	CHECK(judge.at(first, kFrames) == Verdict::excused);
+	CHECK(judge.report().stallsExcused == 1);
+	CHECK_FALSE(judge.done());
+	CycleFacts second = caughtUp(3, 3, 3 * kFrames, kClock.ns(3 * kFrames));
+	second.graphCycle = 16; // missed 13 to 15, the second stall's among them
+	CHECK(judge.at(second, kFrames) == Verdict::excused);
 	CHECK(judge.done());
 	CHECK(judge.report().ok());
 	std::ostringstream told;
 	told << judge.report();
-	CHECK_THAT(told.str(), Catch::Contains("judged 2 of 2") && Catch::Contains("stalls made 2 of 2"));
+	CHECK_THAT(told.str(), Catch::Contains("judged 2 of 2") && Catch::Contains("stalls made 2 of 2, 2 excused"));
 	// A failure leaves it done but not ok.
 	CHECK(judge.at(CycleFacts{.causes = CycleCause::drive}, kFrames) == Verdict::fail);
 	CHECK(judge.done());
 	CHECK_FALSE(judge.report().ok());
+}
+
+TEST_CASE("A cycle judge counts a card's missing block as covering the stall made in its cycle", "[cycle_judge]") {
+	ear::CutRing ring;
+	CycleJudge judge(JudgePlan{.judged = 1, .induce = StallPlan::every(1, 0, 1, StallLength::of(0ms))}, kClock, &ring);
+	ring.start(); // cycle 1: the stall's, cut
+	judge.stalls()(0, kFrames, 48000);
+	ring.incomplete();
+	ring.start();
+	CHECK(judge.blockHeard() == Verdict::judge);
+	CHECK_FALSE(judge.done());
+	CHECK(judge.blockMissing(1) == Verdict::excused);
+	CHECK(judge.done());
+	CHECK(judge.report().ok());
 }

@@ -5,7 +5,7 @@ spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 
 9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
 `GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); steps
-C3a and C3b built (sections 9.4 and 9.5: `CycleJudge`, the ledger on facts, and the inside ports', card, source, engine
+C3a and C3b built (sections 9.4 to 9.6: `CycleJudge`, the ledger on facts, and the inside ports', card, source, engine
 and sink tests and S5 on the judge, described in `docs/testing.md#the-cycle-judge`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
@@ -1097,6 +1097,32 @@ What C3b moved is described in `docs/testing.md#the-cycle-judge`; this section k
   S5 and the sink included. Untouched, as they should be: by the zeroed outputs, the card's clock tests (no audio
   judged) and the sink (its tap is fed before the outputs); by the wrong date, the card's clock tests (no catch-up
   needed on an idle run).
+
+### 9.6 Found in the C3 review
+
+The review found the judge still held windows; each is closed where its rule lives (`docs/testing.md#the-cycle-judge`).
+
+- **The raw-clock rule is the 1 ms clamp alone.** 5.1's two cycles' wake room came from the tests that read the raw
+  clock at their own entry; a cycle's `startRawNs` is the driver's deadline mapped to the raw clock, so a late wake
+  cancels out, as the cycle table's conformance already judged. `JudgeReport::mostOverLostNs` keeps the evidence the
+  deleted `mostOverLost` gave (257 ns in a run that printed it, against the 1 ms allowed). A date one cycle short fails
+  every test that excuses a catch-up.
+- **A planned stall counts only where it was excused.** `Stalls` keeps the graph cycle of each stall (given the
+  judge's record), and `done()` needs each inside an excused verdict's missed cycles (or a card's missing block). A
+  judge that plans stalls refuses a null record.
+- **A cut's audio is checked**: across an excused boundary the ramp moved on by whole blocks, at least none and at
+  most the jump. "At least none", not "at least one": the driver can cut a cycle before the ramp, the chain's head,
+  ran it (a catch-up burst cuts before the second node and sometimes the first: 9.1), and a run under load showed it.
+- **A card's whole-block silence needs a fact**: the ramp's next cycle must state a catch-up over at least as many cut
+  cycles. No declared bound was needed: the card's ramp passed 30 loaded runs and 10 idle with the rule.
+- **The card's clock tests count their judged boundaries from the event** (the ledger's index at ready, at the loss),
+  with the cycles before judged by a judge of their own.
+- **The sink's drives are exact**: the plan bounds them by the most the test asks; the report's `expected` must equal
+  the drives taken at distinct positions, since drives the data loop takes before one cycle state one `drive`.
+- **Deny by default**: a cause outside the judge's known set fails.
+- **The source model checks the position** against the last end moved by the stated jump.
+- **One tick helper**: `src/pipewire/driver_tick.hpp` builds a cycle's `DriverTick` from its clock for the port block
+  and S5's B alike.
 
 ## 10. Decided here (technical)
 

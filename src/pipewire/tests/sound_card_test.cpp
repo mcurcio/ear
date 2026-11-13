@@ -131,16 +131,30 @@ private:
 	std::atomic<std::uint32_t> downstream_{0};
 };
 
-/// Every cycle `code` ran so far, through a judge of its own (docs/testing.md#the-cycle-judge): its first its drive (and
-/// its block's start, when the code was driven before the block's first cycle), each after it judged, or excused where
-/// the driver cut what it missed. Another driver, a pause or any jump the driver did not cut fails. It stalls nothing:
-/// the card's clock tests judge the clock a card leaves the blocks on, and the excuse path is proven every run by the
-/// ramp onto channel 2, through the same Code (which judges its own block through this too).
-ear::test::JudgeReport judgeClock(const Code& code) {
-	ear::test::CycleJudge judge(ear::test::JudgePlan{.judged = 16, .induce = StallPlan{}, .expected = {.drives = 1}},
-	                            FrameClock(kRate), nullptr);
-	for (const ear::test::LedgerCycle& cycle : code.ledger().cycles()) judge.at(cycle.facts, cycle.frames);
-	return judge.report();
+/// Every cycle `code` ran so far, through the one judge (docs/testing.md#the-cycle-judge): its first its drive (and its
+/// block's start, when the code was driven before the block's first cycle), each after it judged, or excused where the
+/// driver cut what it missed. Another driver, a pause or any jump the driver did not cut fails. The cycles from ledger
+/// index `from` on (the event a test judges: a card's ready, its loss) have a judge of their own, which must judge 16
+/// boundaries there and expects nothing, so the planned count is never met by cycles before the event. It stalls
+/// nothing: the card's clock tests judge the clock a card leaves the blocks on, and the excuse path is proven every run
+/// by the ramp onto channel 2, through the same Code (which judges its own block through this too).
+ear::test::JudgeReport judgeClock(const Code& code, std::size_t from = 0) {
+	const FrameClock clock(kRate);
+	ear::test::CycleJudge before(ear::test::JudgePlan{.judged = 1, .induce = StallPlan{}, .expected = {.drives = 1}},
+	                             clock, nullptr);
+	ear::test::CycleJudge after(ear::test::JudgePlan{.judged = 16,
+	                                                 .induce = StallPlan{},
+	                                                 .expected = from == 0
+	                                                                 ? ear::test::JudgePlan::Expected{.drives = 1}
+	                                                                 : ear::test::JudgePlan::Expected{.starts = 0}},
+	                            clock, nullptr);
+	const std::span<const ear::test::LedgerCycle> cycles = code.ledger().cycles();
+	for (std::size_t n = 0; n < cycles.size(); ++n) (n < from ? before : after).at(cycles[n].facts, cycles[n].frames);
+	ear::test::JudgeReport report = after.report();
+	const ear::test::JudgeReport earlier = before.report();
+	if (report.firstFailure.empty()) report.firstFailure = earlier.firstFailure;
+	report.failed += earlier.failed;
+	return report;
 }
 
 /// What a card tells, with what the registry showed at the moment it was told.
@@ -261,9 +275,9 @@ std::vector<float> readFrames(const std::filesystem::path& file, std::size_t cha
 /// its own facts are not seen, and the judge answers for it from the engine's record of the ramp's cycles. Across a
 /// block boundary each non-zero sample is the last one plus a step (a boundary judged), except where whole blocks of
 /// the ramp are missing between them, each excused only if the driver cut the cycle the ramp wrote it in. A cycle in
-/// which the card gets no block in time plays one whole block of silence and loses nothing (seen about 1 run in 10
-/// without realtime scheduling: 256 zeros mid-stream, then the ramp goes on where it stopped); any other zero run, and
-/// anything else, is a break.
+/// which the card gets no block plays one whole block of silence and loses nothing (256 zeros mid-stream, then the ramp
+/// goes on where it stopped): allowed only where the ramp's own block missed that many cut cycles there
+/// (silenceExplained). Any other zero run, and anything else, is a break.
 class RampReader {
 public:
 	RampReader(const Code& code, ear::test::CycleJudge& judge) : code_(code), judge_(judge) {}
@@ -303,6 +317,9 @@ public:
 				breakAt(std::to_string(zeroRun_) + " zeros before k " + std::to_string(k));
 			} else if (!from || !to) {
 				breakAt("k " + std::to_string(k) + " after " + std::to_string(*last_) + ", outside the ramp's ledger");
+			} else if (k == *last_ + 1 && zeroRun_ > 0 && !silenceExplained(*from, *to, zeroRun_ / kBlock)) {
+				breakAt(std::to_string(zeroRun_ / kBlock) + " silent blocks before k " + std::to_string(k) +
+				        " that no cut cycle of the ramp's block explains");
 			} else if (k == *last_ + 1) {
 				silentBlocks += zeroRun_ / kBlock;
 				if (*to != *from) judge_.blockHeard();
@@ -329,6 +346,15 @@ public:
 	std::string firstBreaks;                // the first few, for the failure's message
 
 private:
+	/// The card plays a whole block of silence for a cycle the ramp's block did not run (the driver cut it before the
+	/// block, so the card got nothing that cycle) and the ramp goes on where it stopped: `blocks` of silence between the
+	/// ramp's cycles `from` and `to` are explained only when `to` follows `from` and its block missed at least that many
+	/// cycles, every one cut (a catch-up the judge excuses from the ramp's own facts).
+	bool silenceExplained(std::size_t from, std::size_t to, std::size_t blocks) const {
+		if (to != from + 1) return false;
+		const CycleFacts& facts = code_.ledger()[to].facts;
+		return facts.causes.has(CycleCause::catchUp) && facts.confirmed() && blocks <= facts.missed;
+	}
 	static std::uint64_t kOf(float sample) {
 		return static_cast<std::uint64_t>(static_cast<double>(sample) * 16777216.0);
 	}
@@ -357,9 +383,12 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	// at ready the registry has heard every other link ACTIVE and not yet the last one; ready on
 	// an earlier link would find fewer.
 	std::optional<std::size_t> activeAtReady;
+	std::size_t cardAtReady = 0, otherAtReady = 0; // the codes' ledger indices at ready, where the clock is judged from
 	events.onReady = [&] {
 		const auto node = graph.registry.id("card.playback");
 		activeAtReady = node ? graph.registry.activeLinksOf(*node) : 0;
+		cardAtReady = graph.cardCode.ledger().count();
+		otherAtReady = graph.otherCode.ledger().count();
 	};
 	const auto card = graph.makeCard(cardId("Test"), events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
@@ -372,10 +401,13 @@ TEST_CASE("A playback card becomes ready, every channel's link active, and then 
 	CHECK(graph.registry.driverId("card.playback") == graph.dummy);
 	CHECK(graph.cardCode.driver() == graph.dummy); // what the framework tells the code: the same driver
 	// The card joining moved no clock: every cycle each code ran is judged, or excused where the driver cut what it
-	// missed (a loaded host's stall, docs/engine.md#xruns-on-a-loaded-host-are-not-bugs), to a planned count.
-	CHECK(graph.waiter.until([&] { return judgeClock(graph.cardCode).done() && judgeClock(graph.otherCode).done(); }));
-	for (const Code* code : {&graph.cardCode, &graph.otherCode}) {
-		const ear::test::JudgeReport report = judgeClock(*code);
+	// missed (a loaded host's stall, docs/engine.md#xruns-on-a-loaded-host-are-not-bugs), to a planned count from ready.
+	CHECK(graph.waiter.until([&] {
+		return judgeClock(graph.cardCode, cardAtReady).done() && judgeClock(graph.otherCode, otherAtReady).done();
+	}));
+	for (const auto& [code, from] :
+	     {std::pair{&graph.cardCode, cardAtReady}, std::pair{&graph.otherCode, otherAtReady}}) {
+		const ear::test::JudgeReport report = judgeClock(*code, from);
 		INFO(report);
 		CHECK(report.ok());
 	}
@@ -667,6 +699,12 @@ TEST_CASE("A card that loses a link while it follows is lost with its node gone,
 
 	const auto links = graph.registry.linksOf(cardNode);
 	REQUIRE(links.size() == 2);
+	std::size_t cardAtLoss = 0,
+				otherAtLoss = 0; // the codes' ledger indices at the loss, where the clock is judged from
+	events.onLost = [&] {
+		cardAtLoss = graph.cardCode.ledger().count();
+		otherAtLoss = graph.otherCode.ledger().count();
+	};
 	REQUIRE(graph.registry.destroy(links.front()));
 	REQUIRE(graph.waiter.until([&] { return events.lostDetail.has_value(); }));
 	CHECK_FALSE(events.nodePresentAtLost);
@@ -675,10 +713,14 @@ TEST_CASE("A card that loses a link while it follows is lost with its node gone,
 	CHECK(graph.cardCode.driver() == graph.dummy);
 	CHECK(graph.otherCode.driver() == graph.dummy);
 	// The card's loss moves no block's clock: every cycle each code ran is judged, or excused where the driver cut what
-	// it missed (a loaded host's stall, docs/engine.md#xruns-on-a-loaded-host-are-not-bugs), to a planned count.
-	CHECK(graph.waiter.until([&] { return judgeClock(graph.cardCode).done() && judgeClock(graph.otherCode).done(); }));
-	for (const Code* code : {&graph.cardCode, &graph.otherCode}) {
-		const ear::test::JudgeReport report = judgeClock(*code);
+	// it missed (a loaded host's stall, docs/engine.md#xruns-on-a-loaded-host-are-not-bugs), to a planned count from the
+	// loss.
+	CHECK(graph.waiter.until([&] {
+		return judgeClock(graph.cardCode, cardAtLoss).done() && judgeClock(graph.otherCode, otherAtLoss).done();
+	}));
+	for (const auto& [code, from] :
+	     {std::pair{&graph.cardCode, cardAtLoss}, std::pair{&graph.otherCode, otherAtLoss}}) {
+		const ear::test::JudgeReport report = judgeClock(*code, from);
 		INFO(report);
 		CHECK(report.ok());
 	}

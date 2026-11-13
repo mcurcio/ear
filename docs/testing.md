@@ -79,23 +79,29 @@ the test's thread), and gives each a verdict:
 
 - **judge**: nothing was lost before it (`whole()`). The test judges the boundary into it.
 - **excused**: a `catchUp`: the driver cut every cycle the node missed (`confirmed()`), the position
-  moved by exactly those cycles' frames, and no further than the raw clock went
-  (`FrameClock::ns(jumpFrames)` at most `lostRawNs` plus the driver's 1 ms clamp and two cycles'
-  wake room). Exactly the missed cycles are excused, counted.
+  moved by exactly those cycles' frames, and no further than the raw clock went:
+  `FrameClock::ns(jumpFrames)` at most `lostRawNs` plus the driver's 1 ms error clamp, and nothing
+  more, since a cycle's start is the driver's deadline mapped to the raw clock, so a late wake
+  cancels out ([engine.md](engine.md#graphcycle)). Exactly the missed cycles are excused, counted,
+  and the most any catch-up's jump outran the raw time lost is reported (`mostOverLostNs`).
 - **expected**: a cause the test declared in its plan, up to the count it declared (`start`, a
   `drive` per drive it made, a `driverChange` per card it made a driver, an `absent` per pause, an
   `oversized` per cycle too large for the block); a cut it follows is excused as well.
-- **fail**: anything else, a `reposition` always, with the cycle, its facts and the rule it broke.
+- **fail**: anything else: a `reposition` always, and a cause the judge has no rule for (deny by
+  default), with the cycle, its facts and the rule it broke.
 
 There is no window: a disturbance excuses its own cycles and not one more. A test hands the judge
 its plan, `JudgePlan{.judged, .induce, .expected}`: the boundaries it judges (0 is refused: nothing
 passes on nothing), and the stalls it makes itself, by default four of one and a half cycles
 (`StallPlan::every(50, 7, 4, StallLength::cycles(1.5))`). `judge.stalls()` is the `Stalls` the
 test's upstream code calls in its `process()`; each planned stall cuts its cycle straight after
-it, on any host, so the judged node misses it and the judge must excuse it. `done()` holds only
-when the planned boundaries were judged, every planned stall was made, and at least that many
-cycles were excused as cut, so a test whose excuse path is broken (the judge, the facts or the
-record) fails every run, not on the first loaded host. A test waits with its `Waiter` until
+it, on any host, so the judged node misses it and the judge must excuse it. Each stall keeps the
+graph cycle it was made in (the record's count, read in that cycle), and `done()` holds only when
+the planned boundaries were judged and every planned stall was made in a cycle an excused verdict
+covers (the cycles a catch-up missed, or a card's missing block), so a test whose excuse path is
+broken (the judge, the facts or the record) fails every run, not on the first loaded host, and a
+stall made in the judged node itself (which cuts nothing it misses) never counts: stalls are made
+upstream of it. A test waits with its `Waiter` until
 `judge.done()` (or a failure, or its ledger full), then `INFO(judge.report())` and requires
 `judge.report().ok()`. A test that must not stall says why and plans `StallPlan{}`.
 
@@ -103,28 +109,36 @@ record) fails every run, not on the first loaded host. A test waits with its `Wa
 engine's record (`Engine::cuts()`). The test reads the card's file as it grows: a block boundary
 heard whole on both sides is judged (`blockHeard()`), and each block of the ramp missing from the
 file is excused only if the driver cut the cycle the ramp wrote it in (`blockMissing(graphCycle)`,
-the cycle from the ramp's own ledger), with any silence the card plays for a block it missed whole
-blocks.
+the cycle from the ramp's own ledger). The card plays a whole block of silence for a cycle the
+ramp's block did not run (the driver cut it before the block) and the ramp goes on where it stopped:
+such silence is allowed only where the ramp's next cycle states a catch-up over at least that many
+cut cycles, and the ramp's block is judged from its own facts as well.
 
 Every test that excuses a lost cycle does it through the judge:
 
 - The ramp through a block's inside ports (`port_block_test.cpp`) and from one block to another
   (`engine_test.cpp`): within every cycle the recorder heard, the ramp is whole; a boundary is
-  judged where the judge says so, to 32 of them; the ramp makes the judge's four stalls once it is
-  heard.
+  judged where the judge says so, to 32 of them; across an excused one the ramp moved on by whole
+  blocks it wrote unheard, never more than the jump (none where the driver cut the cycle before the
+  ramp too), so a repeated, stale or over-skipped block fails; the ramp makes the judge's four
+  stalls once it is heard.
 - The ramp onto a card's channel 2 (`sound_card_test.cpp`): as above, read from the card's file,
   each stalled block among those excused. The card's join and its loss judge every cycle each block's
-  code ran (its drive expected, nothing else) and make no stall: they judge the clock the card leaves
-  the blocks on, and the ramp proves the excuse path in the same file through the same code.
+  code ran (its drive expected, nothing else), counting the planned boundaries only from the event
+  (the ledger's index at ready, at the loss), and make no stall: they judge the clock the card
+  leaves the blocks on, and the ramp proves the excuse path in the same file through the same code.
 - A sink's take-ups across stops, starts and a storm of drives (`sink_test.cpp`): every cycle of the
-  code through the judge, each drive declared; the block counting the graph's cycles feeds the block
-  under test and makes the judge's four stalls while the code runs.
+  code through the judge; the block counting the graph's cycles feeds the block under test and makes
+  the judge's four stalls while the code runs. The `drive`s expected must be exactly the drives taken
+  at distinct positions (drives the data loop takes before one cycle state one).
 - A bound source and S5's part A on the real block (`source_test.cpp`): every cycle of the source's
   block through the judge, its drive declared; an upstream probe makes the stalls (the default four,
-  and S5's 30 of 12 ms), and the source rule's model reads each stated jump.
+  and S5's 30 of 12 ms), and the source rule's model reads each stated jump, checking the position
+  is the last cycle's end moved by it.
 - S5 (`spikes_test.cpp`): B is a probe, not a block, so it states its own facts by the rule a block
-  runs (`CycleAccount` over the engine's record, from the tick a block builds); U's 200 overruns are
-  the judge's stalls, and every cycle B ran is judged.
+  runs (`CycleAccount` over the engine's record, from the tick a block builds, by the same helper,
+  `src/pipewire/driver_tick.hpp`); U's 200 overruns are the judge's stalls, and every cycle B ran is
+  judged.
 
 ### A writer's own event
 

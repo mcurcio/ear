@@ -550,6 +550,7 @@ private:
 /// judge's (docs/testing.md#the-cycle-judge).
 struct SourceJudged {
 	std::size_t cycles = 0, jumps = 0, beyond = 0, clocks = 0, clockNotBeyond = 0, drift = 0, lagged = 0;
+	std::size_t positionOff = 0; // cycles on the same driver whose position is not the last end and the stated jump
 	std::uint64_t largestJump = 0, excusedDry = 0;
 	std::string firstDrift;
 	/// Per cycle: the source played every frame of it, as its count says; and played it so with no dry cycle just before
@@ -570,6 +571,12 @@ SourceJudged judgeSource(std::span<const CodeCycle> cycles, std::uint32_t capaci
 		const CodeCycle& c = cycles[n];
 		const CodeCycle* p = n > 0 ? &cycles[n - 1] : nullptr;
 		std::uint64_t jump = 0;
+		// The stated jump is the code's own view too: on the same driver, the position is the last cycle's end moved
+		// by it (worked out modulo 2^64, as the facts are).
+		const bool sameDriver = !c.facts.causes.has(CycleCause::start) && !c.facts.causes.has(CycleCause::driverChange);
+		if (p != nullptr && sameDriver &&
+		    c.position != p->position + p->frames + static_cast<std::uint64_t>(c.facts.jumpFrames))
+			++j.positionOff;
 		if (p != nullptr && c.facts.jumpFrames > 0) {
 			++j.jumps;
 			jump = static_cast<std::uint64_t>(c.facts.jumpFrames);
@@ -769,6 +776,7 @@ TEST_CASE("A bound source plays its ramp into its bank before the code, reaching
 	feedJudge(judge, cycles, fed);
 	INFO(judge.report());
 	CHECK(judge.report().ok());
+	CHECK(j.positionOff == 0);
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);
@@ -926,6 +934,7 @@ TEST_CASE("A source on a real block keeps its played count to the clock across c
 	// Every jump was cycles the driver cut, each within the time the raw clock lost, by the one judge; and every jump
 	// past the capacity, and nothing else, was a new clock to the source.
 	CHECK(judge.report().ok());
+	CHECK(j.positionOff == 0);
 	CHECK(j.clocks == j.beyond);
 	CHECK(j.clockNotBeyond == 0);
 	CHECK(j.drift == 0);

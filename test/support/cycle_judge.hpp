@@ -1,14 +1,15 @@
 // The one test judge of lost cycles (docs/testing.md#the-cycle-judge): the only place a test may excuse a cycle its
 // judged node missed. It is fed the facts of the node whose output the test judges (the last of a chain), one cycle
 // at a time in the order they ran, and gives each a verdict: judged (nothing lost before it), excused (cycles the
-// driver cut, exactly as many as were missed, the jump their frames and no further than the raw clock went), expected
+// driver cut, exactly as many as were missed, the jump their frames and within 1 ms of the raw clock), expected
 // (a cause the test declared, up to the count it declared) or a failure. There is no window: a disturbance excuses
 // its own cycles and not one more. It holds the stalls the test makes (1.5-cycle stalls by default), so every run
 // proves its excuse path, and it is done only once the planned boundaries were judged and every planned stall was
-// made and excused. Header-only (the target ear_cycle_judge); the test's thread only, reading ledgers the data thread
-// filled.
+// made and found among the cycles an excused verdict covers. Header-only (the target ear_cycle_judge); the test's
+// thread only, reading ledgers the data thread filled.
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "cycle_table.hpp" // describe(CycleFacts), for a failure's message
 #include "ear/core/cycle_facts.hpp"
@@ -52,18 +54,25 @@ struct JudgeReport {
 	std::size_t excusedEvents = 0; // verdicts that excused some: a stall that cut three cycles is one
 	std::size_t expected = 0, failed = 0;
 	std::size_t stallsMade = 0, stallsPlanned = 0;
+	std::size_t stallsExcused = 0; // planned stalls whose cycle lies in an excused verdict's missed cycles
+	/// The most any catch-up's jump outran the raw time lost (ns(jumpFrames) - lostRawNs), excused or not; none before
+	/// the first catch-up. The evidence of the raw-clock rule's margin.
+	std::optional<std::int64_t> mostOverLostNs;
 	std::string firstFailure; // the cycle, its facts and the rule it broke
-	/// Every planned boundary judged and every planned stall made and excused, with no failure.
+	/// Every planned boundary judged and every planned stall made and found excused.
 	bool done() const noexcept {
-		return judged >= judgedPlanned && stallsMade >= stallsPlanned && excusedCycles >= stallsPlanned;
+		return judged >= judgedPlanned && stallsMade >= stallsPlanned && stallsExcused >= stallsPlanned;
 	}
+	/// Done, with no failure.
 	bool ok() const noexcept { return failed == 0 && done(); }
 	friend std::ostream& operator<<(std::ostream& out, const JudgeReport& report) {
 		out << "judged " << report.judged << " of " << report.judgedPlanned << " boundaries; excused "
 			<< report.excusedCycles << " cut cycles in " << report.excusedEvents << " verdicts; " << report.expected
-			<< " expected; stalls made " << report.stallsMade << " of " << report.stallsPlanned << "; " << report.failed
-			<< " failed";
-		if (!report.firstFailure.empty()) out << " (the first: " << report.firstFailure << ")";
+			<< " expected; stalls made " << report.stallsMade << " of " << report.stallsPlanned << ", "
+			<< report.stallsExcused << " excused; " << report.failed << " failed; a catch-up outran the raw clock by ";
+		if (report.mostOverLostNs) out << *report.mostOverLostNs << " ns at most";
+		else out << "nothing (none came)";
+		if (!report.firstFailure.empty()) out << " (the first failure: " << report.firstFailure << ")";
 		return out;
 	}
 };
@@ -71,14 +80,16 @@ struct JudgeReport {
 class CycleJudge {
 public:
 	/// Refuses (std::invalid_argument) a plan that judges nothing: nothing passes on nothing. `clock` is the graph's,
-	/// for the raw-clock check; `cuts` (outliving the judge) answers blockMissing, and may be null for a judge fed
-	/// facts only.
+	/// for the raw-clock check; `cuts` (outliving the judge) numbers each planned stall's cycle and answers
+	/// blockMissing, and may be null only for a judge that plans no stall.
 	CycleJudge(JudgePlan plan, FrameClock clock, const CutRecord* cuts)
-		: plan_(checked(std::move(plan))), clock_(clock), cuts_(cuts), stalls_(plan_.induce) {}
+		: plan_(checked(std::move(plan), cuts)), clock_(clock), cuts_(cuts), stalls_(plan_.induce, cuts) {}
 	CycleJudge(const CycleJudge&) = delete;
 	CycleJudge& operator=(const CycleJudge&) = delete;
 
-	/// The stalls the test's upstream code calls in its process() (its index: the code's own count of its cycles).
+	/// The stalls the test's upstream code calls in its process() (its index: the code's own count of its cycles). A
+	/// stall must be made upstream of the judged node, in a cycle the judged node then misses: one made in the judged
+	/// node itself cuts nothing it misses, and is never found excused.
 	Stalls& stalls() noexcept { return stalls_; }
 
 	/// One cycle of the judged node, of `frames`, in the order they ran.
@@ -90,15 +101,18 @@ public:
 		}
 		std::string broken;
 		std::uint32_t excusing = 0;
+		if (!facts.causes.only(kKnown)) broken = "a cause the judge does not know";
 		if (facts.causes.has(CycleCause::catchUp)) {
 			// The driver cut every missed cycle, the position moved by exactly their frames, and no further than the raw
-			// clock went: within the driver's 1 ms error clamp and two cycles' wake room (docs/engine.md#graphcycle).
+			// clock went: a cycle's start is the driver's deadline mapped to the raw clock, so a late wake cancels out
+			// and only the driver's 1 ms error clamp is left (docs/engine.md#graphcycle).
 			const std::int64_t whole = static_cast<std::int64_t>(facts.missed) * frames;
+			const std::int64_t over = clock_.ns(facts.jumpFrames) - facts.lostRawNs;
+			mostOverLostNs_ = std::max(mostOverLostNs_.value_or(over), over);
 			if (!facts.confirmed()) broken = "a catch-up over cycles the driver did not all cut";
 			else if (facts.missed == 0 || facts.jumpFrames != whole)
 				broken = "a catch-up whose jump is not its missed cycles' frames";
-			else if (clock_.ns(facts.jumpFrames) > facts.lostRawNs + kClampNs + clock_.ns(2 * std::int64_t{frames}))
-				broken = "a catch-up further than the raw clock went";
+			else if (over > kClampNs) broken = "a catch-up further than the raw clock went";
 			else excusing = facts.missed;
 		}
 		if (facts.causes.has(CycleCause::reposition)) broken = "a reposition, which nothing excuses";
@@ -120,6 +134,7 @@ public:
 		if (excusing > 0) {
 			excusedCycles_ += excusing;
 			++excusedEvents_;
+			if (facts.graphCycle > excusing) spans_.emplace_back(facts.graphCycle - excusing, facts.graphCycle - 1);
 		}
 		if (expecting) {
 			++expected_;
@@ -135,6 +150,7 @@ public:
 		if (cut.value_or(false)) {
 			++excusedCycles_;
 			++excusedEvents_;
+			spans_.emplace_back(graphCycle, graphCycle);
 			return Verdict::excused;
 		}
 		return fail("a block of graph cycle " + std::to_string(graphCycle) + " missing from the card's file: " +
@@ -149,23 +165,43 @@ public:
 
 	bool done() const noexcept { return report().done(); }
 	JudgeReport report() const {
+		const std::size_t made = stalls_.made();
+		std::size_t excused = 0;
+		for (std::size_t i = 0; i < std::min(made, Stalls::kKept); ++i) {
+			const std::uint64_t cycle = stalls_.madeIn(i);
+			for (const auto& [from, to] : spans_) {
+				if (cycle != 0 && from <= cycle && cycle <= to) {
+					++excused;
+					break;
+				}
+			}
+		}
 		return JudgeReport{.judged = judged_,
 		                   .judgedPlanned = plan_.judged,
 		                   .excusedCycles = excusedCycles_,
 		                   .excusedEvents = excusedEvents_,
 		                   .expected = expected_,
 		                   .failed = failed_,
-		                   .stallsMade = stalls_.made(),
+		                   .stallsMade = made,
 		                   .stallsPlanned = plan_.induce.size(),
+		                   .stallsExcused = excused,
+		                   .mostOverLostNs = mostOverLostNs_,
 		                   .firstFailure = firstFailure_};
 	}
 
 private:
 	using Expected = JudgePlan::Expected;
 	static constexpr std::int64_t kClampNs = 1'000'000; // node-driver.c's error clamp
+	/// Every cause the judge has a rule for; any other fails.
+	static constexpr CycleCauses kKnown = CycleCause::start | CycleCause::drive | CycleCause::driverChange |
+	                                      CycleCause::catchUp | CycleCause::absent | CycleCause::oversized |
+	                                      CycleCause::reposition;
 
-	static JudgePlan checked(JudgePlan plan) {
+	static JudgePlan checked(JudgePlan plan, const CutRecord* cuts) {
 		if (plan.judged == 0) throw std::invalid_argument("a cycle judge must judge some boundary");
+		if (plan.induce.size() > 0 && cuts == nullptr)
+			throw std::invalid_argument("a cycle judge that plans stalls needs the record to number them");
+		if (plan.induce.size() > Stalls::kKept) throw std::invalid_argument("more planned stalls than are kept");
 		return plan;
 	}
 	Verdict fail(std::string what) {
@@ -178,6 +214,8 @@ private:
 	const CutRecord* cuts_;
 	Stalls stalls_;
 	Expected used_{0, 0, 0, 0, 0};
+	std::vector<std::pair<std::uint64_t, std::uint64_t>> spans_; // the missed cycles of each excused verdict
+	std::optional<std::int64_t> mostOverLostNs_;
 	std::size_t seen_ = 0, judged_ = 0, excusedCycles_ = 0, excusedEvents_ = 0, expected_ = 0, failed_ = 0;
 	std::string firstFailure_;
 };

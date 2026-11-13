@@ -674,7 +674,7 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	CHECK(wiring.ports.find("card", "to_card.1")->direction == Direction::output);
 
 	const CycleLedger& ledger = recorder.ledger();
-	std::size_t fed = 0, breaks = 0;
+	std::size_t fed = 0, breaks = 0, wrongSkips = 0;
 	// The recorder's cycles so far, in order: each sample within a cycle after the first sound, and each boundary into
 	// one, through the judge.
 	const auto feed = [&] {
@@ -688,9 +688,16 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 			for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
 				if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
 			if (start <= first) continue;
-			if (judge.at(ledger[fed].facts, ledger[fed].frames) == ear::test::Verdict::judge &&
-			    samples[start] != samples[start - 1] + 1.0f)
-				++breaks;
+			const ear::CycleFacts facts = ledger[fed].facts;
+			const ear::test::Verdict verdict = judge.at(facts, ledger[fed].frames);
+			if (verdict == ear::test::Verdict::judge && samples[start] != samples[start - 1] + 1.0f) ++breaks;
+			// Across cycles the driver cut, the ramp moved on by whole blocks it wrote unheard, never more than the
+			// cycles the recorder missed (none, where the driver cut a cycle before the ramp ran it too): a repeated,
+			// stale or over-skipped block fails.
+			if (verdict != ear::test::Verdict::fail && facts.causes.has(ear::CycleCause::catchUp)) {
+				const auto skipped = static_cast<std::int64_t>(samples[start] - samples[start - 1]) - 1;
+				if (skipped < 0 || skipped % ledger[fed].frames != 0 || skipped > facts.jumpFrames) ++wrongSkips;
+			}
 		}
 	};
 	REQUIRE(waiter.until([&] { return firstSound(recorder.samples()) < recorder.samples().size(); }));
@@ -711,6 +718,7 @@ TEST_CASE("A block with inside ports: the inside output is live and routable, le
 	REQUIRE(first < samples.size());
 	CHECK(samples[first] >= 1.0f);
 	CHECK(breaks == 0);
+	CHECK(wrongSkips == 0);
 	CHECK(judge.report().ok());
 
 	std::vector<NodeLevels> snapshot;
