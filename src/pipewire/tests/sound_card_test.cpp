@@ -64,19 +64,19 @@ CardId cardId(std::string_view text) {
 /// Counts its cycles, the driver and discontinuities the framework told it, and the latency
 /// downstream of its first output. Writes zeros everywhere, except a ramp of exact floats
 /// (k * 2^-24, k from 1) on output `rampOn` when it is set; then it records each cycle in its
-/// ledger, with the ramp's first k in it and the graph cycle it ran in, by `driver`. Given a plan, once armed its ramp
-/// stalls the data thread at the planned cycles, counted from the first armed one, and notes which ledger cycles they
-/// were.
+/// ledger, with the ramp's first k in it and the graph cycle it ran in, by the engine's record of its cuts. Given a
+/// plan, once armed its ramp stalls the data thread at the planned cycles, counted from the first armed one, and notes
+/// which ledger cycles they were.
 class Code final : public AudioCode {
 public:
-	Code(Waiter& waiter, const DriverCycles& driver, std::optional<std::size_t> rampOn = std::nullopt,
+	Code(Waiter& waiter, const CutRecord& driver, std::optional<std::size_t> rampOn = std::nullopt,
 	     ear::test::StallPlan plan = {})
 		: waiter_(waiter), driverCycles_(driver), rampOn_(rampOn), ledger_(rampOn ? kRampCycles : 0),
 		  firstK_(ledger_.capacity()), graphCycle_(ledger_.capacity()), stalls_(std::move(plan)) {}
 	void prepare(const AudioFormat&) override {}
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const ear::GraphCycle& cycle) noexcept override {
-		const std::uint64_t graphCycle = driverCycles_.started(); // the cycle this one runs in; 0 before it listened
+		const std::uint64_t graphCycle = driverCycles_.started(); // the cycle this one runs in
 		const bool armed = armed_.load(std::memory_order_acquire);
 		const bool stalling = armed && stalls_.plan().planned(armedCycles_).has_value();
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
@@ -89,7 +89,7 @@ public:
 			for (std::uint32_t i = 0; i < frames; ++i) {
 				outputs[*rampOn_][i] = static_cast<float>(++next_) * kStep;
 			}
-			const std::optional<std::size_t> recorded = ledger_.record(cycle, frames, stalling);
+			const std::optional<std::size_t> recorded = ledger_.record(cycle, frames);
 			if (stalling && recorded) {
 				const std::size_t at = stalledCount_.load(std::memory_order_relaxed);
 				if (at < stalledAt_.size()) {
@@ -107,7 +107,8 @@ public:
 			const std::uint64_t skipped = graphCycle > lastGraphCycle_ ? graphCycle - lastGraphCycle_ - 1 : 0;
 			bool cut = lastGraphCycle_ > 0 && cycle.driverId == lastDriver_ && skipped > 0 &&
 			           cycle.position == lastEnd_ + skipped * frames;
-			for (std::uint64_t g = lastGraphCycle_ + 1; cut && g < graphCycle; ++g) cut = driverCycles_.cutShort(g);
+			for (std::uint64_t g = lastGraphCycle_ + 1; cut && g < graphCycle; ++g)
+				cut = driverCycles_.cut(g).value_or(false);
 			(cut ? hostJumps_ : discontinuities_).fetch_add(1, std::memory_order_relaxed);
 		}
 		lastEnd_ = cycle.position + frames;
@@ -151,7 +152,7 @@ public:
 
 private:
 	Waiter& waiter_;
-	const DriverCycles& driverCycles_;
+	const CutRecord& driverCycles_;
 	std::optional<std::size_t> rampOn_;
 	ear::test::CycleLedger ledger_;
 	std::vector<std::uint64_t> firstK_;
@@ -209,20 +210,18 @@ private:
 struct Graph {
 	explicit Graph(std::optional<std::size_t> rampOn = std::nullopt, Faults* faults = nullptr,
 	               ear::test::StallPlan plan = {})
-		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine),
-		  driverCycles(*engine, 1 << 16, &Graph::wakeWaiter, &waiter), registry(*engine, waiter), blocks(*engine, bell),
-		  cards(*engine, clocklessCardProperties()), cardCode(waiter, driverCycles, rampOn, std::move(plan)),
-		  otherCode(waiter, driverCycles), cardBlockEvents(waiter), otherBlockEvents(waiter) {
+		: out(useTestAlsa(alsaOut)), engine(makeEngine(faults)), waiter(*engine), driverCycles(engine->cuts()),
+		  registry(*engine, waiter), blocks(*engine, bell), cards(*engine, clocklessCardProperties()),
+		  cardCode(waiter, driverCycles, rampOn, std::move(plan)), otherCode(waiter, driverCycles),
+		  cardBlockEvents(waiter), otherBlockEvents(waiter) {
 		cardBlock = blocks.make("card",
 		                        Ports{{{Direction::input, "play", {"1", "2"}},
 		                               {Direction::output, "to_card", {"1", "2"}, PortBank::Reach::inside}}},
 		                        kFormat, cardBlockEvents);
 		otherBlock = blocks.make("other", Ports{{{Direction::input, "in", {"a"}}}}, kFormat, otherBlockEvents);
-		// The dummy driver runs only with a node to drive, so the blocks come first, running no code; the codes are
-		// driven once the driver's listener counts cycles, so every cycle a code runs names its graph cycle and every
-		// discontinuity is judged.
-		REQUIRE(waiter.until(
-			[&] { return cardBlockEvents.isReady && otherBlockEvents.isReady && driverCycles.started() > 0; }));
+		// The engine's record numbers every cycle from its start, so every cycle a code runs names its graph cycle and
+		// every discontinuity is judged.
+		REQUIRE(waiter.until([&] { return cardBlockEvents.isReady && otherBlockEvents.isReady; }));
 		REQUIRE(ear::testing::driveNow(*cardBlock, &cardCode));
 		REQUIRE(ear::testing::driveNow(*otherBlock, &otherCode));
 		REQUIRE(waiter.until([&] {
@@ -247,8 +246,6 @@ struct Graph {
 		return card;
 	}
 
-	/// DriverCycles' wake: the first cycles start with no code running to wake the waiter.
-	static void wakeWaiter(void* waiter) noexcept { static_cast<Waiter*>(waiter)->wake(); }
 	/// Both blocks' code ran `cycles` more times.
 	bool bothRun(std::uint64_t cycles) {
 		const std::uint64_t card = cardCode.calls() + cycles;
@@ -265,7 +262,7 @@ struct Graph {
 	std::filesystem::path out;
 	std::unique_ptr<Engine> engine;
 	Waiter waiter;
-	DriverCycles driverCycles; // before the codes, which read it, so it outlives them
+	const CutRecord& driverCycles; // the engine's record of its cuts, before the codes, which read it
 	Registry registry;
 	NoBell bell;
 	FilterPortBlocks blocks;
@@ -303,7 +300,7 @@ struct RampHeard {
 };
 
 /// Interleaved two-channel `samples` from card Test's file, the ramp on channel 2 (its k * 2^-24) and channel 1 silent.
-RampHeard judgeRamp(const std::vector<float>& samples, const Code& code, const DriverCycles& driver) {
+RampHeard judgeRamp(const std::vector<float>& samples, const Code& code, const CutRecord& driver) {
 	RampHeard heard;
 	const ear::test::CycleLedger& ledger = code.ledger();
 	const std::size_t cycles = ledger.count();
@@ -325,7 +322,7 @@ RampHeard judgeRamp(const std::vector<float>& samples, const Code& code, const D
 	const auto allCut = [&](std::size_t from, std::size_t to) {
 		for (std::size_t n = from; n < to; ++n) {
 			const std::uint64_t cycle = code.graphCycle(n);
-			if (cycle >= started || !driver.cutShort(cycle)) return false;
+			if (cycle >= started || !driver.cut(cycle).value_or(false)) return false;
 		}
 		return true;
 	};
@@ -471,7 +468,7 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 	CardEvents events(graph.waiter, graph.registry, "card.playback");
 	// The card runs no code of ear's, so it keeps no ledger: the driver's own account of each cycle stands in for one.
 	// The ramp names the graph cycle each of its cycles ran in, from before the card is made (Graph waits for it).
-	const DriverCycles& driver = graph.driverCycles;
+	const CutRecord& driver = graph.driverCycles;
 	const auto card = graph.makeCard(cardId("Test"), events);
 	REQUIRE(graph.waiter.until([&] { return events.readyCount > 0 || events.lostDetail.has_value(); }));
 	REQUIRE(events.lostDetail.value_or("") == "");
@@ -505,14 +502,13 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 		30s);
 	INFO("judged " << heard.judged << " of " << kWanted << " boundaries in " << readAt
 	               << " bytes; whole silent blocks: " << heard.silentBlocks << "; boundaries across blocks lost in "
-	               << driver.cuts() << " cycles cut short, not judged: " << heard.unjudged
+	               << driver.cutsSoFar() << " cycles cut short, not judged: " << heard.unjudged
 	               << "; first breaks: " << heard.firstBreaks);
 	REQUIRE(came);
 	{
 		INFO("the ramp filled its " << ledger.capacity() << " cycles before " << kWanted << " boundaries were judged");
 		REQUIRE_FALSE(ledger.full());
 	}
-	REQUIRE_FALSE(driver.overflowed());
 	CHECK(heard.leftNonZero == 0);
 	CHECK(heard.breaks == 0);
 	CHECK(heard.firstK >= 1);
@@ -524,7 +520,7 @@ TEST_CASE("What a port block sends to inside output to_card.2 lands on the card'
 		CHECK(std::ranges::find(heard.excusedCycles, stalled) != heard.excusedCycles.end());
 	}
 	CHECK(heard.excusedCycles.size() >= kStalls); // a run of cut cycles may hold more than one stall
-	CHECK(driver.cuts() >= kStalls);
+	CHECK(driver.cutsSoFar() >= kStalls);
 }
 
 // docs/engine.md#the-quantum-guard: ear sets no force property on a card, and its test seam may not either.

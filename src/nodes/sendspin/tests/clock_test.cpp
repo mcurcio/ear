@@ -134,7 +134,7 @@ public:
 		out.firstIndex = 0;
 		out.lastIndex = 0;
 		out.ramp = true;
-		out.clean = ledger_[at].clean;
+		out.clean = ledger_[at].whole();
 		for (std::uint32_t i = 0; i < frames; ++i) {
 			const float left = outputs[0][i];
 			const float right = outputs[1][i];

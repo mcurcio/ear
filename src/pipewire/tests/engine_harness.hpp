@@ -23,7 +23,6 @@
 #include <pipewire/pipewire.h>
 
 #include "catch2/catch.hpp"
-#include "driver_cycles.hpp"
 #include "ear/core/node_host.hpp"
 #include "ear/pipewire/engine.hpp"
 #include "ear/pipewire/faults.hpp"

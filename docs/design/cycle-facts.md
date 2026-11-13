@@ -4,8 +4,9 @@ Status: designed to module level (2026-11-10); Q-CF1 and Q-CF2 answered, diagnos
 spike S6 run (section 9.1: PipeWire reports every cycle a node misses, so Q-CF3 is not asked); step C1 built (section
 9.2: the facts, `CycleAccount`, the table and the harness, described in `docs/writing-a-node-type.md#lost-cycles`
 and `docs/testing.md`); step C2 built (section 9.3: `DriverCuts`, `listenRealtime`, the block on `CycleAccount` and
-`GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`), the
-rest not. Its steps
+`GraphCycle::facts`, described in `docs/engine.md#graphcycle` and `docs/architecture.md#the-callback-boundary`); step
+C3a built (section 9.4: `CycleJudge`, the ledger on facts and the inside ports' ramp on the judge, described in
+`docs/testing.md#the-cycle-judge`), the rest not. Its steps
 (section 9) follow `root-classes.md`'s and come before slice 3c, whose `sendspin` on a source takes the source rule this page changes (section 4.4). The built system
 it changes is described in `docs/engine.md` (`#graphcycle`, `#the-internal-clock`, `#sinks`, `#sources`, `#dating`,
 `#the-one-data-loop-and-invokes`), `docs/testing.md` (`#making-the-rare-event`, `#the-sleep-guard`),
@@ -817,7 +818,7 @@ R5d).
 | **S6** | **Done** (9.1). Spike (`spikes_test.cpp`, test only): on 1.4.2, with induced stalls and a busy thread per core, (a) every cycle a block misses is reported `incomplete` before the next `start`; (b) `clock.cycle` against the listener's count; (c) jumps are whole missed cycles on the dummy, and what makes the others (the 1127-frame jumps: a driver restart's re-anchoring?); (d) the `TRIGGERED` recovery path in `node_ready` loses no follower cycle. Findings go into this page | nothing | none |
 | **C1** | **Done** (9.2). `cycle_facts.hpp`, `CycleAccount`, `cycle_table.hpp`; the harness on `CycleAccount` with `HarnessCuts` and `loseCycles`, `changeDriver`, `reposition`. `CycleContinuity` becomes a wrapper over `CycleAccount` with no cuts | nothing yet | none (the conformance rows pin today's discontinuities) |
 | **C2** | **Done** (9.3). `DriverCuts`; `listenRealtime<>` in the boundary and `pw_impl_node_add_rt_listener` added to the callback guard's list; the block on `CycleAccount` with the engine's cuts; `GraphCycle::facts` added (`discontinuity`, `xruns` derived from it); the conformance rows through a real block | `CycleContinuity` | none: `facts` is new, the two old members keep their values |
-| **C3a** | `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
+| **C3a** | **Done** (9.4). `cycle_judge.hpp`; `CycleLedger` records facts; `ear_test_support_tests` on the judge (each verdict, a plan of 0 refused, done needing the stalls); `port_block_test.cpp` onto it | `DriverCycles` (`driver_cycles.hpp`), `lostToCuts`, the ledger's own clean rule | none |
 | **C3b** | `sound_card_test.cpp`, `source_test.cpp`, `engine_test.cpp`, `sink_test.cpp`, S5's raw rule | `judgeRamp`'s `allCut`, `hostJumps`, `judgeSource`'s raw block, the code's own raw reads | none |
 | **C4a** | `SendspinCode` on facts: progress moves by the whole jump on a `catchUp`; its unit test on scripted facts. **If R5c/R5d's open findings show a progress bug, its fix is this step** (not a patch of `missedFrames` first); C1 and C2 are small enough to land ahead of it | `missedFrames`, `nextPosition_`, `lastSkipped()` | yes: progress no longer lags after a short skip or a stall past the feed (Q-CF2: keep in step) |
 | **C4b** | `SourceRing::keepTime` on facts; `Chunk`/`ChunkStamp` gain `causes`, `lostFrames`; `GraphCycle::xruns` and `discontinuity` removed (mechanical) | the source's position arithmetic, the two members | `Played` keeps in step across any stall (Q-CF2); `docs/writing-a-node-type.md#sources` and `#sinks` change |
@@ -1027,6 +1028,39 @@ must know.
   to nothing: made inactive, a linked block would hold its peers back. A test's `EngineNodes::suspend` would not do:
   nothing brings a suspended node back.
 - **`stalls_` (D1) is not added**; nothing reads it before D1.
+
+### 9.4 Found building C3a
+
+What C3a built is described where it lives (`docs/testing.md#the-cycle-judge`, `#making-the-rare-event`, its
+`ear_test_support_tests` and `ear_pipewire_tests` rows, the header); this section keeps only where it departs from
+sections 5 and 6, and what the steps after it must know.
+
+- **A card's judged boundaries are counted by `blockHeard()`**, an addition to 6.5: a card states no facts, so a
+  boundary the test heard whole in the card's file is counted as judged through it, and `blockMissing` counts each
+  excused block as an excused cycle. `done()` is then the same for a card as for a chain.
+- **`librarySettle` is not built**: C3c, its only user, adds it with its rule (5.4).
+- **`JudgeReport` carries `judgedPlanned` and `done()`**, so `ok()` (no failure, done) needs nothing but the report.
+- **A declared cause with a catch-up** (a drive across a stall) is `expected`, its cut cycles counted excused as well;
+  a failed verdict uses up no declared count, so the next cycle is judged as if it had not come.
+- **The judge names a cycle's facts with `describe`** from `cycle_table.hpp`, so `ear_cycle_judge` links
+  `ear_cycle_table` rather than keeping a second spelling of the causes.
+- **`DriverCycles` is gone, and with it the second listener of the driver's events.** The test that compared the
+  engine's record with it cycle for cycle now checks the record against what the driver and the chain show
+  independently: each cycle's number against the driver's position, each of the head's 1.5-cycle stalls recorded
+  cut, and over the tail's span a cycle recorded cut exactly when the tail missed it (a cycle the last node ran was
+  finished by every node, so the driver cannot have cut it; S6, 9.1). The tail's last cycle is left out: its cut, if
+  any, is told only as the next cycle starts.
+- **The ledger keeps no clean rule and no `stalled` flag**: a planned stall no longer marks the cycle after it, since
+  the facts say what that cycle lost. `StallingCode` records and stalls as before.
+- **What C3b moves was kept compiling mechanically in C3a**: `sound_card_test.cpp` reads `Engine::cuts()` where it read
+  `DriverCycles`, `engine_test.cpp` judges over `whole()` cycles where it read `clean`, and `sink_test.cpp`'s take-up
+  is judged where its only cause is the drive, where it compared `xruns`. The sendspin clock test and the RTP
+  receiver's engine test (C3c's) read a ledger cycle's `whole()` where they read `clean`: neither marked a stall, so
+  the two say the same.
+- **The take-ups and fade-ins of `port_block_test.cpp` stay on the probe's consecutive positions** (5.5's second row):
+  their listener is a bare probe, not a block, so it states no facts, and a take-up is never excused, only made again;
+  on the tracking dummy consecutive positions are what `whole()` says (S6). Moving them needs a probe that runs
+  `CycleAccount` itself, as C3b's S5 does.
 
 ## 10. Decided here (technical)
 

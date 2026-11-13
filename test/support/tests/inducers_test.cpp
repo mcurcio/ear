@@ -1,6 +1,7 @@
 // The inducers themselves (test/support/inducers.hpp), on cycles made by hand: which cycles a plan stalls and for how
-// long, a stall carried out and counted, which cycles a ledger calls clean, and StallingCode doing both. The engine
-// tests that use them (the clock tests in port_block_test.cpp, S5, the source's cut-short cycles) prove them live.
+// long, a stall carried out and counted, a ledger keeping what each cycle's block stated, and StallingCode doing
+// both. The engine tests that use them (the clock tests in port_block_test.cpp, S5, the source's cut-short cycles)
+// prove them live.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -16,19 +17,16 @@
 namespace {
 using namespace std::chrono_literals;
 using ear::test::CycleLedger;
-using ear::test::LedgerCycle;
 using ear::test::StallingCode;
 using ear::test::StallLength;
 using ear::test::StallPlan;
 using ear::test::Stalls;
 
-/// A block's cycle as the framework would give it: `frames` on from `position`.
-ear::GraphCycle cycleAt(std::uint64_t position, std::uint64_t xruns = 0, bool discontinuity = false) {
+/// A block's cycle as the framework would give it: `frames` on from `position`, nothing lost before it.
+ear::GraphCycle cycleAt(std::uint64_t position) {
 	ear::GraphCycle cycle{};
 	cycle.position = position;
 	cycle.startRawNs = static_cast<std::int64_t>(position) * 1'000'000'000 / 48000;
-	cycle.xruns = xruns;
-	cycle.discontinuity = discontinuity;
 	return cycle;
 }
 
@@ -83,32 +81,26 @@ TEST_CASE("Stalls sleep the planned length at a planned cycle, return at once at
 	CHECK(stalls.made() == 1);
 }
 
-TEST_CASE("A ledger calls a cycle clean only when it follows the last one with nothing lost", "[inducers]") {
-	CycleLedger ledger(8);
-	const auto add = [&](LedgerCycle cycle) {
-		cycle.frames = 256;
-		return ledger.record(cycle);
-	};
-	REQUIRE(add({.position = 1000}) == 0U);             // the first: nothing before it to follow
-	REQUIRE(add({.position = 1256}) == 1U);             // clean
-	REQUIRE(add({.position = 1768}) == 2U);             // a cycle lost between
-	REQUIRE(add({.position = 2024}) == 3U);             // clean
-	REQUIRE(add({.position = 2280, .xruns = 1}) == 4U); // an xrun counted
-	REQUIRE(add({.position = 2536, .xruns = 1, .discontinuity = true}) == 5U);
-	REQUIRE(add({.position = 2792, .xruns = 1, .stalled = true}) == 6U); // clean, and stalls on purpose
-	REQUIRE(add({.position = 3048, .xruns = 1}) == 7U);                  // after a planned stall: never clean
-	const std::vector<bool> expected{false, true, false, true, false, false, true, false};
-	for (std::size_t i = 0; i < ledger.count(); ++i) {
-		INFO("cycle " << i);
-		CHECK(ledger[i].clean == expected[i]);
-	}
-	CHECK(ledger.clean() == 3);
+TEST_CASE("A ledger keeps each cycle as its block stated it, working nothing out, until it is full", "[inducers]") {
+	CycleLedger ledger(3);
+	ear::GraphCycle lost = cycleAt(1768);
+	lost.facts = {.graphCycle = 9, .missed = 1, .missedCut = 1, .jumpFrames = 256, .causes = ear::CycleCause::catchUp};
+	REQUIRE(ledger.record(cycleAt(1000), 256) == 0U);
+	REQUIRE(ledger.record(cycleAt(1256), 256) == 1U);
+	REQUIRE(ledger.record(lost, 256) == 2U);
+	CHECK(ledger[0].whole()); // a GraphCycle with empty facts: the ledger never judges the positions itself
+	CHECK(ledger[1].whole());
+	CHECK_FALSE(ledger[2].whole());
+	CHECK(ledger[2].facts == lost.facts);
+	CHECK(ledger[2].position == 1768);
+	CHECK(ledger[2].frames == 256);
+	CHECK(ledger[2].startRawNs == lost.startRawNs);
 	CHECK(ledger.full());
 	CHECK_FALSE(ledger.overflowed());
-	CHECK_FALSE(add({.position = 3304, .xruns = 1}));
+	CHECK_FALSE(ledger.record(cycleAt(2024), 256));
 	CHECK(ledger.overflowed());
-	CHECK(ledger.count() == 8);
-	CHECK(ledger.cycles().size() == 8);
+	CHECK(ledger.count() == 3);
+	CHECK(ledger.cycles().size() == 3);
 }
 
 TEST_CASE("StallingCode writes silence, records every cycle, stalls at its plan's cycles and wakes each cycle",
@@ -125,8 +117,5 @@ TEST_CASE("StallingCode writes silence, records every cycle, stalls at its plan'
 	const CycleLedger& ledger = code.ledger();
 	REQUIRE(ledger.count() == 4); // full: the two cycles after it are not recorded
 	CHECK(ledger.overflowed());
-	CHECK(ledger[1].stalled);
-	CHECK_FALSE(ledger[2].clean); // the cycle after the stall
-	CHECK(ledger[3].clean);
-	CHECK(ledger.clean() == 2);
+	CHECK(ledger[3].position == 3 * 256);
 }

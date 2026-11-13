@@ -158,10 +158,17 @@ add_library(ear_cycle_table INTERFACE)
 target_include_directories(ear_cycle_table INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
 target_link_libraries(ear_cycle_table INTERFACE ear_core)
 
+# ear_cycle_judge: the one judge of lost cycles (test/support/cycle_judge.hpp, header-only), the only place a test
+# excuses a cycle its judged node missed (docs/testing.md#the-cycle-judge).
+add_library(ear_cycle_judge INTERFACE)
+target_include_directories(ear_cycle_judge INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/support")
+target_link_libraries(ear_cycle_judge INTERFACE ear_core ear_inducers ear_cycle_table)
+
 # ear_test_support_tests: the tools themselves, on cycles and samples made by hand.
-add_executable(ear_test_support_tests support/tests/inducers_test.cpp support/tests/statistics_test.cpp
-	support/tests/without_file_privileges_test.cpp)
-target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_statistics ear_temp_folder ear_catch_main)
+add_executable(ear_test_support_tests support/tests/inducers_test.cpp support/tests/cycle_judge_test.cpp
+	support/tests/statistics_test.cpp support/tests/without_file_privileges_test.cpp)
+target_link_libraries(ear_test_support_tests PRIVATE ear_inducers ear_cycle_judge ear_statistics ear_temp_folder
+	ear_catch_main)
 ear_catch_tests(ear_test_support_tests)
 
 # The sleep guard (docs/testing.md#the-sleep-guard): every sleep and WARN in the tests and their support listed in

@@ -2,7 +2,7 @@
 // the test itself rather than waited for from the host (docs/testing.md#making-the-rare-event). A StallPlan says which
 // cycles stall the data thread and for how long, Stalls carries it out from inside a process() and counts what it did,
 // StallingCode is an AudioCode that does both and keeps a CycleLedger, and a CycleLedger records each cycle as the code
-// saw it, so a test judges exactness over its clean cycles only and waits until it has the number it planned.
+// saw it, with the facts its block stated, for the one judge (cycle_judge.hpp) to judge.
 #pragma once
 
 #include <algorithm>
@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "ear/core/cycle_facts.hpp"
 #include "ear/core/node_type.hpp"
 
 namespace ear::test {
@@ -105,23 +106,19 @@ private:
 	std::atomic<std::size_t> made_{0};
 };
 
-/// One cycle as a code saw it.
+/// One cycle as a code saw it: where and when it ran, and what its block stated of it (docs/engine.md#graphcycle).
 struct LedgerCycle {
 	std::uint64_t position = 0;
 	std::uint32_t frames = 0;
 	std::int64_t startRawNs = 0;
 	double rateDiff = 1.0;
-	std::uint64_t xruns = 0;
-	bool discontinuity = false;
-	bool stalled = false; // this cycle stalled the data thread on purpose (it ran whole; the next is not clean)
-	/// It followed the cycle recorded before it with nothing lost: not the first, no discontinuity, no new xrun, its
-	/// position that cycle's end, and that cycle did not stall. Worked out when recorded.
-	bool clean = false;
+	CycleFacts facts{};
+	/// Nothing was lost before it: its block's own word (CycleFacts::whole), never worked out again here.
+	bool whole() const noexcept { return facts.whole(); }
 };
 
-/// Each cycle a code ran, recorded on the data thread into storage made beforehand, and how many of them were clean. A
-/// test that judges exactness judges over clean cycles only, and waits for `clean() >= planned`: a host that stalls
-/// on its own then only makes the test take longer, it never decides what the test sees.
+/// Each cycle a code ran, recorded on the data thread into storage made beforehand, for a CycleJudge to judge
+/// (cycle_judge.hpp): the ledger works nothing out, it only keeps what the block stated.
 class CycleLedger {
 public:
 	explicit CycleLedger(std::size_t capacity) : cycles_(capacity) {}
@@ -129,32 +126,23 @@ public:
 	CycleLedger& operator=(const CycleLedger&) = delete;
 
 	/// Data thread: records a cycle and returns its index, or none when the ledger is full.
-	std::optional<std::size_t> record(LedgerCycle cycle) noexcept {
+	std::optional<std::size_t> record(const LedgerCycle& cycle) noexcept {
 		const std::size_t n = count_.load(std::memory_order_relaxed);
 		if (n >= cycles_.size()) {
 			full_.store(true, std::memory_order_release);
 			return std::nullopt;
 		}
-		if (n > 0) {
-			const LedgerCycle& last = cycles_[n - 1];
-			cycle.clean = !cycle.discontinuity && cycle.xruns == last.xruns &&
-			              cycle.position == last.position + last.frames && !last.stalled;
-		}
 		cycles_[n] = cycle;
 		count_.store(n + 1, std::memory_order_release);
-		if (cycle.clean) clean_.fetch_add(1, std::memory_order_release); // after count: every clean one is readable
 		return n;
 	}
-	/// Data thread: a block's cycle, as its code's process() was given it; `stalled` if the code stalls in it on
-	/// purpose (so the one after it is not clean).
-	std::optional<std::size_t> record(const GraphCycle& cycle, std::uint32_t frames, bool stalled = false) noexcept {
-		return record(LedgerCycle{cycle.position, frames, cycle.startRawNs, cycle.rateDiff, cycle.xruns,
-		                          cycle.discontinuity, stalled, false});
+	/// Data thread: a block's cycle, as its code's process() was given it.
+	std::optional<std::size_t> record(const GraphCycle& cycle, std::uint32_t frames) noexcept {
+		return record(LedgerCycle{cycle.position, frames, cycle.startRawNs, cycle.rateDiff, cycle.facts});
 	}
 
-	/// Any thread: cycles recorded, and of them clean.
+	/// Any thread: cycles recorded.
 	std::size_t count() const noexcept { return count_.load(std::memory_order_acquire); }
-	std::size_t clean() const noexcept { return clean_.load(std::memory_order_acquire); }
 	bool full() const noexcept { return count() == cycles_.size(); }
 	/// A cycle was offered when the ledger was full: it holds less than the code ran.
 	bool overflowed() const noexcept { return full_.load(std::memory_order_acquire); }
@@ -167,7 +155,6 @@ public:
 private:
 	std::vector<LedgerCycle> cycles_;
 	std::atomic<std::size_t> count_{0};
-	std::atomic<std::size_t> clean_{0};
 	std::atomic<bool> full_{false};
 };
 
@@ -181,9 +168,7 @@ public:
 	void process(std::span<const std::span<const float>>, std::span<const std::span<float>> outputs,
 	             std::uint32_t frames, const GraphCycle& cycle) noexcept override {
 		for (const std::span<float> out : outputs) std::ranges::fill(out, 0.0F);
-		const std::size_t next = ledger_.count(); // this thread alone records
-		const bool stalling = next < ledger_.capacity() && stalls_.plan().planned(next).has_value();
-		if (const std::optional<std::size_t> n = ledger_.record(cycle, frames, stalling)) stalls_(*n, frames, rate_);
+		if (const std::optional<std::size_t> n = ledger_.record(cycle, frames)) stalls_(*n, frames, rate_);
 		if (wake_) wake_();
 	}
 	void release() noexcept override {}

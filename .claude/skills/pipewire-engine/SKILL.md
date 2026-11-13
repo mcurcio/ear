@@ -535,8 +535,9 @@ Nothing like WirePlumber runs. Two things make that work:
   `PIPEWIRE_RUNTIME_DIR`, `PIPEWIRE_REMOTE` and the D-Bus addresses, so it proves the engine
   needs none of them. Its `Waiter` runs the main loop until the awaited events have arrived; a
   timer only fails the test. Copy that pattern for new engine tests. A test that needs a stall or a
-  cut-short cycle makes it (`StallingCode`, `Stalls`), judges exactness over a `CycleLedger`'s clean
-  cycles, and reads a retold latency after `Quiescence::quiesce`; a new sleep or `WARN` must be
+  cut-short cycle makes it (`StallingCode`, `Stalls`), excuses a lost cycle only through the one judge
+  (`CycleJudge`, `docs/testing.md#the-cycle-judge`), and reads a retold latency after
+  `Quiescence::quiesce`; a new sleep or `WARN` must be
   listed in `test/sleeps.txt` (`docs/testing.md#the-tools`).
 
 ## Bumping PipeWire

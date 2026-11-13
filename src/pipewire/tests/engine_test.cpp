@@ -362,7 +362,7 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 		const std::size_t first = firstSound(pair.recorder.samples());
 		std::size_t clean = 0;
 		for (std::size_t n = 0; n < ledger.count(); ++n)
-			if (ledger[n].clean && pair.recorder.cycleStart(n) > first) ++clean;
+			if (ledger[n].whole() && pair.recorder.cycleStart(n) > first) ++clean;
 		return clean;
 	};
 	REQUIRE(waiter.until([&] { return judged() >= kWanted || ledger.full(); }, 30s));
@@ -379,7 +379,7 @@ TEST_CASE("A link carries a source block's ramp to a sink block sample for sampl
 		for (std::size_t i = std::max(start + 1, first + 1); i < end; ++i)
 			if (samples[i] != samples[i - 1] + 1.0f) ++breaks;
 		if (start <= first) continue;
-		if (!ledger[n].clean) ++unjudged; // a cycle lost before it: the boundary is not the ramp's to keep
+		if (!ledger[n].whole()) ++unjudged; // a cycle lost before it: the boundary is not the ramp's to keep
 		else if (samples[start] != samples[start - 1] + 1.0f) ++breaks;
 	}
 	INFO(unjudged << " cycle boundaries after a lost cycle, not judged");

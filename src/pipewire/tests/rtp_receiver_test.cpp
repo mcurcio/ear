@@ -128,7 +128,7 @@ public:
 			const std::size_t first = cycleFirst_[n];
 			const std::size_t end = first + ledger_[n].frames;
 			if (end <= start || first >= from + frames) continue;
-			if (n == 0 || !ledger_[n].clean) return false;
+			if (n == 0 || !ledger_[n].whole()) return false;
 		}
 		return true;
 	}

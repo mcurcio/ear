@@ -736,7 +736,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		// jump.
 		const ear::test::CycleLedger& ledger = ramp.ledger();
 		REQUIRE_FALSE(ledger.overflowed());
-		if (round > 0 && ledger[firstCycle[round]].xruns == ledger[firstCycle[round] - 1].xruns) ++judged;
+		if (round > 0 && ledger[firstCycle[round]].facts.causes == CycleCauses(CycleCause::drive)) ++judged;
 	}
 	REQUIRE(ear::testing::driveNow(*clock, nullptr));
 	bool closed = false;
@@ -795,7 +795,7 @@ TEST_CASE("A ramp through a block's sink starts at the first driven sample and e
 		// The start's position is its first cycle's when the clock reached it without a jump; a jump there (a stall
 		// the host made) only puts the first cycle later.
 		CHECK(start <= cycles[first].position);
-		if (cycles[first].xruns == cycles[first - 1].xruns) CHECK(start == cycles[first].position);
+		if (cycles[first].facts.causes == CycleCauses(CycleCause::drive)) CHECK(start == cycles[first].position);
 	}
 }
 

@@ -64,10 +64,11 @@ if(BUILD_TESTS)
 	# ear_rtp_tone: the RTP receiver tests' sender and tone fit; ear_temp_folder: their temporary folders;
 	# ear_type_harness: ear/testing/drive_now.hpp, a block driven and waited for; ear_output: the main-loop watchdog
 	# (StallWatch) over the real main loop, as main.cpp wires it; ear_inducers: planned data-thread stalls and the cycle
-	# ledger (docs/testing.md#making-the-rare-event); ear_latency_table and ear_cycle_table: the latency model's rows
-	# and the cycle facts' rows, run through a real block.
+	# ledger (docs/testing.md#making-the-rare-event); ear_cycle_judge: the one judge of lost cycles
+	# (docs/testing.md#the-cycle-judge); ear_latency_table and ear_cycle_table: the latency model's rows and the cycle
+	# facts' rows, run through a real block.
 	target_link_libraries(ear_pipewire_tests PRIVATE ear_pipewire ear_catch_main PkgConfig::PIPEWIRE ear_rtp_tone
-		ear_temp_folder ear_type_harness ear_output ear_inducers ear_latency_table ear_cycle_table)
+		ear_temp_folder ear_type_harness ear_output ear_inducers ear_cycle_judge ear_latency_table ear_cycle_table)
 	# The tests run the engine on the source tree's engine.conf; the sound card tests point
 	# ALSA_CONFIG_PATH into tests/alsa, a test ALSA configuration (slice E2 writes it). The property table's tests read
 	# docs/engine.md, whose tables must list its rows.
