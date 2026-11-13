@@ -46,6 +46,19 @@ std::uint32_t Feed::skip(std::uint64_t frames) noexcept {
 	return got;
 }
 
+Feed::Taken Feed::skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
+                               std::uint32_t frames) noexcept {
+	const bool cleared = applyClear();
+	// What it holds now, on the reading thread, is exact: the writer only adds. The read follows only once the skip
+	// covered the debt; a skip it held too little for leaves the writer's newer frames for the debt's next payment.
+	heldAtSkip_ = ring_.writePosition() - ring_.readPosition();
+	const std::uint32_t skipped = ring_.skip(static_cast<std::uint32_t>(std::min<std::uint64_t>(skip, heldAtSkip_)));
+	const std::uint32_t got = skipped >= std::min(owed, skip) ? ring_.readPlanar(channels, frames) : 0;
+	for (const std::span<float> channel : channels) std::fill(channel.begin() + got, channel.begin() + frames, 0.0F);
+	if (cleared || skipped > 0 || got > 0) wakeWriter();
+	return {skipped, got};
+}
+
 bool Feed::takeCleared() noexcept {
 	if (applyClear()) wakeWriter();
 	return std::exchange(clearedSince_, false);

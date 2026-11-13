@@ -165,7 +165,14 @@ host's timing fell ([engine.md](engine.md#the-internal-clock)). It makes its rem
 same way: `Feed::holdWriter()`
 makes the writer's writes take nothing until `releaseWriter()` (which wakes it), so with the writer
 held from the arming until the first whole cycle after the stall the catch-up's burst always drains
-the feed, and the test requires a remainder above 0 before it judges the payment. The network gap
+the feed, and the test requires a remainder above 0 before it judges the payment. Two more stall
+tests stall inside the node's own block and judge the burst the host gives: the block missing some
+of its cycles, or running every one while the next is due (`GraphCycle::overdueNs`). What the
+library does after a planned event (a stall, the network gap) is judged as its answer until the
+first cycle after the stream's return that the host disturbed (one the ledger did not call clean; a
+dry cycle is the product's), and never short of a floor of a chunk and two cycles past the return:
+a host disturbance inside it fails the run naming the cycle, to be rerun alone, and a window it
+shortened says the host event that ended it (`responseReach` in `clock_test.cpp`). The network gap
 test makes its late chunk certain the same way: the test server's `gap` holds the audio it sends
 until the library has starved, and places the release a fixed way into a chunk by the chunks'
 stamps (`test/support/sendspin_server.py`), so the chunk the library is then playing is late at its

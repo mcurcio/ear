@@ -21,6 +21,16 @@ public:
 	/// Realtime; discards up to `frames` of the oldest frames, all it holds when it holds fewer (any count: a catch-up's
 	/// jump has no bound). Returns how many.
 	std::uint32_t skip(std::uint64_t frames) noexcept;
+	struct Taken {
+		std::uint32_t skipped;
+		std::uint32_t read;
+	};
+	/// Realtime; no lock, allocation or waiting. Skips up to `skip` of the oldest frames (any count), then reads up to
+	/// `frames`, planar, zeros after what it read, as one step on what the feed holds as it begins: when what it held
+	/// did not cover `owed` of the skip (a debt that must be paid before any frame is read), it reads nothing, so a
+	/// frame the writer adds after the skip is never read ahead of the debt (docs/node-types.md#clock).
+	Taken skipThenRead(std::uint64_t skip, std::uint64_t owed, std::span<const std::span<float>> channels,
+	                   std::uint32_t frames) noexcept;
 	/// Realtime: applies a clear asked for and not yet applied, and says whether any clear was applied since the last
 	/// call (here, or by a read or a skip): what was owed of the stream it ended is owed no more.
 	bool takeCleared() noexcept;

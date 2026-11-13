@@ -150,6 +150,28 @@ TEST_CASE("The type harness states the facts of every cycle table row it can mak
 	CHECK(made == 14); // the rows only a script of ticks makes are seven
 }
 
+// docs/engine.md#graphcycle: a cycle is overdue when the next was already due as the block began it, which happens only
+// while the driver catches a stall up; the framework states by how much.
+TEST_CASE("A cycle's overdue time is how long the next had been due as it began, and nothing when it was not yet due",
+          "[cycle_facts]") {
+	struct Row {
+		const char* what;
+		std::int64_t nowNs;
+		std::uint64_t nextNs;
+		std::int64_t overdueNs;
+	};
+	const std::vector<Row> rows{
+		{"on time: the next is a cycle away", 1'000'000, 6'333'333, 0},
+		{"the next due this very nanosecond", 6'333'333, 6'333'333, 0},
+		{"a burst after a 200 ms stall: the next long due", 206'000'000, 6'333'333, 199'666'667},
+		{"no next cycle told (a test's own cycle)", 1'000'000, 0, 0},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		CHECK(ear::cycleOverdueNs(row.nowNs, row.nextNs) == row.overdueNs);
+	}
+}
+
 TEST_CASE("Causes are a set", "[cycle_facts]") {
 	const CycleCauses none;
 	CHECK(none.empty());

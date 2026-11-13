@@ -123,6 +123,7 @@ struct LedgerCycle {
 	std::int64_t startRawNs = 0;
 	double rateDiff = 1.0;
 	CycleFacts facts{};
+	std::int64_t overdueNs = 0; // GraphCycle::overdueNs
 	/// Nothing was lost before it: its block's own word (CycleFacts::whole), never worked out again here.
 	bool whole() const noexcept { return facts.whole(); }
 };
@@ -148,7 +149,8 @@ public:
 	}
 	/// Data thread: a block's cycle, as its code's process() was given it.
 	std::optional<std::size_t> record(const GraphCycle& cycle, std::uint32_t frames) noexcept {
-		return record(LedgerCycle{cycle.position, frames, cycle.startRawNs, cycle.rateDiff, cycle.facts});
+		return record(
+			LedgerCycle{cycle.position, frames, cycle.startRawNs, cycle.rateDiff, cycle.facts, cycle.overdueNs});
 	}
 
 	/// Any thread: cycles recorded.

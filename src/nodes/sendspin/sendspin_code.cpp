@@ -45,11 +45,14 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 			catchingUp_ = true;
 		}
 	}
-	const std::uint32_t skipped = feed_.skip(toSkip);
+	// What is owed is paid before any frame is read, from what the feed holds as one step with the read: a frame the
+	// library writes after the skip is never read ahead of the debt.
+	const Feed::Taken taken = feed_.skipThenRead(toSkip, owed_, outputs, frames);
+	const std::uint32_t skipped = taken.skipped;
 	owed_ -= std::min<std::uint64_t>(owed_, skipped);
 	lastHeld_ = feed_.heldAtSkip();
 
-	const std::uint32_t got = feed_.read(outputs, frames);
+	const std::uint32_t got = taken.read;
 	lastGot_ = got;
 	view_.consumed(static_cast<std::uint64_t>(skipped) + got);
 	// While a catch-up is untold, the library cannot see a cycle the feed left short either (its zeros are time the
@@ -57,10 +60,12 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	// played, and it is told nothing until the debt is paid, so it never starves while ear owes: the check at the start
 	// is the whole of the rule.
 	if (catchingUp_) owed_ += frames - got;
-	// The library is told only from a cycle that lost nothing, once what was owed is paid: a cycle that caught lost time
-	// up is dated by the driver's own clock, behind raw time until its catch-up burst ends
-	// (docs/engine.md#the-internal-clock), and a frame dropped after the library was told it played would be taken from
-	// audio still to play. When it has gone untold for `untoldBound` of the graph's nominal time (the cycles' starts as
+	// The library is told only from a cycle that lost nothing and runs on time, once what was owed is paid. A cycle
+	// that caught lost time up, or that runs while the next is already due (overdueNs), is one of the driver's catch-up
+	// burst, dated by its own clock behind raw time until the burst ends (docs/engine.md#the-internal-clock): told from
+	// it, the library would put its next frame behind now, and once the burst drained what it holds, floor it at now
+	// and realign mid-burst. One rule for either shape of burst, the block missing some of its cycles or running every
+	// one. And a frame dropped after the library was told it played would be taken from audio still to play. When it has gone untold for `untoldBound` of the graph's nominal time (the cycles' starts as
 	// the driver dates them), the debt is forgotten and no more is owed until it is told, and it is told from that cycle
 	// on even if it lost frames: with nothing owed no told frame is dropped, and a host that never runs a whole cycle
 	// would otherwise leave the library untold for good (at a stream's start, never out of its priming).
@@ -70,7 +75,8 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 		catchingUp_ = false;
 		owingSuspended_ = true;
 	}
-	if ((movedOn && !owingSuspended_) || owed_ > 0 || view_.untold() == 0) return;
+	const bool behind = cycle.overdueNs > 0;
+	if (((movedOn || behind) && !owingSuspended_) || owed_ > 0 || view_.untold() == 0) return;
 	view_.told();
 	untoldSince_.reset();
 	owingSuspended_ = false;

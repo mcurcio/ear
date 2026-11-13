@@ -2338,6 +2338,44 @@ TEST_CASE("After data-thread stalls past 10 ms the internal clock catches up in 
 	}
 }
 
+// docs/engine.md#graphcycle: after a stall the driver catches up in a burst of timeouts on its own time, behind raw
+// time, and whether the block runs each of them or misses some is the host's; either way each cycle it runs while the
+// next is already due states by how much. The first after a stall of the block's own, k graph cycles after the one it
+// stalled in: the driver moves its time on by a cycle a timeout, so that cycle's next came due k + 1 cycles after the
+// stalled one began, and the block begins it after the stall ended, so it is overdue by at least the stall less k + 1
+// cycles, each as long as the driver's loop makes it (it slews the graph by a few hundred ppm at most after a stall,
+// docs/engine.md#the-internal-clock: 2 us a cycle is 375 ppm). The burst ends: a cycle on time states none.
+TEST_CASE("A cycle the block runs while the next is already due states how long it has been due, after a stall "
+          "whatever the burst's shape, and a cycle on time states none",
+          "[port_blocks][clock]") {
+	constexpr std::size_t stallAt = 200;
+	constexpr auto stall = 120ms;
+	auto engine = makeEngine();
+	Waiter waiter(*engine);
+	Bell bell(waiter);
+	FilterPortBlocks blocks(*engine, bell);
+	StallingCode code(600, StallPlan::at({{stallAt, StallLength::of(stall)}}), [&] { waiter.wake(); });
+	const CycleLedger& log = code.ledger();
+	BlockEvents events(waiter);
+	auto block = blocks.make("stalling", Ports{{{Direction::output, "out", {"a"}}}}, kFormat, events);
+	REQUIRE(ear::testing::driveNow(*block, &code));
+	REQUIRE(waiter.until([&] { return log.full(); }, 30s));
+	REQUIRE(ear::testing::driveNow(*block, nullptr));
+	REQUIRE(code.stalls() == 1);
+
+	const std::int64_t cycleNs = 1'000'000'000LL * kBlock / kFormat.rate;
+	const std::int64_t first = log[stallAt + 1].overdueNs;
+	const auto k = static_cast<std::int64_t>(log[stallAt + 1].facts.graphCycle - log[stallAt].facts.graphCycle);
+	std::size_t onTime = stallAt + 1;
+	while (onTime < log.capacity() && log[onTime].overdueNs > 0) ++onTime;
+	INFO("the first cycle after the stall, " << k << " graph cycles on, overdue by " << first
+	                                         << " ns; the burst ended at cycle " << onTime << " ("
+	                                         << onTime - stallAt - 1 << " overdue cycles)");
+	REQUIRE(log[stallAt].facts.graphCycle != 0);
+	CHECK(first >= std::chrono::nanoseconds(stall).count() - (k + 1) * (cycleNs + 2000));
+	CHECK(onTime < log.capacity());
+}
+
 // A stall of seconds is caught up the same way, by a burst of about half its timeouts' blocks, but the loop is fed its
 // clamped 1 ms error at every one of the burst's timeouts, so it winds up and slews the graph for a while after (the
 // limit of resync.ms beyond any stall; docs/engine.md#the-internal-clock). For a 3 s stall the simulated loop

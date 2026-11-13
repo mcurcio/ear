@@ -106,6 +106,14 @@ protected:
 	~CutRecord() = default;
 };
 
+/// GraphCycle::overdueNs: how long the next cycle (due at `nextNs`) had already been due at `nowNs`, both on
+/// CLOCK_MONOTONIC; 0 when it was not yet due, or when no next cycle is told (`nextNs` 0, a test's own cycle).
+constexpr std::int64_t cycleOverdueNs(std::int64_t nowNs, std::uint64_t nextNs) noexcept {
+	if (nextNs == 0) return 0;
+	const std::int64_t overdue = nowNs - static_cast<std::int64_t>(nextNs);
+	return overdue > 0 ? overdue : 0;
+}
+
 /// One cycle as the block's driver states it.
 struct DriverTick {
 	std::uint32_t driverId = 0;

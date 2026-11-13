@@ -549,6 +549,7 @@ private:
 			                                .rateDiff = clock.rate_diff,
 			                                .driverId = clock.id,
 			                                .nextNs = static_cast<std::int64_t>(clock.next_nsec),
+			                                .overdueNs = cycleOverdueNs(mono, clock.next_nsec),
 			                                .facts = step.facts,
 			                                .downstream = downstreamNow_});
 		} else {

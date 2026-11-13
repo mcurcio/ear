@@ -358,12 +358,18 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   stream that owed, and before a stream plays the library is starved, so nothing is owed. Any other cause (a driver change, a jump back or by part of a cycle) is a new
   clock: nothing is owed. A skipped frame not counted would cost 25 ms (the library sees -5.3 ms,
   drops a chunk and inserts silence).
-- The library is told what was skipped and read only from a cycle that lost nothing, once nothing
-  is owed. *Why:* the driver catches a stall up in a burst of timeouts, of which the block runs
+- What is owed is paid before any frame is read, as one step with the read (`Feed::skipThenRead`):
+  when what the feed held did not cover it, nothing is read, so a frame the library writes after
+  the skip is never read ahead of the debt.
+- The library is told what was skipped and read only from a cycle that lost nothing and runs on
+  time (not `GraphCycle::overdueNs`), once nothing is owed. *Why:* the driver catches a stall up in a burst of timeouts, of which the block runs
   as many as the host lets it, from none to every one ([engine.md](engine.md#the-internal-clock)),
   whose cycles start on the driver's own time, behind raw time until the burst ends; and the
   burst drains the feed faster than the library refills it, so most of a long stall is owed when
-  the burst ends. The library takes what it is told played
+  the burst ends. A burst the block runs every timeout of loses nothing and owes nothing, but its
+  cycles are dated behind raw time all the same: told from them, the library would put its next
+  frame behind now and, once the burst had drained what it holds, floor it at now mid-burst. So
+  an overdue cycle tells nothing either, one rule for both shapes. The library takes what it is told played
   from what it wrote (clamping at zero with a warning), so a frame dropped after it was told would
   be taken from audio still to play, and a remainder never dropped it would catch up itself with a
   hard sync. Told once paid, it is told exactly what ear took, with nothing left to correct.
@@ -383,7 +389,10 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   outputs. The clock tests prove it on the real server with stalls of the data thread of 200 ms and
   1 s, made upstream of the block so it misses the stall and the whole burst on any host, the
   feed's writer held through the catch-up's burst so a remainder is always left to pay, and the
-  library's two timing patches (below) keep it from correcting what needs none.
+  library's two timing patches (below) keep it from correcting what needs none. The same stalls
+  made inside the block judge whichever shape the host gives: with cycles lost, as above; with
+  none, nothing owed, no silence and at most one correction of the library's (what the burst's
+  dry cycles cost it, which nothing owed).
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it

@@ -217,6 +217,70 @@ TEST_CASE("skip discards the oldest frames and says how many, and what it held",
 	CHECK(feed.read(out, 2) == 0);
 }
 
+// docs/node-types.md#clock: what is owed is paid before any frame is read. A skip the feed held too little for reads
+// nothing; one it covered reads on.
+TEST_CASE("skipThenRead reads nothing when what the feed held did not cover the debt, and reads once it did",
+          "[feed]") {
+	Feed feed(2, capacity);
+	std::vector<float> samples;
+	fill(samples, 0, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	std::array<float, 8> left{};
+	std::array<float, 8> right{};
+	left.fill(9.0F);
+	const std::array<std::span<float>, 2> out{left, right};
+	Feed::Taken taken = feed.skipThenRead(14, 14, out, 8);
+	CHECK(taken.skipped == 10);
+	CHECK(taken.read == 0);
+	CHECK(left[0] == 0.0F); // zeros
+	CHECK(feed.heldAtSkip() == 10);
+	fill(samples, 10, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	taken = feed.skipThenRead(4, 4, out, 8); // the rest of the debt, then a read
+	CHECK(taken.skipped == 4);
+	CHECK(taken.read == 6);
+	CHECK(left[0] == 14.0F);
+	// A skip owing nothing (stale audio, the library starved) reads on whatever it held.
+	fill(samples, 20, 10);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	taken = feed.skipThenRead(100, 0, out, 8);
+	CHECK(taken.skipped == 10);
+	CHECK(taken.read == 0);
+	REQUIRE(feed.write(samples, 10, 0ms) == 10);
+	taken = feed.skipThenRead(0, 0, out, 8);
+	CHECK(taken.read == 8);
+	CHECK(left[0] == 20.0F);
+}
+
+// The skip and the read are one step: a writer refilling the feed as fast as it can, woken by the skip, never has a
+// frame read ahead of a debt the feed did not cover. Split into a skip and a read, its frames written between the two
+// were read with the debt unpaid.
+TEST_CASE("A writer refilling the feed as fast as it can never has a frame read ahead of an unpaid debt", "[feed]") {
+	Feed feed(2, capacity);
+	std::atomic<bool> stop{false};
+	std::thread writer([&] {
+		std::vector<float> samples;
+		fill(samples, 0, 64);
+		while (!stop.load(std::memory_order_relaxed)) feed.write(samples, 64, 1ms);
+	});
+	std::array<float, 256> left{};
+	std::array<float, 256> right{};
+	const std::array<std::span<float>, 2> out{left, right};
+	std::uint64_t readAhead = 0;
+	std::uint64_t skipped = 0;
+	for (int i = 0; i < 20000; ++i) {
+		const std::uint64_t debt = std::uint64_t{capacity} * 4; // never covered by what it holds
+		const Feed::Taken taken = feed.skipThenRead(debt, debt, out, 256);
+		skipped += taken.skipped;
+		if (taken.read > 0) ++readAhead;
+	}
+	stop.store(true);
+	writer.join();
+	INFO("skipped " << skipped << " frames");
+	CHECK(skipped > 0);
+	CHECK(readAhead == 0);
+}
+
 TEST_CASE("takeCleared applies a clear asked for and says whether one was applied since, here or by a read", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;
@@ -237,7 +301,7 @@ TEST_CASE("takeCleared applies a clear asked for and says whether one was applie
 	CHECK_FALSE(feed.takeCleared());
 }
 
-TEST_CASE("read and skip allocate nothing", "[feed]") {
+TEST_CASE("read, skip and skipThenRead allocate nothing", "[feed]") {
 	Feed feed(2, capacity);
 	std::vector<float> samples;
 	fill(samples, 0, capacity);
@@ -252,6 +316,7 @@ TEST_CASE("read and skip allocate nothing", "[feed]") {
 		for (int i = 0; i < 16; ++i) {
 			feed.read(out, 256);
 			feed.skip(16);
+			feed.skipThenRead(16, 16, out, 256);
 			if (i == 8) feed.clear();
 		}
 		allocations = counted.load() - before;

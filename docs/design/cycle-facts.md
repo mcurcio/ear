@@ -1304,6 +1304,35 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
   one-block catch-up, the two rules tell the same.
 
+### 9.10 Found after the C4 follow-up (a GitHub runner's burst)
+
+- **The burst's shape is the host's.** Both stall tests failed on a GitHub runner: after the stall the block's next
+  cycle was whole, and no cycle of the run was disturbed, skipped or dry. `on_timeout` triggers the graph and only then
+  re-arms its timer, already due, so whether a block runs a burst's cycle depends on whether its wake is dispatched
+  before that timer's: the dev host misses every other one (9.9's 18 one-block catch-ups), the runner ran every one and
+  lost nothing. Only the stalled cycle's own cut is certain (`docs/engine.md#the-one-data-loop-and-invokes`). 9.9's
+  "a stall never reaches a cycle as one jump past the feed" holds on the dev host only.
+- **A burst that loses nothing was told from cycles behind raw time.** Deferral keyed on loss, and in the runner's
+  shape every cycle is whole, so ear told the library from each burst cycle, its finish on the driver's nominal time,
+  behind now by up to the stall: 9.9's first finding again, by the other shape. In the runner's run the library kept the
+  feed full (no dry cycle), so it never starved and its floor never fired (no hard sync, no lost sync and no ramp step
+  after the stall, over the 750 judged cycles); a library slower to refill would have starved mid-burst and floored at
+  now. The condition is "this cycle is dated behind raw time", not "this cycle lost frames". Built: the framework states
+  `GraphCycle::overdueNs` (how long the next cycle had been due as the block began this one, from the clock it already
+  samples for `startRawNs`; `cycleOverdueNs` in `cycle_facts.hpp`), and `SendspinCode` tells nothing from an overdue
+  cycle, as from a lossy one, under the same `untoldBound`. It is a field, not a cause: an overdue cycle loses nothing,
+  and every other consumer (a source's tap, a sink's stamp, the judges) keeps reading it as whole.
+- **The debt's payment raced the writer.** The code skipped the debt and then read, two feed calls; the skip woke the
+  writer, and frames it wrote between the two were read with the debt unpaid, played behind the clock. Fixed in the
+  feed: `Feed::skipThenRead` skips and reads as one step on what the feed holds as it begins, and reads nothing when
+  that did not cover the debt.
+- **The stall tests made the burst they judged.** `StallProbe` stalls a block upstream of the node's and holds each
+  burst cycle 1 ms while its next timeout is due, so the node's block misses the whole burst on any host; two more
+  tests stall inside the block and judge whichever shape the host gives (with cycles lost, 9.9's rules; with none,
+  nothing owed, no silence, at most one correction). A planned event's answer is judged until the host disturbs the
+  graph again (a cycle the ledger did not call clean, never a dry one), never short of a floor of a chunk and two
+  cycles past the return, inside which a host disturbance fails the run naming it.
+
 ## 10. Decided here (technical)
 
 - One carrier (`GraphCycle::facts`), not a second view.

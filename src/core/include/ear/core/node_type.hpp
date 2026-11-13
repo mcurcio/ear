@@ -89,6 +89,11 @@ struct GraphCycle {
 	double rateDiff = 1.0;       // the driver's rate against the clock it tracks (its loop's correction)
 	std::uint32_t driverId = 0;  // the driving node's engine id: another driver is another clock
 	std::int64_t nextNs = 0;     // when the next cycle is due to start, CLOCK_MONOTONIC
+	/// How long the next cycle had already been due when the block began this one (CLOCK_MONOTONIC, sampled by the
+	/// framework with the clocks it reads for startRawNs); 0 when it was not yet due. Above 0 only while the driver
+	/// catches up after a stall, in a burst of timeouts whose cycles start on its own time, behind raw time
+	/// (docs/engine.md#the-internal-clock), whether the block runs each of them or misses some.
+	std::int64_t overdueNs = 0;
 	/// What this cycle states (docs/writing-a-node-type.md#lost-cycles): the cycle it ran in, what was missed and cut
 	/// since the block's last, how far the position jumped, and why it is a discontinuity (facts.discontinuity()). The
 	/// one home of every fact about lost cycles: a code reads them here, never works them out from `position`. Empty in

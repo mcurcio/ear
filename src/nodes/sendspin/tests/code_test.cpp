@@ -107,9 +107,11 @@ struct Rig {
 		}
 		REQUIRE(feed.write(samples, frames, 0ms) == frames);
 	}
-	/// One cycle as the framework tells it: its facts from the driver, its start on the raw clock, and
-	/// `downstreamFrames` downstream of both outputs (a following card's buffer). Returns its facts.
-	ear::CycleFacts cycle(std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0) {
+	/// One cycle as the framework tells it: its facts from the driver, its start on the raw clock,
+	/// `downstreamFrames` downstream of both outputs (a following card's buffer), and how long the next cycle had been
+	/// due as it began (`overdueNs`: above 0 in a catch-up's burst). Returns its facts.
+	ear::CycleFacts cycle(std::int64_t startRawNs = 1000, std::uint32_t downstreamFrames = 0,
+	                      std::int64_t overdueNs = 0) {
 		const std::array<std::span<float>, 2> outputs{left, right};
 		const std::array<std::span<const float>, 2> inputs{inLeft, inRight};
 		const std::array<ear::Latency, 2> downstream{ear::Latency{downstreamFrames, downstreamFrames},
@@ -120,6 +122,7 @@ struct Rig {
 		             ear::GraphCycle{.startNs = startRawNs - 7, // another clock: the code must not read it
 		                             .position = position,
 		                             .startRawNs = startRawNs,
+		                             .overdueNs = overdueNs,
 		                             .facts = facts,
 		                             .downstream = downstream});
 		return facts;
@@ -360,6 +363,57 @@ TEST_CASE("Untold for untoldBound, the debt is forgotten and the library told ev
 	REQUIRE(rig.cycle(at + 2 * blockNs).whole());
 	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 	CHECK(rig.told() == 4 * block);
+}
+
+// docs/node-types.md#clock: a burst the block runs every timeout of loses nothing, so nothing is owed, but its cycles
+// start on the driver's own time, behind raw time; told from them, the library would put its next frame behind now and,
+// once the burst had drained what it holds, floor it at now mid-burst. So a cycle that runs while the next is already
+// due tells nothing, as a catch-up does, and the first on time tells all that was read, at its own finish.
+TEST_CASE("A burst the block runs every timeout of owes nothing, and is told only from the first cycle on time",
+          "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	rig.write(3 * block);
+	rig.cycle(0);
+	REQUIRE(rig.told() == block);
+	REQUIRE(rig.rang());
+	// Four cycles of the burst, each whole and each overdue (the last by less): two read, two dry.
+	for (int i = 0; i < 4; ++i) {
+		REQUIRE(rig.cycle((i + 1) * blockNs, 0, (40 - 10 * i) * blockNs).whole());
+		CHECK(rig.told() == block);
+		CHECK_FALSE(rig.rang());
+	}
+	CHECK(rig.left[0] == 0.0F); // the feed ran dry: zeros, owed by nothing
+	rig.write(2 * block);
+	const std::int64_t start = 5 * blockNs;
+	REQUIRE(rig.cycle(start).whole());
+	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // nothing skipped
+	const auto progress = rig.progress.read();
+	REQUIRE(progress.has_value());
+	CHECK(progress->totalFrames == 4 * block); // the burst's two reads and this cycle's block
+	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
+	CHECK(rig.rang());
+}
+
+// docs/node-types.md#clock: a burst of whole cycles that lasts past untoldBound of the graph's nominal time is told
+// from the cycle that reaches it, as a lossy one is.
+TEST_CASE("Overdue for untoldBound, the library is told even from a cycle of the burst", "[sendspin][code]") {
+	Rig rig;
+	const std::int64_t blockNs = ear::FrameClock(rate).ns(block);
+	rig.write(capacity);
+	rig.cycle(0);
+	REQUIRE(rig.told() == block);
+	std::int64_t at = blockNs;
+	const std::int64_t untoldSince = at;
+	for (; at - untoldSince < untoldBound.count(); at += blockNs) {
+		rig.write(block);
+		REQUIRE(rig.cycle(at, 0, 3 * untoldBound.count()).whole());
+		CHECK(rig.told() == block);
+	}
+	rig.write(block);
+	const std::uint64_t before = rig.told();
+	REQUIRE(rig.cycle(at, 0, 3 * untoldBound.count()).whole());
+	CHECK(rig.told() > before); // told at the bound, though still overdue
 }
 
 // docs/node-types.md#clock: a host whose every cycle loses frames still tells the library, once untoldBound has
