@@ -300,10 +300,10 @@ public:
 	void subscribeNotes(NodeNoteListener& listener);
 	void subscribeDiagnostics(NodeDiagnosticListener& listener);
 	void subscribeEngineDiagnostics(EngineDiagnosticListener& listener);
-	/// Where each name's span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node
-	/// that does not carry an older node's counts is added, countsEnded with its final counts as it goes, before its
-	/// nodeGone (neither for a superseded node's end, nor for the older node of a port-caused replace). Main thread,
-	/// before the first node.
+	/// Where each span of counts begins and ends (docs/engine.md#reporting-the-counters): countsBegan when a node that
+	/// does not carry an older node's counts is added, its serial the span; countsEnded with its final counts as it
+	/// goes, before its nodeGone or supersededGone (not for the older node of a port-caused replace, whose span its newer
+	/// node carries on). Main thread, before the first node.
 	void subscribeCounts(NodeCountsListener& listener);
 	/// Where the framework's own log entries go (source "ear", attributed to the node): in 3a a stop() that threw
 	/// during a teardown, whose fault is dropped (docs/writing-a-node-type.md#rules-the-framework-enforces edges). Main
@@ -379,6 +379,9 @@ public:
 	/// block counts now, or counted before it went, plus, for a port-caused replace, what the older node counted (read
 	/// from it until it is gone, then carried), so they never step back; none when no such node is left.
 	std::optional<NodeCounts> counts(const NodeName& node) const override;
+	/// The counts of this span of counts (NodeCountsListener): its newest node not yet gone's, carried as counts()
+	/// carries them; none once the span ended.
+	std::optional<NodeCounts> spanCounts(std::uint64_t span) const override;
 	/// What was leaked, never freed: configurations left running past the close deadline or on a wedged data
 	/// loop, and the blocks and engine companions a wedged loop kept. Their threads may still post to `mainLoop` or
 	/// touch engine objects at any time, so once any was leaked the process must end without destroying those (main.cpp

@@ -281,6 +281,7 @@ struct HandCounts final : ear::NodeCounterSource {
 		if (it == nodes.end()) return std::nullopt;
 		return it->second;
 	}
+	std::optional<ear::NodeCounts> spanCounts(std::uint64_t) const override { return std::nullopt; }
 };
 
 TEST_CASE("counters-changed.json: the snapshot's counters, counters.changed replacing what it names, and a port-caused "

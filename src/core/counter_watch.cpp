@@ -1,6 +1,7 @@
 // The counters' one pacer (ear/core/counter_watch.hpp; docs/engine.md#reporting-the-counters).
 #include "ear/core/counter_watch.hpp"
 
+#include <algorithm>
 #include <utility>
 
 namespace ear {
@@ -70,19 +71,21 @@ void CounterWatch::recordNode(const NodeName& name, Span& span, std::optional<Cl
 void CounterWatch::tick() {
 	const Clock::time_point now = timers_.now();
 	const GraphCounts graph = graph_.graphCounts();
-	for (auto& [name, span] : spans_)
-		if (const auto counts = nodes_.counts(name)) span.read = *counts;
+	for (auto& [id, span] : spans_)
+		if (const auto counts = nodes_.spanCounts(id)) span.read = *counts;
 
-	// The wire's sample: every loss moved since the last, whole, at most once per wirePace.
+	// The wire's sample: every loss moved since the last, whole, at most once per wirePace. A superseded node is one
+	// no client holds.
 	bool moved = !sameLosses(graph, graphSent_);
 	std::vector<NamedCounts> changed;
-	for (const auto& [name, span] : spans_)
-		if (span.read != span.sent) changed.push_back({name, span.read});
+	for (const auto& [id, span] : spans_)
+		if (!span.superseded && span.read != span.sent) changed.push_back({span.name, span.read});
+	std::ranges::sort(changed, {}, &NamedCounts::name);
 	moved = moved || !changed.empty();
 	if (moved && (!sentAt_ || now - *sentAt_ >= wirePace)) {
 		for (CounterListener* listener : listeners_) listener->countersChanged(graph, lostMs(graph.cutCycles), changed);
 		graphSent_ = graph;
-		for (auto& [name, span] : spans_) span.sent = span.read;
+		for (auto& [id, span] : spans_) span.sent = span.read;
 		sentAt_ = now;
 	}
 
@@ -91,10 +94,10 @@ void CounterWatch::tick() {
 	        graph.cutCycles == graphRecord_.previous.cutCycles, graphRecordPace, now))
 		recordGraph(graph, now);
 	graphRecord_.previous = graph;
-	for (auto& [name, span] : spans_) {
+	for (auto& [id, span] : spans_) {
 		if (due(span.record, !sameMisses(span.read, span.record.recorded), sameMisses(span.read, span.record.previous),
 		        nodeRecordPace, now))
-			recordNode(name, span, now);
+			recordNode(span.name, span, now);
 		span.record.previous = span.read;
 	}
 }
@@ -102,28 +105,26 @@ void CounterWatch::tick() {
 void CounterWatch::flush() {
 	const GraphCounts graph = graph_.graphCounts();
 	if (graph.cutCycles != graphRecord_.recorded.cutCycles) recordGraph(graph, std::nullopt);
-	for (auto& [name, span] : spans_) {
-		if (const auto counts = nodes_.counts(name)) span.read = *counts;
-		if (!sameMisses(span.read, span.record.recorded)) recordNode(name, span, std::nullopt);
+	for (auto& [id, span] : spans_) {
+		if (const auto counts = nodes_.spanCounts(id)) span.read = *counts;
+		if (!sameMisses(span.read, span.record.recorded)) recordNode(span.name, span, std::nullopt);
 	}
 }
 
-void CounterWatch::countsBegan(const NodeName& node) {
-	// An older node of the name, superseded by this one: what it moved since its last record, as last read.
-	if (const auto older = spans_.find(node); older != spans_.end()) {
-		if (!sameMisses(older->second.read, older->second.record.recorded))
-			recordNode(node, older->second, std::nullopt);
-		spans_.erase(older);
-	}
-	spans_.emplace(node, Span{});
+void CounterWatch::countsBegan(const NodeName& node, std::uint64_t span) {
+	// An older node of the name is superseded: its span stays open, read and recorded, until it ends.
+	for (auto& [id, older] : spans_)
+		if (older.name == node) older.superseded = true;
+	spans_.insert_or_assign(span, Span{.name = node});
 }
 
-void CounterWatch::countsEnded(const NodeName& node, const NodeCounts& total) {
-	const auto span = spans_.find(node);
-	if (span == spans_.end()) return;
-	span->second.read = total;
-	if (!sameMisses(total, span->second.record.recorded)) recordNode(node, span->second, std::nullopt);
-	spans_.erase(span);
+void CounterWatch::countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) {
+	static_cast<void>(node);
+	const auto ended = spans_.find(span);
+	if (ended == spans_.end()) return;
+	ended->second.read = total;
+	if (!sameMisses(total, ended->second.record.recorded)) recordNode(ended->second.name, ended->second, std::nullopt);
+	spans_.erase(ended);
 }
 
 } // namespace ear

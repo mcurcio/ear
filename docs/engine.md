@@ -390,6 +390,13 @@ stall going, so a burst's cut cycles no block ran stay one stall. A reading take
 cuts, then cycles, each an acquire load against the writer's release stores in the other order, so
 no reading shows more stalls than cuts or more cuts than cycles.
 
+**A known limit: a stall told ended only by a block.** Only a port block running a cycle of the
+internal clock on time ends a stall (`Engine::cycleOnTime`). In a graph where every block is paused
+(made inactive) and only engine companions run, no stall is ever seen to end: every cut after the
+first counts in that one stall, however far apart, until a block runs on time again. ear makes
+every block always-processing, so it would take every node's block made inactive at once; nothing
+ear does today makes it.
+
 **A node's** are counted by its port block, every cycle its `onProcess` sees (one too large to run
 included), after all its work: a `CycleCounters`, four atomics its one writer, the data thread,
 loads and stores relaxed, with no lock or allocation; any thread reads them (`PortBlock::counts`).
@@ -418,13 +425,15 @@ would be a system call (an eventfd write) in the middle of a stall's catch-up, t
 thread is furthest behind; and a timer of their own would wake the loop again for what the
 heartbeat already gives. The cost of a beat is a handful of atomic loads and a lookup per node.
 
-**Spans.** A name's counts are one span from the add of a node that starts from zero to its end
-([above](#counters): a port-caused replace carries them on). NodeHost tells where each span begins
-(`countsBegan`: a node added, or a name replaced by another type or removed and added again) and
-ends (`countsEnded`, with its final counts, as it goes, before its `nodeGone`), since only NodeHost
-knows a node's life and `NodeHost::counts` no longer answers for a node once it is gone. A
-superseded node's end is not told: its name's span is the newer node's from its add, and what the
-older node moved since its last record is written then, as last read.
+**Spans.** A span is one node's counts from its add, starting from zero, to its end, keyed by the
+serial of the node that began it ([above](#counters): a port-caused replace goes on in its older
+node's span). NodeHost tells where each begins (`countsBegan`: a node added, or a name replaced by
+another type or removed and added again) and ends (`countsEnded`, with its final counts, as its
+last node goes, before its `nodeGone` or `supersededGone`), and answers a span's counts while it is
+open (`NodeHost::spanCounts`), since only NodeHost knows a node's life. A node superseded by a newer
+node of its name keeps its span open while it closes, read and recorded on its own, and ends it
+with its final counts as it goes; the wire names only each name's newest span, the node a client
+holds. So every record of a node's misses is written, and their sums are the totals, in every case.
 
 **What moves.** A *loss* is `cutCycles` or `stalls` of the graph, or any of a node's four.
 `cycles` moves every cycle and `lostMs` follows `cutCycles`, so neither is a change on its own.
@@ -438,9 +447,10 @@ whose counters differ from what the client holds for it (`node.added`'s, then wh
 **The records' pace.** `ear.graph-lost-cycles` is written at a beat where `cutCycles` moved since
 the last such record, the cuts held still over the last beat (or have kept moving for 10 s, a host
 that never lets the graph catch up), and a second has passed since the last. A stall's cuts all
-come in the catch-up's burst after it (the driver runs on the data thread the stall holds:
-[above](#the-internal-clock)), so waiting for them to hold still writes a long stall once, with
-every cycle it cut, not a record a cycle nor one a second while its burst runs.
+come after it, the stalled cycle's own and those of the catch-up's burst as the host runs it (the
+driver runs on the data thread the stall holds; the burst is all cut on some hosts and runs whole
+on a GitHub runner: [above](#the-internal-clock)), so waiting for them to hold still writes a long
+stall once, with every cycle it cut, not a record a cycle nor one a second while its burst runs.
 `ear.node-missed-cycles` is the same for a node's `missedCycles` and `overruns`, at most once per
 10 s per node (a node that keeps missing must not flood the log), and at its span's end at once,
 pace and hold waived, so a node removed within 10 s of its last record still says what it missed.

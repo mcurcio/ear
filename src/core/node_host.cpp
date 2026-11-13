@@ -265,7 +265,8 @@ struct NodeHost::Impl {
 	/// order, so destroying a node that never stopped still removes its port block first.
 	class Node final : public PortBlockEvents, public StartContext, public Ready, public CreateContext {
 	public:
-		Node(Impl& host, NodeName name, std::uint64_t serial) : host_(host), name_(std::move(name)), serial_(serial) {}
+		Node(Impl& host, NodeName name, std::uint64_t serial)
+			: host_(host), name_(std::move(name)), serial_(serial), span_(serial) {}
 		/// On a wedged data loop nothing that loop may still reach is destroyed: destroying a block waits on it.
 		~Node() {
 			if (!host_.wedged) return;
@@ -277,6 +278,10 @@ struct NodeHost::Impl {
 
 		const NodeName& name() const noexcept { return name_; }
 		std::uint64_t serial() const noexcept { return serial_; }
+		/// The span of counts it belongs to (docs/engine.md#reporting-the-counters): its own serial, or for a port-caused
+		/// replace its older node's span, which it carries on.
+		std::uint64_t span() const noexcept { return span_; }
+		void carrySpan(std::uint64_t span) noexcept { span_ = span; }
 		/// Gone: its block destroyed (the flush ran its destruction) and its configuration gone (removed() in
 		/// node_lifecycle.hpp), and so told.
 		bool removed() const noexcept { return gone_; }
@@ -2087,6 +2092,7 @@ struct NodeHost::Impl {
 		std::uint64_t completionsRun_ = 0; // `done`s its block ran, by event or settle(): a bound sees one it settled
 		std::int64_t judgedMs_ = 0;        // how long the judged request waited, for its diagnostics
 		std::uint64_t dropped_ = 0;
+		std::uint64_t span_;      // its span of counts: its serial, or its port-caused older node's
 		NodeCounts blockCounted_; // what its block counted, once the block went
 		NodeCounts carried_;      // what the older node of its port-caused replace counted, once that one is gone
 		bool predecessorCarried_ = false; // carried_ holds the older node's counters: they are not read from it again
@@ -2282,9 +2288,11 @@ struct NodeHost::Impl {
 				carried.stopHeld = !spec.disabled && older->stopHeld() && !older->disabled();
 				carried.keys = change->keys;
 			}
-			// A node that carries no older node's counts begins a span of its name's counts from zero.
+			// A node that carries no older node's counts begins a span of its name's counts from zero; a port-caused
+			// replace goes on in its older node's span.
 			if (carried.predecessor == 0)
-				for (auto* listener : countsListeners) listener->countsBegan(added.name());
+				for (auto* listener : countsListeners) listener->countsBegan(added.name(), added.span());
+			else added.carrySpan(older->span());
 			added.add(spec, std::move(config), olderBlock, olderNode, std::move(carried));
 		});
 	}
@@ -2350,10 +2358,10 @@ struct NodeHost::Impl {
 	/// node of a port-caused replace tells nobody, and its successor takes its dropped frames.
 	void gone(Node& node, std::uint64_t droppedFrames) {
 		node.markGone();
-		// Its final counts, which counts() no longer answers once it is gone; a superseded node's span is its newer
-		// node's, and a port-caused replace's older node's counts go on in its newer node (below).
-		if (!node.silent() && !node.superseded())
-			for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.counts());
+		// Its span's final counts, which nothing answers once it is gone, a superseded node's too; a port-caused
+		// replace's older node's counts go on in its newer node's span (below), so it ends none.
+		if (!node.silent())
+			for (auto* listener : countsListeners) listener->countsEnded(node.name(), node.span(), node.counts());
 		if (!node.silent())
 			for (auto* listener : listeners) {
 				if (!node.superseded()) listener->nodeGone(node.name(), droppedFrames);
@@ -2476,6 +2484,12 @@ void NodeHost::stopAll(GraphClosed, std::move_only_function<void()> allGone) {
 }
 
 std::size_t NodeHost::leaked() const noexcept { return impl_->leaked; }
+
+std::optional<NodeCounts> NodeHost::spanCounts(std::uint64_t span) const {
+	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)
+		if ((*it)->span() == span && !(*it)->removed()) return (*it)->counts();
+	return std::nullopt;
+}
 
 std::optional<NodeCounts> NodeHost::counts(const NodeName& node) const {
 	for (auto it = impl_->nodes.rbegin(); it != impl_->nodes.rend(); ++it)

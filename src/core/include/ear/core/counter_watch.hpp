@@ -31,22 +31,25 @@ class NodeCounterSource {
 public:
 	/// Main thread. The newest node of this name not yet gone, from its add; none when no such node is left.
 	virtual std::optional<NodeCounts> counts(const NodeName& node) const = 0;
+	/// Main thread. The counts of this span (NodeCountsListener), from its begin; none once it ended.
+	virtual std::optional<NodeCounts> spanCounts(std::uint64_t span) const = 0;
 
 protected:
 	~NodeCounterSource() = default;
 };
 
-/// Told where a node's counts begin and end (docs/engine.md#counters), by NodeHost, which alone knows a node's life:
-/// a name's counts are one span from a node's add to its end, a port-caused replace carrying them on. Main thread.
+/// Told where a node's counts begin and end (docs/engine.md#reporting-the-counters), by NodeHost, which alone knows a
+/// node's life. A span is one node's counts from its add to its end, keyed by the serial of the node that began it; a
+/// port-caused replace carries its older node's span on. Two spans of a name are open at once while an older node of
+/// the name, superseded by a newer one, still closes. Main thread.
 class NodeCountsListener {
 public:
-	/// A node of this name begins counting from zero: added, or replacing an older node of the name by another type or a
-	/// removal and add. Not told for a port-caused replace, whose newer node carries the older node's counts on.
-	virtual void countsBegan(const NodeName& node) = 0;
-	/// The node is gone, these its final counts, which NodeHost::counts no longer answers. Told just before its
-	/// nodeGone; not for a node superseded by a newer node of its name (the name's span is the newer node's), nor for the
-	/// older node of a port-caused replace (its newer node carries its counts).
-	virtual void countsEnded(const NodeName& node, const NodeCounts& total) = 0;
+	/// Span `span` of this name begins counting from zero: a node added, or replacing an older node of the name by
+	/// another type, or by a removal and an add. Not told for a port-caused replace, which goes on in the older's span.
+	virtual void countsBegan(const NodeName& node, std::uint64_t span) = 0;
+	/// The span's last node is gone, these its final counts, which nothing answers after. Told just before its nodeGone
+	/// or supersededGone, a superseded node's too; not for the older node of a port-caused replace, whose span goes on.
+	virtual void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) = 0;
 
 protected:
 	~NodeCountsListener() = default;
@@ -92,9 +95,11 @@ protected:
 /// The one pacer of the counters' reports (docs/engine.md#reporting-the-counters). Main thread. tick() is called at the
 /// main loop's heartbeat, which already wakes the loop every 100 ms for the watchdog, so reading the counters adds no
 /// wake-up and nothing runs on the data thread for it. Each tick reads the graph's counters and those of every node
-/// whose span it holds (opened by countsBegan, closed by countsEnded) and tells:
+/// whose span is open (opened by countsBegan, closed by countsEnded, a superseded node's kept until it is gone) and
+/// tells:
 /// - countersChanged when a loss (cutCycles, stalls, or any node counter: `cycles` moves every cycle and is never a
-///   change on its own) moved since the last one, at most once per wirePace;
+///   change on its own) moved since the last one, at most once per wirePace, naming only each name's newest span (the
+///   node a client holds);
 /// - graphLostCycles when cutCycles moved since the last such record and the cuts held still over the last tick (a
 ///   stall's cuts all come in the catch-up burst after it, so a long stall is one record) or have kept moving for
 ///   holdBound, at most once per graphRecordPace;
@@ -121,8 +126,8 @@ public:
 	void tick();
 	/// Every record still held back, written now.
 	void flush();
-	void countsBegan(const NodeName& node) override;
-	void countsEnded(const NodeName& node, const NodeCounts& total) override;
+	void countsBegan(const NodeName& node, std::uint64_t span) override;
+	void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) override;
 
 private:
 	using Clock = std::chrono::steady_clock;
@@ -135,8 +140,10 @@ private:
 		std::optional<Clock::time_point> movingSince{};
 	};
 	struct Span {
-		NodeCounts read{}; // this tick's reading
-		NodeCounts sent{}; // what the client holds: node.added's zeros, then what countersChanged named
+		NodeName name;
+		bool superseded = false; // a newer span of its name began: the wire names that one
+		NodeCounts read{};       // this tick's reading
+		NodeCounts sent{};       // what the client holds: node.added's zeros, then what countersChanged named
 		Paced<NodeCounts> record{};
 	};
 	/// Whether a record is due at `now`: moved since it was recorded; settled (no move since the last tick) or moving for
@@ -151,8 +158,8 @@ private:
 	const NodeCounterSource& nodes_;
 	AudioFormat format_;
 	std::vector<CounterListener*> listeners_;
-	std::map<NodeName, Span> spans_;
-	GraphCounts graphSent_{}; // what countersChanged last carried; ear starts from zero
+	std::map<std::uint64_t, Span> spans_; // by span
+	GraphCounts graphSent_{};             // what countersChanged last carried; ear starts from zero
 
 	std::optional<Clock::time_point> sentAt_;
 	Paced<GraphCounts> graphRecord_{};

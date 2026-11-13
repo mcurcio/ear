@@ -3692,10 +3692,12 @@ TEST_CASE("A change of ports keeps the node's stop and one health stream for the
 /// What NodeHost tells of each name's span of counts (docs/engine.md#reporting-the-counters), in order.
 struct CountsSpans final : NodeCountsListener {
 	std::vector<std::string> told;
-	void countsBegan(const NodeName& node) override { told.push_back("began " + node); }
-	void countsEnded(const NodeName& node, const NodeCounts& total) override {
-		told.push_back(std::format("ended {} {},{},{},{}", node, total.missedCycles, total.overruns, total.repositions,
-		                           total.driverChanges));
+	void countsBegan(const NodeName& node, std::uint64_t span) override {
+		told.push_back(std::format("began {} {}", node, span));
+	}
+	void countsEnded(const NodeName& node, std::uint64_t span, const NodeCounts& total) override {
+		told.push_back(std::format("ended {} {} {},{},{},{}", node, span, total.missedCycles, total.overruns,
+		                           total.repositions, total.driverChanges));
 	}
 };
 
@@ -3734,6 +3736,8 @@ TEST_CASE("A node's counters are its block's, kept when the block goes and carri
 	f.settle();
 	REQUIRE(f.host.health().size() == 1); // the older node is gone: its counts are carried
 	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 3, 4});
+	CHECK(f.host.spanCounts(1) == NodeCounts{11, 25, 3, 4}); // the older node's span, which the newer carries on
+	CHECK_FALSE(f.host.spanCounts(2));                       // no span of its own
 	f.blocks.made.at(1)->counted.repositions = 1;
 	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
 
@@ -3743,7 +3747,9 @@ TEST_CASE("A node's counters are its block's, kept when the block goes and carri
 	CHECK(f.host.counts("desk") == NodeCounts{11, 25, 4, 4});
 	f.settle();
 	CHECK_FALSE(f.host.counts("desk"));
-	CHECK(spans.told == std::vector<std::string>{"began desk", "ended desk 11,25,4,4"});
+	CHECK_FALSE(f.host.spanCounts(1));
+	// The newer node (serial 2) went on in span 1, which its counts answer, and ended it.
+	CHECK(spans.told == std::vector<std::string>{"began desk 1", "ended desk 1 11,25,4,4"});
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
@@ -3767,8 +3773,8 @@ TEST_CASE("A replace by another type starts the name's counters from zero", "[no
 	f.stopAll();
 	f.settle();
 	CHECK(f.allGone == 1);
-	// A span each: the older node's ends with nothing told, superseded by the newer of its name, whose span is the name's.
-	CHECK(spans.told == std::vector<std::string>{"began x", "began x", "ended x 0,2,0,0"});
+	// A span each, the superseded older node's ended with its final counts as it went.
+	CHECK(spans.told == std::vector<std::string>{"began x 1", "began x 2", "ended x 1 7,0,0,0", "ended x 2 0,2,0,0"});
 }
 
 TEST_CASE("A hand edit that keeps a node keeps its stop, and one that renames it drops it", "[node_host][replace]") {
