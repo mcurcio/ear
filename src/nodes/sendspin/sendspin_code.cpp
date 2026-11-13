@@ -19,13 +19,15 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 	capture_.publish({framesWritten_, startRawNs});
 	framesWritten_ += toServer_.write(inputs, frames);
 
-	// The stream keeps in step with the graph's clock (docs/node-types.md#clock): on a catch-up, however long, the
-	// graph lost `jumpFrames` of time, and the feed skips what it holds of them, each frame counted played. What it did
-	// not hold is the library's to catch up: it is told only what it wrote and ear consumed, with the cycle's real
-	// finish, and so sees the rest as its own lateness. Any other cause is a new clock: nothing lost.
+	// The stream keeps in step with the graph's clock (docs/node-types.md#clock): on a catch-up, however long, or a
+	// pause (cycles missed and not cut, the position moved by exactly their frames), the graph moved on by `jumpFrames`,
+	// and the feed skips what it holds of them, each frame counted played, rather than play stale audio late. What it
+	// did not hold is the library's to catch up: it is told only what it wrote and ear consumed, with the cycle's real
+	// finish, and so sees the rest as its own lateness. A reposition, a driver change or a first cycle is a new clock:
+	// nothing skipped.
 	const CycleFacts& facts = cycle.facts;
-	const std::uint64_t lost =
-		facts.causes.has(CycleCause::catchUp) ? static_cast<std::uint64_t>(facts.jumpFrames) : std::uint64_t{0};
+	const bool movedOn = facts.causes.has(CycleCause::catchUp) || facts.causes.has(CycleCause::absent);
+	const std::uint64_t lost = movedOn && facts.jumpFrames > 0 ? static_cast<std::uint64_t>(facts.jumpFrames) : 0;
 	const std::uint32_t skipped = feed_.skip(lost);
 	lastHeld_ = feed_.heldAtSkip();
 

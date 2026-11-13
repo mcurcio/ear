@@ -279,10 +279,15 @@ engine and the harness both run, so a type's tests and the engine never disagree
   whole jump (`jumpFrames`) of the stream and counts it played at once, so the audio moves on with
   the graph and `Played` stays on the clock exactly. What of it the ring does not hold yet (the
   writer behind, or the new stream during a clear's fade) is owed while the writer is not idle: the
-  next frames written are dropped up to it, already counted. An idle writer owes nothing (its next
-  frames begin a stream with no place on the clock yet), and a clear forgets what the stream it ends
-  owed. Any other cause (`start`, a `drive` alone, `driverChange`, `absent`, `reposition`,
-  `oversized`), and the first cycle after a stop, is a new clock: nothing is skipped.
+  next frames written are dropped up to it, already counted. An idle writer owes nothing: its next
+  frames begin a stream with no place on the clock yet, so a debt left when it says it is idle is
+  forgotten at the next cycle, and a catch-up while it is idle owes none. A clear forgets what the
+  stream it ends owed. Any other cause (`start`, a `drive` alone, `driverChange`, `absent`,
+  `reposition`, `oversized`), and the first cycle after a stop, is a new clock: nothing is skipped.
+  So a pause (`absent`: the block was not scheduled, no cycle cut) leaves `Played` behind the
+  graph's clock by the pause's frames, on purpose: the stream was not played over that time, and
+  a source's writer has no timeline of its own to re-anchor from, so its audio carries on where it
+  stopped rather than lose what the pause held.
 - **It fades at its edges, with no lookahead**, so the latency it adds stays `[0, capacity]`: audio
   that starts or comes back fades in over 5 ms; at an underrun (the ring dry) it decays from the
   last frame it played to zero over 5 ms; after `clear()` it plays the next 5 ms of what was

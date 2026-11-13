@@ -170,6 +170,9 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 	s.cycleEndedStop = false;
 	if (s.stopped.load(std::memory_order_acquire)) s.endStop();
 	s.applyClear();
+	// An idle writer owes nothing (docs/writing-a-node-type.md#sources): its next frames begin a new stream, so a debt
+	// left from before it went idle is forgotten here, not taken from them.
+	if (s.idle.load(std::memory_order_relaxed)) s.debt = 0;
 	const std::uint64_t skipped = s.keepTime(cycle.facts);
 
 	const auto put = [&](std::uint32_t at, const float* frame) noexcept {

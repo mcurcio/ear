@@ -1177,6 +1177,9 @@ departs from 4.4's row, and what C4b and 3c must know.
   `sendspin` moves onto a source in 3c, the library must not be told `Played` as it stands: it would count frames it
   never wrote (the clamp) and, with the debt, catch the same time up twice, as above. 3c must tell the library what the
   source took of what it wrote, or give the source this feed's rule for a writer that keeps its own timeline.
+- **Decided (owner, C4 review): up to one decoded chunk plays late after a stall past the feed** before the library
+  re-syncs (it writes the chunk in hand without re-checking the time), and no library patch is carried. The 4.4
+  deviation above is accepted too: the library's model stays exact.
 
 ### 9.8 Found building C4b
 
@@ -1214,6 +1217,39 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   arithmetic it tested.
 - **The source model** in `source_test.cpp` moves `Played` by the jump on a `catchUp` of any length and counts any
   other jump as a new clock, which must never come (`clocks == 0`).
+
+### 9.9 Found in the C4 review
+
+- **An idle writer's debt is forgotten** (`SourceRing::play`): 9.8 stopped a debt growing while the writer idles, but
+  one owed before it went idle survived and, uncapped, dropped the start of the next stream. Now a cycle that sees the
+  writer idle forgets it.
+- **`sendspin` skips a pause too** (`absent`): the feed's audio of that time is stale, and the library re-anchors from
+  the finish it is told. A source does not: a pause leaves `Played` behind the clock by its frames, on purpose
+  (`docs/writing-a-node-type.md#sources`).
+- **A stall never reaches a cycle as one jump past the feed.** The driver catches a 200 ms stall up in a burst that runs
+  the block every other timeout (`docs/engine.md#the-internal-clock`), so the block states a run of one-block
+  catch-ups (18 of 256 frames); the feed absorbs them unless the library could not refill it between them. So C4a's
+  change for a jump past the feed's capacity never happens on the engine; what keeps the stream in step is the per-cycle
+  skip, which was the old rule's too.
+- **The library breaks sync itself after a stall**, whatever ear does: told nothing for the stall, it floors its
+  playtime to now (`starved_playtime_floor`) at a chunk it loads meanwhile, takes that chunk for 37 to 67 ms late or
+  early, and undoes it at the next chunk (a drop and the silence undoing it, or silence then two chunks skipped), with
+  ear's output on the server's stamps throughout when the feed held the lost time. The review asked the stall test for
+  "back within a chunk and two blocks, exactly one step, no silence after"; that holds only when the floor does not
+  fire. The test holds what does: back within two chunks and two blocks of the burst's end, at most two library steps,
+  no `Buffered frames underflow`, every report exact, then 750 cycles within 1 ms. Two library patches would make the
+  review's bound hold (re-check the chunk in hand when a told finish moves; no floor while reports lag the clock): for
+  the owner, with the chunk bound (`docs/node-types.md#clock`). **Decided by the owner: "Accept up to one chunk"**, no
+  library patch; the test requires back on the timeline within one chunk and two blocks of the burst's end, one
+  library step and no silence after, then 750 cycles within 1 ms, as the review asked, whenever the library keeps its
+  timeline. **The floor fires in most runs** (11 of 14 on an idle host: back 6144 frames after the burst's end in four
+  of the first eight, a 2.3 ms error left for soft sync in one), so the test judges ear's side every run and the bound
+  only in the runs the library's own `Lost sync` does not mark (a test may not write standard output, so the rest
+  show their lines only in a failure's message). The owner decided without this
+  measurement; whether to carry the floor patch is open with this step.
+- **"Report the whole jump" is caught deterministically by the code's unit tests** (eight checks fail in two of them)
+  and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
+  one-block catch-up, the two rules tell the same.
 
 ## 10. Decided here (technical)
 

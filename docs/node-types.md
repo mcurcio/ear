@@ -336,16 +336,35 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
   of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
   buffer; it is counted once `to` is a sink's bank, whose chunks carry it (slice 3c).
-- The stream keeps in step with the graph's clock. A cycle that states a catch-up
-  (`GraphCycle::facts`: cycles the driver cut, the position moved by exactly their frames;
-  [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) skips that much of the stream,
-  however long the stall: what the feed holds of it, counted played. A skipped cycle not counted
+- The stream keeps in step with the graph's clock. A cycle that states a catch-up or a pause
+  (`GraphCycle::facts`: cycles missed, the position moved by exactly their frames, all of them cut
+  or not; [writing-a-node-type.md](writing-a-node-type.md#lost-cycles)) skips that much of the
+  stream, however long: what the feed holds of it, counted played, rather than play its stale audio
+  late. A skipped cycle not counted
   would cost 25 ms (the library sees -5.3 ms, drops a chunk and inserts silence). What the feed did
   not hold the library catches up itself: it is told the cycle's real finish, so it sees the rest as
   its own lateness. *Why not drop the rest from what it writes next:* it takes what it is told
   played from what it wrote (clamping at zero with a warning), and it would catch the same time up
   again on its own, so it is never told more than ear took of what it wrote. Any other cause (a
-  driver change, a jump back or by part of a cycle, a pause) is a new clock: nothing is skipped.
+  driver change, a jump back or by part of a cycle) is a new clock: nothing is skipped.
+- After a stall past the feed, up to one decoded chunk plays late before the library is back in
+  sync: it writes the chunk it holds without looking at the time again, and re-syncs only at the
+  next chunk (skipping chunks already too late and dropping the late front of the next). A chunk is
+  4608 frames, 96 ms, with FLAC at 48 kHz, and the spec bounds it at 150 ms. This is the decided
+  behaviour: the owner accepted up to one chunk, and no library patch is carried for it. The library adds a
+  second disturbance of its own: told nothing while the data thread stalls, it floors its playtime
+  to now at a chunk it loads meanwhile (`starved_playtime_floor`), takes that chunk for late or
+  early by tens of milliseconds (measured 37 to 67 ms), and undoes it at the next (a drop and the
+  silence that undoes it, or silence and a skip). Ear's own output stays on the server's stamps
+  through the stall when the feed held the lost time. After a 200 ms stall the floor fired in 11 of
+  14 runs on the real server, so the accepted one-chunk bound holds only in the runs it does not:
+  with it, the library was back 24 blocks after the catch-up, or left a 2.3 ms error for its soft
+  sync to take seconds over. A patch not flooring a playtime the reports have not caught up with
+  would remove it; none is carried, and whether to is open with the owner. The clock tests judge
+  ear's side of a 200 ms stall every run (its output on the server's stamps until the library acts
+  on its own, every report exact, never more told than written) and the one-chunk bound, one step
+  and no silence after it, then 750 cycles within 1 ms, whenever the library keeps its timeline;
+  a run where it lost sync on its own is judged on ear's side alone.
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it

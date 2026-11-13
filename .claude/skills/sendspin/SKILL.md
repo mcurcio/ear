@@ -104,15 +104,25 @@ that means to an operator:
 - **Audio time is the graph's.** The library is told when frames play from the cycle's start on the raw clock
   (`GraphCycle::startRawNs`, which the framework makes by sampling both clocks; the code reads no clock), never from when the
   thread woke. Wake time failed the spike: 52% within 1 ms against 100%.
-- **The stream keeps in step with the clock** (`docs/node-types.md#clock`). On a cycle whose facts say `catchUp`, the code
-  skips the jump, however long, as far as the feed holds it, counted played; any other cause (a driver change, a jump
-  back, a pause) is a new clock, not a skip. Not counting a skip costs 25 ms (the library sees -5.3 ms, drops a chunk and
+- **The stream keeps in step with the clock** (`docs/node-types.md#clock`). On a cycle whose facts say `catchUp` or
+  `absent` (a pause), the code skips the jump, however long, as far as the feed holds it, counted played; any other cause
+  (a driver change, a jump back) is a new clock, not a skip. Not counting a skip costs 25 ms (the library sees -5.3 ms, drops a chunk and
   inserts silence). **Never tell the library a frame ear did not take from what it wrote**: it subtracts what it is told
   from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
   `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
-  from its next writes (C4a's first build, a source's rule) raced that catch-up under load: the library skipped a late
-  chunk, ear dropped the same time again, and the library filled it with silence (`Lost sync (90568us off)`, a step of a
-  chunk and 257). Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
+  from its next writes (a source's rule) would catch the same time up twice: the library re-syncs on its own at its next
+  chunk. **Up to one decoded chunk plays late after a stall past the feed** (4608 frames, 96 ms, with FLAC at 48 kHz;
+  150 ms by the spec): the library writes the chunk it holds without re-checking the time (`handle_transfer_audio`), and
+  re-syncs at the next chunk's load (late chunks skipped, `Hard sync: dropping`); decided, not patched. **And the library breaks sync itself
+  after a stall**: told nothing while the data thread is stalled, `starved_playtime_floor` floors its playtime to now at
+  a chunk it loads meanwhile, it takes that chunk for 37 to 67 ms late or early, and undoes it at the next (`Lost sync`, a
+  drop and silence that undoes it, or silence and a skip), even when ear's output never left the stamps. A 200 ms stall
+  (on the cycle judge's tooling) splits into one-block catch-ups: the driver's burst runs the block every other timeout
+  (`docs/engine.md#the-internal-clock`), so no single cycle states a jump past the feed. **The owner accepted up to one
+  chunk late, and no library patch is carried** (re-checking the chunk in hand would have removed it). The stall test in
+  `clock_test.cpp` holds that bound whenever the library keeps its timeline, and ear's side every run; the floor fired
+  in 11 of 14 runs of a 200 ms stall (back 24 blocks after the catch-up, or a 2.3 ms error left for soft sync), and such a
+  run is judged on ear's side alone. A floor patch is the open question for the owner. Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
   for a change of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
 - **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)

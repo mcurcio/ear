@@ -275,7 +275,7 @@ TEST_CASE("A catch-up of any length skips what the feed holds of it and tells ex
 	}
 }
 
-TEST_CASE("Any other cause is a new clock: a driver change, a reposition, a pause and the first cycle skip nothing",
+TEST_CASE("Any other cause is a new clock: a driver change, a reposition and the first cycle skip nothing",
           "[sendspin][code]") {
 	SECTION("a driver change") {
 		Rig rig;
@@ -298,15 +298,6 @@ TEST_CASE("Any other cause is a new clock: a driver change, a reposition, a paus
 			CHECK(rig.left[0] == static_cast<float>(2 * block + 1));
 		}
 	}
-	SECTION("a pause: cycles missed that the driver did not cut") {
-		Rig rig;
-		rig.write(3 * block);
-		rig.cycle();
-		rig.driver.lose(2, block, false);
-		REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
-		CHECK(rig.told() == 2 * block);
-		CHECK(rig.left[0] == static_cast<float>(block + 1));
-	}
 	SECTION("the first cycle knows no gap") {
 		Rig rig;
 		rig.write(3 * block);
@@ -314,6 +305,18 @@ TEST_CASE("Any other cause is a new clock: a driver change, a reposition, a paus
 		REQUIRE(rig.cycle().causes == ear::CycleCause::start);
 		CHECK(rig.told() == block);
 	}
+}
+
+// A pause (cycles missed and not cut) moved the graph on as a catch-up does: the feed's audio of that time is stale, so
+// it is skipped rather than played late, and the library re-anchors from the finish it is told.
+TEST_CASE("A pause skips what the feed holds of it, as a catch-up does", "[sendspin][code]") {
+	Rig rig;
+	rig.write(4 * block);
+	rig.cycle();
+	rig.driver.lose(2, block, false);
+	REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
+	CHECK(rig.told() == 4 * block); // two blocks skipped, the third read
+	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 }
 
 TEST_CASE("A skip tells the jump even when the block that follows finds nothing", "[sendspin][code]") {

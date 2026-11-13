@@ -119,6 +119,9 @@ public:
 		code_.process(inputs, outputs, frames, cycle);
 		const std::size_t at = count_.load(std::memory_order_relaxed);
 		if (at >= kCapacity) return;
+		// The one planned stall, once armed: this cycle holds the data thread, so the next states the catch-up.
+		if (armed_.load(std::memory_order_acquire) && stalls_(armedCycles_++, frames, kRate))
+			stalledAt_.store(at, std::memory_order_release);
 		ledger_.record(cycle, frames);
 		Cycle& out = cycles_[at];
 		out.startRawNs = cycle.startRawNs;
@@ -165,6 +168,16 @@ public:
 		waiter_.wake();
 	}
 	std::size_t count() const { return count_.load(std::memory_order_acquire); }
+	/// Any thread: from the next cycle, the data thread stalls once, for `length` (the judge's induced-stall tooling,
+	/// docs/testing.md#making-the-rare-event).
+	void armStall() { armed_.store(true, std::memory_order_release); }
+	/// The cycle that stalled, once it has.
+	std::optional<std::size_t> stalledAt() const {
+		const std::size_t at = stalledAt_.load(std::memory_order_acquire);
+		return at == kNone ? std::nullopt : std::optional<std::size_t>(at);
+	}
+	/// The planned stall: 200 ms, past the feed's 2048 frames (43 ms) and past a decoded chunk (96 ms).
+	static constexpr std::chrono::milliseconds kStall{200};
 	/// The count itself, for what stamps an event with the cycles recorded when it came.
 	const std::atomic<std::size_t>& counter() const { return count_; }
 	const Cycle& at(std::size_t index) const { return cycles_[index]; }
@@ -177,6 +190,11 @@ private:
 	CycleLedger ledger_; // the data thread's alone; each Cycle carries its word
 	std::vector<Cycle> cycles_;
 	std::atomic<std::size_t> count_{0};
+	static constexpr std::size_t kNone = ~std::size_t{0};
+	std::atomic<bool> armed_{false};
+	ear::test::Stalls stalls_{ear::test::StallPlan::at({{0, ear::test::StallLength::of(kStall)}})};
+	std::size_t armedCycles_ = 0; // the data thread's: cycles run since armed, the plan's index
+	std::atomic<std::size_t> stalledAt_{kNone};
 };
 
 /// What the library says of how its sync task re-aligned, read as events: it has no log hook (the sendspin skill), so
@@ -185,10 +203,12 @@ private:
 /// sync_task.cpp, handle_synchronize_audio): `Hard sync: dropping <n> frames` (a late chunk's front dropped), `Hard
 /// sync: adding <n> frames of silence` (silence for a chunk due later than the audio before it), both verbose lines,
 /// and `Lost sync (<n>us off)`, a warning said once as a loss of sync begins, and `Regained sync`, an info line, as it
-/// ends. The rig asks for verbose once the worker has set the library's level (setVerbose).
+/// ends; and `Buffered frames underflow` (sync_task.cpp, process_playback_progress), the warning the library gives when
+/// it is told more played than it wrote, which ear must never make. The rig asks for verbose once the worker has set
+/// the library's level (setVerbose).
 class LibraryLog {
 public:
-	enum class Kind { drop, silence, lostSync, regained };
+	enum class Kind { drop, silence, lostSync, regained, underflow };
 	struct Line {
 		std::size_t cycle; // the tap's count when the line was read
 		Kind kind;
@@ -210,6 +230,7 @@ public:
 			if (const auto frames = after(kDrop)) lines.push_back({said.stamp, Kind::drop, *frames});
 			else if (const auto added = after(kSilence)) lines.push_back({said.stamp, Kind::silence, *added});
 			else if (const auto off = after(kLost)) lines.push_back({said.stamp, Kind::lostSync, *off});
+			else if (said.text.find(kUnderflow) != std::string::npos) lines.push_back({said.stamp, Kind::underflow, 0});
 			else lines.push_back({said.stamp, Kind::regained, 0});
 		}
 		return lines;
@@ -220,8 +241,10 @@ private:
 	static constexpr std::string_view kSilence = "Hard sync: adding ";
 	static constexpr std::string_view kLost = "Lost sync (";
 	static constexpr std::string_view kRegained = "Regained sync";
-	ear::test::StandardErrorLines said_{
-		{std::string(kDrop), std::string(kSilence), std::string(kLost), std::string(kRegained)}, {"V ", "D ", "I "}};
+	static constexpr std::string_view kUnderflow = "Buffered frames underflow";
+	ear::test::StandardErrorLines said_{{std::string(kDrop), std::string(kSilence), std::string(kLost),
+	                                     std::string(kRegained), std::string(kUnderflow)},
+	                                    {"V ", "D ", "I "}};
 };
 
 /// What the worker says, as a node's insides would be told; `stream-ended` also records the tap's cycle.
@@ -496,6 +519,7 @@ struct Errors {
 	std::int64_t contiguousNs = 0;
 	std::vector<std::string> filterSteps; // the time filter moving a fixed server time by 1 ms or more, with the cycle
 	std::vector<std::string> lostSync;    // the library's losses of sync, with the cycle each was read at
+	std::vector<std::size_t> underflows;  // the cycles each `Buffered frames underflow` was read at: ear told too much
 	std::vector<std::string> logged;      // each hard sync the library logged, with the cycle its line was read at
 	std::size_t loggedDrops = 0;          // hard syncs the library logged dropping frames, and adding silence
 	std::size_t loggedSilences = 0;
@@ -536,6 +560,7 @@ std::string describe(const Errors& errors) {
 	list("steps (rule: step at cycle)", errors.steps);
 	list("the code's reports stepping (cycle: us)", errors.progressSteps);
 	list("lost sync (cycle: us off)", errors.lostSync);
+	text << "\nunderflows told by the library: " << errors.underflows.size();
 	list("hard syncs logged", errors.logged);
 	list("time filter steps (cycle: us)", errors.filterSteps);
 	return text.str();
@@ -572,6 +597,18 @@ public:
 	}
 	/// The newest ramp index out.
 	std::uint32_t lastIndex() const { return lastIndex_.value_or(0); }
+	/// One cycle that played ramp frames, as judged: how far its first frame was from the time filter's prediction, and
+	/// its step from the last ramp frame out, less what the code skipped since (so 0 is the next frame; anything else is
+	/// the library's own step).
+	struct RampSeen {
+		std::size_t index;
+		double errorUs;
+		std::int64_t libraryStep;
+	};
+	/// Every ramp cycle read so far, in order.
+	const std::vector<RampSeen>& ramp() const { return ramp_; }
+	/// Cycles read so far (all of them before this index).
+	std::size_t readThrough() const { return next_; }
 	/// Cycles from `from` up to and not including `to` the ledger did not call clean, read so far: what the host did to
 	/// the graph.
 	std::size_t disturbedBetween(std::size_t from, std::size_t to) const {
@@ -594,9 +631,9 @@ private:
 	static constexpr std::size_t kLogLag = 32;
 
 	void one(std::size_t index, Cycle cycle) {
-		// What the code skipped for the graph's lost time, from the facts and what the feed held: a catch-up's jump,
-		// however long, or all the feed held when that was less. Its progress and the ramp are judged against it.
-		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp);
+		// What the code skipped for the graph's lost time, from the facts and what the feed held: a catch-up's or a
+		// pause's jump, however long, or all the feed held when that was less. Its progress and the ramp are judged against it.
+		const bool caughtUp = cycle.facts.causes.has(CycleCause::catchUp) || cycle.facts.causes.has(CycleCause::absent);
 		cycle.skipped = caughtUp ? static_cast<std::uint32_t>(std::min<std::uint64_t>(
 									   static_cast<std::uint64_t>(cycle.facts.jumpFrames), cycle.held))
 		                         : 0;
@@ -664,6 +701,9 @@ private:
 		if (!firstFrameNs_) firstFrameNs_ = cycle.startRawNs;
 		// The chunks the server sent up to this cycle's first frame, which the step and the timing are judged by.
 		const std::int64_t rampUs = sentUs(cycle.firstIndex);
+		const std::int64_t libraryStep = lastIndex_ ? static_cast<std::int64_t>(cycle.firstIndex) -
+		                                                  static_cast<std::int64_t>(*lastIndex_) - 1 - pendingSkipped_
+		                                            : 0;
 		if (lastIndex_) checkStep(index, cycle);
 		lastIndex_ = cycle.lastIndex;
 		lastCycleRamp_ = cycle.ramp;
@@ -677,6 +717,7 @@ private:
 		errors.mostDelayFrames = std::max(errors.mostDelayFrames, cycle.delayFrames);
 		errors.leastDelayFrames = std::min(errors.leastDelayFrames, cycle.delayFrames);
 		const double errorUs = outputUs - static_cast<double>(rig_.worker.clientTimeOf(rampUs));
+		ramp_.push_back({index, errorUs, libraryStep});
 		if (cycle.startRawNs - *firstFrameNs_ <= 3000000000) return;
 		++errors.afterFirst3s;
 		// While the library has lost sync, by its own word, what it plays is its re-alignment, not its timing.
@@ -882,6 +923,8 @@ private:
 			} else if (line.kind == LibraryLog::Kind::lostSync) {
 				errors.lostSync.push_back(std::to_string(line.cycle) + ": " + std::to_string(line.value));
 				losses_.push_back({line.cycle, std::nullopt});
+			} else if (line.kind == LibraryLog::Kind::underflow) {
+				errors.underflows.push_back(line.cycle);
 			} else if (!losses_.empty() && !losses_.back().regained) {
 				losses_.back().regained = line.cycle;
 				errors.lostSync.push_back(std::to_string(line.cycle) + ": regained");
@@ -967,6 +1010,7 @@ private:
 	std::vector<std::size_t> dry_;
 	std::vector<std::size_t> disturbed_; // cycles the ledger did not call clean
 	std::vector<std::size_t> heard_;     // the cycle each line of the library's log was read at
+	std::vector<RampSeen> ramp_;
 };
 
 /// Judges cycles as they come until the planned count is judged: however often the host disturbs the clock, the
@@ -988,6 +1032,8 @@ void checkSync(const Errors& errors) {
 	CHECK(static_cast<double>(errors.within) >= 0.99 * static_cast<double>(errors.judged));
 	CHECK(errors.bad.empty());
 	CHECK(errors.unexplainedSilence.empty());
+	// The library was never told more played than it wrote.
+	CHECK(errors.underflows.empty());
 	// What the code told the library moved by one cycle between clean cycles fed whole: a report a block off is ear's.
 	CHECK(errors.progressSteps.empty());
 	// A frame the library interpolates to correct an error past 100 us is no exact ramp frame, and is allowed: CI's
@@ -1079,6 +1125,117 @@ TEST_CASE("A card lost mid-stream leaves the clock alone, and within 3 s the out
 	CHECK(judge.errors.bad.empty());
 	// The internal clock drove all along: neither the card's links nor its loss moved the clock.
 	CHECK(judge.errors.driverChanges == 0);
+}
+
+// docs/node-types.md#clock: a stall past the feed skips what the feed held, tells the library exactly that with the
+// cycle's real finish, and leaves the rest to the library, which plays the chunk it holds late and re-syncs at the next.
+// A 200 ms stall of the data thread (the judge's induced-stall tooling) is judged from the tap's ramp against the
+// server's stamps through the time filter: back in sync within one decoded chunk and two blocks of the driver's
+// catch-up (the bound the owner accepted, docs/node-types.md#clock), in at most two steps of the library's own, the library never told more than it wrote (no `Buffered frames
+// underflow`, every report exact), and then 750 cycles within 1 ms.
+TEST_CASE("A 200 ms stall past the feed is back in sync within a chunk and two blocks, the library told only what it "
+          "wrote, then within 1 ms",
+          "[sendspin][clock]") {
+	Rig rig;
+	rig.play(kStreamSeconds);
+	Judge judge(rig, rig.log);
+	INFO("the node said:\n" << rig.notes.all());
+	// Steady first: a hundred cycles judged within the run's rules.
+	REQUIRE(rig.waiter.until(
+		[&] {
+			judge.read();
+			return judge.errors.judged >= 100;
+		},
+		60s));
+	rig.tap.armStall();
+	REQUIRE(rig.waiter.until([&] { return rig.tap.stalledAt().has_value(); }, 10s));
+	const std::size_t stalled = *rig.tap.stalledAt();
+	const std::size_t judgedBefore = judge.errors.judged;
+	// The 750 after it, each judged by the run's rules (1.5 s past anything the host or the library did).
+	REQUIRE(rig.waiter.until(
+		[&] {
+			judge.read();
+			return judge.errors.judged >= judgedBefore + kPlannedCycles || rig.notes.heard("stream-ended");
+		},
+		150s));
+	INFO(describe(judge.errors));
+	REQUIRE(judge.errors.judged >= judgedBefore + kPlannedCycles);
+
+	// The stall's end: the driver catches the stalled time up in a burst of cycles, each cut short before the block and
+	// stated as a catch-up by the next it runs (docs/engine.md#the-internal-clock); the burst ends at the first whole
+	// cycle, and together its jumps lie past the feed.
+	std::size_t end = stalled + 1;
+	std::int64_t lostFrames = 0;
+	std::string burst;
+	for (; end < rig.tap.count() && !rig.tap.at(end).facts.whole(); ++end) {
+		const CycleFacts& facts = rig.tap.at(end).facts;
+		burst += " " + std::to_string(facts.causes.bits()) + ":" + std::to_string(facts.jumpFrames);
+		if (facts.causes.has(CycleCause::catchUp)) lostFrames += facts.jumpFrames;
+	}
+	INFO("stalled in cycle " << stalled << "; the burst after it (causes:jump):" << burst << "; " << lostFrames
+	                         << " frames lost");
+	REQUIRE(end > stalled + 1);
+	REQUIRE(lostFrames > static_cast<std::int64_t>(kFeedFrames));
+	const Cycle& caughtUp = rig.tap.at(end);
+	// What ear owes: through the stall and its burst its output stays on the server's stamps until the library acts
+	// on its own (its first step, or its first line, after the stall): every ramp cycle before that has its first
+	// frame within the band the library leaves hard sync at (sync_task.cpp's settle threshold, 500 us), inside which
+	// only its soft sync acts. The library is never told more than it wrote, and every report is exact.
+	constexpr double kBandUs = 500.0;
+	constexpr std::size_t kLineLag = 32; // a library line is stamped when read, up to this many cycles after it acted
+	const std::vector<LibraryLog::Line> lines = rig.log.lines();
+	std::optional<std::size_t> lostSyncAt; // the library's own loss of sync after the stall, by its line
+	std::string library;
+	for (const LibraryLog::Line& line : lines) {
+		if (line.cycle <= stalled) continue;
+		library += " " + std::to_string(static_cast<int>(line.kind)) + ":" + std::to_string(line.value) + "@" +
+		           std::to_string(line.cycle);
+		if (line.kind == LibraryLog::Kind::lostSync && !lostSyncAt) lostSyncAt = line.cycle;
+	}
+	const auto& ramp = judge.ramp();
+	std::size_t libraryActs = lostSyncAt.value_or(~std::size_t{0});
+	std::string steps;
+	for (const Judge::RampSeen& seen : ramp) {
+		if (seen.index <= stalled || seen.libraryStep == 0) continue;
+		steps += " " + std::to_string(seen.libraryStep) + "@" + std::to_string(seen.index) + " (" +
+		         std::to_string(seen.errorUs) + " us)";
+		libraryActs = std::min(libraryActs, seen.index);
+	}
+	std::size_t outOfBand = 0;
+	for (const Judge::RampSeen& seen : ramp)
+		if (seen.index > stalled && seen.index + kLineLag < libraryActs && std::abs(seen.errorUs) > kBandUs)
+			++outOfBand;
+	const auto back = std::ranges::find_if(
+		ramp, [&](const Judge::RampSeen& seen) { return seen.index >= end && std::abs(seen.errorUs) <= kBandUs; });
+	const std::uint64_t framesToBack = back != ramp.end() ? rig.tap.at(back->index).position - caughtUp.position : 0;
+	INFO("back at cycle " << (back != ramp.end() ? back->index : 0) << ", " << framesToBack
+	                      << " frames after the burst's end at " << end << "; the library's own steps after the stall:"
+	                      << steps << "; its lines after it (kind:value@cycle):" << library);
+	CHECK(outOfBand == 0);
+	CHECK(judge.errors.underflows.empty());
+	std::size_t progressWrong = 0;
+	for (const std::string& broken : judge.errors.bad) progressWrong += broken.starts_with("progress ") ? 1 : 0;
+	CHECK(progressWrong == 0);
+	// Back on the timeline within one decoded chunk and two blocks of the burst's end, the bound the owner accepted
+	// (docs/node-types.md#clock): the chunk the library holds plays late, and it re-syncs at its next in one step of
+	// its own, with no silence after. That holds when the library keeps its own timeline through the stall. Starved of
+	// reports for it, the library may instead floor its playtime to now at a chunk it loads meanwhile, take that chunk
+	// for 37 to 67 ms late or early (its `Lost sync` line) and undo it at the next, or leave milliseconds for its soft
+	// sync to take seconds over: the library's own misstep, which no bound of ear's covers, counted by its line and
+	// judged on ear's side alone, its lines in the message of any failure (docs/design/cycle-facts.md, section 9.9).
+	if (!lostSyncAt) {
+		REQUIRE(back != ramp.end());
+		CHECK(framesToBack <= kChunkFrames + 2 * kBlock);
+		std::size_t librarySteps = 0;
+		for (const Judge::RampSeen& seen : ramp)
+			librarySteps += seen.index > stalled && seen.index <= back->index && seen.libraryStep != 0 ? 1 : 0;
+		CHECK(librarySteps == 1);
+		CHECK(std::ranges::none_of(lines, [&](const LibraryLog::Line& line) {
+			return line.cycle > stalled && line.kind == LibraryLog::Kind::silence;
+		}));
+		// Then 750 cycles within 1 ms.
+		checkSync(judge.errors);
+	}
 }
 
 TEST_CASE("A stream ended mid-play leaves zeros within two blocks", "[sendspin][clock]") {

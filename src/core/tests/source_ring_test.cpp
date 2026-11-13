@@ -438,6 +438,27 @@ TEST_CASE("A catch-up while the writer is idle skips what the ring holds and owe
 	CHECK(ring.shortfallFrames() == 0);
 }
 
+// A debt is the stream's that fell behind; once the writer says it is idle that stream is over, and what it writes
+// next is a new one that owes nothing, however long the catch-up before (docs/writing-a-node-type.md#sources).
+TEST_CASE("A debt is forgotten once the writer goes idle: a fresh stream plays from its first frame", "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, kRate, signals);
+	REQUIRE(offer(ring, 0, 20) == 20);
+	Bank bank(1, 16);
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // 4 frames left
+	clock.lose(40, 16);                     // 640 frames lost: 4 skipped, 636 owed
+	ring.play(bank.view(), clock.next(16));
+	CHECK(ring.played().totalFrames == 16 + 640);
+	ring.markIdle();
+	ring.play(bank.view(), clock.next(16)); // seen idle: the debt is forgotten
+	REQUIRE(offer(ring, 1000, 16) == 16);
+	ring.play(bank.view(), clock.next(16));
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(1000 + i), std::min(i, kFade)));
+	CHECK(ring.played().totalFrames == 16 + 640 + 16);
+	CHECK(ring.droppedFrames() == 0);
+}
+
 TEST_CASE("A catch-up during a clear's fade skips the tail, and the rest is owed by the new stream", "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);
