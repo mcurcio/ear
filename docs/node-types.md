@@ -429,6 +429,12 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
 - `cmake/sendspin-listener.patch`: refuses an upgrade carrying `Origin`; makes an unproved
   connection give way in the nursery; lengthens the listen queue (its 5 dropped a server's SYN under
   a burst). The worker's `server_max_connections` is 32 (the library's default is 4).
+  IXWebSocket's client always sends `Origin` (its own `ws://<host>:<port>` when none is given), so
+  a server written on it cannot reach a listening node, and the library's own suite, whose fake
+  servers are IXWebSocket clients, fails wherever one dials in (82 of its tests, which pass with
+  the refusal alone taken out); two more assume the nursery's old refusal of a newcomer. No product
+  bug: `aiosendspin`, Music Assistant's server, sends no `Origin`, and a server gets in beside a
+  port scan's sockets held open (`test/system/sendspin_floods_test.cpp`).
 - `cmake/sendspin-starved-floor.patch`: floors the playtime at now only when nothing is buffered
   (`starved_playtime_floor`), the spec's underrun recovery. Without it a playtime trailing now with
   frames still buffered (reports dated behind now during a catch-up) was taken for an underrun.

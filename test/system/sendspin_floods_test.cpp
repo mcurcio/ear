@@ -315,6 +315,18 @@ TEST_CASE("Bare sockets filling an address's share and renewed before their upgr
 	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
 }
 
+// The library's own ConnectionLifecycle.JunkProbeDoesNotBlockRealServer, against ear's patched tree and a real server:
+// a port scan's two connects held open and never renewed. Its own copy hangs with the listener patch only because its
+// fake server's IXWebSocket client sends Origin (docs/node-types.md#library-facts-and-carried-patches).
+TEST_CASE("A server gets in beside two bare sockets held open from its own address", "[system][sendspin]") {
+	ListeningEar node;
+	SilentPeers peers(node.port, {{"127.0.0.1"}, 2, false, 10min, false});
+	REQUIRE(peers.waitForRounds(1));
+	SendspinTestServer server({"--dial", node.url()});
+	REQUIRE_SEEN(node.ear, node.ear.waitForLine(connectedUnpaired, deadline));
+	CHECK(server.count("disconnected ") == 0);
+}
+
 TEST_CASE("Bare sockets from many addresses filling every socket and renewed keep nobody out", "[system][sendspin]") {
 	ListeningEar node;
 	std::vector<std::string> sources;

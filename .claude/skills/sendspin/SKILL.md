@@ -226,10 +226,29 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   scripts/dev.sh ctest --test-dir out/sendspin-lib-tests   # serially: its lifecycle tests bind fixed ports
   ```
 
-  At 7be2278 with the three patches, 654 of 738 pass; 84 (ConnectionLifecycle, EncryptedLifecycle, RoleDeactivation,
-  ClientLifecycle, Start, SourceWire, VisualizerDelivery, Allocations) hang to the suite's 55 s watchdog in the dev image
-  with or without the two timing patches (checked on `ConnectionLifecycle.SilentEstablishedPeerIsDropped`), so
-  they are this environment's or the listener patch's, not the timing patches'. Every player test passes.
+  The library's build fetches its own dependencies and its examples' (FTXUI): with no network in the container, add
+  `-DBUILD_EXAMPLES=OFF` and point `FETCHCONTENT_SOURCE_DIR_<NAME>` (`ARDUINOJSON`, `MICRO_FLAC`, `NOISE_C`,
+  `IXWEBSOCKET`, `GOOGLETEST`) at trees fetched on the host.
+
+  At 7be2278 with the three patches, 84 of the 133 tests in ConnectionLifecycle, EncryptedLifecycle,
+  RoleDeactivation, ClientLifecycle, Start, SourceWire, VisualizerDelivery and Allocations do not pass (81 hang to the
+  suite's watchdog, 3 fail at once), whichever IXWebSocket; pristine, all 133 pass, and every player test passes
+  either way. **They are the listener patch's, and test assumptions, not bugs** (measured 2026-11-13, each test alone):
+  - **82 are the `Origin` refusal.** IXWebSocket's client always sends `Origin` (`IXWebSocketHandshake.cpp`: its own
+    `ws://<host>:<port>` when none is given, a given one as given, so it cannot leave it out), and every fake server
+    that dials the client in the suite is an IXWebSocket client, so each is closed after its 101 and the test waits
+    for a connection that never comes. `ConnectionLifecycle.JunkProbeDoesNotBlockRealServer` is one: its probes are
+    not what keeps its server out. With only the refusal taken out of the patch (displacement and backlog kept), these
+    82 pass, and the whole suite on ear's trees (the three patches, ear's IXWebSocket) passes but for the two below, 736 of 738;
+    with only the refusal added to pristine, the 82 fail again.
+  - **2 assume upstream's full nursery refuses the newcomer.** `ConnectionLifecycle.FullNurseryOfLivePeersRejectsNewcomer`
+    (two Sentinel peers that never activate must keep a paired newcomer out; under the patch one gives way, so the
+    newcomer never closes and it hangs) and `ClientLifecycle.AnAcceptBehindADisconnectFindsTheNurserySlotsItFreed`
+    (its control row expects a full nursery of unproved stand-ins to refuse). That is what the patch changes, on
+    purpose (`docs/node-types.md#on-an-untrusted-network`).
+
+  The real scenario, a port scan's two connects held open and then a real server, is ear's system test `A server gets
+  in beside two bare sockets held open from its own address` (`aiosendspin` sends no `Origin`).
 - The clock tests `A 200 ms stall past the feed ...` and `A 1 s stall ...` prove ear's payment every run; with the
   payment reverted (the catch-up's `owed_ += lost` removed) both fail every run (5 of 5: the library's own corrections,
   and for 200 ms back past the bound too).
@@ -264,10 +283,31 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   > skipping undecoded when its start is late by more than the longest chunk, would keep the old cost for those.
   > Measured with the real `aiosendspin` server behind a sink that stalled 200 ms: before, two corrections or silence
   > in 11 runs of 14.
+- **Draft upstream report for the listener patch** (not filed; the owner sends it):
+
+  > **Title:** The host server accepts an upgrade carrying `Origin`, and a full nursery of unproved peers keeps every
+  > server out
+  >
+  > (1) connection.md says a client MUST reject a WebSocket upgrade carrying `Origin`; `ws_server.cpp` accepts it, so a
+  > web page speaking Noise can declare `pairing`, knock an idle server off and spend the pairing rounds. Proposed: close
+  > such an upgrade on `Open` (IXWebSocket has no earlier hook, so the peer sees 101, then the close). **Your test
+  > fixtures will need changing with it:** IXWebSocket's client always sends `Origin` (`IXWebSocketHandshake.cpp`
+  > adds `ws://<host>:<port>` when none is given), and every fake server that dials the client is one, so with the
+  > refusal alone 82 tests in ConnectionLifecycle, EncryptedLifecycle, RoleDeactivation, ClientLifecycle, Start,
+  > SourceWire, VisualizerDelivery and Allocations wait for a connection that never comes (81 hang to the watchdog,
+  > `JunkProbeDoesNotBlockRealServer` among them; 3 fail). The fixtures need a client that can send no `Origin`. (2)
+  > `ConnectionManager::accept` refuses a newcomer when the inbound nursery is full, so two peers that finish the
+  > Sentinel handshake and never activate, renewed before the establish reap, keep every server out. Proposed: an
+  > occupant that has proved nothing gives way, the newcomer's own address's first, then one with its Noise handshake
+  > unfinished, then the oldest; only an operational one or one on a long-term PSK never does. This reverses
+  > `ConnectionLifecycle.FullNurseryOfLivePeersRejectsNewcomer` (a paired newcomer now displaces a Sentinel mute) and the
+  > control row of `ClientLifecycle.AnAcceptBehindADisconnectFindsTheNurserySlotsItFreed`. Also proposed: a listen
+  > backlog of twice `max_connections`, as IXWebSocket's 5 dropped a server's SYN under a burst. Patch against 7be2278
+  > attached.
 - **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the three patches in order (each `git diff` in `.cache/deps/sendspin-src` against the tree with the ones before it applied), read
   the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without all of it (asked with
   `git apply --reverse --check`, `cmake/CarriedPatch.cmake`) stops it too, so a probe left in a patched line stops the next configure. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
-  `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers. The IXWebSocket limits are not
+  `Origin` refusal and the nursery's displacement (drafted above); connection-lost and dial-failed events, which would delete the watch's timers. The IXWebSocket limits are not
   reported either, the owner's decision (2026-11-06: "Don't report for now").
 
 ## Trying it without Music Assistant
