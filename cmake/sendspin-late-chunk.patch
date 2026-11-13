@@ -1,0 +1,39 @@
+diff --git a/src/sync_task.cpp b/src/sync_task.cpp
+--- a/src/sync_task.cpp
++++ b/src/sync_task.cpp
+@@ -638,19 +638,28 @@
+             static_cast<int64_t>(this->player_impl_->get_effective_output_delay_ms()) * US_PER_MS -
+             this->player_impl_->config.fixed_delay_us;
+ 
+-        if (client_timestamp < sync_context.new_audio_client_playtime - HARD_SYNC_THRESHOLD_US) {
+-            // This chunk will arrive too late to be played, skip it!
+-            this->inbound_.return_item(sync_context.encoded_item);
+-            sync_context.encoded_item = nullptr;
+-            return DecodeResult::SKIPPED;
+-        }
+-
++        // ear: sendspin-late-chunk.patch. A chunk is too late to play only once its last frame is:
++        // one whose start is late but whose end is not is decoded, and the hard sync drops its late
++        // front, so a catch-up lands on the timeline in one step instead of skipping whole chunks
++        // past it and filling the overshoot with silence.
++        const size_t held_before = sync_context.decode_buffer.available();
+         const DecodeResult decoded = decode_whole_chunk(sync_context);
+         if (decoded != DecodeResult::SUCCESS) {
+             this->inbound_.return_item(sync_context.encoded_item);
+             sync_context.encoded_item = nullptr;
+             return decoded;
+         }
++        const size_t chunk_bytes = sync_context.decode_buffer.available() - held_before;
++        const int64_t chunk_us = sync_context.current_stream_info.frames_to_microseconds(
++            sync_context.current_stream_info.bytes_to_frames(chunk_bytes));
++        if (held_before == 0 && client_timestamp + chunk_us <
++            sync_context.new_audio_client_playtime - HARD_SYNC_THRESHOLD_US) {
++            // This chunk will arrive too late to be played, skip it!
++            sync_context.decode_buffer.decrease_buffer_length(chunk_bytes);
++            this->inbound_.return_item(sync_context.encoded_item);
++            sync_context.encoded_item = nullptr;
++            return DecodeResult::SKIPPED;
++        }
+         sync_context.decoded_timestamp = client_timestamp;
+     }
+ 

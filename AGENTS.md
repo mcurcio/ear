@@ -97,8 +97,9 @@ Toolchain notes:
   `include/knobly/knobly.hpp` is not there. Bump knobly by changing `KNOBLY_COMMIT` in
   `docker/Dockerfile` (the pin's one home); `scripts/dev.sh` rebuilds the image.
 - The `sendspin` node's fetched dependencies are in `cmake/SendspinDeps.cmake`, each at a full
-  commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`; a failed apply, or a
-  tree without it, stops configure), ArduinoJson, IXWebSocket (likewise,
+  commit or by SHA-256: sendspin-cpp (with `cmake/sendspin-listener.patch`,
+  `sendspin-starved-floor.patch` and `sendspin-late-chunk.patch`; a failed apply, or a tree without
+  one, stops configure), ArduinoJson, IXWebSocket (likewise,
   `cmake/ixwebsocket-limits.patch`), micro-flac, noise-c and mjansson/mdns (one header). Each is
   kept in `.cache/deps/` as Boost's is, and `ear_node_sendspin` is the only library that sees
   them. Configure copies their licences to `out/licenses/`. With `BUILD_TESTS=ON` configure stops

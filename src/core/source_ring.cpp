@@ -33,8 +33,9 @@ struct SourceRing::State {
 
 	// Written by the writer, the main thread or a clearing thread; read by play().
 	std::atomic<bool> closed{false};
-	std::atomic<bool> idle{true};     // until the writer's first offer, an empty ring is no shortfall
-	std::atomic<bool> stopped{false}; // dropForStop ran and no cycle played since: offer accepts nothing
+	std::atomic<bool> idle{true};            // until the writer's first offer, an empty ring is no shortfall
+	std::atomic<std::uint32_t> idleEpoch{0}; // markIdle's count: an idle the cycles never saw still ends a debt
+	std::atomic<bool> stopped{false};        // dropForStop ran and no cycle played since: offer accepts nothing
 	std::atomic<std::uint64_t> clearWord{0};
 	// Counters, any thread.
 	std::atomic<std::uint64_t> shortfall{0};
@@ -48,6 +49,7 @@ struct SourceRing::State {
 	// play()'s own (the realtime thread's).
 	bool started = false;           // a cycle played since the source was made or last stopped
 	std::uint32_t clearsSeen = 0;   // clearWord's count as play() last applied it
+	std::uint32_t idlesSeen = 0;    // idleEpoch as play() last saw it
 	std::uint32_t gain = 0;         // the fades' level, 0 (silent) to fadeFrames (full): gain / fadeFrames
 	bool clearing = false;          // a clear's fade to zero is not over: new frames wait for it
 	std::uint64_t debt = 0;         // frames the clock skipped that the ring did not hold yet: counted played, and
@@ -171,8 +173,12 @@ void SourceRing::play(std::span<const std::span<float>> bank, const SourceCycle&
 	if (s.stopped.load(std::memory_order_acquire)) s.endStop();
 	s.applyClear();
 	// An idle writer owes nothing (docs/writing-a-node-type.md#sources): its next frames begin a new stream, so a debt
-	// left from before it went idle is forgotten here, not taken from them.
-	if (s.idle.load(std::memory_order_relaxed)) s.debt = 0;
+	// left from before it said it was idle is forgotten here, not taken from them, even when it wrote again before
+	// this cycle (the idle latched by its count, not read as it stands now).
+	if (const std::uint32_t idles = s.idleEpoch.load(std::memory_order_acquire); idles != s.idlesSeen) {
+		s.idlesSeen = idles;
+		s.debt = 0;
+	}
 	const std::uint64_t skipped = s.keepTime(cycle.facts);
 
 	const auto put = [&](std::uint32_t at, const float* frame) noexcept {
@@ -251,7 +257,10 @@ std::uint32_t SourceRing::offer(std::span<const float> interleaved, std::uint32_
 	return s.ring.writeInterleaved(interleaved, whole);
 }
 
-void SourceRing::markIdle() noexcept { state_->idle.store(true, std::memory_order_relaxed); }
+void SourceRing::markIdle() noexcept {
+	state_->idle.store(true, std::memory_order_relaxed);
+	state_->idleEpoch.fetch_add(1, std::memory_order_release);
+}
 
 void SourceRing::clear() noexcept {
 	State& s = *state_;

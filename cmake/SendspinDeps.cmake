@@ -1,5 +1,5 @@
 # What the sendspin node fetches (docs/node-types.md#library-facts-and-carried-patches): the protocol library,
-# sendspin-cpp, with one carried patch; the four dependencies it would fetch itself at moving tags, each kept here at a
+# sendspin-cpp, with three carried patches; the four dependencies it would fetch itself at moving tags, each kept here at a
 # full commit, IXWebSocket with a carried patch of its own; and the one header ear's mDNS uses. kept_fetchcontent
 # declares each one first, and FetchContent's first declaration wins, so the library's own FetchContent_Declare of a
 # name changes nothing and its FetchContent_MakeAvailable finds it already there. Every tree is kept in .cache/deps
@@ -35,24 +35,30 @@ function(sendspin_dep name repository commit)
 	set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
 
-# sendspin_patched_dep(<name> <repository> <commit> <patch>): a dependency with one carried patch. Its SHA-256 is in the
-# pin, so changing it fetches the tree again, and a failed apply stops configure. Configure then asks whether the tree holds
-# the whole patch, so no node runs without what it carries, whichever tree an explicit FETCHCONTENT_SOURCE_DIR_<NAME> names
-# (cmake/CarriedPatch.cmake). Rebase the patch at each bump of the commit.
-function(sendspin_patched_dep name repository commit patch)
-	file(SHA256 "${patch}" patch_sha256)
-	kept_fetchcontent(${name} "${repository}\n${commit}\n${patch_sha256}"
+# sendspin_patched_dep(<name> <repository> <commit> <patch>...): a dependency with carried patches, applied in order.
+# Their SHA-256s are in the pin, so changing one fetches the tree again, and a failed apply stops configure. Configure
+# then asks whether the tree holds each whole patch, so no node runs without what they carry, whichever tree an explicit
+# FETCHCONTENT_SOURCE_DIR_<NAME> names (cmake/CarriedPatch.cmake). Rebase the patches at each bump of the commit.
+function(sendspin_patched_dep name repository commit)
+	set(pin "${repository}\n${commit}")
+	foreach(patch IN LISTS ARGN)
+		file(SHA256 "${patch}" patch_sha256)
+		string(APPEND pin "\n${patch_sha256}")
+	endforeach()
+	kept_fetchcontent(${name} "${pin}"
 		GIT_REPOSITORY ${repository}
 		GIT_TAG ${commit}
-		PATCH_COMMAND git apply "${patch}"
+		PATCH_COMMAND git apply ${ARGN}
 		EXCLUDE_FROM_ALL
 		SYSTEM
 	)
-	get_filename_component(patch_name "${patch}" NAME)
-	carried_patch_missing(missing "${${name}_SOURCE_DIR}" "${patch}")
-	if(missing)
-		message(FATAL_ERROR "${name}: ${${name}_SOURCE_DIR} lacks cmake/${patch_name}: ${missing}")
-	endif()
+	foreach(patch IN LISTS ARGN)
+		get_filename_component(patch_name "${patch}" NAME)
+		carried_patch_missing(missing "${${name}_SOURCE_DIR}" "${patch}")
+		if(missing)
+			message(FATAL_ERROR "${name}: ${${name}_SOURCE_DIR} lacks cmake/${patch_name}: ${missing}")
+		endif()
+	endforeach()
 	set(${name}_SOURCE_DIR "${${name}_SOURCE_DIR}" PARENT_SCOPE)
 endfunction()
 
@@ -73,10 +79,16 @@ sendspin_dep(noise_c https://github.com/esphome-libs/noise-c.git
 	a1e08809a1b8f65cd91765ba7d68a6d00648ad61    # v0.1.13, MIT
 	SOURCE_SUBDIR no-such-directory)
 
-# The carried patch refuses an upgrade carrying Origin, and makes unproved connections give way to newcomers.
+# Three carried patches: sendspin-listener.patch refuses an upgrade carrying Origin, and makes unproved connections
+# give way to newcomers; sendspin-starved-floor.patch floors the library's playtime at now only when nothing is buffered,
+# so a report dated behind now while the graph catches a stall up is not taken for an underrun; sendspin-late-chunk.patch
+# skips a chunk as too late only once its last frame is, so a catch-up lands in one hard sync instead of skipping past
+# the timeline and filling the overshoot with silence (docs/node-types.md#clock).
 sendspin_patched_dep(sendspin https://github.com/Sendspin/sendspin-cpp.git
 	7be2278a252dd8c71da55732e93fe28871a9021d   # master: accept_inbound_connections came after v0.9.5, Apache-2.0
-	"${CMAKE_CURRENT_LIST_DIR}/sendspin-listener.patch")
+	"${CMAKE_CURRENT_LIST_DIR}/sendspin-listener.patch"
+	"${CMAKE_CURRENT_LIST_DIR}/sendspin-starved-floor.patch"
+	"${CMAKE_CURRENT_LIST_DIR}/sendspin-late-chunk.patch")
 
 # ear's mDNS: one header, so nothing of the project is added (its example would be built). Public domain.
 set(mdns_url https://github.com/mjansson/mdns/archive/refs/tags/1.4.3.tar.gz)

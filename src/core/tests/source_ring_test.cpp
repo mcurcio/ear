@@ -459,6 +459,24 @@ TEST_CASE("A debt is forgotten once the writer goes idle: a fresh stream plays f
 	CHECK(ring.droppedFrames() == 0);
 }
 
+// The idle is latched: a writer that says it is idle and writes again before any cycle sees it has still ended the
+// stream that owed, so its new frames play from their first.
+TEST_CASE("A debt is forgotten when the writer went idle and wrote again with no cycle between", "[source_ring]") {
+	CountingSignals signals;
+	SourceRing ring(1, 64, kRate, signals);
+	REQUIRE(offer(ring, 0, 20) == 20);
+	Bank bank(1, 16);
+	Clock clock;
+	ring.play(bank.view(), clock.next(16)); // 4 frames left
+	clock.lose(40, 16);                     // 640 frames lost: 4 skipped, 636 owed
+	ring.play(bank.view(), clock.next(16));
+	ring.markIdle();
+	REQUIRE(offer(ring, 1000, 16) == 16); // the idle ends before any cycle sees it
+	ring.play(bank.view(), clock.next(16));
+	for (std::uint32_t i = 0; i < 16; ++i) CHECK(bank.data[0][i] == faded(streamAt(1000 + i), std::min(i, kFade)));
+	CHECK(ring.played().totalFrames == 16 + 640 + 16);
+}
+
 TEST_CASE("A catch-up during a clear's fade skips the tail, and the rest is owed by the new stream", "[source_ring]") {
 	CountingSignals signals;
 	SourceRing ring(1, 64, kRate, signals);

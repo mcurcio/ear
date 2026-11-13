@@ -9,7 +9,8 @@
 #include "feed.hpp"
 #include "mailbox.hpp"
 namespace ear::sendspin {
-/// Frames played so far, and when the last of them finishes at the driver's device, on CLOCK_MONOTONIC_RAW.
+/// Frames played so far, and when the library's next frame plays at the driver's device (the end of the cycle that
+/// told it), on CLOCK_MONOTONIC_RAW.
 struct PlayProgress {
 	std::uint64_t totalFrames;
 	std::int64_t finishRawNs;
@@ -45,7 +46,8 @@ private:
 	Mailbox<CaptureAnchor>& capture_;
 	std::uint64_t framesWritten_ = 0;
 	std::uint64_t totalFrames_ = 0;
-	std::uint32_t lastGot_ = 0; // test seams: lastGot() and lastHeld()
+	std::uint64_t toldFrames_ = 0; // what the library was last told played
+	std::uint32_t lastGot_ = 0;    // test seams: lastGot() and lastHeld()
 	std::uint32_t lastHeld_ = 0;
 };
 } // namespace ear::sendspin

@@ -209,14 +209,39 @@ TEST_CASE("The lead a player reports is ceil(frames * 1000 / rate) at every rate
 
 TEST_CASE("A cycle the graph lost and caught up is skipped and counted played", "[sendspin][code]") {
 	Rig rig;
-	rig.write(3 * block);
+	rig.write(4 * block);
 	rig.cycle();
 	rig.driver.lose(1, block);
 	REQUIRE(rig.cycle().causes == ear::CycleCause::catchUp);
+	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
+	rig.cycle();
 	const auto progress = rig.progress.read();
 	REQUIRE(progress.has_value());
-	CHECK(progress->totalFrames == 3 * block);
-	CHECK(rig.left[0] == static_cast<float>(2 * block + 1)); // that block's frames are gone
+	CHECK(progress->totalFrames == 4 * block);
+}
+
+// docs/node-types.md#clock: a cycle that caught lost time up is dated by the driver's own clock, behind raw time until
+// the catch-up's burst ends, so what it skipped and read is told with the next cycle that lost nothing, at that cycle's
+// finish.
+TEST_CASE("What a catch-up cycle skipped and read is told with the next whole cycle, at its finish",
+          "[sendspin][code]") {
+	Rig rig;
+	rig.write(6 * block);
+	rig.cycle(1000);
+	REQUIRE(rig.rang());
+	for (int burst = 0; burst < 2; ++burst) {
+		rig.driver.lose(1, block);
+		REQUIRE(rig.cycle(2000).causes == ear::CycleCause::catchUp);
+		CHECK(rig.told() == block); // nothing told from the burst
+		CHECK_FALSE(rig.rang());
+	}
+	const std::int64_t start = 1'000'000;
+	REQUIRE(rig.cycle(start).whole());
+	const auto progress = rig.progress.read();
+	REQUIRE(progress.has_value());
+	CHECK(progress->totalFrames == 6 * block); // the two skips, the two reads and this cycle's block
+	CHECK(progress->finishRawNs == ear::FrameClock(rate).heardRawNs(start, block, {}));
+	CHECK(rig.rang());
 }
 
 // docs/node-types.md#clock: however long the stall, a catch-up skips what the feed holds of it and tells the library
@@ -230,13 +255,11 @@ TEST_CASE("A catch-up of any length skips what the feed holds of it and tells ex
 		rig.cycle();
 		rig.driver.lose(4, block); // 1024 frames; the feed holds 512
 		REQUIRE(rig.cycle().jumpFrames == 4 * block);
-		CHECK(rig.told() == 3 * block); // what it held, all of it skipped
-		CHECK(rig.rang());
 		CHECK(rig.left[0] == 0.0F);
 
 		rig.write(block);
 		rig.cycle();
-		CHECK(rig.told() == 4 * block);
+		CHECK(rig.told() == 4 * block); // what it held, all of it skipped, and the next block read
 		CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // what came next plays, none of it taken
 	}
 	SECTION("past its capacity, once a change of driver to the code, now a catch-up like any other") {
@@ -247,7 +270,6 @@ TEST_CASE("A catch-up of any length skips what the feed holds of it and tells ex
 		const ear::CycleFacts facts = rig.cycle();
 		REQUIRE(facts.causes == ear::CycleCause::catchUp);
 		REQUIRE(facts.jumpFrames == 10 * block);
-		CHECK(rig.told() == 3 * block);
 		CHECK(rig.left[0] == 0.0F);
 
 		rig.write(block);
@@ -270,8 +292,12 @@ TEST_CASE("A catch-up of any length skips what the feed holds of it and tells ex
 		                                           .missedCut = static_cast<std::uint32_t>(jump / block),
 		                                           .jumpFrames = jump,
 		                                           .causes = ear::CycleCause::catchUp}});
-		CHECK(rig.told() == 3 * block);
 		CHECK(rig.left[0] == 0.0F);
+		rig.write(block);
+		rig.code.process(inputs, outputs, block,
+		                 ear::GraphCycle{.startNs = 0, .position = 2 * block + jump, .startRawNs = 2000});
+		CHECK(rig.told() == 4 * block);
+		CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
 	}
 }
 
@@ -315,8 +341,9 @@ TEST_CASE("A pause skips what the feed holds of it, as a catch-up does", "[sends
 	rig.cycle();
 	rig.driver.lose(2, block, false);
 	REQUIRE(rig.cycle().causes == ear::CycleCause::absent);
-	CHECK(rig.told() == 4 * block); // two blocks skipped, the third read
-	CHECK(rig.left[0] == static_cast<float>(3 * block + 1));
+	CHECK(rig.left[0] == static_cast<float>(3 * block + 1)); // two blocks skipped, the third read
+	rig.cycle();
+	CHECK(rig.told() == 4 * block);
 }
 
 TEST_CASE("A skip tells the jump even when the block that follows finds nothing", "[sendspin][code]") {
@@ -326,9 +353,10 @@ TEST_CASE("A skip tells the jump even when the block that follows finds nothing"
 	REQUIRE(rig.rang());
 	rig.driver.lose(1, block);
 	rig.cycle();
+	CHECK(rig.left[0] == 0.0F);
+	rig.cycle();
 	CHECK(rig.progress.read()->totalFrames == 2 * block);
 	CHECK(rig.rang());
-	CHECK(rig.left[0] == 0.0F);
 }
 
 TEST_CASE("Nothing read rings nothing, and plays zeros", "[sendspin][code]") {

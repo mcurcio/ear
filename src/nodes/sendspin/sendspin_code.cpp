@@ -33,13 +33,19 @@ void SendspinCode::process(std::span<const std::span<const float>> inputs, std::
 
 	const std::uint32_t got = feed_.read(outputs, frames);
 	lastGot_ = got;
-	if (skipped == 0 && got == 0) return;
-
 	totalFrames_ += static_cast<std::uint64_t>(skipped) + got;
-	// What this cycle writes is heard once what lies downstream of the outputs has played: a following card's buffer,
-	// as the framework carries it back through the graph (docs/engine.md#latency-per-bank-pair). The
-	// longest path is taken; the left and right outputs are one bank, so either tells it (docs/engine.md#dating).
-	progress_.publish({totalFrames_, clock_.heardRawNs(startRawNs, got, cycle.downstreamOf(0))});
+	// A cycle that caught lost time up is dated by the driver's own clock, behind raw time until its catch-up burst
+	// ends (docs/engine.md#the-internal-clock): a finish told from it would put the library's playtime that far behind
+	// now, and a chunk it synced meanwhile would be written late. So what it skipped and read is told with the next
+	// cycle that lost nothing, dated on raw time again.
+	if (totalFrames_ == toldFrames_ || movedOn) return;
+	toldFrames_ = totalFrames_;
+	// The finish told is where the library's next frame plays (sync_task.cpp: the finish plus what it still holds): the
+	// end of this cycle, which played zeros for any frames the feed lacked, heard once what lies downstream of the
+	// outputs has played: a following card's buffer, as the framework carries it back through the graph
+	// (docs/engine.md#latency-per-bank-pair). The longest path is taken; the left and right outputs are one bank, so
+	// either tells it (docs/engine.md#dating).
+	progress_.publish({totalFrames_, clock_.heardRawNs(startRawNs, frames, cycle.downstreamOf(0))});
 	bell_.ring();
 }
 

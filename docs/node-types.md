@@ -332,6 +332,9 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   the raw clock (`GraphCycle::startRawNs`) plus the latency downstream of its outputs (a following
   card's buffer, carried back by the framework), never from when the thread woke. *Why:* wake time
   failed the spike, 52% of cycles within 1 ms against 100% from the cycle's start.
+- The finish it tells is where the library's next frame plays, the end of the telling cycle: the
+  library puts its next audio at the finish plus what it still holds, and a cycle the feed left
+  short played zeros to its end.
 - The audio sent to the server (`to`) is dated by when its cycle started, each piece from the
   newest cycle's start by its frames ([engine.md](engine.md#dating)). The capture latency upstream
   of `to` is not counted yet, so a card's capture reaches the server dated late by the card's
@@ -347,24 +350,22 @@ instead, or filter both, if that matters. What a peer can and cannot do:
   played from what it wrote (clamping at zero with a warning), and it would catch the same time up
   again on its own, so it is never told more than ear took of what it wrote. Any other cause (a
   driver change, a jump back or by part of a cycle) is a new clock: nothing is skipped.
-- After a stall past the feed, up to one decoded chunk plays late before the library is back in
-  sync: it writes the chunk it holds without looking at the time again, and re-syncs only at the
-  next chunk (skipping chunks already too late and dropping the late front of the next). A chunk is
-  4608 frames, 96 ms, with FLAC at 48 kHz, and the spec bounds it at 150 ms. This is the decided
-  behaviour: the owner accepted up to one chunk, and no library patch is carried for it. The library adds a
-  second disturbance of its own: told nothing while the data thread stalls, it floors its playtime
-  to now at a chunk it loads meanwhile (`starved_playtime_floor`), takes that chunk for late or
-  early by tens of milliseconds (measured 37 to 67 ms), and undoes it at the next (a drop and the
-  silence that undoes it, or silence and a skip). Ear's own output stays on the server's stamps
-  through the stall when the feed held the lost time. After a 200 ms stall the floor fired in 11 of
-  14 runs on the real server, so the accepted one-chunk bound holds only in the runs it does not:
-  with it, the library was back 24 blocks after the catch-up, or left a 2.3 ms error for its soft
-  sync to take seconds over. A patch not flooring a playtime the reports have not caught up with
-  would remove it; none is carried, and whether to is open with the owner. The clock tests judge
-  ear's side of a 200 ms stall every run (its output on the server's stamps until the library acts
-  on its own, every report exact, never more told than written) and the one-chunk bound, one step
-  and no silence after it, then 750 cycles within 1 ms, whenever the library keeps its timeline;
-  a run where it lost sync on its own is judged on ear's side alone.
+- What a cycle that caught lost time up skipped and read is told with the next cycle that lost
+  nothing, at that cycle's finish. *Why:* the driver catches a stall up in a burst that runs the
+  block every other timeout ([engine.md](engine.md#the-internal-clock)), and a burst cycle's start
+  is the driver's own, behind raw time until the burst ends; a finish told from it would put the
+  library's playtime that far behind now, and a chunk it synced meanwhile would be written late.
+- After a stall past the feed the library is back on the timeline within one decoded chunk, the
+  feed and two blocks of the burst's end, in one hard sync of its own and no silence after it. The chunk it
+  holds plays late (it writes it without looking at the time again), and it re-syncs at its next
+  chunk: chunks wholly too late are skipped and the late front of the next is dropped. A chunk is
+  4608 frames, 96 ms, with FLAC at 48 kHz (150 ms at most by the spec). It takes two of the carried
+  patches ([below](#library-facts-and-carried-patches)), carried by the owner's decision: without
+  them the library floored its playtime at now mid-burst with frames still buffered and corrected
+  twice, or skipped whole chunks past the timeline and filled the overshoot with silence (a 200 ms
+  stall: back 24 blocks after the burst's end, or a 2.3 ms error left for soft sync, in 11 of 14
+  runs). The clock tests prove it on the real server with a 200 ms stall of the data thread
+  (20 runs of 20), and fail with the patches reverted (4 of 5).
 - The feed (the library's decoded audio waiting for the block) is about 43 ms at 48 kHz, small on
   purpose: with 2.7 s a correction lands 2.7 s late. The node declares it as its latency on `from`.
 - Only routed paths count toward the downstream latency (unrouted, or routed to a `file` node, it
@@ -399,6 +400,13 @@ dial in flight cancels within a poll; a half-open inbound socket takes up to 3 s
 - `cmake/sendspin-listener.patch`: refuses an upgrade carrying `Origin`; makes an unproved
   connection give way in the nursery; lengthens the listen queue (its 5 dropped a server's SYN under
   a burst). The worker's `server_max_connections` is 32 (the library's default is 4).
+- `cmake/sendspin-starved-floor.patch`: floors the playtime at now only when nothing is buffered
+  (`starved_playtime_floor`), the spec's underrun recovery. Without it a playtime trailing now with
+  frames still buffered (reports dated behind now during a catch-up) was taken for an underrun.
+- `cmake/sendspin-late-chunk.patch`: skips a chunk as too late only once its last frame is, so a
+  chunk whose front is late is decoded and its front dropped by the hard sync. Without it every
+  chunk whose start was late was skipped whole, overshooting the timeline by up to a chunk, which
+  the next hard sync filled with silence.
 - `cmake/ixwebsocket-limits.patch`: refuses frames over 1 MiB and messages over 1024 fragments;
   lets one transport log line through every 10 s; makes a socket still to upgrade give way (8 per
   address and 32 in all, both counting only sockets whose peer has not closed); keeps a close

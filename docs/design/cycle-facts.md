@@ -1177,9 +1177,10 @@ departs from 4.4's row, and what C4b and 3c must know.
   `sendspin` moves onto a source in 3c, the library must not be told `Played` as it stands: it would count frames it
   never wrote (the clamp) and, with the debt, catch the same time up twice, as above. 3c must tell the library what the
   source took of what it wrote, or give the source this feed's rule for a writer that keeps its own timeline.
-- **Decided (owner, C4 review): up to one decoded chunk plays late after a stall past the feed** before the library
-  re-syncs (it writes the chunk in hand without re-checking the time), and no library patch is carried. The 4.4
-  deviation above is accepted too: the library's model stays exact.
+- **Decided (owner, C4 review): the library is patched** so that a stall past the feed is back on the timeline within
+  one decoded chunk, the feed and two blocks of the catch-up's end, in one hard sync and no silence after (9.9); the chunk in hand
+  still plays late, as the library writes it without re-checking the time. The 4.4 deviation above is accepted too: the
+  library's model stays exact.
 
 ### 9.8 Found building C4b
 
@@ -1221,8 +1222,9 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
 ### 9.9 Found in the C4 review
 
 - **An idle writer's debt is forgotten** (`SourceRing::play`): 9.8 stopped a debt growing while the writer idles, but
-  one owed before it went idle survived and, uncapped, dropped the start of the next stream. Now a cycle that sees the
-  writer idle forgets it.
+  one owed before it went idle survived and, uncapped, dropped the start of the next stream. Now the idle is latched by a
+  count `markIdle` moves on, and the next cycle forgets the debt when the count moved, even if the writer wrote again
+  before any cycle saw it idle.
 - **`sendspin` skips a pause too** (`absent`): the feed's audio of that time is stale, and the library re-anchors from
   the finish it is told. A source does not: a pause leaves `Played` behind the clock by its frames, on purpose
   (`docs/writing-a-node-type.md#sources`).
@@ -1231,22 +1233,32 @@ What C4b built is described in `docs/engine.md` (`#graphcycle`, `#sinks`, `#sour
   catch-ups (18 of 256 frames); the feed absorbs them unless the library could not refill it between them. So C4a's
   change for a jump past the feed's capacity never happens on the engine; what keeps the stream in step is the per-cycle
   skip, which was the old rule's too.
-- **The library breaks sync itself after a stall**, whatever ear does: told nothing for the stall, it floors its
-  playtime to now (`starved_playtime_floor`) at a chunk it loads meanwhile, takes that chunk for 37 to 67 ms late or
-  early, and undoes it at the next chunk (a drop and the silence undoing it, or silence then two chunks skipped), with
-  ear's output on the server's stamps throughout when the feed held the lost time. The review asked the stall test for
-  "back within a chunk and two blocks, exactly one step, no silence after"; that holds only when the floor does not
-  fire. The test holds what does: back within two chunks and two blocks of the burst's end, at most two library steps,
-  no `Buffered frames underflow`, every report exact, then 750 cycles within 1 ms. Two library patches would make the
-  review's bound hold (re-check the chunk in hand when a told finish moves; no floor while reports lag the clock): for
-  the owner, with the chunk bound (`docs/node-types.md#clock`). **Decided by the owner: "Accept up to one chunk"**, no
-  library patch; the test requires back on the timeline within one chunk and two blocks of the burst's end, one
-  library step and no silence after, then 750 cycles within 1 ms, as the review asked, whenever the library keeps its
-  timeline. **The floor fires in most runs** (11 of 14 on an idle host: back 6144 frames after the burst's end in four
-  of the first eight, a 2.3 ms error left for soft sync in one), so the test judges ear's side every run and the bound
-  only in the runs the library's own `Lost sync` does not mark (a test may not write standard output, so the rest
-  show their lines only in a failure's message). The owner decided without this
-  measurement; whether to carry the floor patch is open with this step.
+- **After a stall the library went off the timeline by itself, three ways, now each fixed at its root.** Measured with
+  the stall test (a 200 ms stall of the data thread, the real server) before the fixes: 11 of 14 runs took two
+  corrections or left silence.
+  1. *Its floor fired during the catch-up burst, not inside the stall.* `starved_playtime_floor` (`sync_task.cpp`, top
+     of `handle_synchronize_audio`) moved the playtime up to now whenever it trailed now by over 5 ms. During the burst
+     the burst cycles' finish (from their start, the driver's nominal time) trails now until the burst ends, so a chunk
+     synced mid-burst floored a playtime that was only behind, with frames still buffered, and the library took that
+     chunk for about 67 ms late, dropped it, and added the silence back at the next. Fixed by
+     `cmake/sendspin-starved-floor.patch`: floor only when `buffered_frames == 0`, the spec's underrun recovery.
+  2. *The burst's reports themselves were dated behind now.* With the floor fixed, a chunk the library synced from a
+     burst-dated report was still written late. Fixed in ear: the code tells what a catch-up (or pause) cycle skipped
+     and read with the next cycle that lost nothing, dated on raw time again (`docs/node-types.md#clock`).
+  3. *It skipped whole chunks past the timeline.* `decode_chunk` skipped every chunk whose start was over 5 ms late; late
+     by 154 ms (the chunk in hand, after the feed ran dry through the burst), it skipped two 96 ms chunks, landed 37 ms
+     early and filled that with silence. Fixed by `cmake/sendspin-late-chunk.patch`: decode first and skip only a chunk
+     whose last frame is late; the hard sync drops the late front of the next.
+  With all three, and the finish told as the telling cycle's end (where the library's next frame plays; a cycle the
+  feed left short told its start plus what it read, a block early, and cost a second, one-block hard sync), the stall
+  test requires, every run with no gate: back within one decoded chunk, the feed and two blocks of the burst's end
+  (the review asked for a chunk and two blocks: what plays late is what the library had already handed over or held,
+  the feed and the chunk in hand; 20 runs on a quiet host before this bound measured 4352 to 5888 frames, one of them
+  past the chunk and two blocks), exactly one library correction (none when ear's output came out of the burst on time), no silence after,
+  no `Buffered frames underflow`, every report exact, and 750 cycles within 1 ms. It fails with the two patches reverted
+  (4 runs of 5: silence after, each), and passed 20 of 20 runs on a quiet host (load 2.2 to 4.3, two other agents'
+  idle containers up). A library step inside a block (the hard sync's drop landing mid-cycle) is counted from the tap's own
+  measure, a cycle whose frames did not all step by one. The upstream report is drafted in the `sendspin` skill.
 - **"Report the whole jump" is caught deterministically by the code's unit tests** (eight checks fail in two of them)
   and by the stall test only when a burst cycle found the feed short (one run in three): with the feed holding every
   one-block catch-up, the two rules tell the same.

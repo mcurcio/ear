@@ -1,6 +1,6 @@
 ---
 name: sendspin
-description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried patches and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/nodes/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-listener.patch, cmake/ixwebsocket-limits.patch or test/support/sendspin_server.py.
+description: The sendspin node in EAR, Music Assistant's audio in and out over the Sendspin protocol - dialling or listening per node, pairing by a code, the key file, mDNS, what each `says` line means, its threads and clock (the feed, the notifier, GraphCycle), what the spike learned, the protocol library sendspin-cpp's traps, the carried patches and bumping the pin, trying it against the real-server test tool, and the real Music Assistant check still owed. Use when configuring or pairing a sendspin node, when it is silent, is not found, keeps asking for a code, or fails with `cannot listen on port`, or when changing src/nodes/sendspin/, cmake/SendspinDeps.cmake, cmake/sendspin-listener.patch, cmake/sendspin-starved-floor.patch, cmake/sendspin-late-chunk.patch, cmake/ixwebsocket-limits.patch or test/support/sendspin_server.py.
 ---
 
 # The `sendspin` node
@@ -111,18 +111,12 @@ that means to an operator:
   from what it wrote and clamps at zero with a `Buffered frames underflow` warning (`sync_task.cpp`,
   `process_playback_progress`), and it catches up the rest of a jump itself from the cycle's real finish. A debt dropped
   from its next writes (a source's rule) would catch the same time up twice: the library re-syncs on its own at its next
-  chunk. **Up to one decoded chunk plays late after a stall past the feed** (4608 frames, 96 ms, with FLAC at 48 kHz;
-  150 ms by the spec): the library writes the chunk it holds without re-checking the time (`handle_transfer_audio`), and
-  re-syncs at the next chunk's load (late chunks skipped, `Hard sync: dropping`); decided, not patched. **And the library breaks sync itself
-  after a stall**: told nothing while the data thread is stalled, `starved_playtime_floor` floors its playtime to now at
-  a chunk it loads meanwhile, it takes that chunk for 37 to 67 ms late or early, and undoes it at the next (`Lost sync`, a
-  drop and silence that undoes it, or silence and a skip), even when ear's output never left the stamps. A 200 ms stall
-  (on the cycle judge's tooling) splits into one-block catch-ups: the driver's burst runs the block every other timeout
-  (`docs/engine.md#the-internal-clock`), so no single cycle states a jump past the feed. **The owner accepted up to one
-  chunk late, and no library patch is carried** (re-checking the chunk in hand would have removed it). The stall test in
-  `clock_test.cpp` holds that bound whenever the library keeps its timeline, and ear's side every run; the floor fired
-  in 11 of 14 runs of a 200 ms stall (back 24 blocks after the catch-up, or a 2.3 ms error left for soft sync), and such a
-  run is judged on ear's side alone. A floor patch is the open question for the owner. Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
+  chunk. **A stall's catch-up is told only once it ends:** the driver catches a stall up in a burst that runs the block
+  every other timeout (`docs/engine.md#the-internal-clock`), so a 200 ms stall is 18 one-block catch-ups and no cycle
+  states a jump past the feed; a burst cycle's start is the driver's, behind raw time, so the code tells what the burst
+  skipped and read with the next cycle that lost nothing. **Back within one decoded chunk, the feed and two blocks of the
+  burst's end, in one hard sync, no silence after,** with the two timing patches below, carried by the owner's decision (the
+  chunk in hand still plays late: the library writes it without re-checking the time). Before cycle facts the code worked the skip out from the position itself, and took a stall past the feed
   for a change of driver.
 - **The feed is small on purpose**, about 43 ms at 48 kHz: with 2.7 s a correction lands 2.7 s late.
 - **No card moves the clock** (`docs/engine.md#the-internal-clock`): the internal clock (the dummy driver)
@@ -170,7 +164,7 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   `docs/design/node-primitives.md`); none is carried yet.
 - A correction is one frame per chunk at most, -0.084% over 150 ms against the spec's ±0.5%.
 
-## The pin and the patch
+## The pin and the patches
 
 - sendspin-cpp is pinned at a master commit, not a tag: `accept_inbound_connections` came after v0.9.5.
 - `cmake/ixwebsocket-limits.patch` is carried: IXWebSocket buffers whatever a frame header claims, before any Sendspin message. It
@@ -191,7 +185,36 @@ Thrown away; its numbers are in `docs/node-types.md#library-facts-and-carried-pa
   20 rounds. The peer sees 101, then the close, as IXWebSocket has no earlier hook. It also makes an unproved connection give way
   in the nursery, its own address's first, and lengthens the listen queue, whose 5 dropped a server's SYN under a burst.
 - **Worker's `server_max_connections` is 32,** the room those two need to turn over in; it was the library's 4.
-- **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the patch (`git diff` in `.cache/deps/sendspin-src`), read
+- `cmake/sendspin-starved-floor.patch` is carried (the owner's decision, cycle facts C4): `starved_playtime_floor` moved
+  the playtime up to now whenever it trailed now by more than 5 ms, taking that for an underrun, but it also trails now
+  with frames still buffered, after reports dated behind now. Floored mid-catch-up, the library took the next chunk for
+  37 to 67 ms late or early and corrected twice. The patch floors only when nothing is buffered, the spec's underrun
+  recovery ("Large errors and startup").
+- `cmake/sendspin-late-chunk.patch` is carried (same decision): `decode_chunk` skipped a chunk whenever its start was over
+  5 ms late, so a catch-up of 154 ms skipped two 96 ms chunks, overshot by 37 ms and filled that with silence: two steps.
+  The patch decodes first and skips only a chunk whose last frame is late; the hard sync drops the late front of the
+  next, one step, no silence. The library's own test of the floor is updated in the first patch; neither is built here.
+- The clock test `A 200 ms stall past the feed ...` proves the three together every run and fails with the two reverted
+  (4 runs of 5, each with silence after; passed 20 of 20 with them).
+- **Draft upstream report** (not filed; the owner sends it):
+
+  > **Title:** After a sink's catch-up, the sync task floors a playtime that is only behind, and skips whole chunks past
+  > the timeline
+  >
+  > A sink that stalls and then catches up (a graph that runs its missed cycles back to back) reports
+  > `notify_audio_played` with finish timestamps behind the wall clock until it has caught up. Two things in
+  > `sync_task.cpp` then move the audio off the timeline. (1) `starved_playtime_floor` moves
+  > `new_audio_client_playtime` up to now whenever it trails now by more than `HARD_SYNC_THRESHOLD_US`, even with frames
+  > still buffered; the spec's recovery is for an underrun, and with `buffered_frames > 0` the sink has not starved. The
+  > next chunk is then judged tens of milliseconds late or early and corrected, and corrected back at the chunk after. (2)
+  > `decode_chunk` skips a chunk whenever its start is more than the threshold late, so a sink late by 1.6 chunks skips
+  > two and is then early by 0.4 of one, which the next hard sync fills with silence. Proposed: floor only when
+  > `buffered_frames == 0`; decode first and skip only a chunk whose last frame is late, letting the hard sync drop the
+  > late front of the next. Patches against 7be2278 attached (we carry them, with a test of the floor). Measured with the
+  > real `aiosendspin` server: a 200 ms sink stall is back on the timeline in one hard sync with no silence, within what
+  > the sink and the chunk in hand held (4352 to 5888 frames, 20 runs), where before it took two corrections or silence
+  > in 11 runs of 14.
+- **Bumping:** change the commit in `cmake/SendspinDeps.cmake`, rebase the three patches in order (each `git diff` in `.cache/deps/sendspin-src` against the tree with the ones before it applied), read
   the library's `cmake/host.cmake` for new dependencies. A patch that will not apply stops configure, and a tree without all of it (asked with
   `git apply --reverse --check`, `cmake/CarriedPatch.cmake`) stops it too, so a probe left in a patched line stops the next configure. The pin holds the patch's SHA-256, so a changed patch fetches the tree again. To file upstream, not yet done: the
   `Origin` refusal; connection-lost and dial-failed events, which would delete the watch's timers. The IXWebSocket limits are not
