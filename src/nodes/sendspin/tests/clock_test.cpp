@@ -1399,6 +1399,16 @@ static void judgeStall(bool longStall) {
 	INFO("the library judged up to cycle " << stallReach << " (" << stallReach - end
 	                                       << " after the burst's end; the first the host disturbed after the return, "
 	                                          "or kPlannedCycles on)");
+	// The payment, cycle by cycle from the burst's end: what the feed held as each began and what the code read.
+	std::string payment;
+	std::size_t shortStarts = 0;
+	for (std::size_t i = end; i < (back != ramp.end() ? back->index : end) && i < rig.tap.count(); ++i) {
+		const Cycle& c = rig.tap.at(i);
+		payment += " " + std::to_string(c.heldAtStart) + "/" + std::to_string(c.fed);
+		if (i > end && c.heldAtStart < kFeedFrames) ++shortStarts;
+	}
+	INFO("the payment (held at start/read):" << payment << "; " << shortStarts
+	                                         << " cycles after the first began with the feed short");
 	INFO("the remainder at the burst's end " << owed << " frames; back at cycle "
 	                                         << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
 	                                         << " blocks after the burst's end at " << end << " (bound " << boundBlocks
@@ -1489,13 +1499,21 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 		return seen.index >= recovered && std::abs(seen.errorUs) <= kBandUs;
 	});
 	const std::uint64_t boundBlocks = (kChunkFrames + kBlock - 1) / kBlock + 2;
+	// What the library does about the gap is judged up to the first cycle from the stream's return to the stamps on that
+	// the host disturbed or left dry, and at most kPlannedCycles past the recovery, as a stall test judges it (judgeStall
+	// says why): after such a cycle the library may answer the host in its own steps and silence. The dry cycles before
+	// the return are the gap's own. A drop is counted wherever it is logged: the check is that one came.
+	std::size_t gapReach = recovered + kPlannedCycles + 1;
+	if (back != ramp.end()) {
+		if (const auto host = judge.firstDisturbedFrom(back->index + 1)) gapReach = std::min(gapReach, *host);
+	}
 	std::size_t lostTimeSteps = 0;
 	std::size_t settles = 0;
 	std::size_t others = 0;
 	double worstBeforeBackUs = 0.0;
 	std::string steps;
 	for (const Judge::RampSeen& seen : ramp) {
-		if (seen.index <= heldFrom || seen.index > recovered + kPlannedCycles) continue;
+		if (seen.index <= heldFrom || seen.index >= gapReach) continue;
 		if (seen.index >= recovered && (back == ramp.end() || seen.index < back->index) &&
 		    std::abs(seen.errorUs) > std::abs(worstBeforeBackUs))
 			worstBeforeBackUs = seen.errorUs;
@@ -1516,11 +1534,14 @@ TEST_CASE("A starving network gap: one correction of the lost time, no silence, 
 		if (line.cycle <= heldFrom) continue;
 		library += " " + std::to_string(static_cast<int>(line.kind)) + ":" + std::to_string(line.value) + "@" +
 		           std::to_string(line.cycle);
-		if (line.kind == LibraryLog::Kind::silence) ++silenceAfter;
+		if (line.kind == LibraryLog::Kind::silence && line.cycle < gapReach) ++silenceAfter;
 		if (line.kind == LibraryLog::Kind::drop) ++drops;
 	}
 	const std::uint64_t blocksToBack =
 		back != ramp.end() ? (rig.tap.at(back->index).position - rig.tap.at(recovered).position) / kBlock : 0;
+	INFO("the library judged up to cycle " << gapReach << " (" << gapReach - recovered
+	                                       << " after the recovery; the first the host disturbed after the return, or "
+	                                          "kPlannedCycles on)");
 	INFO("back at cycle " << (back != ramp.end() ? back->index : 0) << ", " << blocksToBack
 	                      << " blocks after the recovery (bound " << boundBlocks << "), off by at most "
 	                      << worstBeforeBackUs << " us before; the library's corrections after the hold:" << steps
