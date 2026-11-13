@@ -103,6 +103,14 @@ struct GraphCycle {
 	/// port's bank, what the ports linked to the bank report (a following card: its buffer), combined over them. Empty
 	/// when nothing tells it (a test's own cycle).
 	std::span<const Latency> downstream{};
+	/// When the block really began this cycle, on CLOCK_MONOTONIC_RAW (docs/engine.md#graphcycle): `startRawNs` when it
+	/// began on time; when it began overdue, `startRawNs + (nextNs - startNs) + overdueNs`, the next cycle's due time
+	/// plus how long that was already overdue, moved onto the raw clock. A `nextNs` of 0 (a test's own cycle) is on time.
+	/// CLOCK_MONOTONIC and the raw clock differ by parts per million over the few milliseconds between: nanoseconds.
+	constexpr std::int64_t ranRawNs() const noexcept {
+		if (overdueNs <= 0 || nextNs == 0) return startRawNs;
+		return startRawNs + (nextNs - startNs) + overdueNs;
+	}
 	/// The latency downstream of output `output`; none when it is not told.
 	Latency downstreamOf(std::size_t output) const noexcept {
 		return output < downstream.size() ? downstream[output] : Latency{};

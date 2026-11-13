@@ -172,6 +172,42 @@ TEST_CASE("A cycle's overdue time is how long the next had been due as it began,
 	}
 }
 
+// docs/engine.md#graphcycle: when the block really began a cycle, on the raw clock. An on-time cycle began at its start;
+// an overdue one, run back to back in a catch-up's burst, began when the next was due plus how long that was overdue.
+TEST_CASE("A cycle ran at its start when on time, and at the next one's due time plus its overdue time when overdue",
+          "[cycle_facts]") {
+	struct Row {
+		const char* what;
+		GraphCycle cycle;
+		std::int64_t ranRawNs;
+	};
+	// The raw clock 7 ms ahead of the monotonic one, so a row that dates on the wrong clock fails.
+	constexpr std::int64_t raw = 7'000'000;
+	const std::vector<Row> rows{
+		{"on time: its start",
+	     {.startNs = 1'000'000, .position = 0, .startRawNs = 1'000'000 + raw, .nextNs = 6'333'333, .overdueNs = 0},
+	     1'000'000 + raw},
+		{"overdue by 199.67 ms after a 200 ms stall: the next due time plus that, on the raw clock",
+	     {.startNs = 1'000'000,
+	      .position = 0,
+	      .startRawNs = 1'000'000 + raw,
+	      .nextNs = 6'333'333,
+	      .overdueNs = 199'666'667},
+	     206'000'000 + raw},
+		{"overdue by a nanosecond",
+	     {.startNs = 1'000'000, .position = 0, .startRawNs = 1'000'000 + raw, .nextNs = 6'333'333, .overdueNs = 1},
+	     6'333'334 + raw},
+		{"a test's own cycle: no next cycle told, so on time whatever its overdue time",
+	     {.startNs = 1'000'000, .position = 0, .startRawNs = 1'000'000 + raw, .nextNs = 0, .overdueNs = 5'000'000},
+	     1'000'000 + raw},
+	};
+	for (const Row& row : rows) {
+		INFO(row.what);
+		CHECK(row.cycle.ranRawNs() == row.ranRawNs);
+	}
+	static_assert(GraphCycle{.startNs = 1, .position = 0, .startRawNs = 2}.ranRawNs() == 2);
+}
+
 TEST_CASE("Causes are a set", "[cycle_facts]") {
 	const CycleCauses none;
 	CHECK(none.empty());
