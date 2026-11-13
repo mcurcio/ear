@@ -302,6 +302,24 @@ std::vector<std::function<void(StatusLog&, Lines&)>> fixtureCalls() {
 			log.nodeMissedCycles("rec", {.missedCycles = 33, .overruns = 2, .repositions = 1},
 		                         {.missedCycles = 33, .overruns = 1, .repositions = 1});
 		},
+		[](StatusLog& log, Lines&) {
+			log.companionFramesLost("rec",
+		                            {.name = "rec.writer",
+		                             .kind = ear::CompanionKind::sink,
+		                             .bank = "writer",
+		                             .ready = true,
+		                             .dropped = 8192},
+		                            4096, 8192);
+		},
+		[](StatusLog& log, Lines&) {
+			log.companionFramesLost("kitchen",
+		                            {.name = "kitchen.from_server",
+		                             .kind = ear::CompanionKind::source,
+		                             .bank = "from_server",
+		                             .ready = true,
+		                             .shortfall = 256},
+		                            1, 256);
+		},
 		[](StatusLog& log, Lines&) { log.stopped(); },
 	};
 }

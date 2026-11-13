@@ -351,6 +351,25 @@ void StatusLog::nodeMissedCycles(const NodeName& node, const NodeCounts& total, 
 	     std::format("node {} {}: {}", node, code, detail));
 }
 
+void StatusLog::companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+                                    std::uint64_t totalFrames) {
+	const bool sink = companion.kind == CompanionKind::sink;
+	const std::string_view code = sink ? "ear.sink-dropped" : "ear.source-shortfall";
+	const std::string detail =
+		sink ? std::format("{} dropped {} its ring had no room for; {} since it was made", companion.name,
+	                       counted(frames, "frame", "frames"), totalFrames)
+			 : std::format("{} played {} short while its writer was not idle; {} since it was made", companion.name,
+	                       counted(frames, "frame", "frames"), totalFrames);
+	emit("diagnostic",
+	     {{"node", json(node)},
+	      {"code", json(code)},
+	      {"companion", json(companion.name)},
+	      {"frames", json(frames)},
+	      {"totalFrames", json(totalFrames)},
+	      {"detail", json(detail)}},
+	     std::format("node {} {}: {}", node, code, detail));
+}
+
 void StatusLog::mainLoopStalled(std::int64_t ms, std::string_view in) {
 	constexpr std::string_view code = "ear.main-loop-stalled";
 	Fields record{{"code", json(code)}, {"ms", json(ms)}};

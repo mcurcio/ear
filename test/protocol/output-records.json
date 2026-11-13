@@ -772,10 +772,42 @@
       }
     },
     {
-      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "case": "a sink's ring had no room for frames its block tapped: what it dropped since its last such record, and its total since its configuration made it; once the count held still for a beat, at most once per 10 s per companion, and at once as its configuration ends",
       "record": {
         "v": 1,
         "seq": 85,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "rec",
+        "code": "ear.sink-dropped",
+        "companion": "rec.writer",
+        "frames": 4096,
+        "totalFrames": 8192,
+        "detail": "rec.writer dropped 4096 frames its ring had no room for; 8192 since it was made",
+        "msg": "node rec ear.sink-dropped: rec.writer dropped 4096 frames its ring had no room for; 8192 since it was made"
+      }
+    },
+    {
+      "case": "a source played zeros while its writer was not idle: the frames since its last such record, and its total since its configuration made it; paced as a sink's drops",
+      "record": {
+        "v": 1,
+        "seq": 86,
+        "t": "2026-11-07T17:42:03.512094Z",
+        "kind": "diagnostic",
+        "node": "kitchen",
+        "code": "ear.source-shortfall",
+        "companion": "kitchen.from_server",
+        "frames": 1,
+        "totalFrames": 256,
+        "detail": "kitchen.from_server played 1 frame short while its writer was not idle; 256 since it was made",
+        "msg": "node kitchen ear.source-shortfall: kitchen.from_server played 1 frame short while its writer was not idle; 256 since it was made"
+      }
+    },
+    {
+      "case": "a stop has done all ear does: every node removed, the control port closed, ear.conf's last write made; ear's last record before it exits 0",
+      "record": {
+        "v": 1,
+        "seq": 87,
         "t": "2026-11-07T17:42:03.512094Z",
         "kind": "exit",
         "status": 0,

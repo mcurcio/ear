@@ -69,7 +69,9 @@ using PaceClock = std::function<std::chrono::steady_clock::time_point()>;
 ///                       (docs/output-records.md#diagnostic; its detail "<callback> threw[ during <where>]: <what>")
 ///                       | ear.graph-lost-cycles (no node: "cycles", "stalls", "ms" since the last, "totalCycles") and
 ///                       node <n> ear.node-missed-cycles ("missed", "overruns" since the last, "totalMissed",
-///                       "totalOverruns"), as CounterWatch paces them (docs/engine.md#reporting-the-counters)
+///                       "totalOverruns"), and node <n> ear.sink-dropped or ear.source-shortfall ("companion",
+///                       "frames" since the last, "totalFrames"), as CounterWatch paces them
+///                       (docs/engine.md#reporting-the-counters)
 /// Records a full queue dropped are counted: the next record carries "dropped":<n>, and its msg says so.
 /// Log records are paced per node, or per source when unattributed (captured stderr, PipeWire, a library): a burst of
 /// logBurst passes, then one a second, so a library that floods its output cannot push node states, routes and notes
@@ -116,6 +118,9 @@ public:
 	/// overran, since the last such record.
 	void graphLostCycles(const GraphCounts& total, const GraphCounts& since, std::uint64_t sinceMs) override;
 	void nodeMissedCycles(const NodeName& node, const NodeCounts& total, const NodeCounts& since) override;
+	/// ear.sink-dropped or ear.source-shortfall, by the companion's kind.
+	void companionFramesLost(const NodeName& node, const CompanionView& companion, std::uint64_t frames,
+	                         std::uint64_t totalFrames) override;
 	void mainLoopStalled(std::int64_t ms, std::string_view in);
 	void mainLoopResumed(std::int64_t ms);
 	void engineScheduling(bool realtime, std::string_view detail);

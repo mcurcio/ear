@@ -333,8 +333,9 @@ int main(int argc, char** argv) {
 	nodes.subscribeEngineDiagnostics(wedgeMarker); // then the engine's adapters stop calling into the loop
 	nodes.subscribeCounts(counterWatch);           // where each name's counts begin and end
 	counterWatch.subscribe(gateway);               // counters.changed
-	counterWatch.subscribe(log);                   // ear.graph-lost-cycles, ear.node-missed-cycles
-	gateway.readCounts(nodes);                     // node.added's counters for a port-caused replace
+	counterWatch.subscribe(
+		log);                  // ear.graph-lost-cycles, ear.node-missed-cycles, ear.sink-dropped, ear.source-shortfall
+	gateway.readCounts(nodes); // node.added's counters for a port-caused replace
 	reconciler.subscribe(log);
 	reconciler.subscribe(gateway);
 	live.subscribe(reconciler);
