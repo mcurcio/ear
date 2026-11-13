@@ -1658,13 +1658,11 @@ SIGSTOP measurement); the library pages hold the result.
   arrival. Proven: a product skip of one block injected into the file node, with a 200 ms stop of ear before the
   stream, fails as "a skip of 1 blocks at frame 177920: 1 of its 1 blocks paid by no record of a loss" with 39 cycles
   cut in the run, which the run-wide budget would have taken.
-- **The stall's record alone.** The first graph record after the count the test starts from must be the stall's,
-  start at that count and carry one stall. The count is read once the graph has run 100 cycles (a snapshot taken at
-  once can read 1 cycle before ear's first cut) and every cut up to it is recorded. A host stall before the test's stall
-  begins is no evidence about its record, so the attempt is made again, up to 5 times, all intrusions named if every
-  one is intruded on; one inside the stall's record fails, named. Under CI-like load (three loops of the other system
-  tests beside it) it passed 16 of 20, each failure a host stall inside the record (2, 3, 3 and 9 stalls in a record
-  of a 50 ms stall); idle, 10 of 10.
+- **The system test proves the wiring, not the stall count.** Asking a whole process signalled on a loaded host for
+  exactly one stall in one record turned CI-like load red about 1 run in 5 for host stalls ear counted rightly. The
+  stall count is proven where the stall is made inside a cycle (`counter_watch_test.cpp`, D1's engine tests: 1 stall
+  across about 40 cuts); `counters_test.cpp` proves that a stall ear took reaches a record covering its cuts, that the
+  records' running totals, `counters.changed` and `graph.get` agree, and that the records add up at the stop.
 - **A stall seen to end only by a block** is a known limit, now named in `docs/engine.md#counters`.
 
 ## 10. Decided here (technical)

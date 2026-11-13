@@ -1,6 +1,8 @@
 // The diagnostics counters reported end to end (docs/engine.md#reporting-the-counters): a stall of the real out/ear,
-// made by stopping the whole process, is one ear.graph-lost-cycles record on standard output however many cycles it
-// cut, and the control port's snapshot and counters.changed carry the same counts. (Shared helpers: ear_system.hpp.)
+// made by stopping the whole process, reaches an ear.graph-lost-cycles record on standard output, the control port's
+// snapshot, counters.changed and graph.get agree with the records, and at the stop the records add up to the total.
+// How many stalls a host's stall is counted as is proven where it can be, in counter_watch_test.cpp and the engine's
+// own tests, not here (docs/testing.md#the-counters-own-word). (Shared helpers: ear_system.hpp.)
 
 #include <chrono>
 #include <csignal>
@@ -74,54 +76,42 @@ json caughtUp(Rpc& rpc, std::uint64_t cyclesThen, std::chrono::steady_clock::tim
 	return {};
 }
 
-/// What stalling until a cut made: the cut cycles once one stall cut some, or what intruded before the stall began.
+/// What a stall that cut cycles made: the cut cycles before it began, and once its catch-up ran.
 struct Stalled {
-	std::optional<std::uint64_t> cut;
-	std::string intrusion;
+	std::uint64_t before;
+	std::uint64_t after;
 };
 
 /// Stalls ear until one stall cut a cycle, each judged by the graph's counters once it caught up: one that cut nothing
-/// lost nothing, the host having run every cycle of it, and is made again. With `cutBefore`, a cut already past it when
-/// a stall is about to begin is a host stall before the test's, returned as an intrusion.
-Stalled stallUntilCut(ChildProcess& process, Rpc& rpc, pid_t thread, std::optional<std::uint64_t> cutBefore) {
+/// lost nothing, the host having run every cycle of it, and is made again.
+Stalled stallUntilCut(ChildProcess& process, Rpc& rpc, pid_t thread) {
 	const auto until = std::chrono::steady_clock::now() + 60s;
-	for (int attempts = 0; std::chrono::steady_clock::now() < until; ++attempts) {
+	while (std::chrono::steady_clock::now() < until) {
 		const json before = rpc.call("graph.get")["result"]["counters"];
 		const auto then = std::chrono::steady_clock::now();
-		if (cutBefore && number(before, "cutCycles") != *cutBefore)
-			return {std::nullopt, "a host stall cut " + std::to_string(number(before, "cutCycles") - *cutBefore) +
-			                          " cycles after the count, before the test's stall began"};
 		stall(process, thread);
 		const std::uint64_t cut = number(caughtUp(rpc, number(before, "cycles"), then), "cutCycles");
-		if (cut > number(before, "cutCycles")) return {cut, {}};
+		if (cut > number(before, "cutCycles")) return {number(before, "cutCycles"), cut};
 	}
 	FAIL("no stall cut a cycle within 60 s");
 	return {};
 }
 
-/// The count of cut cycles a stall's record must start from: read once the graph has run 100 cycles (ear's first
-/// cycles, while its blocks join, may cut one) and once every cut up to it is recorded, read again until it holds.
-std::uint64_t recordedCount(ChildProcess& process, Rpc& rpc) {
-	const auto until = std::chrono::steady_clock::now() + deadline;
-	while (std::chrono::steady_clock::now() < until) {
-		const json counters = rpc.call("graph.get")["result"]["counters"];
-		if (number(counters, "cycles") < 100) continue;
-		const std::uint64_t cut = number(counters, "cutCycles");
-		if (cut > 0 &&
-		    !process.waitForRecord(
-				[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") >= cut; },
-				deadline))
-			break;
-		if (number(rpc.call("graph.get")["result"]["counters"], "cutCycles") == cut) return cut;
+/// Each graph record's total is the sum of every graph record's cycles up to it: the records' running totals agree.
+void checkRunningTotals(const ChildProcess& process) {
+	std::uint64_t sum = 0;
+	for (const json& record : process.records()) {
+		if (!isGraphRecord(record)) continue;
+		sum += number(record, "cycles");
+		INFO("a graph record: " << record.dump());
+		CHECK(number(record, "totalCycles") == sum);
 	}
-	FAIL("the cut cycles were never all recorded and holding still");
-	return 0;
 }
 
 } // namespace
 
-TEST_CASE("A stall is one ear.graph-lost-cycles record however many cycles it cut, and the control port carries its "
-          "counts",
+TEST_CASE("A stall ear took reaches a graph record, the control port agrees with the records, and at the stop they add "
+          "up to the total",
           "[system][counters]") {
 	TempDirectory directory;
 	writeGraphFile(directory, noiseToRec());
@@ -141,82 +131,51 @@ TEST_CASE("A stall is one ear.graph-lost-cycles record however many cycles it cu
 	for (const json& node : snapshot["nodes"])
 		for (const char* counter : {"missedCycles", "overruns", "repositions", "driverChanges"})
 			CHECK(node["counters"].contains(counter));
-	// The stall and its record. An attempt reads the count of cut cycles once every cut up to it is recorded, and stalls
-	// ear until a stall cut a cycle. A host stall that lands before the test's stall begins (the count moved before the
-	// stop, or its cuts have a record of their own before the stall's) says nothing of the stall's record, so the attempt
-	// is made again, up to 5 times. One that lands inside the stall's record cannot be told from the stall and fails,
-	// named: rerun alone (docs/testing.md#the-rules).
-	constexpr std::size_t attemptsAllowed = 5;
-	std::vector<std::string> intrusions;
-	std::optional<json> stall;
-	std::uint64_t cutBefore = 0;
-	std::uint64_t cut = 0;
-	while (!stall) {
-		if (intrusions.size() == attemptsAllowed) {
-			std::string all;
-			for (const std::string& intrusion : intrusions) all += "\n  " + intrusion;
-			FAIL("every one of " << attemptsAllowed << " attempts was intruded on by a host stall:" << all);
-		}
-		cutBefore = recordedCount(process, rpc);
-		const Stalled made = stallUntilCut(process, rpc, *thread, cutBefore);
-		if (!made.cut) {
-			intrusions.push_back(made.intrusion);
-			continue;
-		}
-		cut = *made.cut;
-		// The first graph record of any cut since the count.
-		auto first = process.waitForRecord(
-			[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") > cutBefore; },
-			deadline);
-		INFO("ear printed:\n" << process.output());
-		REQUIRE(first);
-		if (number(*first, "totalCycles") < cut) {
-			// It ends before the stall's cuts: a host stall's own record, written between the count and the stop.
-			intrusions.push_back("a host stall's record before the test's stall: " + first->dump());
-			continue;
-		}
-		stall = std::move(first);
-	}
-	INFO("attempts: " << intrusions.size() + 1 << ", each intruded on before its stall:" << json(intrusions).dump());
-	INFO("the first graph record after the count, which must be the stall's: " << stall->dump());
-	// It starts at the count and carries one stall: every cycle the stall cut, not a record a cycle. Anything else is a
-	// host stall inside the stall's record (it waits for the cuts to hold still), named here.
-	if (number(*stall, "totalCycles") - number(*stall, "cycles") != cutBefore)
-		FAIL("a host stall intruded on the stall's record: it starts at "
-		     << number(*stall, "totalCycles") - number(*stall, "cycles") << " cut cycles, not the count's "
-		     << cutBefore);
-	if (number(*stall, "stalls") != 1)
-		FAIL("a host stall intruded on the stall's record: it carries " << number(*stall, "stalls") << " stalls");
-	CHECK(number(*stall, "totalCycles") >= cut);
-	CHECK(number(*stall, "ms") >= number(*stall, "cycles") * 256 * 1000 / 48000 - 1);
-	const std::uint64_t total = number(*stall, "totalCycles");
 
-	// The wire's sample reaches it, the graph's counters whole, lostMs the cut cycles' time.
+	// The stall: its cuts, counted by the graph, reach a record, which comes once they held still, within the pace.
+	const Stalled stalled = stallUntilCut(process, rpc, *thread);
+	INFO("the stall cut the count from " << stalled.before << " to " << stalled.after);
+	const auto covering = process.waitForRecord(
+		[&](const json& record) { return isGraphRecord(record) && number(record, "totalCycles") >= stalled.after; },
+		deadline);
+	INFO("ear printed:\n" << process.output());
+	if (!covering) FAIL("no ear.graph-lost-cycles record covers the stall's cuts");
+	INFO("the record that covers the stall: " << covering->dump());
+	// The stall's cuts all come after it, held still at the beat that writes the record, so one record holds them all,
+	// beside whatever else the host cut since the record before it.
+	CHECK(number(*covering, "cycles") >= stalled.after - stalled.before);
+	CHECK(number(*covering, "stalls") >= 1);
+	CHECK(number(*covering, "ms") >= number(*covering, "cycles") * 256 * 1000 / 48000 - 1);
+	checkRunningTotals(process);
+	const std::uint64_t total = number(*covering, "totalCycles");
+
+	// The wire's sample reaches it, the graph's counters whole, lostMs the cut cycles' time; graph.get after it agrees.
 	const json changed = rpc.waitFor([&](const json& message) {
 		return message.value("method", "") == "counters.changed" &&
 		       number(message["params"]["graph"], "cutCycles") >= total;
 	});
 	const json& graph = changed["params"]["graph"];
 	CHECK(number(graph, "lostMs") == number(graph, "cutCycles") * 256 * 1000 / 48000);
-	CHECK(number(graph, "stalls") >= number(*stall, "stalls"));
+	CHECK(number(graph, "stalls") >= number(*covering, "stalls"));
 	const json again = rpc.call("graph.get")["result"]["counters"];
 	CHECK(number(again, "cutCycles") >= number(graph, "cutCycles"));
+	CHECK(number(again, "lostMs") == number(again, "cutCycles") * 256 * 1000 / 48000);
 
-	// A second stall, the stop asked for as soon as its cut is counted: the record of it may still be held back for the
-	// cuts to hold still, and the stop writes it all the same. Every record's cycles then add up to the last one's total,
-	// the second stall's among them.
-	const auto second = stallUntilCut(process, rpc, *thread, std::nullopt);
-	REQUIRE(second.cut);
-	const std::uint64_t secondCut = *second.cut;
+	// A second stall, the stop asked for as soon as its cut is counted: its record may still be held back for the cuts
+	// to hold still, and the stop writes it all the same. The records then add up to the last one's total, which is at
+	// least every cut the control port counted.
+	const Stalled second = stallUntilCut(process, rpc, *thread);
 	process.signal(SIGTERM);
 	CHECK(rpc.readUntilClosed() == 1001);
 	REQUIRE(waitForStop(process) == 0);
 	const LostCycles lost = lostCycles(process);
 	INFO(lost);
+	checkRunningTotals(process);
 	std::uint64_t lastTotal = 0;
 	for (const json& record : process.records())
 		if (isGraphRecord(record)) lastTotal = number(record, "totalCycles");
 	CHECK(lost.cutCycles == lastTotal);
-	CHECK(lost.cutCycles >= secondCut);
-	CHECK(lost.graphRecords <= lost.stalls); // a record a stall at most, never a record a cycle
+	if (lost.cutCycles < second.after)
+		FAIL("the records add up to " << lost.cutCycles << " cut cycles, short of the " << second.after
+		                              << " the control port counted before the stop");
 }

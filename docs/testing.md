@@ -286,12 +286,14 @@ GitHub runner ([engine.md](engine.md#the-internal-clock)), where a stop while th
 cuts nothing. The cut that is certain is of a cycle held in progress, so the stop is aimed at a
 moment `/proc` shows the data thread running, and the test stalls again until one stall cut a
 cycle, judging each by the graph's counters once its cycles caught up (one that cut nothing lost
-nothing). The stall's record must then be the first of any cut since the count it started from
-(read once every cut before it is recorded), carrying one stall. A host stall that lands before the
-test's stall begins (the count moved before the stop, or its cuts have a record of their own) says
-nothing of that record, so the attempt is made again, up to 5 times, and the test fails naming every
-intrusion if all are intruded on. A host stall inside the stall's record cannot be told from it and
-fails the test, named: rerun alone.
+nothing). It then proves the wiring end to end, deny by default: a graph record covers the stall's
+cuts within the records' pacing (its cycles at least the stall's, at least one stall), every
+record's total is the sum of the records up to it, `counters.changed` and `graph.get` agree with
+them, and after the stop the records add up to at least what the control port counted (the flush);
+no record, or totals that disagree, fails, named. How many stalls a host's stall is counted as is
+proven in `counter_watch_test.cpp` and the engine's in-process stall tests, where the stall is made
+inside a cycle; a whole process signalled on a loaded host cannot pin it, so this test does not
+claim it.
 
 ### The sender's own counter
 
